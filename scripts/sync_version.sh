@@ -3,8 +3,6 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROOT_CARGO="$ROOT_DIR/Cargo.toml"
-ROOT_LOCK="$ROOT_DIR/Cargo.lock"
-PLUGIN_LOCK="$ROOT_DIR/docs/examples/plugins_example/rust/Cargo.lock"
 
 VERSION="$(
   perl -0ne '
@@ -20,22 +18,30 @@ VERSION_TAG="v$VERSION"
 IFS='.' read -r YEAR MONTH DAY <<< "$VERSION"
 DATE_ISO="$(printf "%04d-%02d-%02d" "$YEAR" "$MONTH" "$DAY")"
 
-replace_in_file() {
+replace_doc_file() {
   local file="$1"
   perl -0pi -e '
     s/v\d{4}\.\d{1,2}\.\d{1,2}/$ENV{VERSION_TAG}/g;
     s/\d{4}-\d{2}-\d{2}/$ENV{DATE_ISO}/g;
-    s/\d{4}\.\d{1,2}\.\d{1,2}/$ENV{VERSION}/g if $ARGV =~ /Cargo\.lock$/;
     s/\d{4}\.\d{1,2}\.\d{1,2}/$ENV{VERSION}/g
-      if $ARGV =~ /(docs\/index\.md|docs\/installation\.md|package(?:-lock)?\.json)$/;
+      if $ARGV =~ /(docs\/index\.md|docs\/installation\.md)$/;
   ' "$file"
 }
 
-VERSION="$VERSION" VERSION_TAG="$VERSION_TAG" DATE_ISO="$DATE_ISO" replace_in_file "$ROOT_LOCK"
+replace_package_json_version() {
+  local file="$1"
+  perl -0pi -e '
+    s/^(\s*"version"\s*:\s*")[^"]+(")/$1$ENV{VERSION}$2/m;
+  ' "$file"
+}
 
-if [[ -f "$PLUGIN_LOCK" ]]; then
-  VERSION="$VERSION" VERSION_TAG="$VERSION_TAG" DATE_ISO="$DATE_ISO" replace_in_file "$PLUGIN_LOCK"
-fi
+replace_package_lock_root_versions() {
+  local file="$1"
+  perl -0pi -e '
+    s/^(\s*"version"\s*:\s*")[^"]+(")/$1$ENV{VERSION}$2/m;
+    s/("packages"\s*:\s*\{\s*""\s*:\s*\{.*?\n\s*"version"\s*:\s*")[^"]+(")/$1$ENV{VERSION}$2/s;
+  ' "$file"
+}
 
 for file in \
   "$ROOT_DIR/README.md" \
@@ -44,11 +50,15 @@ for file in \
   "$ROOT_DIR/docs/index.md" \
   "$ROOT_DIR/docs/installation.md" \
   "$ROOT_DIR/docs/examples/plugins_example/README.md" \
-  "$ROOT_DIR/docs/examples/plugins_example/skill/SKILL.md" \
-  "$ROOT_DIR/crates/rocode-server/web/package.json" \
-  "$ROOT_DIR/crates/rocode-server/web/package-lock.json"
+  "$ROOT_DIR/docs/examples/plugins_example/skill/SKILL.md"
 do
-  VERSION="$VERSION" VERSION_TAG="$VERSION_TAG" DATE_ISO="$DATE_ISO" replace_in_file "$file"
+  VERSION="$VERSION" VERSION_TAG="$VERSION_TAG" DATE_ISO="$DATE_ISO" replace_doc_file "$file"
 done
+
+VERSION="$VERSION" replace_package_json_version \
+  "$ROOT_DIR/crates/rocode-server/web/package.json"
+
+VERSION="$VERSION" replace_package_lock_root_versions \
+  "$ROOT_DIR/crates/rocode-server/web/package-lock.json"
 
 echo "Synced version $VERSION_TAG ($DATE_ISO)"

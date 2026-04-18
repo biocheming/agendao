@@ -391,12 +391,15 @@ impl SessionPrompt {
         provider: &Arc<dyn Provider>,
         filtered_messages: &[SessionMessage],
         compiled_request: &CompiledExecutionRequest,
+        config_store: Option<&rocode_config::ConfigStore>,
     ) {
+        let compaction_config = Self::runtime_compaction_config(config_store);
         if !Self::should_compact(
             filtered_messages,
             provider.as_ref(),
             model_id,
             compiled_request.max_tokens,
+            &compaction_config,
         ) {
             return;
         }
@@ -426,7 +429,7 @@ impl SessionPrompt {
             crate::compaction::RunCompactionOptions {
                 abort: CancellationToken::new(),
                 auto: true,
-                config: None,
+                config: Some(compaction_config.clone()),
                 session_ops: None,
             },
         )
@@ -672,6 +675,7 @@ impl SessionPrompt {
                 &prompt_ctx.provider,
                 &filtered_messages,
                 &prompt_ctx.compiled_request,
+                prompt_ctx.config_store.as_deref(),
             )
             .await;
 
@@ -830,7 +834,8 @@ impl SessionPrompt {
             Self::abort_pending_tool_calls(session);
         }
 
-        Self::prune_after_loop(session);
+        let compaction_config = Self::runtime_compaction_config(prompt_ctx.config_store.as_deref());
+        Self::prune_after_loop(session, &compaction_config);
         session.touch();
         Self::emit_session_update(prompt_ctx.hooks.update_hook.as_ref(), session);
 

@@ -44,6 +44,29 @@ struct LegacyToolStateInput<'a> {
 }
 
 impl SessionPrompt {
+    pub(super) fn runtime_compaction_config(
+        config_store: Option<&rocode_config::ConfigStore>,
+    ) -> CompactionConfig {
+        let mut config = CompactionConfig::default();
+        let Some(store) = config_store else {
+            return config;
+        };
+
+        if let Some(compaction) = store.config().compaction.as_ref() {
+            if let Some(auto) = compaction.auto {
+                config.auto = auto;
+            }
+            if let Some(prune) = compaction.prune {
+                config.prune = prune;
+            }
+            if let Some(reserved) = compaction.reserved {
+                config.reserved = Some(reserved);
+            }
+        }
+
+        config
+    }
+
     pub(super) fn build_chat_messages(
         session_messages: &[SessionMessage],
         system_prompt: Option<&str>,
@@ -399,6 +422,7 @@ impl SessionPrompt {
         provider: &dyn Provider,
         model_id: &str,
         max_output_tokens: Option<u64>,
+        compaction_config: &CompactionConfig,
     ) -> bool {
         let usage = Self::token_usage_from_messages(messages);
         let model = provider.get_model(model_id);
@@ -411,7 +435,7 @@ impl SessionPrompt {
                 .or_else(|| model.map(|info| info.max_output_tokens))
                 .unwrap_or(8192),
         };
-        let engine = CompactionEngine::new(CompactionConfig::default());
+        let engine = CompactionEngine::new(compaction_config.clone());
         if engine.is_overflow(&usage, &limits) {
             return true;
         }
@@ -869,7 +893,7 @@ impl SessionPrompt {
         Ok(())
     }
 
-    pub(super) fn prune_after_loop(session: &mut Session) {
+    pub(super) fn prune_after_loop(session: &mut Session, compaction_config: &CompactionConfig) {
         let mut tool_name_by_call: HashMap<String, String> = HashMap::new();
         for msg in &session.messages {
             for part in &msg.parts {
@@ -920,7 +944,7 @@ impl SessionPrompt {
             })
             .collect();
 
-        let engine = CompactionEngine::new(CompactionConfig::default());
+        let engine = CompactionEngine::new(compaction_config.clone());
         let pruned_ids = engine.prune(&mut prune_messages);
         if pruned_ids.is_empty() {
             return;
@@ -1000,6 +1024,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use futures::stream;
+    use rocode_config::{CompactionConfig as AppCompactionConfig, Config, ConfigStore};
     use rocode_provider::{ChatRequest, ChatResponse, ModelInfo, ProviderError, StreamResult};
 
     struct StaticModelProvider {
@@ -1130,6 +1155,24 @@ mod tests {
     }
 
     #[test]
+    fn runtime_compaction_config_reads_store_values() {
+        let config = Config {
+            compaction: Some(AppCompactionConfig {
+                auto: Some(false),
+                prune: Some(false),
+                reserved: Some(2048),
+            }),
+            ..Default::default()
+        };
+        let store = ConfigStore::new(config);
+
+        let resolved = SessionPrompt::runtime_compaction_config(Some(&store));
+        assert!(!resolved.auto);
+        assert!(!resolved.prune);
+        assert_eq!(resolved.reserved, Some(2048));
+    }
+
+    #[test]
     fn prune_after_loop_compacts_large_old_tool_results() {
         let mut session = Session::new("proj", ".");
         let session_id = session.id.clone();
@@ -1159,7 +1202,7 @@ mod tests {
             .messages_mut()
             .push(SessionMessage::assistant(session_id));
 
-        SessionPrompt::prune_after_loop(&mut session);
+        SessionPrompt::prune_after_loop(&mut session, &CompactionConfig::default());
 
         let compacted_count = session
             .messages
@@ -1185,7 +1228,13 @@ mod tests {
         msg.metadata
             .insert("tokens_input".to_string(), serde_json::json!(950_u64));
 
-        let compact = SessionPrompt::should_compact(&[msg], &provider, "tiny-model", None);
+        let compact = SessionPrompt::should_compact(
+            &[msg],
+            &provider,
+            "tiny-model",
+            None,
+            &CompactionConfig::default(),
+        );
         assert!(compact);
     }
 
@@ -1209,7 +1258,13 @@ mod tests {
         });
         // PLACEHOLDER_TESTS_CONTINUE_3
 
-        let compact = SessionPrompt::should_compact(&[msg], &provider, "big-model", None);
+        let compact = SessionPrompt::should_compact(
+            &[msg],
+            &provider,
+            "big-model",
+            None,
+            &CompactionConfig::default(),
+        );
         assert!(
             compact,
             "should trigger compaction for >5MB tool result content"
@@ -1236,10 +1291,119 @@ mod tests {
         msg.metadata
             .insert("tokens_input".to_string(), serde_json::json!(48_000_u64));
 
-        let compact = SessionPrompt::should_compact(&[msg], &provider, "limited-model", None);
+        let compact = SessionPrompt::should_compact(
+            &[msg],
+            &provider,
+            "limited-model",
+            None,
+            &CompactionConfig::default(),
+        );
         assert!(
             compact,
             "should trigger compaction when input tokens approach max_input_tokens"
+        );
+    }
+
+    #[test]
+    fn should_compact_respects_disabled_auto_compaction() {
+        let provider = StaticModelProvider::with_model("tiny-model", 1000, 100);
+        let mut msg = SessionMessage::user("ses_test", "hello");
+        msg.metadata
+            .insert("tokens_input".to_string(), serde_json::json!(950_u64));
+
+        let compact = SessionPrompt::should_compact(
+            &[msg],
+            &provider,
+            "tiny-model",
+            None,
+            &CompactionConfig {
+                auto: false,
+                reserved: None,
+                prune: true,
+            },
+        );
+        assert!(
+            !compact,
+            "should not trigger automatic compaction when auto=false"
+        );
+    }
+
+    #[test]
+    fn should_compact_respects_reserved_token_budget() {
+        let provider = StaticModelProvider::with_model("reserved-model", 10_000, 2048);
+        let mut msg = SessionMessage::user("ses_test", "hello");
+        msg.metadata
+            .insert("tokens_input".to_string(), serde_json::json!(9_300_u64));
+
+        let compact = SessionPrompt::should_compact(
+            &[msg],
+            &provider,
+            "reserved-model",
+            Some(800),
+            &CompactionConfig {
+                auto: true,
+                reserved: Some(1_000),
+                prune: true,
+            },
+        );
+        assert!(
+            compact,
+            "should trigger compaction when reserved token budget shrinks usable input"
+        );
+    }
+
+    #[test]
+    fn prune_after_loop_respects_disabled_prune() {
+        let mut session = Session::new("proj", ".");
+        let session_id = session.id.clone();
+
+        session
+            .messages_mut()
+            .push(SessionMessage::user(session_id.clone(), "old user message"));
+
+        let mut old_assistant = SessionMessage::assistant(session_id.clone());
+        old_assistant.add_tool_call("call_a", "bash", serde_json::json!({"command": "echo a"}));
+        old_assistant.add_tool_result("call_a", "A".repeat(140_000), false);
+        old_assistant.add_tool_call("call_b", "bash", serde_json::json!({"command": "echo b"}));
+        old_assistant.add_tool_result("call_b", "B".repeat(140_000), false);
+        session.messages_mut().push(old_assistant);
+
+        session
+            .messages_mut()
+            .push(SessionMessage::user(session_id.clone(), "new user one"));
+        session
+            .messages_mut()
+            .push(SessionMessage::assistant(session_id.clone()));
+        session
+            .messages_mut()
+            .push(SessionMessage::user(session_id.clone(), "new user two"));
+        session
+            .messages_mut()
+            .push(SessionMessage::assistant(session_id));
+
+        SessionPrompt::prune_after_loop(
+            &mut session,
+            &CompactionConfig {
+                auto: true,
+                reserved: None,
+                prune: false,
+            },
+        );
+
+        let compacted_count = session
+            .messages
+            .iter()
+            .flat_map(|m| m.parts.iter())
+            .filter_map(|p| match &p.part_type {
+                PartType::ToolResult { content, .. } => Some(content),
+                _ => None,
+            })
+            .filter(|c| c.starts_with("[tool result compacted]"))
+            .count();
+
+        assert_eq!(
+            compacted_count, 0,
+            "expected prune=false to preserve tool results"
         );
     }
 
