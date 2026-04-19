@@ -42,27 +42,28 @@ export function SessionHeader({
 }: SessionHeaderProps) {
   const showTrace = breadcrumbs.length > 1 || Boolean(provenance);
   const secondaryMeta = subtitle?.trim() || null;
+  const modeModelSummary = [modeLabel?.trim(), modelLabel?.trim()].filter(Boolean).join(" · ") || null;
 
   return (
-    <header className="roc-session-header grid gap-2" data-testid="session-header">
-      <div className="flex flex-col gap-1.5 xl:flex-row xl:items-center xl:justify-between">
+    <header className="roc-session-header grid gap-1.5" data-testid="session-header">
+      <div className="flex flex-col gap-1 xl:flex-row xl:items-center xl:justify-between">
         <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 flex-wrap items-center gap-2.5">
-            <span className="text-[10px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="text-[9px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
               Session
             </span>
-            <h1 className="min-w-0 truncate text-[1.15rem] font-semibold tracking-[-0.03em] text-foreground md:text-[1.28rem]">
+            <h1 className="min-w-0 truncate text-[1.05rem] font-semibold tracking-[-0.03em] text-foreground md:text-[1.16rem]">
               {title}
             </h1>
           </div>
           {secondaryMeta ? (
-            <div className="mt-0.5 text-[12px] leading-5 text-muted-foreground">
+            <div className="mt-0.25 text-[11px] leading-5 text-muted-foreground">
               <span className="truncate">{secondaryMeta}</span>
             </div>
           ) : null}
         </div>
 
-        <div className="flex shrink-0 flex-wrap items-center gap-1.5 xl:justify-end">
+        <div className="flex shrink-0 flex-wrap items-center gap-1.25 xl:justify-end">
           {contextSummary ? (
             <span className="roc-chip-subtle" title={contextTitle || contextSummary}>
               {contextSummary}
@@ -70,31 +71,30 @@ export function SessionHeader({
           ) : null}
           {activeStageId ? (
             <button
-              className="rounded-full border border-primary/25 bg-primary/10 px-3 py-1.5 text-xs font-semibold tracking-tight text-foreground transition-colors hover:border-primary/40 hover:bg-primary/15"
+              className="rounded-full border border-primary/22 bg-primary/8 px-2.5 py-1 text-[10px] font-semibold tracking-tight text-foreground transition-colors hover:border-primary/35 hover:bg-primary/12"
               type="button"
               onClick={() => onNavigateStage(activeStageId)}
             >
               stage {activeStageId}
             </button>
           ) : null}
-          {modeLabel ? <span className="roc-chip-subtle">{modeLabel}</span> : null}
-          {modelLabel ? <span className="roc-chip-subtle">{modelLabel}</span> : null}
+          {modeModelSummary ? <span className="roc-chip-subtle">{modeModelSummary}</span> : null}
         </div>
       </div>
 
       {breadcrumbs.length > 1 ? (
         <nav
-          className="flex flex-wrap gap-2"
+          className="flex flex-wrap gap-1.5"
           data-testid="session-breadcrumbs"
           aria-label="Session breadcrumbs"
         >
           {breadcrumbs.map((crumb, index) => (
             <div
               key={`${crumb.sessionId}:${index}`}
-              className="inline-flex items-center gap-2 rounded-full border border-border/60 bg-background/66 px-3 py-1.5"
+              className="inline-flex items-center gap-1.5 rounded-full border border-border/50 bg-background/62 px-2.5 py-1"
             >
               <button
-                className="border-0 bg-transparent p-0 text-sm text-foreground transition-colors hover:text-primary"
+                className="border-0 bg-transparent p-0 text-[12px] text-foreground transition-colors hover:text-primary"
                 type="button"
                 data-testid="session-breadcrumb"
                 data-session-id={crumb.sessionId}
@@ -103,7 +103,7 @@ export function SessionHeader({
                 {crumb.title}
               </button>
               {crumb.viaLabel ? (
-                <span className="text-xs text-muted-foreground">
+                <span className="text-[10px] text-muted-foreground">
                   {crumb.viaLabel}
                 </span>
               ) : null}
@@ -113,7 +113,7 @@ export function SessionHeader({
       ) : null}
 
       {showTrace ? (
-        <div className="border-t border-border/50 pt-3">
+        <div className="border-t border-border/40 pt-2">
           <ProvenanceTrail
             provenance={provenance}
             workspaceReference={provenance ? currentWorkspaceReference : null}

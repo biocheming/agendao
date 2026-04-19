@@ -90,10 +90,18 @@ function SessionTreeList({
 }) {
   return (
     <div className="flex flex-col gap-1">
-      {nodes.map((node) => (
-        <div key={node.id} className="flex flex-col gap-1">
-          <div className="flex items-start gap-1.5" style={{ paddingLeft: `${depth * 12}px` }}>
-            <div className="flex w-5 shrink-0 justify-center pt-2.5">
+      {nodes.map((node) => {
+        const secondaryLabel =
+          node.children.length > 0
+            ? `${node.children.length} branch${node.children.length === 1 ? "" : "es"}`
+            : depth === 0
+              ? "root"
+              : `thread ${depth}`;
+
+        return (
+          <div key={node.id} className="flex flex-col gap-1">
+            <div className="flex items-start gap-1.25" style={{ paddingLeft: `${depth * 10}px` }}>
+              <div className="flex w-4.5 shrink-0 justify-center pt-2">
               {node.children.length > 0 ? (
                 <button
                   type="button"
@@ -110,68 +118,69 @@ function SessionTreeList({
               ) : (
                 <span className="mt-1.5 h-1 w-1 rounded-full bg-border/80" />
               )}
+              </div>
+
+              <button
+                type="button"
+                data-testid="session-item"
+                data-session-id={node.id}
+                data-active={node.id === selectedSessionId ? "true" : "false"}
+                className="roc-sidebar-item min-w-0 flex-1"
+                title={node.title || "(untitled)"}
+                onClick={() => {
+                  if (selectionMode) {
+                    onToggleSelected(node.id);
+                    return;
+                  }
+                  onSelectSession(node.id);
+                }}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[12.5px] font-medium leading-4.5 tracking-tight text-foreground">
+                      {node.title || "(untitled)"}
+                    </div>
+                    <div className="mt-0.5 text-[10px] leading-4 text-muted-foreground">
+                      {secondaryLabel}
+                    </div>
+                  </div>
+                  {selectionMode ? (
+                    <button
+                      type="button"
+                      className="roc-sidebar-toggle mt-0.25 shrink-0"
+                      aria-label={selectedIds.has(node.id) ? "Deselect session" : "Select session"}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onToggleSelected(node.id);
+                      }}
+                    >
+                      {selectedIds.has(node.id) ? (
+                        <CheckSquare2 className="h-3.5 w-3.5" />
+                      ) : (
+                        <Square className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                  ) : null}
+                </div>
+              </button>
             </div>
 
-            <button
-              type="button"
-              data-testid="session-item"
-              data-session-id={node.id}
-              data-active={node.id === selectedSessionId ? "true" : "false"}
-              className="roc-sidebar-item min-w-0 flex-1"
-              onClick={() => {
-                if (selectionMode) {
-                  onToggleSelected(node.id);
-                  return;
-                }
-                onSelectSession(node.id);
-              }}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-[13px] font-semibold leading-5 tracking-tight text-foreground">
-                    {node.title || "(untitled)"}
-                  </div>
-                  <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
-                    <span>{depth === 0 ? "Root" : `Thread ${depth}`}</span>
-                    {node.children.length > 0 ? <span>{node.children.length} follow-up</span> : null}
-                  </div>
-                </div>
-                {selectionMode ? (
-                  <button
-                    type="button"
-                    className="roc-sidebar-toggle mt-0.5 shrink-0"
-                    aria-label={selectedIds.has(node.id) ? "Deselect session" : "Select session"}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onToggleSelected(node.id);
-                    }}
-                  >
-                    {selectedIds.has(node.id) ? (
-                      <CheckSquare2 className="h-3.5 w-3.5" />
-                    ) : (
-                      <Square className="h-3.5 w-3.5" />
-                    )}
-                  </button>
-                ) : null}
-              </div>
-            </button>
+            {node.children.length > 0 && !collapsedIds.has(node.id) ? (
+              <SessionTreeList
+                nodes={node.children}
+                selectedSessionId={selectedSessionId}
+                selectionMode={selectionMode}
+                selectedIds={selectedIds}
+                collapsedIds={collapsedIds}
+                depth={depth + 1}
+                onToggleCollapsed={onToggleCollapsed}
+                onToggleSelected={onToggleSelected}
+                onSelectSession={onSelectSession}
+              />
+            ) : null}
           </div>
-
-          {node.children.length > 0 && !collapsedIds.has(node.id) ? (
-            <SessionTreeList
-              nodes={node.children}
-              selectedSessionId={selectedSessionId}
-              selectionMode={selectionMode}
-              selectedIds={selectedIds}
-              collapsedIds={collapsedIds}
-              depth={depth + 1}
-              onToggleCollapsed={onToggleCollapsed}
-              onToggleSelected={onToggleSelected}
-              onSelectSession={onSelectSession}
-            />
-          ) : null}
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -308,28 +317,28 @@ export function SessionSidebar({
 
   return (
     <aside className="roc-sidebar-shell flex h-full flex-col" data-testid="session-sidebar">
-      <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-3 py-3">
-        <section className="px-1 pt-1 pb-2">
+      <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto px-3 py-3">
+        <section className="px-1 pt-1 pb-1.5">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
                 Workspace
               </p>
-              <h2 className="mt-1.5 text-base font-semibold tracking-tight text-foreground">
+              <h2 className="mt-1 text-[15px] font-semibold tracking-tight text-foreground">
                 {currentWorkspaceShort || "Choose a workspace"}
               </h2>
               {currentWorkspaceHint && currentWorkspaceHint !== currentWorkspaceShort ? (
-                <p className="mt-1 truncate text-[11px] text-muted-foreground">{currentWorkspaceHint}</p>
+                <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{currentWorkspaceHint}</p>
               ) : null}
             </div>
             {workspaceMode ? <span className="roc-pill-outline whitespace-nowrap">{workspaceMode}</span> : null}
           </div>
 
-          <div className="mt-3 grid grid-cols-2 gap-2">
+          <div className="mt-2.5 grid grid-cols-2 gap-1.5">
             <Button
               variant="outline"
               size="sm"
-              className="justify-start"
+              className="h-8 rounded-full justify-start px-3 text-[11px] text-muted-foreground"
               type="button"
               data-testid="project-new"
               onClick={() => setCreateOpen(true)}
@@ -340,7 +349,7 @@ export function SessionSidebar({
             <Button
               variant="default"
               size="sm"
-              className="justify-start"
+              className="h-8 rounded-full justify-start px-3 text-[11px]"
               type="button"
               data-testid="session-new"
               onClick={onCreateSession}
@@ -353,8 +362,8 @@ export function SessionSidebar({
         </section>
 
         {showProjectsSection ? (
-          <section className="roc-sidebar-section p-3">
-            <div className="mb-2 space-y-2 px-1">
+          <section className="roc-sidebar-section p-2.5">
+            <div className="mb-2 space-y-2 px-0.5">
               <div className="flex items-center justify-between gap-2">
                 <div>
                   <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
@@ -371,7 +380,7 @@ export function SessionSidebar({
                     value={workspaceQuery}
                     onChange={(event) => setWorkspaceQuery(event.target.value)}
                     placeholder="Search projects"
-                    className="pl-9"
+                    className="h-8 rounded-xl border-border/45 bg-background/72 pl-9 text-[12px]"
                   />
                 </div>
               ) : null}
@@ -393,26 +402,26 @@ export function SessionSidebar({
                       title={workspace.path}
                       onClick={() => onSelectWorkspace(workspace.path)}
                     >
-                      <div className="flex items-center gap-3">
-                        <div className="flex size-8 shrink-0 items-center justify-center rounded-2xl border border-border/50 bg-background/80">
-                          <FolderTree className="h-4 w-4 text-muted-foreground" />
+                      <div className="flex items-center gap-2.5">
+                        <div className="flex size-7 shrink-0 items-center justify-center rounded-xl border border-border/40 bg-background/74">
+                          <FolderTree className="h-3.5 w-3.5 text-muted-foreground" />
                         </div>
                         <div className="min-w-0 flex-1">
-                          <div className="truncate text-sm font-semibold tracking-tight text-foreground">
-                            {workspace.label}
+                          <div className="flex items-center gap-2">
+                            <div className="truncate text-[13px] font-medium tracking-tight text-foreground">
+                              {workspace.label}
+                            </div>
+                            <span className="roc-sidebar-meta shrink-0">
+                              {workspace.sessionCount}
+                            </span>
                           </div>
                           {workspacePathHint(workspace.path, currentWorkspaceRootPath) &&
                           workspacePathHint(workspace.path, currentWorkspaceRootPath) !== workspace.label ? (
-                            <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                            <div className="mt-0.25 truncate text-[10px] text-muted-foreground">
                               {workspacePathHint(workspace.path, currentWorkspaceRootPath)}
                             </div>
                           ) : null}
                         </div>
-                      </div>
-                      <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-                        <span className="roc-sidebar-meta">
-                          {workspace.sessionCount} sessions
-                        </span>
                       </div>
                     </button>
                   ))
@@ -422,8 +431,8 @@ export function SessionSidebar({
           </section>
         ) : null}
 
-        <section className="roc-sidebar-section flex min-h-0 flex-1 flex-col p-3" data-testid="session-list">
-          <div className="mb-1.5 px-1">
+        <section className="roc-sidebar-section flex min-h-0 flex-1 flex-col p-2.5" data-testid="session-list">
+          <div className="mb-1.5 px-0.5">
             <div className="flex items-center justify-between gap-2">
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">

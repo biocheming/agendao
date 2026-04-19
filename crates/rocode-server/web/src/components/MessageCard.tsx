@@ -61,6 +61,13 @@ function readableSummary(message: FeedMessage) {
   return summary;
 }
 
+function excerptText(value?: string | null, maxLength = 120) {
+  const text = compactText(value);
+  if (!text) return null;
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength - 1)}…`;
+}
+
 function normalizeValue(value: unknown) {
   const text = String(value ?? "").trim();
   if (!text) return { structured: false, text: "" };
@@ -182,6 +189,7 @@ function DisclosureCard({
   title,
   summary,
   defaultExpanded = false,
+  tone = "default",
   children,
 }: {
   icon: React.ReactNode;
@@ -189,12 +197,17 @@ function DisclosureCard({
   title: string;
   summary?: string | null;
   defaultExpanded?: boolean;
+  tone?: "default" | "danger";
   children: React.ReactNode;
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
 
   return (
-    <section className="roc-detail-card">
+    <section
+      className="roc-detail-card"
+      data-expanded={expanded ? "true" : "false"}
+      data-tone={tone === "danger" ? "danger" : undefined}
+    >
       <button
         type="button"
         className="roc-detail-trigger"
@@ -205,12 +218,12 @@ function DisclosureCard({
           <div className="roc-section-label">{label}</div>
           <div className="roc-detail-title">{title}</div>
           {summary ? (
-            <p className="roc-detail-summary line-clamp-2">{summary}</p>
+            <p className={cn("roc-detail-summary", expanded ? "line-clamp-2" : "line-clamp-1")}>{summary}</p>
           ) : null}
         </div>
         <ChevronDownIcon
           className={cn(
-            "mt-1 size-4 shrink-0 text-muted-foreground transition-transform duration-200",
+            "mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform duration-200",
             expanded && "rotate-180",
           )}
         />
@@ -234,7 +247,7 @@ function ReasoningBlock({ text }: { text: string }) {
       icon={<BrainCircuitIcon className="size-4" />}
       label="Reasoning"
       title="Reasoning trace"
-      summary="Collapsed by default so the visible response keeps its reading pace."
+      summary={excerptText(text, 132) || "Collapsed by default so the visible response keeps its reading pace."}
     >
       <StructuredText value={text} className="text-muted-foreground" />
     </DisclosureCard>
@@ -244,71 +257,86 @@ function ReasoningBlock({ text }: { text: string }) {
 function StatusBlock({ message }: { message: OutputBlock }) {
   const isError = message.tone === "error";
   const title = message.title?.trim() || (isError ? "Runtime error" : "System update");
-  const summary = message.summary?.trim() || null;
+  const summary = message.summary?.trim() || excerptText(message.text, 120) || null;
+  const hasDetail = Boolean(message.text?.trim() || message.fields?.length);
+
+  if (!hasDetail) {
+    return (
+      <section className="roc-detail-card" data-tone={isError ? "danger" : undefined}>
+        <div className="flex items-start gap-2.5">
+          <div
+            className={cn(
+              "roc-detail-icon",
+              isError ? "border-destructive/20 text-destructive" : "text-muted-foreground",
+            )}
+          >
+            <ActivityIcon className="size-4" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="roc-section-label">{isError ? "Error" : "Status"}</div>
+            <div className={cn("roc-detail-title", isError && "text-destructive")}>{title}</div>
+            {summary ? (
+              <p className={cn("roc-detail-summary", isError && "text-destructive/80")}>{summary}</p>
+            ) : null}
+          </div>
+        </div>
+      </section>
+    );
+  }
 
   return (
-    <section
-      className={cn(
-        "roc-detail-card",
-        isError && "border-destructive/30 bg-destructive/8",
-      )}
+    <DisclosureCard
+      icon={<ActivityIcon className="size-4" />}
+      label={isError ? "Error" : "Status"}
+      title={title}
+      summary={summary}
+      defaultExpanded={isError}
+      tone={isError ? "danger" : "default"}
     >
-      <div className="flex items-start gap-3">
-        <div
-          className={cn(
-            "roc-detail-icon",
-            isError ? "border-destructive/25 text-destructive" : "text-muted-foreground",
-          )}
-        >
-          <ActivityIcon className="size-4" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="roc-section-label">{isError ? "Error" : "Status"}</div>
-          <div className={cn("roc-detail-title", isError && "text-destructive")}>{title}</div>
-          {summary ? (
-            <p className={cn("roc-detail-summary", isError && "text-destructive/80")}>{summary}</p>
-          ) : null}
-        </div>
-      </div>
-      {message.text?.trim() || message.fields?.length ? (
-        <div className="roc-detail-body">
-          {message.text?.trim() ? (
-            <p className={cn("text-sm leading-6 whitespace-pre-wrap", isError ? "text-destructive" : "text-foreground/88")}>
-              {message.text}
-            </p>
-          ) : null}
-          {message.fields?.length ? <FieldList fields={message.fields} /> : null}
-        </div>
+      {message.text?.trim() ? (
+        <p className={cn("text-sm leading-6 whitespace-pre-wrap", isError ? "text-destructive" : "text-foreground/88")}>
+          {message.text}
+        </p>
       ) : null}
-    </section>
+      {message.fields?.length ? <FieldList fields={message.fields} /> : null}
+    </DisclosureCard>
   );
 }
 
 function InfoBlock({ message }: { message: OutputBlock }) {
   const title = message.title?.trim() || "Context note";
-  const summary = message.summary?.trim() || null;
+  const summary = message.summary?.trim() || excerptText(message.text, 120) || null;
+  const hasDetail = Boolean(message.text?.trim() || message.fields?.length);
+
+  if (!hasDetail) {
+    return (
+      <section className="roc-detail-card">
+        <div className="flex items-start gap-2.5">
+          <div className="roc-detail-icon">
+            <InfoIcon className="size-4" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="roc-section-label">Context</div>
+            <div className="roc-detail-title">{title}</div>
+            {summary ? <p className="roc-detail-summary">{summary}</p> : null}
+          </div>
+        </div>
+      </section>
+    );
+  }
 
   return (
-    <section className="roc-detail-card">
-      <div className="flex items-start gap-3">
-        <div className="roc-detail-icon">
-          <InfoIcon className="size-4" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="roc-section-label">Context</div>
-          <div className="roc-detail-title">{title}</div>
-          {summary ? <p className="roc-detail-summary">{summary}</p> : null}
-        </div>
-      </div>
-      {message.text?.trim() || message.fields?.length ? (
-        <div className="roc-detail-body">
-          {message.text?.trim() ? (
-            <StructuredText value={message.text} className="text-muted-foreground" />
-          ) : null}
-          {message.fields?.length ? <FieldList fields={message.fields} /> : null}
-        </div>
+    <DisclosureCard
+      icon={<InfoIcon className="size-4" />}
+      label="Context"
+      title={title}
+      summary={summary}
+    >
+      {message.text?.trim() ? (
+        <StructuredText value={message.text} className="text-muted-foreground" />
       ) : null}
-    </section>
+      {message.fields?.length ? <FieldList fields={message.fields} /> : null}
+    </DisclosureCard>
   );
 }
 
@@ -343,7 +371,7 @@ function ToolBlock({ message, active }: { message: OutputBlock; active: boolean 
       summary={summary}
       defaultExpanded={active}
     >
-      <div className="grid gap-3">
+      <div className="grid gap-2.5">
         {message.tool_call_id || message.stage_id ? (
           <div className="roc-message-meta-group">
             {message.tool_call_id ? <span className="roc-meta-badge">tool {message.tool_call_id}</span> : null}
@@ -436,7 +464,7 @@ export function MessageCard({
 
   return (
     <article
-      className={cn("grid gap-1.5", isUser && "justify-items-end")}
+      className={cn("grid gap-1", isUser && "justify-items-end")}
       data-testid="message-card"
       data-feed-id={message.feedId}
       data-block-id={message.id}
@@ -445,7 +473,7 @@ export function MessageCard({
     >
       <div className={cn("w-full", isUser ? "max-w-[82%]" : "max-w-full")}>
         <section
-          className="roc-message-card p-3.5 md:p-4"
+          className="roc-message-card p-3 md:p-3.5"
           data-tone={isUser ? "user" : "assistant"}
           data-highlighted={highlighted ? "true" : "false"}
           data-active={active ? "true" : "false"}

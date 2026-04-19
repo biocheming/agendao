@@ -422,7 +422,7 @@ export function ComposerPanel({
   const modelSearchValue = modelValue || AUTO_MODEL_VALUE;
 
   return (
-    <div className="flex flex-col gap-3" data-testid="composer-form">
+    <div className="flex flex-col gap-2.5" data-testid="composer-form">
       <ComposerContextStrip
         references={references}
         attachments={attachments}
@@ -457,7 +457,7 @@ export function ComposerPanel({
             onDragLeave={onDragLeave}
             onDrop={onDrop}
           >
-            <div className="px-4 pt-3.5 pb-2.5 md:px-5">
+            <div className="px-4 pt-4 pb-3 md:px-5">
               <textarea
                 ref={textareaRef}
                 name="message"
@@ -471,27 +471,7 @@ export function ComposerPanel({
               />
             </div>
 
-            {multimodalHints.length > 0 ? (
-              <div className="px-4 pb-2 md:px-5">
-                <div className="flex flex-wrap gap-1.5">
-                  {multimodalHints.map((hint, index) => (
-                    <span
-                      key={`${hint.tone}:${hint.text}:${index}`}
-                      className={cn(
-                        "rounded-full px-2.5 py-1 text-[11px]",
-                        hint.tone === "warning"
-                          ? "bg-amber-500/10 text-amber-700 dark:text-amber-300"
-                          : "bg-muted text-muted-foreground",
-                      )}
-                    >
-                      {hint.text}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            <div className="border-t border-border/60 px-4 py-2.5 md:px-5">
+            <div className="border-t border-border/55 px-4 py-2.5 md:px-5">
                 <input
                   ref={fileInputRef}
                   data-testid="composer-file-input"
@@ -510,14 +490,14 @@ export function ComposerPanel({
                   onChange={onFileChange}
                 />
               <div className="flex flex-col gap-2">
-                <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-                  <div className="flex min-w-0 flex-wrap items-center gap-2">
-                    <div className="flex flex-wrap items-center gap-2">
+                <div className="flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       <label className="roc-toolbar-field max-w-full">
                         <span className="roc-toolbar-label">Mode</span>
                         <select
                           aria-label="Execution mode"
-                          className="roc-toolbar-select max-w-[8.5rem]"
+                          className="roc-toolbar-select max-w-[8rem]"
                           value={modeValue}
                           onChange={(event) => onModeChange(event.target.value)}
                         >
@@ -530,7 +510,7 @@ export function ComposerPanel({
                         </select>
                       </label>
 
-                      <div className="roc-toolbar-field min-w-[17rem] max-w-full">
+                      <div className="roc-toolbar-field min-w-[16rem] max-w-full">
                         <span className="roc-toolbar-label">Model</span>
                         <Popover open={modelPickerOpen} onOpenChange={setModelPickerOpen}>
                           <PopoverTrigger asChild>
@@ -541,18 +521,20 @@ export function ComposerPanel({
                               className="flex min-w-0 flex-1 items-center gap-2 border-0 bg-transparent px-0 py-0 text-left shadow-none outline-none"
                             >
                               <div className="min-w-0 flex flex-1 items-center gap-2">
-                                <div className="min-w-0 flex flex-1 items-center gap-2 overflow-hidden">
-                                  <div className="truncate text-[12px] font-medium text-foreground">
+                                <div className="min-w-0 flex flex-1 flex-col overflow-hidden">
+                                  <div className="truncate text-[12px] font-medium leading-4.5 text-foreground">
                                     {selectedModelTitle}
                                   </div>
-                                  <div className="truncate text-[10px] text-muted-foreground">
-                                    {selectedModelSubtitle}
-                                  </div>
-                                  {selectedModelBadges.length > 0 ? (
-                                    <div className="flex shrink-0 items-center gap-1">
-                                      {selectedModelBadges.slice(0, 2).map(renderModelBadge)}
+                                  <div className="flex min-w-0 items-center gap-1.5">
+                                    <div className="truncate text-[10px] leading-4 text-muted-foreground">
+                                      {selectedModelSubtitle}
                                     </div>
-                                  ) : null}
+                                    {selectedModelBadges.length > 0 ? (
+                                      <div className="flex shrink-0 items-center gap-1">
+                                        {selectedModelBadges.slice(0, 2).map(renderModelBadge)}
+                                      </div>
+                                    ) : null}
+                                  </div>
                                 </div>
                                 <ChevronsUpDownIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
                               </div>
@@ -682,14 +664,14 @@ export function ComposerPanel({
                     </div>
                   </div>
 
-                  <div className="flex shrink-0 items-center gap-2 lg:pb-0.5">
+                  <div className="flex shrink-0 items-center gap-1.5 lg:pb-0.5">
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button
                           type="button"
                           variant="outline"
                           size="sm"
-                          className="h-9 rounded-full px-3.5 text-[12px]"
+                          className="h-8.5 rounded-full border-border/45 px-3 text-[11px] text-muted-foreground"
                           title="Add attachment"
                         >
                           <PlusIcon className="mr-1.5 size-3.5" />
@@ -734,7 +716,7 @@ export function ComposerPanel({
                         type="button"
                         variant="outline"
                         size="sm"
-                        className="h-9 gap-1.5 rounded-full border-border/55 px-3.5 text-[11px]"
+                        className="h-8.5 gap-1.5 rounded-full border-border/50 px-3 text-[11px]"
                         onClick={() => {
                           window.dispatchEvent(new CustomEvent("rocode:stop-streaming"));
                         }}
@@ -749,7 +731,7 @@ export function ComposerPanel({
                       variant="default"
                       size="sm"
                       disabled={!composer.trim() && attachments.length === 0}
-                      className="h-10 rounded-full px-4.5 shadow-sm"
+                      className="h-9.5 rounded-full px-4 shadow-sm"
                     >
                       <span className="mr-1 text-[11px] font-medium">Send</span>
                       <SendIcon className="size-3.25" />
@@ -757,32 +739,44 @@ export function ComposerPanel({
                   </div>
                 </div>
 
-                <div className="flex flex-col gap-2.5 pt-0.5 lg:flex-row lg:items-end lg:justify-between">
+                <div className="flex flex-col gap-2 pt-0.25 lg:flex-row lg:items-end lg:justify-between">
                   <div className="min-w-0 flex-1">
-                    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+                    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[11px] leading-5">
                       <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                         Context
                       </span>
                       {contextSummary ? (
-                        <span className="text-[12px] font-medium text-foreground/88">
+                        <span className="font-medium text-foreground/88">
                           {contextSummary}
                           {contextPercent ? <span className="text-muted-foreground"> · {contextPercent}</span> : null}
                         </span>
                       ) : (
-                        <span className="text-[12px] text-muted-foreground">Awaiting telemetry</span>
+                        <span className="text-muted-foreground">Awaiting telemetry</span>
                       )}
                       {contextCount > 0 ? (
                         <span className="roc-chip-subtle">
                           {references.length} refs · {attachments.length} attachments
                         </span>
                       ) : null}
+                      {multimodalHints.map((hint, index) => (
+                        <span
+                          key={`${hint.tone}:${hint.text}:${index}`}
+                          className={cn(
+                            hint.tone === "warning"
+                              ? "text-amber-700 dark:text-amber-300"
+                              : "text-muted-foreground",
+                          )}
+                        >
+                          {hint.text}
+                        </span>
+                      ))}
                       {activityHint ? (
-                        <span className={cn("text-[11px] font-medium", voiceError ? "text-destructive" : "text-muted-foreground")}>
+                        <span className={cn("font-medium", voiceError ? "text-destructive" : "text-muted-foreground")}>
                           {activityHint}
                         </span>
                       ) : null}
                     </div>
-                    <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-muted/65">
+                    <div className="mt-1.5 h-1.25 overflow-hidden rounded-full bg-muted/60">
                       <div
                         className={cn(
                           "h-full rounded-full transition-[width,background-color] duration-200 ease-out",
@@ -797,12 +791,10 @@ export function ComposerPanel({
                     </div>
                   </div>
 
-                  <div className="flex shrink-0 flex-wrap items-center gap-2 lg:justify-end">
-                    <span className="roc-chip-subtle">
-                      Cost {formatCompactMoney(sessionCost)}
-                    </span>
+                  <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground lg:justify-end">
+                    <span>Cost {formatCompactMoney(sessionCost)}</span>
                     {pricingLabel ? (
-                      <span className="roc-chip-subtle" title="Model pricing per million tokens">
+                      <span title="Model pricing per million tokens">
                         {pricingLabel}
                       </span>
                     ) : null}
