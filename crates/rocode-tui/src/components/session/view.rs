@@ -347,10 +347,12 @@ impl SessionView {
     pub fn clear_sidebar_focus(&self) -> bool {
         let mut state = self.state.lock();
         let mut next_sidebar = state.sidebar.clone();
-        let had_focus =
-            next_sidebar.lifecycle.process_focus || next_sidebar.lifecycle.child_session_focus;
+        let had_focus = next_sidebar.lifecycle.process_focus
+            || next_sidebar.lifecycle.child_session_focus
+            || next_sidebar.lifecycle.workspace_focus;
         next_sidebar.lifecycle.process_focus = false;
         next_sidebar.lifecycle.child_session_focus = false;
+        next_sidebar.lifecycle.workspace_focus = false;
         if had_focus {
             state.update_sidebar_state(next_sidebar);
         }
@@ -365,12 +367,24 @@ impl SessionView {
         self.state.lock().sidebar.lifecycle.child_session_focus
     }
 
+    pub fn sidebar_workspace_focus(&self) -> bool {
+        self.state.lock().sidebar.lifecycle.workspace_focus
+    }
+
     pub fn sidebar_process_selected(&self) -> usize {
         self.state.lock().sidebar.lifecycle.process_selected
     }
 
     pub fn sidebar_child_session_selected(&self) -> usize {
         self.state.lock().sidebar.lifecycle.child_session_selected
+    }
+
+    pub fn sidebar_workspace_node_count(&self) -> usize {
+        self.state
+            .lock()
+            .sidebar
+            .render_state
+            .workspace_visible_count()
     }
 
     pub fn move_sidebar_process_selection_up(&self) {
@@ -433,15 +447,63 @@ impl SessionView {
         state.update_sidebar_state(next_sidebar);
     }
 
+    pub fn move_sidebar_workspace_selection_up(&self) {
+        let mut state = self.state.lock();
+        let mut next_sidebar = state.sidebar.clone();
+        let next_index = next_sidebar.lifecycle.workspace_selected.saturating_sub(1);
+        next_sidebar
+            .render_state
+            .set_workspace_selected_index(&mut next_sidebar.lifecycle, next_index);
+        state.update_sidebar_state(next_sidebar);
+    }
+
+    pub fn move_sidebar_workspace_selection_down(&self, count: usize) {
+        let mut state = self.state.lock();
+        let mut next_sidebar = state.sidebar.clone();
+        if count > 0 {
+            let next_index = (next_sidebar.lifecycle.workspace_selected + 1).min(count - 1);
+            next_sidebar
+                .render_state
+                .set_workspace_selected_index(&mut next_sidebar.lifecycle, next_index);
+        }
+        state.update_sidebar_state(next_sidebar);
+    }
+
+    pub fn expand_sidebar_workspace_selection(&self) -> bool {
+        let mut state = self.state.lock();
+        let mut next_sidebar = state.sidebar.clone();
+        let changed = next_sidebar
+            .render_state
+            .expand_selected_workspace_dir(&mut next_sidebar.lifecycle);
+        if changed {
+            state.update_sidebar_state(next_sidebar);
+        }
+        changed
+    }
+
+    pub fn collapse_sidebar_workspace_selection(&self) -> bool {
+        let mut state = self.state.lock();
+        let mut next_sidebar = state.sidebar.clone();
+        let changed = next_sidebar
+            .render_state
+            .collapse_selected_workspace_dir(&mut next_sidebar.lifecycle);
+        if changed {
+            state.update_sidebar_state(next_sidebar);
+        }
+        changed
+    }
+
     pub fn toggle_sidebar_process_focus(&self, terminal_width: u16) -> bool {
         let mut state = self.state.lock();
         if !session_sidebar_visible(&state.sidebar.lifecycle, terminal_width) {
             return false;
         }
         let mut next_sidebar = state.sidebar.clone();
+        next_sidebar.lifecycle.active_tab = crate::context::SidebarTab::Session;
         next_sidebar.lifecycle.process_focus = !next_sidebar.lifecycle.process_focus;
         if next_sidebar.lifecycle.process_focus {
             next_sidebar.lifecycle.child_session_focus = false;
+            next_sidebar.lifecycle.workspace_focus = false;
         }
         state.update_sidebar_state(next_sidebar);
         true
@@ -453,9 +515,27 @@ impl SessionView {
             return false;
         }
         let mut next_sidebar = state.sidebar.clone();
+        next_sidebar.lifecycle.active_tab = crate::context::SidebarTab::Session;
         next_sidebar.lifecycle.child_session_focus = !next_sidebar.lifecycle.child_session_focus;
         if next_sidebar.lifecycle.child_session_focus {
             next_sidebar.lifecycle.process_focus = false;
+            next_sidebar.lifecycle.workspace_focus = false;
+        }
+        state.update_sidebar_state(next_sidebar);
+        true
+    }
+
+    pub fn toggle_sidebar_workspace_focus(&self, terminal_width: u16) -> bool {
+        let mut state = self.state.lock();
+        if !session_sidebar_visible(&state.sidebar.lifecycle, terminal_width) {
+            return false;
+        }
+        let mut next_sidebar = state.sidebar.clone();
+        next_sidebar.lifecycle.active_tab = crate::context::SidebarTab::Workspace;
+        next_sidebar.lifecycle.workspace_focus = !next_sidebar.lifecycle.workspace_focus;
+        if next_sidebar.lifecycle.workspace_focus {
+            next_sidebar.lifecycle.process_focus = false;
+            next_sidebar.lifecycle.child_session_focus = false;
         }
         state.update_sidebar_state(next_sidebar);
         true
@@ -475,6 +555,7 @@ impl SessionView {
             next_sidebar.lifecycle.visible = false;
             next_sidebar.lifecycle.process_focus = false;
             next_sidebar.lifecycle.child_session_focus = false;
+            next_sidebar.lifecycle.workspace_focus = false;
         } else {
             next_sidebar.lifecycle.mode = SidebarMode::Auto;
             next_sidebar.lifecycle.visible =
@@ -936,6 +1017,7 @@ impl SessionView {
             next_sidebar.lifecycle.visible = false;
             next_sidebar.lifecycle.process_focus = false;
             next_sidebar.lifecycle.child_session_focus = false;
+            next_sidebar.lifecycle.workspace_focus = false;
             next_sidebar.close_button_area = None;
             state.update_sidebar_state(next_sidebar);
             return true;
@@ -946,6 +1028,7 @@ impl SessionView {
             next_sidebar.lifecycle.visible = false;
             next_sidebar.lifecycle.process_focus = false;
             next_sidebar.lifecycle.child_session_focus = false;
+            next_sidebar.lifecycle.workspace_focus = false;
             next_sidebar.backdrop_area = None;
             next_sidebar.close_button_area = None;
             state.update_sidebar_state(next_sidebar);

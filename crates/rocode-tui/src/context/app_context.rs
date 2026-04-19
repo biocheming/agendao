@@ -74,14 +74,24 @@ pub enum SidebarMode {
     Hide,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SidebarTab {
+    #[default]
+    Session,
+    Workspace,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SidebarLifecycleState {
     pub mode: SidebarMode,
     pub visible: bool,
+    pub active_tab: SidebarTab,
     pub process_selected: usize,
     pub process_focus: bool,
     pub child_session_selected: usize,
     pub child_session_focus: bool,
+    pub workspace_selected: usize,
+    pub workspace_focus: bool,
 }
 
 impl Default for SidebarLifecycleState {
@@ -89,10 +99,13 @@ impl Default for SidebarLifecycleState {
         Self {
             mode: SidebarMode::Auto,
             visible: false,
+            active_tab: SidebarTab::Session,
             process_selected: 0,
             process_focus: false,
             child_session_selected: 0,
             child_session_focus: false,
+            workspace_selected: 0,
+            workspace_focus: false,
         }
     }
 }

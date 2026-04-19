@@ -325,7 +325,7 @@ fn session_messages_area_uses_full_main_width_without_outer_inset() {
 }
 
 #[test]
-fn session_messages_start_below_two_row_header_in_wide_layout() {
+fn session_messages_start_below_padded_header_in_wide_layout() {
     let context = Arc::new(AppContext::new());
     let view = SessionView::new("session-1".to_string());
     let prompt = Prompt::new(context.clone())
@@ -342,7 +342,7 @@ fn session_messages_start_below_two_row_header_in_wide_layout() {
         .viewport
         .last_messages_area
         .expect("messages area");
-    assert_eq!(messages_area.y, area.y.saturating_add(2));
+    assert_eq!(messages_area.y, area.y.saturating_add(3));
 }
 
 #[test]

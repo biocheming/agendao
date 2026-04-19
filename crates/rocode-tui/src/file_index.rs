@@ -8,7 +8,7 @@ use walkdir::{DirEntry, WalkDir};
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const DEFAULT_MAX_DEPTH: usize = 8;
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileIndex {
     entries: Vec<String>,
     last_refresh: Option<Instant>,
@@ -99,6 +99,10 @@ impl FileIndex {
         });
         scored.truncate(limit);
         scored
+    }
+
+    pub fn entries(&self) -> &[String] {
+        &self.entries
     }
 }
 

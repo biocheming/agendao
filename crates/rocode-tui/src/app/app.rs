@@ -842,6 +842,35 @@ impl App {
                     }
                 }
 
+                if let Some(sv) = self
+                    .context
+                    .session_view_handle()
+                    .filter(|sv| sv.sidebar_workspace_focus())
+                {
+                    match key.code {
+                        KeyCode::Up => {
+                            sv.move_sidebar_workspace_selection_up();
+                            return Ok(());
+                        }
+                        KeyCode::Down => {
+                            let count = sv.sidebar_workspace_node_count();
+                            sv.move_sidebar_workspace_selection_down(count);
+                            return Ok(());
+                        }
+                        KeyCode::Left => {
+                            if sv.collapse_sidebar_workspace_selection() {
+                                return Ok(());
+                            }
+                        }
+                        KeyCode::Right => {
+                            if sv.expand_sidebar_workspace_selection() {
+                                return Ok(());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
                 // Child session panel keyboard handling (when focused)
                 if let Some(sv) = self
                     .context
@@ -984,6 +1013,12 @@ impl App {
                 if self.matches_keybind("session_child_cycle", key) {
                     if let Some(sv) = self.context.session_view_handle() {
                         let _ = sv.toggle_sidebar_child_session_focus(self.terminal_width());
+                    }
+                    return Ok(());
+                }
+                if self.matches_keybind("session_child_cycle_reverse", key) {
+                    if let Some(sv) = self.context.session_view_handle() {
+                        let _ = sv.toggle_sidebar_workspace_focus(self.terminal_width());
                     }
                     return Ok(());
                 }

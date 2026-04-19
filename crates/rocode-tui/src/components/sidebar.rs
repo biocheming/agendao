@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use ratatui::{
@@ -11,11 +12,14 @@ use ratatui::{
 use crate::branding::{APP_NAME, APP_SHORT_NAME, APP_VERSION_DATE};
 use crate::context::{
     AppContext, LspConnectionStatus, McpConnectionStatus, MessageRole, SidebarLifecycleState,
-    TodoStatus,
+    SidebarTab, TodoStatus,
 };
+use crate::file_index::FileIndex;
 use crate::theme::Theme;
 use crate::ui::RenderSurface;
 use rocode_core::process_registry::ProcessKind;
+
+const SIDEBAR_WORKSPACE_INDEX_MAX_DEPTH: usize = 8;
 
 pub struct Sidebar {
     context: Arc<AppContext>,
@@ -28,6 +32,23 @@ struct SidebarToggleHit {
     section_key: &'static str,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SidebarTabHit {
+    tab: SidebarTab,
+    area: Rect,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct WorkspaceVisibleNode {
+    path: String,
+    label: String,
+    depth: usize,
+    is_dir: bool,
+    expanded: bool,
+    is_modified: bool,
+    is_current: bool,
+}
+
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct SidebarRenderState {
     collapsed_sections: HashMap<&'static str, bool>,
@@ -35,12 +56,20 @@ pub struct SidebarRenderState {
     content_lines: usize,
     viewport_lines: usize,
     sidebar_area: Option<Rect>,
+    tabs_area: Option<Rect>,
     sections_area: Option<Rect>,
+    tab_hits: Vec<SidebarTabHit>,
     toggle_hits: Vec<SidebarToggleHit>,
     /// Maps rendered line index → process list index (for click selection).
     process_line_hits: Vec<(usize, usize)>,
     /// Maps rendered line index → child session list index (for click selection).
     child_session_line_hits: Vec<(usize, usize)>,
+    /// Maps rendered line index → workspace visible node index.
+    workspace_line_hits: Vec<(usize, usize)>,
+    workspace_index: FileIndex,
+    workspace_expanded_dirs: HashSet<String>,
+    workspace_visible_nodes: Vec<WorkspaceVisibleNode>,
+    workspace_selected_path: Option<String>,
     /// Pending navigation target set by click-to-activate on an already-selected child session.
     /// Consumed (taken) by the app after `handle_click` returns.
     pending_navigate_child: Option<usize>,
@@ -49,7 +78,9 @@ pub struct SidebarRenderState {
 impl SidebarRenderState {
     pub fn reset_hidden(&mut self) {
         self.sidebar_area = None;
+        self.tabs_area = None;
         self.sections_area = None;
+        self.tab_hits.clear();
         self.toggle_hits.clear();
         self.scroll_offset = 0;
         self.content_lines = 0;
@@ -58,6 +89,11 @@ impl SidebarRenderState {
 
     fn set_sidebar_area(&mut self, area: Rect) {
         self.sidebar_area = Some(area);
+    }
+
+    fn set_tab_layout(&mut self, tabs_area: Rect, tab_hits: Vec<SidebarTabHit>) {
+        self.tabs_area = Some(tabs_area);
+        self.tab_hits = tab_hits;
     }
 
     fn set_sections_layout(
@@ -83,6 +119,19 @@ impl SidebarRenderState {
         col: u16,
         row: u16,
     ) -> bool {
+        if let Some(hit) = self
+            .tab_hits
+            .iter()
+            .find(|hit| contains_point(Some(hit.area), col, row))
+        {
+            lifecycle.active_tab = hit.tab;
+            lifecycle.process_focus = false;
+            lifecycle.child_session_focus = false;
+            lifecycle.workspace_focus = hit.tab == SidebarTab::Workspace;
+            self.scroll_offset = 0;
+            return true;
+        }
+
         let Some(area) = self.sections_area else {
             return false;
         };
@@ -100,8 +149,10 @@ impl SidebarRenderState {
             .find(|(li, _)| *li == line_index)
         {
             lifecycle.process_selected = *proc_idx;
+            lifecycle.active_tab = SidebarTab::Session;
             lifecycle.process_focus = true;
             lifecycle.child_session_focus = false;
+            lifecycle.workspace_focus = false;
             return true;
         }
 
@@ -116,9 +167,34 @@ impl SidebarRenderState {
                 self.pending_navigate_child = Some(*cs_idx);
             } else {
                 // First click — select and focus
+                lifecycle.active_tab = SidebarTab::Session;
                 lifecycle.child_session_selected = *cs_idx;
                 lifecycle.child_session_focus = true;
                 lifecycle.process_focus = false;
+                lifecycle.workspace_focus = false;
+            }
+            return true;
+        }
+
+        if let Some((_line_idx, node_idx)) = self
+            .workspace_line_hits
+            .iter()
+            .find(|(li, _)| *li == line_index)
+        {
+            let was_selected =
+                lifecycle.workspace_focus && lifecycle.workspace_selected == *node_idx;
+            lifecycle.active_tab = SidebarTab::Workspace;
+            lifecycle.workspace_selected = *node_idx;
+            lifecycle.workspace_focus = true;
+            lifecycle.process_focus = false;
+            lifecycle.child_session_focus = false;
+            if let Some(node) = self.workspace_visible_nodes.get(*node_idx) {
+                let node_path = node.path.clone();
+                let node_is_dir = node.is_dir;
+                self.workspace_selected_path = Some(node_path.clone());
+                if node_is_dir && was_selected {
+                    self.toggle_workspace_dir(&node_path);
+                }
             }
             return true;
         }
@@ -189,6 +265,122 @@ impl SidebarRenderState {
     pub fn take_pending_navigate_child(&mut self) -> Option<usize> {
         self.pending_navigate_child.take()
     }
+
+    pub fn refresh_workspace_index(&mut self, root: &PathBuf) {
+        self.workspace_index
+            .refresh(root, SIDEBAR_WORKSPACE_INDEX_MAX_DEPTH);
+    }
+
+    fn set_workspace_visible_nodes(&mut self, nodes: Vec<WorkspaceVisibleNode>) {
+        self.workspace_visible_nodes = nodes;
+    }
+
+    pub fn sync_workspace_selection(
+        &mut self,
+        lifecycle: &mut SidebarLifecycleState,
+        preferred_path: Option<&str>,
+    ) {
+        if self.workspace_visible_nodes.is_empty() {
+            lifecycle.workspace_selected = 0;
+            self.workspace_selected_path = None;
+            return;
+        }
+
+        let selected_index = self
+            .workspace_selected_path
+            .as_deref()
+            .and_then(|path| {
+                self.workspace_visible_nodes
+                    .iter()
+                    .position(|node| node.path == path)
+            })
+            .or_else(|| {
+                preferred_path.and_then(|path| {
+                    self.workspace_visible_nodes
+                        .iter()
+                        .position(|node| node.path == path)
+                })
+            })
+            .unwrap_or_else(|| {
+                lifecycle
+                    .workspace_selected
+                    .min(self.workspace_visible_nodes.len().saturating_sub(1))
+            });
+        lifecycle.workspace_selected = selected_index;
+        self.workspace_selected_path = self
+            .workspace_visible_nodes
+            .get(selected_index)
+            .map(|node| node.path.clone());
+    }
+
+    pub fn workspace_visible_count(&self) -> usize {
+        self.workspace_visible_nodes.len()
+    }
+
+    pub fn set_workspace_selected_index(
+        &mut self,
+        lifecycle: &mut SidebarLifecycleState,
+        index: usize,
+    ) {
+        if let Some(node) = self.workspace_visible_nodes.get(index) {
+            lifecycle.workspace_selected = index;
+            self.workspace_selected_path = Some(node.path.clone());
+        } else {
+            lifecycle.workspace_selected = 0;
+            self.workspace_selected_path = None;
+        }
+    }
+
+    pub fn expand_selected_workspace_dir(&mut self, lifecycle: &mut SidebarLifecycleState) -> bool {
+        let Some(node) = self
+            .workspace_visible_nodes
+            .get(lifecycle.workspace_selected)
+        else {
+            return false;
+        };
+        if !node.is_dir || node.expanded {
+            return false;
+        }
+        self.workspace_expanded_dirs.insert(node.path.clone());
+        true
+    }
+
+    pub fn collapse_selected_workspace_dir(
+        &mut self,
+        lifecycle: &mut SidebarLifecycleState,
+    ) -> bool {
+        let Some(node) = self
+            .workspace_visible_nodes
+            .get(lifecycle.workspace_selected)
+        else {
+            return false;
+        };
+        if node.is_dir && node.expanded {
+            self.workspace_expanded_dirs.remove(&node.path);
+            return true;
+        }
+        let Some(parent) = workspace_parent_path(&node.path) else {
+            return false;
+        };
+        if let Some(index) = self
+            .workspace_visible_nodes
+            .iter()
+            .position(|candidate| candidate.path == parent)
+        {
+            lifecycle.workspace_selected = index;
+            self.workspace_selected_path = Some(parent);
+            return true;
+        }
+        false
+    }
+
+    fn toggle_workspace_dir(&mut self, path: &str) {
+        if self.workspace_expanded_dirs.contains(path) {
+            self.workspace_expanded_dirs.remove(path);
+        } else {
+            self.workspace_expanded_dirs.insert(path.to_string());
+        }
+    }
 }
 
 fn clamp_sidebar_process_selection(lifecycle: &mut SidebarLifecycleState, count: usize) {
@@ -207,11 +399,20 @@ fn clamp_sidebar_child_session_selection(lifecycle: &mut SidebarLifecycleState, 
     }
 }
 
+fn clamp_sidebar_workspace_selection(lifecycle: &mut SidebarLifecycleState, count: usize) {
+    if count == 0 {
+        lifecycle.workspace_selected = 0;
+    } else if lifecycle.workspace_selected >= count {
+        lifecycle.workspace_selected = count - 1;
+    }
+}
+
 struct SidebarSection {
     key: &'static str,
     title: &'static str,
     lines: Vec<Line<'static>>,
     child_session_hit_rows: Option<Vec<Option<usize>>>,
+    workspace_hit_rows: Option<Vec<Option<usize>>>,
     summary: Option<String>,
     collapsible: bool,
 }
@@ -273,13 +474,87 @@ impl Sidebar {
 
         let layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(3)])
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(0),
+                Constraint::Length(3),
+            ])
             .split(inner);
 
-        self.render_sections_with_bg(
+        self.render_tabs_with_bg(
             surface, layout[0], &theme, state, lifecycle, floating, panel_bg,
         );
-        self.render_footer_with_bg(surface, layout[1], &theme, floating, panel_bg);
+        self.render_sections_with_bg(
+            surface, layout[1], &theme, state, lifecycle, floating, panel_bg,
+        );
+        self.render_footer_with_bg(surface, layout[2], &theme, floating, panel_bg);
+    }
+
+    fn render_tabs_with_bg<S: RenderSurface>(
+        &self,
+        surface: &mut S,
+        area: Rect,
+        theme: &Theme,
+        state: &mut SidebarRenderState,
+        lifecycle: &SidebarLifecycleState,
+        floating: bool,
+        panel_bg: ratatui::style::Color,
+    ) {
+        if area.width == 0 || area.height == 0 {
+            state.set_tab_layout(area, Vec::new());
+            return;
+        }
+
+        let session_area = Rect {
+            x: area.x,
+            y: area.y,
+            width: 9.min(area.width),
+            height: area.height,
+        };
+        let workspace_x = session_area
+            .x
+            .saturating_add(session_area.width)
+            .saturating_add(1);
+        let workspace_width = area.right().saturating_sub(workspace_x).min(11);
+        let workspace_area = Rect {
+            x: workspace_x,
+            y: area.y,
+            width: workspace_width,
+            height: area.height,
+        };
+        let tab_hits = vec![
+            SidebarTabHit {
+                tab: SidebarTab::Session,
+                area: session_area,
+            },
+            SidebarTabHit {
+                tab: SidebarTab::Workspace,
+                area: workspace_area,
+            },
+        ];
+        state.set_tab_layout(area, tab_hits);
+
+        if !floating {
+            surface.render_widget(
+                Paragraph::new("").style(Style::default().bg(panel_bg)),
+                area,
+            );
+        }
+
+        render_sidebar_tab(
+            surface,
+            session_area,
+            theme,
+            lifecycle.active_tab == SidebarTab::Session,
+            "Session",
+        );
+        render_sidebar_tab(
+            surface,
+            workspace_area,
+            theme,
+            lifecycle.active_tab == SidebarTab::Workspace,
+            "Workspace",
+        );
     }
 
     fn render_sections_with_bg<S: RenderSurface>(
@@ -301,436 +576,453 @@ impl Sidebar {
         let mcp_servers = self.context.mcp_servers.read();
         let lsp_status = self.context.lsp_status.read();
 
-        let session = session_ctx.sessions.get(&self.session_id);
-        let messages = session_ctx
-            .messages
-            .get(&self.session_id)
-            .cloned()
-            .unwrap_or_default();
+        let sections: Vec<SidebarSection> = if lifecycle.active_tab == SidebarTab::Workspace {
+            self.build_workspace_sections(area, theme, state, lifecycle, &session_ctx)
+        } else {
+            let session = session_ctx.sessions.get(&self.session_id);
+            let messages = session_ctx
+                .messages
+                .get(&self.session_id)
+                .cloned()
+                .unwrap_or_default();
 
-        let title = session
-            .map(|s| s.title.clone())
-            .unwrap_or_else(|| "New Session".to_string());
-        let mut session_lines = vec![Line::from(Span::styled(
-            truncate_text(&title, area.width as usize),
-            Style::default().fg(theme.text).bold(),
-        ))];
-        if let Some(session_meta) = session.and_then(|s| s.metadata.as_ref()) {
-            if let Some(agent) = sidebar_metadata_text(session_meta, "agent") {
-                session_lines.push(sidebar_meta_line(theme, "agent", agent));
+            let title = session
+                .map(|s| s.title.clone())
+                .unwrap_or_else(|| "New Session".to_string());
+            let mut session_lines = vec![Line::from(Span::styled(
+                truncate_text(&title, area.width as usize),
+                Style::default().fg(theme.text).bold(),
+            ))];
+            if let Some(session_meta) = session.and_then(|s| s.metadata.as_ref()) {
+                if let Some(agent) = sidebar_metadata_text(session_meta, "agent") {
+                    session_lines.push(sidebar_meta_line(theme, "agent", agent));
+                }
+                if let Some(model) = sidebar_model_summary(session_meta) {
+                    session_lines.push(sidebar_meta_line(theme, "model", model));
+                }
+                if let Some(scheduler) = sidebar_scheduler_summary(session_meta) {
+                    session_lines.push(sidebar_meta_line(theme, "scheduler", scheduler));
+                }
             }
-            if let Some(model) = sidebar_model_summary(session_meta) {
-                session_lines.push(sidebar_meta_line(theme, "model", model));
-            }
-            if let Some(scheduler) = sidebar_scheduler_summary(session_meta) {
-                session_lines.push(sidebar_meta_line(theme, "scheduler", scheduler));
-            }
-        }
-        let mut sections: Vec<SidebarSection> = vec![SidebarSection {
-            key: "session",
-            title: "Session",
-            lines: session_lines,
-            child_session_hit_rows: None,
-            summary: None,
-            collapsible: false,
-        }];
-
-        if let Some(share) = session.and_then(|s| s.share.as_ref()) {
-            sections.push(SidebarSection {
-                key: "share",
-                title: "Share",
-                lines: vec![Line::from(Span::styled(
-                    truncate_text(&share.url, area.width as usize),
-                    Style::default().fg(theme.info),
-                ))],
+            let mut sections: Vec<SidebarSection> = vec![SidebarSection {
+                key: "session",
+                title: "Session",
+                lines: session_lines,
                 child_session_hit_rows: None,
+                workspace_hit_rows: None,
+                summary: None,
+                collapsible: false,
+            }];
+
+            if let Some(share) = session.and_then(|s| s.share.as_ref()) {
+                sections.push(SidebarSection {
+                    key: "share",
+                    title: "Share",
+                    lines: vec![Line::from(Span::styled(
+                        truncate_text(&share.url, area.width as usize),
+                        Style::default().fg(theme.info),
+                    ))],
+                    child_session_hit_rows: None,
+                    workspace_hit_rows: None,
+                    summary: None,
+                    collapsible: false,
+                });
+            }
+
+            let total_cost = self
+                .context
+                .session_usage()
+                .as_ref()
+                .map(|usage| usage.total_cost)
+                .unwrap_or_else(|| {
+                    messages
+                        .iter()
+                        .filter(|m| matches!(m.role, MessageRole::Assistant))
+                        .map(|m| m.cost)
+                        .sum()
+                });
+            let total_tokens = self
+                .context
+                .session_usage()
+                .as_ref()
+                .map(total_session_tokens)
+                .unwrap_or_else(|| {
+                    messages
+                        .iter()
+                        .filter(|m| matches!(m.role, MessageRole::Assistant))
+                        .map(|m| {
+                            m.tokens.input
+                                + m.tokens.output
+                                + m.tokens.reasoning
+                                + m.tokens.cache_read
+                                + m.tokens.cache_write
+                        })
+                        .sum::<u64>()
+                });
+            let active_model = messages
+                .iter()
+                .rev()
+                .find(|m| matches!(m.role, MessageRole::Assistant))
+                .and_then(|m| m.model.as_deref());
+            let active_model_info = self.context.resolve_model_info(active_model);
+            sections.push(SidebarSection {
+                key: "context",
+                title: "Context",
+                lines: {
+                    let mut lines = Vec::new();
+                    lines.push(sidebar_context_line(
+                        &theme,
+                        total_tokens,
+                        active_model_info.as_ref().map(|model| model.context_window),
+                    ));
+                    if let Some(model) = active_model_info.as_ref() {
+                        if let (Some(input_price), Some(output_price)) =
+                            (model.cost_per_million_input, model.cost_per_million_output)
+                        {
+                            lines.push(Line::from(vec![
+                                Span::styled("Price  ", Style::default().fg(theme.text_muted)),
+                                Span::styled(
+                                    format_price_pair(input_price, output_price),
+                                    Style::default().fg(theme.text),
+                                ),
+                            ]));
+                        }
+                    }
+                    lines.push(Line::from(vec![
+                        Span::styled("Cost   ", Style::default().fg(theme.text_muted)),
+                        Span::styled(
+                            format!("${:.4}", total_cost),
+                            Style::default().fg(theme.text),
+                        ),
+                    ]));
+                    lines
+                },
+                child_session_hit_rows: None,
+                workspace_hit_rows: None,
                 summary: None,
                 collapsible: false,
             });
-        }
 
-        let total_cost = self
-            .context
-            .session_usage()
-            .as_ref()
-            .map(|usage| usage.total_cost)
-            .unwrap_or_else(|| {
-                messages
-                    .iter()
-                    .filter(|m| matches!(m.role, MessageRole::Assistant))
-                    .map(|m| m.cost)
-                    .sum()
-            });
-        let total_tokens = self
-            .context
-            .session_usage()
-            .as_ref()
-            .map(total_session_tokens)
-            .unwrap_or_else(|| {
-                messages
-                    .iter()
-                    .filter(|m| matches!(m.role, MessageRole::Assistant))
-                    .map(|m| {
-                        m.tokens.input
-                            + m.tokens.output
-                            + m.tokens.reasoning
-                            + m.tokens.cache_read
-                            + m.tokens.cache_write
-                    })
-                    .sum::<u64>()
-            });
-        let active_model = messages
-            .iter()
-            .rev()
-            .find(|m| matches!(m.role, MessageRole::Assistant))
-            .and_then(|m| m.model.as_deref());
-        let active_model_info = self.context.resolve_model_info(active_model);
-        sections.push(SidebarSection {
-            key: "context",
-            title: "Context",
-            lines: {
-                let mut lines = Vec::new();
-                lines.push(sidebar_context_line(
-                    &theme,
-                    total_tokens,
-                    active_model_info.as_ref().map(|model| model.context_window),
-                ));
-                if let Some(model) = active_model_info.as_ref() {
-                    if let (Some(input_price), Some(output_price)) =
-                        (model.cost_per_million_input, model.cost_per_million_output)
-                    {
-                        lines.push(Line::from(vec![
-                            Span::styled("Price  ", Style::default().fg(theme.text_muted)),
-                            Span::styled(
-                                format_price_pair(input_price, output_price),
-                                Style::default().fg(theme.text),
-                            ),
-                        ]));
-                    }
-                }
-                lines.push(Line::from(vec![
-                    Span::styled("Cost   ", Style::default().fg(theme.text_muted)),
-                    Span::styled(
-                        format!("${:.4}", total_cost),
-                        Style::default().fg(theme.text),
-                    ),
-                ]));
-                lines
-            },
-            child_session_hit_rows: None,
-            summary: None,
-            collapsible: false,
-        });
-
-        let connected_mcp = mcp_servers
-            .iter()
-            .filter(|s| matches!(s.status, McpConnectionStatus::Connected))
-            .count();
-        let failed_mcp = mcp_servers
-            .iter()
-            .filter(|s| matches!(s.status, McpConnectionStatus::Failed))
-            .count();
-        let registration_needed_mcp = mcp_servers
-            .iter()
-            .filter(|s| matches!(s.status, McpConnectionStatus::NeedsClientRegistration))
-            .count();
-        let problematic_mcp = failed_mcp + registration_needed_mcp;
-        let mut mcp_lines: Vec<Line<'static>> = Vec::new();
-        if mcp_servers.is_empty() {
-            mcp_lines.push(Line::from(Span::styled(
-                "No MCP servers",
-                Style::default().fg(theme.text_muted),
-            )));
-        } else {
-            for server in mcp_servers.iter() {
-                let (status_text, color) = match server.status {
-                    McpConnectionStatus::Connected => ("connected", theme.success),
-                    McpConnectionStatus::Failed => ("failed", theme.error),
-                    McpConnectionStatus::NeedsAuth => ("needs auth", theme.warning),
-                    McpConnectionStatus::NeedsClientRegistration => {
-                        ("needs client ID", theme.warning)
-                    }
-                    McpConnectionStatus::Disabled => ("disabled", theme.text_muted),
-                    McpConnectionStatus::Disconnected => ("disconnected", theme.text_muted),
-                };
-                mcp_lines.push(Line::from(vec![
-                    Span::styled("• ", Style::default().fg(color)),
-                    Span::styled(
-                        truncate_text(&server.name, area.width.saturating_sub(14) as usize),
-                        Style::default().fg(theme.text),
-                    ),
-                    Span::styled(
-                        format!(" {}", status_text),
-                        Style::default().fg(theme.text_muted),
-                    ),
-                ]));
-            }
-        }
-        sections.push(SidebarSection {
-            key: "mcp",
-            title: "MCP",
-            lines: mcp_lines,
-            child_session_hit_rows: None,
-            summary: Some(format!(
-                "{} active, {} errors",
-                connected_mcp, problematic_mcp
-            )),
-            collapsible: mcp_servers.len() > 2,
-        });
-
-        let connected_lsp = lsp_status
-            .iter()
-            .filter(|s| matches!(s.status, LspConnectionStatus::Connected))
-            .count();
-        let errored_lsp = lsp_status
-            .iter()
-            .filter(|s| matches!(s.status, LspConnectionStatus::Error))
-            .count();
-        let mut lsp_lines: Vec<Line<'static>> = Vec::new();
-        if lsp_status.is_empty() {
-            lsp_lines.push(Line::from(Span::styled(
-                "No active LSP",
-                Style::default().fg(theme.text_muted),
-            )));
-        } else {
-            for server in lsp_status.iter() {
-                let (status_text, color) = match server.status {
-                    LspConnectionStatus::Connected => ("connected", theme.success),
-                    LspConnectionStatus::Error => ("error", theme.error),
-                };
-                lsp_lines.push(Line::from(vec![
-                    Span::styled("• ", Style::default().fg(color)),
-                    Span::styled(
-                        truncate_text(&server.id, area.width.saturating_sub(14) as usize),
-                        Style::default().fg(theme.text),
-                    ),
-                    Span::styled(
-                        format!(" {}", status_text),
-                        Style::default().fg(theme.text_muted),
-                    ),
-                ]));
-            }
-        }
-        sections.push(SidebarSection {
-            key: "lsp",
-            title: "LSP",
-            lines: lsp_lines,
-            child_session_hit_rows: None,
-            summary: Some(format!(
-                "{} connected, {} errors",
-                connected_lsp, errored_lsp
-            )),
-            collapsible: lsp_status.len() > 2,
-        });
-
-        if let Some(todos) = session_ctx.todos.get(&self.session_id) {
-            let pending = todos
+            let connected_mcp = mcp_servers
                 .iter()
-                .filter(|todo| {
-                    !matches!(todo.status, TodoStatus::Completed | TodoStatus::Cancelled)
-                })
-                .collect::<Vec<_>>();
-            if !pending.is_empty() {
-                let mut todo_lines: Vec<Line<'static>> = Vec::new();
-                for todo in pending.iter().take(5) {
-                    todo_lines.push(Line::from(vec![
-                        Span::styled("☐ ", Style::default().fg(theme.warning)),
+                .filter(|s| matches!(s.status, McpConnectionStatus::Connected))
+                .count();
+            let failed_mcp = mcp_servers
+                .iter()
+                .filter(|s| matches!(s.status, McpConnectionStatus::Failed))
+                .count();
+            let registration_needed_mcp = mcp_servers
+                .iter()
+                .filter(|s| matches!(s.status, McpConnectionStatus::NeedsClientRegistration))
+                .count();
+            let problematic_mcp = failed_mcp + registration_needed_mcp;
+            let mut mcp_lines: Vec<Line<'static>> = Vec::new();
+            if mcp_servers.is_empty() {
+                mcp_lines.push(Line::from(Span::styled(
+                    "No MCP servers",
+                    Style::default().fg(theme.text_muted),
+                )));
+            } else {
+                for server in mcp_servers.iter() {
+                    let (status_text, color) = match server.status {
+                        McpConnectionStatus::Connected => ("connected", theme.success),
+                        McpConnectionStatus::Failed => ("failed", theme.error),
+                        McpConnectionStatus::NeedsAuth => ("needs auth", theme.warning),
+                        McpConnectionStatus::NeedsClientRegistration => {
+                            ("needs client ID", theme.warning)
+                        }
+                        McpConnectionStatus::Disabled => ("disabled", theme.text_muted),
+                        McpConnectionStatus::Disconnected => ("disconnected", theme.text_muted),
+                    };
+                    mcp_lines.push(Line::from(vec![
+                        Span::styled("• ", Style::default().fg(color)),
                         Span::styled(
-                            truncate_text(&todo.content, area.width.saturating_sub(2) as usize),
+                            truncate_text(&server.name, area.width.saturating_sub(14) as usize),
+                            Style::default().fg(theme.text),
+                        ),
+                        Span::styled(
+                            format!(" {}", status_text),
                             Style::default().fg(theme.text_muted),
                         ),
                     ]));
                 }
-                sections.push(SidebarSection {
-                    key: "todo",
-                    title: "Todo",
-                    lines: todo_lines,
-                    child_session_hit_rows: None,
-                    summary: Some(format!("{} pending", pending.len())),
-                    collapsible: pending.len() > 2,
-                });
-            }
-        }
-
-        if let Some(entries) = session_ctx.session_diff.get(&self.session_id) {
-            if !entries.is_empty() {
-                let mut file_lines: Vec<Line<'static>> = Vec::new();
-                for entry in entries.iter().take(8) {
-                    file_lines.push(Line::from(vec![
-                        Span::styled(
-                            truncate_text(&entry.file, area.width.saturating_sub(14) as usize),
-                            Style::default().fg(theme.text),
-                        ),
-                        Span::raw(" "),
-                        Span::styled(
-                            format!("+{}", entry.additions),
-                            Style::default().fg(theme.success),
-                        ),
-                        Span::raw("/"),
-                        Span::styled(
-                            format!("-{}", entry.deletions),
-                            Style::default().fg(theme.error),
-                        ),
-                    ]));
-                }
-                sections.push(SidebarSection {
-                    key: "diff",
-                    title: "Modified Files",
-                    lines: file_lines,
-                    child_session_hit_rows: None,
-                    summary: Some(format!("{} files changed", entries.len())),
-                    collapsible: entries.len() > 2,
-                });
-            }
-        }
-
-        // Processes section
-        let proc_list = self.context.processes.read().clone();
-        clamp_sidebar_process_selection(lifecycle, proc_list.len());
-        if !proc_list.is_empty() {
-            let mut proc_lines: Vec<Line<'static>> = Vec::new();
-            for (idx, proc) in proc_list.iter().enumerate() {
-                let selected = lifecycle.process_focus && idx == lifecycle.process_selected;
-                let prefix = if selected { "▸ " } else { "  " };
-                let kind_color = match proc.kind {
-                    ProcessKind::Plugin => theme.info,
-                    ProcessKind::Bash => theme.success,
-                    ProcessKind::Agent => theme.warning,
-                    ProcessKind::Mcp => theme.info, // Same category as Plugin
-                    ProcessKind::Lsp => theme.warning, // Same category as Agent
-                };
-                let name_width = area.width.saturating_sub(18) as usize;
-                let stats = format!("{:4.1}% {:>3}MB", proc.cpu_percent, proc.memory_kb / 1024);
-                let fg = if selected {
-                    theme.text
-                } else {
-                    theme.text_muted
-                };
-                let row_bg = if selected {
-                    Some(theme.background_element)
-                } else {
-                    None
-                };
-                let mk_style = |base: Style| -> Style {
-                    if let Some(bg) = row_bg {
-                        base.bg(bg)
-                    } else {
-                        base
-                    }
-                };
-                proc_lines.push(Line::from(vec![
-                    Span::styled(
-                        prefix,
-                        mk_style(Style::default().fg(if selected {
-                            theme.primary
-                        } else {
-                            theme.text_muted
-                        })),
-                    ),
-                    Span::styled("● ", mk_style(Style::default().fg(kind_color))),
-                    Span::styled(
-                        truncate_text(&proc.name, name_width),
-                        mk_style(Style::default().fg(fg)),
-                    ),
-                    Span::styled(
-                        format!(" {}", stats),
-                        mk_style(Style::default().fg(theme.text_muted)),
-                    ),
-                ]));
             }
             sections.push(SidebarSection {
-                key: "processes",
-                title: "Processes",
-                lines: proc_lines,
+                key: "mcp",
+                title: "MCP",
+                lines: mcp_lines,
                 child_session_hit_rows: None,
-                summary: Some(format!("{} running", proc_list.len())),
-                collapsible: proc_list.len() > 2,
+                workspace_hit_rows: None,
+                summary: Some(format!(
+                    "{} active, {} errors",
+                    connected_mcp, problematic_mcp
+                )),
+                collapsible: mcp_servers.len() > 2,
             });
-        }
 
-        // Agents section — sourced from execution topology (server-side)
-        {
-            let topology = self.context.execution_topology();
-            let agent_nodes = collect_agent_nodes_from_topology(&topology);
-            if !agent_nodes.is_empty() {
-                let mut agent_lines: Vec<Line<'static>> = Vec::new();
-                let mut running = 0usize;
-                let mut done = 0usize;
-                for (label, status) in &agent_nodes {
-                    let (symbol, color) = match status {
-                        crate::api::ExecutionStatus::Running => {
-                            running += 1;
-                            ("●", theme.info)
-                        }
-                        crate::api::ExecutionStatus::Waiting => ("◯", theme.warning),
-                        crate::api::ExecutionStatus::Done => {
-                            done += 1;
-                            ("✓", theme.success)
-                        }
-                        _ => ("●", theme.text_muted),
+            let connected_lsp = lsp_status
+                .iter()
+                .filter(|s| matches!(s.status, LspConnectionStatus::Connected))
+                .count();
+            let errored_lsp = lsp_status
+                .iter()
+                .filter(|s| matches!(s.status, LspConnectionStatus::Error))
+                .count();
+            let mut lsp_lines: Vec<Line<'static>> = Vec::new();
+            if lsp_status.is_empty() {
+                lsp_lines.push(Line::from(Span::styled(
+                    "No active LSP",
+                    Style::default().fg(theme.text_muted),
+                )));
+            } else {
+                for server in lsp_status.iter() {
+                    let (status_text, color) = match server.status {
+                        LspConnectionStatus::Connected => ("connected", theme.success),
+                        LspConnectionStatus::Error => ("error", theme.error),
                     };
-                    let name_width = area.width.saturating_sub(12) as usize;
-                    agent_lines.push(Line::from(vec![
-                        Span::styled(format!("{} ", symbol), Style::default().fg(color)),
+                    lsp_lines.push(Line::from(vec![
+                        Span::styled("• ", Style::default().fg(color)),
                         Span::styled(
-                            truncate_text(label, name_width),
+                            truncate_text(&server.id, area.width.saturating_sub(14) as usize),
                             Style::default().fg(theme.text),
+                        ),
+                        Span::styled(
+                            format!(" {}", status_text),
+                            Style::default().fg(theme.text_muted),
                         ),
                     ]));
                 }
-                let summary = if done > 0 && running > 0 {
-                    format!("{} running, {} done", running, done)
-                } else if running > 0 {
-                    format!("{} running", running)
-                } else {
-                    format!("{} done", done)
-                };
+            }
+            sections.push(SidebarSection {
+                key: "lsp",
+                title: "LSP",
+                lines: lsp_lines,
+                child_session_hit_rows: None,
+                workspace_hit_rows: None,
+                summary: Some(format!(
+                    "{} connected, {} errors",
+                    connected_lsp, errored_lsp
+                )),
+                collapsible: lsp_status.len() > 2,
+            });
+
+            if let Some(todos) = session_ctx.todos.get(&self.session_id) {
+                let pending = todos
+                    .iter()
+                    .filter(|todo| {
+                        !matches!(todo.status, TodoStatus::Completed | TodoStatus::Cancelled)
+                    })
+                    .collect::<Vec<_>>();
+                if !pending.is_empty() {
+                    let mut todo_lines: Vec<Line<'static>> = Vec::new();
+                    for todo in pending.iter().take(5) {
+                        todo_lines.push(Line::from(vec![
+                            Span::styled("☐ ", Style::default().fg(theme.warning)),
+                            Span::styled(
+                                truncate_text(&todo.content, area.width.saturating_sub(2) as usize),
+                                Style::default().fg(theme.text_muted),
+                            ),
+                        ]));
+                    }
+                    sections.push(SidebarSection {
+                        key: "todo",
+                        title: "Todo",
+                        lines: todo_lines,
+                        child_session_hit_rows: None,
+                        workspace_hit_rows: None,
+                        summary: Some(format!("{} pending", pending.len())),
+                        collapsible: pending.len() > 2,
+                    });
+                }
+            }
+
+            if let Some(entries) = session_ctx.session_diff.get(&self.session_id) {
+                if !entries.is_empty() {
+                    let mut file_lines: Vec<Line<'static>> = Vec::new();
+                    for entry in entries.iter().take(8) {
+                        file_lines.push(Line::from(vec![
+                            Span::styled(
+                                truncate_text(&entry.file, area.width.saturating_sub(14) as usize),
+                                Style::default().fg(theme.text),
+                            ),
+                            Span::raw(" "),
+                            Span::styled(
+                                format!("+{}", entry.additions),
+                                Style::default().fg(theme.success),
+                            ),
+                            Span::raw("/"),
+                            Span::styled(
+                                format!("-{}", entry.deletions),
+                                Style::default().fg(theme.error),
+                            ),
+                        ]));
+                    }
+                    sections.push(SidebarSection {
+                        key: "diff",
+                        title: "Modified Files",
+                        lines: file_lines,
+                        child_session_hit_rows: None,
+                        workspace_hit_rows: None,
+                        summary: Some(format!("{} files changed", entries.len())),
+                        collapsible: entries.len() > 2,
+                    });
+                }
+            }
+
+            // Processes section
+            let proc_list = self.context.processes.read().clone();
+            clamp_sidebar_process_selection(lifecycle, proc_list.len());
+            if !proc_list.is_empty() {
+                let mut proc_lines: Vec<Line<'static>> = Vec::new();
+                for (idx, proc) in proc_list.iter().enumerate() {
+                    let selected = lifecycle.process_focus && idx == lifecycle.process_selected;
+                    let prefix = if selected { "▸ " } else { "  " };
+                    let kind_color = match proc.kind {
+                        ProcessKind::Plugin => theme.info,
+                        ProcessKind::Bash => theme.success,
+                        ProcessKind::Agent => theme.warning,
+                        ProcessKind::Mcp => theme.info, // Same category as Plugin
+                        ProcessKind::Lsp => theme.warning, // Same category as Agent
+                    };
+                    let name_width = area.width.saturating_sub(18) as usize;
+                    let stats = format!("{:4.1}% {:>3}MB", proc.cpu_percent, proc.memory_kb / 1024);
+                    let fg = if selected {
+                        theme.text
+                    } else {
+                        theme.text_muted
+                    };
+                    let row_bg = if selected {
+                        Some(theme.background_element)
+                    } else {
+                        None
+                    };
+                    let mk_style = |base: Style| -> Style {
+                        if let Some(bg) = row_bg {
+                            base.bg(bg)
+                        } else {
+                            base
+                        }
+                    };
+                    proc_lines.push(Line::from(vec![
+                        Span::styled(
+                            prefix,
+                            mk_style(Style::default().fg(if selected {
+                                theme.primary
+                            } else {
+                                theme.text_muted
+                            })),
+                        ),
+                        Span::styled("● ", mk_style(Style::default().fg(kind_color))),
+                        Span::styled(
+                            truncate_text(&proc.name, name_width),
+                            mk_style(Style::default().fg(fg)),
+                        ),
+                        Span::styled(
+                            format!(" {}", stats),
+                            mk_style(Style::default().fg(theme.text_muted)),
+                        ),
+                    ]));
+                }
                 sections.push(SidebarSection {
-                    key: "agents",
-                    title: "Agents",
-                    lines: agent_lines,
+                    key: "processes",
+                    title: "Processes",
+                    lines: proc_lines,
                     child_session_hit_rows: None,
-                    summary: Some(summary),
-                    collapsible: agent_nodes.len() > 3,
+                    workspace_hit_rows: None,
+                    summary: Some(format!("{} running", proc_list.len())),
+                    collapsible: proc_list.len() > 2,
                 });
             }
-        }
 
-        // Session Graph section
-        let child_list = self.context.child_sessions();
-        clamp_sidebar_child_session_selection(lifecycle, child_list.len());
-        if !child_list.is_empty() {
-            let selected_child = child_list.get(
-                lifecycle
-                    .child_session_selected
-                    .min(child_list.len().saturating_sub(1)),
-            );
-            let (cs_lines, child_session_hit_rows) = build_session_graph_lines(
-                theme,
-                area.width,
-                &title,
-                &self.session_id,
-                &child_list,
-                &session_ctx.sessions,
-                &session_ctx.session_diff,
-                lifecycle,
-                selected_child,
-            );
-            sections.push(SidebarSection {
-                key: "session_graph",
-                title: "Session Graph",
-                lines: cs_lines,
-                child_session_hit_rows: Some(child_session_hit_rows),
-                summary: Some(format!("{} sessions", child_list.len())),
-                collapsible: child_list.len() > 2,
-            });
-        }
+            // Agents section — sourced from execution topology (server-side)
+            {
+                let topology = self.context.execution_topology();
+                let agent_nodes = collect_agent_nodes_from_topology(&topology);
+                if !agent_nodes.is_empty() {
+                    let mut agent_lines: Vec<Line<'static>> = Vec::new();
+                    let mut running = 0usize;
+                    let mut done = 0usize;
+                    for (label, status) in &agent_nodes {
+                        let (symbol, color) = match status {
+                            crate::api::ExecutionStatus::Running => {
+                                running += 1;
+                                ("●", theme.info)
+                            }
+                            crate::api::ExecutionStatus::Waiting => ("◯", theme.warning),
+                            crate::api::ExecutionStatus::Done => {
+                                done += 1;
+                                ("✓", theme.success)
+                            }
+                            _ => ("●", theme.text_muted),
+                        };
+                        let name_width = area.width.saturating_sub(12) as usize;
+                        agent_lines.push(Line::from(vec![
+                            Span::styled(format!("{} ", symbol), Style::default().fg(color)),
+                            Span::styled(
+                                truncate_text(label, name_width),
+                                Style::default().fg(theme.text),
+                            ),
+                        ]));
+                    }
+                    let summary = if done > 0 && running > 0 {
+                        format!("{} running, {} done", running, done)
+                    } else if running > 0 {
+                        format!("{} running", running)
+                    } else {
+                        format!("{} done", done)
+                    };
+                    sections.push(SidebarSection {
+                        key: "agents",
+                        title: "Agents",
+                        lines: agent_lines,
+                        child_session_hit_rows: None,
+                        workspace_hit_rows: None,
+                        summary: Some(summary),
+                        collapsible: agent_nodes.len() > 3,
+                    });
+                }
+            }
+
+            // Session Graph section
+            let child_list = self.context.child_sessions();
+            clamp_sidebar_child_session_selection(lifecycle, child_list.len());
+            if !child_list.is_empty() {
+                let selected_child = child_list.get(
+                    lifecycle
+                        .child_session_selected
+                        .min(child_list.len().saturating_sub(1)),
+                );
+                let (cs_lines, child_session_hit_rows) = build_session_graph_lines(
+                    theme,
+                    area.width,
+                    &title,
+                    &self.session_id,
+                    &child_list,
+                    &session_ctx.sessions,
+                    &session_ctx.session_diff,
+                    lifecycle,
+                    selected_child,
+                );
+                sections.push(SidebarSection {
+                    key: "session_graph",
+                    title: "Session Graph",
+                    lines: cs_lines,
+                    child_session_hit_rows: Some(child_session_hit_rows),
+                    workspace_hit_rows: None,
+                    summary: Some(format!("{} sessions", child_list.len())),
+                    collapsible: child_list.len() > 2,
+                });
+            }
+
+            sections
+        };
 
         let mut lines: Vec<Line<'static>> = Vec::new();
         let mut line_index = 0usize;
         let mut toggle_hits: Vec<SidebarToggleHit> = Vec::new();
         let mut process_line_hits: Vec<(usize, usize)> = Vec::new();
         let mut child_session_line_hits: Vec<(usize, usize)> = Vec::new();
+        let mut workspace_line_hits: Vec<(usize, usize)> = Vec::new();
         for section in sections {
             if !lines.is_empty() {
                 lines.push(Line::from(""));
@@ -765,6 +1057,7 @@ impl Sidebar {
             if !collapsed {
                 let is_processes = section.key == "processes";
                 let child_hit_rows = section.child_session_hit_rows.as_ref();
+                let workspace_hit_rows = section.workspace_hit_rows.as_ref();
                 for (row_idx, row) in section.lines.into_iter().enumerate() {
                     if is_processes {
                         process_line_hits.push((line_index, row_idx));
@@ -772,6 +1065,11 @@ impl Sidebar {
                     if let Some(hit_rows) = child_hit_rows {
                         if let Some(Some(child_index)) = hit_rows.get(row_idx) {
                             child_session_line_hits.push((line_index, *child_index));
+                        }
+                    }
+                    if let Some(hit_rows) = workspace_hit_rows {
+                        if let Some(Some(node_index)) = hit_rows.get(row_idx) {
+                            workspace_line_hits.push((line_index, *node_index));
                         }
                     }
                     lines.push(row);
@@ -805,6 +1103,7 @@ impl Sidebar {
         state.set_sections_layout(sections_text_area, lines.len(), toggle_hits);
         state.process_line_hits = process_line_hits;
         state.child_session_line_hits = child_session_line_hits;
+        state.workspace_line_hits = workspace_line_hits;
 
         let mut paragraph = Paragraph::new(lines)
             .scroll((state.scroll_offset.min(usize::from(u16::MAX)) as u16, 0));
@@ -828,6 +1127,95 @@ impl Sidebar {
                 .thumb_style(Style::default().fg(theme.primary));
             surface.render_stateful_widget(scrollbar, scroll_area, &mut scrollbar_state);
         }
+    }
+
+    fn build_workspace_sections(
+        &self,
+        area: Rect,
+        theme: &Theme,
+        state: &mut SidebarRenderState,
+        lifecycle: &mut SidebarLifecycleState,
+        session_ctx: &crate::context::SessionContext,
+    ) -> Vec<SidebarSection> {
+        let directory = self.context.directory.read().clone();
+        let workspace_root = workspace_root_path(&directory);
+        state.refresh_workspace_index(&workspace_root);
+
+        let modified_paths = session_ctx
+            .session_diff
+            .get(&self.session_id)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| normalize_workspace_path(&workspace_root, &entry.file))
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        let current_path = session_ctx
+            .session_diff
+            .get(&self.session_id)
+            .and_then(|entries| entries.last())
+            .and_then(|entry| normalize_workspace_path(&workspace_root, &entry.file));
+        let reveal_path = state
+            .workspace_selected_path
+            .as_deref()
+            .or(current_path.as_deref());
+        let visible_nodes = build_workspace_visible_nodes(
+            state.workspace_index.entries(),
+            &state.workspace_expanded_dirs,
+            &modified_paths,
+            current_path.as_deref(),
+            reveal_path,
+        );
+        state.set_workspace_visible_nodes(visible_nodes);
+        state.sync_workspace_selection(lifecycle, current_path.as_deref());
+        clamp_sidebar_workspace_selection(lifecycle, state.workspace_visible_count());
+
+        let (root_prefix, root_leaf) = split_path_segments(directory.as_str());
+        let workspace_label = if root_leaf.is_empty() {
+            directory.clone()
+        } else {
+            root_leaf
+        };
+        let tree_summary = format!(
+            "{} indexed · {} touched",
+            state.workspace_index.entries().len(),
+            modified_paths.len()
+        );
+        let mut sections = vec![SidebarSection {
+            key: "workspace_root",
+            title: "Workspace",
+            lines: vec![
+                Line::from(vec![
+                    Span::styled(root_prefix, Style::default().fg(theme.text_muted)),
+                    Span::styled(workspace_label, Style::default().fg(theme.text).bold()),
+                ]),
+                Line::from(vec![Span::styled(
+                    tree_summary.clone(),
+                    Style::default().fg(theme.text_muted),
+                )]),
+            ],
+            child_session_hit_rows: None,
+            workspace_hit_rows: None,
+            summary: None,
+            collapsible: false,
+        }];
+        let (tree_lines, workspace_hit_rows) = build_workspace_tree_lines(
+            theme,
+            area.width,
+            &state.workspace_visible_nodes,
+            lifecycle,
+        );
+        sections.push(SidebarSection {
+            key: "workspace_tree",
+            title: "Files",
+            lines: tree_lines,
+            child_session_hit_rows: None,
+            workspace_hit_rows: Some(workspace_hit_rows),
+            summary: Some(tree_summary),
+            collapsible: false,
+        });
+        sections
     }
 
     fn render_footer_with_bg<S: RenderSurface>(
@@ -876,6 +1264,34 @@ fn contains_point(area: Option<Rect>, col: u16, row: u16) -> bool {
     col >= area.x && col < max_x && row >= area.y && row < max_y
 }
 
+#[derive(Clone, Default, PartialEq, Eq)]
+struct WorkspaceTreeDir {
+    dirs: BTreeMap<String, WorkspaceTreeDir>,
+    files: Vec<String>,
+}
+
+fn render_sidebar_tab<S: RenderSurface>(
+    surface: &mut S,
+    area: Rect,
+    theme: &Theme,
+    active: bool,
+    label: &str,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let style = if active {
+        Style::default()
+            .bg(theme.background_element)
+            .fg(theme.text)
+            .bold()
+    } else {
+        Style::default().fg(theme.text_muted)
+    };
+    let text = format!(" {label} ");
+    surface.render_widget(Paragraph::new(Line::from(Span::styled(text, style))), area);
+}
+
 fn truncate_text(text: &str, max_chars: usize) -> String {
     if max_chars == 0 {
         return String::new();
@@ -889,6 +1305,215 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
     }
     out.push('…');
     out
+}
+
+fn workspace_root_path(directory: &str) -> PathBuf {
+    if directory.trim().is_empty() {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    } else {
+        PathBuf::from(directory)
+    }
+}
+
+fn normalize_workspace_path(root: &PathBuf, path: &str) -> Option<String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let normalized = if PathBuf::from(trimmed).is_absolute() {
+        let absolute = PathBuf::from(trimmed);
+        absolute
+            .strip_prefix(root)
+            .ok()
+            .map(|relative| relative.to_string_lossy().to_string())?
+    } else {
+        trimmed.to_string()
+    };
+    let normalized = normalized
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .trim_start_matches('/')
+        .to_string();
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+fn workspace_parent_path(path: &str) -> Option<String> {
+    path.rsplit_once('/').map(|(parent, _)| parent.to_string())
+}
+
+fn build_workspace_visible_nodes(
+    entries: &[String],
+    expanded_dirs: &HashSet<String>,
+    modified_paths: &HashSet<String>,
+    current_path: Option<&str>,
+    reveal_path: Option<&str>,
+) -> Vec<WorkspaceVisibleNode> {
+    let tree = build_workspace_tree(entries);
+    let mut nodes = Vec::new();
+    flatten_workspace_tree(
+        &tree,
+        None,
+        0,
+        expanded_dirs,
+        modified_paths,
+        current_path,
+        reveal_path,
+        &mut nodes,
+    );
+    nodes
+}
+
+fn build_workspace_tree(entries: &[String]) -> WorkspaceTreeDir {
+    let mut root = WorkspaceTreeDir::default();
+    for entry in entries {
+        let segments = entry
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .collect::<Vec<_>>();
+        insert_workspace_entry(&mut root, &segments);
+    }
+    root
+}
+
+fn insert_workspace_entry(node: &mut WorkspaceTreeDir, segments: &[&str]) {
+    let Some((first, rest)) = segments.split_first() else {
+        return;
+    };
+    if rest.is_empty() {
+        node.files.push((*first).to_string());
+        return;
+    }
+    insert_workspace_entry(node.dirs.entry((*first).to_string()).or_default(), rest);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn flatten_workspace_tree(
+    tree: &WorkspaceTreeDir,
+    parent_path: Option<&str>,
+    depth: usize,
+    expanded_dirs: &HashSet<String>,
+    modified_paths: &HashSet<String>,
+    current_path: Option<&str>,
+    reveal_path: Option<&str>,
+    out: &mut Vec<WorkspaceVisibleNode>,
+) {
+    for (dir_name, child) in &tree.dirs {
+        let path = join_workspace_path(parent_path, dir_name);
+        let expanded = depth == 0
+            || expanded_dirs.contains(&path)
+            || reveal_path
+                .map(|candidate| candidate.starts_with(&(path.clone() + "/")))
+                .unwrap_or(false);
+        out.push(WorkspaceVisibleNode {
+            path: path.clone(),
+            label: dir_name.clone(),
+            depth,
+            is_dir: true,
+            expanded,
+            is_modified: modified_paths
+                .iter()
+                .any(|entry| entry.starts_with(&(path.clone() + "/"))),
+            is_current: current_path
+                .map(|candidate| candidate.starts_with(&(path.clone() + "/")))
+                .unwrap_or(false),
+        });
+        if expanded {
+            flatten_workspace_tree(
+                child,
+                Some(&path),
+                depth + 1,
+                expanded_dirs,
+                modified_paths,
+                current_path,
+                reveal_path,
+                out,
+            );
+        }
+    }
+    for file_name in &tree.files {
+        let path = join_workspace_path(parent_path, file_name);
+        out.push(WorkspaceVisibleNode {
+            path: path.clone(),
+            label: file_name.clone(),
+            depth,
+            is_dir: false,
+            expanded: false,
+            is_modified: modified_paths.contains(&path),
+            is_current: current_path == Some(path.as_str()),
+        });
+    }
+}
+
+fn join_workspace_path(parent_path: Option<&str>, segment: &str) -> String {
+    parent_path
+        .map(|parent| format!("{parent}/{segment}"))
+        .unwrap_or_else(|| segment.to_string())
+}
+
+fn build_workspace_tree_lines(
+    theme: &Theme,
+    width: u16,
+    nodes: &[WorkspaceVisibleNode],
+    lifecycle: &SidebarLifecycleState,
+) -> (Vec<Line<'static>>, Vec<Option<usize>>) {
+    if nodes.is_empty() {
+        return (
+            vec![Line::from(Span::styled(
+                "No indexed files yet",
+                Style::default().fg(theme.text_muted),
+            ))],
+            vec![None],
+        );
+    }
+
+    let mut lines = Vec::new();
+    let mut hit_rows = Vec::new();
+    for (idx, node) in nodes.iter().enumerate() {
+        let selected = lifecycle.workspace_focus && lifecycle.workspace_selected == idx;
+        let row_bg = selected.then_some(theme.background_element);
+        let mk_style = |style: Style| row_bg.map_or(style, |bg| style.bg(bg));
+        let indent = "  ".repeat(node.depth.min(6));
+        let caret = if node.is_dir {
+            if node.expanded { "▾" } else { "▸" }
+        } else {
+            "•"
+        };
+        let accent = if node.is_current {
+            theme.primary
+        } else if node.is_modified {
+            theme.success
+        } else if node.is_dir {
+            theme.text
+        } else {
+            theme.text_muted
+        };
+        let suffix = if node.is_current {
+            Some(" current")
+        } else if node.is_modified {
+            Some(" touched")
+        } else {
+            None
+        };
+        let reserved = indent.len() + 6 + suffix.map_or(0, str::len);
+        let label = truncate_text(&node.label, width.saturating_sub(reserved as u16) as usize);
+        let mut spans = vec![
+            Span::styled(indent, mk_style(Style::default().fg(theme.text_muted))),
+            Span::styled(
+                format!("{caret} "),
+                mk_style(Style::default().fg(if selected { theme.primary } else { accent })),
+            ),
+            Span::styled(label, mk_style(Style::default().fg(accent))),
+        ];
+        if let Some(suffix) = suffix {
+            spans.push(Span::styled(
+                suffix,
+                mk_style(Style::default().fg(theme.text_muted)),
+            ));
+        }
+        lines.push(Line::from(spans));
+        hit_rows.push(Some(idx));
+    }
+    (lines, hit_rows)
 }
 
 pub(crate) fn sidebar_metadata_text(
@@ -1368,5 +1993,45 @@ mod tests {
         let first_child_row = hit_rows.iter().position(|row| row == &Some(0));
         assert_eq!(first_child_row, Some(3));
         assert!(hit_rows.iter().skip(4).all(|row| row.is_none()));
+    }
+
+    #[test]
+    fn workspace_tree_reveals_current_file_and_maps_hit_rows() {
+        let entries = vec![
+            "src/main.rs".to_string(),
+            "src/ui/app.rs".to_string(),
+            "README.md".to_string(),
+        ];
+        let modified = HashSet::from(["src/ui/app.rs".to_string()]);
+        let nodes = build_workspace_visible_nodes(
+            &entries,
+            &HashSet::new(),
+            &modified,
+            Some("src/ui/app.rs"),
+            Some("src/ui/app.rs"),
+        );
+
+        assert!(nodes.iter().any(|node| node.path == "src"));
+        assert!(nodes.iter().any(|node| node.path == "src/ui"));
+        assert!(
+            nodes
+                .iter()
+                .any(|node| node.path == "src/ui/app.rs" && node.is_current)
+        );
+
+        let lifecycle = SidebarLifecycleState {
+            active_tab: SidebarTab::Workspace,
+            workspace_selected: nodes
+                .iter()
+                .position(|node| node.path == "src/ui/app.rs")
+                .expect("workspace node"),
+            workspace_focus: true,
+            ..Default::default()
+        };
+        let (_lines, hit_rows) = build_workspace_tree_lines(&Theme::dark(), 42, &nodes, &lifecycle);
+        let selected_row = hit_rows
+            .iter()
+            .position(|row| row.is_some_and(|idx| nodes[idx].path == "src/ui/app.rs"));
+        assert!(selected_row.is_some());
     }
 }
