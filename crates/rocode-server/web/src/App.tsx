@@ -22,6 +22,7 @@ import { useExecutionActivity } from "./hooks/useExecutionActivity";
 import { useMultimodalComposer } from "./hooks/useMultimodalComposer";
 import { useSchedulerNavigation } from "./hooks/useSchedulerNavigation";
 import { useTerminalSessions } from "./hooks/useTerminalSessions";
+import { useResizableWidth } from "./hooks/useResizableWidth";
 import { prepareComposerAttachments } from "./lib/composerAttachments";
 import {
   attachmentContainsWorkspacePath,
@@ -719,6 +720,8 @@ export default function App() {
   const [connectProviderId, setConnectProviderId] = useState("");
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
   const [rightSidebarOpen, setRightSidebarOpen] = useState(true);
+  const leftResize = useResizableWidth(312, 220, 520, "left");
+  const rightResize = useResizableWidth(320, 220, 520, "right");
   const [connectProtocol, setConnectProtocol] = useState("");
   const [connectApiKey, setConnectApiKey] = useState("");
   const [connectBaseUrl, setConnectBaseUrl] = useState("");
@@ -2136,7 +2139,7 @@ export default function App() {
 
   return (
     <div className="roc-app-shell flex h-dvh flex-col overflow-hidden bg-background text-foreground font-sans">
-      <header className="roc-appbar relative flex shrink-0 items-center justify-between px-4 py-2.5 md:px-5">
+      <header className="roc-appbar relative flex shrink-0 items-center justify-between px-4 py-1.5 md:px-5">
         <div className="flex min-w-0 items-center gap-3">
           <button
             onClick={() => setLeftSidebarOpen((value) => !value)}
@@ -2189,31 +2192,34 @@ export default function App() {
 
       <div className="flex flex-1 overflow-hidden">
         {leftSidebarOpen && (
-          <div className="w-[19.5rem] shrink-0 overflow-hidden border-r border-border/65 bg-sidebar/92 backdrop-blur-xl">
-            <SessionSidebar
-              workspaces={workspaceSummaries}
-              currentWorkspacePath={currentWorkspaceSummary?.path ?? null}
-              currentWorkspaceLabel={currentWorkspaceSummary?.label ?? null}
-              currentWorkspaceRootPath={resolvedWorkspaceRootPath || currentWorkspaceSummary?.path || null}
-              currentWorkspaceMode={resolvedWorkspaceMode}
-              sessionTree={sessionTree}
-              selectedSessionId={selectedSessionId}
-              deletingSessions={deletingSessions}
-              onCreateProject={(input) => {
-                void createProject(input);
-              }}
-              onCreateSession={() => {
-                void createSession({
-                  directory: (currentWorkspaceSummary?.path ?? serviceRootPath) || undefined,
-                });
-              }}
-              onDeleteSessions={(sessionIds) => {
-                void deleteSelectedSessions(sessionIds);
-              }}
-              onSelectWorkspace={selectWorkspace}
-              onSelectSession={(sessionId) => setSelectedSessionId(sessionId)}
-            />
-          </div>
+          <>
+            <div className="shrink-0 overflow-hidden border-r border-border/50 bg-sidebar" style={{ width: leftResize.width }}>
+              <SessionSidebar
+                workspaces={workspaceSummaries}
+                currentWorkspacePath={currentWorkspaceSummary?.path ?? null}
+                currentWorkspaceLabel={currentWorkspaceSummary?.label ?? null}
+                currentWorkspaceRootPath={resolvedWorkspaceRootPath || currentWorkspaceSummary?.path || null}
+                currentWorkspaceMode={resolvedWorkspaceMode}
+                sessionTree={sessionTree}
+                selectedSessionId={selectedSessionId}
+                deletingSessions={deletingSessions}
+                onCreateProject={(input) => {
+                  void createProject(input);
+                }}
+                onCreateSession={() => {
+                  void createSession({
+                    directory: (currentWorkspaceSummary?.path ?? serviceRootPath) || undefined,
+                  });
+                }}
+                onDeleteSessions={(sessionIds) => {
+                  void deleteSelectedSessions(sessionIds);
+                }}
+                onSelectWorkspace={selectWorkspace}
+                onSelectSession={(sessionId) => setSelectedSessionId(sessionId)}
+              />
+            </div>
+            <div className={leftResize.handleClassName} onMouseDown={leftResize.handleMouseDown} />
+          </>
         )}
 
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -2339,7 +2345,9 @@ export default function App() {
         </div>
 
         {rightSidebarOpen && (
-          <div className="w-80 shrink-0 overflow-hidden border-l border-border/65 bg-sidebar/92 backdrop-blur-xl">
+          <>
+            <div className={rightResize.handleClassName} onMouseDown={rightResize.handleMouseDown} />
+            <div className="shrink-0 overflow-hidden border-l border-border/50 bg-sidebar" style={{ width: rightResize.width }}>
             <WorkspacePanel
               apiJson={apiJson}
               workspaceLoading={workspaceLoading}
@@ -2380,6 +2388,7 @@ export default function App() {
               onSaveSelectedFile={saveSelectedFile}
             />
           </div>
+          </>
         )}
       </div>
 

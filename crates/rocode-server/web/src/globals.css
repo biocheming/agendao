@@ -58,31 +58,31 @@ html[data-theme="daylight"] {
   --card-foreground: oklch(0.18 0.02 260);
   --popover: oklch(0.99 0.003 85);
   --popover-foreground: oklch(0.18 0.02 260);
-  --primary: oklch(0.22 0.02 260);
-  --primary-foreground: oklch(0.98 0.003 85);
+  --primary: oklch(0.45 0.16 260);
+  --primary-foreground: oklch(0.98 0.005 260);
   --secondary: oklch(0.955 0.006 85);
   --secondary-foreground: oklch(0.22 0.02 260);
   --muted: oklch(0.955 0.006 85);
   --muted-foreground: oklch(0.52 0.01 260);
-  --accent: oklch(0.94 0.01 85);
+  --accent: oklch(0.94 0.025 260);
   --accent-foreground: oklch(0.22 0.02 260);
   --destructive: oklch(0.577 0.245 27.325);
   --border: oklch(0.91 0.008 85);
   --input: oklch(0.91 0.008 85);
-  --ring: oklch(0.68 0.08 205);
-  --chart-1: oklch(0.68 0.16 205);
+  --ring: oklch(0.50 0.16 260);
+  --chart-1: oklch(0.50 0.16 260);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
   --sidebar: oklch(0.97 0.005 85);
   --sidebar-foreground: oklch(0.18 0.02 260);
-  --sidebar-primary: oklch(0.22 0.02 260);
-  --sidebar-primary-foreground: oklch(0.98 0.003 85);
-  --sidebar-accent: oklch(0.94 0.01 85);
+  --sidebar-primary: oklch(0.45 0.16 260);
+  --sidebar-primary-foreground: oklch(0.98 0.005 260);
+  --sidebar-accent: oklch(0.94 0.025 260);
   --sidebar-accent-foreground: oklch(0.22 0.02 260);
   --sidebar-border: oklch(0.91 0.008 85);
-  --sidebar-ring: oklch(0.68 0.08 205);
+  --sidebar-ring: oklch(0.50 0.16 260);
 }
 
 /* ─── Theme: Sunset (warm tinted light) ──────────────────────────── */
@@ -130,31 +130,31 @@ html[data-theme="graphite"] {
   --card-foreground: oklch(0.93 0.005 260);
   --popover: oklch(0.2 0.01 260);
   --popover-foreground: oklch(0.93 0.005 260);
-  --primary: oklch(0.88 0.01 260);
-  --primary-foreground: oklch(0.2 0.01 260);
+  --primary: oklch(0.68 0.16 260);
+  --primary-foreground: oklch(0.18 0.02 260);
   --secondary: oklch(0.25 0.01 260);
   --secondary-foreground: oklch(0.93 0.005 260);
   --muted: oklch(0.25 0.01 260);
   --muted-foreground: oklch(0.65 0.01 260);
-  --accent: oklch(0.28 0.015 260);
+  --accent: oklch(0.28 0.03 260);
   --accent-foreground: oklch(0.93 0.005 260);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.55 0.01 260);
-  --chart-1: oklch(0.488 0.243 264.376);
+  --ring: oklch(0.60 0.16 260);
+  --chart-1: oklch(0.68 0.16 260);
   --chart-2: oklch(0.696 0.17 162.48);
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
   --sidebar: oklch(0.18 0.01 260);
   --sidebar-foreground: oklch(0.93 0.005 260);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary: oklch(0.68 0.16 260);
   --sidebar-primary-foreground: oklch(0.93 0.005 260);
-  --sidebar-accent: oklch(0.25 0.01 260);
+  --sidebar-accent: oklch(0.25 0.015 260);
   --sidebar-accent-foreground: oklch(0.93 0.005 260);
   --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.55 0.01 260);
+  --sidebar-ring: oklch(0.60 0.16 260);
 }
 
 /* ─── Theme: Midnight (warm-tinted dark) ─────────────────────────── */
@@ -166,7 +166,7 @@ html[data-theme="midnight"] {
   --card-foreground: oklch(0.94 0.008 85);
   --popover: oklch(0.19 0.015 250);
   --popover-foreground: oklch(0.94 0.008 85);
-  --primary: oklch(0.88 0.05 80);
+  --primary: oklch(0.72 0.12 50);
   --primary-foreground: oklch(0.19 0.015 250);
   --secondary: oklch(0.24 0.015 250);
   --secondary-foreground: oklch(0.94 0.008 85);
@@ -177,20 +177,20 @@ html[data-theme="midnight"] {
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.6 0.08 38);
-  --chart-1: oklch(0.68 0.16 38);
+  --ring: oklch(0.65 0.12 50);
+  --chart-1: oklch(0.72 0.12 50);
   --chart-2: oklch(0.696 0.17 162.48);
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
   --sidebar: oklch(0.17 0.015 250);
   --sidebar-foreground: oklch(0.94 0.008 85);
-  --sidebar-primary: oklch(0.68 0.16 38);
+  --sidebar-primary: oklch(0.72 0.12 50);
   --sidebar-primary-foreground: oklch(0.94 0.008 85);
   --sidebar-accent: oklch(0.24 0.015 250);
   --sidebar-accent-foreground: oklch(0.94 0.008 85);
   --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.6 0.08 38);
+  --sidebar-ring: oklch(0.65 0.12 50);
 }
 
 @layer base {
@@ -203,106 +203,85 @@ html[data-theme="midnight"] {
 }
 
 @layer components {
+  /* ─── Design tokens ──────────────────────────────────────────────── */
+
   .roc-app-shell {
-    background:
-      radial-gradient(circle at top, color-mix(in oklch, var(--primary) 12%, transparent), transparent 38%),
-      radial-gradient(circle at 88% 0%, color-mix(in oklch, var(--accent) 46%, transparent), transparent 24%),
-      linear-gradient(
-        180deg,
-        color-mix(in oklch, var(--background) 92%, var(--card) 8%) 0%,
-        var(--background) 34%
-      );
+    background: var(--background);
   }
 
   .roc-appbar {
-    @apply border-b border-border/70 bg-background/82 backdrop-blur-xl;
-    box-shadow: 0 10px 28px -26px color-mix(in oklch, var(--foreground) 18%, transparent);
+    @apply border-b border-border/50 bg-background;
+  }
+
+  /* ─── Surfaces ───────────────────────────────────────────────────── */
+
+  .roc-card {
+    @apply rounded-xl border border-border/50 bg-card transition-colors;
   }
 
   .roc-panel {
-    @apply rounded-xl border border-border/45 bg-card transition-[border-color,background-color,box-shadow,transform] duration-200 ease-out;
-    box-shadow: 0 18px 44px -40px color-mix(in oklch, var(--foreground) 20%, transparent);
+    @apply rounded-xl border border-border/50 bg-card transition-colors;
   }
 
   .roc-subpanel {
-    @apply rounded-lg border border-border/35 bg-muted;
+    @apply rounded-xl border border-border/50 bg-muted;
+  }
+
+  .roc-section {
+    @apply grid gap-3 rounded-xl border border-border/50 bg-card p-4;
   }
 
   .roc-surface-elevated {
-    @apply rounded-[28px] border border-border/60 bg-card/88 backdrop-blur-xl transition-[border-color,background-color,box-shadow,transform] duration-200 ease-out;
-    box-shadow: 0 28px 80px -48px color-mix(in oklch, var(--foreground) 28%, transparent);
+    @apply rounded-2xl border border-border/75 bg-card transition-colors;
+    box-shadow: 0 8px 30px oklch(from var(--foreground) l c h / 10%);
   }
 
-  .roc-session-hero {
-    background:
-      linear-gradient(
-        180deg,
-        color-mix(in oklch, var(--card) 90%, var(--background) 10%) 0%,
-        color-mix(in oklch, var(--card) 96%, transparent) 100%
-      );
-  }
-
-  .roc-session-header {
-    @apply border-b border-border/45 pb-2;
-  }
+  /* ─── Sidebar ────────────────────────────────────────────────────── */
 
   .roc-sidebar-shell {
-    @apply border-r border-border/65 bg-sidebar/92 backdrop-blur-xl;
+    @apply border-r border-border/50 bg-sidebar;
   }
 
   .roc-sidebar-section {
-    @apply rounded-[16px] border border-border/45 bg-background/48 backdrop-blur-sm transition-[border-color,background-color,box-shadow,transform] duration-200 ease-out;
-    box-shadow: 0 10px 24px -28px color-mix(in oklch, var(--foreground) 14%, transparent);
+    @apply rounded-xl bg-background/50;
   }
 
   .roc-sidebar-item {
-    @apply w-full rounded-[13px] border border-transparent bg-transparent px-2.25 py-1.25 text-left transition-[background-color,border-color,box-shadow];
+    @apply w-full rounded-lg border border-transparent bg-transparent px-2.5 py-1.5 text-left transition-colors;
   }
 
   .roc-sidebar-item:hover {
-    @apply border-border/45 bg-accent/42;
+    @apply bg-accent;
   }
 
   .roc-sidebar-item[data-active="true"] {
-    @apply border-border/60 bg-card/82;
-    box-shadow: 0 10px 24px -24px color-mix(in oklch, var(--foreground) 16%, transparent);
+    @apply border-border/50 bg-card;
   }
 
   .roc-sidebar-toggle {
-    @apply inline-flex size-4.5 items-center justify-center rounded-full border border-transparent text-muted-foreground transition-colors hover:border-border/35 hover:bg-accent/35 hover:text-foreground;
+    @apply inline-flex size-5 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground;
   }
 
   .roc-sidebar-meta {
-    @apply inline-flex items-center rounded-full border border-border/40 bg-background/68 px-2 py-0.5 text-[10px] font-medium text-muted-foreground;
+    @apply inline-flex items-center rounded-full border border-border/50 bg-background px-2.5 py-0.5 text-xs font-medium text-muted-foreground;
   }
 
-  .roc-feed-state {
-    @apply rounded-[28px] border border-border/55 bg-card/74 px-6 py-6 backdrop-blur-sm transition-[border-color,background-color,box-shadow,transform] duration-200 ease-out;
-    box-shadow: 0 24px 72px -52px color-mix(in oklch, var(--foreground) 24%, transparent);
-  }
-
-  .roc-note-card {
-    @apply rounded-[18px] border border-border/46 bg-card/70 backdrop-blur-sm transition-[border-color,background-color,box-shadow,transform] duration-200 ease-out;
-    box-shadow: 0 14px 32px -32px color-mix(in oklch, var(--foreground) 16%, transparent);
-  }
+  /* ─── Messages ───────────────────────────────────────────────────── */
 
   .roc-message-card {
-    @apply rounded-[18px] border border-border/48 bg-card/74 backdrop-blur-sm transition-[border-color,background-color,box-shadow,transform] duration-200 ease-out;
-    box-shadow: 0 14px 32px -30px color-mix(in oklch, var(--foreground) 16%, transparent);
+    @apply rounded-xl border border-border/50 bg-card transition-colors;
   }
 
   .roc-message-card[data-tone="user"] {
-    @apply bg-secondary/86;
+    @apply bg-secondary;
   }
 
   .roc-message-card[data-highlighted="true"] {
-    @apply border-primary/35;
-    box-shadow: 0 18px 40px -34px color-mix(in oklch, var(--primary) 24%, transparent);
+    @apply border-primary/50;
   }
 
   .roc-message-card[data-active="true"] {
-    @apply border-amber-400/45;
-    box-shadow: 0 18px 40px -34px color-mix(in oklch, oklch(0.72 0.16 80) 26%, transparent);
+    @apply border-amber-400/50;
   }
 
   .roc-message-meta-row {
@@ -314,7 +293,7 @@ html[data-theme="midnight"] {
   }
 
   .roc-message-title {
-    @apply mb-1.5 text-[14px] font-semibold leading-6 tracking-tight text-foreground/88;
+    @apply mb-1.5 text-sm font-semibold leading-6 tracking-tight text-foreground;
   }
 
   .roc-message-body {
@@ -322,26 +301,26 @@ html[data-theme="midnight"] {
   }
 
   .roc-message-footer {
-    @apply mt-2 flex items-center justify-end gap-2 border-t border-border/35 pt-1.5;
+    @apply mt-2 flex items-center justify-end gap-2 border-t border-border/50 pt-1.5;
   }
 
   .roc-message-summary {
     @apply text-[11px] leading-4.5 text-muted-foreground;
   }
 
+  /* ─── Detail cards ───────────────────────────────────────────────── */
+
   .roc-detail-card {
-    @apply rounded-[18px] border border-border/42 bg-background/54 px-3.5 py-3 backdrop-blur-sm transition-[border-color,background-color,box-shadow,transform] duration-200 ease-out;
-    box-shadow: 0 10px 24px -28px color-mix(in oklch, var(--foreground) 12%, transparent);
+    @apply rounded-xl border border-border/50 bg-card px-3.5 py-3 transition-colors;
   }
 
   .roc-detail-card[data-expanded="true"] {
-    @apply border-border/50 bg-card/70;
-    box-shadow: 0 14px 34px -30px color-mix(in oklch, var(--foreground) 16%, transparent);
+    @apply bg-card;
   }
 
   .roc-detail-card[data-tone="danger"] {
-    border-color: color-mix(in oklch, var(--destructive) 24%, var(--border));
-    background: color-mix(in oklch, var(--destructive) 5%, var(--card));
+    border-color: color-mix(in oklch, var(--destructive) 30%, var(--border));
+    background: color-mix(in oklch, var(--destructive) 6%, var(--card));
   }
 
   .roc-detail-trigger {
@@ -349,114 +328,51 @@ html[data-theme="midnight"] {
   }
 
   .roc-detail-icon {
-    @apply flex size-8 shrink-0 items-center justify-center rounded-xl border border-border/35 bg-background/66 text-muted-foreground;
+    @apply flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/50 bg-background text-muted-foreground;
   }
 
   .roc-detail-title {
-    @apply mt-0.75 text-[14px] font-semibold leading-5.5 tracking-tight text-foreground;
+    @apply text-sm font-semibold tracking-tight text-foreground;
   }
 
   .roc-detail-summary {
-    @apply mt-0.75 text-[12px] leading-5 text-muted-foreground;
+    @apply text-xs text-muted-foreground;
   }
 
   .roc-detail-body {
-    @apply mt-3 grid gap-2.5 border-t border-border/30 pt-3;
+    @apply mt-3 grid gap-2.5 border-t border-border/50 pt-3;
   }
 
-  .roc-section-label {
-    @apply text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground;
-  }
-
-  .roc-meta-badge {
-    @apply inline-flex items-center rounded-full border border-border/40 bg-background/72 px-2.25 py-0.75 text-[10px] font-medium text-muted-foreground;
-  }
-
-  .roc-data-row {
-    @apply grid gap-1.5 rounded-[18px] border border-border/40 bg-background/56 px-3.5 py-3;
-  }
-
-  .roc-structured-value {
-    @apply rounded-[16px] border border-border/35 bg-background/66 px-3 py-2.5 font-mono text-[11.5px] leading-[1.65] text-foreground whitespace-pre-wrap break-words;
-  }
-
-  .roc-structured-copy {
-    @apply break-words;
-  }
-
-  .roc-skeleton-line {
-    @apply rounded-full bg-muted/70;
-    animation: roc-pulse 1.6s ease-in-out infinite;
-  }
-
-  .roc-skeleton-panel {
-    @apply rounded-[24px] border border-border/45 bg-card/66;
-    animation: roc-pulse 1.8s ease-in-out infinite;
-  }
-
-  .roc-streaming-dot {
-    @apply size-2 rounded-full bg-primary/70;
-    animation: roc-breathe 1.4s ease-in-out infinite;
-  }
-
-  .roc-streaming-dot:nth-child(2) {
-    animation-delay: 0.18s;
-  }
-
-  .roc-streaming-dot:nth-child(3) {
-    animation-delay: 0.36s;
-  }
-
-  .roc-inline-fact {
-    @apply inline-flex items-center gap-1.5 rounded-full border border-border/40 bg-background/70 px-2.5 py-1 text-[11px] text-foreground/82;
-  }
-
-  .roc-inline-fact-label {
-    @apply font-semibold tracking-tight text-muted-foreground;
-  }
-
-  .roc-inline-fact-value {
-    @apply font-medium text-foreground/88;
-  }
-
-  .roc-empty-suggestion {
-    @apply rounded-full border border-border/45 bg-background/72 px-3 py-2 text-xs text-foreground/80 transition-colors hover:border-border/70 hover:bg-accent/45;
-  }
-
-  .roc-history-banner {
-    @apply rounded-[18px] border border-border/46 bg-card/70 px-4 py-3 backdrop-blur-sm transition-[border-color,background-color,box-shadow,transform] duration-200 ease-out;
-    box-shadow: 0 14px 32px -32px color-mix(in oklch, var(--foreground) 16%, transparent);
-  }
+  /* ─── Banners ────────────────────────────────────────────────────── */
 
   .roc-banner {
-    @apply rounded-[24px] border px-4 py-3 backdrop-blur-xl transition-[border-color,background-color,box-shadow,transform,opacity] duration-200 ease-out;
+    @apply rounded-xl border border-border/50 bg-card px-4 py-3 transition-colors;
     animation: roc-fade-rise 220ms ease-out;
-    box-shadow: 0 22px 54px -42px color-mix(in oklch, var(--foreground) 24%, transparent);
   }
 
   .roc-banner[data-tone="warning"] {
-    border-color: color-mix(in oklch, oklch(0.78 0.13 80) 62%, var(--border));
-    background: color-mix(in oklch, oklch(0.97 0.03 88) 88%, transparent);
-    color: color-mix(in oklch, oklch(0.37 0.09 75) 78%, var(--foreground));
+    border-color: color-mix(in oklch, oklch(0.78 0.13 80) 50%, var(--border));
+    background: color-mix(in oklch, oklch(0.97 0.03 88) 80%, var(--card));
   }
 
   .roc-banner[data-tone="error"] {
-    border-color: color-mix(in oklch, var(--destructive) 56%, var(--border));
-    background: color-mix(in oklch, var(--destructive) 9%, var(--card));
-    color: color-mix(in oklch, var(--destructive) 72%, var(--foreground));
+    border-color: color-mix(in oklch, var(--destructive) 40%, var(--border));
+    background: color-mix(in oklch, var(--destructive) 8%, var(--card));
   }
 
   .roc-banner-dismiss {
-    @apply inline-flex size-8 items-center justify-center rounded-full border border-transparent text-current/70 transition-[background-color,border-color,color,transform] duration-150 ease-out hover:border-current/15 hover:bg-background/50 hover:text-current;
+    @apply inline-flex size-8 items-center justify-center rounded-full text-current/70 transition-colors hover:bg-muted hover:text-current;
   }
 
+  /* ─── Floating / Overlay ─────────────────────────────────────────── */
+
   .roc-floating-overlay {
-    @apply fixed inset-0 z-50 bg-background/42 backdrop-blur-[3px] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0;
+    @apply fixed inset-0 z-50 bg-background/40 backdrop-blur-sm data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0;
   }
 
   .roc-floating-surface {
-    @apply z-50 overflow-hidden rounded-[24px] border border-border/60 bg-popover/94 text-popover-foreground backdrop-blur-xl outline-none transition-[border-color,background-color,box-shadow,transform,opacity] duration-200 ease-out data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-98 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-[0.985];
-    box-shadow: 0 32px 96px -56px color-mix(in oklch, var(--foreground) 34%, transparent);
+    @apply z-50 overflow-hidden rounded-2xl border border-border/75 bg-popover text-popover-foreground backdrop-blur-xl outline-none transition-colors data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-98 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-[0.985];
+    box-shadow: 0 8px 30px oklch(from var(--foreground) l c h / 12%);
   }
 
   .roc-floating-surface[data-side="bottom"] {
@@ -476,53 +392,52 @@ html[data-theme="midnight"] {
   }
 
   .roc-floating-close {
-    @apply inline-flex size-8 items-center justify-center rounded-full border border-transparent text-muted-foreground transition-[background-color,border-color,color,transform] duration-150 ease-out hover:border-border/50 hover:bg-accent/70 hover:text-foreground;
+    @apply inline-flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground;
   }
 
-  .roc-surface-interactive {
-    @apply transition-[border-color,background-color,box-shadow,transform] duration-200 ease-out;
-  }
-
-  .roc-surface-interactive:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 24px 58px -44px color-mix(in oklch, var(--foreground) 26%, transparent);
-  }
+  /* ─── State cards ────────────────────────────────────────────────── */
 
   .roc-state-card {
-    @apply rounded-[22px] border border-border/50 bg-card/72 px-4 py-4 text-sm backdrop-blur-sm transition-[border-color,background-color,box-shadow,transform,opacity] duration-200 ease-out;
-    box-shadow: 0 18px 40px -38px color-mix(in oklch, var(--foreground) 20%, transparent);
+    @apply rounded-xl border border-border/50 bg-card px-4 py-4 text-sm transition-colors;
     animation: roc-fade-rise 220ms ease-out;
   }
 
   .roc-state-card[data-tone="danger"] {
-    border-color: color-mix(in oklch, var(--destructive) 44%, var(--border));
-    background: color-mix(in oklch, var(--destructive) 7%, var(--card));
+    border-color: color-mix(in oklch, var(--destructive) 30%, var(--border));
+    background: color-mix(in oklch, var(--destructive) 6%, var(--card));
   }
 
   .roc-state-card[data-tone="muted"] {
-    background: color-mix(in oklch, var(--card) 68%, var(--background));
+    @apply bg-muted;
   }
 
   .roc-state-card[data-tone="loading"] {
     border-color: color-mix(in oklch, var(--primary) 20%, var(--border));
   }
 
-  .roc-status-row {
-    @apply inline-flex items-center gap-2 text-sm text-muted-foreground;
+  /* ─── Interactive items ──────────────────────────────────────────── */
+
+  .roc-item {
+    @apply rounded-lg border border-transparent bg-transparent px-3 py-2.5 text-left transition-colors;
   }
 
-  .roc-status-orb {
-    @apply flex size-9 items-center justify-center rounded-2xl border border-border/45 bg-background/78 text-muted-foreground;
+  .roc-item:hover {
+    @apply bg-accent;
   }
 
-  .roc-status-orb[data-tone="danger"] {
-    @apply border-destructive/25 text-destructive;
+  .roc-item-active {
+    @apply border-border/50 bg-accent;
   }
 
-  .roc-status-orb[data-tone="loading"] {
-    border-color: color-mix(in oklch, var(--primary) 24%, var(--border));
-    color: color-mix(in oklch, var(--primary) 58%, var(--muted-foreground));
+  .roc-surface-interactive {
+    @apply transition-colors;
   }
+
+  .roc-surface-interactive:hover {
+    @apply bg-accent;
+  }
+
+  /* ─── Rail / Side panels ─────────────────────────────────────────── */
 
   .roc-rail-panel,
   .roc-side-panel {
@@ -538,11 +453,11 @@ html[data-theme="midnight"] {
   }
 
   .roc-rail-title {
-    @apply text-[16px] font-semibold tracking-tight text-foreground;
+    @apply text-base font-semibold tracking-tight text-foreground;
   }
 
   .roc-rail-description {
-    @apply text-sm leading-6 text-muted-foreground;
+    @apply text-sm text-muted-foreground;
   }
 
   .roc-rail-toolbar {
@@ -551,8 +466,7 @@ html[data-theme="midnight"] {
 
   .roc-rail-section,
   .roc-side-section {
-    @apply grid gap-3 rounded-[22px] border border-border/50 bg-card/72 p-4 backdrop-blur-sm transition-[border-color,background-color,box-shadow,transform] duration-200 ease-out;
-    box-shadow: 0 18px 44px -42px color-mix(in oklch, var(--foreground) 18%, transparent);
+    @apply grid gap-3 rounded-xl border border-border/50 bg-card p-4;
   }
 
   .roc-rail-section-header {
@@ -564,40 +478,37 @@ html[data-theme="midnight"] {
   }
 
   .roc-rail-section-title {
-    @apply text-[15px] font-semibold tracking-tight text-foreground;
+    @apply text-sm font-semibold tracking-tight text-foreground;
   }
 
   .roc-rail-section-note {
-    @apply text-xs leading-5 text-muted-foreground;
+    @apply text-xs text-muted-foreground;
   }
 
   .roc-rail-item,
   .roc-side-item {
-    @apply rounded-[18px] border border-transparent bg-card/44 px-3 py-2.5 text-left transition-[border-color,background-color,box-shadow,transform] duration-150 ease-out;
+    @apply rounded-lg border border-transparent bg-transparent px-3 py-2.5 text-left transition-colors;
   }
 
   .roc-rail-item:hover,
   .roc-side-item:hover {
-    @apply border-border/50 bg-accent/34;
-    transform: translateY(-1px);
+    @apply bg-accent;
   }
 
   .roc-rail-item[data-active="true"],
   .roc-side-item[data-active="true"] {
-    @apply border-primary/28 bg-accent/44;
-    box-shadow: 0 18px 44px -40px color-mix(in oklch, var(--primary) 24%, transparent);
+    @apply border-primary/30 bg-accent;
   }
 
   .roc-rail-item[data-preview="true"],
   .roc-side-item[data-preview="true"] {
-    border-color: color-mix(in oklch, oklch(0.72 0.16 80) 32%, var(--border));
-    background: color-mix(in oklch, oklch(0.86 0.08 88) 34%, var(--card));
+    border-color: color-mix(in oklch, oklch(0.72 0.16 80) 30%, var(--border));
+    background: color-mix(in oklch, oklch(0.86 0.08 88) 30%, var(--card));
   }
 
   .roc-rail-empty,
   .roc-side-empty {
-    @apply flex flex-col items-center justify-center gap-3 rounded-[22px] border border-border/50 bg-card/72 px-4 py-7 text-center text-sm backdrop-blur-sm transition-[border-color,background-color,box-shadow,transform,opacity] duration-200 ease-out;
-    box-shadow: 0 18px 40px -38px color-mix(in oklch, var(--foreground) 20%, transparent);
+    @apply flex flex-col items-center justify-center gap-3 rounded-xl border border-border/50 bg-card px-4 py-7 text-center text-sm;
     animation: roc-fade-rise 220ms ease-out;
   }
 
@@ -607,7 +518,7 @@ html[data-theme="midnight"] {
   }
 
   .roc-rail-tab-list {
-    @apply flex flex-wrap gap-2 border-b border-border/45 pb-3;
+    @apply flex flex-wrap gap-2 border-b border-border/50 pb-3;
   }
 
   .roc-rail-meta-list {
@@ -618,6 +529,96 @@ html[data-theme="midnight"] {
     @apply grid gap-1 text-sm text-muted-foreground;
   }
 
+  /* ─── History ────────────────────────────────────────────────────── */
+
+  .roc-session-hero {
+    background: var(--card);
+  }
+
+  .roc-session-header {
+    @apply border-b border-border/50 pb-2;
+  }
+
+  .roc-feed-state {
+    @apply rounded-xl border border-border/50 bg-card px-6 py-6 transition-colors;
+  }
+
+  .roc-note-card {
+    @apply rounded-xl border border-border/50 bg-card transition-colors;
+  }
+
+  .roc-history-banner {
+    @apply rounded-xl border border-border/50 bg-card px-4 py-3 transition-colors;
+  }
+
+  /* ─── Badges / Pills ─────────────────────────────────────────────── */
+
+  .roc-badge {
+    @apply inline-flex items-center rounded-full border border-border/50 bg-background px-2.5 py-0.5 text-xs font-medium text-muted-foreground;
+  }
+
+  .roc-meta-badge {
+    @apply inline-flex items-center rounded-full border border-border/50 bg-background px-2.5 py-0.5 text-xs font-medium text-muted-foreground;
+  }
+
+  .roc-pill {
+    @apply inline-flex items-center rounded-full border border-border/50 bg-background px-2.5 py-0.5 text-xs font-medium text-muted-foreground;
+  }
+
+  .roc-pill-outline {
+    @apply inline-flex items-center rounded-full border border-border/50 bg-background px-2.5 py-0.5 text-xs font-medium text-muted-foreground;
+  }
+
+  .roc-chip-subtle {
+    @apply inline-flex items-center rounded-full border border-border/50 bg-background px-2.5 py-0.5 text-xs font-medium text-muted-foreground;
+  }
+
+  /* ─── Actions ────────────────────────────────────────────────────── */
+
+  .roc-action {
+    @apply inline-flex items-center justify-center rounded-lg border border-border/50 bg-background px-3 py-1.5 text-sm text-foreground transition-colors;
+  }
+
+  .roc-action:hover {
+    @apply bg-accent border-border/75;
+  }
+
+  .roc-action:disabled {
+    @apply pointer-events-none opacity-50;
+  }
+
+  .roc-action-compact {
+    @apply min-h-8 rounded-full px-3 text-xs;
+  }
+
+  .roc-action-pill {
+    @apply min-h-9 rounded-full px-4 text-sm;
+  }
+
+  /* ─── Labels ─────────────────────────────────────────────────────── */
+
+  .roc-section-label {
+    @apply text-xs font-semibold uppercase tracking-widest text-muted-foreground;
+  }
+
+  .roc-label {
+    @apply text-xs font-semibold uppercase tracking-widest text-muted-foreground;
+  }
+
+  .roc-inline-fact {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-border/50 bg-background px-2.5 py-1 text-xs text-foreground/80;
+  }
+
+  .roc-inline-fact-label {
+    @apply font-semibold text-muted-foreground;
+  }
+
+  .roc-inline-fact-value {
+    @apply font-medium text-foreground;
+  }
+
+  /* ─── Forms ──────────────────────────────────────────────────────── */
+
   .roc-form-stack {
     @apply grid gap-3;
   }
@@ -627,23 +628,23 @@ html[data-theme="midnight"] {
   }
 
   .roc-form-label {
-    @apply text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground;
+    @apply text-xs font-semibold uppercase tracking-widest text-muted-foreground;
   }
 
   .roc-form-hint {
-    @apply text-xs leading-5 text-muted-foreground;
+    @apply text-xs text-muted-foreground;
   }
 
   .roc-form-control {
-    @apply min-h-9 w-full rounded-xl border border-input/70 bg-background/82 px-3 py-2 text-sm tracking-tight text-foreground shadow-none transition-[color,background-color,border-color,box-shadow] outline-none placeholder:text-muted-foreground/82 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50;
+    @apply min-h-9 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground outline-none transition-[border-color,box-shadow] placeholder:text-muted-foreground disabled:pointer-events-none disabled:opacity-50;
   }
 
   .roc-form-control:focus-visible {
-    @apply border-ring ring-[3px] ring-ring/40;
+    @apply border-ring ring-2 ring-ring/30;
   }
 
   .roc-form-select {
-    @apply min-h-9 w-full appearance-none rounded-xl border border-input/70 bg-background/82 px-3 py-2 pr-9 text-sm tracking-tight text-foreground shadow-none transition-[color,background-color,border-color,box-shadow] outline-none disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50;
+    @apply min-h-9 w-full appearance-none rounded-lg border border-input bg-background px-3 py-2 pr-9 text-sm text-foreground outline-none transition-[border-color,box-shadow] disabled:pointer-events-none disabled:opacity-50;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M4 6.5 8 10.5 12 6.5' stroke='%236b7280' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     background-position: right 0.85rem center;
     background-repeat: no-repeat;
@@ -651,40 +652,49 @@ html[data-theme="midnight"] {
   }
 
   .roc-form-select:focus-visible {
-    @apply border-ring ring-[3px] ring-ring/40;
+    @apply border-ring ring-2 ring-ring/30;
   }
 
   .roc-form-textarea {
-    @apply min-h-32 w-full resize-y rounded-xl border border-input/70 bg-background/82 px-3.5 py-3 text-sm leading-6 text-foreground shadow-none transition-[color,background-color,border-color,box-shadow] outline-none placeholder:text-muted-foreground/82 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50;
+    @apply min-h-32 w-full resize-y rounded-lg border border-input bg-background px-3.5 py-3 text-sm leading-6 text-foreground outline-none transition-[border-color,box-shadow] placeholder:text-muted-foreground disabled:pointer-events-none disabled:opacity-50;
   }
 
   .roc-form-textarea:focus-visible {
-    @apply border-ring ring-[3px] ring-ring/40;
+    @apply border-ring ring-2 ring-ring/30;
   }
 
   .roc-form-checkbox-row {
-    @apply inline-flex items-center gap-3 rounded-xl border border-border/45 bg-background/58 px-3 py-2.5 text-sm text-foreground transition-[border-color,background-color] duration-150 ease-out;
+    @apply inline-flex items-center gap-3 rounded-lg border border-border/50 bg-background px-3 py-2.5 text-sm text-foreground transition-colors;
   }
 
   .roc-form-checkbox-row:hover {
-    @apply border-border/70 bg-accent/42;
+    @apply bg-accent;
   }
 
   .roc-form-checkbox {
-    @apply size-4 rounded border border-input/75 bg-background/85 text-primary shadow-none outline-none;
+    @apply size-4 rounded border border-input bg-background text-primary outline-none;
   }
 
   .roc-form-checkbox:focus-visible {
-    @apply border-ring ring-[3px] ring-ring/40;
+    @apply border-ring ring-2 ring-ring/30;
   }
 
   .roc-form-surface {
-    @apply grid gap-4 rounded-[20px] border border-border/45 bg-card/72 p-4 backdrop-blur-sm;
-    box-shadow: 0 18px 42px -40px color-mix(in oklch, var(--foreground) 18%, transparent);
+    @apply grid gap-3 rounded-xl border border-border/50 bg-card p-4;
+  }
+
+  /* ─── Structured data ────────────────────────────────────────────── */
+
+  .roc-structured-value {
+    @apply rounded-lg border border-border/50 bg-background px-3 py-2.5 font-mono text-xs leading-relaxed text-foreground whitespace-pre-wrap break-words;
+  }
+
+  .roc-structured-copy {
+    @apply break-words;
   }
 
   .roc-structured-empty {
-    @apply rounded-[18px] border border-dashed border-border/45 bg-muted/26 px-3.5 py-4 text-sm italic text-muted-foreground;
+    @apply rounded-xl border border-dashed border-border/50 bg-muted px-3.5 py-4 text-sm italic text-muted-foreground;
   }
 
   .roc-structured-list {
@@ -692,8 +702,7 @@ html[data-theme="midnight"] {
   }
 
   .roc-structured-disclosure {
-    @apply rounded-[20px] border border-border/45 bg-card/70 px-3.5 py-3 backdrop-blur-sm transition-[border-color,background-color,box-shadow] duration-150 ease-out;
-    box-shadow: 0 16px 40px -38px color-mix(in oklch, var(--foreground) 16%, transparent);
+    @apply rounded-xl border border-border/50 bg-card px-3.5 py-3 transition-colors;
   }
 
   .roc-structured-summary {
@@ -717,15 +726,15 @@ html[data-theme="midnight"] {
   }
 
   .roc-structured-summary-meta {
-    @apply inline-flex items-center rounded-full border border-border/45 bg-background/76 px-2.5 py-1 text-[11px] font-medium text-muted-foreground;
+    @apply inline-flex items-center rounded-full border border-border/50 bg-background px-2.5 py-0.5 text-xs font-medium text-muted-foreground;
   }
 
   .roc-structured-summary-note {
-    @apply text-xs leading-5 text-muted-foreground;
+    @apply text-xs text-muted-foreground;
   }
 
   .roc-structured-body {
-    @apply mt-3 grid gap-3 border-t border-border/35 pt-3;
+    @apply mt-3 grid gap-3 border-t border-border/50 pt-3;
   }
 
   .roc-structured-dl {
@@ -733,15 +742,15 @@ html[data-theme="midnight"] {
   }
 
   .roc-structured-row {
-    @apply grid gap-1.5 rounded-[16px] border border-border/35 bg-background/58 px-3 py-2.5;
+    @apply grid gap-1.5 rounded-lg border border-border/50 bg-background px-3 py-2.5;
   }
 
   .roc-structured-key {
-    @apply text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground;
+    @apply text-xs font-semibold uppercase tracking-widest text-muted-foreground;
   }
 
   .roc-structured-type {
-    @apply inline-flex items-center rounded-full border border-border/45 bg-background/76 px-2.5 py-1 text-[11px] font-medium text-muted-foreground;
+    @apply inline-flex items-center rounded-full border border-border/50 bg-background px-2.5 py-0.5 text-xs font-medium text-muted-foreground;
   }
 
   .roc-structured-stack {
@@ -752,32 +761,108 @@ html[data-theme="midnight"] {
     @apply flex flex-wrap gap-1.5;
   }
 
-  .roc-action-compact {
-    @apply min-h-[32px] rounded-full px-3 text-xs;
+  .roc-data-row {
+    @apply grid gap-1.5 rounded-xl border border-border/50 bg-background px-3.5 py-3;
   }
 
-  .roc-action-pill {
-    @apply min-h-[36px] rounded-full px-4 text-sm;
+  /* ─── Status ─────────────────────────────────────────────────────── */
+
+  .roc-status-row {
+    @apply inline-flex items-center gap-2 text-sm text-muted-foreground;
   }
+
+  .roc-status-orb {
+    @apply flex size-9 items-center justify-center rounded-xl border border-border/50 bg-background text-muted-foreground;
+  }
+
+  .roc-status-orb[data-tone="danger"] {
+    @apply border-destructive/30 text-destructive;
+  }
+
+  .roc-status-orb[data-tone="loading"] {
+    border-color: color-mix(in oklch, var(--primary) 25%, var(--border));
+    color: color-mix(in oklch, var(--primary) 60%, var(--muted-foreground));
+  }
+
+  /* ─── Composer ───────────────────────────────────────────────────── */
+
+  .roc-composer-shell {
+    @apply overflow-hidden rounded-xl border border-border/50 bg-card transition-colors;
+  }
+
+  .roc-composer-shell[data-drag-active="true"] {
+    @apply border-primary/50;
+  }
+
+  .roc-toolbar-field {
+    @apply inline-flex min-w-0 items-center gap-2 rounded-lg border border-border/50 bg-background px-2.75 py-1.5;
+  }
+
+  .roc-toolbar-label {
+    @apply text-[9px] font-semibold uppercase tracking-widest text-muted-foreground;
+  }
+
+  .roc-toolbar-select {
+    @apply min-w-0 bg-transparent text-xs font-medium text-foreground outline-none;
+  }
+
+  .roc-toolbar-select option {
+    color: var(--foreground);
+    background: var(--background);
+  }
+
+  /* ─── Terminal ───────────────────────────────────────────────────── */
 
   .roc-terminal-tab {
-    @apply inline-flex items-center rounded-full border border-transparent px-4 py-2 text-sm transition-[border-color,background-color,box-shadow,transform] duration-150 ease-out;
+    @apply inline-flex items-center rounded-full border border-transparent px-4 py-2 text-sm transition-colors;
   }
 
   .roc-terminal-tab:hover {
-    @apply border-border/45 bg-accent/55;
-    transform: translateY(-1px);
+    @apply bg-accent;
   }
 
   .roc-terminal-tab[data-active="true"] {
     @apply border-foreground/10 bg-foreground text-background font-semibold;
-    box-shadow: 0 16px 40px -34px color-mix(in oklch, var(--foreground) 34%, transparent);
   }
 
   .roc-terminal-viewport {
-    @apply min-h-[24rem] rounded-[20px] border border-border/45 bg-background/86 p-2;
-    box-shadow: inset 0 1px 0 color-mix(in oklch, var(--background) 68%, transparent);
+    @apply min-h-[24rem] rounded-xl border border-border/50 bg-background p-2;
   }
+
+  /* ─── Misc ───────────────────────────────────────────────────────── */
+
+  .roc-empty-suggestion {
+    @apply rounded-full border border-border/50 bg-background px-3 py-2 text-xs text-foreground/80 transition-colors hover:bg-accent;
+  }
+
+  .roc-textarea {
+    @apply rounded-lg border border-border/50 bg-background outline-none transition-[border-color,box-shadow];
+  }
+
+  .roc-skeleton-line {
+    @apply rounded-full bg-muted/70;
+    animation: roc-pulse 1.6s ease-in-out infinite;
+  }
+
+  .roc-skeleton-panel {
+    @apply rounded-xl border border-border/50 bg-muted/50;
+    animation: roc-pulse 1.8s ease-in-out infinite;
+  }
+
+  .roc-streaming-dot {
+    @apply size-2 rounded-full bg-primary/70;
+    animation: roc-breathe 1.4s ease-in-out infinite;
+  }
+
+  .roc-streaming-dot:nth-child(2) {
+    animation-delay: 0.18s;
+  }
+
+  .roc-streaming-dot:nth-child(3) {
+    animation-delay: 0.36s;
+  }
+
+  /* ─── Markdown (unchanged) ───────────────────────────────────────── */
 
   .roc-markdown-flow {
     @apply text-[15px] leading-6.5 text-foreground/92;
@@ -1074,19 +1159,13 @@ html[data-theme="midnight"] {
 
 @media (prefers-reduced-motion: reduce) {
   .roc-panel,
+  .roc-card,
   .roc-surface-elevated,
-  .roc-sidebar-section,
-  .roc-feed-state,
-  .roc-note-card,
   .roc-message-card,
-  .roc-history-banner,
+  .roc-detail-card,
   .roc-banner,
   .roc-floating-surface,
   .roc-state-card,
-  .roc-side-section,
-  .roc-side-item,
-  .roc-surface-interactive,
-  .roc-terminal-tab,
   .roc-action,
   .roc-textarea,
   .roc-composer-shell {

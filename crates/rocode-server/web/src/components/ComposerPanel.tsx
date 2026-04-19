@@ -716,7 +716,7 @@ export function ComposerPanel({
                         type="button"
                         variant="outline"
                         size="sm"
-                        className="h-8.5 gap-1.5 rounded-full border-border/50 px-3 text-[11px]"
+                        className="h-8.5 gap-1.5 rounded-full border-destructive/50 px-3 text-[11px] text-destructive hover:bg-destructive/10"
                         onClick={() => {
                           window.dispatchEvent(new CustomEvent("rocode:stop-streaming"));
                         }}
@@ -742,9 +742,6 @@ export function ComposerPanel({
                 <div className="flex flex-col gap-2 pt-0.25 lg:flex-row lg:items-end lg:justify-between">
                   <div className="min-w-0 flex-1">
                     <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[11px] leading-5">
-                      <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                        Context
-                      </span>
                       {contextSummary ? (
                         <span className="font-medium text-foreground/88">
                           {contextSummary}
@@ -755,7 +752,17 @@ export function ComposerPanel({
                       )}
                       {contextCount > 0 ? (
                         <span className="roc-chip-subtle">
-                          {references.length} refs · {attachments.length} attachments
+                          {references.length} refs · {attachments.length} files
+                        </span>
+                      ) : null}
+                      {sessionCost != null && sessionCost > 0 ? (
+                        <span className="text-muted-foreground">
+                          ${sessionCost.toFixed(2)}
+                        </span>
+                      ) : null}
+                      {pricingLabel ? (
+                        <span className="text-muted-foreground" title="Model pricing per million tokens">
+                          {pricingLabel}
                         </span>
                       ) : null}
                       {multimodalHints.map((hint, index) => (
@@ -776,7 +783,7 @@ export function ComposerPanel({
                         </span>
                       ) : null}
                     </div>
-                    <div className="mt-1.5 h-1.25 overflow-hidden rounded-full bg-muted/60">
+                    <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-muted/60">
                       <div
                         className={cn(
                           "h-full rounded-full transition-[width,background-color] duration-200 ease-out",
@@ -789,15 +796,6 @@ export function ComposerPanel({
                         style={{ width: contextRatio !== null ? `${Math.max(6, Math.round(contextRatio * 100))}%` : "0%" }}
                       />
                     </div>
-                  </div>
-
-                  <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground lg:justify-end">
-                    <span>Cost {formatCompactMoney(sessionCost)}</span>
-                    {pricingLabel ? (
-                      <span title="Model pricing per million tokens">
-                        {pricingLabel}
-                      </span>
-                    ) : null}
                   </div>
                 </div>
               </div>

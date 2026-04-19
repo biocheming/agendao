@@ -48,22 +48,21 @@ export function SessionHeader({
     <header className="roc-session-header grid gap-1.5" data-testid="session-header">
       <div className="flex flex-col gap-1 xl:flex-row xl:items-center xl:justify-between">
         <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <span className="text-[9px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
-              Session
-            </span>
-            <h1 className="min-w-0 truncate text-[1.05rem] font-semibold tracking-[-0.03em] text-foreground md:text-[1.16rem]">
-              {title}
-            </h1>
+          <h1 className="min-w-0 truncate text-xl font-semibold tracking-[-0.02em] text-foreground">
+            {title}
+          </h1>
+          <div className="mt-0.5 flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+            {secondaryMeta ? <span className="truncate">{secondaryMeta}</span> : null}
+            {modeModelSummary ? (
+              <>
+                {secondaryMeta ? <span className="text-border">·</span> : null}
+                <span className="truncate">{modeModelSummary}</span>
+              </>
+            ) : null}
           </div>
-          {secondaryMeta ? (
-            <div className="mt-0.25 text-[11px] leading-5 text-muted-foreground">
-              <span className="truncate">{secondaryMeta}</span>
-            </div>
-          ) : null}
         </div>
 
-        <div className="flex shrink-0 flex-wrap items-center gap-1.25 xl:justify-end">
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5 xl:justify-end">
           {contextSummary ? (
             <span className="roc-chip-subtle" title={contextTitle || contextSummary}>
               {contextSummary}
@@ -71,14 +70,13 @@ export function SessionHeader({
           ) : null}
           {activeStageId ? (
             <button
-              className="rounded-full border border-primary/22 bg-primary/8 px-2.5 py-1 text-[10px] font-semibold tracking-tight text-foreground transition-colors hover:border-primary/35 hover:bg-primary/12"
+              className="rounded-full border border-primary/22 bg-primary/8 px-2.5 py-1 text-[11px] font-semibold tracking-tight text-foreground transition-colors hover:border-primary/35 hover:bg-primary/12"
               type="button"
               onClick={() => onNavigateStage(activeStageId)}
             >
               stage {activeStageId}
             </button>
           ) : null}
-          {modeModelSummary ? <span className="roc-chip-subtle">{modeModelSummary}</span> : null}
         </div>
       </div>
 
