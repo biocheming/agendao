@@ -6,7 +6,9 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
+    widgets::{
+        Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+    },
 };
 
 use crate::branding::{APP_NAME, APP_SHORT_NAME, APP_VERSION_DATE};
@@ -70,6 +72,8 @@ pub struct SidebarRenderState {
     workspace_expanded_dirs: HashSet<String>,
     workspace_visible_nodes: Vec<WorkspaceVisibleNode>,
     workspace_selected_path: Option<String>,
+    workspace_tooltip: Option<String>,
+    workspace_seeded_root: Option<String>,
     /// Pending navigation target set by click-to-activate on an already-selected child session.
     /// Consumed (taken) by the app after `handle_click` returns.
     pending_navigate_child: Option<usize>,
@@ -128,6 +132,9 @@ impl SidebarRenderState {
             lifecycle.process_focus = false;
             lifecycle.child_session_focus = false;
             lifecycle.workspace_focus = hit.tab == SidebarTab::Workspace;
+            if hit.tab != SidebarTab::Workspace {
+                self.workspace_tooltip = None;
+            }
             self.scroll_offset = 0;
             return true;
         }
@@ -153,6 +160,7 @@ impl SidebarRenderState {
             lifecycle.process_focus = true;
             lifecycle.child_session_focus = false;
             lifecycle.workspace_focus = false;
+            self.workspace_tooltip = None;
             return true;
         }
 
@@ -173,6 +181,7 @@ impl SidebarRenderState {
                 lifecycle.process_focus = false;
                 lifecycle.workspace_focus = false;
             }
+            self.workspace_tooltip = None;
             return true;
         }
 
@@ -189,12 +198,14 @@ impl SidebarRenderState {
             lifecycle.process_focus = false;
             lifecycle.child_session_focus = false;
             if let Some(node) = self.workspace_visible_nodes.get(*node_idx) {
+                let tooltip = workspace_popup_text(self.sections_area, node);
                 let node_path = node.path.clone();
                 let node_is_dir = node.is_dir;
                 self.workspace_selected_path = Some(node_path.clone());
                 if node_is_dir && was_selected {
                     self.toggle_workspace_dir(&node_path);
                 }
+                self.workspace_tooltip = tooltip;
             }
             return true;
         }
@@ -1127,6 +1138,7 @@ impl Sidebar {
                 .thumb_style(Style::default().fg(theme.primary));
             surface.render_stateful_widget(scrollbar, scroll_area, &mut scrollbar_state);
         }
+        self.render_workspace_tooltip(surface, sections_text_area, theme, state);
     }
 
     fn build_workspace_sections(
@@ -1140,6 +1152,13 @@ impl Sidebar {
         let directory = self.context.directory.read().clone();
         let workspace_root = workspace_root_path(&directory);
         state.refresh_workspace_index(&workspace_root);
+        if state.workspace_seeded_root.as_deref() != Some(directory.as_str()) {
+            state.workspace_expanded_dirs =
+                top_level_workspace_dirs(state.workspace_index.entries());
+            state.workspace_seeded_root = Some(directory.clone());
+            state.workspace_selected_path = None;
+            state.workspace_tooltip = None;
+        }
 
         let modified_paths = session_ctx
             .session_diff
@@ -1216,6 +1235,71 @@ impl Sidebar {
             collapsible: false,
         });
         sections
+    }
+
+    fn render_workspace_tooltip<S: RenderSurface>(
+        &self,
+        surface: &mut S,
+        area: Rect,
+        theme: &Theme,
+        state: &SidebarRenderState,
+    ) {
+        let Some(text) = state.workspace_tooltip.as_ref() else {
+            return;
+        };
+        let Some(selected_path) = state.workspace_selected_path.as_ref() else {
+            return;
+        };
+        let Some((line_index, _)) = state.workspace_line_hits.iter().find(|(_, idx)| {
+            state
+                .workspace_visible_nodes
+                .get(*idx)
+                .map(|node| &node.path == selected_path)
+                .unwrap_or(false)
+        }) else {
+            return;
+        };
+        if *line_index < state.scroll_offset {
+            return;
+        }
+        let visible_row = line_index.saturating_sub(state.scroll_offset) as u16;
+        if visible_row >= area.height {
+            return;
+        }
+
+        let popup_width = area.width.saturating_sub(1).clamp(18, area.width);
+        if popup_width < 8 {
+            return;
+        }
+        let popup_height = 3.min(area.height.max(1));
+        let popup_y = if visible_row.saturating_add(popup_height) < area.height {
+            area.y.saturating_add(visible_row.saturating_add(1))
+        } else {
+            area.y
+                .saturating_add(visible_row.saturating_sub(popup_height.saturating_sub(1)))
+        };
+        let popup = Rect {
+            x: area.x,
+            y: popup_y,
+            width: popup_width,
+            height: popup_height,
+        };
+        surface.render_widget(Clear, popup);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.primary))
+            .style(Style::default().bg(theme.background_panel));
+        let inner = block.inner(popup);
+        surface.render_widget(block, popup);
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
+        surface.render_widget(
+            Paragraph::new(text.clone())
+                .wrap(Wrap { trim: false })
+                .style(Style::default().fg(theme.text).bg(theme.background_panel)),
+            inner,
+        );
     }
 
     fn render_footer_with_bg<S: RenderSurface>(
@@ -1375,6 +1459,20 @@ fn build_workspace_tree(entries: &[String]) -> WorkspaceTreeDir {
     root
 }
 
+fn top_level_workspace_dirs(entries: &[String]) -> HashSet<String> {
+    entries
+        .iter()
+        .filter_map(|entry| entry.split('/').next())
+        .filter(|segment| {
+            !segment.is_empty()
+                && entries
+                    .iter()
+                    .any(|entry| entry.starts_with(&format!("{segment}/")))
+        })
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
 fn insert_workspace_entry(node: &mut WorkspaceTreeDir, segments: &[&str]) {
     let Some((first, rest)) = segments.split_first() else {
         return;
@@ -1399,8 +1497,7 @@ fn flatten_workspace_tree(
 ) {
     for (dir_name, child) in &tree.dirs {
         let path = join_workspace_path(parent_path, dir_name);
-        let expanded = depth == 0
-            || expanded_dirs.contains(&path)
+        let expanded = expanded_dirs.contains(&path)
             || reveal_path
                 .map(|candidate| candidate.starts_with(&(path.clone() + "/")))
                 .unwrap_or(false);
@@ -1514,6 +1611,18 @@ fn build_workspace_tree_lines(
         hit_rows.push(Some(idx));
     }
     (lines, hit_rows)
+}
+
+fn workspace_popup_text(
+    sections_area: Option<Rect>,
+    node: &WorkspaceVisibleNode,
+) -> Option<String> {
+    let area = sections_area?;
+    let available_width = usize::from(area.width.saturating_sub(4)).max(1);
+    let needs_popup = node.path.chars().count() > available_width
+        || node.label.chars().count()
+            > available_width.saturating_sub(node.depth.saturating_mul(2));
+    needs_popup.then(|| node.path.clone())
 }
 
 pub(crate) fn sidebar_metadata_text(
@@ -2033,5 +2142,58 @@ mod tests {
             .iter()
             .position(|row| row.is_some_and(|idx| nodes[idx].path == "src/ui/app.rs"));
         assert!(selected_row.is_some());
+    }
+
+    #[test]
+    fn workspace_tree_root_nodes_respect_expanded_state() {
+        let entries = vec![
+            "src/main.rs".to_string(),
+            "src/ui/app.rs".to_string(),
+            "docs/guide.md".to_string(),
+        ];
+        let nodes =
+            build_workspace_visible_nodes(&entries, &HashSet::new(), &HashSet::new(), None, None);
+
+        assert!(
+            nodes
+                .iter()
+                .any(|node| node.path == "src" && node.is_dir && !node.expanded)
+        );
+        assert!(
+            nodes
+                .iter()
+                .any(|node| node.path == "docs" && node.is_dir && !node.expanded)
+        );
+        assert!(!nodes.iter().any(|node| node.path == "src/ui"));
+        assert!(!nodes.iter().any(|node| node.path == "src/main.rs"));
+    }
+
+    #[test]
+    fn workspace_popup_only_appears_for_long_paths() {
+        let area = Some(Rect::new(0, 0, 20, 10));
+        let short = WorkspaceVisibleNode {
+            path: "src/app.rs".to_string(),
+            label: "app.rs".to_string(),
+            depth: 1,
+            is_dir: false,
+            expanded: false,
+            is_modified: false,
+            is_current: false,
+        };
+        let long = WorkspaceVisibleNode {
+            path: "very-long-directory-name/another-long-segment/file.rs".to_string(),
+            label: "file.rs".to_string(),
+            depth: 2,
+            is_dir: false,
+            expanded: false,
+            is_modified: false,
+            is_current: false,
+        };
+
+        assert_eq!(workspace_popup_text(area, &short), None);
+        assert_eq!(
+            workspace_popup_text(area, &long),
+            Some("very-long-directory-name/another-long-segment/file.rs".to_string())
+        );
     }
 }
