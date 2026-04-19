@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use ratatui::{
     layout::Rect,
@@ -42,6 +42,14 @@ pub struct QuestionPrompt {
     selected_options: Vec<bool>,
     text_input: String,
     last_rendered_area: Cell<Option<Rect>>,
+    click_targets: RefCell<Vec<QuestionClickTarget>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct QuestionClickTarget {
+    start_row: u16,
+    end_row: u16,
+    option_index: usize,
 }
 
 impl QuestionPrompt {
@@ -53,6 +61,7 @@ impl QuestionPrompt {
             selected_options: Vec::new(),
             text_input: String::new(),
             last_rendered_area: Cell::new(None),
+            click_targets: RefCell::new(Vec::new()),
         }
     }
 
@@ -75,6 +84,7 @@ impl QuestionPrompt {
         self.selected_index = 0;
         self.selected_options.clear();
         self.text_input.clear();
+        self.click_targets.borrow_mut().clear();
     }
 
     pub fn move_up(&mut self) {
@@ -138,6 +148,16 @@ impl QuestionPrompt {
         }
     }
 
+    pub fn handle_space(&mut self) {
+        if let Some(q) = &self.current_question {
+            if q.question_type == QuestionType::Text || self.custom_input_active() {
+                self.text_input.push(' ');
+            } else {
+                self.toggle_selected();
+            }
+        }
+    }
+
     pub fn confirm(&mut self) -> Option<(QuestionRequest, Vec<String>)> {
         let q = self.current_question.as_ref()?;
         let answers = if q.question_type == QuestionType::Text {
@@ -170,6 +190,7 @@ impl QuestionPrompt {
         self.selected_index = 0;
         self.selected_options.clear();
         self.text_input.clear();
+        self.click_targets.borrow_mut().clear();
         Some((request, answers))
     }
 
@@ -185,14 +206,30 @@ impl QuestionPrompt {
             {
                 return;
             }
-            let options_start = area.y + 5;
-            if row >= options_start {
-                let idx = (row - options_start) as usize;
-                if let Some(q) = &self.current_question {
-                    if idx < q.options.len() {
-                        self.selected_index = idx;
-                        self.toggle_selected();
-                    }
+            let target = {
+                let click_targets = self.click_targets.borrow();
+                click_targets
+                    .iter()
+                    .find(|target| row >= target.start_row && row <= target.end_row)
+                    .copied()
+            };
+            if let Some(target) = target {
+                if self.selected_index != target.option_index
+                    || !self
+                        .selected_options
+                        .get(target.option_index)
+                        .copied()
+                        .unwrap_or(false)
+                {
+                    self.selected_index = target.option_index;
+                    self.toggle_selected();
+                } else if self
+                    .current_question
+                    .as_ref()
+                    .is_some_and(|question| question.question_type == QuestionType::MultipleChoice)
+                {
+                    self.selected_index = target.option_index;
+                    self.toggle_selected();
                 }
             }
         }
@@ -221,8 +258,11 @@ impl QuestionPrompt {
             Line::from(""),
         ];
 
+        let mut option_line_ranges = Vec::new();
+
         if !question.options.is_empty() {
             for (i, opt) in question.options.iter().enumerate() {
+                let option_start = content.len();
                 let is_selected = self.selected_options.get(i).copied().unwrap_or(false);
                 let is_highlighted = i == self.selected_index;
                 let marker = if is_selected { "[x]" } else { "[ ]" };
@@ -247,6 +287,8 @@ impl QuestionPrompt {
                         ]));
                     }
                 }
+                let option_end = content.len().saturating_sub(1);
+                option_line_ranges.push((option_start, option_end, i));
             }
             if self.custom_input_active() {
                 content.push(Line::from(""));
@@ -304,6 +346,16 @@ impl QuestionPrompt {
         );
 
         self.last_rendered_area.set(Some(popup_area));
+        let content_origin_y = popup_area.y.saturating_add(1);
+        let click_targets = option_line_ranges
+            .into_iter()
+            .map(|(start, end, option_index)| QuestionClickTarget {
+                start_row: content_origin_y.saturating_add(start as u16),
+                end_row: content_origin_y.saturating_add(end as u16),
+                option_index,
+            })
+            .collect::<Vec<_>>();
+        self.click_targets.replace(click_targets);
 
         let paragraph = Paragraph::new(content)
             .block(
@@ -410,5 +462,32 @@ mod tests {
             .filter(|cell| !cell.symbol().trim().is_empty())
             .count();
         assert!(rendered > 0);
+    }
+
+    #[test]
+    fn clicking_option_row_selects_it() {
+        let mut prompt = choice_prompt();
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buffer = Buffer::empty(area);
+        let mut surface = BufferSurface::new(&mut buffer);
+
+        prompt.render(&mut surface, area, &Theme::dark());
+        let target = prompt.click_targets.borrow()[1];
+        prompt.handle_click(5, target.start_row);
+
+        assert_eq!(prompt.selected_index, 1);
+        assert!(prompt.selected_options[1]);
+    }
+
+    #[test]
+    fn handle_space_types_when_custom_input_is_active() {
+        let mut prompt = choice_prompt();
+        prompt.move_down();
+        prompt.toggle_selected();
+        prompt.type_char('n');
+        prompt.handle_space();
+        prompt.type_char('o');
+
+        assert_eq!(prompt.text_input, "n o");
     }
 }

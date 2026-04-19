@@ -520,7 +520,7 @@ impl SessionView {
         }
 
         let show_header = snapshot.show_header;
-        let header_height = if show_header { 2u16 } else { 0u16 };
+        let header_height = if show_header { 3u16 } else { 0u16 };
         let session_footer_height = 1u16;
         let desired_prompt_height = prompt.desired_height(area.width);
         let total_height = area.height;
@@ -669,12 +669,14 @@ impl SessionView {
                 Span::styled("  ·  ", Style::default().fg(theme.border)),
                 Span::styled(right.clone(), Style::default().fg(theme.text_muted)),
             ]),
-            (Some(left), None) => {
-                Line::from(Span::styled(left.clone(), Style::default().fg(theme.text_muted)))
-            }
-            (None, Some(right)) => {
-                Line::from(Span::styled(right.clone(), Style::default().fg(theme.text_muted)))
-            }
+            (Some(left), None) => Line::from(Span::styled(
+                left.clone(),
+                Style::default().fg(theme.text_muted),
+            )),
+            (None, Some(right)) => Line::from(Span::styled(
+                right.clone(),
+                Style::default().fg(theme.text_muted),
+            )),
             (None, None) => Line::from(""),
         };
         let content = vec![Line::from(title_spans), subtitle_line];
@@ -703,7 +705,7 @@ impl SessionView {
                     } else {
                         theme.border
                     }))
-                    .padding(ratatui::widgets::Padding::new(1, 1, 0, 0)),
+                    .padding(ratatui::widgets::Padding::new(1, 1, 1, 0)),
             )
             .style(Style::default().bg(theme.background_panel));
 
@@ -772,22 +774,32 @@ impl SessionView {
                 ));
                 right_spans.push(Span::raw("  "));
             }
-
-            right_spans.push(Span::styled(
-                "/status",
-                Style::default().fg(theme.text_muted),
-            ));
         }
 
-        let right_text_len: usize = right_spans.iter().map(|s| s.content.len()).sum();
-        let dir_len = footer.directory.len();
-        let available = area.width as usize;
-        let mut line_spans = vec![Span::styled(
+        let meter_style = match footer.context_meter_percent {
+            Some(percent) if percent >= 95 => Style::default().fg(theme.error),
+            Some(percent) if percent > 80 => Style::default().fg(theme.warning),
+            Some(percent) if percent >= 50 => Style::default().fg(theme.warning),
+            Some(_) => Style::default().fg(theme.success),
+            None => Style::default().fg(theme.text_muted),
+        };
+        let mut left_spans = vec![Span::styled(
             footer.directory.clone(),
             Style::default().fg(theme.text_muted),
         )];
-        if available > dir_len + right_text_len + 1 {
-            line_spans.push(Span::raw(" ".repeat(available - dir_len - right_text_len)));
+        if let Some(context_meter) = footer.context_meter.as_ref() {
+            left_spans.push(Span::raw("  "));
+            left_spans.push(Span::styled(context_meter.clone(), meter_style));
+        }
+
+        let right_text_len: usize = right_spans.iter().map(|s| s.content.len()).sum();
+        let left_text_len: usize = left_spans.iter().map(|s| s.content.len()).sum();
+        let available = area.width as usize;
+        let mut line_spans = left_spans;
+        if available > left_text_len + right_text_len + 1 {
+            line_spans.push(Span::raw(
+                " ".repeat(available - left_text_len - right_text_len),
+            ));
         } else {
             line_spans.push(Span::raw(" "));
         }

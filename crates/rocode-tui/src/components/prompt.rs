@@ -4,8 +4,8 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Padding, Paragraph, Wrap},
 };
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,7 +17,7 @@ use crate::file_index::FileIndex;
 use crate::theme::Theme;
 use crate::ui::RenderSurface;
 
-use super::spinner::{progress_circle_icon, KnightRiderSpinner, SpinnerMode, TaskKind};
+use super::spinner::{KnightRiderSpinner, SpinnerMode, TaskKind, progress_circle_icon};
 
 const MAX_HISTORY_ENTRIES: usize = 200;
 const MAX_STASH_ENTRIES: usize = 50;
@@ -1257,41 +1257,14 @@ impl Prompt {
                 return self.slash_hint_line(theme, &token);
             }
         }
-
-        let keybind = self.context.keybind.read();
-        let variant_cycle = keybind.print("variant_cycle");
-        let agent_cycle = keybind.print("agent_cycle");
-        let command_list = keybind.print("command_list");
-        drop(keybind);
-
-        let mut spans = Vec::new();
-        if self.context.current_model_variant().is_some() {
-            spans.push(Span::styled(variant_cycle, Style::default().fg(theme.text)));
-            spans.push(Span::styled(
-                " variants",
-                Style::default().fg(theme.text_muted),
-            ));
-            spans.push(Span::raw("  "));
-        }
-        spans.push(Span::styled(agent_cycle, Style::default().fg(theme.text)));
-        spans.push(Span::styled(
-            " agents",
-            Style::default().fg(theme.text_muted),
-        ));
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(command_list, Style::default().fg(theme.text)));
-        spans.push(Span::styled(
-            " commands",
-            Style::default().fg(theme.text_muted),
-        ));
-        Line::from(spans)
+        Line::from("")
     }
 
     fn slash_hint_line(&self, theme: &Theme, token: &str) -> Line<'static> {
-        let mut spans = vec![
-            Span::styled("Tab", Style::default().fg(theme.text)),
-            Span::styled(" autocomplete", Style::default().fg(theme.text_muted)),
-        ];
+        let mut spans = vec![Span::styled(
+            "Commands",
+            Style::default().fg(theme.text_muted),
+        )];
 
         let preview = self
             .suggestions

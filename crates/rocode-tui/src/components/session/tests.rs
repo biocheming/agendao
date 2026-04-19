@@ -1,17 +1,18 @@
 use super::{
+    SessionMessageOutputCache, SessionMessageViewportState, SessionMessagesSnapshot,
+    SessionReasoningState, SessionRenderModelCache, SessionView,
     build_session_render_model_memo_key, build_session_viewport_content_memo_key,
     map_scrollbar_row_to_offset, render_session_messages_child, reset_session_render_perf_counters,
-    resolve_session_render_model, snapshot_session_render_perf_counters, SessionMessageOutputCache,
-    SessionMessageViewportState, SessionMessagesSnapshot, SessionReasoningState,
-    SessionRenderModelCache, SessionView,
+    resolve_session_render_model, snapshot_session_render_perf_counters,
 };
 use chrono::Utc;
 use parking_lot::Mutex;
 use ratatui::{buffer::Buffer, layout::Rect};
 use reratui::fiber_tree::{clear_fiber_tree, set_fiber_tree};
 use reratui::{
-    clear_current_event, clear_global_handlers, clear_render_context, init_render_context,
-    reset_component_position_counter, with_render_context_mut, Component, Element, FiberTree,
+    Component, Element, FiberTree, clear_current_event, clear_global_handlers,
+    clear_render_context, init_render_context, reset_component_position_counter,
+    with_render_context_mut,
 };
 
 use crate::{
@@ -144,6 +145,29 @@ fn build_perf_session_messages() -> Vec<Message> {
             }],
         ),
     ]
+}
+
+#[test]
+fn builds_context_usage_bar_clamped_to_width() {
+    assert_eq!(super::context_usage_bar(Some(0), 5), "[░░░░░]");
+    assert_eq!(super::context_usage_bar(Some(50), 5), "[███░░]");
+    assert_eq!(super::context_usage_bar(Some(140), 5), "[█████]");
+}
+
+#[test]
+fn formats_context_usage_label_without_meter() {
+    assert_eq!(
+        super::format_context_usage_label(12_450, Some(200_000)),
+        "12.4K/200K 6%"
+    );
+}
+
+#[test]
+fn formats_context_usage_meter_with_compact_bar() {
+    assert_eq!(
+        super::format_context_usage_meter(12_450, Some(200_000)),
+        Some(("12.4K/200K [█░░░░░░░] 6%".to_string(), Some(6)))
+    );
 }
 
 fn perf_snapshot_with_messages() -> (Arc<AppContext>, String, SessionMessagesSnapshot) {
@@ -465,11 +489,13 @@ fn reasoning_toggle_rebuilds_only_affected_message_output() {
     assert_eq!(counters.message_cache_misses, 1);
     assert_eq!(counters.visible_range_recomputes, 1);
     assert!(counters.visible_lines_written > 0);
-    assert!(second
-        .reasoning
-        .toggle_hits
-        .iter()
-        .any(|hit| hit.reasoning_id == reasoning_id));
+    assert!(
+        second
+            .reasoning
+            .toggle_hits
+            .iter()
+            .any(|hit| hit.reasoning_id == reasoning_id)
+    );
     assert!(
         second.viewport.rendered_line_count > first.viewport.rendered_line_count,
         "expanded reasoning should increase rendered line count"

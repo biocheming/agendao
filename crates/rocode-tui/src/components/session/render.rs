@@ -1608,16 +1608,73 @@ fn user_border_color_for_agent(agent: Option<&str>, theme: &crate::theme::Theme)
     theme.agent_color(hasher.finish() as usize)
 }
 
-fn format_number(value: u64) -> String {
-    let digits = value.to_string();
-    let mut out = String::with_capacity(digits.len() + (digits.len() / 3));
-    for (idx, ch) in digits.chars().rev().enumerate() {
-        if idx > 0 && idx % 3 == 0 {
-            out.push(',');
-        }
-        out.push(ch);
+fn format_compact_number(value: u64) -> String {
+    if value >= 1_000_000 {
+        let compact = value as f64 / 1_000_000.0;
+        return if compact.fract() == 0.0 {
+            format!("{compact:.0}M")
+        } else {
+            format!("{compact:.1}M")
+        };
     }
-    out.chars().rev().collect()
+    if value >= 1_000 {
+        let compact = value as f64 / 1_000.0;
+        return if compact.fract() == 0.0 {
+            format!("{compact:.0}K")
+        } else {
+            format!("{compact:.1}K")
+        };
+    }
+    value.to_string()
+}
+
+fn context_usage_percent(used: u64, limit: u64) -> Option<u64> {
+    if limit == 0 {
+        return None;
+    }
+    Some(((used as f64 / limit as f64) * 100.0).round() as u64)
+}
+
+fn context_usage_bar(percent: Option<u64>, width: usize) -> String {
+    let safe_percent = percent.unwrap_or(0).min(100) as usize;
+    let mut filled = ((safe_percent * width) + 50) / 100;
+    if safe_percent > 0 && filled == 0 {
+        filled = 1;
+    }
+    format!(
+        "[{}{}]",
+        "█".repeat(filled),
+        "░".repeat(width.saturating_sub(filled))
+    )
+}
+
+fn format_context_usage_label(used: u64, limit: Option<u64>) -> String {
+    let Some(limit) = limit.filter(|limit| *limit > 0) else {
+        return format_compact_number(used);
+    };
+
+    let percent = context_usage_percent(used, limit);
+    format!(
+        "{}/{} {}%",
+        format_compact_number(used),
+        format_compact_number(limit),
+        percent.unwrap_or(0)
+    )
+}
+
+fn format_context_usage_meter(used: u64, limit: Option<u64>) -> Option<(String, Option<u64>)> {
+    let limit = limit.filter(|limit| *limit > 0)?;
+    let percent = context_usage_percent(used, limit);
+    Some((
+        format!(
+            "{}/{} {} {}%",
+            format_compact_number(used),
+            format_compact_number(limit),
+            context_usage_bar(percent, 8),
+            percent.unwrap_or(0)
+        ),
+        percent,
+    ))
 }
 
 fn total_session_tokens(usage: &rocode_session::SessionUsage) -> u64 {

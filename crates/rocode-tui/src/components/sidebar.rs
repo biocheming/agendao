@@ -387,28 +387,11 @@ impl Sidebar {
             title: "Context",
             lines: {
                 let mut lines = Vec::new();
-                let mut context_spans = vec![
-                    Span::styled("Ctx    ", Style::default().fg(theme.text_muted)),
-                    Span::styled(format_number(total_tokens), Style::default().fg(theme.text)),
-                ];
-                if let Some(model) = active_model_info
-                    .as_ref()
-                    .filter(|model| model.context_window > 0)
-                {
-                    context_spans.push(Span::styled(
-                        format!("/{}", format_number(model.context_window)),
-                        Style::default().fg(theme.text_muted),
-                    ));
-                    if total_tokens > 0 {
-                        let used_pct = ((total_tokens as f64 / model.context_window as f64) * 100.0)
-                            .round() as u64;
-                        context_spans.push(Span::styled(
-                            format!("  {}%", used_pct),
-                            Style::default().fg(theme.text_muted),
-                        ));
-                    }
-                }
-                lines.push(Line::from(context_spans));
+                lines.push(sidebar_context_line(
+                    &theme,
+                    total_tokens,
+                    active_model_info.as_ref().map(|model| model.context_window),
+                ));
                 if let Some(model) = active_model_info.as_ref() {
                     if let (Some(input_price), Some(output_price)) =
                         (model.cost_per_million_input, model.cost_per_million_output)
@@ -1044,16 +1027,69 @@ fn split_path_segments(path: &str) -> (String, String) {
     (String::new(), path.to_string())
 }
 
-fn format_number(value: u64) -> String {
-    let digits = value.to_string();
-    let mut out = String::with_capacity(digits.len() + (digits.len() / 3));
-    for (idx, ch) in digits.chars().rev().enumerate() {
-        if idx > 0 && idx % 3 == 0 {
-            out.push(',');
-        }
-        out.push(ch);
+fn format_compact_number(value: u64) -> String {
+    if value >= 1_000_000 {
+        let compact = value as f64 / 1_000_000.0;
+        return if compact.fract() == 0.0 {
+            format!("{compact:.0}M")
+        } else {
+            format!("{compact:.1}M")
+        };
     }
-    out.chars().rev().collect()
+    if value >= 1_000 {
+        let compact = value as f64 / 1_000.0;
+        return if compact.fract() == 0.0 {
+            format!("{compact:.0}K")
+        } else {
+            format!("{compact:.1}K")
+        };
+    }
+    value.to_string()
+}
+
+fn context_usage_percent(used: u64, limit: u64) -> Option<u64> {
+    if limit == 0 {
+        return None;
+    }
+    Some(((used as f64 / limit as f64) * 100.0).round() as u64)
+}
+
+fn context_usage_style(theme: &Theme, percent: Option<u64>) -> Style {
+    let color = match percent {
+        Some(pct) if pct >= 95 => theme.error,
+        Some(pct) if pct > 80 => theme.warning,
+        Some(pct) if pct >= 50 => theme.warning,
+        Some(_) => theme.success,
+        None => theme.text_muted,
+    };
+    Style::default().fg(color)
+}
+
+fn sidebar_context_line(theme: &Theme, used: u64, limit: Option<u64>) -> Line<'static> {
+    let Some(limit) = limit.filter(|limit| *limit > 0) else {
+        return Line::from(vec![
+            Span::styled("Ctx    ", Style::default().fg(theme.text_muted)),
+            Span::styled(format_compact_number(used), Style::default().fg(theme.text)),
+        ]);
+    };
+
+    let percent = context_usage_percent(used, limit);
+    let accent = context_usage_style(theme, percent);
+    let percent_label = percent.map_or_else(|| "--".to_string(), |pct| format!("{pct}%"));
+
+    Line::from(vec![
+        Span::styled("Ctx    ", Style::default().fg(theme.text_muted)),
+        Span::styled(
+            format!(
+                "{}/{}",
+                format_compact_number(used),
+                format_compact_number(limit)
+            ),
+            Style::default().fg(theme.text),
+        ),
+        Span::styled(" ", Style::default().fg(theme.text_muted)),
+        Span::styled(percent_label, accent),
+    ])
 }
 
 fn total_session_tokens(usage: &rocode_session::SessionUsage) -> u64 {

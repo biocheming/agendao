@@ -160,6 +160,8 @@ struct SessionHeaderSnapshot {
 #[derive(Clone)]
 struct SessionFooterSnapshot {
     directory: String,
+    context_meter: Option<String>,
+    context_meter_percent: Option<u64>,
     permission_count: usize,
     connected_lsp: usize,
     connected_mcp: usize,
@@ -185,7 +187,17 @@ impl SessionRenderSnapshot {
         let has_connected_provider = *context.has_connected_provider.read();
 
         let selection = context.selection_state();
-        let (parent_title, title, subtitle, usage, status_label, status_running, status_retrying) = {
+        let (
+            parent_title,
+            title,
+            subtitle,
+            usage,
+            footer_context_meter,
+            footer_context_meter_percent,
+            status_label,
+            status_running,
+            status_retrying,
+        ) = {
             let session_ctx = context.session.read();
             let session = session_ctx.sessions.get(session_id);
             let title = session
@@ -242,16 +254,10 @@ impl SessionRenderSnapshot {
 
                 let model = context.resolve_model_info(assistant_msg.model.as_deref());
                 let mut parts = Vec::new();
-                let mut context_text = format_number(total_tokens);
-                if let Some(model) = model.as_ref().filter(|model| model.context_window > 0) {
-                    let pct = ((total_tokens as f64 / model.context_window as f64) * 100.0).round()
-                        as u64;
-                    context_text.push_str(&format!(
-                        "/{} {}%",
-                        format_number(model.context_window),
-                        pct
-                    ));
-                }
+                let context_text = format_context_usage_label(
+                    total_tokens,
+                    model.as_ref().map(|model| model.context_window),
+                );
                 parts.push(context_text);
                 parts.push(format!("${:.4}", total_cost));
                 if let Some(model) = model.as_ref() {
@@ -262,6 +268,24 @@ impl SessionRenderSnapshot {
                     }
                 }
                 Some(parts.join("  ·  "))
+            });
+            let footer_context_meter = last_assistant.and_then(|assistant_msg| {
+                let total_tokens = context
+                    .session_usage()
+                    .as_ref()
+                    .map(total_session_tokens)
+                    .unwrap_or_else(|| {
+                        let t = &assistant_msg.tokens;
+                        t.input + t.output + t.reasoning + t.cache_read + t.cache_write
+                    });
+                if total_tokens == 0 {
+                    return None;
+                }
+                let model = context.resolve_model_info(assistant_msg.model.as_deref());
+                format_context_usage_meter(
+                    total_tokens,
+                    model.as_ref().map(|model| model.context_window),
+                )
             });
 
             let (status_label, status_running, status_retrying) = match status {
@@ -279,6 +303,10 @@ impl SessionRenderSnapshot {
                 title,
                 subtitle,
                 usage,
+                footer_context_meter
+                    .as_ref()
+                    .map(|(label, _)| label.clone()),
+                footer_context_meter.and_then(|(_, percent)| percent),
                 status_label,
                 status_running,
                 status_retrying,
@@ -327,6 +355,8 @@ impl SessionRenderSnapshot {
             },
             footer: SessionFooterSnapshot {
                 directory,
+                context_meter: footer_context_meter,
+                context_meter_percent: footer_context_meter_percent,
                 permission_count,
                 connected_lsp,
                 connected_mcp,

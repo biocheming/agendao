@@ -332,7 +332,11 @@ fn cli_list_child_sessions(runtime: &CliExecutionRuntime) {
 }
 
 fn cli_format_stage_summary_brief(stage: &rocode_command::stage_protocol::StageSummary) -> String {
-    let mut parts = vec![format!("{} [{}]", stage.stage_name, stage.status.as_ref_label())];
+    let mut parts = vec![format!(
+        "{} [{}]",
+        stage.stage_name,
+        stage.status.as_ref_label()
+    )];
     if let (Some(index), Some(total)) = (stage.index, stage.total) {
         parts.push(format!("{}/{}", index, total));
     }
@@ -346,7 +350,11 @@ fn cli_format_stage_summary_brief(stage: &rocode_command::stage_protocol::StageS
 }
 
 fn cli_stage_runtime_line(stage: &rocode_command::stage_protocol::StageSummary) -> String {
-    let mut parts = vec![format!("{} [{}]", stage.stage_name, stage.status.as_ref_label())];
+    let mut parts = vec![format!(
+        "{} [{}]",
+        stage.stage_name,
+        stage.status.as_ref_label()
+    )];
     if let (Some(index), Some(total)) = (stage.index, stage.total) {
         parts.push(format!("{}/{}", index, total));
     }
@@ -374,7 +382,11 @@ fn cli_stage_runtime_line(stage: &rocode_command::stage_protocol::StageSummary) 
         } else {
             ""
         };
-        parts.push(format!("budget {}{}", format_token_count(budget), truncated));
+        parts.push(format!(
+            "budget {}{}",
+            format_token_count(budget),
+            truncated
+        ));
     }
     if let Some(context_tokens) = stage.estimated_context_tokens {
         parts.push(format!("ctx {}", format_token_count(context_tokens)));
@@ -383,7 +395,11 @@ fn cli_stage_runtime_line(stage: &rocode_command::stage_protocol::StageSummary) 
 }
 
 fn cli_stage_usage_line(stage: &rocode_command::stage_protocol::StageSummary) -> String {
-    let mut parts = vec![format!("{} [{}]", stage.stage_name, stage.status.as_ref_label())];
+    let mut parts = vec![format!(
+        "{} [{}]",
+        stage.stage_name,
+        stage.status.as_ref_label()
+    )];
     if let Some(prompt_tokens) = stage.prompt_tokens {
         parts.push(format!("in {}", format_token_count(prompt_tokens)));
     }
@@ -397,7 +413,10 @@ fn cli_stage_usage_line(stage: &rocode_command::stage_protocol::StageSummary) ->
         parts.push(format!("cache-r {}", format_token_count(cache_read_tokens)));
     }
     if let Some(cache_write_tokens) = stage.cache_write_tokens.filter(|value| *value > 0) {
-        parts.push(format!("cache-w {}", format_token_count(cache_write_tokens)));
+        parts.push(format!(
+            "cache-w {}",
+            format_token_count(cache_write_tokens)
+        ));
     }
     if let Some(budget) = stage.skill_tree_budget {
         let truncated = if stage.skill_tree_truncated.unwrap_or(false) {
@@ -405,7 +424,11 @@ fn cli_stage_usage_line(stage: &rocode_command::stage_protocol::StageSummary) ->
         } else {
             ""
         };
-        parts.push(format!("budget {}{}", format_token_count(budget), truncated));
+        parts.push(format!(
+            "budget {}{}",
+            format_token_count(budget),
+            truncated
+        ));
     }
     if let Some(waiting_on) = stage.waiting_on.as_deref() {
         parts.push(format!("waiting {}", waiting_on));
@@ -465,7 +488,10 @@ fn cli_runtime_snapshot_lines(
 
     if let Some(stage) = cli_active_stage_summary(telemetry) {
         lines.push(String::new());
-        lines.push(format!("Active stage: {}", cli_format_stage_summary_brief(stage)));
+        lines.push(format!(
+            "Active stage: {}",
+            cli_format_stage_summary_brief(stage)
+        ));
         if let Some(last_event) = stage.last_event.as_deref() {
             lines.push(format!("Last event: {}", last_event));
         }
@@ -484,7 +510,10 @@ fn cli_runtime_snapshot_lines(
             } else {
                 "no"
             };
-            lines.push(format!("Skill tree truncation: {} ({})", strategy, truncated));
+            lines.push(format!(
+                "Skill tree truncation: {} ({})",
+                strategy, truncated
+            ));
         }
     }
 
@@ -994,7 +1023,9 @@ async fn cli_print_runtime_snapshot(
     let Some(session_id) = cli_current_observed_session_id(runtime) else {
         let _ = print_block(
             Some(runtime),
-            OutputBlock::Status(StatusBlock::warning("No active session available for /runtime.")),
+            OutputBlock::Status(StatusBlock::warning(
+                "No active session available for /runtime.",
+            )),
             style,
         );
         return;
@@ -1003,7 +1034,8 @@ async fn cli_print_runtime_snapshot(
     match api_client.get_session_telemetry(&session_id).await {
         Ok(telemetry) => {
             let lines = cli_runtime_snapshot_lines(&session_id, &telemetry);
-            let footer = "Source: /session/{id}/telemetry · use /events [stage=<id>] for raw event log";
+            let footer =
+                "Source: /session/{id}/telemetry · use /events [stage=<id>] for raw event log";
             let _ = print_cli_list_on_surface(
                 Some(runtime),
                 "Runtime Telemetry",
@@ -1033,7 +1065,9 @@ async fn cli_print_usage_snapshot(
     let Some(session_id) = cli_current_observed_session_id(runtime) else {
         let _ = print_block(
             Some(runtime),
-            OutputBlock::Status(StatusBlock::warning("No active session available for /usage.")),
+            OutputBlock::Status(StatusBlock::warning(
+                "No active session available for /usage.",
+            )),
             style,
         );
         return;
@@ -1044,7 +1078,13 @@ async fn cli_print_usage_snapshot(
             let lines = cli_usage_snapshot_lines(&session_id, &telemetry);
             let footer =
                 "Source: /session/{id}/telemetry · stage totals come from authority summaries";
-            let _ = print_cli_list_on_surface(Some(runtime), "Session Usage", Some(footer), &lines, style);
+            let _ = print_cli_list_on_surface(
+                Some(runtime),
+                "Session Usage",
+                Some(footer),
+                &lines,
+                style,
+            );
         }
         Err(error) => {
             let _ = print_block(
@@ -1067,7 +1107,9 @@ async fn cli_print_session_insights(
     let Some(session_id) = cli_current_observed_session_id(runtime) else {
         let _ = print_block(
             Some(runtime),
-            OutputBlock::Status(StatusBlock::warning("No active session available for /insights.")),
+            OutputBlock::Status(StatusBlock::warning(
+                "No active session available for /insights.",
+            )),
             style,
         );
         return;
@@ -1076,9 +1118,14 @@ async fn cli_print_session_insights(
     match api_client.get_session_insights(&session_id).await {
         Ok(insights) => {
             let lines = cli_session_insights_lines(&session_id, &insights);
-            let footer =
-                "Source: /session/{id}/insights · includes persisted telemetry, multimodal explain, and memory explain";
-            let _ = print_cli_list_on_surface(Some(runtime), "Session Insights", Some(footer), &lines, style);
+            let footer = "Source: /session/{id}/insights · includes persisted telemetry, multimodal explain, and memory explain";
+            let _ = print_cli_list_on_surface(
+                Some(runtime),
+                "Session Insights",
+                Some(footer),
+                &lines,
+                style,
+            );
         }
         Err(error) => {
             let _ = print_block(
@@ -1102,7 +1149,9 @@ async fn cli_print_session_events(
     let Some(session_id) = cli_current_observed_session_id(runtime) else {
         let _ = print_block(
             Some(runtime),
-            OutputBlock::Status(StatusBlock::warning("No active session available for /events.")),
+            OutputBlock::Status(StatusBlock::warning(
+                "No active session available for /events.",
+            )),
             style,
         );
         return;
@@ -1224,7 +1273,11 @@ async fn cli_print_session_events(
                 if can_go_next { " · /events next" } else { "" },
                 " · /events page <n>",
                 " · /events clear",
-                if page_index > 1 { " · /events first" } else { "" }
+                if page_index > 1 {
+                    " · /events first"
+                } else {
+                    ""
+                }
             );
 
             if let Ok(mut projection) = runtime.frontend_projection.lock() {
@@ -1318,7 +1371,13 @@ async fn cli_print_memory_list(
                 },
                 response.contract.search_fields.join(", ")
             );
-            let _ = print_cli_list_on_surface(Some(runtime), "Memory Records", Some(&footer), &lines, style);
+            let _ = print_cli_list_on_surface(
+                Some(runtime),
+                "Memory Records",
+                Some(&footer),
+                &lines,
+                style,
+            );
         }
         Err(error) => {
             let _ = print_block(
@@ -1428,15 +1487,30 @@ async fn cli_print_memory_detail(
             ];
             if !record.trigger_conditions.is_empty() {
                 lines.push("Triggers:".to_string());
-                lines.extend(record.trigger_conditions.iter().map(|value| format!("  - {}", value)));
+                lines.extend(
+                    record
+                        .trigger_conditions
+                        .iter()
+                        .map(|value| format!("  - {}", value)),
+                );
             }
             if !record.normalized_facts.is_empty() {
                 lines.push("Facts:".to_string());
-                lines.extend(record.normalized_facts.iter().map(|value| format!("  - {}", value)));
+                lines.extend(
+                    record
+                        .normalized_facts
+                        .iter()
+                        .map(|value| format!("  - {}", value)),
+                );
             }
             if !record.boundaries.is_empty() {
                 lines.push("Boundaries:".to_string());
-                lines.extend(record.boundaries.iter().map(|value| format!("  - {}", value)));
+                lines.extend(
+                    record
+                        .boundaries
+                        .iter()
+                        .map(|value| format!("  - {}", value)),
+                );
             }
             if !record.evidence_refs.is_empty() {
                 lines.push("Evidence:".to_string());
@@ -1451,9 +1525,14 @@ async fn cli_print_memory_detail(
                     )
                 }));
             }
-            let footer =
-                "Source: /memory/{id} · validation: /memory validation <id> · conflicts: /memory conflicts <id>";
-            let _ = print_cli_list_on_surface(Some(runtime), "Memory Detail", Some(footer), &lines, style);
+            let footer = "Source: /memory/{id} · validation: /memory validation <id> · conflicts: /memory conflicts <id>";
+            let _ = print_cli_list_on_surface(
+                Some(runtime),
+                "Memory Detail",
+                Some(footer),
+                &lines,
+                style,
+            );
         }
         Err(error) => {
             let _ = print_block(
@@ -1484,7 +1563,12 @@ async fn cli_print_memory_validation_report(
                     lines.push("Issues: none".to_string());
                 } else {
                     lines.push("Issues:".to_string());
-                    lines.extend(report.issues.into_iter().map(|issue| format!("  - {}", issue)));
+                    lines.extend(
+                        report
+                            .issues
+                            .into_iter()
+                            .map(|issue| format!("  - {}", issue)),
+                    );
                 }
             } else {
                 lines.push("No validation report recorded yet.".to_string());
@@ -2428,12 +2512,9 @@ fn cli_sidebar_lines(
         if ts.total_tokens > 0 {
             if let Some(model) = model_info.filter(|model| model.context_window.unwrap_or(0) > 0) {
                 let limit = model.context_window.unwrap_or(0);
-                let pct = ((ts.total_tokens as f64 / limit as f64) * 100.0).round() as u64;
                 lines.push(format!(
-                    "Ctx:    {}/{} ({}%)",
-                    format_token_count(ts.total_tokens),
-                    format_token_count(limit),
-                    pct
+                    "Ctx:    {}",
+                    cli_format_context_meter(ts.total_tokens, Some(limit))
                 ));
             } else {
                 lines.push(format!("Ctx:    {}", format_token_count(ts.total_tokens)));
@@ -2501,12 +2582,56 @@ fn cli_sidebar_lines(
 /// Format a token count for display (e.g., 1234 → "1,234", 1234567 → "1.2M").
 fn format_token_count(n: u64) -> String {
     if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
+        let compact = n as f64 / 1_000_000.0;
+        if compact.fract() == 0.0 {
+            format!("{compact:.0}M")
+        } else {
+            format!("{compact:.1}M")
+        }
     } else if n >= 1_000 {
-        format!("{:.1}K", n as f64 / 1_000.0)
+        let compact = n as f64 / 1_000.0;
+        if compact.fract() == 0.0 {
+            format!("{compact:.0}K")
+        } else {
+            format!("{compact:.1}K")
+        }
     } else {
         n.to_string()
     }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn cli_context_usage_percent(used: u64, limit: u64) -> Option<u64> {
+    if limit == 0 {
+        return None;
+    }
+    Some(((used as f64 / limit as f64) * 100.0).round() as u64)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn cli_context_usage_bar(percent: Option<u64>, width: usize) -> String {
+    let safe_percent = percent.unwrap_or(0).min(100) as usize;
+    let filled = ((safe_percent * width) + 50) / 100;
+    format!(
+        "[{}{}]",
+        "█".repeat(filled),
+        "░".repeat(width.saturating_sub(filled))
+    )
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn cli_format_context_meter(used: u64, limit: Option<u64>) -> String {
+    let Some(limit) = limit.filter(|limit| *limit > 0) else {
+        return format_token_count(used);
+    };
+    let percent = cli_context_usage_percent(used, limit);
+    format!(
+        "{}/{} {} {}%",
+        format_token_count(used),
+        format_token_count(limit),
+        cli_context_usage_bar(percent, 10),
+        percent.unwrap_or(0)
+    )
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -2791,14 +2916,17 @@ fn cli_render_retained_layout(
 #[cfg(test)]
 mod session_projection_tests {
     use super::{
-        cli_default_events_query_input, cli_parse_events_command_input,
-        cli_parse_events_query_input, CliEventsCommandInput, CliEventsQueryInput,
-        CLI_EVENTS_DEFAULT_PAGE_SIZE,
+        CLI_EVENTS_DEFAULT_PAGE_SIZE, CliEventsCommandInput, CliEventsQueryInput,
+        cli_context_usage_bar, cli_default_events_query_input, cli_format_context_meter,
+        cli_parse_events_command_input, cli_parse_events_query_input,
     };
 
     #[test]
     fn parses_default_events_query_input() {
-        assert_eq!(cli_parse_events_query_input(None), cli_default_events_query_input());
+        assert_eq!(
+            cli_parse_events_query_input(None),
+            cli_default_events_query_input()
+        );
     }
 
     #[test]
@@ -2873,5 +3001,20 @@ mod session_projection_tests {
                 page: 2,
             }
         );
+    }
+
+    #[test]
+    fn formats_compact_context_meter() {
+        assert_eq!(
+            cli_format_context_meter(12_450, Some(200_000)),
+            "12.4K/200K [█░░░░░░░░░] 6%"
+        );
+    }
+
+    #[test]
+    fn builds_context_bar_with_clamped_width() {
+        assert_eq!(cli_context_usage_bar(Some(0), 5), "[░░░░░]");
+        assert_eq!(cli_context_usage_bar(Some(50), 5), "[███░░]");
+        assert_eq!(cli_context_usage_bar(Some(140), 5), "[█████]");
     }
 }
