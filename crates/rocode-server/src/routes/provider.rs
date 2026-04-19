@@ -207,11 +207,17 @@ fn modality_info_from_values(values: Option<&[String]>, fallback_text: bool) -> 
 
 fn capability_info_from_catalog(model: &ModelsDevInfo) -> Option<ModelCapabilityInfo> {
     let input = modality_info_from_values(
-        model.modalities.as_ref().map(|modalities| modalities.input.as_ref()),
+        model
+            .modalities
+            .as_ref()
+            .map(|modalities| modalities.input.as_ref()),
         true,
     );
     let output = modality_info_from_values(
-        model.modalities.as_ref().map(|modalities| modalities.output.as_ref()),
+        model
+            .modalities
+            .as_ref()
+            .map(|modalities| modalities.output.as_ref()),
         true,
     );
     let capability = ModelCapabilityInfo {
@@ -296,7 +302,10 @@ fn merge_override_modalities(existing: &mut ModelModalityInfo, incoming: &ModelM
     override_bool(&mut existing.pdf, incoming.pdf);
 }
 
-fn merge_fill_missing_capabilities(existing: &mut ModelCapabilityInfo, incoming: &ModelCapabilityInfo) {
+fn merge_fill_missing_capabilities(
+    existing: &mut ModelCapabilityInfo,
+    incoming: &ModelCapabilityInfo,
+) {
     fill_missing_bool(&mut existing.attachment, incoming.attachment);
     fill_missing_bool(&mut existing.tool_call, incoming.tool_call);
     fill_missing_bool(&mut existing.reasoning, incoming.reasoning);

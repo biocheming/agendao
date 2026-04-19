@@ -71,9 +71,7 @@ pub fn stage_policy_from_label(label: &str) -> Option<StageToolPolicy> {
     match label.trim() {
         "allow-all" => Some(StageToolPolicy::AllowAll),
         "allow-read-only" => Some(StageToolPolicy::AllowReadOnly),
-        "restricted:prometheus-planning-artifacts" => {
-            Some(prometheus_planning_stage_tool_policy())
-        }
+        "restricted:prometheus-planning-artifacts" => Some(prometheus_planning_stage_tool_policy()),
         "disable-all" => Some(StageToolPolicy::DisableAll),
         _ => None,
     }

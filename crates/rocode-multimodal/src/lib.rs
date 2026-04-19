@@ -323,9 +323,10 @@ mod tests {
             mime: Some("audio/wav".to_string()),
         }];
 
-        let transport = authority
-            .capability_authority()
-            .transport_explain(&capability, &model, &session_parts);
+        let transport =
+            authority
+                .capability_authority()
+                .transport_explain(&capability, &model, &session_parts);
 
         assert_eq!(transport.replaced_parts, vec!["voice.wav".to_string()]);
         assert_eq!(transport.warnings.len(), 1);

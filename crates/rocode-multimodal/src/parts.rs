@@ -1,6 +1,4 @@
-use crate::{
-    CapturedAssetKind, CapturedAssetSource, ModalityKind, PreflightInputPart,
-};
+use crate::{CapturedAssetKind, CapturedAssetSource, ModalityKind, PreflightInputPart};
 use rocode_provider::{mime_to_modality, Modality};
 use rocode_session::prompt::PartInput;
 

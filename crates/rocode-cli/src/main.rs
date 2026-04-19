@@ -296,8 +296,14 @@ async fn main() -> anyhow::Result<()> {
             let launched_from_desktop =
                 !std::io::stdin().is_terminal() && !std::io::stdout().is_terminal();
             if launched_from_desktop {
-                run_desktop_web_command(0, "127.0.0.1".to_string(), false, "rocode.local".to_string(), vec![])
-                    .await?;
+                run_desktop_web_command(
+                    0,
+                    "127.0.0.1".to_string(),
+                    false,
+                    "rocode.local".to_string(),
+                    vec![],
+                )
+                .await?;
                 return Ok(());
             }
             run_tui(TuiLaunchOptions {

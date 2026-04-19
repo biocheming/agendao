@@ -401,36 +401,39 @@ fn parse_methodology_steps(lines: &[String]) -> Option<Vec<SkillMethodologyStep>
         if title.is_empty() || remainder.is_empty() {
             return None;
         }
-        let (remainder, experienced_tools) =
-            if let Some(idx) = remainder.find("_Experienced: ") {
-                let before = remainder[..idx].trim();
-                let after = &remainder[idx + "_Experienced: ".len()..];
-                let parsed = if let Some(end_idx) = after.find("_ Outcome: ") {
-                    Some((after[..end_idx].to_string(), after[end_idx + 1..].trim().to_string()))
+        let (remainder, experienced_tools) = if let Some(idx) = remainder.find("_Experienced: ") {
+            let before = remainder[..idx].trim();
+            let after = &remainder[idx + "_Experienced: ".len()..];
+            let parsed = if let Some(end_idx) = after.find("_ Outcome: ") {
+                Some((
+                    after[..end_idx].to_string(),
+                    after[end_idx + 1..].trim().to_string(),
+                ))
+            } else {
+                after
+                    .strip_suffix('_')
+                    .map(|tools| (tools.to_string(), String::new()))
+            };
+            if let Some((tools_str, rest)) = parsed {
+                let tools = tools_str
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>();
+                let combined = if before.is_empty() {
+                    rest
+                } else if rest.is_empty() {
+                    before.to_string()
                 } else {
-                    after.strip_suffix('_')
-                        .map(|tools| (tools.to_string(), String::new()))
+                    format!("{before} {rest}")
                 };
-                if let Some((tools_str, rest)) = parsed {
-                    let tools = tools_str
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect::<Vec<_>>();
-                    let combined = if before.is_empty() {
-                        rest
-                    } else if rest.is_empty() {
-                        before.to_string()
-                    } else {
-                        format!("{before} {rest}")
-                    };
-                    (combined, tools)
-                } else {
-                    (remainder.to_string(), Vec::new())
-                }
+                (combined, tools)
             } else {
                 (remainder.to_string(), Vec::new())
-            };
+            }
+        } else {
+            (remainder.to_string(), Vec::new())
+        };
         let (action, outcome) = if let Some((action, outcome)) = remainder.split_once(" Outcome: ")
         {
             (
@@ -640,8 +643,8 @@ Just some prose.
             references: vec![],
         };
 
-        let body =
-            render_methodology_skill_body("container-health", &template).expect("render should work");
+        let body = render_methodology_skill_body("container-health", &template)
+            .expect("render should work");
         assert!(body.contains("_Experienced: docker, curl_"));
 
         let source = format!(

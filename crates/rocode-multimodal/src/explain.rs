@@ -153,12 +153,11 @@ impl PersistedMultimodalExplain {
     }
 
     pub fn has_message_signal(message: &SessionMessage) -> bool {
-        message.parts.iter().any(|part| {
-            matches!(
-                part.part_type,
-                PartType::File { .. }
-            )
-        }) || message.metadata.contains_key(PREFLIGHT_KEY)
+        message
+            .parts
+            .iter()
+            .any(|part| matches!(part.part_type, PartType::File { .. }))
+            || message.metadata.contains_key(PREFLIGHT_KEY)
     }
 
     pub fn from_message(message: &SessionMessage) -> Option<Self> {
@@ -246,14 +245,8 @@ impl PersistedMultimodalExplain {
     }
 }
 
-fn metadata_string_list(
-    metadata: &HashMap<String, serde_json::Value>,
-    key: &str,
-) -> Vec<String> {
-    metadata
-        .get(key)
-        .map(json_string_list)
-        .unwrap_or_default()
+fn metadata_string_list(metadata: &HashMap<String, serde_json::Value>, key: &str) -> Vec<String> {
+    metadata.get(key).map(json_string_list).unwrap_or_default()
 }
 
 fn json_string_list(value: &serde_json::Value) -> Vec<String> {
@@ -340,7 +333,10 @@ mod tests {
         assert_eq!(explain.attachment_count, 1);
         assert_eq!(explain.kinds, vec!["audio".to_string()]);
         assert_eq!(explain.compact_label.as_deref(), Some("[1 attachment]"));
-        assert_eq!(explain.transport_replaced_parts, vec!["voice.wav".to_string()]);
+        assert_eq!(
+            explain.transport_replaced_parts,
+            vec!["voice.wav".to_string()]
+        );
         assert_eq!(explain.transport_warnings.len(), 1);
     }
 

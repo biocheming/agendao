@@ -248,7 +248,15 @@ fn choose_workspace_via_system_dialog() -> Option<PathBuf> {
                 "--title=Select a workspace folder for ROCode",
             ],
         ),
-        ("kdialog", &["--getexistingdirectory", ".", "--title", "Select a workspace folder for ROCode"]),
+        (
+            "kdialog",
+            &[
+                "--getexistingdirectory",
+                ".",
+                "--title",
+                "Select a workspace folder for ROCode",
+            ],
+        ),
     ];
 
     for (program, args) in linux_candidates {

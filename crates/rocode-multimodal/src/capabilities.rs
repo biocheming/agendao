@@ -1,7 +1,7 @@
 use crate::{CapturedAssetKind, ResolvedMultimodalConfig};
 use rocode_provider::{
-    bootstrap::ProviderModel, mime_to_modality, transform_messages, Content, ContentPart,
-    ImageUrl, Message, Modality, ProviderType, Role,
+    bootstrap::ProviderModel, mime_to_modality, transform_messages, Content, ContentPart, ImageUrl,
+    Message, Modality, ProviderType, Role,
 };
 use rocode_session::prompt::PartInput;
 use serde::{Deserialize, Serialize};
@@ -305,7 +305,8 @@ impl<'a> MultimodalCapabilityAuthority<'a> {
 }
 
 fn build_transport_message_parts(parts: &[PartInput]) -> Vec<ContentPart> {
-    parts.iter()
+    parts
+        .iter()
         .filter_map(|part| match part {
             PartInput::Text { text } => Some(ContentPart {
                 content_type: "text".to_string(),

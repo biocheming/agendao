@@ -35,8 +35,7 @@ pub use methodology::{
 };
 pub use runtime::{
     infer_runtime_skill_names, RuntimeInstructionSource, RuntimeSkillBootstrapReport,
-    RuntimeSkillMaterialization,
-    RuntimeSkillMaterializationAction, RuntimeSkillSourceKind,
+    RuntimeSkillMaterialization, RuntimeSkillMaterializationAction, RuntimeSkillSourceKind,
 };
 pub use sync::SkillSyncPlanner;
 pub use types::{
