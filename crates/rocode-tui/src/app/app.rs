@@ -1097,6 +1097,19 @@ impl App {
                             return Ok(());
                         }
 
+                        if self.status_dialog.is_open() {
+                            if self.status_dialog.handle_click(col, row) {
+                                self.close_status_dialog_modal();
+                                return Ok(());
+                            }
+                            if self.status_dialog.contains_point(col, row) {
+                                if button == MouseButton::Left {
+                                    self.selection.start(row, col);
+                                }
+                                return Ok(());
+                            }
+                        }
+
                         if self.handle_dialog_mouse(mouse_event)? {
                             return Ok(());
                         }
@@ -1153,6 +1166,10 @@ impl App {
                         }
                     }
                     MouseEventKind::Drag(_) => {
+                        if self.status_dialog.is_open() {
+                            self.selection.update(mouse_event.row, mouse_event.column);
+                            return Ok(());
+                        }
                         let col = mouse_event.column;
                         let row = mouse_event.row;
                         if let Some(sv) = self.context.session_view_handle() {
@@ -1163,12 +1180,20 @@ impl App {
                         self.selection.update(row, col);
                     }
                     MouseEventKind::Moved => {
+                        if self.status_dialog.is_open() {
+                            self.event_caused_change = false;
+                            return Ok(());
+                        }
                         if self.handle_dialog_mouse(mouse_event)? {
                             return Ok(());
                         }
                         self.event_caused_change = false;
                     }
                     MouseEventKind::Up(_) => {
+                        if self.status_dialog.is_open() {
+                            self.selection.finalize();
+                            return Ok(());
+                        }
                         if let Some(sv) = self.context.session_view_handle() {
                             if sv.stop_scrollbar_drag() {
                                 return Ok(());

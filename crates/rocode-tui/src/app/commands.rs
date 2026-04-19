@@ -490,7 +490,9 @@ impl App {
             "Recording voice input for up to {} seconds...",
             duration_seconds
         );
-        println!("Configure `multimodal.voice.record.command` / `multimodal.voice.transcribe.command` if autodetect is not enough.");
+        println!(
+            "Configure `multimodal.voice.record.command` / `multimodal.voice.transcribe.command` if autodetect is not enough."
+        );
         println!();
         let _ = io::stdout().flush();
 

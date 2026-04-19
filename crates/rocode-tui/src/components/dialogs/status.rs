@@ -4,6 +4,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
+use std::cell::Cell;
 
 use crate::theme::Theme;
 use crate::ui::RenderSurface;
@@ -73,6 +74,8 @@ pub struct StatusDialog {
     open: bool,
     title: String,
     footer_hint: Option<String>,
+    last_rendered_area: Cell<Option<Rect>>,
+    close_button_area: Cell<Option<Rect>>,
 }
 
 impl StatusDialog {
@@ -82,6 +85,8 @@ impl StatusDialog {
             open: false,
             title: "Status".to_string(),
             footer_hint: None,
+            last_rendered_area: Cell::new(None),
+            close_button_area: Cell::new(None),
         }
     }
 
@@ -112,10 +117,24 @@ impl StatusDialog {
 
     pub fn close(&mut self) {
         self.open = false;
+        self.last_rendered_area.set(None);
+        self.close_button_area.set(None);
     }
 
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    pub fn contains_point(&self, col: u16, row: u16) -> bool {
+        self.last_rendered_area
+            .get()
+            .is_some_and(|area| contains_point(area, col, row))
+    }
+
+    pub fn handle_click(&self, col: u16, row: u16) -> bool {
+        self.close_button_area
+            .get()
+            .is_some_and(|area| contains_point(area, col, row))
     }
 
     pub fn render<S: RenderSurface>(&self, surface: &mut S, area: Rect, theme: &Theme) {
@@ -124,6 +143,7 @@ impl StatusDialog {
         }
 
         let dialog_area = centered_rect(90, 24, area);
+        self.last_rendered_area.set(Some(dialog_area));
         surface.render_widget(Clear, dialog_area);
 
         let block = Block::default()
@@ -138,6 +158,25 @@ impl StatusDialog {
             .style(Style::default().bg(theme.background_panel));
         let inner = super::dialog_inner(block.inner(dialog_area));
         surface.render_widget(block, dialog_area);
+        let close_button_area = Rect::new(
+            dialog_area
+                .x
+                .saturating_add(dialog_area.width.saturating_sub(4)),
+            dialog_area.y,
+            3,
+            1,
+        );
+        self.close_button_area.set(Some(close_button_area));
+        surface.render_widget(
+            Paragraph::new(Span::styled(
+                "×",
+                Style::default()
+                    .fg(theme.text_muted)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .style(Style::default().bg(theme.background_panel)),
+            close_button_area,
+        );
 
         let layout = Layout::default()
             .direction(Direction::Vertical)
@@ -169,7 +208,10 @@ impl StatusDialog {
         };
         surface.render_widget(Paragraph::new(lines), layout[0]);
 
-        let footer = self.footer_hint.as_deref().unwrap_or("Esc close");
+        let footer = self.footer_hint.as_ref().map_or_else(
+            || "Drag to select · Ctrl+Shift+C copy · Esc close".to_string(),
+            |hint| format!("{hint} · Drag to select · Ctrl+Shift+C copy · Esc close"),
+        );
         surface.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 footer,
@@ -188,6 +230,13 @@ impl Default for StatusDialog {
 
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     super::centered_rect(width, height, area)
+}
+
+fn contains_point(area: Rect, col: u16, row: u16) -> bool {
+    col >= area.x
+        && col < area.x.saturating_add(area.width)
+        && row >= area.y
+        && row < area.y.saturating_add(area.height)
 }
 
 #[cfg(test)]
@@ -218,5 +267,21 @@ mod tests {
             .filter(|cell| !cell.symbol().trim().is_empty())
             .count();
         assert!(rendered > 0);
+    }
+
+    #[test]
+    fn status_dialog_tracks_close_button_hitbox() {
+        let mut dialog = StatusDialog::new();
+        dialog.set_lines(vec!["hello".to_string()]);
+        dialog.open();
+
+        let area = Rect::new(0, 0, 120, 32);
+        let mut buffer = Buffer::empty(area);
+        let mut surface = BufferSurface::new(&mut buffer);
+        dialog.render(&mut surface, area, &Theme::dark());
+
+        assert!(dialog.contains_point(15, 5));
+        assert!(dialog.handle_click(102, 4));
+        assert!(!dialog.handle_click(15, 5));
     }
 }
