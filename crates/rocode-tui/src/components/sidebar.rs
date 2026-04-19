@@ -211,6 +211,7 @@ struct SidebarSection {
     key: &'static str,
     title: &'static str,
     lines: Vec<Line<'static>>,
+    child_session_hit_rows: Option<Vec<Option<usize>>>,
     summary: Option<String>,
     collapsible: bool,
 }
@@ -329,6 +330,7 @@ impl Sidebar {
             key: "session",
             title: "Session",
             lines: session_lines,
+            child_session_hit_rows: None,
             summary: None,
             collapsible: false,
         }];
@@ -341,6 +343,7 @@ impl Sidebar {
                     truncate_text(&share.url, area.width as usize),
                     Style::default().fg(theme.info),
                 ))],
+                child_session_hit_rows: None,
                 summary: None,
                 collapsible: false,
             });
@@ -414,6 +417,7 @@ impl Sidebar {
                 ]));
                 lines
             },
+            child_session_hit_rows: None,
             summary: None,
             collapsible: false,
         });
@@ -466,6 +470,7 @@ impl Sidebar {
             key: "mcp",
             title: "MCP",
             lines: mcp_lines,
+            child_session_hit_rows: None,
             summary: Some(format!(
                 "{} active, {} errors",
                 connected_mcp, problematic_mcp
@@ -510,6 +515,7 @@ impl Sidebar {
             key: "lsp",
             title: "LSP",
             lines: lsp_lines,
+            child_session_hit_rows: None,
             summary: Some(format!(
                 "{} connected, {} errors",
                 connected_lsp, errored_lsp
@@ -539,6 +545,7 @@ impl Sidebar {
                     key: "todo",
                     title: "Todo",
                     lines: todo_lines,
+                    child_session_hit_rows: None,
                     summary: Some(format!("{} pending", pending.len())),
                     collapsible: pending.len() > 2,
                 });
@@ -570,6 +577,7 @@ impl Sidebar {
                     key: "diff",
                     title: "Modified Files",
                     lines: file_lines,
+                    child_session_hit_rows: None,
                     summary: Some(format!("{} files changed", entries.len())),
                     collapsible: entries.len() > 2,
                 });
@@ -634,6 +642,7 @@ impl Sidebar {
                 key: "processes",
                 title: "Processes",
                 lines: proc_lines,
+                child_session_hit_rows: None,
                 summary: Some(format!("{} running", proc_list.len())),
                 collapsible: proc_list.len() > 2,
             });
@@ -680,98 +689,38 @@ impl Sidebar {
                     key: "agents",
                     title: "Agents",
                     lines: agent_lines,
+                    child_session_hit_rows: None,
                     summary: Some(summary),
                     collapsible: agent_nodes.len() > 3,
                 });
             }
         }
 
-        // Child Sessions section
+        // Session Graph section
         let child_list = self.context.child_sessions();
         clamp_sidebar_child_session_selection(lifecycle, child_list.len());
         if !child_list.is_empty() {
-            let mut cs_lines: Vec<Line<'static>> = Vec::new();
-            for (idx, child) in child_list.iter().enumerate() {
-                let selected =
-                    lifecycle.child_session_focus && idx == lifecycle.child_session_selected;
-                let prefix = if selected { "▸ " } else { "  " };
-                let (status_symbol, status_color) = match child.status.as_str() {
-                    "running" => ("●", theme.info),
-                    "done" => ("●", theme.success),
-                    "cancelled" => ("●", theme.error),
-                    _ => ("●", theme.text_muted),
-                };
-                let label = match (child.stage_index, child.stage_total) {
-                    (Some(idx_val), Some(total)) => {
-                        format!("{} [{}/{}]", child.stage_title, idx_val, total)
-                    }
-                    (Some(idx_val), None) => {
-                        format!("{} [{}]", child.stage_title, idx_val)
-                    }
-                    _ => child.stage_title.clone(),
-                };
-                let name_width = area.width.saturating_sub(12) as usize;
-                let short_id = if child.session_id.len() > 7 {
-                    &child.session_id[..7]
-                } else {
-                    &child.session_id
-                };
-                let fg = if selected {
-                    theme.text
-                } else {
-                    theme.text_muted
-                };
-                let row_bg = if selected {
-                    Some(theme.background_element)
-                } else {
-                    None
-                };
-                let mk_style = |base: Style| -> Style {
-                    if let Some(bg) = row_bg {
-                        base.bg(bg)
-                    } else {
-                        base
-                    }
-                };
-                cs_lines.push(Line::from(vec![
-                    Span::styled(
-                        prefix,
-                        mk_style(Style::default().fg(if selected {
-                            theme.primary
-                        } else {
-                            theme.text_muted
-                        })),
-                    ),
-                    Span::styled(
-                        truncate_text(&label, name_width),
-                        mk_style(Style::default().fg(fg)),
-                    ),
-                    Span::styled(
-                        format!(" {} ", short_id),
-                        mk_style(Style::default().fg(theme.text_muted)),
-                    ),
-                    Span::styled(
-                        format!("{} {}", status_symbol, child.status),
-                        mk_style(Style::default().fg(status_color)),
-                    ),
-                ]));
-                // Show stage_id on a dimmed sub-line when available.
-                if let Some(ref sid) = child.stage_id {
-                    let sid_display = if sid.len() > 24 {
-                        format!("    ⤷ {}…", &sid[..23])
-                    } else {
-                        format!("    ⤷ {}", sid)
-                    };
-                    cs_lines.push(Line::from(Span::styled(
-                        sid_display,
-                        mk_style(Style::default().fg(theme.text_muted)),
-                    )));
-                }
-            }
+            let selected_child = child_list.get(
+                lifecycle
+                    .child_session_selected
+                    .min(child_list.len().saturating_sub(1)),
+            );
+            let (cs_lines, child_session_hit_rows) = build_session_graph_lines(
+                theme,
+                area.width,
+                &title,
+                &self.session_id,
+                &child_list,
+                &session_ctx.sessions,
+                &session_ctx.session_diff,
+                lifecycle,
+                selected_child,
+            );
             sections.push(SidebarSection {
-                key: "child_sessions",
-                title: "Child Sessions",
+                key: "session_graph",
+                title: "Session Graph",
                 lines: cs_lines,
+                child_session_hit_rows: Some(child_session_hit_rows),
                 summary: Some(format!("{} sessions", child_list.len())),
                 collapsible: child_list.len() > 2,
             });
@@ -815,13 +764,15 @@ impl Sidebar {
 
             if !collapsed {
                 let is_processes = section.key == "processes";
-                let is_child_sessions = section.key == "child_sessions";
+                let child_hit_rows = section.child_session_hit_rows.as_ref();
                 for (row_idx, row) in section.lines.into_iter().enumerate() {
                     if is_processes {
                         process_line_hits.push((line_index, row_idx));
                     }
-                    if is_child_sessions {
-                        child_session_line_hits.push((line_index, row_idx));
+                    if let Some(hit_rows) = child_hit_rows {
+                        if let Some(Some(child_index)) = hit_rows.get(row_idx) {
+                            child_session_line_hits.push((line_index, *child_index));
+                        }
                     }
                     lines.push(row);
                     line_index += 1;
@@ -1005,6 +956,220 @@ fn sidebar_meta_line(theme: &Theme, label: &str, value: String) -> Line<'static>
     ])
 }
 
+fn build_session_graph_lines(
+    theme: &Theme,
+    width: u16,
+    current_title: &str,
+    current_session_id: &str,
+    child_list: &[crate::context::ChildSessionInfo],
+    sessions: &std::collections::HashMap<String, crate::context::Session>,
+    session_diff: &std::collections::HashMap<String, Vec<crate::context::DiffEntry>>,
+    lifecycle: &SidebarLifecycleState,
+    selected_child: Option<&crate::context::ChildSessionInfo>,
+) -> (Vec<Line<'static>>, Vec<Option<usize>>) {
+    let mut lines = Vec::new();
+    let mut hit_rows = Vec::new();
+
+    let spine_style = Style::default().fg(theme.border_subtle);
+    lines.push(Line::from(Span::styled("│", spine_style)));
+    hit_rows.push(None);
+
+    let root_label = format!(
+        "● {}  {}",
+        truncate_text(current_title, width.saturating_sub(12) as usize),
+        short_session_id(current_session_id)
+    );
+    lines.push(Line::from(vec![
+        Span::styled("│ ", spine_style),
+        Span::styled(root_label, Style::default().fg(theme.text).bold()),
+    ]));
+    hit_rows.push(None);
+
+    lines.push(Line::from(Span::styled("│", spine_style)));
+    hit_rows.push(None);
+
+    for (idx, child) in child_list.iter().enumerate() {
+        let selected = lifecycle.child_session_focus && idx == lifecycle.child_session_selected;
+        let branch = if idx + 1 == child_list.len() {
+            "╰"
+        } else {
+            "├"
+        };
+        let branch_continues = idx + 1 != child_list.len();
+        let (status_symbol, status_color) = session_status_badge(theme, &child.status);
+        let label = child_graph_label(child, sessions.get(&child.session_id), width);
+        let row_bg = selected.then_some(theme.background_element);
+        let mk_style = |style: Style| {
+            if let Some(bg) = row_bg {
+                style.bg(bg)
+            } else {
+                style
+            }
+        };
+        lines.push(Line::from(vec![
+            Span::styled("│ ", mk_style(Style::default().fg(theme.border_subtle))),
+            Span::styled(
+                format!("{branch}─"),
+                mk_style(Style::default().fg(if selected {
+                    theme.primary
+                } else {
+                    theme.border_subtle
+                })),
+            ),
+            Span::styled(
+                format!("{} ", status_symbol),
+                mk_style(Style::default().fg(status_color)),
+            ),
+            Span::styled(
+                label,
+                mk_style(Style::default().fg(if selected {
+                    theme.text
+                } else {
+                    theme.text_muted
+                })),
+            ),
+        ]));
+        hit_rows.push(Some(idx));
+
+        if branch_continues {
+            lines.push(Line::from(vec![Span::styled(
+                "│",
+                mk_style(Style::default().fg(theme.border_subtle)),
+            )]));
+            hit_rows.push(None);
+        }
+    }
+
+    if let Some(child) = selected_child {
+        lines.push(Line::from(""));
+        hit_rows.push(None);
+
+        let detail_title = sessions
+            .get(&child.session_id)
+            .map(|session| session.title.as_str())
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or(child.stage_title.as_str());
+        lines.push(Line::from(vec![
+            Span::styled("Selected ", Style::default().fg(theme.text_muted)),
+            Span::styled(
+                truncate_text(detail_title, width.saturating_sub(10) as usize),
+                Style::default().fg(theme.text).bold(),
+            ),
+        ]));
+        hit_rows.push(None);
+
+        lines.push(Line::from(vec![
+            Span::styled("Session ", Style::default().fg(theme.text_muted)),
+            Span::styled(
+                short_session_id(&child.session_id),
+                Style::default().fg(theme.text),
+            ),
+            Span::styled("  Stage ", Style::default().fg(theme.text_muted)),
+            Span::styled(format_stage_badge(child), Style::default().fg(theme.text)),
+        ]));
+        hit_rows.push(None);
+
+        let (_, status_color) = session_status_badge(theme, &child.status);
+        lines.push(Line::from(vec![
+            Span::styled("Status  ", Style::default().fg(theme.text_muted)),
+            Span::styled(child.status.clone(), Style::default().fg(status_color)),
+        ]));
+        hit_rows.push(None);
+
+        if let Some(entries) = session_diff.get(&child.session_id) {
+            if entries.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "Modified files unavailable",
+                    Style::default().fg(theme.text_muted),
+                )));
+                hit_rows.push(None);
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled("Files ", Style::default().fg(theme.text_muted)),
+                    Span::styled(
+                        format!("{} changed", entries.len()),
+                        Style::default().fg(theme.text),
+                    ),
+                ]));
+                hit_rows.push(None);
+                for entry in entries.iter().take(4) {
+                    lines.push(Line::from(vec![
+                        Span::styled("  ", Style::default().fg(theme.text_muted)),
+                        Span::styled(
+                            truncate_text(&entry.file, width.saturating_sub(16) as usize),
+                            Style::default().fg(theme.text_muted),
+                        ),
+                        Span::raw(" "),
+                        Span::styled(
+                            format!("+{}", entry.additions),
+                            Style::default().fg(theme.success),
+                        ),
+                        Span::raw(" "),
+                        Span::styled(
+                            format!("-{}", entry.deletions),
+                            Style::default().fg(theme.error),
+                        ),
+                    ]));
+                    hit_rows.push(None);
+                }
+            }
+        } else {
+            lines.push(Line::from(Span::styled(
+                "Open node to sync modified files",
+                Style::default().fg(theme.text_muted),
+            )));
+            hit_rows.push(None);
+        }
+    }
+
+    (lines, hit_rows)
+}
+
+fn child_graph_label(
+    child: &crate::context::ChildSessionInfo,
+    session: Option<&crate::context::Session>,
+    width: u16,
+) -> String {
+    let title = session
+        .map(|session| session.title.as_str())
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or(child.stage_title.as_str());
+    let label = match (child.stage_index, child.stage_total) {
+        (Some(index), Some(total)) => format!("{title} [{index}/{total}]"),
+        (Some(index), None) => format!("{title} [{index}]"),
+        _ => title.to_string(),
+    };
+    let suffix = format!(" {}", short_session_id(&child.session_id));
+    let max_label_chars = width.saturating_sub(16) as usize;
+    format!("{}{}", truncate_text(&label, max_label_chars), suffix)
+}
+
+fn format_stage_badge(child: &crate::context::ChildSessionInfo) -> String {
+    match (child.stage_index, child.stage_total) {
+        (Some(index), Some(total)) => format!("{index}/{total}"),
+        (Some(index), None) => index.to_string(),
+        _ => child.stage_name.clone(),
+    }
+}
+
+fn short_session_id(session_id: &str) -> String {
+    if session_id.len() > 7 {
+        session_id[..7].to_string()
+    } else {
+        session_id.to_string()
+    }
+}
+
+fn session_status_badge(theme: &Theme, status: &str) -> (&'static str, ratatui::style::Color) {
+    match status {
+        "running" => ("●", theme.info),
+        "done" => ("●", theme.success),
+        "cancelled" => ("●", theme.error),
+        "waiting" => ("◯", theme.warning),
+        _ => ("●", theme.text_muted),
+    }
+}
+
 fn split_path_segments(path: &str) -> (String, String) {
     if path.is_empty() {
         return (String::new(), String::new());
@@ -1140,4 +1305,68 @@ fn collect_agent_nodes_from_topology(
         walk(root, &mut result);
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::{ChildSessionInfo, Session};
+    use chrono::Utc;
+
+    #[test]
+    fn session_graph_hit_rows_only_map_to_child_nodes() {
+        let child = ChildSessionInfo {
+            session_id: "child-session-1".to_string(),
+            stage_name: "review".to_string(),
+            stage_title: "Review".to_string(),
+            stage_id: Some("stg_1".to_string()),
+            stage_index: Some(1),
+            stage_total: Some(2),
+            status: "running".to_string(),
+        };
+        let mut sessions = HashMap::new();
+        sessions.insert(
+            child.session_id.clone(),
+            Session {
+                id: child.session_id.clone(),
+                title: "Review follow-up".to_string(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_id: Some("root-session".to_string()),
+                share: None,
+                metadata: None,
+            },
+        );
+        let mut diffs = HashMap::new();
+        diffs.insert(
+            child.session_id.clone(),
+            vec![crate::context::DiffEntry {
+                file: "src/lib.rs".to_string(),
+                additions: 12,
+                deletions: 3,
+            }],
+        );
+        let lifecycle = SidebarLifecycleState {
+            child_session_selected: 0,
+            child_session_focus: true,
+            ..Default::default()
+        };
+
+        let (_lines, hit_rows) = build_session_graph_lines(
+            &Theme::dark(),
+            42,
+            "Root Session",
+            "root-session",
+            &[child.clone()],
+            &sessions,
+            &diffs,
+            &lifecycle,
+            Some(&child),
+        );
+
+        assert_eq!(hit_rows.first(), Some(&None));
+        let first_child_row = hit_rows.iter().position(|row| row == &Some(0));
+        assert_eq!(first_child_row, Some(3));
+        assert!(hit_rows.iter().skip(4).all(|row| row.is_none()));
+    }
 }
