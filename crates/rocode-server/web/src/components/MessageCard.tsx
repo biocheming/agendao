@@ -534,7 +534,7 @@ export function MessageCard({
     >
       <div className={cn("w-full", isUser ? "max-w-[82%]" : "max-w-full")}>
         <section
-          className="roc-message-card p-3 md:p-3.5"
+          className="roc-message-card p-3 md:p-4"
           data-tone={isUser ? "user" : "assistant"}
           data-highlighted={highlighted ? "true" : "false"}
           data-active={active ? "true" : "false"}

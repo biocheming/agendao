@@ -208,7 +208,7 @@ export function ConversationFeedPanel({
           </ConversationEmptyState>
         ) : null}
         {messages.length > 0 ? (
-          <div className="grid min-w-0 gap-3.5">
+          <div className="grid min-w-0 gap-4">
             <HistoryBackfillState
               hiddenCount={hiddenCount}
               visibleCount={visibleMessages.length}

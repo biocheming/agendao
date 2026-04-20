@@ -428,7 +428,7 @@ export function ComposerPanel({
   const modelSearchValue = modelValue || AUTO_MODEL_VALUE;
 
   return (
-    <div className="flex flex-col gap-2.5" data-testid="composer-form">
+    <div className="flex flex-col gap-2" data-testid="composer-form">
       <ComposerContextStrip
         references={references}
         attachments={attachments}
@@ -496,7 +496,7 @@ export function ComposerPanel({
                   onChange={onFileChange}
                 />
               <div className="flex flex-col gap-2">
-                <div className="flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between">
+                <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
                   <div className="flex min-w-0 flex-wrap items-center gap-1.5">
                     <div className="flex flex-wrap items-center gap-1.5">
                       <label className="roc-toolbar-field max-w-full">
