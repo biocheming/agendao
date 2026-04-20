@@ -338,7 +338,7 @@ html[data-theme="midnight"] {
   }
 
   .roc-detail-icon {
-    @apply flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/30 bg-muted text-muted-foreground;
+    @apply flex size-8 shrink-0 items-center justify-center rounded-lg border border-primary/15 bg-primary/8 text-primary;
   }
 
   .roc-detail-title {
@@ -493,7 +493,7 @@ html[data-theme="midnight"] {
   }
 
   .roc-session-title {
-    @apply min-w-0 truncate text-xl font-semibold tracking-[-0.03em] text-foreground;
+    @apply min-w-0 truncate text-xl font-semibold tracking-[-0.03em] text-primary;
     font-family: var(--font-serif);
   }
 
@@ -513,6 +513,10 @@ html[data-theme="midnight"] {
 
   .roc-badge {
     @apply inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground;
+  }
+
+  .roc-badge[data-emphasis="true"] {
+    @apply bg-primary/10 text-primary font-semibold;
   }
 
   /* ─── Actions ────────────────────────────────────────────────────── */
@@ -705,15 +709,15 @@ html[data-theme="midnight"] {
   }
 
   .roc-icon-tile {
-    @apply flex size-7 shrink-0 items-center justify-center rounded-xl border border-border/30 bg-muted text-muted-foreground;
+    @apply flex size-7 shrink-0 items-center justify-center rounded-xl border border-primary/15 bg-primary/8 text-primary;
   }
 
   .roc-icon-tile[data-emphasis="strong"] {
-    @apply border-primary/20 bg-primary/10 text-primary;
+    @apply border-primary/25 bg-primary/15 text-primary;
   }
 
   .roc-toolbar-label {
-    @apply text-[10px] font-semibold uppercase tracking-widest text-muted-foreground;
+    @apply text-[10px] font-semibold uppercase tracking-widest text-primary/50;
   }
 
   .roc-inline-fact {
