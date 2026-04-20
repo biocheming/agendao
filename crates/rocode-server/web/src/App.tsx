@@ -133,6 +133,7 @@ type PromptPart =
     };
 
 type SessionLiveBlockCache = Record<string, OutputBlock[]>;
+type SessionOptimisticFeedCache = Record<string, FeedMessage[]>;
 
 type PendingCommandInvocation = PendingCommandInvocationRecord;
 
@@ -399,6 +400,48 @@ function toFeedMessage(block: OutputBlock): FeedMessage {
   };
 }
 
+function createOptimisticUserFeedMessage(text: string): FeedMessage {
+  return {
+    kind: "message",
+    phase: "full",
+    role: "user",
+    text,
+    feedId: nextFeedId(),
+  };
+}
+
+function isEquivalentUserMessage(message: FeedMessage, optimistic: FeedMessage): boolean {
+  return (
+    message.kind === "message" &&
+    message.role === "user" &&
+    message.text.trim() === optimistic.text.trim()
+  );
+}
+
+function mergeOptimisticMessages(
+  messages: FeedMessage[],
+  optimistic: FeedMessage[],
+): { messages: FeedMessage[]; remaining: FeedMessage[] } {
+  if (optimistic.length === 0) {
+    return { messages, remaining: optimistic };
+  }
+
+  const remaining = [...optimistic];
+  for (const message of messages) {
+    const matchIndex = remaining.findIndex((candidate) =>
+      isEquivalentUserMessage(message, candidate),
+    );
+    if (matchIndex >= 0) {
+      remaining.splice(matchIndex, 1);
+    }
+  }
+
+  return {
+    messages: remaining.length > 0 ? [...messages, ...remaining] : messages,
+    remaining,
+  };
+}
+
 function upsertFeedMessage(
   messages: FeedMessage[],
   block: OutputBlock,
@@ -538,6 +581,9 @@ function buildFeedFromHistory(history: MessageRecord[], showThinking: boolean): 
     let startedText = false;
 
     for (const part of message.parts ?? []) {
+      if (part.ignored) {
+        continue;
+      }
       if (part.output_block) {
         messages = applyOutputBlock(messages, part.output_block, showThinking);
         continue;
@@ -645,8 +691,30 @@ function buildFeedFromHistory(history: MessageRecord[], showThinking: boolean): 
   return messages;
 }
 
+function isStreamingTextBlock(block: OutputBlock): boolean {
+  return block.kind === "message" || block.kind === "reasoning";
+}
+
 function shouldRetainLiveBlock(block: OutputBlock): boolean {
-  return Boolean(block.id && block.kind !== "message" && block.kind !== "reasoning");
+  return Boolean(block.id);
+}
+
+function liveTextSnapshot(block: OutputBlock, previous?: OutputBlock): OutputBlock {
+  if (block.phase === "start") {
+    return { ...previous, ...block, text: "" };
+  }
+  if (block.phase === "delta") {
+    return {
+      ...previous,
+      ...block,
+      text: `${previous?.text ?? ""}${block.text ?? ""}`,
+    };
+  }
+  return {
+    ...previous,
+    ...block,
+    text: normalizeBlockText(block),
+  };
 }
 
 function appendLiveBlock(blocks: OutputBlock[], block: OutputBlock): OutputBlock[] {
@@ -658,12 +726,58 @@ function appendLiveBlock(blocks: OutputBlock[], block: OutputBlock): OutputBlock
   const existingIndex = next.findIndex(
     (candidate) => candidate.kind === block.kind && candidate.id === block.id,
   );
-  if (existingIndex >= 0) {
-    next[existingIndex] = block;
+  if (block.phase === "end") {
+    if (existingIndex >= 0) {
+      next.splice(existingIndex, 1);
+    }
     return next;
   }
-  next.push(block);
+
+  const previous = existingIndex >= 0 ? next[existingIndex] : undefined;
+  const retained = isStreamingTextBlock(block) ? liveTextSnapshot(block, previous) : block;
+  if (existingIndex >= 0) {
+    next[existingIndex] = retained;
+    return next;
+  }
+  next.push(retained);
   return next;
+}
+
+function mergeLiveTextBlock(messages: FeedMessage[], block: OutputBlock, showThinking: boolean): FeedMessage[] {
+  if (block.kind === "reasoning" && !showThinking) {
+    return messages;
+  }
+
+  const blockText = block.text ?? "";
+  const matchIndex = block.id
+    ? messages.findIndex((message) => message.kind === block.kind && message.id === block.id)
+    : -1;
+  const fallbackIndex =
+    matchIndex >= 0
+      ? matchIndex
+      : (() => {
+          for (let index = messages.length - 1; index >= 0; index -= 1) {
+            const candidate = messages[index];
+            if (candidate.kind !== block.kind) continue;
+            if (block.kind === "message" && candidate.role !== block.role) continue;
+            return index;
+          }
+          return -1;
+        })();
+
+  if (fallbackIndex >= 0) {
+    const next = [...messages];
+    const candidate = next[fallbackIndex];
+    next[fallbackIndex] = {
+      ...candidate,
+      ...block,
+      text: blockText,
+      feedId: candidate.feedId,
+    };
+    return next;
+  }
+
+  return [...messages, { ...toFeedMessage(block), text: blockText }];
 }
 
 function mergeHistoryWithLiveBlocks(
@@ -671,10 +785,12 @@ function mergeHistoryWithLiveBlocks(
   liveBlocks: OutputBlock[],
   showThinking: boolean,
 ): FeedMessage[] {
-  return liveBlocks.reduce(
-    (current, block) => applyOutputBlock(current, block, showThinking),
-    buildFeedFromHistory(history, showThinking),
-  );
+  return liveBlocks.reduce((current, block) => {
+    if (isStreamingTextBlock(block)) {
+      return mergeLiveTextBlock(current, block, showThinking);
+    }
+    return applyOutputBlock(current, block, showThinking);
+  }, buildFeedFromHistory(history, showThinking));
 }
 
 function modeKey(mode: ExecutionMode): string {
@@ -771,6 +887,7 @@ export default function App() {
   const preferencesReadyRef = useRef(false);
   const selectedSessionRef = useRef<string | null>(null);
   const liveBlocksRef = useRef<SessionLiveBlockCache>({});
+  const optimisticMessagesRef = useRef<SessionOptimisticFeedCache>({});
   const connectResolveRequestRef = useRef(0);
 
   const modelOptions = useMemo(() => flattenProviderModels(providers), [providers]);
@@ -1214,13 +1331,20 @@ export default function App() {
       try {
         const history = await apiJson<MessageRecord[]>(`/session/${selectedSessionId}/message`);
         if (cancelled) return;
-        setMessages(
-          mergeHistoryWithLiveBlocks(
-            history,
-            liveBlocksRef.current[selectedSessionId] ?? [],
-            showThinking,
-          ),
+        const mergedHistory = mergeHistoryWithLiveBlocks(
+          history,
+          liveBlocksRef.current[selectedSessionId] ?? [],
+          showThinking,
         );
+        const merged = mergeOptimisticMessages(
+          mergedHistory,
+          optimisticMessagesRef.current[selectedSessionId] ?? [],
+        );
+        optimisticMessagesRef.current = {
+          ...optimisticMessagesRef.current,
+          [selectedSessionId]: merged.remaining,
+        };
+        setMessages(merged.messages);
       } catch (error) {
         if (!cancelled) {
           setBanner(`Failed to load messages: ${formatError(error)}`);
@@ -1520,6 +1644,7 @@ export default function App() {
       normalizeSessionRecords([normalized, ...current.filter((item) => item.id !== normalized.id)]),
     );
     setCurrentWorkspacePath(normalized.directory?.trim() || options?.directory || null);
+    selectedSessionRef.current = normalized.id;
     setSelectedSessionId(normalized.id);
     return normalized.id;
   };
@@ -1641,20 +1766,18 @@ export default function App() {
         return;
       }
     }
+    selectedSessionRef.current = sessionId;
 
     const preview = promptPreviewText(content, promptParts);
-    setMessages((current) =>
-      applyOutputBlock(
-        current,
-        {
-          kind: "message",
-          phase: "full",
-          role: "user",
-          text: preview,
-        },
-        showThinking,
-      ),
-    );
+    const optimisticMessage = createOptimisticUserFeedMessage(preview);
+    optimisticMessagesRef.current = {
+      ...optimisticMessagesRef.current,
+      [sessionId]: [
+        ...(optimisticMessagesRef.current[sessionId] ?? []),
+        optimisticMessage,
+      ],
+    };
+    setMessages((current) => [...current, optimisticMessage]);
     setComposer("");
     setAttachments([]);
     setStreaming(true);

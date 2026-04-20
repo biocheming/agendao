@@ -684,9 +684,9 @@ export function ComposerPanel({
                       <DropdownMenuTrigger asChild>
                         <Button
                           type="button"
-                          variant="outline"
+                          variant="ghost"
                           size="sm"
-                          className="h-8.5 rounded-full border-border/45 px-3 text-[11px] text-muted-foreground"
+                          className="roc-action h-8.5 rounded-full px-3 text-[11px]"
                           title="Add attachment"
                         >
                           <PlusIcon className="mr-1.5 size-3.5" />
@@ -741,16 +741,16 @@ export function ComposerPanel({
                       </Button>
                     ) : null}
 
-                    <Button
-                      type="submit"
-                      variant="default"
-                      size="sm"
-                      disabled={!composer.trim() && attachments.length === 0}
-                      className="h-9.5 rounded-full px-4 shadow-sm"
-                    >
-                      <span className="mr-1 text-[11px] font-medium">Send</span>
-                      <SendIcon className="size-3.25" />
-                    </Button>
+                      <Button
+                        type="submit"
+                        variant="ghost"
+                        size="sm"
+                        disabled={!composer.trim() && attachments.length === 0}
+                        className="roc-primary-action h-9.5 rounded-full px-4"
+                      >
+                        <span className="mr-1 text-[11px] font-medium">Send</span>
+                        <SendIcon className="size-3.25" />
+                      </Button>
                   </div>
                 </div>
 

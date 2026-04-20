@@ -4,8 +4,8 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Padding, Paragraph, Wrap},
 };
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,7 +17,7 @@ use crate::file_index::FileIndex;
 use crate::theme::Theme;
 use crate::ui::RenderSurface;
 
-use super::spinner::{KnightRiderSpinner, SpinnerMode, TaskKind, progress_circle_icon};
+use super::spinner::{progress_circle_icon, KnightRiderSpinner, SpinnerMode, TaskKind};
 
 const MAX_HISTORY_ENTRIES: usize = 200;
 const MAX_STASH_ENTRIES: usize = 50;

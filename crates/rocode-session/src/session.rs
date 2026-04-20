@@ -41,6 +41,48 @@ pub static COMMAND_EXECUTED_EVENT: BusEventDef = BusEventDef::new("command.execu
 /// semantics and cannot silently broaden them with detail-only fields.
 pub const SESSION_LIST_SEARCH_FIELDS: &[&str] = &["title"];
 
+fn looks_like_provider_response_json(value: &serde_json::Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    let has = |key: &str| object.contains_key(key);
+
+    (has("choices") && (has("model") || has("usage") || has("id") || has("object")))
+        || (has("candidates") && (has("usage") || has("model_version") || has("model")))
+        || (has("output") && (has("model") || has("usage") || has("id")))
+        || (has("message") && has("type") && (has("usage") || has("delta")))
+}
+
+fn strip_trailing_provider_response_json(text: &str) -> String {
+    let trimmed = text.trim_end();
+    let candidate_starts = [
+        trimmed.rfind("\n\n{"),
+        trimmed.rfind("\n{"),
+        trimmed.rfind("\n\n["),
+        trimmed.rfind("\n["),
+    ];
+
+    for start_index in candidate_starts.into_iter().flatten() {
+        let candidate = trimmed[start_index..].trim_start();
+        if !(candidate.starts_with('{') || candidate.starts_with('[')) {
+            continue;
+        }
+        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(candidate) else {
+            continue;
+        };
+        if !looks_like_provider_response_json(&parsed) {
+            continue;
+        }
+        let prefix = trimmed[..start_index].trim_end();
+        if prefix.is_empty() {
+            continue;
+        }
+        return prefix.to_string();
+    }
+
+    trimmed.to_string()
+}
+
 pub fn sanitize_display_text(text: &str) -> String {
     let mut lines = Vec::new();
     let mut in_pseudo_invoke = false;
@@ -78,7 +120,9 @@ pub fn sanitize_display_text(text: &str) -> String {
         lines.push(raw_line.to_string());
     }
 
-    lines.join("\n").trim().to_string()
+    strip_trailing_provider_response_json(&lines.join("\n"))
+        .trim()
+        .to_string()
 }
 
 // ============================================================================
@@ -1414,6 +1458,14 @@ mod tests {
             "before\nminimax:tool_call (minimax:tool_call)\n<invoke name=\"Bash\">\n<parameter name=\"command\">pwd</parameter>\n</invoke>\nafter",
         );
         assert_eq!(cleaned, "before\nafter");
+    }
+
+    #[test]
+    fn test_sanitize_display_text_strips_trailing_provider_response_json() {
+        let cleaned = sanitize_display_text(
+            "Answer body\n\n{\"id\":\"chatcmpl_1\",\"object\":\"chat.completion\",\"model\":\"glm\",\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Answer body\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2}}",
+        );
+        assert_eq!(cleaned, "Answer body");
     }
 
     #[test]

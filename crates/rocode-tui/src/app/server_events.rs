@@ -480,8 +480,8 @@ fn parse_server_event_value(value: serde_json::Value) -> Option<Event> {
 #[cfg(test)]
 mod tests {
     use super::{build_event_url, forward_server_event};
-    use crate::Event;
     use crate::event::{CustomEvent, StateChange};
+    use crate::Event;
 
     #[test]
     fn build_event_url_appends_session_filter() {

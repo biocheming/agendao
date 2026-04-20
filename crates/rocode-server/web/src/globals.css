@@ -58,31 +58,41 @@ html[data-theme="daylight"] {
   --card-foreground: oklch(0.18 0.02 260);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.18 0.02 260);
-  --primary: oklch(0.45 0.16 260);
+  --primary: oklch(0.53 0.19 257);
   --primary-foreground: oklch(0.98 0.005 260);
   --secondary: oklch(0.96 0.004 85);
   --secondary-foreground: oklch(0.22 0.02 260);
   --muted: oklch(0.96 0.004 85);
   --muted-foreground: oklch(0.50 0.01 260);
-  --accent: oklch(0.95 0.02 260);
+  --accent: oklch(0.94 0.04 252);
   --accent-foreground: oklch(0.22 0.02 260);
   --destructive: oklch(0.577 0.245 27.325);
   --border: oklch(0.92 0.005 85);
   --input: oklch(0.92 0.005 85);
-  --ring: oklch(0.50 0.16 260);
-  --chart-1: oklch(0.50 0.16 260);
+  --ring: oklch(0.56 0.18 257);
+  --chart-1: oklch(0.56 0.18 257);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
   --sidebar: oklch(0.965 0.004 85);
   --sidebar-foreground: oklch(0.18 0.02 260);
-  --sidebar-primary: oklch(0.45 0.16 260);
+  --sidebar-primary: oklch(0.53 0.19 257);
   --sidebar-primary-foreground: oklch(0.98 0.005 260);
-  --sidebar-accent: oklch(0.94 0.02 260);
+  --sidebar-accent: oklch(0.94 0.04 252);
   --sidebar-accent-foreground: oklch(0.22 0.02 260);
   --sidebar-border: oklch(0.92 0.005 85);
-  --sidebar-ring: oklch(0.50 0.16 260);
+  --sidebar-ring: oklch(0.56 0.18 257);
+  --roc-shell-start: oklch(0.99 0.02 246);
+  --roc-shell-end: oklch(0.97 0.012 84);
+  --roc-panel-shadow: oklch(0.28 0.08 255 / 14%);
+  --roc-panel-glow: oklch(0.74 0.12 250 / 14%);
+  --roc-surface-tint: oklch(0.97 0.018 250);
+  --roc-spot: oklch(0.55 0.2 257);
+  --roc-spot-soft: oklch(0.93 0.05 252);
+  --roc-hero: oklch(0.55 0.2 257);
+  --roc-hero-soft: oklch(0.92 0.06 248);
+  --roc-signal: oklch(0.76 0.16 84);
 }
 
 /* ─── Theme: Sunset (warm tinted light) ──────────────────────────── */
@@ -94,18 +104,18 @@ html[data-theme="sunset"] {
   --card-foreground: oklch(0.2 0.03 45);
   --popover: oklch(0.99 0.006 60);
   --popover-foreground: oklch(0.2 0.03 45);
-  --primary: oklch(0.55 0.18 38);
+  --primary: oklch(0.63 0.2 34);
   --primary-foreground: oklch(0.98 0.005 60);
   --secondary: oklch(0.94 0.02 55);
   --secondary-foreground: oklch(0.25 0.03 45);
   --muted: oklch(0.94 0.02 55);
   --muted-foreground: oklch(0.48 0.02 45);
-  --accent: oklch(0.92 0.03 50);
+  --accent: oklch(0.91 0.06 45);
   --accent-foreground: oklch(0.25 0.03 45);
   --destructive: oklch(0.577 0.245 27.325);
   --border: oklch(0.90 0.02 55);
   --input: oklch(0.90 0.02 55);
-  --ring: oklch(0.6 0.15 38);
+  --ring: oklch(0.64 0.18 34);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
@@ -113,12 +123,22 @@ html[data-theme="sunset"] {
   --chart-5: oklch(0.769 0.188 70.08);
   --sidebar: oklch(0.945 0.015 58);
   --sidebar-foreground: oklch(0.2 0.03 45);
-  --sidebar-primary: oklch(0.55 0.18 38);
+  --sidebar-primary: oklch(0.63 0.2 34);
   --sidebar-primary-foreground: oklch(0.98 0.005 60);
-  --sidebar-accent: oklch(0.92 0.025 55);
+  --sidebar-accent: oklch(0.91 0.06 45);
   --sidebar-accent-foreground: oklch(0.25 0.03 45);
   --sidebar-border: oklch(0.90 0.02 55);
-  --sidebar-ring: oklch(0.6 0.15 38);
+  --sidebar-ring: oklch(0.64 0.18 34);
+  --roc-shell-start: oklch(0.985 0.032 48);
+  --roc-shell-end: oklch(0.956 0.018 78);
+  --roc-panel-shadow: oklch(0.42 0.12 28 / 15%);
+  --roc-panel-glow: oklch(0.78 0.12 68 / 16%);
+  --roc-surface-tint: oklch(0.972 0.024 50);
+  --roc-spot: oklch(0.65 0.21 34);
+  --roc-spot-soft: oklch(0.92 0.07 45);
+  --roc-hero: oklch(0.65 0.21 34);
+  --roc-hero-soft: oklch(0.93 0.08 46);
+  --roc-signal: oklch(0.79 0.16 86);
 }
 
 /* ─── Theme: Graphite (cool dark) ────────────────────────────────── */
@@ -130,31 +150,41 @@ html[data-theme="graphite"] {
   --card-foreground: oklch(0.93 0.005 260);
   --popover: oklch(0.22 0.012 260);
   --popover-foreground: oklch(0.93 0.005 260);
-  --primary: oklch(0.68 0.16 260);
+  --primary: oklch(0.74 0.16 235);
   --primary-foreground: oklch(0.15 0.01 260);
   --secondary: oklch(0.22 0.01 260);
   --secondary-foreground: oklch(0.93 0.005 260);
   --muted: oklch(0.22 0.01 260);
   --muted-foreground: oklch(0.60 0.01 260);
-  --accent: oklch(0.24 0.025 260);
+  --accent: oklch(0.25 0.05 238);
   --accent-foreground: oklch(0.93 0.005 260);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 8%);
   --input: oklch(1 0 0 / 12%);
-  --ring: oklch(0.60 0.16 260);
-  --chart-1: oklch(0.68 0.16 260);
+  --ring: oklch(0.7 0.16 235);
+  --chart-1: oklch(0.74 0.16 235);
   --chart-2: oklch(0.696 0.17 162.48);
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
   --sidebar: oklch(0.13 0.01 260);
   --sidebar-foreground: oklch(0.93 0.005 260);
-  --sidebar-primary: oklch(0.68 0.16 260);
+  --sidebar-primary: oklch(0.74 0.16 235);
   --sidebar-primary-foreground: oklch(0.93 0.005 260);
-  --sidebar-accent: oklch(0.22 0.012 260);
+  --sidebar-accent: oklch(0.24 0.04 238);
   --sidebar-accent-foreground: oklch(0.93 0.005 260);
   --sidebar-border: oklch(1 0 0 / 8%);
-  --sidebar-ring: oklch(0.60 0.16 260);
+  --sidebar-ring: oklch(0.7 0.16 235);
+  --roc-shell-start: oklch(0.2 0.04 238);
+  --roc-shell-end: oklch(0.12 0.02 272);
+  --roc-panel-shadow: oklch(0.02 0 0 / 46%);
+  --roc-panel-glow: oklch(0.68 0.13 228 / 22%);
+  --roc-surface-tint: oklch(0.22 0.03 242);
+  --roc-spot: oklch(0.76 0.15 230);
+  --roc-spot-soft: oklch(0.29 0.07 238);
+  --roc-hero: oklch(0.76 0.15 230);
+  --roc-hero-soft: oklch(0.31 0.07 238);
+  --roc-signal: oklch(0.74 0.13 164);
 }
 
 /* ─── Theme: Midnight (warm-tinted dark) ─────────────────────────── */
@@ -166,31 +196,41 @@ html[data-theme="midnight"] {
   --card-foreground: oklch(0.94 0.008 85);
   --popover: oklch(0.22 0.018 250);
   --popover-foreground: oklch(0.94 0.008 85);
-  --primary: oklch(0.72 0.12 50);
+  --primary: oklch(0.79 0.15 78);
   --primary-foreground: oklch(0.15 0.015 250);
   --secondary: oklch(0.24 0.015 250);
   --secondary-foreground: oklch(0.94 0.008 85);
   --muted: oklch(0.24 0.015 250);
   --muted-foreground: oklch(0.62 0.012 250);
-  --accent: oklch(0.27 0.02 250);
+  --accent: oklch(0.28 0.045 64);
   --accent-foreground: oklch(0.94 0.008 85);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 8%);
   --input: oklch(1 0 0 / 12%);
-  --ring: oklch(0.65 0.12 50);
-  --chart-1: oklch(0.72 0.12 50);
+  --ring: oklch(0.73 0.14 78);
+  --chart-1: oklch(0.79 0.15 78);
   --chart-2: oklch(0.696 0.17 162.48);
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
   --sidebar: oklch(0.12 0.015 250);
   --sidebar-foreground: oklch(0.94 0.008 85);
-  --sidebar-primary: oklch(0.72 0.12 50);
+  --sidebar-primary: oklch(0.79 0.15 78);
   --sidebar-primary-foreground: oklch(0.94 0.008 85);
-  --sidebar-accent: oklch(0.22 0.015 250);
+  --sidebar-accent: oklch(0.28 0.045 64);
   --sidebar-accent-foreground: oklch(0.94 0.008 85);
   --sidebar-border: oklch(1 0 0 / 6%);
-  --sidebar-ring: oklch(0.65 0.12 50);
+  --sidebar-ring: oklch(0.73 0.14 78);
+  --roc-shell-start: oklch(0.2 0.04 238);
+  --roc-shell-end: oklch(0.13 0.028 302);
+  --roc-panel-shadow: oklch(0.02 0 0 / 48%);
+  --roc-panel-glow: oklch(0.74 0.12 76 / 18%);
+  --roc-surface-tint: oklch(0.23 0.03 264);
+  --roc-spot: oklch(0.81 0.14 78);
+  --roc-spot-soft: oklch(0.29 0.05 70);
+  --roc-hero: oklch(0.81 0.14 78);
+  --roc-hero-soft: oklch(0.30 0.06 74);
+  --roc-signal: oklch(0.76 0.12 210);
 }
 
 @layer base {
@@ -199,6 +239,11 @@ html[data-theme="midnight"] {
   }
   body {
     @apply bg-background text-foreground;
+    background:
+      radial-gradient(circle at top left, color-mix(in oklch, var(--roc-spot) 16%, transparent) 0%, transparent 28%),
+      radial-gradient(circle at top right, color-mix(in oklch, var(--chart-4) 11%, transparent) 0%, transparent 24%),
+      radial-gradient(circle at 18% 100%, color-mix(in oklch, var(--roc-hero-soft) 14%, transparent) 0%, transparent 34%),
+      linear-gradient(180deg, var(--roc-shell-start) 0%, var(--roc-shell-end) 100%);
   }
 }
 
@@ -212,29 +257,81 @@ html[data-theme="midnight"] {
   /* ─── Surfaces ───────────────────────────────────────────────────── */
 
   .roc-panel {
-    @apply rounded-xl border border-border/30 bg-card transition-colors;
+    @apply rounded-xl border transition-colors;
+    border-color: color-mix(in oklch, var(--primary) 14%, var(--border));
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--card) 76%, var(--roc-surface-tint)) 0%,
+        color-mix(in oklch, var(--card) 92%, var(--roc-hero-soft)) 22%,
+        color-mix(in oklch, var(--card) 94%, var(--background)) 100%
+      );
+    box-shadow:
+      0 20px 42px -32px var(--roc-panel-shadow),
+      0 8px 22px -28px var(--roc-panel-glow),
+      0 1px 0 color-mix(in oklch, var(--card) 72%, transparent),
+      0 0 0 1px color-mix(in oklch, var(--primary) 4%, transparent);
   }
 
   .roc-section {
-    @apply grid gap-3 rounded-xl border border-border/30 bg-card p-4;
+    @apply grid gap-3 rounded-xl border p-4;
+    border-color: color-mix(in oklch, var(--primary) 10%, var(--border));
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--card) 80%, var(--roc-surface-tint)) 0%,
+        color-mix(in oklch, var(--card) 95%, var(--background)) 100%
+      );
   }
 
   /* ─── Sidebar ────────────────────────────────────────────────────── */
 
+  .roc-sidebar-shell {
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--sidebar) 94%, var(--roc-surface-tint)) 0%,
+        color-mix(in oklch, var(--sidebar) 98%, var(--background)) 100%
+      );
+    border-right: 1px solid color-mix(in oklch, var(--primary) 12%, var(--sidebar-border));
+    box-shadow: inset -1px 0 0 color-mix(in oklch, var(--primary) 6%, transparent);
+  }
+
   .roc-sidebar-section {
-    @apply rounded-xl bg-background/40;
+    @apply rounded-xl border;
+    border-color: color-mix(in oklch, var(--primary) 12%, var(--sidebar-border));
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--card) 72%, var(--roc-surface-tint)) 0%,
+        color-mix(in oklch, var(--card) 88%, var(--background)) 100%
+      );
+    box-shadow: inset 0 1px 0 color-mix(in oklch, var(--card) 60%, transparent);
   }
 
   .roc-sidebar-item {
-    @apply w-full rounded-lg border border-transparent bg-transparent px-3 py-1.5 text-left transition-colors;
+    @apply w-full rounded-xl border px-3 py-1.5 text-left transition-colors;
+    border-color: transparent;
+    background: color-mix(in oklch, var(--card) 68%, transparent);
   }
 
   .roc-sidebar-item:hover {
-    @apply bg-accent/60;
+    background: color-mix(in oklch, var(--accent) 72%, var(--card));
+    border-color: color-mix(in oklch, var(--primary) 14%, var(--border));
   }
 
   .roc-sidebar-item[data-active="true"] {
-    @apply border-primary/12 bg-primary/8 font-medium text-foreground;
+    @apply font-medium text-foreground;
+    border-color: color-mix(in oklch, var(--primary) 28%, var(--border));
+    background:
+      linear-gradient(
+        90deg,
+        color-mix(in oklch, var(--roc-hero) 20%, transparent) 0%,
+        color-mix(in oklch, var(--primary) 9%, var(--card)) 100%
+      );
+    box-shadow:
+      inset 3px 0 0 color-mix(in oklch, var(--roc-hero) 82%, transparent),
+      0 16px 24px -26px var(--roc-panel-shadow);
   }
 
   .roc-sidebar-toggle {
@@ -242,25 +339,63 @@ html[data-theme="midnight"] {
   }
 
   .roc-sidebar-meta {
-    @apply inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground;
+    @apply inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium;
+    border-color: color-mix(in oklch, var(--primary) 18%, var(--border));
+    background: color-mix(in oklch, var(--primary) 10%, var(--background));
+    color: color-mix(in oklch, var(--primary) 60%, var(--foreground));
   }
 
   /* ─── Messages ───────────────────────────────────────────────────── */
 
   .roc-message-card {
-    @apply overflow-hidden rounded-xl border border-border/40 bg-card px-5 py-4 transition-colors;
+    @apply overflow-hidden rounded-xl border px-5 py-4 transition-colors;
+    border-color: color-mix(in oklch, var(--primary) 12%, var(--border));
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--card) 78%, var(--roc-surface-tint)) 0%,
+        color-mix(in oklch, var(--card) 94%, var(--background)) 100%
+      );
+    box-shadow:
+      0 18px 32px -30px var(--roc-panel-shadow),
+      inset 0 1px 0 color-mix(in oklch, var(--card) 68%, transparent);
+  }
+
+  .roc-message-card[data-tone="assistant"] {
+    border-color: color-mix(in oklch, var(--roc-hero) 16%, var(--border));
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--card) 72%, var(--roc-hero-soft)) 0%,
+        color-mix(in oklch, var(--card) 88%, var(--roc-surface-tint)) 46%,
+        color-mix(in oklch, var(--card) 96%, var(--background)) 100%
+      );
   }
 
   .roc-message-card[data-tone="user"] {
-    @apply border-transparent bg-secondary;
+    border-color: color-mix(in oklch, var(--primary) 18%, var(--border));
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--secondary) 76%, var(--roc-spot-soft)) 0%,
+        color-mix(in oklch, var(--secondary) 92%, var(--background)) 100%
+      );
   }
 
   .roc-message-card[data-highlighted="true"] {
-    @apply border-primary/50;
+    border-color: color-mix(in oklch, var(--roc-hero) 34%, var(--border));
+    box-shadow:
+      0 18px 32px -30px var(--roc-panel-shadow),
+      0 0 0 1px color-mix(in oklch, var(--roc-hero) 14%, transparent),
+      inset 0 1px 0 color-mix(in oklch, var(--card) 68%, transparent);
   }
 
   .roc-message-card[data-active="true"] {
-    @apply border-amber-400/50;
+    border-color: color-mix(in oklch, var(--roc-signal) 46%, var(--border));
+    box-shadow:
+      0 18px 32px -30px var(--roc-panel-shadow),
+      0 0 0 1px color-mix(in oklch, var(--roc-signal) 18%, transparent),
+      inset 0 1px 0 color-mix(in oklch, var(--card) 68%, transparent);
   }
 
   .roc-message-meta-row {
@@ -272,7 +407,8 @@ html[data-theme="midnight"] {
   }
 
   .roc-message-title {
-    @apply mb-1.5 text-sm font-semibold leading-6 tracking-tight text-foreground;
+    @apply mb-1.5 text-sm font-semibold leading-6 tracking-tight;
+    color: color-mix(in oklch, var(--foreground) 84%, var(--primary) 16%);
   }
 
   .roc-message-body {
@@ -290,11 +426,28 @@ html[data-theme="midnight"] {
   /* ─── Detail cards ───────────────────────────────────────────────── */
 
   .roc-detail-card {
-    @apply rounded-xl border border-border/30 bg-card px-4 py-3 transition-colors;
+    @apply rounded-xl border px-4 py-3 transition-colors;
+    border-color: color-mix(in oklch, var(--primary) 10%, var(--border));
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--card) 76%, var(--roc-surface-tint)) 0%,
+        color-mix(in oklch, var(--card) 95%, var(--background)) 100%
+      );
+    box-shadow: inset 0 1px 0 color-mix(in oklch, var(--card) 62%, transparent);
   }
 
   .roc-detail-card[data-expanded="true"] {
-    @apply bg-muted/40;
+    border-color: color-mix(in oklch, var(--roc-hero) 18%, var(--border));
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--roc-hero) 10%, var(--card)) 0%,
+        color-mix(in oklch, var(--muted) 52%, var(--card)) 100%
+      );
+    box-shadow:
+      inset 2px 0 0 color-mix(in oklch, var(--roc-hero) 52%, transparent),
+      inset 0 1px 0 color-mix(in oklch, var(--card) 62%, transparent);
   }
 
   .roc-detail-card[data-tone="danger"] {
@@ -307,7 +460,16 @@ html[data-theme="midnight"] {
   }
 
   .roc-detail-icon {
-    @apply flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/30 bg-background text-muted-foreground;
+    @apply flex size-8 shrink-0 items-center justify-center rounded-lg border;
+    border-color: color-mix(in oklch, var(--primary) 18%, var(--border));
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--primary) 14%, var(--background)) 0%,
+        color-mix(in oklch, var(--primary) 7%, var(--card)) 100%
+      );
+    color: color-mix(in oklch, var(--primary) 72%, var(--foreground));
+    box-shadow: inset 0 1px 0 color-mix(in oklch, var(--card) 68%, transparent);
   }
 
   .roc-detail-title {
@@ -386,7 +548,8 @@ html[data-theme="midnight"] {
   }
 
   .roc-rail-title {
-    @apply text-base font-semibold tracking-tight text-foreground;
+    @apply text-base font-semibold tracking-tight;
+    color: color-mix(in oklch, var(--foreground) 80%, var(--roc-hero) 20%);
   }
 
   .roc-rail-description {
@@ -398,7 +561,18 @@ html[data-theme="midnight"] {
   }
 
   .roc-rail-section {
-    @apply grid gap-3 rounded-xl border border-border/30 bg-card/60 p-4;
+    @apply grid gap-3 rounded-xl border p-4;
+    border-color: color-mix(in oklch, var(--primary) 10%, var(--border));
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--card) 68%, var(--roc-surface-tint)) 0%,
+        color-mix(in oklch, var(--card) 88%, var(--roc-hero-soft)) 18%,
+        color-mix(in oklch, var(--card) 92%, var(--background)) 100%
+      );
+    box-shadow:
+      0 16px 30px -34px var(--roc-panel-shadow),
+      inset 0 1px 0 color-mix(in oklch, var(--card) 62%, transparent);
   }
 
   .roc-rail-section-header {
@@ -418,7 +592,9 @@ html[data-theme="midnight"] {
   }
 
   .roc-rail-item {
-    @apply rounded-lg border border-transparent bg-transparent px-3 py-2 text-left transition-colors;
+    @apply rounded-xl border px-3 py-2 text-left transition-colors;
+    border-color: transparent;
+    background: color-mix(in oklch, var(--card) 68%, transparent);
   }
 
   .roc-rail-item:hover {
@@ -426,7 +602,14 @@ html[data-theme="midnight"] {
   }
 
   .roc-rail-item[data-active="true"] {
-    @apply border-primary/15 bg-primary/8;
+    border-color: color-mix(in oklch, var(--primary) 24%, var(--border));
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--primary) 11%, var(--card)) 0%,
+        color-mix(in oklch, var(--primary) 4%, var(--background)) 100%
+      );
+    box-shadow: inset 2px 0 0 color-mix(in oklch, var(--primary) 72%, transparent);
   }
 
   .roc-rail-item[data-preview="true"] {
@@ -457,27 +640,124 @@ html[data-theme="midnight"] {
   /* ─── History ────────────────────────────────────────────────────── */
 
   .roc-session-header {
-    @apply border-b border-border/30 pb-3;
+    @apply rounded-2xl border px-4 py-3;
+    border-color: color-mix(in oklch, var(--primary) 12%, var(--border));
+    background:
+      linear-gradient(
+        135deg,
+        color-mix(in oklch, var(--roc-hero) 16%, var(--card)) 0%,
+        color-mix(in oklch, var(--card) 82%, var(--roc-hero-soft)) 38%,
+        color-mix(in oklch, var(--card) 90%, var(--background)) 68%,
+        color-mix(in oklch, var(--chart-4) 10%, var(--card)) 100%
+      );
+    box-shadow:
+      0 22px 38px -34px var(--roc-panel-shadow),
+      0 10px 26px -30px var(--roc-panel-glow),
+      inset 0 1px 0 color-mix(in oklch, var(--card) 62%, transparent);
+  }
+
+  .roc-session-title {
+    @apply min-w-0 truncate text-xl font-semibold tracking-[-0.03em];
+    font-family: var(--font-serif);
+    color: color-mix(in oklch, var(--foreground) 74%, var(--roc-hero) 26%);
+  }
+
+  .roc-session-subtitle {
+    @apply mt-0.5 flex min-w-0 items-center gap-2 text-xs;
+    color: color-mix(in oklch, var(--muted-foreground) 82%, var(--foreground) 18%);
+  }
+
+  .roc-accent-chip {
+    @apply rounded-full border px-2.5 py-1 text-[11px] font-semibold tracking-tight transition-colors;
+    border-color: color-mix(in oklch, var(--roc-hero) 32%, var(--border));
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--roc-hero) 18%, var(--background)) 0%,
+        color-mix(in oklch, var(--roc-hero) 10%, var(--card)) 100%
+      );
+    color: color-mix(in oklch, var(--roc-hero) 78%, var(--foreground));
+    box-shadow: 0 12px 24px -24px var(--roc-panel-shadow);
+  }
+
+  .roc-accent-chip:hover {
+    border-color: color-mix(in oklch, var(--roc-hero) 46%, var(--border));
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--roc-hero) 24%, var(--background)) 0%,
+        color-mix(in oklch, var(--roc-hero) 14%, var(--card)) 100%
+      );
   }
 
   /* ─── Badges ─────────────────────────────────────────────────────── */
 
   .roc-badge {
-    @apply inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground;
+    @apply inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium;
+    border-color: color-mix(in oklch, var(--primary) 14%, var(--border));
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--primary) 10%, var(--background)) 0%,
+        color-mix(in oklch, var(--card) 88%, var(--background)) 100%
+      );
+    color: color-mix(in oklch, var(--foreground) 62%, var(--primary) 38%);
   }
 
   /* ─── Actions ────────────────────────────────────────────────────── */
 
   .roc-action {
-    @apply inline-flex items-center justify-center rounded-lg border border-transparent bg-muted px-3 py-1.5 text-sm font-medium text-foreground transition-colors;
+    @apply inline-flex items-center justify-center rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors;
+    border-color: color-mix(in oklch, var(--primary) 14%, var(--border));
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--card) 84%, var(--roc-surface-tint)) 0%,
+        color-mix(in oklch, var(--card) 95%, var(--background)) 100%
+      );
+    color: color-mix(in oklch, var(--foreground) 78%, var(--primary) 22%);
+    box-shadow: 0 14px 28px -28px var(--roc-panel-shadow);
   }
 
   .roc-action:hover {
-    @apply bg-accent text-accent-foreground;
+    border-color: color-mix(in oklch, var(--primary) 24%, var(--border));
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--accent) 74%, var(--card)) 0%,
+        color-mix(in oklch, var(--primary) 8%, var(--background)) 100%
+      );
+    color: color-mix(in oklch, var(--foreground) 68%, var(--primary) 32%);
   }
 
   .roc-action:disabled {
     @apply pointer-events-none opacity-50;
+  }
+
+  .roc-primary-action {
+    border-color: color-mix(in oklch, var(--roc-hero) 32%, var(--border));
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--roc-hero) 86%, white) 0%,
+        color-mix(in oklch, var(--roc-hero) 94%, black) 100%
+      );
+    color: color-mix(in oklch, var(--primary-foreground) 92%, white 8%);
+    box-shadow:
+      0 20px 34px -26px var(--roc-panel-shadow),
+      0 10px 22px -24px var(--roc-panel-glow),
+      inset 0 1px 0 color-mix(in oklch, white 36%, transparent);
+  }
+
+  .roc-primary-action:hover {
+    border-color: color-mix(in oklch, var(--roc-hero) 44%, var(--border));
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--roc-hero) 92%, white) 0%,
+        color-mix(in oklch, var(--roc-hero) 100%, black) 100%
+      );
+    color: color-mix(in oklch, var(--primary-foreground) 96%, white 4%);
   }
 
   .roc-action-compact {
@@ -632,20 +912,89 @@ html[data-theme="midnight"] {
   /* ─── Composer ───────────────────────────────────────────────────── */
 
   .roc-composer-shell {
-    @apply overflow-hidden rounded-2xl border border-border/30 bg-card transition-colors;
-    box-shadow: 0 -1px 0 var(--border), 0 4px 24px -8px oklch(from var(--foreground) l c h / 8%);
+    @apply overflow-hidden rounded-2xl border transition-colors;
+    border-color: color-mix(in oklch, var(--primary) 18%, var(--border));
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--card) 74%, var(--roc-surface-tint)) 0%,
+        color-mix(in oklch, var(--card) 94%, var(--background)) 100%
+      );
+    box-shadow:
+      0 -1px 0 color-mix(in oklch, var(--primary) 18%, var(--border)),
+      0 26px 44px -30px var(--roc-panel-shadow),
+      0 0 0 1px color-mix(in oklch, var(--primary) 5%, transparent);
   }
 
   .roc-composer-shell[data-drag-active="true"] {
-    @apply border-primary/50;
+    border-color: color-mix(in oklch, var(--primary) 48%, var(--border));
+    box-shadow:
+      0 0 0 1px color-mix(in oklch, var(--primary) 24%, transparent),
+      0 30px 54px -34px var(--roc-panel-shadow);
   }
 
   .roc-toolbar-field {
-    @apply inline-flex min-w-0 items-center gap-2 rounded-lg border border-border/30 bg-background px-3 py-1.5;
+    @apply inline-flex min-w-0 items-center gap-2 rounded-xl border px-3 py-1.5;
+    border-color: color-mix(in oklch, var(--primary) 12%, var(--border));
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--card) 68%, var(--roc-surface-tint)) 0%,
+        color-mix(in oklch, var(--card) 88%, var(--roc-hero-soft)) 22%,
+        color-mix(in oklch, var(--background) 92%, var(--card)) 100%
+      );
+  }
+
+  .roc-icon-tile {
+    @apply flex size-7 shrink-0 items-center justify-center rounded-xl border;
+    border-color: color-mix(in oklch, var(--primary) 16%, var(--border));
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--primary) 12%, var(--background)) 0%,
+        color-mix(in oklch, var(--card) 92%, var(--background)) 100%
+      );
+    color: color-mix(in oklch, var(--foreground) 68%, var(--primary) 32%);
+    box-shadow: inset 0 1px 0 color-mix(in oklch, var(--card) 60%, transparent);
+  }
+
+  .roc-icon-tile[data-emphasis="strong"] {
+    border-color: color-mix(in oklch, var(--roc-hero) 26%, var(--border));
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--roc-hero) 16%, var(--background)) 0%,
+        color-mix(in oklch, var(--roc-hero-soft) 56%, var(--card)) 100%
+      );
+    color: color-mix(in oklch, var(--roc-hero) 74%, var(--foreground));
   }
 
   .roc-toolbar-label {
-    @apply text-[10px] font-semibold uppercase tracking-widest text-muted-foreground;
+    @apply text-[10px] font-semibold uppercase tracking-widest;
+    color: color-mix(in oklch, var(--muted-foreground) 74%, var(--primary) 26%);
+  }
+
+  .roc-inline-fact {
+    @apply inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium;
+    border-color: color-mix(in oklch, var(--primary) 18%, var(--border));
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--primary) 12%, var(--background)) 0%,
+        color-mix(in oklch, var(--card) 92%, var(--background)) 100%
+      );
+    color: color-mix(in oklch, var(--foreground) 74%, var(--primary) 26%);
+  }
+
+  .roc-inline-fact-label {
+    @apply uppercase tracking-[0.16em];
+    color: color-mix(in oklch, var(--muted-foreground) 72%, var(--primary) 28%);
+    font-size: 10px;
+  }
+
+  .roc-inline-fact-value {
+    @apply text-[11px] font-semibold;
+    color: color-mix(in oklch, var(--foreground) 82%, var(--primary) 18%);
   }
 
   .roc-toolbar-select {

@@ -331,14 +331,14 @@ export function SessionSidebar({
                 <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{currentWorkspaceHint}</p>
               ) : null}
             </div>
-            {workspaceMode ? <span className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">{workspaceMode}</span> : null}
+            {workspaceMode ? <span className="roc-badge px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.22em]">{workspaceMode}</span> : null}
           </div>
 
           <div className="mt-2.5 grid grid-cols-2 gap-1.5">
             <Button
-              variant="outline"
+              variant="ghost"
               size="sm"
-              className="h-8 rounded-full justify-start px-3 text-[11px] text-muted-foreground"
+              className="roc-action h-8.5 rounded-full justify-start px-3 text-[11px]"
               type="button"
               data-testid="project-new"
               onClick={() => setCreateOpen(true)}
@@ -347,9 +347,9 @@ export function SessionSidebar({
               New Project
             </Button>
             <Button
-              variant="default"
+              variant="ghost"
               size="sm"
-              className="h-8 rounded-full justify-start px-3 text-[11px]"
+              className="roc-primary-action h-8.5 rounded-full justify-start px-3 text-[11px] font-semibold"
               type="button"
               data-testid="session-new"
               onClick={onCreateSession}
@@ -403,8 +403,11 @@ export function SessionSidebar({
                       onClick={() => onSelectWorkspace(workspace.path)}
                     >
                       <div className="flex items-center gap-2.5">
-                        <div className="flex size-7 shrink-0 items-center justify-center rounded-xl border border-border/40 bg-background/74">
-                          <FolderTree className="h-3.5 w-3.5 text-muted-foreground" />
+                        <div
+                          className="roc-icon-tile"
+                          data-emphasis={workspace.path === currentWorkspacePath ? "strong" : undefined}
+                        >
+                          <FolderTree className="h-3.5 w-3.5 text-primary/80" />
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">

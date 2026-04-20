@@ -30,8 +30,8 @@ use crate::session_runtime::events::{
 };
 use crate::session_runtime::{
     assistant_visible_text, ensure_default_session_title,
-    finalize_active_scheduler_stage_cancelled, first_user_message_text, ModelPricing,
-    SessionSchedulerLifecycleHook,
+    finalize_active_scheduler_stage_cancelled, first_user_message_text,
+    visible_assistant_text_from_orchestrator_output, ModelPricing, SessionSchedulerLifecycleHook,
 };
 use crate::{ApiError, Result, ServerState};
 use rocode_session::prompt::{OutputBlockEvent, OutputBlockHook};
@@ -1468,7 +1468,9 @@ pub async fn run_local_scheduler_prompt(
                         total_cost: cost,
                     });
                 }
-                assistant.add_text(output.content);
+                assistant.add_text(visible_assistant_text_from_orchestrator_output(
+                    &output.content,
+                ));
             }
             Err(error) => {
                 cancelled = is_scheduler_cancellation_error(&error);

@@ -24,15 +24,17 @@ use crate::routes::permission::request_permission;
 use crate::routes::skill_catalog::enrich_scheduler_plan_skills;
 use crate::runtime_control::SessionRunStatus;
 use crate::session_runtime::events::{
-    broadcast_session_updated, server_output_block_hook, ServerEvent,
+    broadcast_session_updated, emit_output_block_via_hook, server_output_block_hook, ServerEvent,
 };
 use crate::session_runtime::{
-    ensure_default_session_title, finalize_active_scheduler_stage_cancelled,
-    first_user_message_text, ModelPricing, SessionSchedulerLifecycleHook,
+    assistant_visible_text, ensure_default_session_title,
+    finalize_active_scheduler_stage_cancelled, first_user_message_text,
+    visible_assistant_text_from_orchestrator_output, ModelPricing, SessionSchedulerLifecycleHook,
 };
 use crate::{ApiError, Result, ServerState};
 use rocode_agent::{AgentMode, AgentRegistry};
 use rocode_command::{
+    output_blocks::{MessageBlock, MessageRole as OutputMessageRole, OutputBlock},
     Command, CommandArgumentField, CommandArgumentKind, CommandContext, CommandRegistry,
     InteractivePolicy,
 };
@@ -1170,6 +1172,8 @@ pub(super) async fn session_prompt(
         broadcast_session_updated(state.as_ref(), id.clone(), "prompt.command.accepted");
         persist_sessions_if_enabled(&state).await;
     }
+    let output_block_hook: Option<rocode_session::prompt::OutputBlockHook> =
+        Some(server_output_block_hook(task_state.clone()));
     tokio::spawn(async move {
         let mut session = {
             let sessions = task_state.sessions.lock().await;
@@ -1442,7 +1446,8 @@ pub(super) async fn session_prompt(
                     session_id.clone(),
                     profile_name.clone(),
                 )
-                .with_model_pricing(task_model_pricing),
+                .with_model_pricing(task_model_pricing)
+                .with_output_hook(output_block_hook.clone()),
             );
             let ctx = OrchestratorContext {
                 agent_resolver: Arc::new(SchedulerAgentResolver {
@@ -1573,7 +1578,9 @@ pub(super) async fn session_prompt(
                                 total_cost: cost,
                             });
                         }
-                        assistant.add_text(output.content);
+                        assistant.add_text(visible_assistant_text_from_orchestrator_output(
+                            &output.content,
+                        ));
                     }
                     Err(error) => {
                         if is_scheduler_cancellation_error(&error) {
@@ -1618,11 +1625,31 @@ pub(super) async fn session_prompt(
                 .runtime_telemetry
                 .record_session_usage(&session_id, Some(&assistant_message_id), session_usage)
                 .await;
+            let assistant_text = session
+                .get_message(&assistant_message_id)
+                .map(assistant_visible_text)
+                .unwrap_or_default();
             broadcast_session_updated(
                 task_state.as_ref(),
                 session_id.clone(),
                 "prompt.scheduler.completed",
             );
+            if let Some(output_hook) = output_block_hook.clone() {
+                if !assistant_text.trim().is_empty() {
+                    emit_output_block_via_hook(
+                        Some(&output_hook),
+                        rocode_session::prompt::OutputBlockEvent {
+                            session_id: session_id.clone(),
+                            block: OutputBlock::Message(MessageBlock::full(
+                                OutputMessageRole::Assistant,
+                                assistant_text,
+                            )),
+                            id: Some(assistant_message_id.clone()),
+                        },
+                    )
+                    .await;
+                }
+            }
             persist_sessions_if_enabled(&task_state).await;
             return;
         }
@@ -1750,9 +1777,6 @@ pub(super) async fn session_prompt(
                 }
             }))
         };
-        let output_block_hook: Option<rocode_session::prompt::OutputBlockHook> =
-            { Some(server_output_block_hook(task_state.clone())) };
-
         let publish_bus_hook: Option<rocode_session::prompt::PublishBusHook> = {
             let state = task_state.clone();
             let session_id = session_id.clone();

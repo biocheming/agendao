@@ -68,6 +68,64 @@ function excerptText(value?: string | null, maxLength = 120) {
   return `${text.slice(0, maxLength - 1)}…`;
 }
 
+function looksLikeStructuredEnvelope(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const keys = Object.keys(value as Record<string, unknown>);
+  if (keys.length === 0) return false;
+  const knownEnvelopeKeys = [
+    "kind",
+    "phase",
+    "role",
+    "text",
+    "parts",
+    "metadata",
+    "output_block",
+    "display",
+    "structured",
+    "summary",
+    "fields",
+    "tool_call_id",
+    "stage_id",
+    "choices",
+    "usage",
+    "object",
+    "created",
+    "model",
+    "candidates",
+    "output",
+  ];
+  return keys.some((key) => knownEnvelopeKeys.includes(key));
+}
+
+function stripTrailingStructuredJson(text: string) {
+  const trimmed = text.trimEnd();
+  const candidateStarts = [trimmed.lastIndexOf("\n\n{"), trimmed.lastIndexOf("\n{"), trimmed.lastIndexOf("\n\n[")];
+
+  for (const startIndex of candidateStarts) {
+    if (startIndex < 0) continue;
+    const candidate = trimmed.slice(startIndex).trimStart();
+    if (!(candidate.startsWith("{") || candidate.startsWith("["))) continue;
+    try {
+      const parsed = JSON.parse(candidate);
+      if (!looksLikeStructuredEnvelope(parsed)) continue;
+      const prefix = trimmed.slice(0, startIndex).trimEnd();
+      if (!prefix) continue;
+      return prefix;
+    } catch {
+      continue;
+    }
+  }
+
+  return trimmed;
+}
+
+function sanitizeDisplayedMessageText(message: FeedMessage) {
+  const raw = message.text?.trimEnd() ?? "";
+  if (!raw) return raw;
+  if ((message.role ?? "assistant") !== "assistant") return raw;
+  return stripTrailingStructuredJson(raw);
+}
+
 function normalizeValue(value: unknown) {
   const text = String(value ?? "").trim();
   if (!text) return { structured: false, text: "" };
@@ -97,15 +155,17 @@ function normalizeValue(value: unknown) {
 function MetaActionButton({
   children,
   onClick,
+  className,
 }: {
   children: React.ReactNode;
   onClick: () => void;
+  className?: string;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="roc-badge transition-colors hover:border-primary/35 hover:text-primary"
+      className={cn("roc-badge transition-colors hover:border-primary/35 hover:text-primary", className)}
     >
       {children}
     </button>
@@ -413,12 +473,13 @@ export function MessageCard({
   onNavigateChildSession,
 }: MessageCardProps) {
   const [copied, setCopied] = useState(false);
+  const displayText = sanitizeDisplayedMessageText(message);
 
   const handleCopy = useCallback(async () => {
-    await navigator.clipboard.writeText(message.text);
+    await navigator.clipboard.writeText(displayText);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-  }, [message.text]);
+  }, [displayText]);
 
   if (message.kind === "scheduler_stage") {
     return (
@@ -495,20 +556,20 @@ export function MessageCard({
             ) : null}
           </div>
 
-          {message.title?.trim() && message.title.trim() !== message.text.trim() ? (
+          {message.title?.trim() && message.title.trim() !== displayText.trim() ? (
             <div className="roc-message-title">
               {message.title.trim()}
             </div>
           ) : null}
 
-          {message.text ? (
+          {displayText ? (
             <MessageResponse
               className={cn(
                 "roc-markdown-flow roc-message-body size-full",
                 isUser ? "[&_p]:text-foreground" : "[&_p]:text-foreground/92",
               )}
             >
-              {message.text}
+              {displayText}
             </MessageResponse>
           ) : null}
 
@@ -518,7 +579,7 @@ export function MessageCard({
             </div>
           ) : null}
 
-          {!isUser && message.text ? (
+          {!isUser && displayText ? (
             <div className="roc-message-footer">
               <div className="min-w-0 flex-1">
                 {summary ? <p className="roc-message-summary">{summary}</p> : null}
@@ -530,7 +591,7 @@ export function MessageCard({
                       type="button"
                       variant="ghost"
                       size="icon"
-                      className="roc-action-compact h-7 w-7 rounded-full text-muted-foreground hover:text-foreground"
+                      className="roc-action roc-action-compact h-7 w-7 rounded-full text-muted-foreground hover:text-foreground"
                       title={copied ? "Copied" : "Copy message"}
                       onClick={handleCopy}
                     >
@@ -550,6 +611,7 @@ export function MessageCard({
       {!isUser && message.child_session_id ? (
         <div className="pl-1">
           <MetaActionButton
+            className="roc-action roc-action-pill justify-center px-3.5 py-1.5 text-xs text-foreground no-underline"
             onClick={() =>
               onNavigateChildSession(message.child_session_id!, {
                 stageId: message.stage_id ?? null,

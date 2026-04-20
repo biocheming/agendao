@@ -6,11 +6,15 @@ use axum::extract::{Path, Query, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use crate::session_runtime::{assistant_visible_text, decision_from_stage_text};
+use crate::session_runtime::{
+    assistant_visible_text, decision_from_stage_text, scheduler_stage_block_from_message,
+};
 use crate::{ApiError, Result, ServerState};
 use rocode_command::agent_presenter::{
     history_session_event_to_web, history_tool_call_to_web, history_tool_result_to_web,
+    output_block_to_web,
 };
+use rocode_command::output_blocks::OutputBlock;
 use rocode_multimodal::{MultimodalDisplaySummary, PersistedMultimodalExplain, SessionPartAdapter};
 
 use super::session_crud::persist_sessions_if_enabled;
@@ -409,6 +413,11 @@ fn message_to_info(
 ) -> MessageInfo {
     let mut metadata = message.metadata.clone();
     augment_scheduler_decision_metadata_for_response(&mut metadata, message);
+    let scheduler_stage_block = {
+        let mut message_with_augmented_metadata = message.clone();
+        message_with_augmented_metadata.metadata = metadata.clone();
+        scheduler_stage_block_from_message(&message_with_augmented_metadata)
+    };
     let usage = message.usage.clone().unwrap_or_default();
     let model_id = message
         .metadata
@@ -435,15 +444,44 @@ fn message_to_info(
             .unwrap_or(0.0)
     };
 
+    let mut parts: Vec<PartInfo> = message
+        .parts
+        .iter()
+        .map(|part| part_to_info(part, &message.metadata, tool_names, pending_questions))
+        .collect();
+    if let Some(block) = scheduler_stage_block {
+        for part in &mut parts {
+            if part.part_type == "text" && part.output_block.is_none() {
+                part.ignored = Some(true);
+            }
+        }
+
+        let mut output_block = output_block_to_web(&OutputBlock::SchedulerStage(Box::new(block)));
+        if let Some(map) = output_block.as_object_mut() {
+            map.insert(
+                "ts".to_string(),
+                serde_json::Value::Number(message.created_at.timestamp_millis().into()),
+            );
+            map.insert("id".to_string(), serde_json::json!(message.id.clone()));
+        }
+        parts.push(PartInfo {
+            id: format!("{}:scheduler_stage", message.id),
+            part_type: "output_block".to_string(),
+            text: None,
+            file: None,
+            tool_call: None,
+            tool_result: None,
+            output_block: Some(output_block),
+            synthetic: Some(true),
+            ignored: None,
+        });
+    }
+
     MessageInfo {
         id: message.id.clone(),
         session_id: session_id.to_string(),
         role: message_role_name(&message.role).to_string(),
-        parts: message
-            .parts
-            .iter()
-            .map(|part| part_to_info(part, &message.metadata, tool_names, pending_questions))
-            .collect(),
+        parts,
         created_at: message.created_at.timestamp_millis(),
         completed_at: message
             .metadata
@@ -1025,6 +1063,52 @@ mod tests {
         let expected = rocode_session::sanitize_display_text(reminder_text);
 
         assert_eq!(info.parts[0].text.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn message_to_info_synthesizes_scheduler_stage_output_block_for_history() {
+        let mut message = SessionMessage::assistant("ses_test");
+        message
+            .metadata
+            .insert("scheduler_stage".to_string(), serde_json::json!("route"));
+        message.metadata.insert(
+            "scheduler_profile".to_string(),
+            serde_json::json!("prometheus"),
+        );
+        message.parts.push(MessagePart {
+            id: "prt_text".to_string(),
+            part_type: PartType::Text {
+                text: r###"{"mode":"direct","direct_kind":"reply","direct_response":"## Answer\n\n- item","rationale_summary":"concept reply"}"###.to_string(),
+                synthetic: None,
+                ignored: None,
+            },
+            created_at: chrono::Utc::now(),
+            message_id: Some(message.id.clone()),
+        });
+
+        let info = message_to_info("ses_test", &message, &HashMap::new(), &mut Vec::new());
+
+        assert_eq!(info.parts[0].ignored, Some(true));
+        let block = info
+            .parts
+            .iter()
+            .find(|part| part.part_type == "output_block")
+            .and_then(|part| part.output_block.as_ref())
+            .expect("synthetic scheduler stage block");
+        assert_eq!(
+            block.get("kind").and_then(|value| value.as_str()),
+            Some("scheduler_stage")
+        );
+        assert_eq!(
+            block
+                .get("decision")
+                .and_then(|value| value.get("sections"))
+                .and_then(|value| value.as_array())
+                .and_then(|value| value.first())
+                .and_then(|value| value.get("title"))
+                .and_then(|value| value.as_str()),
+            Some("Response")
+        );
     }
 
     #[test]

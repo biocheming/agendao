@@ -1571,7 +1571,11 @@ fn build_workspace_tree_lines(
         let mk_style = |style: Style| row_bg.map_or(style, |bg| style.bg(bg));
         let indent = "  ".repeat(node.depth.min(6));
         let caret = if node.is_dir {
-            if node.expanded { "▾" } else { "▸" }
+            if node.expanded {
+                "▾"
+            } else {
+                "▸"
+            }
         } else {
             "•"
         };
@@ -2122,11 +2126,9 @@ mod tests {
 
         assert!(nodes.iter().any(|node| node.path == "src"));
         assert!(nodes.iter().any(|node| node.path == "src/ui"));
-        assert!(
-            nodes
-                .iter()
-                .any(|node| node.path == "src/ui/app.rs" && node.is_current)
-        );
+        assert!(nodes
+            .iter()
+            .any(|node| node.path == "src/ui/app.rs" && node.is_current));
 
         let lifecycle = SidebarLifecycleState {
             active_tab: SidebarTab::Workspace,
@@ -2154,16 +2156,12 @@ mod tests {
         let nodes =
             build_workspace_visible_nodes(&entries, &HashSet::new(), &HashSet::new(), None, None);
 
-        assert!(
-            nodes
-                .iter()
-                .any(|node| node.path == "src" && node.is_dir && !node.expanded)
-        );
-        assert!(
-            nodes
-                .iter()
-                .any(|node| node.path == "docs" && node.is_dir && !node.expanded)
-        );
+        assert!(nodes
+            .iter()
+            .any(|node| node.path == "src" && node.is_dir && !node.expanded));
+        assert!(nodes
+            .iter()
+            .any(|node| node.path == "docs" && node.is_dir && !node.expanded));
         assert!(!nodes.iter().any(|node| node.path == "src/ui"));
         assert!(!nodes.iter().any(|node| node.path == "src/main.rs"));
     }

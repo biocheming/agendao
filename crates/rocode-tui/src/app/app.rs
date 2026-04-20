@@ -36,10 +36,10 @@ use std::time::{Duration, Instant};
 use chrono::{TimeZone, Utc};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{buffer::Buffer, layout::Rect, style::Style, widgets::Block};
-use rocode_command::interactive::{InteractiveCommand, parse_interactive_command};
+use rocode_command::interactive::{parse_interactive_command, InteractiveCommand};
 use rocode_command::output_blocks::{BlockTone, StatusBlock};
 use rocode_command::{CommandRegistry, UiActionId};
-use rocode_core::agent_task_registry::{AgentTaskStatus, global_task_registry};
+use rocode_core::agent_task_registry::{global_task_registry, AgentTaskStatus};
 
 use crate::api::{
     ApiClient, ExecutionModeInfo, ExecutionStatus as ApiExecutionStatus, McpStatusInfo,
@@ -51,28 +51,27 @@ use crate::api::{
 };
 use crate::app::state::AppState;
 use crate::components::{
-    Agent, AgentSelectDialog, AlertDialog, CommandPalette, ForkDialog, ForkEntry, HelpDialog,
-    HomeView, McpDialog, McpItem, ModeKind, Model, ModelSelectDialog, OTHER_OPTION_ID,
-    OTHER_OPTION_LABEL, PendingSubmit, PermissionAction, PermissionPrompt, Prompt,
-    PromptStashDialog, ProviderDialog, QuestionOption, QuestionPrompt, QuestionRequest,
-    QuestionType, RecoveryActionDialog, RecoveryActionItem, SessionDeleteState,
-    SessionExportDialog, SessionItem, SessionListDialog, SessionRenameDialog, SkillListDialog,
-    SlashCommandPopup, StashItem, StatusDialog, StatusLine, SubagentDialog, TagDialog, TaskKind,
-    ThemeListDialog, ThemeOption, TimelineDialog, TimelineEntry, Toast, ToastVariant,
-    ToolCallCancelDialog, ToolCallItem, exit_logo_lines,
+    exit_logo_lines, Agent, AgentSelectDialog, AlertDialog, CommandPalette, ForkDialog, ForkEntry,
+    HelpDialog, HomeView, McpDialog, McpItem, ModeKind, Model, ModelSelectDialog, PendingSubmit,
+    PermissionAction, PermissionPrompt, Prompt, PromptStashDialog, ProviderDialog, QuestionOption,
+    QuestionPrompt, QuestionRequest, QuestionType, RecoveryActionDialog, RecoveryActionItem,
+    SessionDeleteState, SessionExportDialog, SessionItem, SessionListDialog, SessionRenameDialog,
+    SkillListDialog, SlashCommandPopup, StashItem, StatusDialog, StatusLine, SubagentDialog,
+    TagDialog, TaskKind, ThemeListDialog, ThemeOption, TimelineDialog, TimelineEntry, Toast,
+    ToastVariant, ToolCallCancelDialog, ToolCallItem, OTHER_OPTION_ID, OTHER_OPTION_LABEL,
 };
-use crate::context::keybind::{LeaderKeyState, is_primary_key_event, normalize_key_event};
+use crate::context::keybind::{is_primary_key_event, normalize_key_event, LeaderKeyState};
 use crate::context::{
-    AppContext, McpConnectionStatus, McpServerStatus, Message, MessagePart as ContextMessagePart,
-    MessageRole, RevertInfo, Session, SessionStatus, StatusDialogView, TokenUsage,
-    TuiEventsBrowserState, TuiMemoryConsolidationState, TuiMemoryDetailState, TuiMemoryListState,
-    TuiMemoryPreviewState, TuiMemoryRuleHitsState, collect_child_sessions,
+    collect_child_sessions, AppContext, McpConnectionStatus, McpServerStatus, Message,
+    MessagePart as ContextMessagePart, MessageRole, RevertInfo, Session, SessionStatus,
+    StatusDialogView, TokenUsage, TuiEventsBrowserState, TuiMemoryConsolidationState,
+    TuiMemoryDetailState, TuiMemoryListState, TuiMemoryPreviewState, TuiMemoryRuleHitsState,
 };
 use crate::event::{CustomEvent, Event, StateChange};
 use crate::router::Route;
 use crate::ui::{
-    BufferSurface, Clipboard, RenderSurface, Selection, apply_selection_highlight,
-    capture_screen_lines, strip_session_gutter, truncate,
+    apply_selection_highlight, capture_screen_lines, strip_session_gutter, truncate, BufferSurface,
+    Clipboard, RenderSurface, Selection,
 };
 
 use self::mappers::{
@@ -81,8 +80,8 @@ use self::mappers::{
     map_api_todo, map_mcp_status, provider_from_model,
 };
 use self::server_events::{
-    SessionFilter, env_var_enabled, env_var_with_fallback, resolve_tui_base_url,
-    spawn_server_event_listener_task,
+    env_var_enabled, env_var_with_fallback, resolve_tui_base_url, spawn_server_event_listener_task,
+    SessionFilter,
 };
 use self::support::{
     append_execution_status_node, apply_selected_mode, current_mode_label, default_export_filename,

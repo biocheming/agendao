@@ -45,13 +45,13 @@ export function SessionHeader({
   const modeModelSummary = [modeLabel?.trim(), modelLabel?.trim()].filter(Boolean).join(" · ") || null;
 
   return (
-    <header className="roc-session-header grid gap-1.5" data-testid="session-header">
+    <header className="roc-session-header grid gap-2" data-testid="session-header">
       <div className="flex flex-col gap-1 xl:flex-row xl:items-center xl:justify-between">
         <div className="min-w-0 flex-1">
-          <h1 className="min-w-0 truncate text-xl font-semibold tracking-[-0.02em] text-foreground">
+          <h1 className="roc-session-title">
             {title}
           </h1>
-          <div className="mt-0.5 flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+          <div className="roc-session-subtitle">
             {secondaryMeta ? <span className="truncate">{secondaryMeta}</span> : null}
             {modeModelSummary ? (
               <>
@@ -70,7 +70,7 @@ export function SessionHeader({
           ) : null}
           {activeStageId ? (
             <button
-              className="rounded-full border border-primary/22 bg-primary/8 px-2.5 py-1 text-[11px] font-semibold tracking-tight text-foreground transition-colors hover:border-primary/35 hover:bg-primary/12"
+              className="roc-accent-chip"
               type="button"
               onClick={() => onNavigateStage(activeStageId)}
             >
@@ -89,7 +89,7 @@ export function SessionHeader({
           {breadcrumbs.map((crumb, index) => (
             <div
               key={`${crumb.sessionId}:${index}`}
-              className="inline-flex items-center gap-1.5 rounded-full border border-border/50 bg-background/62 px-2.5 py-1"
+              className="roc-badge gap-1.5 px-2.5 py-1"
             >
               <button
                 className="border-0 bg-transparent p-0 text-[12px] text-foreground transition-colors hover:text-primary"

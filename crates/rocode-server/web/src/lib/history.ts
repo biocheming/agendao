@@ -70,6 +70,8 @@ export interface MessagePartRecord {
   id: string;
   type: string;
   text?: string;
+  ignored?: boolean;
+  synthetic?: boolean;
   file?: {
     url: string;
     filename: string;

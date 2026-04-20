@@ -10,6 +10,7 @@ import {
   WorkflowIcon,
 } from "lucide-react";
 import { useState } from "react";
+import { MessageResponse } from "./ai-elements/message";
 
 interface SchedulerStageCardProps {
   message: FeedMessage;
@@ -33,6 +34,13 @@ function tokenSummary(message: FeedMessage) {
 
 function compactText(value: unknown) {
   return String(value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function sectionSummary(value: unknown, maxLength = 140) {
+  const text = compactText(value);
+  if (!text) return null;
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength - 1)}…`;
 }
 
 function normalizeValue(value: unknown) {
@@ -70,6 +78,25 @@ function StructuredValue({ value }: { value: unknown }) {
   }
 
   return <p className="roc-structured-copy text-sm leading-6 whitespace-pre-wrap text-foreground">{display.text}</p>;
+}
+
+function MarkdownSectionValue({ value }: { value: unknown }) {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+
+  if (text.startsWith("{") || text.startsWith("[")) {
+    try {
+      return <pre className="roc-structured-value roc-structured-copy">{JSON.stringify(JSON.parse(text), null, 2)}</pre>;
+    } catch {
+      // Fall through to markdown rendering.
+    }
+  }
+
+  return (
+    <MessageResponse className="roc-markdown-flow roc-message-body size-full [&_p]:text-foreground/92">
+      {text}
+    </MessageResponse>
+  );
 }
 
 function classifyFact(value: unknown) {
@@ -214,7 +241,7 @@ export function SchedulerStageCard({
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0 flex-1">
           <div className="flex items-start gap-3">
-            <div className="roc-detail-icon size-10">
+            <div className="roc-icon-tile size-10" data-emphasis="strong">
               <WorkflowIcon className="size-4" />
             </div>
             <div className="min-w-0 flex-1">
@@ -232,9 +259,9 @@ export function SchedulerStageCard({
           {message.stage_id ? (
             <Button
               type="button"
-              variant="outline"
+              variant="ghost"
               size="sm"
-              className="rounded-full"
+              className="roc-primary-action roc-action-pill"
               data-testid="scheduler-stage-open-stage"
               onClick={() => onNavigateStage(message.stage_id!)}
             >
@@ -245,9 +272,9 @@ export function SchedulerStageCard({
           {message.child_session_id ? (
             <Button
               type="button"
-              variant="outline"
+              variant="ghost"
               size="sm"
-              className="rounded-full"
+              className="roc-action roc-action-pill"
               data-testid="scheduler-stage-open-child"
               onClick={() =>
                 onNavigateChildSession(message.child_session_id!, {
@@ -347,12 +374,34 @@ export function SchedulerStageCard({
             </div>
           ) : null}
           {message.decision.sections?.map((section, index) => (
-            <div key={`${message.feedId}-decision-section-${index}`} className="roc-detail-card">
-              <div className="roc-section-label">{section.title || `Section ${index + 1}`}</div>
-              <div className="roc-detail-body">
-                <StructuredValue value={section.body || ""} />
-              </div>
-            </div>
+            (() => {
+              const title = section.title || `Section ${index + 1}`;
+              const isResponseSection = title.trim().toLowerCase() === "response";
+
+              if (isResponseSection) {
+                return (
+                  <DisclosurePanel
+                    key={`${message.feedId}-decision-section-${index}`}
+                    icon={<InfoIcon className="size-4" />}
+                    label="Response"
+                    title={title}
+                    summary={sectionSummary(section.body || "")}
+                    defaultOpen={false}
+                  >
+                    <MarkdownSectionValue value={section.body || ""} />
+                  </DisclosurePanel>
+                );
+              }
+
+              return (
+                <div key={`${message.feedId}-decision-section-${index}`} className="roc-detail-card">
+                  <div className="roc-section-label">{title}</div>
+                  <div className="roc-detail-body">
+                    <MarkdownSectionValue value={section.body || ""} />
+                  </div>
+                </div>
+              );
+            })()
           ))}
           </div>
         </section>

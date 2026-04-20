@@ -963,7 +963,6 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
             )
             .await;
         }
-
         let message = session.add_assistant_message();
         let message_id = message.id.clone();
         let execution_id = format!("stage_{}", uuid::Uuid::new_v4().simple());
@@ -2663,6 +2662,24 @@ pub fn assistant_visible_text(message: &SessionMessage) -> String {
     rocode_session::sanitize_display_text(&out)
 }
 
+pub fn visible_assistant_text_from_orchestrator_output(output: &str) -> String {
+    let trimmed = output.trim();
+    if let Some(decision) = parse_route_decision(trimmed) {
+        if matches!(decision.mode, rocode_orchestrator::RouteMode::Direct) {
+            if let Some(response) = decision
+                .direct_response
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                return rocode_session::sanitize_display_text(response);
+            }
+        }
+    }
+
+    rocode_session::sanitize_display_text(output)
+}
+
 pub fn scheduler_stage_block_from_message(message: &SessionMessage) -> Option<SchedulerStageBlock> {
     let metadata = &message.metadata;
     let text = assistant_visible_text(message);
@@ -2959,7 +2976,6 @@ pub(crate) async fn ensure_default_session_title(
 mod tests {
     use super::*;
     use futures::stream;
-    use rocode_command::output_blocks::MessagePhase;
     use rocode_provider::{
         ChatRequest, ChatResponse, Choice, Content, Message, ModelInfo, Provider, ProviderError,
         Role, StreamResult,
@@ -3046,6 +3062,16 @@ mod tests {
         assert_eq!(
             first_user_message_text(&session).as_deref(),
             Some("Refactor the session renderer")
+        );
+    }
+
+    #[test]
+    fn visible_assistant_text_from_orchestrator_output_uses_direct_response() {
+        let output = r###"{"mode":"direct","direct_kind":"reply","direct_response":"## Answer\n\n- item","rationale_summary":"concept reply"}"###;
+
+        assert_eq!(
+            visible_assistant_text_from_orchestrator_output(output),
+            "## Answer\n\n- item"
         );
     }
 
@@ -3743,7 +3769,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lifecycle_hook_emits_reasoning_blocks_for_non_child_session() {
+    async fn lifecycle_hook_emits_scheduler_stage_and_reasoning_blocks_for_non_child_session() {
         let state = Arc::new(ServerState::new());
         let session_id = {
             let mut sessions = state.sessions.lock().await;
@@ -3793,6 +3819,13 @@ mod tests {
             &exec_ctx,
         )
         .await;
+        hook.on_scheduler_stage_content(
+            "execution-orchestration",
+            1,
+            "main session streamed content",
+            &exec_ctx,
+        )
+        .await;
         hook.on_scheduler_stage_end(
             "atlas",
             "execution-orchestration",
@@ -3805,29 +3838,46 @@ mod tests {
 
         let emitted_blocks = emitted.lock().expect("emitted blocks").clone();
 
-        // Should emit reasoning start, delta, and end blocks
-        let reasoning_start = emitted_blocks.iter().find(
-            |e| matches!(&e.block, OutputBlock::Reasoning(b) if b.phase == MessagePhase::Start),
-        );
-        let reasoning_delta = emitted_blocks.iter().find(
-            |e| matches!(&e.block, OutputBlock::Reasoning(b) if b.text == "main session reasoning"),
-        );
-        let reasoning_end = emitted_blocks.iter().find(
-            |e| matches!(&e.block, OutputBlock::Reasoning(b) if b.phase == MessagePhase::End),
-        );
+        let session_blocks = emitted_blocks
+            .iter()
+            .filter(|event| event.session_id == session_id)
+            .map(|event| &event.block)
+            .collect::<Vec<_>>();
+        let sequence = session_blocks
+            .iter()
+            .map(|block| match block {
+                OutputBlock::Message(message) => match message.phase {
+                    rocode_command::output_blocks::MessagePhase::Start => "message:start",
+                    rocode_command::output_blocks::MessagePhase::Delta => "message:delta",
+                    rocode_command::output_blocks::MessagePhase::End => "message:end",
+                    rocode_command::output_blocks::MessagePhase::Full => "message:full",
+                },
+                OutputBlock::Reasoning(reasoning) => match reasoning.phase {
+                    rocode_command::output_blocks::MessagePhase::Start => "reasoning:start",
+                    rocode_command::output_blocks::MessagePhase::Delta => "reasoning:delta",
+                    rocode_command::output_blocks::MessagePhase::End => "reasoning:end",
+                    rocode_command::output_blocks::MessagePhase::Full => "reasoning:full",
+                },
+                OutputBlock::SchedulerStage(_) => "scheduler_stage",
+                _ => "other",
+            })
+            .collect::<Vec<_>>();
 
-        assert!(
-            reasoning_start.is_some(),
-            "should emit reasoning start for non-child session"
+        assert_eq!(
+            sequence,
+            vec![
+                "scheduler_stage",
+                "reasoning:start",
+                "reasoning:delta",
+                "scheduler_stage",
+                "scheduler_stage",
+                "scheduler_stage",
+                "reasoning:end",
+            ]
         );
-        assert!(
-            reasoning_delta.is_some(),
-            "should emit reasoning delta for non-child session"
-        );
-        assert!(
-            reasoning_end.is_some(),
-            "should emit reasoning end for non-child session"
-        );
+        assert!(!session_blocks
+            .iter()
+            .any(|block| matches!(block, OutputBlock::Message(_))));
     }
 
     #[tokio::test]
