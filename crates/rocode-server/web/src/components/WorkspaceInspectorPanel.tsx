@@ -127,7 +127,7 @@ export function WorkspaceInspectorPanel({
             <p className="roc-rail-description break-all">{workspaceRootLabel}</p>
           </div>
           <div className="roc-rail-toolbar">
-            <span className="roc-pill px-3 py-1.5 text-xs">
+            <span className="roc-badge px-3 py-1.5 text-xs">
               {workspaceLoading ? "loading" : `${fileTree?.children?.length ?? 0} items`}
             </span>
             <button
@@ -211,10 +211,10 @@ export function WorkspaceInspectorPanel({
             ) : null}
           </div>
           <div className="roc-rail-toolbar">
-            <span className="roc-pill px-3 py-1.5 text-xs">
+            <span className="roc-badge px-3 py-1.5 text-xs">
               {selectedWorkspaceType === "directory" ? "directory" : workspaceDirty ? "dirty" : "saved"}
             </span>
-            {selectedWorkspacePath && workspaceLinkLabel ? <span className="roc-pill px-3 py-1.5 text-xs">{workspaceLinkLabel}</span> : null}
+            {selectedWorkspacePath && workspaceLinkLabel ? <span className="roc-badge px-3 py-1.5 text-xs">{workspaceLinkLabel}</span> : null}
             <button
               className={workspaceActionButtonClass}
               type="button"

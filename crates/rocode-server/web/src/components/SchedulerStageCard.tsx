@@ -197,13 +197,13 @@ export function SchedulerStageCard({
         <div className="roc-message-meta-group">
           <span className="roc-section-label">Scheduler Stage</span>
           {(message.role ?? "assistant") !== "assistant" ? (
-            <span className="roc-meta-badge">{message.role}</span>
+            <span className="roc-badge">{message.role}</span>
           ) : null}
         </div>
         {chips.length ? (
           <div className="roc-message-meta-group">
             {chips.map((chip, index) => (
-              <span key={`${message.feedId}-chip-${index}`} className="roc-meta-badge">
+              <span key={`${message.feedId}-chip-${index}`} className="roc-badge">
                 {chip}
               </span>
             ))}
@@ -299,7 +299,7 @@ export function SchedulerStageCard({
       {tokens.length ? (
         <div className="flex flex-wrap gap-2">
           {tokens.map((token) => (
-            <span key={`${message.feedId}-${token}`} className="roc-meta-badge">
+            <span key={`${message.feedId}-${token}`} className="roc-badge">
               {token}
             </span>
           ))}
@@ -388,7 +388,7 @@ export function SchedulerStageCard({
             <div className="flex flex-wrap items-center gap-2">
               <span className="roc-section-label">Skills</span>
               {message.active_skills.map((skill) => (
-                <span key={`${message.feedId}-skill-${skill}`} className="roc-meta-badge">
+                <span key={`${message.feedId}-skill-${skill}`} className="roc-badge">
                   {skill}
                 </span>
               ))}
@@ -398,7 +398,7 @@ export function SchedulerStageCard({
             <div className="flex flex-wrap items-center gap-2">
               <span className="roc-section-label">Agents</span>
               {message.active_agents.map((agent) => (
-                <span key={`${message.feedId}-agent-${agent}`} className="roc-meta-badge">
+                <span key={`${message.feedId}-agent-${agent}`} className="roc-badge">
                   {agent}
                 </span>
               ))}
@@ -408,7 +408,7 @@ export function SchedulerStageCard({
             <div className="flex flex-wrap items-center gap-2">
               <span className="roc-section-label">Categories</span>
               {message.active_categories.map((category) => (
-                <span key={`${message.feedId}-category-${category}`} className="roc-meta-badge">
+                <span key={`${message.feedId}-category-${category}`} className="roc-badge">
                   {category}
                 </span>
               ))}

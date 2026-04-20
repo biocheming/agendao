@@ -52,144 +52,144 @@
 html[data-theme="daylight"] {
   color-scheme: light;
   --radius: 0.5rem;
-  --background: oklch(0.975 0.005 85);
+  --background: oklch(0.98 0.003 85);
   --foreground: oklch(0.18 0.02 260);
-  --card: oklch(0.99 0.003 85);
+  --card: oklch(1 0 0);
   --card-foreground: oklch(0.18 0.02 260);
-  --popover: oklch(0.99 0.003 85);
+  --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.18 0.02 260);
   --primary: oklch(0.45 0.16 260);
   --primary-foreground: oklch(0.98 0.005 260);
-  --secondary: oklch(0.955 0.006 85);
+  --secondary: oklch(0.96 0.004 85);
   --secondary-foreground: oklch(0.22 0.02 260);
-  --muted: oklch(0.955 0.006 85);
-  --muted-foreground: oklch(0.52 0.01 260);
-  --accent: oklch(0.94 0.025 260);
+  --muted: oklch(0.96 0.004 85);
+  --muted-foreground: oklch(0.50 0.01 260);
+  --accent: oklch(0.95 0.02 260);
   --accent-foreground: oklch(0.22 0.02 260);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.91 0.008 85);
-  --input: oklch(0.91 0.008 85);
+  --border: oklch(0.92 0.005 85);
+  --input: oklch(0.92 0.005 85);
   --ring: oklch(0.50 0.16 260);
   --chart-1: oklch(0.50 0.16 260);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.97 0.005 85);
+  --sidebar: oklch(0.965 0.004 85);
   --sidebar-foreground: oklch(0.18 0.02 260);
   --sidebar-primary: oklch(0.45 0.16 260);
   --sidebar-primary-foreground: oklch(0.98 0.005 260);
-  --sidebar-accent: oklch(0.94 0.025 260);
+  --sidebar-accent: oklch(0.94 0.02 260);
   --sidebar-accent-foreground: oklch(0.22 0.02 260);
-  --sidebar-border: oklch(0.91 0.008 85);
+  --sidebar-border: oklch(0.92 0.005 85);
   --sidebar-ring: oklch(0.50 0.16 260);
 }
 
 /* ─── Theme: Sunset (warm tinted light) ──────────────────────────── */
 html[data-theme="sunset"] {
   color-scheme: light;
-  --background: oklch(0.96 0.015 60);
+  --background: oklch(0.97 0.012 60);
   --foreground: oklch(0.2 0.03 45);
-  --card: oklch(0.975 0.012 60);
+  --card: oklch(0.99 0.006 60);
   --card-foreground: oklch(0.2 0.03 45);
-  --popover: oklch(0.975 0.012 60);
+  --popover: oklch(0.99 0.006 60);
   --popover-foreground: oklch(0.2 0.03 45);
   --primary: oklch(0.55 0.18 38);
   --primary-foreground: oklch(0.98 0.005 60);
   --secondary: oklch(0.94 0.02 55);
   --secondary-foreground: oklch(0.25 0.03 45);
   --muted: oklch(0.94 0.02 55);
-  --muted-foreground: oklch(0.5 0.02 45);
+  --muted-foreground: oklch(0.48 0.02 45);
   --accent: oklch(0.92 0.03 50);
   --accent-foreground: oklch(0.25 0.03 45);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.89 0.025 55);
-  --input: oklch(0.89 0.025 55);
+  --border: oklch(0.90 0.02 55);
+  --input: oklch(0.90 0.02 55);
   --ring: oklch(0.6 0.15 38);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.95 0.015 58);
+  --sidebar: oklch(0.945 0.015 58);
   --sidebar-foreground: oklch(0.2 0.03 45);
   --sidebar-primary: oklch(0.55 0.18 38);
   --sidebar-primary-foreground: oklch(0.98 0.005 60);
   --sidebar-accent: oklch(0.92 0.025 55);
   --sidebar-accent-foreground: oklch(0.25 0.03 45);
-  --sidebar-border: oklch(0.89 0.025 55);
+  --sidebar-border: oklch(0.90 0.02 55);
   --sidebar-ring: oklch(0.6 0.15 38);
 }
 
 /* ─── Theme: Graphite (cool dark) ────────────────────────────────── */
 html[data-theme="graphite"] {
   color-scheme: dark;
-  --background: oklch(0.16 0.01 260);
+  --background: oklch(0.15 0.01 260);
   --foreground: oklch(0.93 0.005 260);
-  --card: oklch(0.2 0.01 260);
+  --card: oklch(0.19 0.01 260);
   --card-foreground: oklch(0.93 0.005 260);
-  --popover: oklch(0.2 0.01 260);
+  --popover: oklch(0.22 0.012 260);
   --popover-foreground: oklch(0.93 0.005 260);
   --primary: oklch(0.68 0.16 260);
-  --primary-foreground: oklch(0.18 0.02 260);
-  --secondary: oklch(0.25 0.01 260);
+  --primary-foreground: oklch(0.15 0.01 260);
+  --secondary: oklch(0.22 0.01 260);
   --secondary-foreground: oklch(0.93 0.005 260);
-  --muted: oklch(0.25 0.01 260);
-  --muted-foreground: oklch(0.65 0.01 260);
-  --accent: oklch(0.28 0.03 260);
+  --muted: oklch(0.22 0.01 260);
+  --muted-foreground: oklch(0.60 0.01 260);
+  --accent: oklch(0.24 0.025 260);
   --accent-foreground: oklch(0.93 0.005 260);
   --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
+  --border: oklch(1 0 0 / 8%);
+  --input: oklch(1 0 0 / 12%);
   --ring: oklch(0.60 0.16 260);
   --chart-1: oklch(0.68 0.16 260);
   --chart-2: oklch(0.696 0.17 162.48);
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.18 0.01 260);
+  --sidebar: oklch(0.13 0.01 260);
   --sidebar-foreground: oklch(0.93 0.005 260);
   --sidebar-primary: oklch(0.68 0.16 260);
   --sidebar-primary-foreground: oklch(0.93 0.005 260);
-  --sidebar-accent: oklch(0.25 0.015 260);
+  --sidebar-accent: oklch(0.22 0.012 260);
   --sidebar-accent-foreground: oklch(0.93 0.005 260);
-  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-border: oklch(1 0 0 / 8%);
   --sidebar-ring: oklch(0.60 0.16 260);
 }
 
 /* ─── Theme: Midnight (warm-tinted dark) ─────────────────────────── */
 html[data-theme="midnight"] {
   color-scheme: dark;
-  --background: oklch(0.145 0.015 250);
+  --background: oklch(0.15 0.015 250);
   --foreground: oklch(0.94 0.008 85);
   --card: oklch(0.19 0.015 250);
   --card-foreground: oklch(0.94 0.008 85);
-  --popover: oklch(0.19 0.015 250);
+  --popover: oklch(0.22 0.018 250);
   --popover-foreground: oklch(0.94 0.008 85);
   --primary: oklch(0.72 0.12 50);
-  --primary-foreground: oklch(0.19 0.015 250);
+  --primary-foreground: oklch(0.15 0.015 250);
   --secondary: oklch(0.24 0.015 250);
   --secondary-foreground: oklch(0.94 0.008 85);
   --muted: oklch(0.24 0.015 250);
-  --muted-foreground: oklch(0.65 0.015 250);
+  --muted-foreground: oklch(0.62 0.012 250);
   --accent: oklch(0.27 0.02 250);
   --accent-foreground: oklch(0.94 0.008 85);
   --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
+  --border: oklch(1 0 0 / 8%);
+  --input: oklch(1 0 0 / 12%);
   --ring: oklch(0.65 0.12 50);
   --chart-1: oklch(0.72 0.12 50);
   --chart-2: oklch(0.696 0.17 162.48);
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.17 0.015 250);
+  --sidebar: oklch(0.12 0.015 250);
   --sidebar-foreground: oklch(0.94 0.008 85);
   --sidebar-primary: oklch(0.72 0.12 50);
   --sidebar-primary-foreground: oklch(0.94 0.008 85);
-  --sidebar-accent: oklch(0.24 0.015 250);
+  --sidebar-accent: oklch(0.22 0.015 250);
   --sidebar-accent-foreground: oklch(0.94 0.008 85);
-  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-border: oklch(1 0 0 / 6%);
   --sidebar-ring: oklch(0.65 0.12 50);
 }
 
@@ -205,57 +205,36 @@ html[data-theme="midnight"] {
 @layer components {
   /* ─── Design tokens ──────────────────────────────────────────────── */
 
-  .roc-app-shell {
-    background: var(--background);
-  }
-
   .roc-appbar {
-    @apply border-b border-border/50 bg-background;
+    @apply border-b border-border/30 bg-background;
   }
 
   /* ─── Surfaces ───────────────────────────────────────────────────── */
 
-  .roc-card {
-    @apply rounded-xl border border-border/50 bg-card transition-colors;
-  }
-
   .roc-panel {
-    @apply rounded-xl border border-border/50 bg-card transition-colors;
-  }
-
-  .roc-subpanel {
-    @apply rounded-xl border border-border/50 bg-muted;
+    @apply rounded-xl border border-border/30 bg-card transition-colors;
   }
 
   .roc-section {
-    @apply grid gap-3 rounded-xl border border-border/50 bg-card p-4;
-  }
-
-  .roc-surface-elevated {
-    @apply rounded-2xl border border-border/75 bg-card transition-colors;
-    box-shadow: 0 8px 30px oklch(from var(--foreground) l c h / 10%);
+    @apply grid gap-3 rounded-xl border border-border/30 bg-card p-4;
   }
 
   /* ─── Sidebar ────────────────────────────────────────────────────── */
 
-  .roc-sidebar-shell {
-    @apply border-r border-border/50 bg-sidebar;
-  }
-
   .roc-sidebar-section {
-    @apply rounded-xl bg-background/50;
+    @apply rounded-xl bg-background/40;
   }
 
   .roc-sidebar-item {
-    @apply w-full rounded-lg border border-transparent bg-transparent px-2.5 py-1.5 text-left transition-colors;
+    @apply w-full rounded-lg border border-transparent bg-transparent px-3 py-1.5 text-left transition-colors;
   }
 
   .roc-sidebar-item:hover {
-    @apply bg-accent;
+    @apply bg-accent/60;
   }
 
   .roc-sidebar-item[data-active="true"] {
-    @apply border-border/50 bg-card;
+    @apply border-primary/12 bg-primary/8 font-medium text-foreground;
   }
 
   .roc-sidebar-toggle {
@@ -263,17 +242,17 @@ html[data-theme="midnight"] {
   }
 
   .roc-sidebar-meta {
-    @apply inline-flex items-center rounded-full border border-border/50 bg-background px-2.5 py-0.5 text-xs font-medium text-muted-foreground;
+    @apply inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground;
   }
 
   /* ─── Messages ───────────────────────────────────────────────────── */
 
   .roc-message-card {
-    @apply rounded-xl border border-border/50 bg-card transition-colors;
+    @apply overflow-hidden rounded-xl border border-border/40 bg-card px-5 py-4 transition-colors;
   }
 
   .roc-message-card[data-tone="user"] {
-    @apply bg-secondary;
+    @apply border-transparent bg-secondary;
   }
 
   .roc-message-card[data-highlighted="true"] {
@@ -285,7 +264,7 @@ html[data-theme="midnight"] {
   }
 
   .roc-message-meta-row {
-    @apply mb-2 flex flex-col gap-1.25 sm:flex-row sm:items-center sm:justify-between;
+    @apply mb-2 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between;
   }
 
   .roc-message-meta-group {
@@ -297,25 +276,25 @@ html[data-theme="midnight"] {
   }
 
   .roc-message-body {
-    @apply text-[15px] leading-6.5;
+    @apply min-w-0 max-w-full overflow-x-auto text-[15px] leading-6.5;
   }
 
   .roc-message-footer {
-    @apply mt-2 flex items-center justify-end gap-2 border-t border-border/50 pt-1.5;
+    @apply mt-2 flex items-center justify-end gap-2 border-t border-border/30 pt-1.5;
   }
 
   .roc-message-summary {
-    @apply text-[11px] leading-4.5 text-muted-foreground;
+    @apply text-xs leading-4 text-muted-foreground;
   }
 
   /* ─── Detail cards ───────────────────────────────────────────────── */
 
   .roc-detail-card {
-    @apply rounded-xl border border-border/50 bg-card px-3.5 py-3 transition-colors;
+    @apply rounded-xl border border-border/30 bg-card px-4 py-3 transition-colors;
   }
 
   .roc-detail-card[data-expanded="true"] {
-    @apply bg-card;
+    @apply bg-muted/40;
   }
 
   .roc-detail-card[data-tone="danger"] {
@@ -324,11 +303,11 @@ html[data-theme="midnight"] {
   }
 
   .roc-detail-trigger {
-    @apply flex w-full items-start gap-2.5 text-left;
+    @apply flex w-full items-start gap-3 text-left;
   }
 
   .roc-detail-icon {
-    @apply flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/50 bg-background text-muted-foreground;
+    @apply flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/30 bg-background text-muted-foreground;
   }
 
   .roc-detail-title {
@@ -340,28 +319,7 @@ html[data-theme="midnight"] {
   }
 
   .roc-detail-body {
-    @apply mt-3 grid gap-2.5 border-t border-border/50 pt-3;
-  }
-
-  /* ─── Banners ────────────────────────────────────────────────────── */
-
-  .roc-banner {
-    @apply rounded-xl border border-border/50 bg-card px-4 py-3 transition-colors;
-    animation: roc-fade-rise 220ms ease-out;
-  }
-
-  .roc-banner[data-tone="warning"] {
-    border-color: color-mix(in oklch, oklch(0.78 0.13 80) 50%, var(--border));
-    background: color-mix(in oklch, oklch(0.97 0.03 88) 80%, var(--card));
-  }
-
-  .roc-banner[data-tone="error"] {
-    border-color: color-mix(in oklch, var(--destructive) 40%, var(--border));
-    background: color-mix(in oklch, var(--destructive) 8%, var(--card));
-  }
-
-  .roc-banner-dismiss {
-    @apply inline-flex size-8 items-center justify-center rounded-full text-current/70 transition-colors hover:bg-muted hover:text-current;
+    @apply mt-3 grid gap-3 border-t border-border/30 pt-3;
   }
 
   /* ─── Floating / Overlay ─────────────────────────────────────────── */
@@ -371,8 +329,8 @@ html[data-theme="midnight"] {
   }
 
   .roc-floating-surface {
-    @apply z-50 overflow-hidden rounded-2xl border border-border/75 bg-popover text-popover-foreground backdrop-blur-xl outline-none transition-colors data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-98 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-[0.985];
-    box-shadow: 0 8px 30px oklch(from var(--foreground) l c h / 12%);
+    @apply z-50 overflow-hidden rounded-2xl border border-border/30 bg-popover text-popover-foreground outline-none transition-colors data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-98 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-[0.985];
+    box-shadow: 0 16px 48px -12px oklch(from var(--foreground) l c h / 16%), 0 0 0 1px oklch(from var(--border) l c h / 30%);
   }
 
   .roc-floating-surface[data-side="bottom"] {
@@ -395,52 +353,27 @@ html[data-theme="midnight"] {
     @apply inline-flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground;
   }
 
-  /* ─── State cards ────────────────────────────────────────────────── */
-
-  .roc-state-card {
-    @apply rounded-xl border border-border/50 bg-card px-4 py-4 text-sm transition-colors;
-    animation: roc-fade-rise 220ms ease-out;
-  }
-
-  .roc-state-card[data-tone="danger"] {
-    border-color: color-mix(in oklch, var(--destructive) 30%, var(--border));
-    background: color-mix(in oklch, var(--destructive) 6%, var(--card));
-  }
-
-  .roc-state-card[data-tone="muted"] {
-    @apply bg-muted;
-  }
-
-  .roc-state-card[data-tone="loading"] {
-    border-color: color-mix(in oklch, var(--primary) 20%, var(--border));
-  }
-
   /* ─── Interactive items ──────────────────────────────────────────── */
 
   .roc-item {
-    @apply rounded-lg border border-transparent bg-transparent px-3 py-2.5 text-left transition-colors;
+    @apply rounded-lg border border-transparent bg-transparent px-3 py-2 text-left transition-colors;
   }
 
   .roc-item:hover {
-    @apply bg-accent;
+    @apply bg-accent/60;
   }
 
-  .roc-item-active {
-    @apply border-border/50 bg-accent;
+  .roc-item[data-active="true"] {
+    @apply border-primary/15 bg-primary/8 text-foreground;
   }
 
-  .roc-surface-interactive {
-    @apply transition-colors;
-  }
-
-  .roc-surface-interactive:hover {
-    @apply bg-accent;
+  .roc-empty {
+    @apply flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border/30 px-4 py-8 text-center text-sm text-muted-foreground;
   }
 
   /* ─── Rail / Side panels ─────────────────────────────────────────── */
 
-  .roc-rail-panel,
-  .roc-side-panel {
+  .roc-rail-panel {
     @apply grid gap-4;
   }
 
@@ -464,9 +397,8 @@ html[data-theme="midnight"] {
     @apply flex flex-wrap items-center justify-end gap-2;
   }
 
-  .roc-rail-section,
-  .roc-side-section {
-    @apply grid gap-3 rounded-xl border border-border/50 bg-card p-4;
+  .roc-rail-section {
+    @apply grid gap-3 rounded-xl border border-border/30 bg-card/60 p-4;
   }
 
   .roc-rail-section-header {
@@ -485,40 +417,33 @@ html[data-theme="midnight"] {
     @apply text-xs text-muted-foreground;
   }
 
-  .roc-rail-item,
-  .roc-side-item {
-    @apply rounded-lg border border-transparent bg-transparent px-3 py-2.5 text-left transition-colors;
+  .roc-rail-item {
+    @apply rounded-lg border border-transparent bg-transparent px-3 py-2 text-left transition-colors;
   }
 
-  .roc-rail-item:hover,
-  .roc-side-item:hover {
-    @apply bg-accent;
+  .roc-rail-item:hover {
+    @apply bg-accent/60;
   }
 
-  .roc-rail-item[data-active="true"],
-  .roc-side-item[data-active="true"] {
-    @apply border-primary/30 bg-accent;
+  .roc-rail-item[data-active="true"] {
+    @apply border-primary/15 bg-primary/8;
   }
 
-  .roc-rail-item[data-preview="true"],
-  .roc-side-item[data-preview="true"] {
+  .roc-rail-item[data-preview="true"] {
     border-color: color-mix(in oklch, oklch(0.72 0.16 80) 30%, var(--border));
     background: color-mix(in oklch, oklch(0.86 0.08 88) 30%, var(--card));
   }
 
-  .roc-rail-empty,
-  .roc-side-empty {
-    @apply flex flex-col items-center justify-center gap-3 rounded-xl border border-border/50 bg-card px-4 py-7 text-center text-sm;
-    animation: roc-fade-rise 220ms ease-out;
+  .roc-rail-empty {
+    @apply flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border/30 px-4 py-8 text-center text-sm text-muted-foreground;
   }
 
-  .roc-rail-link,
-  .roc-side-link {
+  .roc-rail-link {
     @apply appearance-none border-0 bg-transparent p-0 text-xs font-medium text-primary underline underline-offset-3 transition-colors hover:text-primary/78;
   }
 
   .roc-rail-tab-list {
-    @apply flex flex-wrap gap-2 border-b border-border/50 pb-3;
+    @apply flex flex-wrap gap-2 border-b border-border/30 pb-3;
   }
 
   .roc-rail-meta-list {
@@ -531,56 +456,24 @@ html[data-theme="midnight"] {
 
   /* ─── History ────────────────────────────────────────────────────── */
 
-  .roc-session-hero {
-    background: var(--card);
-  }
-
   .roc-session-header {
-    @apply border-b border-border/50 pb-2;
+    @apply border-b border-border/30 pb-3;
   }
 
-  .roc-feed-state {
-    @apply rounded-xl border border-border/50 bg-card px-6 py-6 transition-colors;
-  }
-
-  .roc-note-card {
-    @apply rounded-xl border border-border/50 bg-card transition-colors;
-  }
-
-  .roc-history-banner {
-    @apply rounded-xl border border-border/50 bg-card px-4 py-3 transition-colors;
-  }
-
-  /* ─── Badges / Pills ─────────────────────────────────────────────── */
+  /* ─── Badges ─────────────────────────────────────────────────────── */
 
   .roc-badge {
-    @apply inline-flex items-center rounded-full border border-border/50 bg-background px-2.5 py-0.5 text-xs font-medium text-muted-foreground;
-  }
-
-  .roc-meta-badge {
-    @apply inline-flex items-center rounded-full border border-border/50 bg-background px-2.5 py-0.5 text-xs font-medium text-muted-foreground;
-  }
-
-  .roc-pill {
-    @apply inline-flex items-center rounded-full border border-border/50 bg-background px-2.5 py-0.5 text-xs font-medium text-muted-foreground;
-  }
-
-  .roc-pill-outline {
-    @apply inline-flex items-center rounded-full border border-border/50 bg-background px-2.5 py-0.5 text-xs font-medium text-muted-foreground;
-  }
-
-  .roc-chip-subtle {
-    @apply inline-flex items-center rounded-full border border-border/50 bg-background px-2.5 py-0.5 text-xs font-medium text-muted-foreground;
+    @apply inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground;
   }
 
   /* ─── Actions ────────────────────────────────────────────────────── */
 
   .roc-action {
-    @apply inline-flex items-center justify-center rounded-lg border border-border/50 bg-background px-3 py-1.5 text-sm text-foreground transition-colors;
+    @apply inline-flex items-center justify-center rounded-lg border border-transparent bg-muted px-3 py-1.5 text-sm font-medium text-foreground transition-colors;
   }
 
   .roc-action:hover {
-    @apply bg-accent border-border/75;
+    @apply bg-accent text-accent-foreground;
   }
 
   .roc-action:disabled {
@@ -601,38 +494,10 @@ html[data-theme="midnight"] {
     @apply text-xs font-semibold uppercase tracking-widest text-muted-foreground;
   }
 
-  .roc-label {
-    @apply text-xs font-semibold uppercase tracking-widest text-muted-foreground;
-  }
-
-  .roc-inline-fact {
-    @apply inline-flex items-center gap-1.5 rounded-full border border-border/50 bg-background px-2.5 py-1 text-xs text-foreground/80;
-  }
-
-  .roc-inline-fact-label {
-    @apply font-semibold text-muted-foreground;
-  }
-
-  .roc-inline-fact-value {
-    @apply font-medium text-foreground;
-  }
-
   /* ─── Forms ──────────────────────────────────────────────────────── */
-
-  .roc-form-stack {
-    @apply grid gap-3;
-  }
-
-  .roc-form-field {
-    @apply grid gap-1.5;
-  }
 
   .roc-form-label {
     @apply text-xs font-semibold uppercase tracking-widest text-muted-foreground;
-  }
-
-  .roc-form-hint {
-    @apply text-xs text-muted-foreground;
   }
 
   .roc-form-control {
@@ -656,7 +521,7 @@ html[data-theme="midnight"] {
   }
 
   .roc-form-textarea {
-    @apply min-h-32 w-full resize-y rounded-lg border border-input bg-background px-3.5 py-3 text-sm leading-6 text-foreground outline-none transition-[border-color,box-shadow] placeholder:text-muted-foreground disabled:pointer-events-none disabled:opacity-50;
+    @apply min-h-32 w-full resize-y rounded-lg border border-input bg-background px-4 py-3 text-sm leading-6 text-foreground outline-none transition-[border-color,box-shadow] placeholder:text-muted-foreground disabled:pointer-events-none disabled:opacity-50;
   }
 
   .roc-form-textarea:focus-visible {
@@ -664,29 +529,17 @@ html[data-theme="midnight"] {
   }
 
   .roc-form-checkbox-row {
-    @apply inline-flex items-center gap-3 rounded-lg border border-border/50 bg-background px-3 py-2.5 text-sm text-foreground transition-colors;
+    @apply inline-flex items-center gap-3 rounded-lg border border-border/30 bg-background px-3 py-2 text-sm text-foreground transition-colors;
   }
 
   .roc-form-checkbox-row:hover {
-    @apply bg-accent;
-  }
-
-  .roc-form-checkbox {
-    @apply size-4 rounded border border-input bg-background text-primary outline-none;
-  }
-
-  .roc-form-checkbox:focus-visible {
-    @apply border-ring ring-2 ring-ring/30;
-  }
-
-  .roc-form-surface {
-    @apply grid gap-3 rounded-xl border border-border/50 bg-card p-4;
+    @apply bg-accent/60;
   }
 
   /* ─── Structured data ────────────────────────────────────────────── */
 
   .roc-structured-value {
-    @apply rounded-lg border border-border/50 bg-background px-3 py-2.5 font-mono text-xs leading-relaxed text-foreground whitespace-pre-wrap break-words;
+    @apply overflow-x-auto rounded-lg border border-border/30 bg-background px-3 py-2 font-mono text-xs leading-relaxed text-foreground whitespace-pre-wrap break-words;
   }
 
   .roc-structured-copy {
@@ -694,7 +547,7 @@ html[data-theme="midnight"] {
   }
 
   .roc-structured-empty {
-    @apply rounded-xl border border-dashed border-border/50 bg-muted px-3.5 py-4 text-sm italic text-muted-foreground;
+    @apply rounded-xl border border-dashed border-border/30 bg-muted px-4 py-4 text-sm italic text-muted-foreground;
   }
 
   .roc-structured-list {
@@ -702,7 +555,7 @@ html[data-theme="midnight"] {
   }
 
   .roc-structured-disclosure {
-    @apply rounded-xl border border-border/50 bg-card px-3.5 py-3 transition-colors;
+    @apply rounded-xl border border-border/30 bg-card px-4 py-3 transition-colors;
   }
 
   .roc-structured-summary {
@@ -726,7 +579,7 @@ html[data-theme="midnight"] {
   }
 
   .roc-structured-summary-meta {
-    @apply inline-flex items-center rounded-full border border-border/50 bg-background px-2.5 py-0.5 text-xs font-medium text-muted-foreground;
+    @apply inline-flex items-center rounded-full border border-border/30 bg-background px-2.5 py-0.5 text-xs font-medium text-muted-foreground;
   }
 
   .roc-structured-summary-note {
@@ -734,7 +587,7 @@ html[data-theme="midnight"] {
   }
 
   .roc-structured-body {
-    @apply mt-3 grid gap-3 border-t border-border/50 pt-3;
+    @apply mt-3 grid gap-3 border-t border-border/30 pt-3;
   }
 
   .roc-structured-dl {
@@ -742,15 +595,11 @@ html[data-theme="midnight"] {
   }
 
   .roc-structured-row {
-    @apply grid gap-1.5 rounded-lg border border-border/50 bg-background px-3 py-2.5;
+    @apply grid gap-1.5 rounded-lg border border-border/30 bg-background px-3 py-2;
   }
 
   .roc-structured-key {
     @apply text-xs font-semibold uppercase tracking-widest text-muted-foreground;
-  }
-
-  .roc-structured-type {
-    @apply inline-flex items-center rounded-full border border-border/50 bg-background px-2.5 py-0.5 text-xs font-medium text-muted-foreground;
   }
 
   .roc-structured-stack {
@@ -761,10 +610,6 @@ html[data-theme="midnight"] {
     @apply flex flex-wrap gap-1.5;
   }
 
-  .roc-data-row {
-    @apply grid gap-1.5 rounded-xl border border-border/50 bg-background px-3.5 py-3;
-  }
-
   /* ─── Status ─────────────────────────────────────────────────────── */
 
   .roc-status-row {
@@ -772,7 +617,7 @@ html[data-theme="midnight"] {
   }
 
   .roc-status-orb {
-    @apply flex size-9 items-center justify-center rounded-xl border border-border/50 bg-background text-muted-foreground;
+    @apply flex size-9 items-center justify-center rounded-xl border border-border/30 bg-background text-muted-foreground;
   }
 
   .roc-status-orb[data-tone="danger"] {
@@ -787,7 +632,8 @@ html[data-theme="midnight"] {
   /* ─── Composer ───────────────────────────────────────────────────── */
 
   .roc-composer-shell {
-    @apply overflow-hidden rounded-xl border border-border/50 bg-card transition-colors;
+    @apply overflow-hidden rounded-2xl border border-border/30 bg-card transition-colors;
+    box-shadow: 0 -1px 0 var(--border), 0 4px 24px -8px oklch(from var(--foreground) l c h / 8%);
   }
 
   .roc-composer-shell[data-drag-active="true"] {
@@ -795,11 +641,11 @@ html[data-theme="midnight"] {
   }
 
   .roc-toolbar-field {
-    @apply inline-flex min-w-0 items-center gap-2 rounded-lg border border-border/50 bg-background px-2.75 py-1.5;
+    @apply inline-flex min-w-0 items-center gap-2 rounded-lg border border-border/30 bg-background px-3 py-1.5;
   }
 
   .roc-toolbar-label {
-    @apply text-[9px] font-semibold uppercase tracking-widest text-muted-foreground;
+    @apply text-[10px] font-semibold uppercase tracking-widest text-muted-foreground;
   }
 
   .roc-toolbar-select {
@@ -818,7 +664,7 @@ html[data-theme="midnight"] {
   }
 
   .roc-terminal-tab:hover {
-    @apply bg-accent;
+    @apply bg-accent/60;
   }
 
   .roc-terminal-tab[data-active="true"] {
@@ -826,18 +672,10 @@ html[data-theme="midnight"] {
   }
 
   .roc-terminal-viewport {
-    @apply min-h-[24rem] rounded-xl border border-border/50 bg-background p-2;
+    @apply min-h-[24rem] rounded-xl border border-border/30 bg-background p-3;
   }
 
   /* ─── Misc ───────────────────────────────────────────────────────── */
-
-  .roc-empty-suggestion {
-    @apply rounded-full border border-border/50 bg-background px-3 py-2 text-xs text-foreground/80 transition-colors hover:bg-accent;
-  }
-
-  .roc-textarea {
-    @apply rounded-lg border border-border/50 bg-background outline-none transition-[border-color,box-shadow];
-  }
 
   .roc-skeleton-line {
     @apply rounded-full bg-muted/70;
@@ -845,7 +683,7 @@ html[data-theme="midnight"] {
   }
 
   .roc-skeleton-panel {
-    @apply rounded-xl border border-border/50 bg-muted/50;
+    @apply rounded-xl border border-border/30 bg-muted/50;
     animation: roc-pulse 1.8s ease-in-out infinite;
   }
 
@@ -865,7 +703,8 @@ html[data-theme="midnight"] {
   /* ─── Markdown (unchanged) ───────────────────────────────────────── */
 
   .roc-markdown-flow {
-    @apply text-[15px] leading-6.5 text-foreground/92;
+    @apply min-w-0 text-[15px] leading-6.5 text-foreground/92;
+    overflow-wrap: break-word;
   }
 
   .roc-markdown-flow > * + * {
@@ -874,6 +713,8 @@ html[data-theme="midnight"] {
 
   .roc-markdown-flow p {
     @apply text-[15px] leading-6.5;
+    overflow-wrap: break-word;
+    word-break: break-word;
   }
 
   .roc-markdown-flow strong {
@@ -998,11 +839,11 @@ html[data-theme="midnight"] {
   }
 
   .roc-markdown-flow pre {
-    @apply overflow-x-auto rounded-[20px] border border-border/45 bg-background/72 px-4 py-3;
+    @apply min-w-0 max-w-full overflow-x-auto rounded-[20px] border border-border/45 bg-background/72 px-4 py-3;
   }
 
   .roc-markdown-flow [data-streamdown="code-block"] {
-    @apply my-[0.64rem] overflow-hidden rounded-[18px] border border-border/50 bg-card/68;
+    @apply my-[0.64rem] min-w-0 max-w-full overflow-hidden rounded-[18px] border border-border/30 bg-card/68;
     box-shadow: 0 14px 34px -32px color-mix(in oklch, var(--foreground) 18%, transparent);
   }
 
@@ -1053,75 +894,6 @@ html[data-theme="midnight"] {
     @apply border-t border-border/35 px-3 py-2 align-top text-foreground/88;
   }
 
-  .roc-item {
-    @apply rounded-lg border border-transparent bg-transparent transition-colors;
-  }
-
-  .roc-item:hover {
-    @apply bg-accent/45;
-  }
-
-  .roc-item-active {
-    @apply border-border/70 bg-accent/60 shadow-sm;
-  }
-
-  .roc-pill {
-    @apply rounded-full bg-muted/55 px-2.5 py-1 text-[11px] font-medium text-muted-foreground;
-  }
-
-  .roc-pill-outline {
-    @apply rounded-full border border-border/40 bg-background/66 px-2.25 py-0.75 text-[10px] font-medium text-muted-foreground;
-  }
-
-  .roc-chip-subtle {
-    @apply inline-flex items-center rounded-full border border-border/40 bg-background/66 px-2.25 py-0.75 text-[10px] font-medium text-muted-foreground;
-  }
-
-  .roc-action {
-    @apply inline-flex items-center justify-center rounded-lg border border-border/45 bg-background/70 text-foreground transition-[border-color,background-color,box-shadow,transform,opacity] duration-150 ease-out hover:border-border/70 hover:bg-accent/72;
-    box-shadow: 0 12px 30px -28px color-mix(in oklch, var(--foreground) 16%, transparent);
-  }
-
-  .roc-action:hover {
-    transform: translateY(-1px);
-  }
-
-  .roc-action:disabled {
-    @apply cursor-not-allowed border-border/35 bg-muted/42 text-muted-foreground;
-    box-shadow: none;
-    transform: none;
-  }
-
-  .roc-textarea {
-    @apply rounded-xl border border-border/45 bg-background transition-[border-color,box-shadow,background-color] duration-150 ease-out;
-  }
-
-  .roc-composer-shell {
-    @apply overflow-hidden rounded-[16px] border border-border/52 bg-card/86 backdrop-blur-xl transition-[border-color,background-color,box-shadow,transform] duration-200 ease-out;
-    box-shadow: 0 14px 34px -34px color-mix(in oklch, var(--foreground) 16%, transparent);
-  }
-
-  .roc-composer-shell[data-drag-active="true"] {
-    border-color: color-mix(in oklch, var(--primary) 52%, var(--border));
-    background: color-mix(in oklch, var(--card) 90%, var(--primary) 10%);
-  }
-
-  .roc-toolbar-field {
-    @apply inline-flex min-w-0 items-center gap-2 rounded-[12px] border border-border/45 bg-background/70 px-2.75 py-1.5;
-  }
-
-  .roc-toolbar-label {
-    @apply text-[9px] font-semibold uppercase tracking-[0.18em] text-muted-foreground;
-  }
-
-  .roc-toolbar-select {
-    @apply min-w-0 bg-transparent text-[12px] font-medium text-foreground outline-none;
-  }
-
-  .roc-toolbar-select option {
-    color: var(--foreground);
-    background: var(--background);
-  }
 }
 
 @keyframes roc-pulse {
@@ -1159,15 +931,10 @@ html[data-theme="midnight"] {
 
 @media (prefers-reduced-motion: reduce) {
   .roc-panel,
-  .roc-card,
-  .roc-surface-elevated,
   .roc-message-card,
   .roc-detail-card,
-  .roc-banner,
   .roc-floating-surface,
-  .roc-state-card,
   .roc-action,
-  .roc-textarea,
   .roc-composer-shell {
     transition-duration: 0ms !important;
     animation: none !important;

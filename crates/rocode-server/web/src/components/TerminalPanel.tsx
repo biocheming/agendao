@@ -190,9 +190,9 @@ export function TerminalPanel({ terminal }: TerminalPanelProps) {
           {terminal.activeSession ? (
             <>
               <div className="roc-rail-meta-list">
-                <span className="roc-pill px-3 py-1.5 text-xs">{terminal.activeSession.status}</span>
-                <span className="roc-pill px-3 py-1.5 text-xs">{terminal.activeSession.cwd || "cwd unknown"}</span>
-                <span className="roc-pill px-3 py-1.5 text-xs">{terminal.activeSession.id}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">{terminal.activeSession.status}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">{terminal.activeSession.cwd || "cwd unknown"}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">{terminal.activeSession.id}</span>
               </div>
               <div className="roc-rail-section">
                 <div

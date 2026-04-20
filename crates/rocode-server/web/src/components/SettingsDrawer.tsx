@@ -1567,7 +1567,7 @@ export function SettingsDrawer({
 
           {!loading && activeTab === "general" ? (
             <div className="grid gap-6">
-              <div className="roc-form-surface">
+              <div className="roc-section">
                 <div className={formFieldClass}>
                   <label className={formLabelClass}>Theme</label>
                 </div>
@@ -1589,7 +1589,7 @@ export function SettingsDrawer({
                 </div>
               </div>
 
-              <div className="roc-form-surface">
+              <div className="roc-section">
                 <label htmlFor="settings-mode-select" className={formLabelClass}>Execution Mode</label>
                 <select
                   id="settings-mode-select"
@@ -1606,7 +1606,7 @@ export function SettingsDrawer({
                 </select>
               </div>
 
-              <div className="roc-form-surface">
+              <div className="roc-section">
                 <label htmlFor="settings-model-select" className={formLabelClass}>Model</label>
                 <select
                   id="settings-model-select"
@@ -1623,7 +1623,7 @@ export function SettingsDrawer({
                 </select>
               </div>
 
-              <div className="roc-form-surface">
+              <div className="roc-section">
                 <label className={checkboxRowClass}>
                   <input
                     className={checkboxClass}
@@ -1732,7 +1732,7 @@ export function SettingsDrawer({
           {!loading && activeTab === "providers" ? (
             <div className="grid gap-6">
               <form
-                className="roc-form-surface"
+                className="roc-section"
                 onSubmit={(event) => {
                   event.preventDefault();
                   void (async () => {
@@ -1765,7 +1765,7 @@ export function SettingsDrawer({
                         <button
                           key={provider.id}
                           type="button"
-                          className="roc-side-item grid gap-1 text-left"
+                          className="roc-item grid gap-1 text-left"
                           onClick={() => chooseKnownProvider(provider)}
                         >
                           <strong>{provider.name}</strong>
@@ -1915,7 +1915,7 @@ export function SettingsDrawer({
 
           {!loading && activeTab === "scheduler" ? (
             <div className="grid gap-6">
-              <div className="roc-form-surface">
+              <div className="roc-section">
                 <label htmlFor="settings-scheduler-path" className={formLabelClass}>Scheduler Config Path</label>
                 <input
                   id="settings-scheduler-path"
@@ -1929,7 +1929,7 @@ export function SettingsDrawer({
                 </div>
               </div>
 
-              <div className="roc-form-surface">
+              <div className="roc-section">
                 <label htmlFor="settings-scheduler-content" className={formLabelClass}>Scheduler Config</label>
                 <textarea
                   id="settings-scheduler-content"
@@ -2122,7 +2122,7 @@ export function SettingsDrawer({
               </div>
 
               {Object.entries(mcpConfigs).map(([key]) => (
-                <div key={key} className="roc-form-surface">
+                <div key={key} className="roc-section">
                   <label className={formLabelClass}>{key}</label>
                   <textarea
                     className={editorTextareaClass}
@@ -2151,7 +2151,7 @@ export function SettingsDrawer({
                 </div>
               ))}
 
-              <div className="roc-form-surface">
+              <div className="roc-section">
                 <label htmlFor="settings-new-mcp-key" className={formLabelClass}>New MCP Config</label>
                 <input
                   id="settings-new-mcp-key"
@@ -2207,7 +2207,7 @@ export function SettingsDrawer({
               </div>
 
               {Object.entries(pluginConfigs).map(([key]) => (
-                <div key={key} className="roc-form-surface">
+                <div key={key} className="roc-section">
                   <label className={formLabelClass}>{key}</label>
                   <textarea
                     className={editorTextareaClass}
@@ -2236,7 +2236,7 @@ export function SettingsDrawer({
                 </div>
               ))}
 
-              <div className="roc-form-surface">
+              <div className="roc-section">
                 <label htmlFor="settings-new-plugin-key" className={formLabelClass}>New Plugin Config</label>
                 <input
                   id="settings-new-plugin-key"

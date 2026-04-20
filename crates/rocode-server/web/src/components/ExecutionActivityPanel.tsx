@@ -278,12 +278,12 @@ export function ExecutionActivityPanel({
       {activity.executionTopology ? (
         <>
           <div className="roc-rail-meta-list">
-            <span className="roc-pill px-3 py-1.5 text-xs">active {activity.executionTopology.active_count}</span>
-            <span className="roc-pill px-3 py-1.5 text-xs">running {activity.executionTopology.running_count}</span>
-            <span className="roc-pill px-3 py-1.5 text-xs">waiting {activity.executionTopology.waiting_count}</span>
-            <span className="roc-pill px-3 py-1.5 text-xs">retry {activity.executionTopology.retry_count ?? 0}</span>
-            <span className="roc-pill px-3 py-1.5 text-xs">cancelling {activity.executionTopology.cancelling_count ?? 0}</span>
-            <span className="roc-pill px-3 py-1.5 text-xs">done {activity.executionTopology.done_count}</span>
+            <span className="roc-badge px-3 py-1.5 text-xs">active {activity.executionTopology.active_count}</span>
+            <span className="roc-badge px-3 py-1.5 text-xs">running {activity.executionTopology.running_count}</span>
+            <span className="roc-badge px-3 py-1.5 text-xs">waiting {activity.executionTopology.waiting_count}</span>
+            <span className="roc-badge px-3 py-1.5 text-xs">retry {activity.executionTopology.retry_count ?? 0}</span>
+            <span className="roc-badge px-3 py-1.5 text-xs">cancelling {activity.executionTopology.cancelling_count ?? 0}</span>
+            <span className="roc-badge px-3 py-1.5 text-xs">done {activity.executionTopology.done_count}</span>
           </div>
           <p className="text-sm text-muted-foreground leading-relaxed">
             Updated {formatTs(activity.executionTopology.updated_at ?? undefined)}
@@ -293,11 +293,11 @@ export function ExecutionActivityPanel({
               <div className={sideSectionClass}>
                 <p className="roc-section-label">Session Usage</p>
                 <div className="roc-rail-meta-list">
-                  <span className="roc-pill px-3 py-1.5 text-xs">input {activity.sessionUsage.input_tokens}</span>
-                  <span className="roc-pill px-3 py-1.5 text-xs">output {activity.sessionUsage.output_tokens}</span>
-                  <span className="roc-pill px-3 py-1.5 text-xs">reasoning {activity.sessionUsage.reasoning_tokens}</span>
-                  <span className="roc-pill px-3 py-1.5 text-xs">cache read {activity.sessionUsage.cache_read_tokens}</span>
-                  <span className="roc-pill px-3 py-1.5 text-xs">cache write {activity.sessionUsage.cache_write_tokens}</span>
+                  <span className="roc-badge px-3 py-1.5 text-xs">input {activity.sessionUsage.input_tokens}</span>
+                  <span className="roc-badge px-3 py-1.5 text-xs">output {activity.sessionUsage.output_tokens}</span>
+                  <span className="roc-badge px-3 py-1.5 text-xs">reasoning {activity.sessionUsage.reasoning_tokens}</span>
+                  <span className="roc-badge px-3 py-1.5 text-xs">cache read {activity.sessionUsage.cache_read_tokens}</span>
+                  <span className="roc-badge px-3 py-1.5 text-xs">cache write {activity.sessionUsage.cache_write_tokens}</span>
                 </div>
                 <p className="text-sm text-muted-foreground leading-relaxed">Total cost {formatMoney(activity.sessionUsage.total_cost)}</p>
               </div>
@@ -307,23 +307,23 @@ export function ExecutionActivityPanel({
                   <>
                     <div className="roc-rail-meta-list items-center">
                       <strong>{activity.activeStageSummary.stage_name}</strong>
-                      <span className="roc-pill px-3 py-1 text-xs">{activity.activeStageSummary.status}</span>
+                      <span className="roc-badge px-3 py-1 text-xs">{activity.activeStageSummary.status}</span>
                       {activity.sessionRuntime?.active_stage_count ? (
-                        <span className="roc-pill px-3 py-1 text-xs">active {activity.sessionRuntime.active_stage_count}</span>
+                        <span className="roc-badge px-3 py-1 text-xs">active {activity.sessionRuntime.active_stage_count}</span>
                       ) : null}
                     </div>
                     <div className="roc-rail-meta-list">
                       {typeof activity.activeStageSummary.prompt_tokens === "number" ? (
-                        <span className="roc-pill px-3 py-1 text-xs">in {activity.activeStageSummary.prompt_tokens}</span>
+                        <span className="roc-badge px-3 py-1 text-xs">in {activity.activeStageSummary.prompt_tokens}</span>
                       ) : null}
                       {typeof activity.activeStageSummary.completion_tokens === "number" ? (
-                        <span className="roc-pill px-3 py-1 text-xs">out {activity.activeStageSummary.completion_tokens}</span>
+                        <span className="roc-badge px-3 py-1 text-xs">out {activity.activeStageSummary.completion_tokens}</span>
                       ) : null}
                       {typeof activity.activeStageSummary.reasoning_tokens === "number" ? (
-                        <span className="roc-pill px-3 py-1 text-xs">reasoning {activity.activeStageSummary.reasoning_tokens}</span>
+                        <span className="roc-badge px-3 py-1 text-xs">reasoning {activity.activeStageSummary.reasoning_tokens}</span>
                       ) : null}
                       {typeof activity.activeStageSummary.skill_tree_budget === "number" ? (
-                        <span className="roc-pill px-3 py-1 text-xs">budget {activity.activeStageSummary.skill_tree_budget}</span>
+                        <span className="roc-badge px-3 py-1 text-xs">budget {activity.activeStageSummary.skill_tree_budget}</span>
                       ) : null}
                     </div>
                     <p className="text-sm text-muted-foreground leading-relaxed">
@@ -352,20 +352,20 @@ export function ExecutionActivityPanel({
                   <p className="roc-section-label">Memory Runtime</p>
                   <h4 className="roc-rail-section-title">{activity.sessionMemory.workspace_mode} workspace explain</h4>
                 </div>
-                <span className="roc-pill px-3 py-1.5 text-xs">
+                <span className="roc-badge px-3 py-1.5 text-xs">
                   snapshot {activity.sessionMemory.frozen_snapshot_items}
                 </span>
               </div>
               <div className="roc-rail-meta-list">
-                <span className="roc-pill px-3 py-1.5 text-xs">prefetch {activity.sessionMemory.last_prefetch_items}</span>
-                <span className="roc-pill px-3 py-1.5 text-xs">rule hits {activity.sessionMemory.recent_rule_hits.length}</span>
-                <span className="roc-pill px-3 py-1.5 text-xs">session writes {activity.sessionMemory.candidate_count + activity.sessionMemory.validated_count + activity.sessionMemory.rejected_count}</span>
-                <span className="roc-pill px-3 py-1.5 text-xs">warnings {activity.sessionMemory.warning_count}</span>
-                <span className="roc-pill px-3 py-1.5 text-xs">methodology {activity.sessionMemory.methodology_candidate_count}</span>
-                <span className="roc-pill px-3 py-1.5 text-xs">skill targets {activity.sessionMemory.derived_skill_candidate_count}</span>
-                <span className="roc-pill px-3 py-1.5 text-xs">linked skills {activity.sessionMemory.linked_skill_count}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">prefetch {activity.sessionMemory.last_prefetch_items}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">rule hits {activity.sessionMemory.recent_rule_hits.length}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">session writes {activity.sessionMemory.candidate_count + activity.sessionMemory.validated_count + activity.sessionMemory.rejected_count}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">warnings {activity.sessionMemory.warning_count}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">methodology {activity.sessionMemory.methodology_candidate_count}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">skill targets {activity.sessionMemory.derived_skill_candidate_count}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">linked skills {activity.sessionMemory.linked_skill_count}</span>
                 {activity.sessionMemory.latest_consolidation_run ? (
-                  <span className="roc-pill px-3 py-1.5 text-xs">
+                  <span className="roc-badge px-3 py-1.5 text-xs">
                     consolidation {activity.sessionMemory.latest_consolidation_run.run_id}
                   </span>
                 ) : null}
@@ -395,7 +395,7 @@ export function ExecutionActivityPanel({
                   <p className="roc-section-label">Recent Skill-Linked Memory</p>
                   <div className="roc-rail-meta-list">
                     {recentSkillRecords.slice(0, 4).map((item) => (
-                      <span key={memoryRecordIdValue(item.id)} className="roc-pill px-3 py-1.5 text-xs">
+                      <span key={memoryRecordIdValue(item.id)} className="roc-badge px-3 py-1.5 text-xs">
                         {item.linked_skill_name || item.derived_skill_name}: {item.title}
                       </span>
                     ))}
@@ -423,7 +423,7 @@ export function ExecutionActivityPanel({
                         <div className="flex flex-wrap items-center gap-2">
                           <strong>{hit.hit_kind}</strong>
                           {hit.memory_id ? (
-                            <span className="roc-pill px-2.5 py-1 text-xs">{memoryRecordIdValue(hit.memory_id)}</span>
+                            <span className="roc-badge px-2.5 py-1 text-xs">{memoryRecordIdValue(hit.memory_id)}</span>
                           ) : null}
                         </div>
                         <p className="text-xs text-muted-foreground">
@@ -510,7 +510,7 @@ export function ExecutionActivityPanel({
                       {meta.map((item) => (
                         <span
                           key={`${stage.stage_id}:${item}`}
-                          className="roc-pill px-2.5 py-1 text-xs"
+                          className="roc-badge px-2.5 py-1 text-xs"
                         >
                           {item}
                         </span>

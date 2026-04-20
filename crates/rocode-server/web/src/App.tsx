@@ -2157,7 +2157,7 @@ export default function App() {
               ROCode
             </span>
             {!leftSidebarOpen && currentWorkspaceSummary?.label ? (
-              <span className="roc-chip-subtle max-w-[12rem] truncate md:max-w-[18rem]">
+              <span className="roc-badge max-w-[12rem] truncate md:max-w-[18rem]">
                 {currentWorkspaceSummary.label}
               </span>
             ) : null}

@@ -105,7 +105,7 @@ export function WorktreePanel({ className }: WorktreePanelProps) {
           <div className="flex items-center gap-2">
             <GitBranchIcon className="size-4 text-muted-foreground" />
             <h3 className="roc-rail-title">Worktrees</h3>
-            <span className="roc-pill px-3 py-1.5 text-xs">{worktrees.length}</span>
+            <span className="roc-badge px-3 py-1.5 text-xs">{worktrees.length}</span>
           </div>
           <p className="roc-rail-description">Branch sandboxes for parallel experiments without disturbing the main repository.</p>
         </div>
@@ -135,7 +135,7 @@ export function WorktreePanel({ className }: WorktreePanelProps) {
                   Create a Git worktree for branch-specific experiments without touching the main checkout.
                 </DialogDescription>
               </DialogHeader>
-              <div className="roc-form-surface py-0">
+              <div className="roc-section py-0">
                 <div className="roc-form-field">
                   <label htmlFor="branch" className="roc-form-label">
                     Branch name (optional)
@@ -245,7 +245,7 @@ export function WorktreePanel({ className }: WorktreePanelProps) {
                 </Button>
               </div>
               <div className="roc-rail-meta-list">
-                <span className="roc-pill px-3 py-1.5 text-xs">sandbox</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">sandbox</span>
                 <span className="font-mono px-1.5 py-0.5 rounded bg-muted">
                   {wt.head.slice(0, 7)}
                 </span>

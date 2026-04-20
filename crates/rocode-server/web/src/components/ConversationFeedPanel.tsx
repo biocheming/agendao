@@ -33,7 +33,7 @@ interface ConversationFeedPanelProps {
 
 function FeedLoadingState() {
   return (
-    <div className="roc-feed-state grid gap-5">
+    <div className="roc-panel grid gap-5">
       <div className="flex items-center gap-2 text-muted-foreground">
         <LoaderCircleIcon className="size-4 animate-spin" />
         <span className="text-sm">Loading conversation…</span>
@@ -74,7 +74,7 @@ function HistoryBackfillState({
   if (!historyLoading && !hasHiddenMessages) return null;
 
   return (
-    <div className="roc-history-banner flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+    <div className="roc-panel flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
       <div className="flex min-w-0 items-start gap-3">
         <div className="flex size-9 shrink-0 items-center justify-center rounded-2xl border border-border/45 bg-background/78 text-muted-foreground">
           {historyLoading ? <LoaderCircleIcon className="size-4 animate-spin" /> : <ChevronUpIcon className="size-4" />}
@@ -90,7 +90,7 @@ function HistoryBackfillState({
       </div>
       <div className="flex flex-wrap items-center gap-2">
         {totalCount > 0 ? (
-          <span className="roc-meta-badge">
+          <span className="roc-badge">
             {visibleCount} / {totalCount} in view
           </span>
         ) : null}
@@ -179,12 +179,12 @@ export function ConversationFeedPanel({
   };
 
   return (
-    <Conversation className="h-full border-0 bg-transparent">
+    <Conversation className="h-full min-w-0 overflow-x-hidden border-0 bg-transparent">
       <ConversationContent className="mx-auto w-full max-w-[76rem] px-4 pb-6 pt-3 md:px-5 md:pb-7 md:pt-3.5">
         {historyLoading && messages.length === 0 ? <FeedLoadingState /> : null}
         {!historyLoading && messages.length === 0 ? (
           <ConversationEmptyState
-            className="roc-feed-state min-h-[22rem] gap-4"
+            className="roc-panel min-h-[22rem] gap-4"
             icon={<SparklesIcon className="size-5" />}
             title="Conversation starts here"
             description="Ask for code changes, debugging, or exploration. The feed will turn into a readable execution narrative instead of a raw event log."
@@ -208,7 +208,7 @@ export function ConversationFeedPanel({
           </ConversationEmptyState>
         ) : null}
         {messages.length > 0 ? (
-          <div className="grid gap-3.5">
+          <div className="grid min-w-0 gap-3.5">
             <HistoryBackfillState
               hiddenCount={hiddenCount}
               visibleCount={visibleMessages.length}
@@ -228,7 +228,7 @@ export function ConversationFeedPanel({
               />
             ))}
             {streaming ? (
-              <div className="roc-note-card flex items-center gap-3 px-3.5 py-2.5">
+              <div className="roc-panel flex items-center gap-3 px-3.5 py-2.5">
                 <div className="flex size-9 items-center justify-center rounded-2xl border border-border/45 bg-background/78">
                   <div className="flex items-center gap-1.5">
                     <span className="roc-streaming-dot" />

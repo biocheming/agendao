@@ -64,7 +64,7 @@ export function SessionHeader({
 
         <div className="flex shrink-0 flex-wrap items-center gap-1.5 xl:justify-end">
           {contextSummary ? (
-            <span className="roc-chip-subtle" title={contextTitle || contextSummary}>
+            <span className="roc-badge" title={contextTitle || contextSummary}>
               {contextSummary}
             </span>
           ) : null}

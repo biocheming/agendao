@@ -143,9 +143,9 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
                 <h4 className="roc-rail-section-title">Stored Run Snapshot</h4>
               </div>
               <div className="roc-rail-meta-list">
-                <span className="roc-pill px-3 py-1.5 text-xs">version {insights.telemetry.version}</span>
-                <span className="roc-pill px-3 py-1.5 text-xs">status {insights.telemetry.last_run_status}</span>
-                <span className="roc-pill px-3 py-1.5 text-xs">stages {insights.telemetry.stage_summaries.length}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">version {insights.telemetry.version}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">status {insights.telemetry.last_run_status}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">stages {insights.telemetry.stage_summaries.length}</span>
               </div>
               <p className="text-sm text-muted-foreground leading-relaxed">
                 Input {insights.telemetry.usage.input_tokens} · output {insights.telemetry.usage.output_tokens} · reasoning {insights.telemetry.usage.reasoning_tokens} · cost {formatMoney(insights.telemetry.usage.total_cost)}
@@ -163,10 +163,10 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
                 <h4 className="roc-rail-section-title">{multimodalDisplayLabel(insights.multimodal) || "Attachment-backed input"}</h4>
               </div>
               <div className="roc-rail-meta-list">
-                <span className="roc-pill px-3 py-1.5 text-xs">message {insights.multimodal.user_message_id}</span>
-                <span className="roc-pill px-3 py-1.5 text-xs">attachments {insights.multimodal.attachment_count}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">message {insights.multimodal.user_message_id}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">attachments {insights.multimodal.attachment_count}</span>
                 {insights.multimodal.kinds.map((kind) => (
-                  <span key={`kind:${kind}`} className="roc-pill px-3 py-1.5 text-xs">
+                  <span key={`kind:${kind}`} className="roc-badge px-3 py-1.5 text-xs">
                     {kind}
                   </span>
                 ))}
@@ -221,14 +221,14 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
                 <h4 className="roc-rail-section-title">{insights.memory.summary.workspace_mode} workspace</h4>
               </div>
               <div className="roc-rail-meta-list">
-                <span className="roc-pill px-3 py-1.5 text-xs">snapshot {insights.memory.summary.frozen_snapshot_items}</span>
-                <span className="roc-pill px-3 py-1.5 text-xs">prefetch {insights.memory.summary.last_prefetch_items}</span>
-                <span className="roc-pill px-3 py-1.5 text-xs">rule hits {insights.memory.summary.recent_rule_hits.length}</span>
-                <span className="roc-pill px-3 py-1.5 text-xs">warnings {insights.memory.summary.warning_count}</span>
-                <span className="roc-pill px-3 py-1.5 text-xs">methodology {insights.memory.summary.methodology_candidate_count}</span>
-                <span className="roc-pill px-3 py-1.5 text-xs">skill targets {insights.memory.summary.derived_skill_candidate_count}</span>
-                <span className="roc-pill px-3 py-1.5 text-xs">linked skills {insights.memory.summary.linked_skill_count}</span>
-                <span className="roc-pill px-3 py-1.5 text-xs">feedback lessons {insights.memory.summary.skill_feedback_lesson_count}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">snapshot {insights.memory.summary.frozen_snapshot_items}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">prefetch {insights.memory.summary.last_prefetch_items}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">rule hits {insights.memory.summary.recent_rule_hits.length}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">warnings {insights.memory.summary.warning_count}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">methodology {insights.memory.summary.methodology_candidate_count}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">skill targets {insights.memory.summary.derived_skill_candidate_count}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">linked skills {insights.memory.summary.linked_skill_count}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">feedback lessons {insights.memory.summary.skill_feedback_lesson_count}</span>
               </div>
               <div className="grid gap-1 text-sm text-muted-foreground">
                 <p>Workspace key: {insights.memory.summary.workspace_key}</p>
@@ -258,7 +258,7 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
                         <div className="flex flex-wrap items-center gap-2">
                           <strong>{item.title}</strong>
                           {skillBadgeLabel(item) ? (
-                            <span className="roc-pill px-2.5 py-1 text-xs">{skillBadgeLabel(item)}</span>
+                            <span className="roc-badge px-2.5 py-1 text-xs">{skillBadgeLabel(item)}</span>
                           ) : null}
                         </div>
                         <p className="text-xs text-muted-foreground">{item.summary}</p>
@@ -289,7 +289,7 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
                       <div className="flex flex-wrap items-center gap-2">
                         <strong>{hit.hit_kind}</strong>
                         {hit.memory_id ? (
-                          <span className="roc-pill px-2.5 py-1 text-xs">
+                          <span className="roc-badge px-2.5 py-1 text-xs">
                             {memoryRecordIdValue(hit.memory_id)}
                           </span>
                         ) : null}

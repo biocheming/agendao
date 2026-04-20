@@ -25,7 +25,7 @@ export function ProvenanceTrail({
             Source
           </span>
           <button
-            className="roc-chip-subtle text-foreground hover:border-primary/35 hover:text-primary transition-colors"
+            className="roc-badge text-foreground hover:border-primary/35 hover:text-primary transition-colors"
             data-testid="provenance-session"
             type="button"
             onClick={onNavigateSession}
@@ -34,7 +34,7 @@ export function ProvenanceTrail({
           </button>
           {provenance.stageId ? (
             <button
-              className="roc-chip-subtle hover:border-primary/35 hover:text-primary transition-colors"
+              className="roc-badge hover:border-primary/35 hover:text-primary transition-colors"
               data-testid="provenance-stage"
               type="button"
               onClick={onNavigateStage}
@@ -44,7 +44,7 @@ export function ProvenanceTrail({
           ) : null}
           {provenance.toolCallId ? (
             <button
-              className="roc-chip-subtle hover:border-primary/35 hover:text-primary transition-colors"
+              className="roc-badge hover:border-primary/35 hover:text-primary transition-colors"
               data-testid="provenance-tool"
               type="button"
               onClick={onNavigateToolCall}
@@ -58,7 +58,7 @@ export function ProvenanceTrail({
         </>
       ) : null}
       {workspaceReference ? (
-        <span className="roc-chip-subtle max-w-[18rem] truncate" data-testid="provenance-workspace" title={`@${workspaceReference}`}>
+        <span className="roc-badge max-w-[18rem] truncate" data-testid="provenance-workspace" title={`@${workspaceReference}`}>
           @{workspaceReference}
         </span>
       ) : null}

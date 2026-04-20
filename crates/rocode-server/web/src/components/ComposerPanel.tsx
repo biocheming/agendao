@@ -55,6 +55,12 @@ import {
 
 const AUTO_MODEL_VALUE = "__auto__";
 
+function parseModeKind(modeKey: string): string | null {
+  const colonIdx = modeKey.indexOf(":");
+  if (colonIdx < 1) return null;
+  return modeKey.slice(0, colonIdx);
+}
+
 function compactOptionLabel(label: string) {
   const trimmed = label.trim();
   if (!trimmed) return trimmed;
@@ -495,19 +501,28 @@ export function ComposerPanel({
                     <div className="flex flex-wrap items-center gap-1.5">
                       <label className="roc-toolbar-field max-w-full">
                         <span className="roc-toolbar-label">Mode</span>
-                        <select
-                          aria-label="Execution mode"
-                          className="roc-toolbar-select max-w-[8rem]"
-                          value={modeValue}
-                          onChange={(event) => onModeChange(event.target.value)}
-                        >
-                          <option value="">Auto</option>
-                          {modeOptions.map((mode) => (
-                            <option key={mode.key} value={mode.key}>
-                              {compactOptionLabel(mode.label)}
-                            </option>
-                          ))}
-                        </select>
+                        <div className="flex min-w-0 flex-col">
+                          <select
+                            aria-label="Execution mode"
+                            className="roc-toolbar-select max-w-[8rem]"
+                            value={modeValue}
+                            onChange={(event) => onModeChange(event.target.value)}
+                          >
+                            <option value="">Auto</option>
+                            {modeOptions.map((mode) => (
+                              <option key={mode.key} value={mode.key}>
+                                {compactOptionLabel(mode.label)}
+                              </option>
+                            ))}
+                          </select>
+                          {modeValue ? (
+                            <span className="truncate text-[10px] leading-4 text-muted-foreground">
+                              {parseModeKind(modeValue) || "agent"}
+                            </span>
+                          ) : (
+                            <span className="text-[10px] leading-4 text-muted-foreground">auto-detect</span>
+                          )}
+                        </div>
                       </label>
 
                       <div className="roc-toolbar-field min-w-[16rem] max-w-full">
@@ -751,7 +766,7 @@ export function ComposerPanel({
                         <span className="text-muted-foreground">Awaiting telemetry</span>
                       )}
                       {contextCount > 0 ? (
-                        <span className="roc-chip-subtle">
+                        <span className="roc-badge">
                           {references.length} refs · {attachments.length} files
                         </span>
                       ) : null}

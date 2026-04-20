@@ -44,8 +44,8 @@ function flattenSessionIds(nodes: SessionTreeNode[]): string[] {
 }
 
 function workspaceModeLabel(mode: "shared" | "isolated" | null) {
-  if (mode === "shared") return "Shared root";
-  if (mode === "isolated") return "Isolated root";
+  if (mode === "shared") return "SHARED";
+  if (mode === "isolated") return "ISOLATED";
   return null;
 }
 
@@ -331,7 +331,7 @@ export function SessionSidebar({
                 <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{currentWorkspaceHint}</p>
               ) : null}
             </div>
-            {workspaceMode ? <span className="roc-pill-outline whitespace-nowrap">{workspaceMode}</span> : null}
+            {workspaceMode ? <span className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">{workspaceMode}</span> : null}
           </div>
 
           <div className="mt-2.5 grid grid-cols-2 gap-1.5">
@@ -508,7 +508,7 @@ export function SessionSidebar({
               Create a new workspace folder and open its root session in the left sidebar.
             </DialogDescription>
           </DialogHeader>
-          <div className="roc-form-surface py-0">
+          <div className="roc-section py-0">
             <div className="roc-form-field">
               <label htmlFor="project-path" className="roc-form-label">
                 Workspace Folder
@@ -557,7 +557,7 @@ export function SessionSidebar({
               If a parent session is included, its follow-up threads are removed with it.
             </DialogDescription>
           </DialogHeader>
-          <div className="roc-form-surface py-0">
+          <div className="roc-section py-0">
             <div className="roc-form-field gap-2">
               <div className="text-sm font-medium text-foreground">
                 {selectedCount} session{selectedCount === 1 ? "" : "s"} selected

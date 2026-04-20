@@ -105,7 +105,7 @@ function MetaActionButton({
     <button
       type="button"
       onClick={onClick}
-      className="roc-meta-badge transition-colors hover:border-primary/35 hover:text-primary"
+      className="roc-badge transition-colors hover:border-primary/35 hover:text-primary"
     >
       {children}
     </button>
@@ -374,8 +374,8 @@ function ToolBlock({ message, active }: { message: OutputBlock; active: boolean 
       <div className="grid gap-2.5">
         {message.tool_call_id || message.stage_id ? (
           <div className="roc-message-meta-group">
-            {message.tool_call_id ? <span className="roc-meta-badge">tool {message.tool_call_id}</span> : null}
-            {message.stage_id ? <span className="roc-meta-badge">stage {message.stage_id}</span> : null}
+            {message.tool_call_id ? <span className="roc-badge">tool {message.tool_call_id}</span> : null}
+            {message.stage_id ? <span className="roc-badge">stage {message.stage_id}</span> : null}
           </div>
         ) : null}
         {fields?.length ? <FieldList fields={fields} /> : null}
@@ -464,7 +464,7 @@ export function MessageCard({
 
   return (
     <article
-      className={cn("grid gap-1", isUser && "justify-items-end")}
+      className={cn("grid min-w-0 gap-1", isUser && "justify-items-end")}
       data-testid="message-card"
       data-feed-id={message.feedId}
       data-block-id={message.id}
@@ -481,7 +481,7 @@ export function MessageCard({
           <div className="roc-message-meta-row">
             <div className="roc-message-meta-group">
               <span className="roc-section-label">{roleLabel}</span>
-              {clock ? <span className="roc-meta-badge">{clock}</span> : null}
+              {clock ? <span className="roc-badge">{clock}</span> : null}
             </div>
             {message.stage_id || message.tool_call_id ? (
               <div className="roc-message-meta-group">
@@ -490,7 +490,7 @@ export function MessageCard({
                     stage {message.stage_id}
                   </MetaActionButton>
                 ) : null}
-                {message.tool_call_id ? <span className="roc-meta-badge">tool {message.tool_call_id}</span> : null}
+                {message.tool_call_id ? <span className="roc-badge">tool {message.tool_call_id}</span> : null}
               </div>
             ) : null}
           </div>

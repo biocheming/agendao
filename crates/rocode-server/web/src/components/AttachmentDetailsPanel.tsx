@@ -72,7 +72,7 @@ export function AttachmentDetailsPanel({
         </div>
         <div className="flex items-center flex-wrap gap-2.5">
           {languageLabel ? <span className="rounded-full border border-primary/20 bg-primary/10 px-3 py-2 text-xs font-bold uppercase tracking-wider">{languageLabel}</span> : null}
-          <span className="roc-pill px-3 py-1.5 text-xs">{attachmentSource(attachment)}</span>
+          <span className="roc-badge px-3 py-1.5 text-xs">{attachmentSource(attachment)}</span>
           {activeStageId ? (
             <button className="text-xs text-primary underline underline-offset-2 cursor-pointer hover:text-primary/80 border-0 bg-transparent p-0" type="button" onClick={() => onNavigateStage(activeStageId)}>
               stage {activeStageId}
