@@ -604,16 +604,20 @@ fn run_prompt_session(
                 cursor_pos,
                 render_state.as_ref(),
             )?);
-        } else if render_state.is_some() {
-            // Just update cursor position without full redraw
+        } else if let Some(state) = render_state.as_mut() {
             let viewport =
                 wrapped_viewport(&line, cursor_pos, frame.inner_width, frame.max_visible_rows);
+            let row_delta = state.cursor_row_in_view as i16 - viewport.cursor_row as i16;
+            if row_delta > 0 {
+                execute!(stdout, cursor::MoveUp(row_delta as u16))?;
+            } else if row_delta < 0 {
+                execute!(stdout, cursor::MoveDown((-row_delta) as u16))?;
+            }
             execute!(
                 stdout,
-                cursor::MoveToColumn(0),
-                cursor::MoveUp((viewport.visible_rows.len() - viewport.cursor_row) as u16),
                 cursor::MoveToColumn(frame.input_prefix_width + viewport.cursor_col as u16)
             )?;
+            state.cursor_row_in_view = viewport.cursor_row;
             stdout.flush()?;
         }
     }
