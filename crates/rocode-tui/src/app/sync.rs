@@ -126,11 +126,10 @@ impl App {
             None => return,
         };
         let session_ctx = self.context.session.read();
-        let children = session_ctx
-            .messages
-            .get(&session_id)
-            .map(|msgs| collect_child_sessions(msgs))
-            .unwrap_or_default();
+        let children = match session_ctx.messages.get(&session_id) {
+            Some(msgs) => collect_child_sessions(msgs),
+            None => return,
+        };
         drop(session_ctx);
         self.context.set_child_sessions(children);
     }

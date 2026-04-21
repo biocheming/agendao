@@ -9,6 +9,7 @@ struct SessionViewState {
     reasoning_dirty: bool,
     sidebar_dirty: bool,
     pending_navigate_child: Option<usize>,
+    pending_navigate_parent: bool,
 }
 
 impl SessionViewState {
@@ -1041,6 +1042,7 @@ impl SessionView {
             return false;
         }
         state.pending_navigate_child = next_sidebar.render_state.take_pending_navigate_child();
+        state.pending_navigate_parent = next_sidebar.render_state.take_pending_navigate_parent();
         state.update_sidebar_state(next_sidebar);
         true
     }
@@ -1075,6 +1077,10 @@ impl SessionView {
 
     pub fn take_pending_navigate_child(&self) -> Option<usize> {
         self.state.lock().pending_navigate_child.take()
+    }
+
+    pub fn take_pending_navigate_parent(&self) -> bool {
+        std::mem::take(&mut self.state.lock().pending_navigate_parent)
     }
 
     pub fn scroll_up(&self) {

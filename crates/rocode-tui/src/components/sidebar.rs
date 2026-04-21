@@ -77,6 +77,8 @@ pub struct SidebarRenderState {
     /// Pending navigation target set by click-to-activate on an already-selected child session.
     /// Consumed (taken) by the app after `handle_click` returns.
     pending_navigate_child: Option<usize>,
+    /// Set when the root session node is double-clicked (navigate back to parent).
+    pending_navigate_parent: bool,
 }
 
 impl SidebarRenderState {
@@ -170,6 +172,12 @@ impl SidebarRenderState {
             .iter()
             .find(|(li, _)| *li == line_index)
         {
+            if *cs_idx == usize::MAX {
+                // Root session node — navigate to parent
+                self.pending_navigate_parent = true;
+                self.workspace_tooltip = None;
+                return true;
+            }
             if lifecycle.child_session_focus && lifecycle.child_session_selected == *cs_idx {
                 // Already selected and focused — treat as activation (navigate)
                 self.pending_navigate_child = Some(*cs_idx);
@@ -275,6 +283,11 @@ impl SidebarRenderState {
     /// Returns the index into the child_sessions list that was clicked for activation.
     pub fn take_pending_navigate_child(&mut self) -> Option<usize> {
         self.pending_navigate_child.take()
+    }
+
+    /// Take the pending parent/root session navigation flag.
+    pub fn take_pending_navigate_parent(&mut self) -> bool {
+        std::mem::take(&mut self.pending_navigate_parent)
     }
 
     pub fn refresh_workspace_index(&mut self, root: &PathBuf) {
@@ -1721,7 +1734,7 @@ fn build_session_graph_lines(
         Span::styled("│ ", spine_style),
         Span::styled(root_label, Style::default().fg(theme.text).bold()),
     ]));
-    hit_rows.push(None);
+    hit_rows.push(Some(usize::MAX));
 
     lines.push(Line::from(Span::styled("│", spine_style)));
     hit_rows.push(None);

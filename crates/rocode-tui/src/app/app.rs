@@ -1162,6 +1162,9 @@ impl App {
                                                 let _ = self.sync_session_from_server(&child_id);
                                             }
                                         }
+                                        if sv.take_pending_navigate_parent() {
+                                            self.navigate_to_parent_session();
+                                        }
                                         return Ok(());
                                     }
                                     if sv.is_point_in_sidebar(col, row) {
