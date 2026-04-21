@@ -183,7 +183,7 @@ struct CliPromptChrome {
     mode_label: Mutex<String>,
     model_label: Mutex<String>,
     selection: Mutex<CliPromptSelectionState>,
-    catalog: CliPromptCatalog,
+    catalog: Mutex<CliPromptCatalog>,
     frontend_projection: Arc<Mutex<CliFrontendProjection>>,
     style: CliStyle,
 }
@@ -205,11 +205,11 @@ impl CliPromptChrome {
                 agent: runtime.resolved_agent_name.clone(),
                 preset: runtime.resolved_scheduler_profile_name.clone(),
             }),
-            catalog: CliPromptCatalog {
+            catalog: Mutex::new(CliPromptCatalog {
                 models: cli_prompt_models(provider_registry),
                 agents: cli_prompt_agents(agent_registry),
                 presets: cli_available_presets(config),
-            },
+            }),
             frontend_projection: runtime.frontend_projection.clone(),
             style: style.clone(),
         }
@@ -229,13 +229,24 @@ impl CliPromptChrome {
         }
     }
 
+    fn update_model_catalog(&self, models: Vec<String>) {
+        if let Ok(mut catalog) = self.catalog.lock() {
+            catalog.models = models;
+        }
+    }
+
     fn assist(&self, line: &str, cursor_pos: usize) -> CliPromptAssistView {
         let selection = self
             .selection
             .lock()
             .map(|value| value.clone())
             .unwrap_or_default();
-        cli_prompt_assist_view(&self.catalog, &selection, line, cursor_pos)
+        let catalog = self
+            .catalog
+            .lock()
+            .map(|value| value.clone())
+            .unwrap_or_default();
+        cli_prompt_assist_view(&catalog, &selection, line, cursor_pos)
     }
 
     fn frame(&self, line: &str, cursor_pos: usize) -> PromptFrame {

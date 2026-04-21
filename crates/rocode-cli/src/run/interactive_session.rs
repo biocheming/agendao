@@ -98,15 +98,34 @@ pub(super) async fn run_chat_session(
     );
 
     let mut dispatch_rx = match interactive_mode {
-        InteractiveCliMode::Rich => Some(attach_rich_prompt(
-            &mut runtime,
-            &repl_style,
-            &current_dir,
-            &config,
-            provider_registry.as_ref(),
-            agent_registry_arc.as_ref(),
-            recent_session_info.as_ref(),
-        )?),
+        InteractiveCliMode::Rich => {
+            let server_models = api_client.get_all_providers().await.ok().map(|response| {
+                let mut models: Vec<String> = response
+                    .all
+                    .into_iter()
+                    .flat_map(|provider| {
+                        let provider_id = provider.id;
+                        provider
+                            .models
+                            .into_iter()
+                            .map(move |model| format!("{}/{}", provider_id, model.id))
+                    })
+                    .collect();
+                models.sort();
+                models.dedup();
+                models
+            });
+            Some(attach_rich_prompt(
+                &mut runtime,
+                &repl_style,
+                &current_dir,
+                &config,
+                provider_registry.as_ref(),
+                agent_registry_arc.as_ref(),
+                recent_session_info.as_ref(),
+                server_models,
+            )?)
+        }
         InteractiveCliMode::Compact => {
             print!(
                 "{}{}",
@@ -612,6 +631,7 @@ fn attach_rich_prompt(
     provider_registry: &ProviderRegistry,
     agent_registry: &AgentRegistry,
     recent_session_info: Option<&CliRecentSessionInfo>,
+    server_model_list: Option<Vec<String>>,
 ) -> anyhow::Result<mpsc::UnboundedReceiver<CliDispatchInput>> {
     let shared_frontend_projection = runtime.frontend_projection.clone();
     let queued_inputs = runtime.queued_inputs.clone();
@@ -631,6 +651,9 @@ fn attach_rich_prompt(
         provider_registry,
         agent_registry,
     ));
+    if let Some(models) = server_model_list {
+        prompt_chrome.update_model_catalog(models);
+    }
     let (prompt_event_tx, mut prompt_event_rx) = mpsc::unbounded_channel();
     let prompt_session = Arc::new(PromptSession::spawn(
         Arc::new({
