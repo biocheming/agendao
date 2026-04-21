@@ -70,6 +70,13 @@ pub async fn web_apple_touch_icon() -> impl IntoResponse {
     )
 }
 
+pub async fn web_rocode_logo_png() -> impl IntoResponse {
+    binary_asset(
+        include_bytes!("../../../icons/rocode_logo.png"),
+        HeaderValueStatic::PNG,
+    )
+}
+
 fn binary_asset(bytes: &'static [u8], content_type: &'static str) -> impl IntoResponse {
     (
         [

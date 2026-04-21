@@ -6,6 +6,7 @@ import {
   FolderPlus,
   FolderTree,
   Layers2,
+  PanelLeftClose,
   Search,
   Square,
   Trash2,
@@ -37,6 +38,7 @@ interface SessionSidebarProps {
   onDeleteSessions: (sessionIds: string[]) => void;
   onSelectWorkspace: (workspacePath: string) => void;
   onSelectSession: (sessionId: string) => void;
+  onToggleSidebar: () => void;
 }
 
 function flattenSessionIds(nodes: SessionTreeNode[]): string[] {
@@ -199,6 +201,7 @@ export function SessionSidebar({
   onDeleteSessions,
   onSelectWorkspace,
   onSelectSession,
+  onToggleSidebar,
 }: SessionSidebarProps) {
   const [workspaceQuery, setWorkspaceQuery] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
@@ -318,6 +321,25 @@ export function SessionSidebar({
   return (
     <aside className="roc-sidebar-shell flex h-full flex-col" data-testid="session-sidebar">
       <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto px-3 py-3">
+        <section className="px-1 pt-1">
+          <div className="flex items-center justify-between gap-3">
+            <img
+              src="/web/brand/rocode-logo.png"
+              alt="ROCode"
+              className="h-8 w-auto max-w-[10.5rem] object-contain"
+            />
+            <button
+              type="button"
+              className="roc-sidebar-toggle shrink-0"
+              title="Hide sidebar"
+              aria-label="Hide sidebar"
+              onClick={onToggleSidebar}
+            >
+              <PanelLeftClose className="h-4 w-4" />
+            </button>
+          </div>
+        </section>
+
         <section className="px-1 pt-1 pb-1.5">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">

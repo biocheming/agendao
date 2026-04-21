@@ -96,7 +96,6 @@ import {
   AlertTriangleIcon,
   FolderTreeIcon,
   PanelLeftIcon,
-  PanelLeftCloseIcon,
   SettingsIcon,
   XIcon,
 } from "lucide-react";
@@ -2266,27 +2265,22 @@ export default function App() {
     <div className="roc-app-shell flex h-dvh flex-col overflow-hidden bg-background text-foreground font-sans">
       <header className="roc-appbar relative flex shrink-0 items-center justify-between px-4 py-1.5 md:px-5">
         <div className="flex min-w-0 items-center gap-3">
-          <button
-            onClick={() => setLeftSidebarOpen((value) => !value)}
-            className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            title={leftSidebarOpen ? "Hide sessions" : "Show sessions"}
-          >
-            {leftSidebarOpen ? (
-              <PanelLeftCloseIcon className="size-4" />
-            ) : (
-              <PanelLeftIcon className="size-4" />
-            )}
-          </button>
-          <div className="flex min-w-0 items-center gap-2">
-            <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-              ROCode
-            </span>
-            {!leftSidebarOpen && currentWorkspaceSummary?.label ? (
-              <span className="roc-badge max-w-[12rem] truncate md:max-w-[18rem]">
-                {currentWorkspaceSummary.label}
-              </span>
-            ) : null}
-          </div>
+          {!leftSidebarOpen ? (
+            <>
+              <button
+                onClick={() => setLeftSidebarOpen(true)}
+                className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                title="Show sidebar"
+              >
+                <PanelLeftIcon className="size-4" />
+              </button>
+              {currentWorkspaceSummary?.label ? (
+                <span className="roc-badge max-w-[12rem] truncate md:max-w-[18rem]">
+                  {currentWorkspaceSummary.label}
+                </span>
+              ) : null}
+            </>
+          ) : null}
         </div>
         <div className="flex items-center gap-1.5">
           {!rightSidebarOpen && selectedWorkspaceFilename ? (
@@ -2341,6 +2335,7 @@ export default function App() {
                 }}
                 onSelectWorkspace={selectWorkspace}
                 onSelectSession={(sessionId) => setSelectedSessionId(sessionId)}
+                onToggleSidebar={() => setLeftSidebarOpen(false)}
               />
             </div>
             <div className={leftResize.handleClassName} onMouseDown={leftResize.handleMouseDown} />

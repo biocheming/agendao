@@ -84,6 +84,7 @@ pub fn router() -> Router<Arc<ServerState>> {
         .route("/web/favicon-32.png", get(web::web_favicon_png_32))
         .route("/web/favicon-192.png", get(web::web_favicon_png_192))
         .route("/web/apple-touch-icon.png", get(web::web_apple_touch_icon))
+        .route("/web/brand/rocode-logo.png", get(web::web_rocode_logo_png))
         .route("/web/assets/{*path}", get(web::web_asset))
         .route("/health", get(health))
         .route("/event", get(event_stream))
