@@ -16,6 +16,7 @@ import { InteractionOverlays } from "./components/InteractionOverlays";
 import { SessionHeader } from "./components/SessionHeader";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { WorkspacePanel } from "./components/WorkspacePanel";
+import { loadWebPlugins } from "./web-plugin-loader";
 import { cn } from "./lib/utils";
 import { useConversationJump } from "./hooks/useConversationJump";
 import { useExecutionActivity } from "./hooks/useExecutionActivity";
@@ -1284,6 +1285,7 @@ export default function App() {
         setConnectProtocol((current) => current || connectSchema.protocols?.[0]?.id || "");
         setSelectedSessionId((current) => current ?? sessionData[0]?.id ?? null);
         preferencesReadyRef.current = true;
+        void loadWebPlugins(apiJson);
       } catch (error) {
         if (!cancelled) {
           setBanner(`Bootstrap failed: ${formatError(error)}`);

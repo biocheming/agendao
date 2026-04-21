@@ -388,6 +388,86 @@ fn test_load_all_preserves_explicit_file_plugin() {
 }
 
 #[test]
+fn test_load_all_prefers_higher_precedence_discovered_plugin() {
+    let temp = TestDir::new("rocode_config_plugin_precedence");
+    let root = temp.path.join("repo");
+    let extra_root = root.join("team-plugins");
+    fs::create_dir_all(root.join(".git")).unwrap();
+    fs::create_dir_all(root.join(".rocode/plugins")).unwrap();
+    fs::create_dir_all(&extra_root).unwrap();
+
+    let workspace_plugin = root.join(".rocode/plugins/shared-plugin.ts");
+    let override_plugin = extra_root.join("shared-plugin.ts");
+    fs::write(
+        &workspace_plugin,
+        "export default { source: 'workspace' };\n",
+    )
+    .unwrap();
+    fs::write(&override_plugin, "export default { source: 'team' };\n").unwrap();
+    fs::write(
+        root.join(".rocode/rocode.json"),
+        r#"{
+  "plugin_paths": {
+    "team": "team-plugins"
+  }
+}"#,
+    )
+    .unwrap();
+
+    let mut loader = ConfigLoader::new();
+    let cfg = loader.load_all(&root).unwrap();
+
+    assert_eq!(
+        cfg.plugin["shared-plugin"].path.as_deref(),
+        Some(override_plugin.to_str().unwrap())
+    );
+}
+
+#[test]
+fn test_discover_web_plugins_prefers_later_roots_and_supports_mjs() {
+    let temp = TestDir::new("rocode_web_plugin_discovery");
+    let low_root = temp.path.join("low");
+    let high_root = temp.path.join("high");
+
+    fs::create_dir_all(low_root.join("web/molstar")).unwrap();
+    fs::create_dir_all(high_root.join("web/molstar")).unwrap();
+    fs::create_dir_all(high_root.join("web")).unwrap();
+
+    fs::write(
+        low_root.join("web/molstar/index.js"),
+        "export default function() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        high_root.join("web/molstar/index.mjs"),
+        "export default function() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        high_root.join("web/plot.mjs"),
+        "export default function() {}\n",
+    )
+    .unwrap();
+
+    let plugins = discover_web_plugins(&[low_root.clone(), high_root.clone()]);
+
+    let molstar = plugins
+        .iter()
+        .find(|plugin| plugin.name == "molstar")
+        .expect("molstar plugin");
+    assert_eq!(molstar.entry(), "index.mjs");
+    assert_eq!(molstar.entry_path, high_root.join("web/molstar/index.mjs"));
+    assert_eq!(molstar.serve_root, high_root.join("web/molstar"));
+
+    let plot = plugins
+        .iter()
+        .find(|plugin| plugin.name == "plot")
+        .expect("plot plugin");
+    assert_eq!(plot.entry(), "plot.mjs");
+    assert_eq!(plot.serve_root, high_root.join("web"));
+}
+
+#[test]
 fn test_substitute_env_vars() {
     std::env::set_var("ROCODE_TEST_VAR", "test_value");
     let input = r#"{"api_key": "{env:ROCODE_TEST_VAR}"}"#;

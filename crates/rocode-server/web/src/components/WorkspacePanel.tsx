@@ -9,6 +9,7 @@ import { WorkspaceTreeNode } from "./WorkspaceTreeNode";
 import {
   FolderTreeIcon,
   LightbulbIcon,
+  EyeIcon,
   PlusIcon,
   FolderPlusIcon,
   UploadIcon,
@@ -18,6 +19,11 @@ import type { useExecutionActivity } from "../hooks/useExecutionActivity";
 const SessionInsightsPanel = lazy(async () => {
   const module = await import("./SessionInsightsPanel");
   return { default: module.SessionInsightsPanel };
+});
+
+const FilePreviewPane = lazy(async () => {
+  const module = await import("./FilePreviewPane");
+  return { default: module.FilePreviewPane };
 });
 
 interface WorkspacePanelProps {
@@ -85,7 +91,7 @@ export function WorkspacePanel({
   executionActivity,
 }: WorkspacePanelProps) {
   const workspaceUploadInputRef = useRef<HTMLInputElement | null>(null);
-  const [activeTab, setActiveTab] = useState<"files" | "insights">("files");
+  const [activeTab, setActiveTab] = useState<"files" | "insights" | "preview">("files");
   const workspaceRootName =
     workspaceRootLabel.split("/").filter(Boolean).pop() || workspaceRootLabel || "Workspace";
 
@@ -119,6 +125,19 @@ export function WorkspacePanel({
           >
             <LightbulbIcon className="size-3.25" />
             <span>Insights</span>
+          </button>
+          <button
+            className={cn(
+              "inline-flex items-center justify-center gap-1.5 rounded-full px-2.5 py-1.5 text-[10.5px] font-medium transition-colors",
+              activeTab === "preview"
+                ? "bg-foreground/8 text-foreground"
+                : "text-muted-foreground hover:bg-accent/45 hover:text-foreground"
+            )}
+            type="button"
+            onClick={() => setActiveTab("preview")}
+          >
+            <EyeIcon className="size-3.25" />
+            <span>Preview</span>
           </button>
         </div>
         <div className="flex items-center gap-0.5 flex-shrink-0">
@@ -195,6 +214,17 @@ export function WorkspacePanel({
                 </div>
               )
           : null}
+        {activeTab === "preview" ? (
+          <Suspense
+            fallback={
+              <div className="flex items-center justify-center py-6 text-muted-foreground/60">
+                <span className="text-[10px]">Loading preview...</span>
+              </div>
+            }
+          >
+            <FilePreviewPane filePath={selectedWorkspacePath} />
+          </Suspense>
+        ) : null}
       </div>
 
       {/* Hidden file input */}

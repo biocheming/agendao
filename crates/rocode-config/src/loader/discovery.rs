@@ -199,7 +199,7 @@ pub(crate) fn resolve_configured_path(base: &Path, raw: &str) -> PathBuf {
     }
 }
 
-pub(super) fn collect_plugin_roots(
+pub fn collect_plugin_roots(
     project_dir: &Path,
     plugin_paths: &HashMap<String, String>,
 ) -> Vec<PathBuf> {
@@ -247,12 +247,22 @@ fn collect_plugins_in_dir(dir: &Path, plugins: &mut Vec<String>) {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            if let Some(ext) = path.extension() {
-                if ext == "ts" || ext == "js" {
-                    plugins.push(format!("file://{}", path.display()));
+            if path.is_file() {
+                if let Some(ext) = path.extension() {
+                    if ext == "ts" || ext == "js" || ext == "mjs" {
+                        plugins.push(format!("file://{}", path.display()));
+                    }
+                }
+            } else if path.is_dir() {
+                if path.file_name().map_or(false, |n| n == "web") {
+                    continue;
+                }
+                for entry_name in ["index.ts", "index.js", "index.mjs"] {
+                    let entry_path = path.join(entry_name);
+                    if entry_path.is_file() {
+                        plugins.push(format!("file://{}", entry_path.display()));
+                        break;
+                    }
                 }
             }
         }
@@ -268,6 +278,109 @@ pub(super) fn load_plugins_from_path(path: &Path) -> Vec<String> {
     collect_plugins_in_dir(&path.join("plugin"), &mut plugins);
     collect_plugins_in_dir(&path.join("plugins"), &mut plugins);
     plugins
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WebPluginInfo {
+    pub name: String,
+    pub entry_path: PathBuf,
+    pub serve_root: PathBuf,
+}
+
+impl WebPluginInfo {
+    pub fn entry(&self) -> String {
+        self.entry_path
+            .strip_prefix(&self.serve_root)
+            .ok()
+            .and_then(|path| path.to_str())
+            .map(|path| path.replace('\\', "/"))
+            .unwrap_or_else(|| {
+                self.entry_path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
+            })
+    }
+}
+
+/// Discover web plugins from `web/` subdirectories under plugin roots.
+/// Web plugins must be `.js` files (browser-loadable).
+pub fn discover_web_plugins(plugin_roots: &[PathBuf]) -> Vec<WebPluginInfo> {
+    let mut web_plugins = Vec::new();
+    for root in plugin_roots {
+        for sub in ["", "plugin", "plugins"] {
+            let web_dir = if sub.is_empty() {
+                root.join("web")
+            } else {
+                root.join(sub).join("web")
+            };
+            if !web_dir.is_dir() {
+                continue;
+            }
+            if let Ok(entries) = fs::read_dir(&web_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        if matches!(
+                            path.extension().and_then(|e| e.to_str()),
+                            Some("js" | "mjs")
+                        ) {
+                            let name = path
+                                .file_stem()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string();
+                            upsert_web_plugin(
+                                &mut web_plugins,
+                                WebPluginInfo {
+                                    name,
+                                    entry_path: path,
+                                    serve_root: web_dir.clone(),
+                                },
+                            );
+                        }
+                    } else if path.is_dir() {
+                        let mut entry_path = None;
+                        for entry_name in ["index.js", "index.mjs"] {
+                            let candidate = path.join(entry_name);
+                            if candidate.is_file() {
+                                entry_path = Some(candidate);
+                                break;
+                            }
+                        }
+                        if let Some(entry_path) = entry_path {
+                            let name = path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string();
+                            upsert_web_plugin(
+                                &mut web_plugins,
+                                WebPluginInfo {
+                                    name,
+                                    entry_path,
+                                    serve_root: path,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    web_plugins
+}
+
+fn upsert_web_plugin(web_plugins: &mut Vec<WebPluginInfo>, plugin: WebPluginInfo) {
+    if let Some(existing) = web_plugins
+        .iter_mut()
+        .find(|entry| entry.name == plugin.name)
+    {
+        *existing = plugin;
+    } else {
+        web_plugins.push(plugin);
+    }
 }
 
 /// Recursively find all .md files in a directory.

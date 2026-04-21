@@ -18,6 +18,7 @@ mod skill_hub;
 mod stream;
 mod task;
 mod tui;
+mod web_plugin;
 mod workspace;
 
 // Re-export all pub items from sub-modules so `pub use routes::*` in lib.rs continues to work.
@@ -31,6 +32,8 @@ use self::skill_catalog::{
 };
 use self::skill_hub::skill_hub_routes;
 use self::task::task_routes;
+use self::web_plugin::web_plugin_routes;
+use self::workspace::workspace_routes;
 pub use config::*;
 pub use file::*;
 pub use global::*;
@@ -127,7 +130,8 @@ pub fn router() -> Router<Arc<ServerState>> {
         .nest("/workspace", workspace_routes())
         .nest("/global", global_routes())
         .nest("/experimental", experimental_routes())
-        .nest("/plugin", plugin_auth_routes());
+        .nest("/plugin", plugin_auth_routes())
+        .nest("/web-plugin", web_plugin_routes());
 
     #[cfg(debug_assertions)]
     let router = router.nest(

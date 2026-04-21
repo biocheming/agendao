@@ -29,6 +29,9 @@ use discovery::{
     get_managed_config_dir, load_agents_from_dir, load_commands_from_dir, load_modes_from_dir,
     load_plugins_from_path, normalize_existing_path,
 };
+pub use discovery::{
+    collect_plugin_roots as get_plugin_roots, discover_web_plugins, WebPluginInfo,
+};
 use file_ops::{
     get_global_config_paths, migrate_legacy_toml_config, parse_jsonc, resolve_file_references,
     substitute_env_vars,
@@ -227,12 +230,16 @@ impl ConfigLoader {
         // - configured `plugin_paths`
         // Auto-discovered file plugins are merged; explicitly configured plugins
         // (from config files) are preserved via entry().or_insert().
+        let mut discovered_plugins = std::collections::HashMap::new();
         for dir in collect_plugin_roots(project_dir, &self.config.plugin_paths) {
             let plugins = load_plugins_from_path(&dir);
             for plugin_spec in plugins {
                 let (key, config) = PluginConfig::from_file_spec(&plugin_spec);
-                self.config.plugin.entry(key).or_insert(config);
+                discovered_plugins.insert(key, config);
             }
+        }
+        for (key, config) in discovered_plugins {
+            self.config.plugin.entry(key).or_insert(config);
         }
 
         // Inline config content overrides all non-managed config sources

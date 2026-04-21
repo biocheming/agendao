@@ -162,6 +162,7 @@ impl ConfigLoader {
             self.config.agent = Some(agent_configs);
         }
 
+        let mut discovered_plugins = std::collections::HashMap::new();
         for plugin_dir in [
             config_dir.join("plugins"),
             config_dir.join("plugin"),
@@ -171,8 +172,11 @@ impl ConfigLoader {
             let plugins = load_plugins_from_path(&plugin_dir);
             for plugin_spec in plugins {
                 let (key, config) = crate::schema::PluginConfig::from_file_spec(&plugin_spec);
-                self.config.plugin.entry(key).or_insert(config);
+                discovered_plugins.insert(key, config);
             }
+        }
+        for (key, config) in discovered_plugins {
+            self.config.plugin.entry(key).or_insert(config);
         }
 
         apply_post_load_transforms(&mut self.config);
