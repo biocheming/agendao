@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import type { FeedMessage } from "@/lib/history";
+import { humanizeStageEvent, humanizeStageWaitTarget } from "@/lib/stageSignals";
 import { cn } from "@/lib/utils";
 import {
   ActivityIcon,
@@ -110,21 +111,6 @@ function classifyFact(value: unknown) {
   return { display, inline };
 }
 
-function SummaryFact({
-  label,
-  value,
-}: {
-  label: string;
-  value: React.ReactNode;
-}) {
-  return (
-    <div className="roc-structured-row">
-      <div className="roc-structured-key">{label}</div>
-      <div>{value}</div>
-    </div>
-  );
-}
-
 function DisclosurePanel({
   icon,
   label,
@@ -190,9 +176,11 @@ export function SchedulerStageCard({
   ].filter(Boolean);
   const tokens = tokenSummary(message);
   const stageTitle = message.title || message.stage || "Scheduler Stage";
+  const waitingLabel = humanizeStageWaitTarget(message.waiting_on);
+  const lastEventLabel = humanizeStageEvent(message.last_event);
   const stageSummary =
     compactText(message.focus) ||
-    compactText(message.last_event) ||
+    compactText(lastEventLabel) ||
     compactText(message.text) ||
     null;
 
@@ -274,7 +262,7 @@ export function SchedulerStageCard({
               type="button"
               variant="ghost"
               size="sm"
-              className="roc-action roc-action-pill"
+              className="roc-action roc-action-compact gap-1.5 px-3"
               data-testid="scheduler-stage-open-child"
               onClick={() =>
                 onNavigateChildSession(message.child_session_id!, {
@@ -291,34 +279,19 @@ export function SchedulerStageCard({
         </div>
       </div>
 
-      {(message.waiting_on || message.last_event || message.child_session_id) ? (
-        <div className="grid gap-2 md:grid-cols-3">
-          {message.waiting_on ? (
-            <SummaryFact label="Waiting">
-              <p className="text-sm leading-6 text-foreground">Waiting on {message.waiting_on}</p>
-            </SummaryFact>
+      {(waitingLabel || lastEventLabel) ? (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-border/20 pt-3 text-xs text-muted-foreground">
+          {waitingLabel ? (
+            <div className="inline-flex min-w-0 items-baseline gap-2">
+              <span className="roc-section-label">Waiting</span>
+              <span className="text-sm font-medium text-foreground/78">{waitingLabel}</span>
+            </div>
           ) : null}
-          {message.last_event ? (
-            <SummaryFact label="Last Event">
-              <p className="text-sm leading-6 text-foreground">{message.last_event}</p>
-            </SummaryFact>
-          ) : null}
-          {message.child_session_id ? (
-            <SummaryFact label="Child Session">
-              <button
-                type="button"
-                className="text-sm font-medium text-primary transition-colors hover:text-primary/80"
-                onClick={() =>
-                  onNavigateChildSession(message.child_session_id!, {
-                    stageId: message.stage_id ?? null,
-                    toolCallId: message.tool_call_id ?? null,
-                    label: message.title || message.stage || message.stage_id || message.child_session_id,
-                  })
-                }
-              >
-                {message.child_session_id}
-              </button>
-            </SummaryFact>
+          {lastEventLabel ? (
+            <div className="inline-flex min-w-0 items-baseline gap-2">
+              <span className="roc-section-label">Last Event</span>
+              <span className="text-sm text-foreground/72">{lastEventLabel}</span>
+            </div>
           ) : null}
         </div>
       ) : null}
@@ -416,18 +389,6 @@ export function SchedulerStageCard({
           defaultOpen={false}
         >
           <StructuredValue value={message.activity} />
-        </DisclosurePanel>
-      ) : null}
-
-      {message.text?.trim() ? (
-        <DisclosurePanel
-          icon={<InfoIcon className="size-4" />}
-          label="Payload"
-          title="Raw stage payload"
-          summary="Structured payload emitted by the scheduler/runtime layer."
-          defaultOpen={false}
-        >
-          <StructuredValue value={message.text} />
         </DisclosurePanel>
       ) : null}
 

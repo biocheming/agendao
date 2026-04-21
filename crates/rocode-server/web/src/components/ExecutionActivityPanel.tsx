@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ConversationJumpTarget } from "../hooks/useConversationJump";
 import type { useExecutionActivity } from "../hooks/useExecutionActivity";
+import { humanizeStageEvent, humanizeStageWaitTarget } from "../lib/stageSignals";
 import { cn } from "@/lib/utils";
 import { memoryRecordIdValue } from "../lib/memory";
 import { StructuredDataView } from "./StructuredDataView";
@@ -72,7 +73,7 @@ function stageSummaryMeta(stage: ExecutionActivityState["stageSummaries"][number
     parts.push(`step ${stage.step}/${stage.step_total}`);
   }
   if (stage.waiting_on) {
-    parts.push(`waiting ${stage.waiting_on}`);
+    parts.push(`waiting ${humanizeStageWaitTarget(stage.waiting_on) ?? stage.waiting_on}`);
   }
   if (typeof stage.retry_attempt === "number") {
     parts.push(`retry ${stage.retry_attempt}`);
@@ -328,8 +329,11 @@ export function ExecutionActivityPanel({
                     </div>
                     <p className="text-sm text-muted-foreground leading-relaxed">
                       {activity.activeStageSummary.waiting_on
-                        ? `Waiting on ${activity.activeStageSummary.waiting_on}`
-                        : activity.activeStageSummary.last_event || "No active wait signal"}
+                        ? `Waiting for ${
+                            humanizeStageWaitTarget(activity.activeStageSummary.waiting_on) ??
+                            activity.activeStageSummary.waiting_on
+                          }`
+                        : humanizeStageEvent(activity.activeStageSummary.last_event) || "No active wait signal"}
                     </p>
                     {activity.activeStageSummary.skill_tree_truncated ? (
                       <p className="text-sm text-amber-700 dark:text-amber-300 leading-relaxed">
@@ -526,7 +530,7 @@ export function ExecutionActivityPanel({
                   </div>
                   {stage.last_event || stage.focus ? (
                     <div className="grid gap-1 text-xs text-muted-foreground">
-                      {stage.last_event ? <p>Last event: {stage.last_event}</p> : null}
+                      {stage.last_event ? <p>Last event: {humanizeStageEvent(stage.last_event) || stage.last_event}</p> : null}
                       {stage.focus ? <p>Focus: {stage.focus}</p> : null}
                     </div>
                   ) : null}
