@@ -95,7 +95,6 @@ import {
 import {
   AlertTriangleIcon,
   FolderTreeIcon,
-  PanelLeftCloseIcon,
   PanelLeftIcon,
   SettingsIcon,
   XIcon,
@@ -2266,17 +2265,6 @@ export default function App() {
     <div className="roc-app-shell flex h-dvh flex-col overflow-hidden bg-background text-foreground font-sans">
       <header className="roc-appbar relative flex shrink-0 items-center justify-between px-4 py-1.5 md:px-5">
         <div className="flex min-w-0 items-center gap-3">
-          <button
-            onClick={() => setLeftSidebarOpen((value) => !value)}
-            className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            title={leftSidebarOpen ? "Hide sidebar" : "Show sidebar"}
-          >
-            {leftSidebarOpen ? (
-              <PanelLeftCloseIcon className="size-4" />
-            ) : (
-              <PanelLeftIcon className="size-4" />
-            )}
-          </button>
           <img
             src="/web/brand/rocode-logo.png"
             alt="ROCode"
@@ -2341,13 +2329,25 @@ export default function App() {
                 }}
                 onSelectWorkspace={selectWorkspace}
                 onSelectSession={(sessionId) => setSelectedSessionId(sessionId)}
+                onHideSidebar={() => setLeftSidebarOpen(false)}
               />
             </div>
             <div className={leftResize.handleClassName} onMouseDown={leftResize.handleMouseDown} />
           </>
         )}
 
-        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
+          {!leftSidebarOpen ? (
+            <div className="absolute left-4 top-3 z-20 md:left-5">
+              <button
+                onClick={() => setLeftSidebarOpen(true)}
+                className="rounded-lg border border-border/50 bg-background/78 p-1.5 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:bg-muted hover:text-foreground"
+                title="Show sidebar"
+              >
+                <PanelLeftIcon className="size-4" />
+              </button>
+            </div>
+          ) : null}
           {banner ? (
             <div className="mx-auto w-full max-w-[76rem] px-4 pt-3 md:px-5">
               <div className="roc-banner flex items-start gap-3" data-tone="warning">

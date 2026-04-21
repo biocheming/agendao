@@ -6,6 +6,7 @@ import {
   FolderPlus,
   FolderTree,
   Layers2,
+  PanelLeftClose,
   Search,
   Square,
   Trash2,
@@ -37,6 +38,7 @@ interface SessionSidebarProps {
   onDeleteSessions: (sessionIds: string[]) => void;
   onSelectWorkspace: (workspacePath: string) => void;
   onSelectSession: (sessionId: string) => void;
+  onHideSidebar: () => void;
 }
 
 function flattenSessionIds(nodes: SessionTreeNode[]): string[] {
@@ -199,6 +201,7 @@ export function SessionSidebar({
   onDeleteSessions,
   onSelectWorkspace,
   onSelectSession,
+  onHideSidebar,
 }: SessionSidebarProps) {
   const [workspaceQuery, setWorkspaceQuery] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
@@ -318,6 +321,18 @@ export function SessionSidebar({
   return (
     <aside className="roc-sidebar-shell flex h-full flex-col" data-testid="session-sidebar">
       <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto px-3 py-3">
+        <section className="px-1 pt-1">
+          <button
+            type="button"
+            className="inline-flex items-center gap-2 rounded-full border border-border/45 bg-background/68 px-3 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            title="Hide sidebar"
+            onClick={onHideSidebar}
+          >
+            <PanelLeftClose className="h-3.5 w-3.5" />
+            <span>Hide Sidebar</span>
+          </button>
+        </section>
+
         <section className="px-1 pt-1 pb-1.5">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
