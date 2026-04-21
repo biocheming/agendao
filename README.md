@@ -1,3 +1,7 @@
+<p>
+  <img src="icons/rocode_logo.png" alt="ROCode" width="280" />
+</p>
+
 # RustingOpenCode (ROCode)
 
 RustingOpenCode（简称 `ROCode`）是一个面向本地仓库工作的 Rust 编码代理系统。它提供统一的 CLI、TUI、HTTP Server 和 Web 界面，并把 session、scheduler、tool、provider、skill、runtime telemetry 这些能力收敛到同一套 authority 驱动的运行模型中。
