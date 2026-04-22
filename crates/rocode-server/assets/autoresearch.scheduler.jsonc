@@ -39,7 +39,7 @@
             "timeoutMs": 1200000
           },
           "guard": {
-            "command": "cargo build -p rocode-server && cargo build -p rocode-cli && cargo build -p rocode-tui",
+            "command": "cargo build -p rocode && npm --prefix apps/rocode-web run build",
             "timeoutMs": 1200000
           }
         },

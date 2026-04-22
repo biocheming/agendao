@@ -205,7 +205,7 @@ rocode serve [选项]
 
 启动后台服务器并打开 Web 浏览器界面。
 
-当前 Web 前端由独立应用 `apps/rocode-web` 构建，`rocode-server` 只在运行时加载外部 `dist/` 目录。默认查找顺序包括：
+当前 Web 前端由独立应用 `apps/rocode-web` 构建，ROCode 在运行时加载外部 `dist/` 目录。默认查找顺序包括：
 
 - `ROCODE_WEB_DIST`
 - 已安装布局中的 `share/rocode/web`
@@ -655,7 +655,7 @@ rocode pr <NUMBER>
 rocode upgrade [TARGET] [-m, --method <METHOD>]
 ```
 
-`rocode upgrade` 适合由安装器或包管理器维护的安装方式。对于源码 / 本地 side-by-side 安装，请重新安装整套二进制，而不是单独替换 `rocode`：
+`rocode upgrade` 适合由安装器或包管理器维护的安装方式。对于源码 / 本地单文件安装，请重新安装完整的 `rocode` 分发物，而不是手工替换旧二进制：
 
 ```bash
 ./scripts/install-local.sh release ~/.local
@@ -678,7 +678,7 @@ rocode uninstall [选项]
 | `--dry-run` | 只显示将要执行的操作 |
 | `-f, --force` | 强制卸载 |
 
-当 `rocode` 是以 side-by-side 方式安装时，卸载会同时列出并删除同目录下的 `rocode`、`rocode-server` 和 `rocode-tui`。
+当 `rocode` 以本地单文件布局安装时，卸载会删除 `rocode` 以及对应的 Web 资源目录。
 
 ---
 

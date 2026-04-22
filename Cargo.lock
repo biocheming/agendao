@@ -3252,6 +3252,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "rocode"
+version = "2026.4.22"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "dirs",
+ "rocode-cli",
+ "rocode-client",
+ "rocode-core",
+ "rocode-launcher",
+ "rocode-server",
+ "rocode-tui",
+ "tokio",
+ "tracing-subscriber",
+ "which",
+]
+
+[[package]]
 name = "rocode-agent"
 version = "2026.4.22"
 dependencies = [
@@ -3293,6 +3311,7 @@ name = "rocode-cli"
 version = "2026.4.22"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64",
  "chrono",
  "clap",

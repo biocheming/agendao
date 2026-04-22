@@ -1,13 +1,14 @@
 //! Server discovery, startup, and health-check utilities for CLI.
 //!
-//! CLI shares the same HTTP server as TUI and Web.  On startup the CLI
+//! CLI shares the same HTTP server as TUI and Web. On startup the CLI
 //! probes the configured address; if a server is already running it reuses
-//! it, otherwise it spawns `rocode-server` as a sibling process.
+//! it, otherwise it starts an in-process backend runtime.
 
 use std::time::Duration;
 
 use crate::util::server_url;
-use rocode_launcher::{spawn_server_background, wait_for_server_ready, ServerLaunchOptions};
+use rocode_launcher::wait_for_server_ready;
+use tokio::process::Command;
 
 /// Default port when nothing else is configured.
 const DEFAULT_PORT: u16 = 3000;
@@ -57,33 +58,30 @@ pub(crate) async fn discover_or_start_server(port_override: Option<u16>) -> anyh
         return Ok(base_url);
     }
 
-    // 2. Start a new server process
+    // 2. Start a new local product-host process in server mode
     let port = port_override.unwrap_or(DEFAULT_PORT);
     tracing::info!(
         "No server found — starting local server on 127.0.0.1:{}",
         port
     );
-    let options = ServerLaunchOptions {
-        port,
-        hostname: "127.0.0.1".to_string(),
-        cwd: None,
-        web_dist: None,
-        mdns: false,
-        mdns_domain: "rocode.local".to_string(),
-        cors: Vec::new(),
-    };
-    let mut child = spawn_server_background(
-        &options,
-        std::process::Stdio::null(),
-        std::process::Stdio::null(),
-    )?;
+    let current_exe = std::env::current_exe()?;
+    let mut child = Command::new(current_exe)
+        .arg("serve")
+        .arg("--port")
+        .arg(port.to_string())
+        .arg("--hostname")
+        .arg("127.0.0.1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
 
     // 3. Wait until the server is ready
     wait_for_server_ready(&base_url, SERVER_STARTUP_TIMEOUT, Some(&mut child)).await?;
     tokio::spawn(async move {
         match child.wait().await {
-            Ok(status) => tracing::warn!("Background rocode-server exited with status {}", status),
-            Err(error) => tracing::warn!("Background rocode-server wait failed: {}", error),
+            Ok(status) => tracing::warn!("Background rocode host exited with status {}", status),
+            Err(error) => tracing::warn!("Background rocode host wait failed: {}", error),
         }
     });
 

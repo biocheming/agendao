@@ -1,5 +1,5 @@
+use async_trait::async_trait;
 use clap::Parser;
-use std::io::IsTerminal;
 
 mod agent_cmd;
 mod agent_stream_adapter;
@@ -18,11 +18,9 @@ mod mcp_cmd;
 mod providers;
 mod remote;
 mod run;
-mod server;
 mod server_lifecycle;
 mod session_cmd;
 mod skill_cmd;
-mod tui;
 mod upgrade;
 mod util;
 
@@ -36,59 +34,79 @@ use github::{handle_github_command, handle_pr_command};
 use import_export::{export_session_data, import_session_data};
 use mcp_cmd::handle_mcp_command;
 use run::{run_non_interactive, RunNonInteractiveOptions};
-use server::{run_acp_command, run_desktop_web_command, run_server_command, run_web_command};
 use session_cmd::{handle_session_command, show_config};
 use skill_cmd::handle_skill_command;
-use tui::{run_tui, TuiLaunchOptions};
 use upgrade::{handle_uninstall_command, handle_upgrade_command};
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // Write logs to a file so they're visible even when TUI captures stderr.
-    let log_dir = dirs::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-        .join("rocode")
-        .join("log");
-    std::fs::create_dir_all(&log_dir).ok();
-    let log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_dir.join("rocode.log"))
-        .ok();
-    if let Some(file) = log_file {
-        use tracing_subscriber::EnvFilter;
-        let default_level = if cfg!(debug_assertions) {
-            "debug"
-        } else {
-            "warn"
-        };
-        let filter =
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
-        tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .with_writer(std::sync::Mutex::new(file))
-            .with_ansi(false)
-            .init();
-    } else {
-        use tracing_subscriber::EnvFilter;
-        let default_level = if cfg!(debug_assertions) {
-            "debug"
-        } else {
-            "warn"
-        };
-        tracing_subscriber::fmt()
-            .with_env_filter(
-                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level)),
-            )
-            .init();
-    }
+#[derive(Clone, Debug)]
+pub struct TuiCommandRequest {
+    pub project: Option<std::path::PathBuf>,
+    pub model: Option<String>,
+    pub continue_last: bool,
+    pub session: Option<String>,
+    pub fork: bool,
+    pub prompt: Option<String>,
+    pub agent: Option<String>,
+    pub port: u16,
+    pub hostname: String,
+    pub mdns: bool,
+    pub mdns_domain: String,
+    pub cors: Vec<String>,
+    pub attach_url: Option<String>,
+    pub password: Option<String>,
+}
 
+#[derive(Clone, Debug)]
+pub struct ServerCommandRequest {
+    pub mode: String,
+    pub port: u16,
+    pub hostname: String,
+    pub dir: Option<std::path::PathBuf>,
+    pub mdns: bool,
+    pub mdns_domain: String,
+    pub cors: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct WebCommandRequest {
+    pub port: u16,
+    pub hostname: String,
+    pub dir: Option<std::path::PathBuf>,
+    pub mdns: bool,
+    pub mdns_domain: String,
+    pub cors: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DesktopWebCommandRequest {
+    pub port: u16,
+    pub hostname: String,
+    pub mdns: bool,
+    pub mdns_domain: String,
+    pub cors: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct AcpCommandRequest {
+    pub port: u16,
+    pub hostname: String,
+    pub mdns: bool,
+    pub mdns_domain: String,
+    pub cors: Vec<String>,
+    pub cwd: std::path::PathBuf,
+}
+
+#[async_trait]
+pub trait ProductHost {
+    async fn run_tui(&self, request: TuiCommandRequest) -> anyhow::Result<()>;
+    async fn run_server(&self, request: ServerCommandRequest) -> anyhow::Result<()>;
+    async fn run_web(&self, request: WebCommandRequest) -> anyhow::Result<()>;
+    async fn run_desktop_web(&self, request: DesktopWebCommandRequest) -> anyhow::Result<()>;
+    async fn run_acp(&self, request: AcpCommandRequest) -> anyhow::Result<()>;
+}
+
+pub async fn run_with_host<H: ProductHost + Sync>(host: &H) -> anyhow::Result<()> {
     let cli = Cli::parse();
-
-    // Start the background process reaper (defense layer A — 30s interval).
-    // Primary cleanup is via ProcessGuard RAII (strategy B); this is insurance.
-    rocode_core::process_registry::global_registry()
-        .spawn_reaper(std::time::Duration::from_secs(30));
 
     match cli.command {
         Some(Commands::Tui {
@@ -105,14 +123,14 @@ async fn main() -> anyhow::Result<()> {
             mdns_domain,
             cors,
         }) => {
-            run_tui(TuiLaunchOptions {
+            host.run_tui(TuiCommandRequest {
                 project,
                 model,
                 continue_last,
                 session,
                 fork,
-                agent_name: agent,
-                initial_prompt: prompt,
+                prompt,
+                agent,
                 port,
                 hostname,
                 mdns,
@@ -129,14 +147,14 @@ async fn main() -> anyhow::Result<()> {
             session,
             password,
         }) => {
-            run_tui(TuiLaunchOptions {
+            host.run_tui(TuiCommandRequest {
                 project: dir,
                 model: None,
                 continue_last: false,
                 session,
                 fork: false,
-                agent_name: None,
-                initial_prompt: None,
+                prompt: None,
+                agent: None,
                 port: 0,
                 hostname: "127.0.0.1".to_string(),
                 mdns: false,
@@ -197,7 +215,16 @@ async fn main() -> anyhow::Result<()> {
             mdns_domain,
             cors,
         }) => {
-            run_server_command("serve", port, hostname, dir, mdns, mdns_domain, cors).await?;
+            host.run_server(ServerCommandRequest {
+                mode: "serve".to_string(),
+                port,
+                hostname,
+                dir,
+                mdns,
+                mdns_domain,
+                cors,
+            })
+            .await?;
         }
         Some(Commands::Web {
             port,
@@ -207,7 +234,15 @@ async fn main() -> anyhow::Result<()> {
             mdns_domain,
             cors,
         }) => {
-            run_web_command(port, hostname, dir, mdns, mdns_domain, cors).await?;
+            host.run_web(WebCommandRequest {
+                port,
+                hostname,
+                dir,
+                mdns,
+                mdns_domain,
+                cors,
+            })
+            .await?;
         }
         Some(Commands::Acp {
             port,
@@ -217,7 +252,15 @@ async fn main() -> anyhow::Result<()> {
             cors,
             cwd,
         }) => {
-            run_acp_command(port, hostname, mdns, mdns_domain, cors, cwd).await?;
+            host.run_acp(AcpCommandRequest {
+                port,
+                hostname,
+                mdns,
+                mdns_domain,
+                cors,
+                cwd,
+            })
+            .await?;
         }
         Some(Commands::Models {
             provider,
@@ -289,33 +332,20 @@ async fn main() -> anyhow::Result<()> {
             handle_generate_command().await?;
         }
         Some(Commands::Version) => {
-            println!("ROCode {}", env!("CARGO_PKG_VERSION"));
+            println!("{}", env!("CARGO_PKG_VERSION"));
         }
         Some(Commands::Info) => {
-            show_build_info();
+            print_build_info();
         }
         None => {
-            let launched_from_desktop =
-                !std::io::stdin().is_terminal() && !std::io::stdout().is_terminal();
-            if launched_from_desktop {
-                run_desktop_web_command(
-                    0,
-                    "127.0.0.1".to_string(),
-                    false,
-                    "rocode.local".to_string(),
-                    vec![],
-                )
-                .await?;
-                return Ok(());
-            }
-            run_tui(TuiLaunchOptions {
+            host.run_tui(TuiCommandRequest {
                 project: None,
                 model: None,
                 continue_last: false,
                 session: None,
                 fork: false,
-                agent_name: None,
-                initial_prompt: None,
+                prompt: None,
+                agent: None,
                 port: 0,
                 hostname: "127.0.0.1".to_string(),
                 mdns: false,
@@ -331,25 +361,40 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn show_build_info() {
+pub fn spawn_process_reaper() {
+    rocode_core::process_registry::global_registry()
+        .spawn_reaper(std::time::Duration::from_secs(30));
+}
+
+pub fn print_build_info() {
+    let built_at = option_env!("ROCODE_BUILD_TIMESTAMP").unwrap_or("unknown");
+    let rustc = option_env!("ROCODE_RUSTC_VERSION").unwrap_or("unknown");
+    let profile = option_env!("ROCODE_BUILD_PROFILE").unwrap_or("unknown");
+    let target = option_env!("TARGET").unwrap_or("unknown");
+    let host = option_env!("HOST").unwrap_or("unknown");
+
     println!("ROCode {}", env!("CARGO_PKG_VERSION"));
     println!();
     println!("Build Info:");
-    println!("  Compiler:   {}", env!("ROCODE_RUSTC_VERSION"));
-    println!("  Profile:    {}", env!("ROCODE_PROFILE"));
-    println!("  Target:     {}", env!("ROCODE_TARGET"));
-    println!("  Host:       {}", env!("ROCODE_HOST"));
-    println!("  Built at:   {}", env!("ROCODE_BUILD_TIME"));
+    println!("  Compiler:   {}", rustc);
+    println!("  Profile:    {}", profile);
+    println!("  Target:     {}", target);
+    println!("  Host:       {}", host);
+    println!("  Built at:   {}", built_at);
     println!();
+
+    let data = dirs::data_local_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join("rocode");
+    let cache = dirs::cache_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join("rocode");
+    let config = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join("rocode");
+
     println!("Paths:");
-    let data_dir = dirs::data_local_dir().unwrap_or_default().join("rocode");
-    let config_dir = dirs::config_dir().unwrap_or_default().join("rocode");
-    let cache_dir = dirs::cache_dir().unwrap_or_default().join("rocode");
-    println!("  Data:       {}", data_dir.display());
-    println!("  Config:     {}", config_dir.display());
-    println!("  Cache:      {}", cache_dir.display());
-    println!();
-    println!("Plugin ABI:");
-    println!("  Native plugins (dylib) must be compiled with the same");
-    println!("  Rust compiler version listed above.");
+    println!("  Data:       {}", data.display());
+    println!("  Config:     {}", config.display());
+    println!("  Cache:      {}", cache.display());
 }

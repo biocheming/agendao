@@ -20,7 +20,7 @@ rocode tui
 也可以从源码直接启动：
 
 ```bash
-cargo run -p rocode-cli -- tui
+cargo run -p rocode -- tui
 ```
 
 ### 1.2 单次运行

@@ -9,7 +9,7 @@ This directory contains product-facing examples and design references for ROCode
 - `README.md`
   - 项目总览、启动方式、当前公开能力范围
 - `installation.md`
-  - 三个并列二进制的安装、升级、卸载与环境变量覆盖说明
+  - 单一 `rocode` 分发入口的安装、升级、卸载与 Web 资源布局说明
 - `../CHANGELOG.md`
   - 当前版本发布说明与最近一次交付摘要
 - `../USER_GUIDE.md`
@@ -48,7 +48,7 @@ This directory contains product-facing examples and design references for ROCode
   - Design notes and architecture plans
   - Use these as implementation references, not as runtime config files
 - `docs/plans/frontend-backend-decoupling-blueprint.md`
-  - 前端/后端解耦执行蓝图，定义 `rocode-cli`、`rocode-tui`、`rocode-web` 与 `rocode-server` 的目标边界和迁移阶段
+  - 前端/后端解耦执行蓝图，定义 `rocode` 产品壳、`rocode-cli`/`rocode-tui`/`rocode-web` 前端层与 `rocode-server` 后端层的边界和迁移状态
 - `docs/plans/tui-session-graph-sidebar.md`
   - TUI session graph sidebar 的分轮目标与风险
 
@@ -104,8 +104,8 @@ The current schema IDs are:
 
 - `/` 是正式 Web 入口
 - `/web/*` 是正式静态资源前缀
-- `rocode-server` 不再运行 npm，也不再内嵌静态资源
-- `crates/rocode-server/web-ui` 已从主线构建中清理
+- 后端 runtime 不再运行 npm，也不再内嵌静态资源
+- `apps/rocode-web` 是当前正式 Web 前端源码目录，后端不再内嵌或构建 Web 资源
 - 当前 Web 交互已包含可过滤 model picker、批量 session 删除确认和更高密度的消息阅读节奏
 
 ## Skill Hub CLI

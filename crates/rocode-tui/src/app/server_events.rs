@@ -21,7 +21,14 @@ pub(super) fn env_var_with_fallback(primary: &str, fallback: &str) -> Option<Str
         .or_else(|| std::env::var(fallback).ok())
 }
 
-pub(super) fn resolve_tui_base_url() -> String {
+pub(super) fn resolve_tui_base_url(base_url_override: Option<&str>) -> String {
+    if let Some(value) = base_url_override {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+
     if let Some(value) = env_var_with_fallback("ROCODE_TUI_BASE_URL", "OPENCODE_TUI_BASE_URL") {
         let trimmed = value.trim();
         if !trimmed.is_empty() {

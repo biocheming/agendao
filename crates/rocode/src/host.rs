@@ -3,45 +3,62 @@ use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 use std::time::Duration;
 
-use rocode_launcher::{self as launcher, ServerLaunchOptions};
+use async_trait::async_trait;
+use rocode_cli::{
+    AcpCommandRequest, DesktopWebCommandRequest, ProductHost, ServerCommandRequest,
+    TuiCommandRequest, WebCommandRequest,
+};
+use rocode_launcher as launcher;
+use rocode_server::ServerRuntimeOptions;
+use rocode_tui::AppLaunchConfig;
 
-pub(crate) async fn run_server_command(
-    mode: &str,
-    port: u16,
-    hostname: String,
-    dir: Option<PathBuf>,
-    mdns: bool,
-    mdns_domain: String,
-    cors: Vec<String>,
-) -> anyhow::Result<()> {
-    let bind_port = if port == 0 { 3000 } else { port };
-    let options = ServerLaunchOptions {
-        port: bind_port,
+pub struct Host;
+
+#[async_trait]
+impl ProductHost for Host {
+    async fn run_tui(&self, request: TuiCommandRequest) -> anyhow::Result<()> {
+        run_tui(request).await
+    }
+
+    async fn run_server(&self, request: ServerCommandRequest) -> anyhow::Result<()> {
+        run_server_command(request).await
+    }
+
+    async fn run_web(&self, request: WebCommandRequest) -> anyhow::Result<()> {
+        run_web_command(request).await
+    }
+
+    async fn run_desktop_web(&self, request: DesktopWebCommandRequest) -> anyhow::Result<()> {
+        run_desktop_web_command(request).await
+    }
+
+    async fn run_acp(&self, request: AcpCommandRequest) -> anyhow::Result<()> {
+        run_acp_command(request).await
+    }
+}
+
+async fn run_server_command(request: ServerCommandRequest) -> anyhow::Result<()> {
+    rocode_server::run_server_runtime(ServerRuntimeOptions {
+        port: request.port,
+        hostname: request.hostname,
+        cwd: request.dir,
+        mdns: request.mdns,
+        mdns_domain: request.mdns_domain,
+        cors: request.cors,
+    })
+    .await
+}
+
+async fn run_web_command(request: WebCommandRequest) -> anyhow::Result<()> {
+    let WebCommandRequest {
+        port,
         hostname,
-        cwd: dir,
-        web_dist: None,
+        dir,
         mdns,
         mdns_domain,
         cors,
-    };
-    if let Some(path) = launcher::try_resolve_component_binary("server") {
-        println!(
-            "Starting ROCode {} server via {}",
-            mode,
-            launcher::resolve_binary_display(&path)
-        );
-    }
-    launcher::run_server_foreground(&options).await
-}
+    } = request;
 
-pub(crate) async fn run_web_command(
-    port: u16,
-    hostname: String,
-    dir: Option<PathBuf>,
-    mdns: bool,
-    mdns_domain: String,
-    cors: Vec<String>,
-) -> anyhow::Result<()> {
     let bind_port = if port == 0 { 3000 } else { port };
     let display_host = if hostname == "0.0.0.0" {
         "localhost".to_string()
@@ -67,47 +84,163 @@ pub(crate) async fn run_web_command(
     };
     println!("Backend API: {}", backend_url);
     println!("Web interface: {}", launch_url);
-    let options = ServerLaunchOptions {
+
+    if let Some(web_dist) = web_dist.as_ref() {
+        std::env::set_var("ROCODE_WEB_DIST", web_dist);
+    }
+
+    let server_task = tokio::spawn(rocode_server::run_server_runtime(ServerRuntimeOptions {
         port: bind_port,
         hostname,
         cwd: dir,
-        web_dist,
         mdns,
         mdns_domain,
         cors: effective_cors,
-    };
-    let mut child =
-        launcher::spawn_server_background(&options, Stdio::inherit(), Stdio::inherit())?;
-    launcher::wait_for_server_ready(&backend_url, Duration::from_secs(90), Some(&mut child))
-        .await?;
+    }));
+
+    launcher::wait_for_server_ready(&backend_url, Duration::from_secs(90), None).await?;
     launcher::try_open_browser(&launch_url);
-    let status = child.wait().await?;
-    if !status.success() {
-        anyhow::bail!("rocode-server exited with status {}", status);
-    }
-    Ok(())
+    server_task.await?
 }
 
-pub(crate) async fn run_desktop_web_command(
-    port: u16,
-    hostname: String,
-    mdns: bool,
-    mdns_domain: String,
-    cors: Vec<String>,
-) -> anyhow::Result<()> {
+async fn run_desktop_web_command(request: DesktopWebCommandRequest) -> anyhow::Result<()> {
     let workspace_dir = launcher::resolve_desktop_workspace("rocode")?;
     launcher::remember_desktop_workspace("rocode", &workspace_dir);
-    run_web_command(port, hostname, Some(workspace_dir), mdns, mdns_domain, cors).await
+    run_web_command(WebCommandRequest {
+        port: request.port,
+        hostname: request.hostname,
+        dir: Some(workspace_dir),
+        mdns: request.mdns,
+        mdns_domain: request.mdns_domain,
+        cors: request.cors,
+    })
+    .await
 }
 
-pub(crate) async fn run_acp_command(
-    port: u16,
-    hostname: String,
-    mdns: bool,
-    mdns_domain: String,
-    cors: Vec<String>,
-    cwd: PathBuf,
-) -> anyhow::Result<()> {
+async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
+    let TuiCommandRequest {
+        project,
+        model,
+        continue_last,
+        session,
+        fork,
+        prompt,
+        agent,
+        port,
+        hostname,
+        mdns,
+        mdns_domain,
+        cors,
+        attach_url,
+        password: _password,
+    } = request;
+
+    if let Some(project) = project {
+        std::env::set_current_dir(&project).map_err(|e| {
+            anyhow::anyhow!("Failed to change directory to {}: {}", project.display(), e)
+        })?;
+    }
+
+    if fork && !continue_last && session.is_none() {
+        anyhow::bail!("--fork requires --continue or --session");
+    }
+
+    let mut server_task = None;
+    let base_url = if let Some(url) = attach_url {
+        url
+    } else {
+        let client_host = if mdns && hostname == "127.0.0.1" {
+            "127.0.0.1".to_string()
+        } else {
+            hostname.clone()
+        };
+        let bind_port = if port == 0 { 3000 } else { port };
+        let server_url = format!("http://{}:{}", client_host, bind_port);
+        eprintln!("Starting local server for TUI at {}", server_url);
+        server_task = Some(tokio::spawn(rocode_server::run_server_runtime(
+            ServerRuntimeOptions {
+                port: bind_port,
+                hostname,
+                cwd: None,
+                mdns,
+                mdns_domain,
+                cors,
+            },
+        )));
+        launcher::wait_for_server_ready(&server_url, Duration::from_secs(90), None).await?;
+        server_url
+    };
+
+    let selected_session =
+        resolve_requested_session(&base_url, continue_last, session, fork).await?;
+    // rocode-tui creates and drives its own Tokio runtime internally.
+    // Run it on a blocking thread so we do not try to nest runtimes inside
+    // the product shell's async runtime.
+    let run_result = tokio::task::spawn_blocking(move || {
+        rocode_tui::run_tui_with_config(AppLaunchConfig {
+            base_url: Some(base_url),
+            model,
+            initial_prompt: prompt,
+            agent_name: agent,
+            session_id: selected_session,
+        })
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("rocode-tui task failed to join: {}", error))?;
+
+    if let Some(server_task) = server_task {
+        server_task.abort();
+        let _ = server_task.await;
+    }
+
+    run_result
+}
+
+async fn resolve_requested_session(
+    base_url: &str,
+    continue_last: bool,
+    session: Option<String>,
+    fork: bool,
+) -> anyhow::Result<Option<String>> {
+    let api_client = rocode_client::AsyncApiClient::new(base_url.to_string());
+    let selected = if let Some(session_id) = session {
+        Some(session_id)
+    } else if continue_last {
+        api_client
+            .list_sessions(None, Some(100))
+            .await?
+            .into_iter()
+            .find(|s| s.parent_id.is_none())
+            .map(|s| s.id)
+    } else {
+        None
+    };
+
+    if !fork {
+        return Ok(selected);
+    }
+
+    let Some(session_id) = selected else {
+        anyhow::bail!(
+            "No session is available to fork. Use --session <id> or --continue with an existing session."
+        );
+    };
+
+    let forked = api_client.fork_session(&session_id, None).await?;
+    eprintln!("Forked session {} -> {}", session_id, forked.id);
+    Ok(Some(forked.id))
+}
+
+async fn run_acp_command(request: AcpCommandRequest) -> anyhow::Result<()> {
+    let AcpCommandRequest {
+        port,
+        hostname,
+        mdns,
+        mdns_domain,
+        cors,
+        cwd,
+    } = request;
+
     std::env::set_current_dir(&cwd)
         .map_err(|e| anyhow::anyhow!("Failed to change directory to {}: {}", cwd.display(), e))?;
 
@@ -118,7 +251,16 @@ pub(crate) async fn run_acp_command(
     eprintln!(
         "Warning: no external ACP stdio bridge runtime found; falling back to HTTP server mode."
     );
-    run_server_command("acp", port, hostname, Some(cwd), mdns, mdns_domain, cors).await
+    run_server_command(ServerCommandRequest {
+        mode: "acp".to_string(),
+        port,
+        hostname,
+        dir: Some(cwd),
+        mdns,
+        mdns_domain,
+        cors,
+    })
+    .await
 }
 
 fn build_acp_network_args(

@@ -271,8 +271,21 @@ enum SessionSyncMode {
     Incremental,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct AppLaunchConfig {
+    pub base_url: Option<String>,
+    pub agent_name: Option<String>,
+    pub model: Option<String>,
+    pub session_id: Option<String>,
+    pub initial_prompt: Option<String>,
+}
+
 impl App {
     pub fn new() -> anyhow::Result<Self> {
+        Self::new_with_config(AppLaunchConfig::default())
+    }
+
+    pub fn new_with_config(config: AppLaunchConfig) -> anyhow::Result<Self> {
         let context = Arc::new(AppContext::new());
         let mut prompt = Prompt::new(context.clone())
             .with_placeholder("Ask anything... \"Fix a TODO in the codebase\"");
@@ -283,26 +296,39 @@ impl App {
             *context.directory.write() = dir.display().to_string();
         }
 
-        let base_url = resolve_tui_base_url();
+        let base_url = resolve_tui_base_url(config.base_url.as_deref());
         let api_client = Arc::new(ApiClient::new(base_url.clone()));
         context.set_api_client(api_client);
         let sse_session_filter: SessionFilter = Arc::new(std::sync::Mutex::new(None));
 
-        if let Some(agent) = env_var_with_fallback("ROCODE_TUI_AGENT", "OPENCODE_TUI_AGENT") {
+        if let Some(agent) = config
+            .agent_name
+            .as_deref()
+            .map(str::to_string)
+            .or_else(|| env_var_with_fallback("ROCODE_TUI_AGENT", "OPENCODE_TUI_AGENT"))
+        {
             let agent = agent.trim();
             if !agent.is_empty() {
                 context.set_agent(agent.to_string());
             }
         }
-        if let Some(model) = env_var_with_fallback("ROCODE_TUI_MODEL", "OPENCODE_TUI_MODEL") {
+        if let Some(model) = config
+            .model
+            .as_deref()
+            .map(str::to_string)
+            .or_else(|| env_var_with_fallback("ROCODE_TUI_MODEL", "OPENCODE_TUI_MODEL"))
+        {
             let model = model.trim();
             if !model.is_empty() {
                 context.set_model_selection(model.to_string(), provider_from_model(model));
                 context.set_model_variant(None);
             }
         }
-        if let Some(session_id) =
-            env_var_with_fallback("ROCODE_TUI_SESSION", "OPENCODE_TUI_SESSION")
+        if let Some(session_id) = config
+            .session_id
+            .as_deref()
+            .map(str::to_string)
+            .or_else(|| env_var_with_fallback("ROCODE_TUI_SESSION", "OPENCODE_TUI_SESSION"))
         {
             let session_id = session_id.trim();
             if !session_id.is_empty() {
@@ -317,8 +343,11 @@ impl App {
                 });
             }
         }
-        if let Some(initial_prompt) =
-            env_var_with_fallback("ROCODE_TUI_PROMPT", "OPENCODE_TUI_PROMPT")
+        if let Some(initial_prompt) = config
+            .initial_prompt
+            .as_deref()
+            .map(str::to_string)
+            .or_else(|| env_var_with_fallback("ROCODE_TUI_PROMPT", "OPENCODE_TUI_PROMPT"))
         {
             let initial_prompt = initial_prompt.trim();
             if !initial_prompt.is_empty() {

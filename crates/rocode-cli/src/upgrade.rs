@@ -4,7 +4,7 @@ use std::process::Command as ProcessCommand;
 
 use crate::util::parse_http_json;
 
-const MANAGED_BINARIES: [&str; 3] = ["rocode", "rocode-server", "rocode-tui"];
+const MANAGED_BINARIES: [&str; 1] = ["rocode"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InstallMethod {
@@ -228,7 +228,7 @@ fn run_upgrade_process(method: InstallMethod, target: &str) -> anyhow::Result<()
     let status = match method {
         InstallMethod::Local => {
             anyhow::bail!(
-                "Local side-by-side installs must upgrade `rocode`, `rocode-server`, and `rocode-tui` together. Reinstall from the matching release bundle or rerun `./scripts/install-local.sh release` from a source checkout."
+                "Local installs package ROCode as a single `rocode` binary. Reinstall from the matching release bundle or rerun `./scripts/install-local.sh release` from a source checkout."
             );
         }
         InstallMethod::Curl => ProcessCommand::new("sh")

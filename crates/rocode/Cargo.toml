@@ -1,0 +1,24 @@
+[package]
+name = "rocode"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rocode"
+path = "src/main.rs"
+
+[dependencies]
+rocode-cli = { path = "../rocode-cli" }
+rocode-client = { path = "../rocode-client" }
+rocode-launcher = { path = "../rocode-launcher" }
+rocode-server = { path = "../rocode-server" }
+rocode-tui = { path = "../rocode-tui" }
+rocode-core = { path = "../rocode-core" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+dirs = { workspace = true }
+tracing-subscriber = { workspace = true }
+which = { workspace = true }

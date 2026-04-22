@@ -4,10 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-
-[[bin]]
-name = "rocode"
-path = "src/main.rs"
+autobins = false
 
 [dependencies]
 rocode-core = { path = "../rocode-core" }
@@ -35,6 +32,7 @@ clap = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 futures = { workspace = true }
