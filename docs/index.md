@@ -108,8 +108,7 @@ rocode mcp connect my-server
 
 ```bash
 git clone <repo-url> && cd rocode
-cargo build --release --package rocode-cli
-cp target/release/rocode-cli /usr/local/bin/rocode
+./scripts/install-local.sh release ~/.local
 ```
 
 参见 [安装指南](installation) 了解完整安装方式。

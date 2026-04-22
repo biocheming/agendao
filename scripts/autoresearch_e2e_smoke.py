@@ -18,7 +18,7 @@ ANSWERS = {
     "goal": "Exercise the /autoresearch command preflight and reply loop.",
     "scope": "crates/rocode-server/**, crates/rocode-cli/**, crates/rocode-tui/**",
     "metric": "The command resubmits with all missing fields populated.",
-    "verify": "cargo build -p rocode-cli -p rocode-tui",
+    "verify": "cargo build -p rocode-cli -p rocode-server -p rocode-tui",
 }
 
 

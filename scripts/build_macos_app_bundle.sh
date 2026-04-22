@@ -11,15 +11,20 @@ if [[ "${PROFILE}" != "release" && "${PROFILE}" != "debug" ]]; then
 fi
 
 APP_NAME="ROCode"
-BINARY_NAME="rocode"
+CLI_BINARY_NAME="rocode"
+SERVER_BINARY_NAME="rocode-server"
+TUI_BINARY_NAME="rocode-tui"
 BUNDLE_NAME="${APP_NAME}.app"
 TARGET_DIR="${REPO_ROOT}/../target"
+WEB_DIST_DIR="${REPO_ROOT}/apps/rocode-web/dist"
 PROFILE_DIR="${PROFILE}"
 if [[ "${PROFILE}" == "debug" ]]; then
   PROFILE_DIR="debug"
 fi
 
-BINARY_PATH="${TARGET_DIR}/${PROFILE_DIR}/${BINARY_NAME}"
+CLI_BINARY_PATH="${TARGET_DIR}/${PROFILE_DIR}/${CLI_BINARY_NAME}"
+SERVER_BINARY_PATH="${TARGET_DIR}/${PROFILE_DIR}/${SERVER_BINARY_NAME}"
+TUI_BINARY_PATH="${TARGET_DIR}/${PROFILE_DIR}/${TUI_BINARY_NAME}"
 DIST_DIR="${REPO_ROOT}/dist/macos"
 APP_DIR="${DIST_DIR}/${BUNDLE_NAME}"
 CONTENTS_DIR="${APP_DIR}/Contents"
@@ -74,17 +79,19 @@ generate_iconset() {
   render_icon_png 1024 "${ICONSET_DIR}/icon_512x512@2x.png"
 }
 
-echo "[1/4] Building ${BINARY_NAME} (${PROFILE})..."
+echo "[1/4] Building ${CLI_BINARY_NAME}, ${SERVER_BINARY_NAME}, and ${TUI_BINARY_NAME} (${PROFILE})..."
 if [[ "${PROFILE}" == "release" ]]; then
-  cargo build -p rocode-cli --release
+  cargo build -p rocode-cli -p rocode-server -p rocode-tui --release
 else
-  cargo build -p rocode-cli
+  cargo build -p rocode-cli -p rocode-server -p rocode-tui
 fi
 
-if [[ ! -x "${BINARY_PATH}" ]]; then
-  echo "expected binary not found: ${BINARY_PATH}" >&2
-  exit 1
-fi
+for path in "${CLI_BINARY_PATH}" "${SERVER_BINARY_PATH}" "${TUI_BINARY_PATH}"; do
+  if [[ ! -x "${path}" ]]; then
+    echo "expected binary not found: ${path}" >&2
+    exit 1
+  fi
+done
 
 generate_iconset
 
@@ -115,7 +122,14 @@ fi
 echo "[3/4] Assembling ${BUNDLE_NAME}..."
 rm -rf "${APP_DIR}"
 mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}"
-cp "${BINARY_PATH}" "${MACOS_DIR}/${APP_NAME}"
+cp "${CLI_BINARY_PATH}" "${MACOS_DIR}/${APP_NAME}"
+cp "${SERVER_BINARY_PATH}" "${MACOS_DIR}/${SERVER_BINARY_NAME}"
+cp "${TUI_BINARY_PATH}" "${MACOS_DIR}/${TUI_BINARY_NAME}"
+if [[ -d "${WEB_DIST_DIR}" ]]; then
+  cp -R "${WEB_DIST_DIR}" "${RESOURCES_DIR}/web"
+else
+  echo "Warning: ${WEB_DIST_DIR} not found; bundle will not contain ROCode Web assets."
+fi
 cp "${ICNS_PATH}" "${RESOURCES_DIR}/rocode.icns"
 printf 'APPLROCD' > "${PKGINFO_PATH}"
 sed "s/__ROCODE_VERSION__/${VERSION}/g" "${PLIST_TEMPLATE}" > "${PLIST_PATH}"

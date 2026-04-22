@@ -44,7 +44,9 @@ use tokio_util::sync::CancellationToken;
 use crate::api_client::{
     CliApiClient, McpStatusInfo, SessionExecutionTopology, SessionRuntimeState,
 };
+use crate::branding::{APP_SHORT_NAME, APP_TAGLINE, APP_VERSION_DATE};
 use crate::cli::{InteractiveCliMode, RunOutputFormat};
+use crate::clipboard::Clipboard;
 use crate::event_stream::{self, CliServerEvent};
 use crate::providers::{render_help, setup_providers};
 use crate::remote::{parse_output_block, run_non_interactive_attach, RemoteAttachOptions};
@@ -53,8 +55,6 @@ use crate::util::{
     append_cli_file_attachments, collect_run_input, parse_model_and_provider, truncate_text,
 };
 use rocode_command::branding::logo_lines;
-use rocode_tui::branding::{APP_SHORT_NAME, APP_TAGLINE, APP_VERSION_DATE};
-use rocode_tui::ui::Clipboard;
 
 mod interactive_session;
 
@@ -112,7 +112,7 @@ pub(crate) async fn run_non_interactive(options: RunNonInteractiveOptions) -> an
         title,
         attach,
         dir,
-        port: _port,
+        port,
         variant,
         thinking,
         interactive_mode,
@@ -146,7 +146,7 @@ pub(crate) async fn run_non_interactive(options: RunNonInteractiveOptions) -> an
     let base_url = if let Some(base_url) = attach {
         base_url
     } else {
-        discover_or_start_server(None).await?
+        discover_or_start_server(port).await?
     };
     let api_client = CliApiClient::new(base_url.clone());
     let remote_context = api_client.get_workspace_context().await.ok();
@@ -637,12 +637,12 @@ mod tests {
         PermissionMemory, TerminalStreamAccumulator,
     };
     use crate::api_client::SessionListItem;
+    use crate::api_client::{SessionListHints, SessionListTime};
     use chrono::Utc;
     use rocode_command::cli_style::CliStyle;
     use rocode_command::output_blocks::{MessageBlock, OutputBlock, SchedulerStageBlock};
     use rocode_command::{CommandRegistry, ResolvedUiCommand, UiActionId, UiCommandArgumentKind};
     use rocode_config::{Config, UiPreferencesConfig};
-    use rocode_tui::api::{SessionListHints, SessionListTime};
     use std::collections::{BTreeSet, HashMap, VecDeque};
     use std::path::Path;
     use std::sync::atomic::AtomicBool;

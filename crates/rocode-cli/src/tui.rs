@@ -1,10 +1,12 @@
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use rocode_storage::{Database, SessionRepository};
+use rocode_launcher::{
+    build_tui_env, run_tui_foreground, spawn_server_background, wait_for_server_ready,
+    ServerLaunchOptions,
+};
 
-use crate::server::{start_mdns_publisher_if_needed, wait_for_server_ready, MdnsPublisher};
+use crate::api_client::CliApiClient;
 
 pub(crate) struct TuiLaunchOptions {
     pub project: Option<PathBuf>,
@@ -51,82 +53,68 @@ pub(crate) async fn run_tui(options: TuiLaunchOptions) -> anyhow::Result<()> {
         anyhow::bail!("--fork requires --continue or --session");
     }
 
-    let mut server_handle = None;
-    let mut mdns_publisher: Option<MdnsPublisher> = None;
+    let mut server_child = None;
     let base_url = if let Some(url) = attach_url {
         url
     } else {
-        let bind_host = if mdns && hostname == "127.0.0.1" {
-            "0.0.0.0".to_string()
+        let client_host = if mdns && hostname == "127.0.0.1" {
+            "127.0.0.1".to_string()
         } else {
             hostname.clone()
         };
-        let client_host = if bind_host == "0.0.0.0" {
-            "127.0.0.1".to_string()
-        } else {
-            bind_host.clone()
-        };
         let bind_port = if port == 0 { 3000 } else { port };
-        let addr: SocketAddr = format!("{}:{}", bind_host, bind_port).parse()?;
         let server_url = format!("http://{}:{}", client_host, bind_port);
         eprintln!("Starting local server for TUI at {}", server_url);
-        rocode_server::set_cors_whitelist(cors.clone());
-        let mut handle = tokio::spawn(async move { rocode_server::run_server(addr).await });
-        wait_for_server_ready(&server_url, Duration::from_secs(90), Some(&mut handle)).await?;
-        server_handle = Some(handle);
-        mdns_publisher = start_mdns_publisher_if_needed(mdns, &bind_host, bind_port, &mdns_domain);
+        let options = ServerLaunchOptions {
+            port: bind_port,
+            hostname,
+            cwd: None,
+            web_dist: None,
+            mdns,
+            mdns_domain,
+            cors,
+        };
+        let mut child = spawn_server_background(
+            &options,
+            std::process::Stdio::inherit(),
+            std::process::Stdio::inherit(),
+        )?;
+        wait_for_server_ready(&server_url, Duration::from_secs(90), Some(&mut child)).await?;
+        server_child = Some(child);
         server_url
     };
 
-    let selected_session = resolve_requested_session(continue_last, session, fork).await?;
-    std::env::set_var("ROCODE_TUI_BASE_URL", &base_url);
-    if let Some(model) = model {
-        std::env::set_var("ROCODE_TUI_MODEL", model);
-    }
-    if let Some(prompt) = initial_prompt {
-        std::env::set_var("ROCODE_TUI_PROMPT", prompt);
-    }
-    if let Some(agent_name) = agent_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        std::env::set_var("ROCODE_TUI_AGENT", agent_name);
-    }
-    if let Some(session_id) = selected_session {
-        std::env::set_var("ROCODE_TUI_SESSION", session_id);
-    }
+    let selected_session =
+        resolve_requested_session(&base_url, continue_last, session, fork).await?;
+    let run_result = run_tui_foreground(build_tui_env(
+        &base_url,
+        model,
+        initial_prompt,
+        agent_name,
+        selected_session,
+    ))
+    .await;
 
-    let run_result = tokio::task::spawn_blocking(rocode_tui::run_tui)
-        .await
-        .map_err(|e| anyhow::anyhow!("TUI task panicked: {}", e))?;
-
-    std::env::remove_var("ROCODE_TUI_BASE_URL");
-    std::env::remove_var("ROCODE_TUI_MODEL");
-    std::env::remove_var("ROCODE_TUI_PROMPT");
-    std::env::remove_var("ROCODE_TUI_AGENT");
-    std::env::remove_var("ROCODE_TUI_SESSION");
-
-    drop(mdns_publisher);
-    if let Some(handle) = server_handle {
-        handle.abort();
+    if let Some(mut child) = server_child {
+        let _ = child.kill().await;
+        let _ = child.wait().await;
     }
 
     run_result
 }
 
 async fn resolve_requested_session(
+    base_url: &str,
     continue_last: bool,
     session: Option<String>,
     fork: bool,
 ) -> anyhow::Result<Option<String>> {
+    let api_client = CliApiClient::new(base_url.to_string());
     let selected = if let Some(session_id) = session {
         Some(session_id)
     } else if continue_last {
-        let db = Database::new().await?;
-        let session_repo = SessionRepository::new(db.pool().clone());
-        session_repo
-            .list(None, 100)
+        api_client
+            .list_sessions(None, Some(100))
             .await?
             .into_iter()
             .find(|s| s.parent_id.is_none())
@@ -135,11 +123,15 @@ async fn resolve_requested_session(
         None
     };
 
-    if fork && selected.is_some() {
-        eprintln!(
-            "Note: --fork for TUI session attach is not fully wired yet; using base session."
-        );
+    if !fork {
+        return Ok(selected);
     }
 
-    Ok(selected)
+    let Some(session_id) = selected else {
+        anyhow::bail!("No session is available to fork. Use --session <id> or --continue with an existing session.");
+    };
+
+    let forked = api_client.fork_session(&session_id, None).await?;
+    eprintln!("Forked session {} -> {}", session_id, forked.id);
+    Ok(Some(forked.id))
 }

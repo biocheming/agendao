@@ -1038,7 +1038,8 @@ async fn cli_execute_ui_action(
                 return Ok(CliUiActionOutcome::Continue);
             };
 
-            let wants_advanced = if draft.mode == rocode_tui::api::ProviderConnectDraftMode::Known {
+            let wants_advanced =
+                if draft.mode == crate::api_client::ProviderConnectDraftMode::Known {
                 let options = vec![
                     SelectOption {
                         label: "Use suggested settings".to_string(),

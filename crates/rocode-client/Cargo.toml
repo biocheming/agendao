@@ -1,0 +1,17 @@
+[package]
+name = "rocode-client"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+rocode-api = { path = "../rocode-api" }
+rocode-command = { path = "../rocode-command" }
+rocode-config = { path = "../rocode-config" }
+rocode-runtime-context = { path = "../rocode-runtime-context" }
+rocode-state = { path = "../rocode-state" }
+anyhow = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

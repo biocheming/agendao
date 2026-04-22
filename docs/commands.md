@@ -69,7 +69,7 @@ rocode tui [PROJECT] [选项]
 | `-m, --model` | string | 配置默认 | 指定模型（格式: `provider/model`） |
 | `-c, --continue` | flag | false | 恢复上次会话 |
 | `-s, --session` | string | -- | 指定会话 ID |
-| `--fork` | flag | false | 从已有会话分叉（需要 `-c` 或 `-s`） |
+| `--fork` | flag | false | 从已有会话分叉后再进入 TUI（需要 `-c` 或 `-s`） |
 | `--prompt` | string | -- | 初始提示词 |
 | `--agent` | string | -- | 指定代理名称 |
 | `--port` | u16 | 0 | HTTP 服务端口（0 = 自动） |
@@ -125,7 +125,7 @@ rocode run --command <command> [选项]
 | `--title` | string | -- | 会话标题 |
 | `--attach` | string | -- | 附加到指定 URL 的服务器 |
 | `--dir` | path | -- | 工作目录 |
-| `--port` | u16 | -- | 服务端口 |
+| `--port` | u16 | -- | 自动拉起本地服务器时使用的端口 |
 | `--variant` | string | -- | 模型变体 |
 | `--thinking` | flag | false | 显示思考过程 |
 | `--interactive-mode` | enum | rich | CLI 交互模式: `rich` 或 `compact` |
@@ -204,6 +204,20 @@ rocode serve [选项]
 ## rocode web -- Web 界面
 
 启动后台服务器并打开 Web 浏览器界面。
+
+当前 Web 前端由独立应用 `apps/rocode-web` 构建，`rocode-server` 只在运行时加载外部 `dist/` 目录。默认查找顺序包括：
+
+- `ROCODE_WEB_DIST`
+- 已安装布局中的 `share/rocode/web`
+- macOS bundle 中的 `Contents/Resources/web`
+
+如果这些路径都不可用，launcher 会在启动前直接报错，而不是先打开一个缺失前端资源的空页面。
+
+开发态也支持独立 Web dev server：
+
+- 设置 `ROCODE_WEB_DEV_URL=http://127.0.0.1:5173` 后，`rocode web` 会只拉起后端，并把浏览器打开到该 dev server。
+- launcher 会自动把后端地址追加为 `?api_base_url=http://127.0.0.1:3000`，前端的 HTTP / SSE / WebSocket / 文件下载请求都会改为走这个显式后端地址。
+- 对于本机 `localhost` / `127.0.0.1` 开发地址通常不需要额外 CORS 配置；若使用其他 origin，launcher 会把该 origin 一并加入后端白名单。
 
 ### 用法
 
@@ -641,6 +655,12 @@ rocode pr <NUMBER>
 rocode upgrade [TARGET] [-m, --method <METHOD>]
 ```
 
+`rocode upgrade` 适合由安装器或包管理器维护的安装方式。对于源码 / 本地 side-by-side 安装，请重新安装整套二进制，而不是单独替换 `rocode`：
+
+```bash
+./scripts/install-local.sh release ~/.local
+```
+
 ---
 
 ## rocode uninstall -- 卸载
@@ -657,6 +677,8 @@ rocode uninstall [选项]
 | `-d, --keep-data` | 保留数据文件 |
 | `--dry-run` | 只显示将要执行的操作 |
 | `-f, --force` | 强制卸载 |
+
+当 `rocode` 是以 side-by-side 方式安装时，卸载会同时列出并删除同目录下的 `rocode`、`rocode-server` 和 `rocode-tui`。
 
 ---
 

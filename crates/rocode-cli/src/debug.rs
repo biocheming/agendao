@@ -5,6 +5,13 @@ use std::process::Command as ProcessCommand;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::api_client::{
+    CliApiClient, SkillCatalogQuery, SkillDetailQuery, SkillHubGuardRunRequest,
+    SkillHubIndexRefreshRequest, SkillHubManagedDetachRequest, SkillHubManagedRemoveRequest,
+    SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
+    SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest, SkillHubSyncApplyRequest,
+    SkillHubSyncPlanRequest, SkillHubTimelineQuery, SkillSourceKind, SkillSourceRef,
+};
 use rocode_agent::AgentRegistry;
 use rocode_config::loader::load_config;
 use rocode_config::{LspConfig, LspServerConfig as ConfigLspServerConfig};
@@ -14,7 +21,6 @@ use rocode_session::snapshot::Snapshot;
 use rocode_storage::{Database, SessionRepository};
 use rocode_tool::{registry::create_default_registry, ToolContext};
 
-use crate::api_client::CliApiClient;
 use crate::cli::*;
 use crate::server_lifecycle::discover_or_start_server;
 
@@ -167,7 +173,7 @@ async fn resolve_server_skill_catalog(
 ) -> anyhow::Result<Vec<serde_json::Value>> {
     let base_url = discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
-    let query = session_id.map(|session_id| rocode_tui::api::SkillCatalogQuery {
+    let query = session_id.map(|session_id| SkillCatalogQuery {
         session_id: Some(session_id.to_string()),
         ..Default::default()
     });
@@ -190,7 +196,7 @@ async fn resolve_server_skill_detail(
     let base_url = discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
     let detail = client
-        .get_skill_detail(&rocode_tui::api::SkillDetailQuery {
+        .get_skill_detail(&SkillDetailQuery {
             name: name.to_string(),
             session_id: session_id.map(ToOwned::to_owned),
             ..Default::default()
@@ -199,13 +205,13 @@ async fn resolve_server_skill_detail(
     Ok(serde_json::json!(detail))
 }
 
-fn debug_skill_source_kind_to_api(kind: SkillSourceKindArg) -> rocode_tui::api::SkillSourceKind {
+fn debug_skill_source_kind_to_api(kind: SkillSourceKindArg) -> SkillSourceKind {
     match kind {
-        SkillSourceKindArg::Bundled => rocode_tui::api::SkillSourceKind::Bundled,
-        SkillSourceKindArg::LocalPath => rocode_tui::api::SkillSourceKind::LocalPath,
-        SkillSourceKindArg::Git => rocode_tui::api::SkillSourceKind::Git,
-        SkillSourceKindArg::Archive => rocode_tui::api::SkillSourceKind::Archive,
-        SkillSourceKindArg::Registry => rocode_tui::api::SkillSourceKind::Registry,
+        SkillSourceKindArg::Bundled => SkillSourceKind::Bundled,
+        SkillSourceKindArg::LocalPath => SkillSourceKind::LocalPath,
+        SkillSourceKindArg::Git => SkillSourceKind::Git,
+        SkillSourceKindArg::Archive => SkillSourceKind::Archive,
+        SkillSourceKindArg::Registry => SkillSourceKind::Registry,
     }
 }
 
@@ -230,8 +236,8 @@ async fn resolve_server_skill_hub_index_refresh(
     let base_url = discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
     let response = client
-        .refresh_skill_hub_index(&rocode_tui::api::SkillHubIndexRefreshRequest {
-            source: rocode_tui::api::SkillSourceRef {
+        .refresh_skill_hub_index(&SkillHubIndexRefreshRequest {
+            source: SkillSourceRef {
                 source_id: source_id.to_string(),
                 source_kind: debug_skill_source_kind_to_api(source_kind),
                 locator: locator.to_string(),
@@ -256,7 +262,7 @@ async fn resolve_server_skill_hub_timeline(
     let base_url = discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
     let response = client
-        .list_skill_hub_timeline(&rocode_tui::api::SkillHubTimelineQuery {
+        .list_skill_hub_timeline(&SkillHubTimelineQuery {
             skill_name: skill_name
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
@@ -281,7 +287,7 @@ async fn resolve_server_skill_hub_guard(
     let base_url = discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
     let request = if let Some(name) = name.map(str::trim).filter(|value| !value.is_empty()) {
-        rocode_tui::api::SkillHubGuardRunRequest {
+        SkillHubGuardRunRequest {
             skill_name: Some(name.to_string()),
             source: None,
         }
@@ -296,9 +302,9 @@ async fn resolve_server_skill_hub_guard(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| anyhow::anyhow!("--locator is required when --name is not set"))?;
-        rocode_tui::api::SkillHubGuardRunRequest {
+        SkillHubGuardRunRequest {
             skill_name: None,
-            source: Some(rocode_tui::api::SkillSourceRef {
+            source: Some(SkillSourceRef {
                 source_id: source_id.to_string(),
                 source_kind: debug_skill_source_kind_to_api(source_kind),
                 locator: locator.to_string(),
@@ -320,8 +326,8 @@ async fn resolve_server_skill_hub_sync_plan(
     let base_url = discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
     let response = client
-        .plan_skill_hub_sync(&rocode_tui::api::SkillHubSyncPlanRequest {
-            source: rocode_tui::api::SkillSourceRef {
+        .plan_skill_hub_sync(&SkillHubSyncPlanRequest {
+            source: SkillSourceRef {
                 source_id: source_id.to_string(),
                 source_kind: debug_skill_source_kind_to_api(source_kind),
                 locator: locator.to_string(),
@@ -342,9 +348,9 @@ async fn resolve_server_skill_hub_sync_apply(
     let base_url = discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
     let response = client
-        .apply_skill_hub_sync(&rocode_tui::api::SkillHubSyncApplyRequest {
+        .apply_skill_hub_sync(&SkillHubSyncApplyRequest {
             session_id: session_id.to_string(),
-            source: rocode_tui::api::SkillSourceRef {
+            source: SkillSourceRef {
                 source_id: source_id.to_string(),
                 source_kind: debug_skill_source_kind_to_api(source_kind),
                 locator: locator.to_string(),
@@ -387,8 +393,8 @@ async fn resolve_server_skill_hub_install_plan(
     let base_url = discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
     let response = client
-        .plan_skill_hub_remote_install(&rocode_tui::api::SkillHubRemoteInstallPlanRequest {
-            source: rocode_tui::api::SkillSourceRef {
+        .plan_skill_hub_remote_install(&SkillHubRemoteInstallPlanRequest {
+            source: SkillSourceRef {
                 source_id: source_id.to_string(),
                 source_kind: debug_skill_source_kind_to_api(source_kind),
                 locator: locator.to_string(),
@@ -411,9 +417,9 @@ async fn resolve_server_skill_hub_install_apply(
     let base_url = discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
     let response = client
-        .apply_skill_hub_remote_install(&rocode_tui::api::SkillHubRemoteInstallApplyRequest {
+        .apply_skill_hub_remote_install(&SkillHubRemoteInstallApplyRequest {
             session_id: session_id.to_string(),
-            source: rocode_tui::api::SkillSourceRef {
+            source: SkillSourceRef {
                 source_id: source_id.to_string(),
                 source_kind: debug_skill_source_kind_to_api(source_kind),
                 locator: locator.to_string(),
@@ -435,8 +441,8 @@ async fn resolve_server_skill_hub_update_plan(
     let base_url = discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
     let response = client
-        .plan_skill_hub_remote_update(&rocode_tui::api::SkillHubRemoteUpdatePlanRequest {
-            source: rocode_tui::api::SkillSourceRef {
+        .plan_skill_hub_remote_update(&SkillHubRemoteUpdatePlanRequest {
+            source: SkillSourceRef {
                 source_id: source_id.to_string(),
                 source_kind: debug_skill_source_kind_to_api(source_kind),
                 locator: locator.to_string(),
@@ -459,9 +465,9 @@ async fn resolve_server_skill_hub_update_apply(
     let base_url = discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
     let response = client
-        .apply_skill_hub_remote_update(&rocode_tui::api::SkillHubRemoteUpdateApplyRequest {
+        .apply_skill_hub_remote_update(&SkillHubRemoteUpdateApplyRequest {
             session_id: session_id.to_string(),
-            source: rocode_tui::api::SkillSourceRef {
+            source: SkillSourceRef {
                 source_id: source_id.to_string(),
                 source_kind: debug_skill_source_kind_to_api(source_kind),
                 locator: locator.to_string(),
@@ -484,9 +490,9 @@ async fn resolve_server_skill_hub_detach(
     let base_url = discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
     let response = client
-        .detach_skill_hub_managed(&rocode_tui::api::SkillHubManagedDetachRequest {
+        .detach_skill_hub_managed(&SkillHubManagedDetachRequest {
             session_id: session_id.to_string(),
-            source: rocode_tui::api::SkillSourceRef {
+            source: SkillSourceRef {
                 source_id: source_id.to_string(),
                 source_kind: debug_skill_source_kind_to_api(source_kind),
                 locator: locator.to_string(),
@@ -509,9 +515,9 @@ async fn resolve_server_skill_hub_remove(
     let base_url = discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
     let response = client
-        .remove_skill_hub_managed(&rocode_tui::api::SkillHubManagedRemoveRequest {
+        .remove_skill_hub_managed(&SkillHubManagedRemoveRequest {
             session_id: session_id.to_string(),
-            source: rocode_tui::api::SkillSourceRef {
+            source: SkillSourceRef {
                 source_id: source_id.to_string(),
                 source_kind: debug_skill_source_kind_to_api(source_kind),
                 locator: locator.to_string(),

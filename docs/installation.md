@@ -42,37 +42,55 @@ ROCode 目前以源码形式分发。克隆仓库并构建：
 git clone <repo-url>
 cd rocode
 
-# Release 构建（优化后，适合日常使用）
-cargo build --release --package rocode-cli
+# Web 前端单独构建
+npm --prefix apps/rocode-web install
+npm --prefix apps/rocode-web run build
+
+# 推荐：一次性构建并安装三个并列二进制
+./scripts/install-local.sh release ~/.local
 ```
 
-构建产物位于：
+安装后固定布局为：
 
 ```
-target/release/rocode-cli        # Linux / macOS
-target\release\rocode-cli.exe   # Windows
+~/.local/bin/rocode
+~/.local/bin/rocode-server
+~/.local/bin/rocode-tui
+~/.local/share/rocode/web
 ```
 
-将二进制文件复制到 PATH 中的目录：
+如果只想构建、不立即安装：
 
 ```bash
-# 系统级安装
-sudo cp target/release/rocode-cli /usr/local/bin/rocode
-
-# 或用户级安装
-mkdir -p ~/.local/bin
-cp target/release/rocode-cli ~/.local/bin/rocode
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
+cargo build --release -p rocode-cli -p rocode-server -p rocode-tui
+npm --prefix apps/rocode-web run build
 ```
 
 ### 方式二：cargo install
 
 ```bash
-cargo install --path crates/rocode-cli --bin rocode-cli --root ~/.local
+cargo install --path crates/rocode-cli --bin rocode --root ~/.local
+cargo install --path crates/rocode-server --root ~/.local
+cargo install --path crates/rocode-tui --root ~/.local
 ```
 
-二进制文件将被安装到 `~/.local/bin/rocode-cli`。你可能需要重命名为 `rocode`。
+`cargo install` 也必须把这三个二进制安装到同一个 `--root` 下，否则 `rocode` 无法在运行时找到 `rocode-server` / `rocode-tui`。
+
+### 方式三：生成 release 分发包
+
+```bash
+./scripts/package-release.sh release
+```
+
+该脚本会生成固定布局的发布目录和压缩包：
+
+```
+dist/release/rocode-<version>-<target>/bin/rocode
+dist/release/rocode-<version>-<target>/bin/rocode-server
+dist/release/rocode-<version>-<target>/bin/rocode-tui
+dist/release/rocode-<version>-<target>/share/rocode/web
+dist/release/rocode-<version>-<target>.tar.gz
+```
 
 ---
 
@@ -97,6 +115,9 @@ sudo pacman -S base-devel openssl
 
 ```bash
 rocode version
+which rocode
+which rocode-server
+which rocode-tui
 ```
 
 成功安装后输出类似：
@@ -248,7 +269,10 @@ ROCode 使用以下标准目录（遵循 XDG 规范）：
 | `ZHIPUAI_API_KEY` | 智谱 BigModel API 密钥 |
 | `ALIBABA_CN_API_KEY` | 阿里云百炼 API 密钥 |
 | `KIMI_FOR_CODING_API_KEY` | Moonshot Kimi API 密钥 |
-| `ROCODE_SERVER_URL` | 服务器 URL（默认 `http://127.0.0.1:4096`） |
+| `ROCODE_SERVER_URL` | 服务器 URL（默认 `http://127.0.0.1:3000`） |
+| `ROCODE_SERVER_BIN` | 覆盖 CLI 启动 `rocode-server` 时使用的可执行文件路径 |
+| `ROCODE_TUI_BIN` | 覆盖 CLI 启动 `rocode-tui` 时使用的可执行文件路径 |
+| `ROCODE_WEB_DIST` | 覆盖 `rocode-server` 加载外部 Web 前端 `dist/` 目录的位置 |
 | `ROCODE_CONFIG_DIR` | 覆盖配置目录路径 |
 | `RUST_LOG` | 日志级别过滤（如 `debug`、`rocode_provider=trace`） |
 
@@ -259,10 +283,16 @@ ROCode 使用以下标准目录（遵循 XDG 规范）：
 ## 卸载
 
 ```bash
-# 移除二进制文件
+# 移除三个并列二进制
 rm ~/.local/bin/rocode
+rm ~/.local/bin/rocode-server
+rm ~/.local/bin/rocode-tui
+rm -rf ~/.local/share/rocode/web
 # 或
 sudo rm /usr/local/bin/rocode
+sudo rm /usr/local/bin/rocode-server
+sudo rm /usr/local/bin/rocode-tui
+sudo rm -rf /usr/local/share/rocode/web
 
 # 移除配置和数据（可选）
 rm -rf ~/.config/rocode
@@ -285,16 +315,17 @@ rocode uninstall --dry-run                   # 仅预览将删除的文件
 ```bash
 rocode upgrade
 rocode upgrade v2026.4.22           # 升级到指定版本
-rocode upgrade --method cargo      # 指定升级方式
+rocode upgrade --method brew       # 显式指定包管理器方式
 ```
 
-或者从源码重新构建：
+如果你是从源码 / 本地安装脚本安装的，请整体重装三件套，而不是只替换 `rocode`：
 
 ```bash
 cd rocode
 git pull
-cargo build --release --package rocode-cli
-cp target/release/rocode-cli /usr/local/bin/rocode
+npm --prefix apps/rocode-web install
+npm --prefix apps/rocode-web run build
+./scripts/install-local.sh release ~/.local
 ```
 
 ---
