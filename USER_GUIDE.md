@@ -4,7 +4,7 @@
 
 ## 0. 版本
 
-- 当前版本：`v2026.4.21`
+- 当前版本：`v2026.4.22`
 - 当前 CLI 命令：`rocode`
 
 ## 1. 先选运行方式
@@ -139,6 +139,7 @@ ROCode 现在区分：
 ### 4.1 Session 与忙碌状态
 
 - 当 session 正在运行时，普通输入不会插入当前 workflow 中间
+- `/abort` 走独立取消请求，只取消当前活动执行边界，不会把 `/abort` 文本塞进正在运行的 prompt
 - 如果系统需要你回答，它应通过正式 question UI 发起
 - scheduler stage transcript 会被投影到主 session，而不是只藏在内部日志里
 - 当前 TUI 主会话视图已经迁入 reratui reactive session subtree，滚动、reasoning、sidebar 与消息流体验已按新渲染边界收口
@@ -148,6 +149,7 @@ ROCode 现在区分：
 - TUI、CLI、Web 使用统一 slash command 语义
 - 命令缺参数时，会走 question / 参数补全链路
 - 不再要求每个命令都必须走旧式静态预注册弹窗
+- 如果要终止某个已登记的 agent task，用 `/tasks kill <ID>`；`/abort` 针对的是当前会话执行边界
 
 ### 4.3 Skill 浏览与 Hub
 
@@ -422,4 +424,4 @@ rocode debug docs validate --help
 - 文档索引：[docs/README.md](/home/biocheming/tests/python/rust/rocode/docs/README.md)
 - Scheduler 示例：[docs/examples/scheduler/README.md](/home/biocheming/tests/python/rust/rocode/docs/examples/scheduler/README.md)
 - Context Docs：[docs/examples/context_docs/README.md](/home/biocheming/tests/python/rust/rocode/docs/examples/context_docs/README.md)
-- 插件 / skill 示例：[docs/plugins_example/README.md](/home/biocheming/tests/python/rust/rocode/docs/plugins_example/README.md)
+- 插件 / skill 示例：[docs/examples/plugins_example/README.md](/home/biocheming/tests/python/rust/rocode/docs/examples/plugins_example/README.md)

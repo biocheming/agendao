@@ -495,6 +495,8 @@ pub struct OrchestratorContext {
 }
 ```
 
+`cancel_token` 是 agent 执行的统一取消入口。当前运行时注册表已经支持给 agent task 单独挂接 token，但并不是所有调用点都已接成“每个 task 一枚独立 token”；因此用户侧精确取消仍以 `/tasks kill <ID>` 为准，而 `/abort` 更多针对当前会话的活动执行边界。
+
 ### AgentResolver
 
 `AgentResolver` trait 负责将 agent 名称解析为 `AgentDescriptor`：

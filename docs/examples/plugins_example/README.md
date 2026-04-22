@@ -1,6 +1,6 @@
 # plugins_example
 
-文档基线：v2026.4.21（更新日期：2026-04-21）
+文档基线：v2026.4.22（更新日期：2026-04-22）
 
 这个目录是示例合集，用来回答你这个问题：
 
@@ -10,7 +10,7 @@
 
 结论：这个做法是对的，但三者的加载方式不一样。
 
-## 本轮补充（v2026.4.21）
+## 本轮补充（v2026.4.22）
 
 - 对于会产生大输出的插件工具，建议把二进制 / 大文本放到 `attachments` 或外部引用，不要直接塞进 `output` 文本，避免请求体超限。
 - 对于批量工具调用，建议返回摘要文本 + 结构化 metadata，前端按 metadata 做可视化渲染。
@@ -27,9 +27,22 @@
 ## 2) TS Plugin 是运行时 Hook / Auth 扩展
 
 - 由 `rocode-plugin` 子进程桥接执行
-- 在配置文件里通过 `plugin` 列表声明（目前路径入口是 `rocode.jsonc`）
+- 在配置文件里通过 `plugin` 映射或兼容列表声明（入口是 `rocode.jsonc`）
 
-示例配置（项目根 `rocode.jsonc`）：
+推荐配置（项目根 `rocode.jsonc`）：
+
+```json
+{
+  "plugin": {
+    "example-plugin": {
+      "type": "file",
+      "path": "./docs/examples/plugins_example/ts/example-plugin.ts"
+    }
+  }
+}
+```
+
+兼容旧写法：
 
 ```json
 {
@@ -41,10 +54,11 @@
 
 本目录示例：`./ts/example-plugin.ts`
 
-## 3) Rust 示例是编译期扩展
+## 3) Rust 示例是原生 dylib 编译示例
 
 - Rust 代码不会像 TS 插件那样被动态 `import`
-- 需要你在 Rust 工程里显式注册并重新编译
+- 需要先编译成 `cdylib` / `dylib`，再通过 `plugin.type = "dylib"` 显式配置加载
+- 这个目录下的 Rust 代码是原生插件入口示例，不是“放进仓库就会自动生效”的插件目录
 
 本目录示例：`./rust/src/lib.rs`
 

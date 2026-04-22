@@ -2,7 +2,7 @@
 
 ROCode (RustingOpenCode) 是一个用 Rust 编写的高性能 AI 编码编排器。它将终端原生交互、多 Agent 协调、可扩展技能系统和多模型 Provider 整合为一个统一的开发工作流引擎。
 
-> **版本:** 2026.4.21 · **许可证:** MIT · **作者:** Biocheming
+> **版本:** 2026.4.22 · **许可证:** MIT · **作者:** Biocheming
 
 ---
 
@@ -94,7 +94,7 @@ rocode mcp connect my-server
 
 ### 插件系统
 
-支持 npm、pip、cargo、本地文件、动态库（dylib）五种插件类型，可通过 `rocode.jsonc` 配置。
+当前运行时会自动引导三类插件入口：`npm`、本地 `file` TypeScript 插件、以及 `dylib` 原生插件。配置模型里保留了 `pip` / `cargo` 字段，但它们目前不是自动加载路径。
 
 ### 上下文文档
 
@@ -234,7 +234,7 @@ ROCode 遵循严格的分层架构，每层有明确的职责边界：
 | 命令 | 说明 |
 |------|------|
 | `/help` | 显示帮助 |
-| `/abort` | 取消当前响应 |
+| `/abort` | 取消当前活动执行边界 |
 | `/new` | 开始新会话 |
 | `/models` | 列出可用模型 |
 | `/model <id>` | 切换模型 |
@@ -245,6 +245,8 @@ ROCode 遵循严格的分层架构，每层有明确的职责边界：
 | `/compact` | 压缩对话历史 |
 | `/status` | 显示会话状态 |
 | `/copy` | 复制最近一条助手回复 |
+
+`/abort` 通过独立控制请求命中 server 的取消路由，不会作为普通用户消息插入当前 prompt。若目标是某个已登记的 agent task，应使用 `/tasks kill <ID>` 或 `task_flow cancel`。
 
 ---
 

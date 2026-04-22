@@ -402,6 +402,8 @@ Scheduler 通过 JSON/JSONC 文件配置。JSONC 支持注释和尾逗号。
 | `agents` | `string[]` | agent 名称过滤器 |
 | `skillList` | `string[]` | 该 stage 可用的 skill 列表 |
 
+`childSession: true` 会让该 stage 在隔离子会话中运行；用户侧的 `/abort` 取消的是当前活动执行边界，而不是把一条文本消息塞进这个子会话。若要精确终止某个已登记的 agent task，应走 `/tasks kill <ID>` 或 `task_flow cancel`。
+
 ### 三层覆盖链
 
 ```

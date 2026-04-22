@@ -21,13 +21,15 @@ ROCode 的插件系统让你通过额外的工具、Hook、认证桥接、代理
 
 ## 插件类型概览
 
-ROCode 支持三种插件类型：
+当前运行时自动引导三种插件入口：
 
 | 类型 | 格式 | 加载方式 | 适用场景 |
 |------|------|----------|----------|
 | **Skill** | `SKILL.md` | 直接加载 | 增强提示词和流程，不改运行时代码 |
 | **TypeScript** | `.ts` 文件 | 子进程桥接 | 动态 Hook、Auth、自定义 fetch |
 | **Rust 原生** | `.so` / `.dylib` | in-process `libloading` | 深度性能、类型安全、核心能力扩展 |
+
+配置 schema 中还保留了 `pip` / `cargo` 类型字段，但当前 server 启动流程不会自动把它们交给插件加载器；真正会自动引导的是上表这三类入口。
 
 ---
 
@@ -72,14 +74,20 @@ ROCode 支持三种插件类型：
 - `file://` 前缀 -> `file` 类型插件
 - `pkg@version` 格式 -> `npm` 类型插件
 
+列表格式只覆盖历史兼容路径，本质上仍只会落到 `file` 或 `npm` 两种自动加载入口。新配置优先使用映射格式。
+
 ### PluginConfig 字段
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `type` | string | 插件类型: `file`, `npm`, `dylib` |
+| `type` | string | 当前自动引导的类型: `file`, `npm`, `dylib` |
 | `path` | string | 文件路径（`file` 和 `dylib` 类型） |
-| `package` | string | npm 包名（`npm` 类型） |
-| `version` | string | npm 版本（`npm` 类型，可选） |
+| `package` | string | 包名（当前主要用于 `npm`） |
+| `version` | string | 版本约束（常用于 `npm`，可选） |
+| `runtime` | string | 运行时覆盖（例如 `bun`） |
+| `options` | object | 插件专用扩展参数 |
+
+`PluginConfig` 结构体里还定义了 `pip` / `cargo` 相关描述空间，但当前自动引导逻辑不会把它们转成 loader spec；如果文档或示例需要可执行插件，请继续使用 `npm` / `file` / `dylib`。
 
 ### 插件路径
 
@@ -183,6 +191,8 @@ ROCode 内嵌了宿主脚本（`plugin-host.ts`），插件不需要自己提供
   ]
 }
 ```
+
+映射格式是当前推荐写法；列表格式主要用于兼容旧项目。
 
 ### 插件能力
 

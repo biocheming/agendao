@@ -734,7 +734,7 @@ rocode generate
 
 | 命令 | 说明 |
 |------|------|
-| `/abort` | 终止当前执行 |
+| `/abort` | 终止当前活动执行边界 |
 | `/recover` | 显示恢复操作列表 |
 | `/recover <key\|number>` | 执行恢复操作 |
 | `/status` | 显示会话状态（别名: `/stats`） |
@@ -744,6 +744,8 @@ rocode generate
 | `/events <query>` | 按条件过滤事件 |
 | `/inspect` | 显示阶段事件日志（别名: `/stage`, `/stages`） |
 | `/inspect <stage_id>` | 显示特定阶段 |
+
+`/abort` 通过独立控制请求命中 server 的取消路由，不会把 `/abort` 文本作为普通消息插进当前运行中的任务。若目标是某个已登记的 agent task，请使用 `/tasks kill <ID>`。
 
 事件浏览器查询语法：
 
