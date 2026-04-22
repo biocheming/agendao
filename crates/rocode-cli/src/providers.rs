@@ -12,7 +12,7 @@ use rocode_provider::{
     ProviderRegistry,
 };
 
-const DEFAULT_PLUGIN_SERVER_URL: &str = "http://127.0.0.1:4096";
+const DEFAULT_PLUGIN_SERVER_URL: &str = "http://127.0.0.1:3000";
 
 pub(crate) async fn setup_providers(
     config: &rocode_config::Config,

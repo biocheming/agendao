@@ -2,16 +2,15 @@
 //!
 //! CLI shares the same HTTP server as TUI and Web.  On startup the CLI
 //! probes the configured address; if a server is already running it reuses
-//! it, otherwise it spawns one in-process via `tokio::spawn`.
+//! it, otherwise it spawns `rocode-server` as a sibling process.
 
-use std::net::SocketAddr;
 use std::time::Duration;
 
-use crate::server::wait_for_server_ready;
 use crate::util::server_url;
+use rocode_launcher::{spawn_server_background, wait_for_server_ready, ServerLaunchOptions};
 
 /// Default port when nothing else is configured.
-const DEFAULT_PORT: u16 = 4096;
+const DEFAULT_PORT: u16 = 3000;
 
 /// Maximum time to wait for a freshly spawned server to become ready.
 const SERVER_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -58,16 +57,35 @@ pub(crate) async fn discover_or_start_server(port_override: Option<u16>) -> anyh
         return Ok(base_url);
     }
 
-    // 2. Start a new server in-process
+    // 2. Start a new server process
     let port = port_override.unwrap_or(DEFAULT_PORT);
-    let addr: SocketAddr = format!("127.0.0.1:{}", port).parse()?;
-
-    tracing::info!("No server found — starting local server on {}", addr);
-
-    let mut handle = tokio::spawn(async move { rocode_server::run_server(addr).await });
+    tracing::info!(
+        "No server found — starting local server on 127.0.0.1:{}",
+        port
+    );
+    let options = ServerLaunchOptions {
+        port,
+        hostname: "127.0.0.1".to_string(),
+        cwd: None,
+        web_dist: None,
+        mdns: false,
+        mdns_domain: "rocode.local".to_string(),
+        cors: Vec::new(),
+    };
+    let mut child = spawn_server_background(
+        &options,
+        std::process::Stdio::null(),
+        std::process::Stdio::null(),
+    )?;
 
     // 3. Wait until the server is ready
-    wait_for_server_ready(&base_url, SERVER_STARTUP_TIMEOUT, Some(&mut handle)).await?;
+    wait_for_server_ready(&base_url, SERVER_STARTUP_TIMEOUT, Some(&mut child)).await?;
+    tokio::spawn(async move {
+        match child.wait().await {
+            Ok(status) => tracing::warn!("Background rocode-server exited with status {}", status),
+            Err(error) => tracing::warn!("Background rocode-server wait failed: {}", error),
+        }
+    });
 
     tracing::info!("Local server ready at {}", base_url);
     Ok(base_url)

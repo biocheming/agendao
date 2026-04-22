@@ -18,8 +18,9 @@ rocode-multimodal = { path = "../rocode-multimodal" }
 rocode-voice = { path = "../rocode-voice" }
 rocode-grep = { path = "../rocode-grep" }
 rocode-permission = { path = "../rocode-permission" }
-rocode-server = { path = "../rocode-server" }
 rocode-agent = { path = "../rocode-agent" }
+rocode-launcher = { path = "../rocode-launcher" }
+rocode-client = { path = "../rocode-client" }
 rocode-provider = { path = "../rocode-provider" }
 rocode-plugin = { path = "../rocode-plugin" }
 rocode-runtime-context = { path = "../rocode-runtime-context" }
@@ -27,7 +28,6 @@ rocode-session = { path = "../rocode-session" }
 rocode-skill = { path = "../rocode-skill" }
 rocode-storage = { path = "../rocode-storage" }
 rocode-tool = { path = "../rocode-tool" }
-rocode-tui = { path = "../rocode-tui" }
 rocode-types = { path = "../rocode-types" }
 rocode-command = { path = "../rocode-command" }
 rocode-lsp = { path = "../rocode-lsp" }
@@ -47,3 +47,4 @@ sqlx = { workspace = true }
 url = { workspace = true }
 which = { workspace = true }
 crossterm = "0.27"
+base64 = { workspace = true }

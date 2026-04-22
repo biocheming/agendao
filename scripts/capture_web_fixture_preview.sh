@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WEB_DIR="$ROOT_DIR/crates/rocode-server/web"
+WEB_DIR="$ROOT_DIR/apps/rocode-web"
 FIXTURE_PATH="$WEB_DIR/fixture-preview.html"
 OUTPUT_DIR_DEFAULT="$WEB_DIR/visual-baseline"
 

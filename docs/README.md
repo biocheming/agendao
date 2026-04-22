@@ -8,6 +8,8 @@ This directory contains product-facing examples and design references for ROCode
 
 - `README.md`
   - 项目总览、启动方式、当前公开能力范围
+- `installation.md`
+  - 三个并列二进制的安装、升级、卸载与环境变量覆盖说明
 - `../CHANGELOG.md`
   - 当前版本发布说明与最近一次交付摘要
 - `../USER_GUIDE.md`
@@ -45,10 +47,10 @@ This directory contains product-facing examples and design references for ROCode
 - `plans/`
   - Design notes and architecture plans
   - Use these as implementation references, not as runtime config files
-- `docs/plans/tui-reratui-migration.md`
-  - TUI 从 ratatui 迁移到 reratui 的完整阶段计划与收口状态
-- `docs/plans/web-aesthetic-remediation.md`
-  - Web 审美债治理、Round 进度与当前 UI 语法说明
+- `docs/plans/frontend-backend-decoupling-blueprint.md`
+  - 前端/后端解耦执行蓝图，定义 `rocode-cli`、`rocode-tui`、`rocode-web` 与 `rocode-server` 的目标边界和迁移阶段
+- `docs/plans/tui-session-graph-sidebar.md`
+  - TUI session graph sidebar 的分轮目标与风险
 
 ## Context Docs Entry
 
@@ -98,10 +100,11 @@ The current schema IDs are:
 
 ## Web Frontend Entry
 
-当前默认 Web 前端是 `crates/rocode-server/web`（React 版本）：
+当前默认 Web 前端是 `apps/rocode-web`（React 版本）：
 
 - `/` 是正式 Web 入口
 - `/web/*` 是正式静态资源前缀
+- `rocode-server` 不再运行 npm，也不再内嵌静态资源
 - `crates/rocode-server/web-ui` 已从主线构建中清理
 - 当前 Web 交互已包含可过滤 model picker、批量 session 删除确认和更高密度的消息阅读节奏
 

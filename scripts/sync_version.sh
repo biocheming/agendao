@@ -39,10 +39,10 @@ replace_rocode_lock_versions() {
 }
 
 VERSION="$VERSION" replace_package_json_version \
-  "$ROOT_DIR/crates/rocode-server/web/package.json"
+  "$ROOT_DIR/apps/rocode-web/package.json"
 
 VERSION="$VERSION" replace_package_lock_root_versions \
-  "$ROOT_DIR/crates/rocode-server/web/package-lock.json"
+  "$ROOT_DIR/apps/rocode-web/package-lock.json"
 
 for file in \
   "$ROOT_DIR/Cargo.lock" \

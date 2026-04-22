@@ -1,48 +1,9 @@
-use std::io;
-use std::net::SocketAddr;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command as ProcessCommand, Stdio};
+use std::process::{Command as ProcessCommand, Stdio};
 use std::time::Duration;
 
-use crate::util::server_url;
-
-pub(crate) async fn wait_for_server_ready(
-    base_url: &str,
-    timeout: Duration,
-    server_handle: Option<&mut tokio::task::JoinHandle<anyhow::Result<()>>>,
-) -> anyhow::Result<()> {
-    let client = reqwest::Client::new();
-    let start = tokio::time::Instant::now();
-    let health = server_url(base_url, "/health");
-    let mut server_handle = server_handle;
-
-    loop {
-        if let Some(handle) = server_handle.as_mut() {
-            if handle.is_finished() {
-                match handle.await {
-                    Ok(Ok(())) => {
-                        anyhow::bail!("Local server exited before becoming ready at {}", base_url)
-                    }
-                    Ok(Err(error)) => anyhow::bail!("Local server failed to start: {}", error),
-                    Err(join_error) => anyhow::bail!("Local server task failed: {}", join_error),
-                }
-            }
-        }
-
-        if start.elapsed() > timeout {
-            anyhow::bail!(
-                "Timed out waiting for local server to start at {}",
-                base_url
-            );
-        }
-        if let Ok(resp) = client.get(&health).send().await {
-            if resp.status().is_success() {
-                return Ok(());
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
+use rocode_launcher::{self as launcher, ServerLaunchOptions};
 
 pub(crate) async fn run_server_command(
     mode: &str,
@@ -53,82 +14,24 @@ pub(crate) async fn run_server_command(
     mdns_domain: String,
     cors: Vec<String>,
 ) -> anyhow::Result<()> {
-    if let Some(workspace_dir) = dir.as_ref() {
-        std::env::set_current_dir(workspace_dir).map_err(|error| {
-            anyhow::anyhow!(
-                "Failed to change workspace directory to {}: {}",
-                workspace_dir.display(),
-                error
-            )
-        })?;
-    }
-
-    if std::env::var("ROCODE_SERVER_PASSWORD")
-        .or_else(|_| std::env::var("OPENCODE_SERVER_PASSWORD"))
-        .is_err()
-    {
-        eprintln!(
-            "Warning: ROCODE_SERVER_PASSWORD is not set; server is unsecured (legacy fallback: OPENCODE_SERVER_PASSWORD)."
-        );
-    }
-
-    let bind_host = if mdns && hostname == "127.0.0.1" {
-        "0.0.0.0".to_string()
-    } else {
-        hostname
-    };
     let bind_port = if port == 0 { 3000 } else { port };
-    rocode_server::set_cors_whitelist(cors);
-    let _mdns_publisher = start_mdns_publisher_if_needed(mdns, &bind_host, bind_port, &mdns_domain);
-    let addr: SocketAddr = format!("{}:{}", bind_host, bind_port).parse()?;
-    if let Ok(cwd) = std::env::current_dir() {
+    let options = ServerLaunchOptions {
+        port: bind_port,
+        hostname,
+        cwd: dir,
+        web_dist: None,
+        mdns,
+        mdns_domain,
+        cors,
+    };
+    if let Some(path) = launcher::try_resolve_component_binary("server") {
         println!(
-            "Starting ROCode {} server on {} (workspace: {})",
+            "Starting ROCode {} server via {}",
             mode,
-            addr,
-            cwd.display()
+            launcher::resolve_binary_display(&path)
         );
-    } else {
-        println!("Starting ROCode {} server on {}", mode, addr);
     }
-    rocode_server::run_server(addr).await?;
-    Ok(())
-}
-
-pub(crate) fn try_open_browser(url: &str) {
-    let mut candidates: Vec<Vec<String>> = Vec::new();
-    if cfg!(target_os = "macos") {
-        candidates.push(vec!["open".to_string(), url.to_string()]);
-    } else if cfg!(target_os = "windows") {
-        candidates.push(vec![
-            "cmd".to_string(),
-            "/C".to_string(),
-            "start".to_string(),
-            "".to_string(),
-            url.to_string(),
-        ]);
-    } else {
-        candidates.push(vec!["xdg-open".to_string(), url.to_string()]);
-    }
-
-    for cmd in candidates {
-        if cmd.is_empty() {
-            continue;
-        }
-        let launch_result = ProcessCommand::new(&cmd[0])
-            .args(&cmd[1..])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-        if launch_result.is_ok() {
-            return;
-        }
-    }
-    eprintln!(
-        "Could not auto-open browser. Open this URL manually: {}",
-        url
-    );
+    launcher::run_server_foreground(&options).await
 }
 
 pub(crate) async fn run_web_command(
@@ -139,167 +42,50 @@ pub(crate) async fn run_web_command(
     mdns_domain: String,
     cors: Vec<String>,
 ) -> anyhow::Result<()> {
-    if let Some(workspace_dir) = dir.as_ref() {
-        std::env::set_current_dir(workspace_dir).map_err(|error| {
-            anyhow::anyhow!(
-                "Failed to change workspace directory to {}: {}",
-                workspace_dir.display(),
-                error
-            )
-        })?;
-    }
     let bind_port = if port == 0 { 3000 } else { port };
     let display_host = if hostname == "0.0.0.0" {
         "localhost".to_string()
     } else {
         hostname.clone()
     };
-    let url = format!("http://{}:{}", display_host, bind_port);
-    println!("Web interface: {}", url);
-    try_open_browser(&url);
-    run_server_command("web", bind_port, hostname, None, mdns, mdns_domain, cors).await
-}
-
-fn desktop_state_dir() -> PathBuf {
-    dirs::data_local_dir()
-        .or_else(dirs::data_dir)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("rocode")
-        .join("desktop")
-}
-
-fn desktop_workspace_hint_path() -> PathBuf {
-    desktop_state_dir().join("last-workspace.txt")
-}
-
-fn remember_desktop_workspace(path: &Path) {
-    if std::fs::create_dir_all(desktop_state_dir()).is_err() {
-        return;
+    let backend_url = format!("http://{}:{}", display_host, bind_port);
+    let web_dev_url = launcher::resolve_web_dev_url()?;
+    let mut effective_cors = cors;
+    let web_dist = if let Some(dev_url) = web_dev_url.as_ref() {
+        launcher::push_origin_if_missing(&mut effective_cors, dev_url);
+        println!("Web dev server: {}", dev_url);
+        None
+    } else {
+        let web_dist = launcher::resolve_web_dist_dir()?;
+        println!("Web assets: {}", web_dist.display());
+        Some(web_dist)
+    };
+    let launch_url = if let Some(dev_url) = web_dev_url {
+        launcher::append_browser_api_base(dev_url, &backend_url)
+    } else {
+        backend_url.clone()
+    };
+    println!("Backend API: {}", backend_url);
+    println!("Web interface: {}", launch_url);
+    let options = ServerLaunchOptions {
+        port: bind_port,
+        hostname,
+        cwd: dir,
+        web_dist,
+        mdns,
+        mdns_domain,
+        cors: effective_cors,
+    };
+    let mut child =
+        launcher::spawn_server_background(&options, Stdio::inherit(), Stdio::inherit())?;
+    launcher::wait_for_server_ready(&backend_url, Duration::from_secs(90), Some(&mut child))
+        .await?;
+    launcher::try_open_browser(&launch_url);
+    let status = child.wait().await?;
+    if !status.success() {
+        anyhow::bail!("rocode-server exited with status {}", status);
     }
-    let _ = std::fs::write(desktop_workspace_hint_path(), path.display().to_string());
-}
-
-fn load_desktop_workspace_hint() -> Option<PathBuf> {
-    let raw = std::fs::read_to_string(desktop_workspace_hint_path()).ok()?;
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let path = PathBuf::from(trimmed);
-    path.is_dir().then_some(path)
-}
-
-fn looks_like_workspace_dir(path: &Path) -> bool {
-    if !path.is_dir() {
-        return false;
-    }
-
-    [
-        ".git",
-        ".rocode",
-        "rocode.json",
-        "rocode.jsonc",
-        "Cargo.toml",
-        "package.json",
-        "pyproject.toml",
-        ".workspace",
-    ]
-    .iter()
-    .any(|entry| path.join(entry).exists())
-}
-
-fn choose_workspace_via_system_dialog() -> Option<PathBuf> {
-    if cfg!(target_os = "macos") {
-        let output = ProcessCommand::new("osascript")
-            .args([
-                "-e",
-                "POSIX path of (choose folder with prompt \"Select a workspace folder for ROCode\")",
-            ])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let path = PathBuf::from(selected);
-        return path.is_dir().then_some(path);
-    }
-
-    if cfg!(target_os = "windows") {
-        let script = "$app=New-Object -ComObject Shell.Application; $folder=$app.BrowseForFolder(0,'Select a workspace folder for ROCode',0,0); if($folder){$folder.Self.Path}";
-        let output = ProcessCommand::new("powershell")
-            .args(["-NoProfile", "-Command", script])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let path = PathBuf::from(selected);
-        return path.is_dir().then_some(path);
-    }
-
-    let linux_candidates: [(&str, &[&str]); 2] = [
-        (
-            "zenity",
-            &[
-                "--file-selection",
-                "--directory",
-                "--title=Select a workspace folder for ROCode",
-            ],
-        ),
-        (
-            "kdialog",
-            &[
-                "--getexistingdirectory",
-                ".",
-                "--title",
-                "Select a workspace folder for ROCode",
-            ],
-        ),
-    ];
-
-    for (program, args) in linux_candidates {
-        let output = match ProcessCommand::new(program).args(args).output() {
-            Ok(output) => output,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(_) => continue,
-        };
-        if !output.status.success() {
-            continue;
-        }
-        let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if selected.is_empty() {
-            continue;
-        }
-        let path = PathBuf::from(selected);
-        if path.is_dir() {
-            return Some(path);
-        }
-    }
-
-    None
-}
-
-fn resolve_desktop_workspace() -> anyhow::Result<PathBuf> {
-    if let Ok(cwd) = std::env::current_dir() {
-        if looks_like_workspace_dir(&cwd) {
-            return Ok(cwd);
-        }
-    }
-
-    if let Some(path) = load_desktop_workspace_hint() {
-        return Ok(path);
-    }
-
-    if let Some(path) = choose_workspace_via_system_dialog() {
-        remember_desktop_workspace(&path);
-        return Ok(path);
-    }
-
-    anyhow::bail!(
-        "Could not determine a workspace for desktop launch. Start with `rocode web --dir <path>` or launch from inside a project directory."
-    );
+    Ok(())
 }
 
 pub(crate) async fn run_desktop_web_command(
@@ -309,8 +95,8 @@ pub(crate) async fn run_desktop_web_command(
     mdns_domain: String,
     cors: Vec<String>,
 ) -> anyhow::Result<()> {
-    let workspace_dir = resolve_desktop_workspace()?;
-    remember_desktop_workspace(&workspace_dir);
+    let workspace_dir = launcher::resolve_desktop_workspace("rocode")?;
+    launcher::remember_desktop_workspace("rocode", &workspace_dir);
     run_web_command(port, hostname, Some(workspace_dir), mdns, mdns_domain, cors).await
 }
 
@@ -333,131 +119,6 @@ pub(crate) async fn run_acp_command(
         "Warning: no external ACP stdio bridge runtime found; falling back to HTTP server mode."
     );
     run_server_command("acp", port, hostname, Some(cwd), mdns, mdns_domain, cors).await
-}
-
-fn is_loopback_host(host: &str) -> bool {
-    matches!(host, "127.0.0.1" | "localhost" | "::1")
-}
-
-fn service_name_from_mdns_domain(domain: &str, port: u16) -> String {
-    let trimmed = domain
-        .trim()
-        .trim_end_matches('.')
-        .trim_end_matches(".local");
-    if trimmed.is_empty() {
-        format!("rocode-{}", port)
-    } else {
-        trimmed.to_string()
-    }
-}
-
-pub(crate) struct MdnsPublisher {
-    child: Child,
-}
-
-impl Drop for MdnsPublisher {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-fn spawn_mdns_command(command: &str, args: &[String]) -> io::Result<MdnsPublisher> {
-    let mut child = ProcessCommand::new(command)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-
-    if let Ok(Some(status)) = child.try_wait() {
-        return Err(io::Error::other(format!(
-            "mDNS publisher exited immediately with status {}",
-            status
-        )));
-    }
-
-    Ok(MdnsPublisher { child })
-}
-
-pub(crate) fn start_mdns_publisher_if_needed(
-    enabled: bool,
-    bind_host: &str,
-    port: u16,
-    mdns_domain: &str,
-) -> Option<MdnsPublisher> {
-    if !enabled {
-        return None;
-    }
-    if is_loopback_host(bind_host) {
-        eprintln!("Warning: mDNS enabled but hostname is loopback; skipping mDNS publish.");
-        return None;
-    }
-
-    let service_name = service_name_from_mdns_domain(mdns_domain, port);
-    let attempts: Vec<(String, Vec<String>)> = if cfg!(target_os = "macos") {
-        vec![(
-            "dns-sd".to_string(),
-            vec![
-                "-R".to_string(),
-                service_name.clone(),
-                "_http._tcp".to_string(),
-                "local.".to_string(),
-                port.to_string(),
-                "path=/".to_string(),
-            ],
-        )]
-    } else if cfg!(target_os = "linux") {
-        vec![
-            (
-                "avahi-publish-service".to_string(),
-                vec![
-                    service_name.clone(),
-                    "_http._tcp".to_string(),
-                    port.to_string(),
-                    "path=/".to_string(),
-                ],
-            ),
-            (
-                "avahi-publish".to_string(),
-                vec![
-                    "-s".to_string(),
-                    service_name.clone(),
-                    "_http._tcp".to_string(),
-                    port.to_string(),
-                    "path=/".to_string(),
-                ],
-            ),
-        ]
-    } else {
-        eprintln!("Warning: mDNS requested but this platform has no configured publisher command.");
-        return None;
-    };
-
-    let mut last_error: Option<String> = None;
-    for (command, args) in attempts {
-        match spawn_mdns_command(&command, &args) {
-            Ok(publisher) => {
-                eprintln!(
-                    "mDNS publish enabled via `{}` as service `{}` on port {}.",
-                    command, service_name, port
-                );
-                return Some(publisher);
-            }
-            Err(err) => {
-                if err.kind() != io::ErrorKind::NotFound {
-                    last_error = Some(format!("{}: {}", command, err));
-                }
-            }
-        }
-    }
-
-    if let Some(err) = last_error {
-        eprintln!("Warning: failed to start mDNS publisher ({})", err);
-    } else {
-        eprintln!("Warning: mDNS requested but no supported publisher command was found on PATH.");
-    }
-    None
 }
 
 fn build_acp_network_args(
@@ -536,7 +197,7 @@ fn run_acp_bridge_candidate(
 
     let status = match cmd.status() {
         Ok(status) => status,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(false),
         Err(err) => {
             anyhow::bail!("Failed to launch ACP bridge command `{}`: {}", program, err);
         }

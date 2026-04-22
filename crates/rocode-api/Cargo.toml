@@ -1,0 +1,15 @@
+[package]
+name = "rocode-api"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+rocode-command = { path = "../rocode-command" }
+rocode-multimodal = { path = "../rocode-multimodal" }
+rocode-session = { path = "../rocode-session" }
+rocode-skill = { path = "../rocode-skill" }
+rocode-types = { path = "../rocode-types" }
+serde = { workspace = true }
+serde_json = { workspace = true }

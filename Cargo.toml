@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/rocode-api",
+    "crates/rocode-launcher",
+    "crates/rocode-client",
     "crates/rocode-core",
     "crates/rocode-content",
     "crates/rocode-types",

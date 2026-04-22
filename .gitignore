@@ -15,10 +15,10 @@ docs/plans/
 .cargo/config.toml
 
 # Web build artifacts and local dependencies
-crates/rocode-server/web/node_modules/
-crates/rocode-server/web/dist/
-crates/rocode-server/web/.build-cache/
-crates/rocode-server/web/.vite/
+apps/rocode-web/node_modules/
+apps/rocode-web/dist/
+apps/rocode-web/.build-cache/
+apps/rocode-web/.vite/
 
 # Python cache
 __pycache__/

@@ -10,7 +10,10 @@ use rocode_types::{
 };
 use serde::Serialize;
 
-use crate::api_client::CliApiClient;
+use crate::api_client::{
+    CliApiClient, SkillHubIndexRefreshRequest, SkillHubManagedDetachRequest,
+    SkillHubManagedRemoveRequest,
+};
 use crate::cli::{
     SkillCommands, SkillHubCommands, SkillHubOutputFormat, SkillSourceArgs, SkillSourceKindArg,
 };
@@ -113,7 +116,7 @@ async fn handle_skill_hub_command(action: SkillHubCommands) -> anyhow::Result<()
         }
         SkillHubCommands::IndexRefresh { source, output } => {
             let response = client
-                .refresh_skill_hub_index(&rocode_tui::api::SkillHubIndexRefreshRequest {
+                .refresh_skill_hub_index(&SkillHubIndexRefreshRequest {
                     source: source_ref(&source),
                 })
                 .await?;
@@ -248,7 +251,7 @@ async fn handle_skill_hub_command(action: SkillHubCommands) -> anyhow::Result<()
             output,
         } => {
             let response = client
-                .detach_skill_hub_managed(&rocode_tui::api::SkillHubManagedDetachRequest {
+                .detach_skill_hub_managed(&SkillHubManagedDetachRequest {
                     session_id,
                     source: source_ref(&source),
                     skill_name,
@@ -268,7 +271,7 @@ async fn handle_skill_hub_command(action: SkillHubCommands) -> anyhow::Result<()
             output,
         } => {
             let response = client
-                .remove_skill_hub_managed(&rocode_tui::api::SkillHubManagedRemoveRequest {
+                .remove_skill_hub_managed(&SkillHubManagedRemoveRequest {
                     session_id,
                     source: source_ref(&source),
                     skill_name,

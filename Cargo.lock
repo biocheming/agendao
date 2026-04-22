@@ -3276,10 +3276,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "rocode-api"
+version = "2026.4.22"
+dependencies = [
+ "rocode-command",
+ "rocode-multimodal",
+ "rocode-session",
+ "rocode-skill",
+ "rocode-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rocode-cli"
 version = "2026.4.22"
 dependencies = [
  "anyhow",
+ "base64",
  "chrono",
  "clap",
  "crossterm 0.27.0",
@@ -3287,10 +3301,12 @@ dependencies = [
  "futures",
  "reqwest",
  "rocode-agent",
+ "rocode-client",
  "rocode-command",
  "rocode-config",
  "rocode-core",
  "rocode-grep",
+ "rocode-launcher",
  "rocode-lsp",
  "rocode-multimodal",
  "rocode-orchestrator",
@@ -3298,12 +3314,10 @@ dependencies = [
  "rocode-plugin",
  "rocode-provider",
  "rocode-runtime-context",
- "rocode-server",
  "rocode-session",
  "rocode-skill",
  "rocode-storage",
  "rocode-tool",
- "rocode-tui",
  "rocode-types",
  "rocode-util",
  "rocode-voice",
@@ -3316,6 +3330,21 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "which",
+]
+
+[[package]]
+name = "rocode-client"
+version = "2026.4.22"
+dependencies = [
+ "anyhow",
+ "reqwest",
+ "rocode-api",
+ "rocode-command",
+ "rocode-config",
+ "rocode-runtime-context",
+ "rocode-state",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3409,6 +3438,18 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "walkdir",
+]
+
+[[package]]
+name = "rocode-launcher"
+version = "2026.4.22"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "reqwest",
+ "tokio",
+ "url",
+ "which",
 ]
 
 [[package]]
@@ -3594,6 +3635,7 @@ dependencies = [
  "axum-extra",
  "base64",
  "chrono",
+ "clap",
  "dirs",
  "futures",
  "once_cell",
@@ -3794,6 +3836,7 @@ dependencies = [
  "reqwest-eventsource",
  "reratui",
  "rocode-agent",
+ "rocode-client",
  "rocode-command",
  "rocode-config",
  "rocode-core",

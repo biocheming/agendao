@@ -36,7 +36,7 @@ use crate::runtime_control::RuntimeControlRegistry;
 use crate::session_runtime::memory::RuntimeMemoryAuthority;
 use crate::session_runtime::telemetry::RuntimeTelemetryAuthority;
 
-const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:4096";
+const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:3000";
 
 struct PluginBridgeFetchProxy {
     bridge: Arc<PluginAuthBridge>,
