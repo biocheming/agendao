@@ -16,9 +16,9 @@ from pathlib import Path
 
 ANSWERS = {
     "goal": "Exercise the /autoresearch command preflight and reply loop.",
-    "scope": "crates/rocode-server/**, crates/rocode-cli/**, crates/rocode-tui/**",
+    "scope": "crates/rocode/**, crates/rocode-cli/**, crates/rocode-server/**, crates/rocode-tui/**, apps/rocode-web/**",
     "metric": "The command resubmits with all missing fields populated.",
-    "verify": "cargo build -p rocode-cli -p rocode-server -p rocode-tui",
+    "verify": "cargo build -p rocode && npm --prefix apps/rocode-web run build",
 }
 
 
@@ -298,12 +298,12 @@ def drive_tui_smoke(base_url, repo_root, rocode_bin):
 
 
 def run_web_smoke(base_url, repo_root):
-    script = repo_root / "crates" / "rocode-server" / "web" / "scripts" / "autoresearch-smoke.mjs"
+    script = repo_root / "apps" / "rocode-web" / "scripts" / "autoresearch-smoke.mjs"
     env = os.environ.copy()
     env["ROCODE_BASE_URL"] = base_url
     completed = subprocess.run(
         ["node", str(script)],
-        cwd=str(script.parent.parent),
+        cwd=str(repo_root / "apps" / "rocode-web"),
         env=env,
         capture_output=True,
         text=True,

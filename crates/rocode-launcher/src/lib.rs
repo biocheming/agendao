@@ -5,86 +5,8 @@ use std::time::Duration;
 
 use anyhow::Context;
 use reqwest::Client as HttpClient;
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use url::Url;
-
-#[derive(Debug, Clone)]
-pub struct ServerLaunchOptions {
-    pub port: u16,
-    pub hostname: String,
-    pub cwd: Option<PathBuf>,
-    pub web_dist: Option<PathBuf>,
-    pub mdns: bool,
-    pub mdns_domain: String,
-    pub cors: Vec<String>,
-}
-
-pub fn server_command(options: &ServerLaunchOptions) -> anyhow::Result<Command> {
-    let mut command = Command::new(resolve_component_binary("server")?);
-    command.arg("--port").arg(options.port.to_string());
-    command.arg("--hostname").arg(&options.hostname);
-    if let Some(cwd) = options.cwd.as_ref() {
-        command.arg("--cwd").arg(cwd);
-    }
-    if let Some(web_dist) = options.web_dist.as_ref() {
-        command.env("ROCODE_WEB_DIST", web_dist);
-    }
-    if options.mdns {
-        command.arg("--mdns");
-        command.arg("--mdns-domain").arg(&options.mdns_domain);
-    }
-    for origin in &options.cors {
-        command.arg("--cors").arg(origin);
-    }
-    Ok(command)
-}
-
-pub async fn run_server_foreground(options: &ServerLaunchOptions) -> anyhow::Result<()> {
-    let status = server_command(options)?
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .await?;
-
-    if !status.success() {
-        anyhow::bail!("rocode-server exited with status {}", status);
-    }
-    Ok(())
-}
-
-pub fn spawn_server_background(
-    options: &ServerLaunchOptions,
-    stdout: Stdio,
-    stderr: Stdio,
-) -> anyhow::Result<Child> {
-    let mut command = server_command(options)?;
-    command.stdin(Stdio::null()).stdout(stdout).stderr(stderr);
-    Ok(command.spawn()?)
-}
-
-pub async fn run_tui_foreground<I, K, V>(envs: I) -> anyhow::Result<()>
-where
-    I: IntoIterator<Item = (K, V)>,
-    K: AsRef<std::ffi::OsStr>,
-    V: AsRef<std::ffi::OsStr>,
-{
-    let mut command = Command::new(resolve_component_binary("tui")?);
-    command
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .envs(envs);
-    let status = command.status().await?;
-    if !status.success() {
-        anyhow::bail!("rocode-tui exited with status {}", status);
-    }
-    Ok(())
-}
-
-pub fn try_resolve_component_binary(component: &str) -> Option<PathBuf> {
-    resolve_component_binary(component).ok()
-}
 
 pub fn resolve_web_dist_dir() -> anyhow::Result<PathBuf> {
     if let Some(path) = try_resolve_web_dist_dir() {
@@ -132,36 +54,6 @@ pub fn try_resolve_web_dist_dir() -> Option<PathBuf> {
     }
 
     candidates.into_iter().find(|path| has_web_dist(path))
-}
-
-pub fn build_tui_env(
-    base_url: &str,
-    model: Option<String>,
-    prompt: Option<String>,
-    agent_name: Option<String>,
-    session_id: Option<String>,
-) -> Vec<(String, String)> {
-    let mut envs = vec![("ROCODE_TUI_BASE_URL".to_string(), base_url.to_string())];
-    if let Some(model) = model.filter(|value| !value.is_empty()) {
-        envs.push(("ROCODE_TUI_MODEL".to_string(), model));
-    }
-    if let Some(prompt) = prompt.filter(|value| !value.is_empty()) {
-        envs.push(("ROCODE_TUI_PROMPT".to_string(), prompt));
-    }
-    if let Some(agent_name) = agent_name
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-    {
-        envs.push(("ROCODE_TUI_AGENT".to_string(), agent_name));
-    }
-    if let Some(session_id) = session_id.filter(|value| !value.is_empty()) {
-        envs.push(("ROCODE_TUI_SESSION".to_string(), session_id));
-    }
-    envs
-}
-
-pub fn resolve_binary_display(path: &Path) -> String {
-    path.display().to_string()
 }
 
 pub async fn wait_for_server_ready(
@@ -324,59 +216,6 @@ pub fn resolve_desktop_workspace(app_name: &str) -> anyhow::Result<PathBuf> {
     anyhow::bail!(
         "Could not determine a workspace for desktop launch. Start with `rocode web --dir <path>` or launch from inside a project directory."
     );
-}
-
-fn resolve_component_binary(component: &str) -> anyhow::Result<PathBuf> {
-    let env_key = format!("ROCODE_{}_BIN", component.to_ascii_uppercase());
-    if let Ok(value) = std::env::var(&env_key) {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            anyhow::bail!("{env_key} is set but empty");
-        }
-        let path = PathBuf::from(trimmed);
-        if !path.is_file() {
-            anyhow::bail!(
-                "{env_key} points to `{}`, but that file does not exist.",
-                path.display()
-            );
-        }
-        return Ok(path);
-    }
-
-    let binary_name = format!("rocode-{}{}", component, std::env::consts::EXE_SUFFIX);
-    let sibling_candidate = std::env::current_exe()
-        .ok()
-        .and_then(|current_exe| current_exe.parent().map(|dir| dir.join(&binary_name)));
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(dir) = current_exe.parent() {
-            let sibling = dir.join(&binary_name);
-            if sibling.is_file() {
-                return Ok(sibling);
-            }
-        }
-    }
-
-    if let Ok(path) = which::which(&binary_name) {
-        return Ok(path);
-    }
-
-    let sibling_display = sibling_candidate
-        .as_ref()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "<unknown>".to_string());
-    let install_hint = match component {
-        "server" | "tui" => {
-            "Build or install the side-by-side ROCode binaries, for example `./scripts/install-local.sh release ~/.local`."
-        }
-        _ => "Build or install the matching ROCode component binary.",
-    };
-    anyhow::bail!(
-        "Required launcher target `{}` was not found. Checked sibling path `{}` and PATH. {} You can also set {} explicitly.",
-        binary_name,
-        sibling_display,
-        install_hint,
-        env_key
-    )
 }
 
 fn has_web_dist(path: &Path) -> bool {

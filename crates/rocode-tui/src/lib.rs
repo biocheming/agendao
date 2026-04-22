@@ -14,7 +14,7 @@ pub mod theme;
 pub mod ui;
 
 pub use api::ApiClient;
-pub use app::{App, RunOutcome};
+pub use app::{App, AppLaunchConfig, RunOutcome};
 pub use event::Event;
 pub use router::{Route, Router};
 pub use terminal::{reset_title, set_session_title, set_title};
@@ -33,9 +33,13 @@ fn setup_panic_hook() {
 }
 
 pub fn run_tui() -> anyhow::Result<()> {
+    run_tui_with_config(AppLaunchConfig::default())
+}
+
+pub fn run_tui_with_config(config: AppLaunchConfig) -> anyhow::Result<()> {
     setup_panic_hook();
 
-    let app = App::new()?;
+    let app = App::new_with_config(config)?;
     let result = app.run();
     if let Ok(outcome) = &result {
         if let Some(summary) = outcome.exit_summary.as_deref() {

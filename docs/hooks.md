@@ -537,7 +537,7 @@ pub struct OrchestratorContext {
 
 ### 集成点
 
-宿主应用（如 `rocode-cli`）在创建 `OrchestratorContext` 时注入具体的 `LifecycleHook` 实现。该实现可以：
+宿主应用（如 `rocode` 产品壳，或测试/工具宿主）在创建 `OrchestratorContext` 时注入具体的 `LifecycleHook` 实现。该实现可以：
 
 1. **直接实现 trait** -- 在宿主代码中写一个 struct 实现 `LifecycleHook`
 2. **组合多个钩子** -- 通过内部 `Vec<Arc<dyn LifecycleHook>>` 实现多播

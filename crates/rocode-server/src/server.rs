@@ -3,8 +3,10 @@ use axum::http::{header::HeaderValue, request::Parts};
 use futures::StreamExt;
 use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
+use std::io;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -37,6 +39,16 @@ use crate::session_runtime::memory::RuntimeMemoryAuthority;
 use crate::session_runtime::telemetry::RuntimeTelemetryAuthority;
 
 const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:3000";
+
+#[derive(Debug, Clone)]
+pub struct ServerRuntimeOptions {
+    pub port: u16,
+    pub hostname: String,
+    pub cwd: Option<PathBuf>,
+    pub mdns: bool,
+    pub mdns_domain: String,
+    pub cors: Vec<String>,
+}
 
 struct PluginBridgeFetchProxy {
     bridge: Arc<PluginAuthBridge>,
@@ -815,6 +827,178 @@ fn cors_layer() -> CorsLayer {
         ))
         .allow_methods(Any)
         .allow_headers(Any)
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    matches!(host, "127.0.0.1" | "localhost" | "::1")
+}
+
+fn service_name_from_mdns_domain(domain: &str, port: u16) -> String {
+    let trimmed = domain
+        .trim()
+        .trim_end_matches('.')
+        .trim_end_matches(".local");
+    if trimmed.is_empty() {
+        format!("rocode-{}", port)
+    } else {
+        trimmed.to_string()
+    }
+}
+
+struct MdnsPublisher {
+    child: Child,
+}
+
+impl Drop for MdnsPublisher {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn spawn_mdns_command(command: &str, args: &[String]) -> io::Result<MdnsPublisher> {
+    let mut child = ProcessCommand::new(command)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    if let Ok(Some(status)) = child.try_wait() {
+        return Err(io::Error::other(format!(
+            "mDNS publisher exited immediately with status {}",
+            status
+        )));
+    }
+
+    Ok(MdnsPublisher { child })
+}
+
+fn start_mdns_publisher_if_needed(
+    enabled: bool,
+    bind_host: &str,
+    port: u16,
+    mdns_domain: &str,
+) -> Option<MdnsPublisher> {
+    if !enabled {
+        return None;
+    }
+    if is_loopback_host(bind_host) {
+        eprintln!("Warning: mDNS enabled but hostname is loopback; skipping mDNS publish.");
+        return None;
+    }
+
+    let service_name = service_name_from_mdns_domain(mdns_domain, port);
+    let attempts: Vec<(String, Vec<String>)> = if cfg!(target_os = "macos") {
+        vec![(
+            "dns-sd".to_string(),
+            vec![
+                "-R".to_string(),
+                service_name.clone(),
+                "_http._tcp".to_string(),
+                "local.".to_string(),
+                port.to_string(),
+                "path=/".to_string(),
+            ],
+        )]
+    } else if cfg!(target_os = "linux") {
+        vec![
+            (
+                "avahi-publish-service".to_string(),
+                vec![
+                    service_name.clone(),
+                    "_http._tcp".to_string(),
+                    port.to_string(),
+                    "path=/".to_string(),
+                ],
+            ),
+            (
+                "avahi-publish".to_string(),
+                vec![
+                    "-s".to_string(),
+                    service_name.clone(),
+                    "_http._tcp".to_string(),
+                    port.to_string(),
+                    "path=/".to_string(),
+                ],
+            ),
+        ]
+    } else {
+        eprintln!("Warning: mDNS requested but this platform has no configured publisher command.");
+        return None;
+    };
+
+    let mut last_error: Option<String> = None;
+    for (command, args) in attempts {
+        match spawn_mdns_command(&command, &args) {
+            Ok(publisher) => {
+                eprintln!(
+                    "mDNS publish enabled via `{}` as service `{}` on port {}.",
+                    command, service_name, port
+                );
+                return Some(publisher);
+            }
+            Err(err) => {
+                if err.kind() != io::ErrorKind::NotFound {
+                    last_error = Some(format!("{}: {}", command, err));
+                }
+            }
+        }
+    }
+
+    if let Some(err) = last_error {
+        eprintln!("Warning: failed to start mDNS publisher ({})", err);
+    } else {
+        eprintln!("Warning: mDNS requested but no supported publisher command was found on PATH.");
+    }
+    None
+}
+
+pub async fn run_server_runtime(options: ServerRuntimeOptions) -> anyhow::Result<()> {
+    if let Some(cwd) = options.cwd.as_ref() {
+        std::env::set_current_dir(cwd).map_err(|error| {
+            anyhow::anyhow!(
+                "Failed to change workspace directory to {}: {}",
+                cwd.display(),
+                error
+            )
+        })?;
+    }
+
+    if std::env::var("ROCODE_SERVER_PASSWORD")
+        .or_else(|_| std::env::var("OPENCODE_SERVER_PASSWORD"))
+        .is_err()
+    {
+        eprintln!(
+            "Warning: ROCODE_SERVER_PASSWORD is not set; server is unsecured (legacy fallback: OPENCODE_SERVER_PASSWORD)."
+        );
+    }
+
+    let bind_host = if options.mdns && options.hostname == "127.0.0.1" {
+        "0.0.0.0".to_string()
+    } else {
+        options.hostname
+    };
+    let bind_port = if options.port == 0 {
+        3000
+    } else {
+        options.port
+    };
+    set_cors_whitelist(options.cors);
+    let _mdns_publisher =
+        start_mdns_publisher_if_needed(options.mdns, &bind_host, bind_port, &options.mdns_domain);
+    let addr: SocketAddr = format!("{}:{}", bind_host, bind_port).parse()?;
+    if let Ok(cwd) = std::env::current_dir() {
+        println!(
+            "Starting ROCode server on {} (workspace: {})",
+            addr,
+            cwd.display()
+        );
+    } else {
+        println!("Starting ROCode server on {}", addr);
+    }
+
+    run_server(addr).await
 }
 
 pub async fn run_server(addr: SocketAddr) -> anyhow::Result<()> {

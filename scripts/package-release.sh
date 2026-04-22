@@ -14,7 +14,7 @@ if [[ "${PROFILE}" != "release" && "${PROFILE}" != "debug" ]]; then
 fi
 
 PROFILE_DIR="${PROFILE}"
-BUILD_ARGS=(-p rocode-cli -p rocode-server -p rocode-tui)
+BUILD_ARGS=(-p rocode)
 if [[ "${PROFILE}" == "release" ]]; then
   BUILD_ARGS+=(--release)
 fi
@@ -36,15 +36,13 @@ STAGE_DIR="${DIST_DIR}/${ARTIFACT_NAME}"
 BIN_DIR="${STAGE_DIR}/bin"
 ARCHIVE_PATH="${DIST_DIR}/${ARTIFACT_NAME}.tar.gz"
 
-echo "[1/3] Building rocode, rocode-server, and rocode-tui (${PROFILE})..."
+echo "[1/3] Building rocode (${PROFILE})..."
 cargo build "${BUILD_ARGS[@]}"
 
 echo "[2/3] Assembling release layout at ${STAGE_DIR}..."
 rm -rf "${STAGE_DIR}"
 mkdir -p "${BIN_DIR}"
 install -m 755 "${TARGET_DIR}/${PROFILE_DIR}/rocode" "${BIN_DIR}/rocode"
-install -m 755 "${TARGET_DIR}/${PROFILE_DIR}/rocode-server" "${BIN_DIR}/rocode-server"
-install -m 755 "${TARGET_DIR}/${PROFILE_DIR}/rocode-tui" "${BIN_DIR}/rocode-tui"
 if [[ -d "${WEB_DIST_DIR}" ]]; then
   mkdir -p "${STAGE_DIR}/share/rocode"
   cp -R "${WEB_DIST_DIR}" "${STAGE_DIR}/share/rocode/web"
