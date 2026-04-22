@@ -10,26 +10,23 @@
 use std::time::Duration;
 
 use crate::util::server_url;
-use rocode_config::Config;
 use rocode_runtime_context::ResolvedWorkspaceContext;
 
 // Re-export shared types from TUI api module so callers don't need to
 // depend on rocode_tui directly.
 pub use rocode_tui::api::{
-    AgentInfo, CompactResponse, CreateSessionRequest, ExecuteRecoveryRequest, ExecuteShellRequest,
-    ExecutionModeInfo, FullProviderListResponse, KnownProvidersResponse, McpAuthStartInfo,
-    McpStatusInfo, MemoryConflictResponse, MemoryConsolidationRequest, MemoryConsolidationResponse,
-    MemoryConsolidationRunListResponse, MemoryConsolidationRunQuery, MemoryDetailView,
-    MemoryListQuery, MemoryListResponse, MemoryRetrievalPreviewResponse, MemoryRetrievalQuery,
-    MemoryRuleHitListResponse, MemoryRuleHitQuery, MemoryRulePackListResponse,
-    MemoryValidationReportResponse, MessageInfo, MultimodalCapabilitiesResponse,
-    MultimodalPolicyResponse, MultimodalPreflightRequest, MultimodalPreflightResponse,
-    PendingCommandInvocation, PermissionRequestInfo, PromptPart, PromptRequest, PromptResponse,
-    ProviderConnectSchemaResponse, ProviderListResponse, QuestionInfo, RecoveryActionKind,
-    RefreshProviderCatalogResponse, RevertRequest, RevertResponse, SessionEventsQuery,
-    SessionExecutionTopology, SessionInfo, SessionInsightsResponse, SessionListItem,
-    SessionListResponse, SessionRecoveryProtocol, SessionRunStatusKind, SessionRuntimeState,
-    SessionStatusInfo, SessionTelemetrySnapshot, ShareResponse, SkillCatalogEntry,
+    CompactResponse, CreateSessionRequest, ExecutionModeInfo, FullProviderListResponse,
+    McpStatusInfo, MemoryConflictResponse, MemoryConsolidationRequest,
+    MemoryConsolidationResponse, MemoryConsolidationRunListResponse,
+    MemoryConsolidationRunQuery, MemoryDetailView, MemoryListQuery, MemoryListResponse,
+    MemoryRetrievalPreviewResponse, MemoryRetrievalQuery, MemoryRuleHitListResponse,
+    MemoryRuleHitQuery, MemoryRulePackListResponse, MemoryValidationReportResponse,
+    MultimodalPreflightRequest, MultimodalPreflightResponse, PendingCommandInvocation,
+    PermissionRequestInfo, PromptPart, PromptRequest, PromptResponse,
+    ProviderConnectSchemaResponse, QuestionInfo, RefreshProviderCatalogResponse,
+    SessionEventsQuery, SessionExecutionTopology, SessionInfo, SessionInsightsResponse,
+    SessionListItem, SessionListResponse, SessionRunStatusKind, SessionRuntimeState,
+    SessionTelemetrySnapshot, ShareResponse, SkillCatalogEntry,
     SkillCatalogQuery, SkillDetailQuery, SkillDetailResponse, SkillHubArtifactCacheResponse,
     SkillHubAuditResponse, SkillHubDistributionResponse, SkillHubGuardRunRequest,
     SkillHubGuardRunResponse, SkillHubIndexRefreshRequest, SkillHubIndexRefreshResponse,
@@ -48,7 +45,6 @@ pub struct CliApiClient {
     base_url: String,
 }
 
-#[allow(dead_code)]
 impl CliApiClient {
     pub fn new(base_url: String) -> Self {
         let client = reqwest::Client::builder()
@@ -108,14 +104,6 @@ impl CliApiClient {
         Ok(response.items)
     }
 
-    pub async fn get_session_status(
-        &self,
-    ) -> anyhow::Result<std::collections::HashMap<String, SessionStatusInfo>> {
-        let url = server_url(&self.base_url, "/session/status");
-        let resp = self.client.get(&url).send().await?;
-        Self::json_ok(resp, "get session status").await
-    }
-
     pub async fn update_session_title(
         &self,
         session_id: &str,
@@ -127,16 +115,6 @@ impl CliApiClient {
         };
         let resp = self.client.patch(&url).json(&req).send().await?;
         Self::json_ok(resp, "update session title").await
-    }
-
-    pub async fn delete_session(&self, session_id: &str) -> anyhow::Result<bool> {
-        let url = server_url(&self.base_url, &format!("/session/{}", session_id));
-        let resp = self.client.delete(&url).send().await?;
-        let value: serde_json::Value = Self::json_ok(resp, "delete session").await?;
-        Ok(value
-            .get("deleted")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true))
     }
 
     // ── Prompt ───────────────────────────────────────────────────────
@@ -195,46 +173,7 @@ impl CliApiClient {
         Self::json_ok(resp, "abort session").await
     }
 
-    pub async fn execute_shell(
-        &self,
-        session_id: &str,
-        command: String,
-        workdir: Option<String>,
-    ) -> anyhow::Result<serde_json::Value> {
-        let url = server_url(&self.base_url, &format!("/session/{}/shell", session_id));
-        let req = ExecuteShellRequest { command, workdir };
-        let resp = self.client.post(&url).json(&req).send().await?;
-        Self::json_ok(resp, "execute shell").await
-    }
-
     // ── Messages ─────────────────────────────────────────────────────
-
-    pub async fn get_messages(&self, session_id: &str) -> anyhow::Result<Vec<MessageInfo>> {
-        self.get_messages_after(session_id, None, None).await
-    }
-
-    pub async fn get_messages_after(
-        &self,
-        session_id: &str,
-        after: Option<&str>,
-        limit: Option<usize>,
-    ) -> anyhow::Result<Vec<MessageInfo>> {
-        let url = server_url(&self.base_url, &format!("/session/{}/message", session_id));
-        let mut params: Vec<(&str, String)> = Vec::new();
-        if let Some(a) = after.map(str::trim).filter(|v| !v.is_empty()) {
-            params.push(("after", a.to_string()));
-        }
-        if let Some(l) = limit.filter(|v| *v > 0) {
-            params.push(("limit", l.to_string()));
-        }
-        let req = if params.is_empty() {
-            self.client.get(&url)
-        } else {
-            self.client.get(&url).query(&params)
-        };
-        let resp = req.send().await?;
-        Self::json_ok(resp, "get messages").await
-    }
 
     // ── Question ─────────────────────────────────────────────────────
 
@@ -263,12 +202,6 @@ impl CliApiClient {
         Ok(())
     }
 
-    pub async fn list_permissions(&self) -> anyhow::Result<Vec<PermissionRequestInfo>> {
-        let url = server_url(&self.base_url, "/permission");
-        let resp = self.client.get(&url).send().await?;
-        Self::json_ok(resp, "list permissions").await
-    }
-
     pub async fn reply_permission(
         &self,
         permission_id: &str,
@@ -289,28 +222,6 @@ impl CliApiClient {
     }
 
     // ── Execution topology & recovery ────────────────────────────────
-
-    pub async fn get_session_executions(
-        &self,
-        session_id: &str,
-    ) -> anyhow::Result<SessionExecutionTopology> {
-        let url = server_url(
-            &self.base_url,
-            &format!("/session/{}/executions", session_id),
-        );
-        let resp = self.client.get(&url).send().await?;
-        Self::json_ok(resp, "get session executions").await
-    }
-
-    /// Fetch the aggregated runtime state for a session.
-    pub async fn get_session_runtime(
-        &self,
-        session_id: &str,
-    ) -> anyhow::Result<SessionRuntimeState> {
-        let url = server_url(&self.base_url, &format!("/session/{}/runtime", session_id));
-        let resp = self.client.get(&url).send().await?;
-        Self::json_ok(resp, "get session runtime").await
-    }
 
     pub async fn get_session_telemetry(
         &self,
@@ -446,75 +357,12 @@ impl CliApiClient {
         Self::json_ok(resp, "run memory consolidation").await
     }
 
-    pub async fn get_session_recovery(
-        &self,
-        session_id: &str,
-    ) -> anyhow::Result<SessionRecoveryProtocol> {
-        let url = server_url(&self.base_url, &format!("/session/{}/recovery", session_id));
-        let resp = self.client.get(&url).send().await?;
-        Self::json_ok(resp, "get session recovery").await
-    }
-
-    pub async fn execute_session_recovery(
-        &self,
-        session_id: &str,
-        action: RecoveryActionKind,
-        target_id: Option<String>,
-    ) -> anyhow::Result<serde_json::Value> {
-        let url = server_url(
-            &self.base_url,
-            &format!("/session/{}/recovery/execute", session_id),
-        );
-        let req = ExecuteRecoveryRequest { action, target_id };
-        let resp = self.client.post(&url).json(&req).send().await?;
-        Self::json_ok(resp, "execute session recovery").await
-    }
-
-    pub async fn cancel_tool_call(
-        &self,
-        session_id: &str,
-        tool_call_id: &str,
-    ) -> anyhow::Result<serde_json::Value> {
-        let url = server_url(
-            &self.base_url,
-            &format!("/session/{}/tool/{}/cancel", session_id, tool_call_id),
-        );
-        let resp = self.client.post(&url).send().await?;
-        Self::json_ok(resp, "cancel tool call").await
-    }
-
     // ── Providers ────────────────────────────────────────────────────
-
-    pub async fn get_config(&self) -> anyhow::Result<Config> {
-        let url = server_url(&self.base_url, "/config");
-        let resp = self.client.get(&url).send().await?;
-        Self::json_ok(resp, "get config").await
-    }
 
     pub async fn get_workspace_context(&self) -> anyhow::Result<ResolvedWorkspaceContext> {
         let url = server_url(&self.base_url, "/workspace/context");
         let resp = self.client.get(&url).send().await?;
         Self::json_ok(resp, "get workspace context").await
-    }
-
-    pub async fn get_multimodal_policy(&self) -> anyhow::Result<MultimodalPolicyResponse> {
-        let url = server_url(&self.base_url, "/multimodal/policy");
-        let resp = self.client.get(&url).send().await?;
-        Self::json_ok(resp, "get multimodal policy").await
-    }
-
-    pub async fn get_multimodal_capabilities(
-        &self,
-        model: Option<&str>,
-    ) -> anyhow::Result<MultimodalCapabilitiesResponse> {
-        let url = server_url(&self.base_url, "/multimodal/capabilities");
-        let request = if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
-            self.client.get(&url).query(&[("model", model)])
-        } else {
-            self.client.get(&url)
-        };
-        let resp = request.send().await?;
-        Self::json_ok(resp, "get multimodal capabilities").await
     }
 
     pub async fn preflight_multimodal(
@@ -526,22 +374,10 @@ impl CliApiClient {
         Self::json_ok(resp, "post multimodal preflight").await
     }
 
-    pub async fn get_config_providers(&self) -> anyhow::Result<ProviderListResponse> {
-        let url = server_url(&self.base_url, "/config/providers");
-        let resp = self.client.get(&url).send().await?;
-        Self::json_ok(resp, "get config providers").await
-    }
-
     pub async fn get_all_providers(&self) -> anyhow::Result<FullProviderListResponse> {
         let url = server_url(&self.base_url, "/provider");
         let resp = self.client.get(&url).send().await?;
         Self::json_ok(resp, "get all providers").await
-    }
-
-    pub async fn get_known_providers(&self) -> anyhow::Result<KnownProvidersResponse> {
-        let url = server_url(&self.base_url, "/provider/known");
-        let resp = self.client.get(&url).send().await?;
-        Self::json_ok(resp, "get known providers").await
     }
 
     pub async fn get_provider_connect_schema(
@@ -579,22 +415,6 @@ impl CliApiClient {
             .await
     }
 
-    pub async fn register_custom_provider(
-        &self,
-        provider_id: &str,
-        base_url: &str,
-        protocol: &str,
-        api_key: &str,
-    ) -> anyhow::Result<()> {
-        self.connect_provider(
-            provider_id,
-            api_key,
-            Some(base_url.to_string()),
-            Some(protocol.to_string()),
-        )
-        .await
-    }
-
     pub async fn connect_provider(
         &self,
         provider_id: &str,
@@ -615,12 +435,6 @@ impl CliApiClient {
     }
 
     // ── Agents & modes ───────────────────────────────────────────────
-
-    pub async fn list_agents(&self) -> anyhow::Result<Vec<AgentInfo>> {
-        let url = server_url(&self.base_url, "/agent");
-        let resp = self.client.get(&url).send().await?;
-        Self::json_ok(resp, "list agents").await
-    }
 
     pub async fn list_execution_modes(&self) -> anyhow::Result<Vec<ExecutionModeInfo>> {
         let url = server_url(&self.base_url, "/mode");
@@ -806,43 +620,6 @@ impl CliApiClient {
         Ok(servers)
     }
 
-    pub async fn start_mcp_auth(&self, name: &str) -> anyhow::Result<McpAuthStartInfo> {
-        let url = server_url(&self.base_url, &format!("/mcp/{}/auth", name));
-        let resp = self.client.post(&url).send().await?;
-        Self::json_ok(resp, &format!("start MCP auth `{}`", name)).await
-    }
-
-    pub async fn authenticate_mcp(&self, name: &str) -> anyhow::Result<McpStatusInfo> {
-        let url = server_url(&self.base_url, &format!("/mcp/{}/auth/authenticate", name));
-        let resp = self.client.post(&url).send().await?;
-        Self::json_ok(resp, &format!("authenticate MCP `{}`", name)).await
-    }
-
-    pub async fn remove_mcp_auth(&self, name: &str) -> anyhow::Result<bool> {
-        let url = server_url(&self.base_url, &format!("/mcp/{}/auth", name));
-        let resp = self.client.delete(&url).send().await?;
-        let value: serde_json::Value =
-            Self::json_ok(resp, &format!("remove MCP auth `{}`", name)).await?;
-        Ok(value
-            .get("success")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true))
-    }
-
-    pub async fn connect_mcp(&self, name: &str) -> anyhow::Result<bool> {
-        let url = server_url(&self.base_url, &format!("/mcp/{}/connect", name));
-        let resp = self.client.post(&url).send().await?;
-        let bytes = Self::expect_success(resp, &format!("connect MCP `{}`", name)).await?;
-        Ok(serde_json::from_slice::<bool>(&bytes).unwrap_or(true))
-    }
-
-    pub async fn disconnect_mcp(&self, name: &str) -> anyhow::Result<bool> {
-        let url = server_url(&self.base_url, &format!("/mcp/{}/disconnect", name));
-        let resp = self.client.post(&url).send().await?;
-        let bytes = Self::expect_success(resp, &format!("disconnect MCP `{}`", name)).await?;
-        Ok(serde_json::from_slice::<bool>(&bytes).unwrap_or(true))
-    }
-
     // ── LSP & formatters ─────────────────────────────────────────────
 
     pub async fn get_lsp_servers(&self) -> anyhow::Result<Vec<String>> {
@@ -850,15 +627,6 @@ impl CliApiClient {
         let resp = self.client.get(&url).send().await?;
         let v: serde_json::Value = Self::json_ok(resp, "get LSP status").await?;
         Ok(v.get("servers")
-            .and_then(|s| serde_json::from_value::<Vec<String>>(s.clone()).ok())
-            .unwrap_or_default())
-    }
-
-    pub async fn get_formatters(&self) -> anyhow::Result<Vec<String>> {
-        let url = server_url(&self.base_url, "/formatter");
-        let resp = self.client.get(&url).send().await?;
-        let v: serde_json::Value = Self::json_ok(resp, "get formatters").await?;
-        Ok(v.get("formatters")
             .and_then(|s| serde_json::from_value::<Vec<String>>(s.clone()).ok())
             .unwrap_or_default())
     }
@@ -886,19 +654,6 @@ impl CliApiClient {
         let url = server_url(&self.base_url, &format!("/session/{}/compact", session_id));
         let resp = self.client.post(&url).send().await?;
         Self::json_ok(resp, &format!("compact session `{}`", session_id)).await
-    }
-
-    pub async fn revert_session(
-        &self,
-        session_id: &str,
-        message_id: &str,
-    ) -> anyhow::Result<RevertResponse> {
-        let url = server_url(&self.base_url, &format!("/session/{}/revert", session_id));
-        let req = RevertRequest {
-            message_id: message_id.to_string(),
-        };
-        let resp = self.client.post(&url).json(&req).send().await?;
-        Self::json_ok(resp, &format!("revert session `{}`", session_id)).await
     }
 
     pub async fn fork_session(

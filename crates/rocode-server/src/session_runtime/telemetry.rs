@@ -55,16 +55,8 @@ impl RuntimeTelemetryAuthority {
         }
     }
 
-    pub(crate) fn runtime_state(&self) -> Arc<RuntimeStateStore> {
-        self.runtime_state.clone()
-    }
-
     pub(crate) fn runtime_control(&self) -> Arc<RuntimeControlRegistry> {
         self.runtime_control.clone()
-    }
-
-    pub(crate) fn stage_event_log(&self) -> Arc<StageEventLog> {
-        self.stage_event_log.clone()
     }
 
     pub(crate) async fn set_session_run_status(&self, session_id: &str, status: SessionRunStatus) {

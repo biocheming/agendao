@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rocode_agent::AgentExecutor;
 use rocode_command::cli_style::CliStyle;
 use rocode_plugin::init_global;
 use rocode_plugin::subprocess::{PluginContext, PluginLoader};
@@ -12,64 +11,6 @@ use rocode_provider::{
     ConfigModel as BootstrapConfigModel, ConfigProvider as BootstrapConfigProvider,
     ProviderRegistry,
 };
-use rocode_tui::Theme;
-
-#[allow(dead_code)]
-pub(crate) fn list_models_interactive(registry: &ProviderRegistry) {
-    println!("\nAvailable Models:\n");
-    for provider in registry.list() {
-        println!("  [{}]", provider.id());
-        for model in provider.models() {
-            println!("    {}", model.id);
-        }
-        println!();
-    }
-    println!("Use /model <provider/model> to select a model");
-    println!();
-}
-
-#[allow(dead_code)]
-pub(crate) fn list_providers_interactive(registry: &ProviderRegistry) {
-    println!("\nConfigured Providers:\n");
-    for provider in registry.list() {
-        let models_count = provider.models().len();
-        println!("  {} - {} model(s)", provider.id(), models_count);
-    }
-    println!();
-}
-
-#[allow(dead_code)]
-pub(crate) fn list_themes_interactive() {
-    let mut names: Vec<String> = Theme::builtin_theme_names()
-        .into_iter()
-        .map(|name| name.to_string())
-        .collect();
-    names.sort();
-
-    println!("\nAvailable Themes:\n");
-    for name in names {
-        println!("  {}@dark", name);
-        println!("  {}@light", name);
-    }
-    println!();
-}
-
-#[allow(dead_code)]
-pub(crate) fn select_model(
-    _executor: &mut AgentExecutor,
-    model_id: &str,
-    registry: &ProviderRegistry,
-) -> anyhow::Result<()> {
-    let model = registry
-        .list()
-        .iter()
-        .flat_map(|p| p.models())
-        .find(|m| m.id == model_id)
-        .ok_or_else(|| anyhow::anyhow!("Model not found: {}", model_id))?;
-
-    println!("Selected model: {} ({})\n", model_id, model.name);
-    Ok(())
-}
 
 const DEFAULT_PLUGIN_SERVER_URL: &str = "http://127.0.0.1:4096";
 

@@ -35,7 +35,6 @@ async fn list_memory(
 ) -> Result<Json<MemoryListResponse>> {
     let response = state
         .runtime_memory
-        .memory()
         .list_memory_for_query(&query)
         .await
         .map_err(|error| ApiError::InternalError(format!("failed to list memory: {error}")))?;
@@ -48,7 +47,6 @@ async fn search_memory(
 ) -> Result<Json<MemoryListResponse>> {
     let response = state
         .runtime_memory
-        .memory()
         .search_memory_for_query(&query)
         .await
         .map_err(|error| ApiError::InternalError(format!("failed to search memory: {error}")))?;
@@ -60,7 +58,6 @@ async fn list_memory_rule_packs(
 ) -> Result<Json<MemoryRulePackListResponse>> {
     let response = state
         .runtime_memory
-        .memory()
         .list_memory_rule_packs()
         .await
         .map_err(|error| {
@@ -75,7 +72,6 @@ async fn list_memory_rule_hits(
 ) -> Result<Json<MemoryRuleHitListResponse>> {
     let response = state
         .runtime_memory
-        .memory()
         .list_memory_rule_hits(&query)
         .await
         .map_err(|error| {
@@ -90,7 +86,6 @@ async fn list_consolidation_runs(
 ) -> Result<Json<MemoryConsolidationRunListResponse>> {
     let response = state
         .runtime_memory
-        .memory()
         .list_consolidation_runs(&query)
         .await
         .map_err(|error| {
@@ -105,7 +100,6 @@ async fn run_memory_consolidation(
 ) -> Result<Json<MemoryConsolidationResponse>> {
     let response = state
         .runtime_memory
-        .memory()
         .run_consolidation(&request)
         .await
         .map_err(|error| {
@@ -120,7 +114,6 @@ async fn get_memory_retrieval_preview(
 ) -> Result<Json<MemoryRetrievalPreviewResponse>> {
     let response = state
         .runtime_memory
-        .memory()
         .build_retrieval_preview(&query)
         .await
         .map_err(|error| {
@@ -135,7 +128,6 @@ async fn get_memory_detail(
 ) -> Result<Json<MemoryDetailView>> {
     state
         .runtime_memory
-        .memory()
         .get_memory_detail(&MemoryRecordId(id.clone()))
         .await
         .map_err(|error| ApiError::InternalError(format!("failed to load memory detail: {error}")))?
@@ -149,7 +141,6 @@ async fn get_memory_validation_report(
 ) -> Result<Json<MemoryValidationReportResponse>> {
     state
         .runtime_memory
-        .memory()
         .get_memory_validation_report(&MemoryRecordId(id.clone()))
         .await
         .map_err(|error| {
@@ -165,7 +156,6 @@ async fn get_memory_conflicts(
 ) -> Result<Json<MemoryConflictResponse>> {
     state
         .runtime_memory
-        .memory()
         .get_memory_conflicts(&MemoryRecordId(id.clone()))
         .await
         .map_err(|error| {

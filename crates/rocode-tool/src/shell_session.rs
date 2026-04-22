@@ -3,7 +3,7 @@ use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, PtySiz
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use tokio::sync::{Notify, RwLock};
 
 use crate::bash::authorize_bash_command;
@@ -222,7 +222,7 @@ impl ShellSessionManager {
             format!("shell_session: {}", command),
             ProcessKind::Bash,
             Arc::new(move || {
-                let _ = shutdown_killer.lock().unwrap().kill();
+                request_shutdown_kill(&shutdown_killer);
             }),
         );
 
@@ -260,15 +260,33 @@ impl ShellSessionManager {
                     }
                     Ok(n) => {
                         let chunk = &buf[..n];
-                        {
-                            let mut output = output_buffer.lock().unwrap();
-                            let mut total = cursor.lock().unwrap();
-                            output.extend_from_slice(chunk);
-                            *total += n;
-                            if output.len() > BUFFER_LIMIT {
-                                let excess = output.len() - BUFFER_LIMIT;
-                                output.drain(..excess);
+                        let mut output = match output_buffer.lock() {
+                            Ok(guard) => guard,
+                            Err(error) => {
+                                tracing::warn!(
+                                    %error,
+                                    "shell session output buffer poisoned; stopping PTY read loop"
+                                );
+                                read_notify.notify_waiters();
+                                break;
                             }
+                        };
+                        let mut total = match cursor.lock() {
+                            Ok(guard) => guard,
+                            Err(error) => {
+                                tracing::warn!(
+                                    %error,
+                                    "shell session cursor poisoned; stopping PTY read loop"
+                                );
+                                read_notify.notify_waiters();
+                                break;
+                            }
+                        };
+                        output.extend_from_slice(chunk);
+                        *total += n;
+                        if output.len() > BUFFER_LIMIT {
+                            let excess = output.len() - BUFFER_LIMIT;
+                            output.drain(..excess);
                         }
                         read_notify.notify_waiters();
                     }
@@ -385,7 +403,7 @@ impl ShellSessionTool {
         let bytes = data.into_bytes();
         let byte_len = bytes.len();
         tokio::task::spawn_blocking(move || {
-            let mut writer = writer.lock().unwrap();
+            let mut writer = lock_mutex(&writer, "shell session writer")?;
             writer.write_all(&bytes).map_err(|e| {
                 ToolError::ExecutionError(format!("failed to write to shell session: {}", e))
             })?;
@@ -415,7 +433,7 @@ impl ShellSessionTool {
         let requested_cursor = input.cursor.unwrap_or(0) as usize;
         let wait_ms = input.wait_ms.unwrap_or(DEFAULT_WAIT_MS).min(MAX_WAIT_MS);
         if session.is_running().await {
-            let current_cursor = *session.cursor.lock().unwrap();
+            let current_cursor = *lock_mutex(&session.cursor, "shell session cursor")?;
             if requested_cursor >= current_cursor && wait_ms > 0 {
                 let _ = tokio::time::timeout(
                     std::time::Duration::from_millis(wait_ms),
@@ -426,8 +444,8 @@ impl ShellSessionTool {
         }
 
         let (buffer_bytes, cursor, buffer_start) = {
-            let output = session.output_buffer.lock().unwrap();
-            let cursor = *session.cursor.lock().unwrap();
+            let output = lock_mutex(&session.output_buffer, "shell session output buffer")?;
+            let cursor = *lock_mutex(&session.cursor, "shell session cursor")?;
             let buffer_start = cursor.saturating_sub(output.len());
             (output.clone(), cursor, buffer_start)
         };
@@ -482,7 +500,8 @@ impl ShellSessionTool {
         let session = shell_session_manager().get_session(&session_id).await?;
         let killer = session.killer.clone();
         tokio::task::spawn_blocking(move || {
-            killer.lock().unwrap().kill().map_err(|e| {
+            let mut killer = lock_mutex(&killer, "shell session killer")?;
+            killer.kill().map_err(|e| {
                 ToolError::ExecutionError(format!("failed to terminate shell session: {}", e))
             })
         })
@@ -725,9 +744,40 @@ fn shell_metadata(operation: &str, session: &ShellSessionView) -> Metadata {
     metadata.insert("operation".to_string(), serde_json::json!(operation));
     metadata.insert(
         "session".to_string(),
-        serde_json::to_value(session).unwrap(),
+        shell_metadata_value("session", session),
     );
     metadata
+}
+
+fn lock_mutex<'a, T>(mutex: &'a Mutex<T>, resource: &str) -> Result<MutexGuard<'a, T>, ToolError> {
+    mutex
+        .lock()
+        .map_err(|error| ToolError::ExecutionError(format!("{} poisoned: {}", resource, error)))
+}
+
+fn request_shutdown_kill(killer: &Arc<Mutex<Box<dyn ChildKiller + Send + Sync>>>) {
+    match killer.lock() {
+        Ok(mut guard) => {
+            if let Err(error) = guard.kill() {
+                tracing::warn!(%error, "failed to kill shell session during shutdown callback");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "shell session killer poisoned during shutdown callback");
+        }
+    }
+}
+
+fn shell_metadata_value<T: Serialize>(key: &str, value: &T) -> serde_json::Value {
+    match serde_json::to_value(value) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(metadata_key = key, %error, "failed to serialize shell session metadata");
+            serde_json::json!({
+                "serialization_error": error.to_string(),
+            })
+        }
+    }
 }
 
 fn spawn_shell(

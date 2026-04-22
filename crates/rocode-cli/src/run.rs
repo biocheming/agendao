@@ -6,7 +6,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rocode_agent::{AgentInfo, AgentRegistry};
-use rocode_command::cli_panel::CliPanelFrame;
 #[cfg(test)]
 use rocode_command::cli_panel::{
     display_width, pad_right_display, truncate_display, wrap_display_text,

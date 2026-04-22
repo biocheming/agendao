@@ -301,7 +301,6 @@ pub(super) async fn resolve_prompt_memory_context(
         }
         if let Err(error) = state
             .runtime_memory
-            .memory()
             .record_prefetch_usage(&session.id, packet)
             .await
         {

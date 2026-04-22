@@ -398,9 +398,9 @@ fn map_skill_error_to_api_error(error: SkillError) -> ApiError {
         | SkillError::ArtifactChecksumMismatch { .. }
         | SkillError::ArtifactLayoutMismatch { .. } => ApiError::BadRequest(error.to_string()),
         SkillError::ArtifactFetchTimeout { .. } => ApiError::InternalError(error.to_string()),
-        SkillError::ReadFailed { .. } | SkillError::WriteFailed { .. } => {
-            ApiError::InternalError(error.to_string())
-        }
+        SkillError::ReadFailed { .. }
+        | SkillError::WriteFailed { .. }
+        | SkillError::CachePoisoned { .. } => ApiError::InternalError(error.to_string()),
     }
 }
 

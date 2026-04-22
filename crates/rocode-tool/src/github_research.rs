@@ -482,10 +482,7 @@ pub struct GitHubResearchTool {
 impl GitHubResearchTool {
     pub fn new() -> Self {
         Self {
-            client: Client::builder()
-                .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
-                .build()
-                .expect("github_research client should build"),
+            client: build_github_client(),
         }
     }
 
@@ -517,7 +514,7 @@ impl GitHubResearchTool {
         input: &GitHubResearchInput,
         ctx: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        let query = input.query.as_deref().expect("validated query");
+        let query = required_query(input)?;
         let q = build_code_search_query(query, &input.repo, input.language.as_deref());
         let url = format!(
             "{}/search/code?per_page={}&q={}",
@@ -549,7 +546,7 @@ impl GitHubResearchTool {
             "total_count".to_string(),
             serde_json::json!(response.total_count),
         );
-        metadata.insert("items".to_string(), serde_json::to_value(&items).unwrap());
+        insert_metadata_serialized(&mut metadata, "items", &items);
 
         Ok(ToolResult {
             title: format!("GitHub code search: {}", input.repo),
@@ -581,7 +578,7 @@ impl GitHubResearchTool {
         ctx: &ToolContext,
         kind: &'static str,
     ) -> Result<ToolResult, ToolError> {
-        let query = input.query.as_deref().expect("validated query");
+        let query = required_query(input)?;
         let q = build_issue_search_query(query, &input.repo, kind, input.state.as_deref());
         let url = format!(
             "{}/search/issues?per_page={}&q={}",
@@ -611,7 +608,7 @@ impl GitHubResearchTool {
             "total_count".to_string(),
             serde_json::json!(response.total_count),
         );
-        metadata.insert("items".to_string(), serde_json::to_value(&items).unwrap());
+        insert_metadata_serialized(&mut metadata, "items", &items);
 
         Ok(ToolResult {
             title: format!("GitHub {} search: {}", kind, input.repo),
@@ -626,7 +623,7 @@ impl GitHubResearchTool {
         input: &GitHubResearchInput,
         ctx: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        let number = input.number.expect("validated number");
+        let number = required_number(input)?;
         let url = format!("{}/repos/{}/issues/{}", API_BASE_URL, input.repo, number);
         let response: GitHubIssueResponse = self.fetch_json(&url, ctx, false).await?;
         let comments = if input.include_comments {
@@ -650,7 +647,7 @@ impl GitHubResearchTool {
 
         let output = render_issue_view(&view);
         let mut metadata = base_metadata(input);
-        metadata.insert("issue".to_string(), serde_json::to_value(&view).unwrap());
+        insert_metadata_serialized(&mut metadata, "issue", &view);
         metadata.insert("count".to_string(), serde_json::json!(view.comments.len()));
 
         Ok(ToolResult {
@@ -666,7 +663,7 @@ impl GitHubResearchTool {
         input: &GitHubResearchInput,
         ctx: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        let number = input.number.expect("validated number");
+        let number = required_number(input)?;
         let url = format!("{}/repos/{}/pulls/{}", API_BASE_URL, input.repo, number);
         let response: GitHubPullRequestResponse = self.fetch_json(&url, ctx, false).await?;
         let issue_comments_url = response.issue_url.replace("/pulls/", "/issues/") + "/comments";
@@ -700,10 +697,7 @@ impl GitHubResearchTool {
 
         let output = render_pr_view(&view);
         let mut metadata = base_metadata(input);
-        metadata.insert(
-            "pull_request".to_string(),
-            serde_json::to_value(&view).unwrap(),
-        );
+        insert_metadata_serialized(&mut metadata, "pull_request", &view);
         metadata.insert("count".to_string(), serde_json::json!(view.comments.len()));
 
         Ok(ToolResult {
@@ -719,7 +713,7 @@ impl GitHubResearchTool {
         input: &GitHubResearchInput,
         ctx: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        let number = input.number.expect("validated number");
+        let number = required_number(input)?;
         let url = format!(
             "{}/repos/{}/pulls/{}/files?per_page={}",
             API_BASE_URL, input.repo, number, input.limit
@@ -741,7 +735,7 @@ impl GitHubResearchTool {
 
         let output = render_pr_files(&input.repo, number, &files);
         let mut metadata = base_metadata(input);
-        metadata.insert("files".to_string(), serde_json::to_value(&files).unwrap());
+        insert_metadata_serialized(&mut metadata, "files", &files);
         metadata.insert("count".to_string(), serde_json::json!(files.len()));
 
         Ok(ToolResult {
@@ -767,7 +761,7 @@ impl GitHubResearchTool {
 
         let output = render_head_sha(&view);
         let mut metadata = base_metadata(input);
-        metadata.insert("head".to_string(), serde_json::to_value(&view).unwrap());
+        insert_metadata_serialized(&mut metadata, "head", &view);
         metadata.insert("count".to_string(), serde_json::json!(1));
 
         Ok(ToolResult {
@@ -783,7 +777,7 @@ impl GitHubResearchTool {
         input: &GitHubResearchInput,
         ctx: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        let path = normalize_repo_path(input.path.as_deref().expect("validated path"));
+        let path = required_path(input)?;
         let resolved = self.resolve_git_ref(input, ctx).await?;
         let view = PermalinkView {
             repo: input.repo.clone(),
@@ -803,10 +797,7 @@ impl GitHubResearchTool {
 
         let output = render_permalink(&view);
         let mut metadata = base_metadata(input);
-        metadata.insert(
-            "permalink".to_string(),
-            serde_json::to_value(&view).unwrap(),
-        );
+        insert_metadata_serialized(&mut metadata, "permalink", &view);
         metadata.insert("count".to_string(), serde_json::json!(1));
 
         Ok(ToolResult {
@@ -822,7 +813,7 @@ impl GitHubResearchTool {
         input: &GitHubResearchInput,
         ctx: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        let path = normalize_repo_path(input.path.as_deref().expect("validated path"));
+        let path = required_path(input)?;
 
         if let Some(local) = self.open_existing_local_repo(input, ctx).await? {
             return self.read_file_from_local(input, &path, local, ctx).await;
@@ -851,7 +842,7 @@ impl GitHubResearchTool {
 
         let output = render_clone_repo(&view);
         let mut metadata = base_metadata(input);
-        metadata.insert("clone".to_string(), serde_json::to_value(&view).unwrap());
+        insert_metadata_serialized(&mut metadata, "clone", &view);
         metadata.insert("count".to_string(), serde_json::json!(1));
 
         Ok(ToolResult {
@@ -888,10 +879,7 @@ impl GitHubResearchTool {
 
         let output = render_releases(&input.repo, &items);
         let mut metadata = base_metadata(input);
-        metadata.insert(
-            "releases".to_string(),
-            serde_json::to_value(&items).unwrap(),
-        );
+        insert_metadata_serialized(&mut metadata, "releases", &items);
         metadata.insert("count".to_string(), serde_json::json!(items.len()));
 
         Ok(ToolResult {
@@ -925,7 +913,7 @@ impl GitHubResearchTool {
 
         let output = render_tags(&input.repo, &items);
         let mut metadata = base_metadata(input);
-        metadata.insert("tags".to_string(), serde_json::to_value(&items).unwrap());
+        insert_metadata_serialized(&mut metadata, "tags", &items);
         metadata.insert(
             "local_path".to_string(),
             serde_json::json!(local.local_path.to_string_lossy().to_string()),
@@ -957,7 +945,7 @@ impl GitHubResearchTool {
             .await?;
         let output = render_git_log(&input.repo, &local.resolved_ref, &items);
         let mut metadata = base_metadata(input);
-        metadata.insert("log".to_string(), serde_json::to_value(&items).unwrap());
+        insert_metadata_serialized(&mut metadata, "log", &items);
         metadata.insert(
             "local_path".to_string(),
             serde_json::json!(local.local_path.to_string_lossy().to_string()),
@@ -983,7 +971,7 @@ impl GitHubResearchTool {
         ctx: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         let local = self.ensure_local_repo(input, ctx).await?;
-        let path = normalize_repo_path(input.path.as_deref().expect("validated path"));
+        let path = required_path(input)?;
         let (line_start, line_end) = blame_line_window(input);
         let lines = self
             .git_blame_in_repo(
@@ -997,7 +985,7 @@ impl GitHubResearchTool {
             .await?;
         let output = render_git_blame(&input.repo, &path, line_start, line_end, &lines);
         let mut metadata = base_metadata(input);
-        metadata.insert("blame".to_string(), serde_json::to_value(&lines).unwrap());
+        insert_metadata_serialized(&mut metadata, "blame", &lines);
         metadata.insert(
             "local_path".to_string(),
             serde_json::json!(local.local_path.to_string_lossy().to_string()),
@@ -1172,7 +1160,7 @@ impl GitHubResearchTool {
 
         let output = render_read_file(&view, truncated);
         let mut metadata = base_metadata(input);
-        metadata.insert("file".to_string(), serde_json::to_value(&view).unwrap());
+        insert_metadata_serialized(&mut metadata, "file", &view);
         metadata.insert(
             "local_path".to_string(),
             serde_json::json!(local.local_path.to_string_lossy().to_string()),
@@ -1232,7 +1220,7 @@ impl GitHubResearchTool {
 
         let output = render_read_file(&view, truncated);
         let mut metadata = base_metadata(input);
-        metadata.insert("file".to_string(), serde_json::to_value(&view).unwrap());
+        insert_metadata_serialized(&mut metadata, "file", &view);
         metadata.insert("count".to_string(), serde_json::json!(view.line_count));
 
         Ok(ToolResult {
@@ -1894,6 +1882,49 @@ fn github_token() -> Option<String> {
         .or_else(|| env::var("GH_TOKEN").ok().filter(|v| !v.trim().is_empty()))
 }
 
+fn build_github_client() -> Client {
+    match Client::builder()
+        .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            tracing::error!(
+                %error,
+                "failed to build configured github_research client; falling back to default client"
+            );
+            Client::new()
+        }
+    }
+}
+
+fn required_query(input: &GitHubResearchInput) -> Result<&str, ToolError> {
+    input
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            ToolError::InvalidArguments("query is required for search operations".to_string())
+        })
+}
+
+fn required_number(input: &GitHubResearchInput) -> Result<u64, ToolError> {
+    input.number.filter(|number| *number > 0).ok_or_else(|| {
+        ToolError::InvalidArguments("number is required for view operations".to_string())
+    })
+}
+
+fn required_path(input: &GitHubResearchInput) -> Result<String, ToolError> {
+    let path = normalize_repo_path(input.path.as_deref().unwrap_or_default());
+    if path.is_empty() {
+        return Err(ToolError::InvalidArguments(
+            "path is required for this operation".to_string(),
+        ));
+    }
+    Ok(path)
+}
+
 fn accept_header(text_matches_preview: bool) -> &'static str {
     if text_matches_preview {
         "application/vnd.github.text-match+json, application/vnd.github+json"
@@ -1903,7 +1934,13 @@ fn accept_header(text_matches_preview: bool) -> &'static str {
 }
 
 async fn map_github_error(response: reqwest::Response, status: StatusCode) -> ToolError {
-    let body = response.text().await.unwrap_or_default();
+    let body = match response.text().await {
+        Ok(body) => body,
+        Err(error) => {
+            tracing::warn!(%error, "failed to read GitHub error response body");
+            format!("<failed to read GitHub error response body: {}>", error)
+        }
+    };
     let message =
         if status == StatusCode::FORBIDDEN && body.to_ascii_lowercase().contains("rate limit") {
             format!("GitHub API rate limit exceeded: {}", body)
@@ -1962,6 +1999,22 @@ fn base_metadata(input: &GitHubResearchInput) -> Metadata {
         serde_json::json!(implemented_phase(&input.operation)),
     );
     metadata
+}
+
+fn insert_metadata_serialized<T: Serialize>(metadata: &mut Metadata, key: &str, value: &T) {
+    metadata.insert(key.to_string(), metadata_value(key, value));
+}
+
+fn metadata_value<T: Serialize>(key: &str, value: &T) -> serde_json::Value {
+    match serde_json::to_value(value) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(metadata_key = key, %error, "failed to serialize github_research metadata");
+            serde_json::json!({
+                "serialization_error": error.to_string(),
+            })
+        }
+    }
 }
 
 fn render_search_code(

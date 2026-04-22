@@ -1,7 +1,7 @@
 "use client";
 
 import type { ChangeEvent } from "react";
-import { Suspense, lazy, useRef, useState } from "react";
+import { Suspense, lazy, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import type { FileTreeNodeRecord } from "@/lib/workspace";
@@ -26,8 +26,11 @@ const FilePreviewPane = lazy(async () => {
   return { default: module.FilePreviewPane };
 });
 
+export type WorkspacePanelTab = "files" | "insights" | "preview";
+
 interface WorkspacePanelProps {
   apiJson: <T>(path: string, options?: RequestInit) => Promise<T>;
+  activeTab: WorkspacePanelTab;
   workspaceLoading: boolean;
   fileTree: FileTreeNodeRecord | null;
   workspaceRootPath: string;
@@ -72,10 +75,12 @@ interface WorkspacePanelProps {
   onDownloadSelectedFile: () => void;
   onDeleteSelectedWorkspaceNode: () => Promise<void>;
   onSaveSelectedFile: () => Promise<void>;
+  onActiveTabChange: (tab: WorkspacePanelTab) => void;
 }
 
 export function WorkspacePanel({
   apiJson,
+  activeTab,
   workspaceLoading,
   fileTree,
   workspaceRootPath,
@@ -87,11 +92,11 @@ export function WorkspacePanel({
   onCreateWorkspaceDirectory,
   onUploadWorkspaceFiles,
   onSelectWorkspaceNode,
+  onActiveTabChange,
   schedulerNavigation,
   executionActivity,
 }: WorkspacePanelProps) {
   const workspaceUploadInputRef = useRef<HTMLInputElement | null>(null);
-  const [activeTab, setActiveTab] = useState<"files" | "insights" | "preview">("files");
   const workspaceRootName =
     workspaceRootLabel.split("/").filter(Boolean).pop() || workspaceRootLabel || "Workspace";
 
@@ -107,7 +112,7 @@ export function WorkspacePanel({
                 : "text-muted-foreground hover:bg-accent/45 hover:text-foreground"
             )}
             type="button"
-            onClick={() => setActiveTab("files")}
+            onClick={() => onActiveTabChange("files")}
             title={workspaceRootLabel}
           >
             <FolderTreeIcon className="size-3.25" />
@@ -121,7 +126,7 @@ export function WorkspacePanel({
                 : "text-muted-foreground hover:bg-accent/45 hover:text-foreground"
             )}
             type="button"
-            onClick={() => setActiveTab("insights")}
+            onClick={() => onActiveTabChange("insights")}
           >
             <LightbulbIcon className="size-3.25" />
             <span>Insights</span>
@@ -134,7 +139,7 @@ export function WorkspacePanel({
                 : "text-muted-foreground hover:bg-accent/45 hover:text-foreground"
             )}
             type="button"
-            onClick={() => setActiveTab("preview")}
+            onClick={() => onActiveTabChange("preview")}
           >
             <EyeIcon className="size-3.25" />
             <span>Preview</span>
@@ -203,6 +208,7 @@ export function WorkspacePanel({
                   linkedStageId={workspaceLinkStageId}
                   onSelectNode={(node) => {
                     onSelectWorkspaceNode(node.path, node.type);
+                    onActiveTabChange(node.type === "file" ? "preview" : "files");
                     schedulerNavigation.restoreActiveStage();
                   }}
                   onPreviewStage={schedulerNavigation.previewStage}

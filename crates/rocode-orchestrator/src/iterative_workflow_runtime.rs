@@ -29,6 +29,7 @@ const METRIC_EPSILON: f64 = 1e-9;
 
 pub struct WorkflowController {
     config: IterativeWorkflowConfig,
+    objective: ObjectiveDefinition,
     runner: VerificationRunner,
     evaluator: ObjectiveEvaluator,
     policy: DecisionPolicy,
@@ -64,6 +65,7 @@ impl WorkflowController {
         })?;
 
         Ok(Some(Self {
+            objective: objective.clone(),
             runner: VerificationRunner::new(tool_runner, exec_ctx.clone()),
             evaluator: ObjectiveEvaluator::new(&objective)?,
             policy: DecisionPolicy::new(policy, config.iteration_policy.clone()),
@@ -374,10 +376,7 @@ impl WorkflowController {
     }
 
     fn objective(&self) -> &ObjectiveDefinition {
-        self.config
-            .objective
-            .as_ref()
-            .expect("workflow objective should exist when controller is active")
+        &self.objective
     }
 
     fn apply_mode_gate_annotation(
@@ -2708,8 +2707,8 @@ fn prune_empty_directories(
 fn now_nanos() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("time should move forward")
-        .as_nanos()
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 pub(crate) const SKILL_GOVERNANCE_DIR: &str = ".rocode/state/skill";
 const HUB_LOCK_FILENAME: &str = "hub-lock.json";
@@ -155,7 +155,10 @@ impl SkillHubStore {
     }
 
     pub fn snapshot(&self) -> SkillHubSnapshot {
-        self.cache.read().expect("skill hub cache poisoned").clone()
+        self.snapshot_result().unwrap_or_else(|error| {
+            tracing::warn!(%error, "failed to read skill hub snapshot from cache");
+            SkillHubSnapshot::default()
+        })
     }
 
     pub fn managed_skills(&self) -> Vec<ManagedSkillRecord> {
@@ -190,7 +193,7 @@ impl SkillHubStore {
     }
 
     pub fn upsert_managed_skill(&self, record: ManagedSkillRecord) -> Result<(), SkillError> {
-        let mut snapshot = self.snapshot();
+        let mut snapshot = self.snapshot_result()?;
         if let Some(existing) = snapshot
             .managed_skills
             .iter_mut()
@@ -211,7 +214,7 @@ impl SkillHubStore {
         mut managed_skills: Vec<ManagedSkillRecord>,
     ) -> Result<(), SkillError> {
         managed_skills.sort_by(|left, right| left.skill_name.cmp(&right.skill_name));
-        let mut snapshot = self.snapshot();
+        let mut snapshot = self.snapshot_result()?;
         snapshot.managed_skills = managed_skills;
         self.persist_snapshot(snapshot)
     }
@@ -221,7 +224,7 @@ impl SkillHubStore {
         mut distributions: Vec<SkillDistributionRecord>,
     ) -> Result<(), SkillError> {
         distributions.sort_by(|left, right| left.distribution_id.cmp(&right.distribution_id));
-        let mut snapshot = self.snapshot();
+        let mut snapshot = self.snapshot_result()?;
         snapshot.distributions = distributions;
         self.persist_snapshot(snapshot)
     }
@@ -232,7 +235,7 @@ impl SkillHubStore {
     ) -> Result<(), SkillError> {
         artifact_cache
             .sort_by(|left, right| left.artifact.artifact_id.cmp(&right.artifact.artifact_id));
-        let mut snapshot = self.snapshot();
+        let mut snapshot = self.snapshot_result()?;
         snapshot.artifact_cache = artifact_cache;
         self.persist_snapshot(snapshot)
     }
@@ -241,7 +244,7 @@ impl SkillHubStore {
         &self,
         entry: SkillArtifactCacheEntry,
     ) -> Result<(), SkillError> {
-        let mut snapshot = self.snapshot();
+        let mut snapshot = self.snapshot_result()?;
         if let Some(existing) = snapshot
             .artifact_cache
             .iter_mut()
@@ -261,7 +264,7 @@ impl SkillHubStore {
         &self,
         distribution: SkillDistributionRecord,
     ) -> Result<(), SkillError> {
-        let mut snapshot = self.snapshot();
+        let mut snapshot = self.snapshot_result()?;
         if let Some(existing) = snapshot
             .distributions
             .iter_mut()
@@ -282,7 +285,7 @@ impl SkillHubStore {
         mut lifecycle: Vec<SkillManagedLifecycleRecord>,
     ) -> Result<(), SkillError> {
         lifecycle.sort_by(|left, right| left.distribution_id.cmp(&right.distribution_id));
-        let mut snapshot = self.snapshot();
+        let mut snapshot = self.snapshot_result()?;
         snapshot.lifecycle = lifecycle;
         self.persist_snapshot(snapshot)
     }
@@ -291,7 +294,7 @@ impl SkillHubStore {
         &self,
         record: SkillManagedLifecycleRecord,
     ) -> Result<(), SkillError> {
-        let mut snapshot = self.snapshot();
+        let mut snapshot = self.snapshot_result()?;
         if let Some(existing) = snapshot
             .lifecycle
             .iter_mut()
@@ -311,7 +314,7 @@ impl SkillHubStore {
         &self,
         skill_name: &str,
     ) -> Result<Option<ManagedSkillRecord>, SkillError> {
-        let mut snapshot = self.snapshot();
+        let mut snapshot = self.snapshot_result()?;
         let original_len = snapshot.managed_skills.len();
         let mut removed = None;
         snapshot.managed_skills.retain(|record| {
@@ -332,7 +335,7 @@ impl SkillHubStore {
         &self,
         source_indices: Vec<SkillSourceIndexSnapshot>,
     ) -> Result<(), SkillError> {
-        let mut snapshot = self.snapshot();
+        let mut snapshot = self.snapshot_result()?;
         snapshot.source_indices = source_indices;
         self.persist_snapshot(snapshot)
     }
@@ -341,7 +344,7 @@ impl SkillHubStore {
         &self,
         source_index: SkillSourceIndexSnapshot,
     ) -> Result<(), SkillError> {
-        let mut snapshot = self.snapshot();
+        let mut snapshot = self.snapshot_result()?;
         if let Some(existing) = snapshot
             .source_indices
             .iter_mut()
@@ -389,14 +392,14 @@ impl SkillHubStore {
         &self,
         bundled_manifest: Option<BundledSkillManifest>,
     ) -> Result<(), SkillError> {
-        let mut snapshot = self.snapshot();
+        let mut snapshot = self.snapshot_result()?;
         snapshot.bundled_manifest = bundled_manifest;
         self.persist_snapshot(snapshot)
     }
 
     pub fn append_audit_event(&self, event: SkillAuditEvent) -> Result<(), SkillError> {
         append_audit_event(&self.audit_log_path(), &event)?;
-        let mut snapshot = self.cache.write().expect("skill hub cache poisoned");
+        let mut snapshot = self.write_cache()?;
         snapshot.audit_tail.push(event);
         if snapshot.audit_tail.len() > DEFAULT_AUDIT_TAIL_LIMIT {
             let overflow = snapshot.audit_tail.len() - DEFAULT_AUDIT_TAIL_LIMIT;
@@ -407,14 +410,30 @@ impl SkillHubStore {
 
     pub fn refresh(&self) -> Result<SkillHubSnapshot, SkillError> {
         let snapshot = load_snapshot_from_disk(&self.base_dir)?;
-        *self.cache.write().expect("skill hub cache poisoned") = snapshot.clone();
+        *self.write_cache()? = snapshot.clone();
         Ok(snapshot)
     }
 
     fn persist_snapshot(&self, snapshot: SkillHubSnapshot) -> Result<(), SkillError> {
         persist_hub_state(&self.base_dir, &snapshot)?;
-        *self.cache.write().expect("skill hub cache poisoned") = snapshot;
+        *self.write_cache()? = snapshot;
         Ok(())
+    }
+
+    fn snapshot_result(&self) -> Result<SkillHubSnapshot, SkillError> {
+        Ok(self.read_cache()?.clone())
+    }
+
+    fn read_cache(&self) -> Result<RwLockReadGuard<'_, SkillHubSnapshot>, SkillError> {
+        self.cache.read().map_err(|_| SkillError::CachePoisoned {
+            resource: "skill hub cache",
+        })
+    }
+
+    fn write_cache(&self) -> Result<RwLockWriteGuard<'_, SkillHubSnapshot>, SkillError> {
+        self.cache.write().map_err(|_| SkillError::CachePoisoned {
+            resource: "skill hub cache",
+        })
     }
 }
 

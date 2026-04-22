@@ -81,4 +81,7 @@ pub enum SkillError {
 
     #[error("failed to write skill path `{path}`: {message}")]
     WriteFailed { path: PathBuf, message: String },
+
+    #[error("skill cache state is unavailable: {resource}")]
+    CachePoisoned { resource: &'static str },
 }

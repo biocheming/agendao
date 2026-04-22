@@ -778,15 +778,6 @@ fn validate_registered_library(
     Ok(())
 }
 
-#[allow(dead_code)]
-fn load_docs_index(
-    registry_path: &Path,
-    entry: &RegisteredLibrary,
-) -> Result<DocsIndex, ToolError> {
-    let (index, _, _) = load_registered_docs_source(registry_path, entry)?;
-    Ok(index)
-}
-
 pub(crate) fn resolve_registry_index_path(registry_path: &Path, index_path: &str) -> PathBuf {
     let registry_dir = registry_path.parent().unwrap_or_else(|| Path::new("."));
     registry_dir.join(index_path)

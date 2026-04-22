@@ -48,8 +48,8 @@ struct Hunk {
 
 #[derive(Debug, Clone)]
 enum PatchLine {
-    Context(#[allow(dead_code)] String),
-    Remove(#[allow(dead_code)] String),
+    Context,
+    Remove,
     Add(String),
 }
 
@@ -424,11 +424,9 @@ fn parse_multi_file_patch(patch_text: &str) -> Result<Vec<FilePatch>, ToolError>
         if in_hunk {
             if let Some(ref mut hunk) = current_hunk {
                 if line.starts_with(' ') || line.starts_with('\t') {
-                    hunk.lines
-                        .push(PatchLine::Context(line.chars().skip(1).collect()));
+                    hunk.lines.push(PatchLine::Context);
                 } else if line.starts_with('-') && !line.starts_with("--- ") {
-                    hunk.lines
-                        .push(PatchLine::Remove(line.chars().skip(1).collect()));
+                    hunk.lines.push(PatchLine::Remove);
                 } else if line.starts_with('+') && !line.starts_with("+++") {
                     hunk.lines
                         .push(PatchLine::Add(line.chars().skip(1).collect()));
@@ -641,12 +639,12 @@ fn apply_hunks(original: &str, hunks: &[Hunk]) -> Result<String, ToolError> {
         let actual_old = hunk
             .lines
             .iter()
-            .filter(|l| matches!(l, PatchLine::Remove(_) | PatchLine::Context(_)))
+            .filter(|l| matches!(l, PatchLine::Remove | PatchLine::Context))
             .count();
         let actual_new = hunk
             .lines
             .iter()
-            .filter(|l| matches!(l, PatchLine::Add(_) | PatchLine::Context(_)))
+            .filter(|l| matches!(l, PatchLine::Add(_) | PatchLine::Context))
             .count();
 
         if hunk.old_count > 0 && actual_old != hunk.old_count {
@@ -689,7 +687,7 @@ fn apply_hunks(original: &str, hunks: &[Hunk]) -> Result<String, ToolError> {
             .collect();
 
         for line in &hunk.lines {
-            if matches!(line, PatchLine::Remove(_)) {
+            if matches!(line, PatchLine::Remove) {
                 remove_count += 1;
             }
         }
@@ -714,7 +712,7 @@ fn apply_hunks(original: &str, hunks: &[Hunk]) -> Result<String, ToolError> {
         let removed = hunk
             .lines
             .iter()
-            .filter(|l| matches!(l, PatchLine::Remove(_)))
+            .filter(|l| matches!(l, PatchLine::Remove))
             .count() as isize;
         offset += added - removed;
     }

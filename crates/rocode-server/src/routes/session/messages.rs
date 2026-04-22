@@ -28,8 +28,8 @@ pub(crate) struct SendMessageRequest {
     pub agent: Option<String>,
     pub scheduler_profile: Option<String>,
     pub variant: Option<String>,
-    #[allow(dead_code)]
-    pub stream: Option<bool>,
+    #[serde(rename = "stream")]
+    pub _stream: Option<bool>,
 }
 
 pub(crate) fn prompt_text_from_parts(parts: &[rocode_session::prompt::PartInput]) -> String {

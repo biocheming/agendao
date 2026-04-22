@@ -553,11 +553,6 @@ impl CliTerminalSurface {
         self.append_rendered(text)
     }
 
-    fn print_panel(&self, title: &str, footer: Option<&str>, lines: &[String]) -> io::Result<()> {
-        let panel = CliPanelFrame::boxed(title, footer, &self.style);
-        self.append_rendered(&panel.render_lines(lines))
-    }
-
     fn clear_transcript(&self) -> io::Result<()> {
         if let Ok(mut projection) = self.frontend_projection.lock() {
             projection.transcript.clear();
@@ -1472,33 +1467,6 @@ fn cli_copy_target_transcript(runtime: &CliExecutionRuntime) -> Option<String> {
         .lock()
         .ok()
         .map(|transcript| transcript.rendered_text())
-}
-
-#[allow(dead_code)]
-fn print_cli_panel(
-    title: &str,
-    footer: Option<&str>,
-    lines: &[String],
-    style: &CliStyle,
-) -> io::Result<()> {
-    let panel = CliPanelFrame::boxed(title, footer, style);
-    print!("{}", panel.render_lines(lines));
-    io::stdout().flush()
-}
-
-#[allow(dead_code)]
-fn print_cli_panel_on_surface(
-    runtime: Option<&CliExecutionRuntime>,
-    title: &str,
-    footer: Option<&str>,
-    lines: &[String],
-    style: &CliStyle,
-) -> io::Result<()> {
-    if let Some(surface) = runtime.and_then(|runtime| runtime.terminal_surface.as_ref()) {
-        surface.print_panel(title, footer, lines)
-    } else {
-        print_cli_panel(title, footer, lines, style)
-    }
 }
 
 /// Render a list as plain text (title + indented items) — no box frame.

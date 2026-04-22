@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::RwLock;
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::loader::{
     resolve_configured_path, update_config, write_config, ConfigAuthority, WorkspaceIdentity,
@@ -42,16 +42,9 @@ impl ConfigStore {
     pub fn from_project_dir(project_dir: &Path) -> anyhow::Result<Self> {
         let resolved = ConfigAuthority::resolve(project_dir)?;
         let store = Self::new(resolved.config);
-        *store.project_dir.write().expect("project_dir poisoned") =
-            Some(resolved.inputs.identity.workspace_root.clone());
-        *store
-            .workspace_identity
-            .write()
-            .expect("workspace_identity poisoned") = Some(resolved.inputs.identity);
-        *store
-            .workspace_mode
-            .write()
-            .expect("workspace_mode poisoned") = resolved.inputs.mode;
+        *store.write_project_dir()? = Some(resolved.inputs.identity.workspace_root.clone());
+        *store.write_workspace_identity()? = Some(resolved.inputs.identity);
+        *store.write_workspace_mode()? = resolved.inputs.mode;
         Ok(store)
     }
 
@@ -66,12 +59,7 @@ impl ConfigStore {
         let mut updated = (*current).clone();
 
         let patch_config: Config = serde_json::from_value(patch)?;
-        if let Some(project_dir) = self
-            .project_dir
-            .read()
-            .expect("project_dir poisoned")
-            .as_deref()
-        {
+        if let Some(project_dir) = self.read_project_dir()?.as_deref() {
             update_config(project_dir, &patch_config)?;
         }
         updated.merge(patch_config);
@@ -80,10 +68,7 @@ impl ConfigStore {
         self.base.store(new_arc.clone());
         self.revision.fetch_add(1, Ordering::Relaxed);
 
-        // Invalidate plugin cache synchronously (best-effort)
-        if let Ok(mut guard) = self.plugin_applied.try_write() {
-            *guard = None;
-        }
+        self.invalidate_plugin_cache_blocking();
 
         Ok(new_arc)
     }
@@ -96,12 +81,7 @@ impl ConfigStore {
         let mut updated = (*current).clone();
         mutator(&mut updated)?;
 
-        if let Some(project_dir) = self
-            .project_dir
-            .read()
-            .expect("project_dir poisoned")
-            .as_deref()
-        {
+        if let Some(project_dir) = self.read_project_dir()?.as_deref() {
             write_config(project_dir, &updated)?;
         }
 
@@ -109,9 +89,7 @@ impl ConfigStore {
         self.base.store(new_arc.clone());
         self.revision.fetch_add(1, Ordering::Relaxed);
 
-        if let Ok(mut guard) = self.plugin_applied.try_write() {
-            *guard = None;
-        }
+        self.invalidate_plugin_cache_blocking();
 
         Ok(new_arc)
     }
@@ -145,11 +123,7 @@ impl ConfigStore {
             return Some(path);
         }
 
-        let project_dir = self
-            .project_dir
-            .read()
-            .expect("project_dir poisoned")
-            .clone();
+        let project_dir = self.read_project_dir().ok()?.clone();
         project_dir.map(|dir| resolve_configured_path(&dir, raw))
     }
 
@@ -166,20 +140,12 @@ impl ConfigStore {
             return Some(path);
         }
 
-        let project_dir = self
-            .project_dir
-            .read()
-            .expect("project_dir poisoned")
-            .clone();
+        let project_dir = self.read_project_dir().ok()?.clone();
         project_dir.map(|dir| resolve_configured_path(&dir, raw))
     }
 
     pub async fn reload(&self) -> anyhow::Result<Arc<Config>> {
-        let project_dir = self
-            .project_dir
-            .read()
-            .expect("project_dir poisoned")
-            .clone();
+        let project_dir = self.read_project_dir()?.clone();
         let project_dir = project_dir
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no project directory set for config reload"))?;
@@ -188,38 +154,85 @@ impl ConfigStore {
         let new_arc = Arc::new(config);
         self.base.store(new_arc.clone());
         self.revision.fetch_add(1, Ordering::Relaxed);
-        *self
-            .workspace_identity
-            .write()
-            .expect("workspace_identity poisoned") = Some(resolved.inputs.identity);
-        *self
-            .workspace_mode
-            .write()
-            .expect("workspace_mode poisoned") = resolved.inputs.mode;
+        *self.write_workspace_identity()? = Some(resolved.inputs.identity);
+        *self.write_workspace_mode()? = resolved.inputs.mode;
         self.invalidate_plugin_cache().await;
         Ok(new_arc)
     }
 
     pub fn project_dir(&self) -> Option<PathBuf> {
-        self.project_dir
-            .read()
-            .expect("project_dir poisoned")
-            .clone()
+        self.read_project_dir()
+            .map(|guard| guard.clone())
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "failed to read project_dir from config store");
+                None
+            })
     }
 
     pub fn workspace_identity(&self) -> Option<WorkspaceIdentity> {
-        self.workspace_identity
-            .read()
-            .expect("workspace_identity poisoned")
-            .clone()
+        self.read_workspace_identity()
+            .map(|guard| guard.clone())
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "failed to read workspace_identity from config store");
+                None
+            })
     }
 
     pub fn workspace_mode(&self) -> WorkspaceMode {
-        *self.workspace_mode.read().expect("workspace_mode poisoned")
+        self.read_workspace_mode()
+            .map(|guard| *guard)
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "failed to read workspace_mode from config store");
+                WorkspaceMode::Shared
+            })
     }
 
     pub fn revision(&self) -> u64 {
         self.revision.load(Ordering::Relaxed)
+    }
+
+    fn invalidate_plugin_cache_blocking(&self) {
+        *self.plugin_applied.blocking_write() = None;
+    }
+
+    fn read_project_dir(&self) -> anyhow::Result<RwLockReadGuard<'_, Option<PathBuf>>> {
+        self.project_dir
+            .read()
+            .map_err(|_| anyhow::anyhow!("project_dir lock poisoned"))
+    }
+
+    fn write_project_dir(&self) -> anyhow::Result<RwLockWriteGuard<'_, Option<PathBuf>>> {
+        self.project_dir
+            .write()
+            .map_err(|_| anyhow::anyhow!("project_dir lock poisoned"))
+    }
+
+    fn read_workspace_identity(
+        &self,
+    ) -> anyhow::Result<RwLockReadGuard<'_, Option<WorkspaceIdentity>>> {
+        self.workspace_identity
+            .read()
+            .map_err(|_| anyhow::anyhow!("workspace_identity lock poisoned"))
+    }
+
+    fn write_workspace_identity(
+        &self,
+    ) -> anyhow::Result<RwLockWriteGuard<'_, Option<WorkspaceIdentity>>> {
+        self.workspace_identity
+            .write()
+            .map_err(|_| anyhow::anyhow!("workspace_identity lock poisoned"))
+    }
+
+    fn read_workspace_mode(&self) -> anyhow::Result<RwLockReadGuard<'_, WorkspaceMode>> {
+        self.workspace_mode
+            .read()
+            .map_err(|_| anyhow::anyhow!("workspace_mode lock poisoned"))
+    }
+
+    fn write_workspace_mode(&self) -> anyhow::Result<RwLockWriteGuard<'_, WorkspaceMode>> {
+        self.workspace_mode
+            .write()
+            .map_err(|_| anyhow::anyhow!("workspace_mode lock poisoned"))
     }
 }
 

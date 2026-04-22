@@ -77,11 +77,7 @@ struct NormalizedTaskInput {
     prompt: String,
     dispatch: TaskDispatchKind,
     task_id: Option<String>,
-    #[allow(dead_code)]
-    command: Option<String>,
     load_skills: Option<Vec<String>>,
-    #[allow(dead_code)]
-    run_in_background: bool,
     /// Inline agent system prompt for runtime agent construction.
     agent_prompt: Option<String>,
     /// Inline agent allowed tools for runtime agent construction.
@@ -148,9 +144,7 @@ impl TaskInput {
             prompt,
             dispatch,
             task_id: self.task_id,
-            command: self.command,
             load_skills: self.load_skills,
-            run_in_background: self.run_in_background,
             agent_prompt: self.agent_prompt,
             agent_tools: self.agent_tools,
         })

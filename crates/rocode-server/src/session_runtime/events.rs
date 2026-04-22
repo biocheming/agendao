@@ -33,7 +33,6 @@ pub struct DiffEntry {
     pub deletions: u64,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ServerEvent {
@@ -445,36 +444,6 @@ pub(crate) fn broadcast_session_updated(
 
 pub(crate) fn broadcast_config_updated(state: &ServerState) {
     broadcast_server_event(state, &ServerEvent::ConfigUpdated);
-}
-
-#[allow(dead_code)]
-pub(crate) fn broadcast_child_session_attached(
-    state: &ServerState,
-    parent_id: impl Into<String>,
-    child_id: impl Into<String>,
-) {
-    broadcast_server_event(
-        state,
-        &ServerEvent::ChildSessionAttached {
-            parent_id: parent_id.into(),
-            child_id: child_id.into(),
-        },
-    );
-}
-
-#[allow(dead_code)]
-pub(crate) fn broadcast_child_session_detached(
-    state: &ServerState,
-    parent_id: impl Into<String>,
-    child_id: impl Into<String>,
-) {
-    broadcast_server_event(
-        state,
-        &ServerEvent::ChildSessionDetached {
-            parent_id: parent_id.into(),
-            child_id: child_id.into(),
-        },
-    );
 }
 
 #[cfg(test)]

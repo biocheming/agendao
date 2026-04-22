@@ -1,4 +1,5 @@
 use chrono::Utc;
+#[cfg(test)]
 use rocode_command::stage_protocol::{ExecutionNode, ExecutionNodeKind, ExecutionNodeStatus};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -66,11 +67,11 @@ pub struct ExecutionRecord {
 
 impl ExecutionRecord {
     /// Project this internal record into a protocol-level [`ExecutionNode`].
-    #[allow(dead_code)]
     ///
     /// The protocol shape is defined in `rocode-command::stage_protocol` so
     /// that CLI, TUI, and Web can consume it without depending on server internals.
-    pub fn to_node(&self) -> ExecutionNode {
+    #[cfg(test)]
+    pub(crate) fn to_node(&self) -> ExecutionNode {
         ExecutionNode {
             execution_id: self.id.clone(),
             parent_execution_id: self.parent_id.clone(),
@@ -229,7 +230,7 @@ pub(crate) struct RuntimeControlRegistry {
 }
 
 impl RuntimeControlRegistry {
-    #[allow(dead_code)] // Used by test harness and future server bootstrap paths.
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
         Self {
             executions: RwLock::new(HashMap::new()),

@@ -38,7 +38,7 @@ impl StageSummaryStore {
         summaries
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) async fn remove_stage(&self, session_id: &str, stage_id: &str) {
         let mut guard = self.summaries.write().await;
         let Some(entries) = guard.get_mut(session_id) else {

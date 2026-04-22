@@ -6,6 +6,32 @@ import { webPluginRegistry } from "@/web-plugin-registry";
 
 type RendererKind = "iframe" | "markdown" | "code" | "image" | "pdf" | "text";
 
+function extensionCandidates(filePath: string): string[] {
+  const fileName = filePath.split("/").pop() ?? filePath;
+  const segments = fileName
+    .toLowerCase()
+    .split(".")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  if (segments.length <= 1) return [];
+
+  const suffixes: string[] = [];
+  for (let start = 1; start < segments.length; start += 1) {
+    suffixes.push(segments.slice(start).join("."));
+  }
+  return suffixes;
+}
+
+function resolvePluginExtension(filePath: string): string | null {
+  for (const candidate of extensionCandidates(filePath)) {
+    if (webPluginRegistry.hasRenderer(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 function resolveBuiltinRenderer(ext: string): RendererKind {
   const map: Record<string, RendererKind> = {
     md: "markdown",
@@ -140,10 +166,11 @@ export function FilePreviewPane({ filePath }: FilePreviewPaneProps) {
     );
   }
 
-  const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
+  const pluginExt = resolvePluginExtension(filePath);
+  const ext = extensionCandidates(filePath).at(-1) ?? "";
 
-  if (webPluginRegistry.hasRenderer(ext)) {
-    return <PluginRendererWrapper filePath={filePath} ext={ext} />;
+  if (pluginExt) {
+    return <PluginRendererWrapper filePath={filePath} ext={pluginExt} />;
   }
 
   switch (resolveBuiltinRenderer(ext)) {

@@ -127,7 +127,6 @@ enum PromptSessionCommand {
     Shutdown(SyncSender<()>),
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone)]
 struct PromptRenderState {
     cursor_row_in_view: usize,
@@ -135,7 +134,6 @@ struct PromptRenderState {
     frame_height: usize,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone)]
 struct WrappedRow {
     start: usize,
@@ -143,12 +141,9 @@ struct WrappedRow {
     text: String,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct WrappedViewport {
     visible_rows: Vec<String>,
-    total_rows: usize,
-    visible_start_row: usize,
     cursor_row: usize,
     cursor_col: usize,
 }
@@ -1316,8 +1311,6 @@ fn wrapped_viewport(
 
     WrappedViewport {
         visible_rows,
-        total_rows: rows.len(),
-        visible_start_row,
         cursor_row: row_index.saturating_sub(visible_start_row),
         cursor_col: col,
     }
@@ -1518,7 +1511,6 @@ mod tests {
         );
         assert_eq!(viewport.cursor_row, 2);
         assert_eq!(viewport.cursor_col, 5);
-        assert_eq!(viewport.total_rows, 3);
     }
 
     #[test]

@@ -535,17 +535,6 @@ fn supports_media_in_tool_results(api_npm: &str, api_id: &str) -> bool {
     }
 }
 
-/// Extract the base64 payload from a `data:` URL, stripping the prefix.
-// TODO: Wire for file attachment support
-#[allow(dead_code)]
-fn extract_base64_data(url: &str) -> &str {
-    if let Some(comma_idx) = url.find(',') {
-        &url[comma_idx + 1..]
-    } else {
-        url
-    }
-}
-
 /// Convert a tool output value into provider-level content parts.
 ///
 /// The TS `toModelOutput` helper handles three shapes:

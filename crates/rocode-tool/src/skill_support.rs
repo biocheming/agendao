@@ -122,6 +122,9 @@ pub(crate) fn map_skill_error(err: SkillError) -> ToolError {
         SkillError::WriteFailed { path, message } => {
             ToolError::ExecutionError(format!("Failed to write {}: {}", path.display(), message))
         }
+        SkillError::CachePoisoned { resource } => {
+            ToolError::ExecutionError(format!("Skill cache state is unavailable: {}", resource))
+        }
     }
 }
 

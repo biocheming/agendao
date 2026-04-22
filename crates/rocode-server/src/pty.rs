@@ -2,7 +2,7 @@ use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::{broadcast, RwLock};
 use tokio::task::JoinHandle;
 
@@ -129,16 +129,32 @@ impl PtyManager {
                     Ok(0) => break,
                     Ok(n) => {
                         let chunk = buf[..n].to_vec();
-                        {
-                            let mut b = buffer_clone.lock().unwrap();
-                            let mut c = cursor_clone.lock().unwrap();
-                            b.extend_from_slice(&chunk);
-                            *c += n;
-                            // Trim buffer if it exceeds the limit, matching TS behaviour.
-                            if b.len() > BUFFER_LIMIT {
-                                let excess = b.len() - BUFFER_LIMIT;
-                                b.drain(..excess);
+                        let mut b = match buffer_clone.lock() {
+                            Ok(guard) => guard,
+                            Err(error) => {
+                                tracing::warn!(
+                                    %error,
+                                    "pty output buffer poisoned; stopping PTY reader loop"
+                                );
+                                break;
                             }
+                        };
+                        let mut c = match cursor_clone.lock() {
+                            Ok(guard) => guard,
+                            Err(error) => {
+                                tracing::warn!(
+                                    %error,
+                                    "pty cursor poisoned; stopping PTY reader loop"
+                                );
+                                break;
+                            }
+                        };
+                        b.extend_from_slice(&chunk);
+                        *c += n;
+                        // Trim buffer if it exceeds the limit, matching TS behaviour.
+                        if b.len() > BUFFER_LIMIT {
+                            let excess = b.len() - BUFFER_LIMIT;
+                            b.drain(..excess);
                         }
                         // Best-effort broadcast; receivers may lag and miss frames.
                         let _ = tx_clone.send(chunk);
@@ -215,7 +231,16 @@ impl PtyManager {
             // Abort the background reader task
             inner.reader_handle.abort();
             // Kill the child process
-            let _ = inner.child.lock().unwrap().kill();
+            match inner.child.lock() {
+                Ok(mut child) => {
+                    if let Err(error) = child.kill() {
+                        tracing::warn!(%error, session_id = %id, "failed to kill PTY child during delete");
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, session_id = %id, "PTY child lock poisoned during delete");
+                }
+            }
             true
         } else {
             false
@@ -231,7 +256,7 @@ impl PtyManager {
         inner
             .master
             .lock()
-            .unwrap()
+            .map_err(|_| PtyError::LockPoisoned("pty master".to_string()))?
             .resize(PtySize {
                 rows,
                 cols,
@@ -254,7 +279,7 @@ impl PtyManager {
         };
 
         tokio::task::spawn_blocking(move || {
-            let mut w = writer.lock().unwrap();
+            let mut w = lock_mutex(&writer, "pty writer")?;
             w.write_all(&data)
                 .map_err(|e| PtyError::IoError(e.to_string()))?;
             w.flush().map_err(|e| PtyError::IoError(e.to_string()))?;
@@ -273,7 +298,7 @@ impl PtyManager {
             .ok_or_else(|| PtyError::SessionNotFound(id.to_string()))?;
 
         let data = {
-            let mut buf = inner.output_buffer.lock().unwrap();
+            let mut buf = lock_mutex(&inner.output_buffer, "pty output buffer")?;
             let bytes: Vec<u8> = buf.drain(..).collect();
             String::from_utf8_lossy(&bytes).into_owned()
         };
@@ -301,8 +326,8 @@ impl PtyManager {
             .ok_or_else(|| PtyError::SessionNotFound(id.to_string()))?;
 
         let (buffer_snapshot, buffer_start, cursor) = {
-            let buf = inner.output_buffer.lock().unwrap();
-            let cursor = *inner.cursor.lock().unwrap();
+            let buf = lock_mutex(&inner.output_buffer, "pty output buffer")?;
+            let cursor = *lock_mutex(&inner.cursor, "pty cursor")?;
             let buffer_start = cursor - buf.len();
             (buf.clone(), buffer_start, cursor)
         };
@@ -339,6 +364,12 @@ impl Default for PtyManager {
     }
 }
 
+fn lock_mutex<'a, T>(mutex: &'a Mutex<T>, resource: &str) -> Result<MutexGuard<'a, T>, PtyError> {
+    mutex
+        .lock()
+        .map_err(|_| PtyError::LockPoisoned(resource.to_string()))
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PtyError {
     #[error("PTY session not found: {0}")]
@@ -349,4 +380,7 @@ pub enum PtyError {
 
     #[error("IO error: {0}")]
     IoError(String),
+
+    #[error("PTY state is unavailable: {0}")]
+    LockPoisoned(String),
 }

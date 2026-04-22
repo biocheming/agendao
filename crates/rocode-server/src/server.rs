@@ -35,7 +35,6 @@ use crate::routes;
 use crate::runtime_control::RuntimeControlRegistry;
 use crate::session_runtime::memory::RuntimeMemoryAuthority;
 use crate::session_runtime::telemetry::RuntimeTelemetryAuthority;
-use crate::stage_event_log::StageEventLog;
 
 const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:4096";
 
@@ -223,8 +222,6 @@ pub struct ServerState {
     // Legacy compatibility fields. Phase 1 keeps them so existing write paths
     // can keep compiling while read paths start going through the authority.
     pub(crate) runtime_control: Arc<RuntimeControlRegistry>,
-    #[allow(dead_code)]
-    pub(crate) stage_event_log: Arc<StageEventLog>,
     pub auth_manager: Arc<AuthManager>,
     pub event_bus: broadcast::Sender<String>,
     pub api_perf: Arc<ApiPerfCounters>,
@@ -232,8 +229,6 @@ pub struct ServerState {
     pub(crate) message_repo: Option<MessageRepository>,
     pub category_registry: Arc<rocode_config::CategoryRegistry>,
     pub(crate) todo_manager: rocode_session::TodoManager,
-    #[allow(dead_code)]
-    pub(crate) runtime_state: Arc<crate::session_runtime::state::RuntimeStateStore>,
 }
 
 pub struct ApiPerfCounters {
@@ -275,8 +270,6 @@ impl ServerState {
         let (tx, _) = broadcast::channel(1024);
         let runtime_telemetry = Arc::new(RuntimeTelemetryAuthority::new(tx.clone()));
         let runtime_control = runtime_telemetry.runtime_control();
-        let stage_event_log = runtime_telemetry.stage_event_log();
-        let runtime_state = runtime_telemetry.runtime_state();
         Self {
             sessions: Mutex::new(SessionManager::new()),
             providers: tokio::sync::RwLock::new(ProviderRegistry::new()),
@@ -292,7 +285,6 @@ impl ServerState {
             runtime_memory,
             runtime_telemetry,
             runtime_control,
-            stage_event_log,
             auth_manager: Arc::new(AuthManager::new()),
             event_bus: tx,
             api_perf: Arc::new(ApiPerfCounters::new()),
@@ -300,7 +292,6 @@ impl ServerState {
             message_repo: None,
             category_registry: Arc::new(rocode_config::CategoryRegistry::empty()),
             todo_manager: rocode_session::TodoManager::new(),
-            runtime_state,
         }
     }
 

@@ -147,13 +147,6 @@ impl StageEventLog {
         let mut guard = self.sessions.write().await;
         guard.remove(session_id);
     }
-
-    /// List all session IDs that have events.
-    #[allow(dead_code)]
-    pub async fn session_ids(&self) -> Vec<String> {
-        let guard = self.sessions.read().await;
-        guard.keys().cloned().collect()
-    }
 }
 
 impl Default for StageEventLog {

@@ -65,7 +65,6 @@ pub(super) async fn get_session_insights(
     let session_record = session.record();
     let memory = match state
         .runtime_memory
-        .memory()
         .build_session_memory_insight(&session)
         .await
     {
@@ -152,7 +151,6 @@ async fn build_session_memory_telemetry(
 ) -> Option<SessionMemoryTelemetrySummary> {
     match state
         .runtime_memory
-        .memory()
         .build_session_memory_telemetry(session)
         .await
     {

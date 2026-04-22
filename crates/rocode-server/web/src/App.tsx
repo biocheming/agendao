@@ -15,7 +15,7 @@ import { ConversationFeedPanel } from "./components/ConversationFeedPanel";
 import { InteractionOverlays } from "./components/InteractionOverlays";
 import { SessionHeader } from "./components/SessionHeader";
 import { SessionSidebar } from "./components/SessionSidebar";
-import { WorkspacePanel } from "./components/WorkspacePanel";
+import { WorkspacePanel, type WorkspacePanelTab } from "./components/WorkspacePanel";
 import { loadWebPlugins } from "./web-plugin-loader";
 import { cn } from "./lib/utils";
 import { useConversationJump } from "./hooks/useConversationJump";
@@ -819,10 +819,50 @@ function findLastMessage(messages: FeedMessage[], predicate: (message: FeedMessa
   return null;
 }
 
+function metadataValue(
+  metadata: Record<string, unknown> | null | undefined,
+  dottedKey: string,
+): unknown {
+  if (!metadata) return undefined;
+  if (dottedKey in metadata) return metadata[dottedKey];
+
+  const segments = dottedKey.split(".");
+  let current: unknown = metadata;
+  for (const segment of segments) {
+    if (!current || typeof current !== "object") {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return current;
+}
+
+function previewPathFromMessageMetadata(
+  history: MessageRecord[],
+  workspaceBasePath: string,
+): string | null {
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const message = history[index];
+    if (message.role === "user") continue;
+
+    const previewTarget =
+      metadataValue(message.metadata, "ui.auto_preview") ??
+      metadataValue(message.metadata, "embed.file_path") ??
+      metadataValue(message.metadata, "file_path");
+    if (typeof previewTarget !== "string" || !previewTarget.trim()) {
+      continue;
+    }
+
+    return resolveWorkspacePath(workspaceBasePath, previewTarget.trim());
+  }
+  return null;
+}
+
 export default function App() {
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<FeedMessage[]>([]);
+  const [messageHistory, setMessageHistory] = useState<MessageRecord[]>([]);
   const [composer, setComposer] = useState("");
   const [attachments, setAttachments] = useState<PromptPart[]>([]);
   const [providers, setProviders] = useState<ProviderRecord[]>([]);
@@ -871,6 +911,7 @@ export default function App() {
   const [selectedWorkspaceType, setSelectedWorkspaceType] = useState<"file" | "directory">(
     "directory",
   );
+  const [workspacePanelTab, setWorkspacePanelTab] = useState<WorkspacePanelTab>("files");
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [selectedFileContent, setSelectedFileContent] = useState("");
   const [savedFileContent, setSavedFileContent] = useState("");
@@ -886,9 +927,11 @@ export default function App() {
   const feedRef = useRef<HTMLDivElement | null>(null);
   const preferencesReadyRef = useRef(false);
   const selectedSessionRef = useRef<string | null>(null);
+  const autoPreviewSignatureRef = useRef<string>("");
   const liveBlocksRef = useRef<SessionLiveBlockCache>({});
   const optimisticMessagesRef = useRef<SessionOptimisticFeedCache>({});
   const connectResolveRequestRef = useRef(0);
+  const [messageReloadToken, setMessageReloadToken] = useState(0);
 
   const modelOptions = useMemo(() => flattenProviderModels(providers), [providers]);
   const settingsModeOptions = useMemo(
@@ -938,6 +981,12 @@ export default function App() {
       null,
     [currentWorkspacePath, workspaceSummaries],
   );
+  const pluginWorkspacePath =
+    currentWorkspaceSummary?.path ||
+    currentWorkspacePath ||
+    workspaceRootFromContext(workspaceContext) ||
+    serviceRootPath ||
+    null;
   const resolvedWorkspaceRootPath = workspaceRootFromContext(workspaceContext) || serviceRootPath;
   const resolvedWorkspaceMode = workspaceModeFromContext(workspaceContext);
   const sessionTree = useMemo(
@@ -1181,6 +1230,11 @@ export default function App() {
   }, [selectedSessionId]);
 
   useEffect(() => {
+    autoPreviewSignatureRef.current = "";
+    setMessageHistory([]);
+  }, [selectedSessionId]);
+
+  useEffect(() => {
     const query = connectQuery.trim();
     if (!query) {
       connectResolveRequestRef.current += 1;
@@ -1284,7 +1338,6 @@ export default function App() {
         setConnectProtocol((current) => current || connectSchema.protocols?.[0]?.id || "");
         setSelectedSessionId((current) => current ?? sessionData[0]?.id ?? null);
         preferencesReadyRef.current = true;
-        void loadWebPlugins(apiJson);
       } catch (error) {
         if (!cancelled) {
           setBanner(`Bootstrap failed: ${formatError(error)}`);
@@ -1297,6 +1350,24 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        await loadWebPlugins(apiJson, { workspacePath: pluginWorkspacePath });
+      } catch (error) {
+        if (!cancelled) {
+          console.warn("[web-plugin] Reload failed", error);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [pluginWorkspacePath]);
 
   useEffect(() => {
     if (!preferencesReadyRef.current) return;
@@ -1322,6 +1393,8 @@ export default function App() {
   useEffect(() => {
     if (!selectedSessionId) {
       setMessages([]);
+      setMessageHistory([]);
+      autoPreviewSignatureRef.current = "";
       return;
     }
 
@@ -1332,6 +1405,7 @@ export default function App() {
       try {
         const history = await apiJson<MessageRecord[]>(`/session/${selectedSessionId}/message`);
         if (cancelled) return;
+        setMessageHistory(history);
         const mergedHistory = mergeHistoryWithLiveBlocks(
           history,
           liveBlocksRef.current[selectedSessionId] ?? [],
@@ -1361,7 +1435,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [selectedSessionId, showThinking]);
+  }, [messageReloadToken, selectedSessionId, showThinking]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1546,6 +1620,9 @@ export default function App() {
 
       if (type === "session.updated") {
         void refreshSessions();
+        if (eventSessionId === selectedSessionRef.current) {
+          setMessageReloadToken((current) => current + 1);
+        }
         return;
       }
 
@@ -2020,13 +2097,14 @@ export default function App() {
   };
 
   const selectWorkspaceNode = (path: string, typeHint?: "file" | "directory") => {
+    const requestedType = typeHint ?? "file";
     if (
       selectedFilePath &&
       workspaceDirty &&
-      (path !== selectedWorkspacePath || (typeHint ?? "file") !== selectedWorkspaceType) &&
+      (path !== selectedWorkspacePath || requestedType !== selectedWorkspaceType) &&
       !confirmDiscardWorkspaceChanges("switch workspace selection")
     ) {
-      return;
+      return false;
     }
 
     const node = findNodeByPath(fileTree, path);
@@ -2034,12 +2112,35 @@ export default function App() {
       setSelectedWorkspacePath(node.path);
       setSelectedWorkspaceType(node.type);
       setSelectedFilePath(node.type === "file" ? node.path : null);
+      setWorkspacePanelTab(node.type === "file" ? "preview" : "files");
+      return true;
+    }
+
+    setPendingWorkspaceSelection({ path, type: requestedType });
+    setWorkspacePanelTab(requestedType === "file" ? "preview" : "files");
+    setWorkspaceReloadToken((current) => current + 1);
+    return true;
+  };
+
+  useEffect(() => {
+    if (!selectedSessionId || !workspaceBasePath) return;
+    const previewPath = previewPathFromMessageMetadata(messageHistory, workspaceBasePath);
+    if (!previewPath) return;
+
+    const signature = `${selectedSessionId}:${previewPath}`;
+    if (autoPreviewSignatureRef.current === signature) {
       return;
     }
 
-    setPendingWorkspaceSelection({ path, type: typeHint ?? "file" });
-    setWorkspaceReloadToken((current) => current + 1);
-  };
+    if (selectWorkspaceNode(previewPath, "file")) {
+      autoPreviewSignatureRef.current = signature;
+      setWorkspacePanelTab("preview");
+    }
+  }, [
+    messageHistory,
+    selectedSessionId,
+    workspaceBasePath,
+  ]);
 
   const locateAttachmentInWorkspace = (attachment: PromptPart) => {
     const path = attachmentWorkspacePath(attachment);
@@ -2475,6 +2576,7 @@ export default function App() {
             <div className="shrink-0 overflow-hidden border-l border-border/50 bg-sidebar" style={{ width: rightResize.width }}>
             <WorkspacePanel
               apiJson={apiJson}
+              activeTab={workspacePanelTab}
               workspaceLoading={workspaceLoading}
               fileTree={fileTree}
               workspaceRootPath={workspaceRootPath || resolvedWorkspaceRootPath}
@@ -2505,6 +2607,7 @@ export default function App() {
               onCreateWorkspaceDirectory={createWorkspaceDirectory}
               onUploadWorkspaceFiles={uploadWorkspaceFiles}
               onSelectWorkspaceNode={selectWorkspaceNode}
+              onActiveTabChange={setWorkspacePanelTab}
               onWorkspaceContentChange={setSelectedFileContent}
               onInsertWorkspaceReference={insertWorkspaceReference}
               onAttachSelectedWorkspaceNode={attachSelectedWorkspaceNode}

@@ -26,10 +26,16 @@ struct WebPluginEntry {
     entry: String,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct WorkspaceQuery {
+    workspace: Option<String>,
+}
+
 async fn list_web_plugins(
     State(state): State<Arc<ServerState>>,
+    Query(query): Query<WorkspaceQuery>,
 ) -> Result<Json<Vec<WebPluginEntry>>> {
-    let roots = web_plugin_roots(&state);
+    let roots = web_plugin_roots(&state, query.workspace.as_deref());
     let plugins = discover_web_plugins(&roots);
     let entries: Vec<WebPluginEntry> = plugins
         .into_iter()
@@ -48,28 +54,36 @@ async fn list_web_plugins(
 struct ServeQuery {
     plugin: String,
     file: String,
+    workspace: Option<String>,
 }
 
 async fn serve_web_plugin_query(
     State(state): State<Arc<ServerState>>,
     Query(query): Query<ServeQuery>,
 ) -> Result<impl IntoResponse> {
-    serve_web_plugin_inner(&state, &query.plugin, &query.file)
+    serve_web_plugin_inner(
+        &state,
+        &query.plugin,
+        &query.file,
+        query.workspace.as_deref(),
+    )
 }
 
 async fn serve_web_plugin_path(
     State(state): State<Arc<ServerState>>,
     Path((plugin, file)): Path<(String, String)>,
+    Query(query): Query<WorkspaceQuery>,
 ) -> Result<impl IntoResponse> {
-    serve_web_plugin_inner(&state, &plugin, &file)
+    serve_web_plugin_inner(&state, &plugin, &file, query.workspace.as_deref())
 }
 
 fn serve_web_plugin_inner(
     state: &Arc<ServerState>,
     plugin_name: &str,
     requested_file: &str,
+    workspace_path: Option<&str>,
 ) -> Result<impl IntoResponse> {
-    let roots = web_plugin_roots(state);
+    let roots = web_plugin_roots(state, workspace_path);
     let plugins = discover_web_plugins(&roots);
 
     let plugin = plugins
@@ -90,11 +104,13 @@ fn serve_web_plugin_inner(
     ))
 }
 
-fn web_plugin_roots(state: &ServerState) -> Vec<PathBuf> {
+fn web_plugin_roots(state: &ServerState, workspace_path: Option<&str>) -> Vec<PathBuf> {
     let config = state.config_store.config();
-    let project_dir = state
-        .config_store
-        .project_dir()
+    let project_dir = workspace_path
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| state.config_store.project_dir())
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."));
     get_plugin_roots(&project_dir, &config.plugin_paths)

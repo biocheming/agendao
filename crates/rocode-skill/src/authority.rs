@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 #[derive(Debug, Clone, Default)]
 pub struct SkillFilter<'a> {
@@ -139,7 +139,7 @@ impl SkillAuthority {
     ) -> Result<LoadedSkill, SkillError> {
         let meta = self.resolve_skill(name, filter)?;
         {
-            let mut guard = self.cache.write().expect("skill cache poisoned");
+            let mut guard = self.write_cache()?;
             if let Some(loaded) = guard.cached_loaded_skill(&meta.name) {
                 if loaded.meta.location == meta.location {
                     return Ok(loaded);
@@ -152,7 +152,7 @@ impl SkillAuthority {
             message: error.to_string(),
         })?;
         let loaded = LoadedSkill { meta, content };
-        let mut guard = self.cache.write().expect("skill cache poisoned");
+        let mut guard = self.write_cache()?;
         guard.remember_loaded_skill(loaded.clone());
         Ok(loaded)
     }
@@ -283,20 +283,21 @@ impl SkillAuthority {
         let snapshot = self.build_snapshot(None);
         self.persist_snapshot(&snapshot);
         let config_revision = self.current_config_revision();
-        let mut guard = self.cache.write().expect("skill cache poisoned");
+        let mut guard = self.write_cache()?;
         guard.set_snapshot(snapshot.clone(), config_revision);
         Ok(snapshot)
     }
 
-    pub fn invalidate(&self) {
-        let mut guard = self.cache.write().expect("skill cache poisoned");
+    pub fn invalidate(&self) -> Result<(), SkillError> {
+        let mut guard = self.write_cache()?;
         guard.clear();
+        Ok(())
     }
 
     /// Future skill-manage write paths should call this after a successful
     /// mutation so the authority becomes the single post-write refresh point.
     pub fn refresh_after_mutation(&self) -> Result<SkillCatalogSnapshot, SkillError> {
-        self.invalidate();
+        self.invalidate()?;
         self.refresh()
     }
 
@@ -563,7 +564,7 @@ impl SkillAuthority {
         let roots = collect_skill_roots(&self.base_dir, config.as_deref());
         let config_revision = self.current_config_revision();
         {
-            let guard = self.cache.read().expect("skill cache poisoned");
+            let guard = self.read_cache()?;
             if let Some(snapshot) = &guard.snapshot {
                 if guard.config_revision == config_revision
                     && snapshot.roots == roots
@@ -576,7 +577,7 @@ impl SkillAuthority {
 
         if let Some(snapshot) = load_snapshot_from_disk(&self.base_dir) {
             if snapshot.roots == roots && self.snapshot_signatures_match(&snapshot, &roots) {
-                let mut guard = self.cache.write().expect("skill cache poisoned");
+                let mut guard = self.write_cache()?;
                 guard.set_snapshot(snapshot.clone(), config_revision);
                 return Ok(snapshot);
             }
@@ -584,7 +585,7 @@ impl SkillAuthority {
 
         let next_snapshot = self.build_snapshot(Some((config.clone(), roots.clone())));
         self.persist_snapshot(&next_snapshot);
-        let mut guard = self.cache.write().expect("skill cache poisoned");
+        let mut guard = self.write_cache()?;
         guard.set_snapshot(next_snapshot.clone(), config_revision);
         Ok(next_snapshot)
     }
@@ -645,6 +646,18 @@ impl SkillAuthority {
                 "failed to persist skill catalog snapshot"
             );
         }
+    }
+
+    fn read_cache(&self) -> Result<RwLockReadGuard<'_, SkillCatalogCache>, SkillError> {
+        self.cache.read().map_err(|_| SkillError::CachePoisoned {
+            resource: "skill catalog cache",
+        })
+    }
+
+    fn write_cache(&self) -> Result<RwLockWriteGuard<'_, SkillCatalogCache>, SkillError> {
+        self.cache.write().map_err(|_| SkillError::CachePoisoned {
+            resource: "skill catalog cache",
+        })
     }
 }
 

@@ -4,7 +4,6 @@ use axum::{
     extract::{Query, State},
     Json,
 };
-use rocode_memory::SkillWriteObservation;
 use rocode_orchestrator::{
     stage_policy_available_tools, stage_policy_from_label, SchedulerProfilePlan, SchedulerSkillRef,
     SchedulerStageKind, SchedulerStageOverride, StageToolPolicy,
@@ -698,8 +697,7 @@ where
     let location = result.result.location.to_string_lossy().to_string();
     if let Err(error) = state
         .runtime_memory
-        .memory()
-        .ingest_skill_write_observation(&SkillWriteObservation {
+        .ingest_skill_write_observation(&rocode_memory::SkillWriteObservation {
             session_id: &session_id,
             tool_call_id: None,
             skill_name: &result.result.skill_name,
@@ -917,7 +915,8 @@ fn map_skill_error_to_api_error(error: rocode_skill::SkillError) -> ApiError {
             ApiError::InternalError(error.to_string())
         }
         rocode_skill::SkillError::ReadFailed { .. }
-        | rocode_skill::SkillError::WriteFailed { .. } => {
+        | rocode_skill::SkillError::WriteFailed { .. }
+        | rocode_skill::SkillError::CachePoisoned { .. } => {
             ApiError::InternalError(error.to_string())
         }
     }
@@ -1203,7 +1202,6 @@ mod tests {
 
         let memories = state
             .runtime_memory
-            .memory()
             .list_memory(None)
             .await
             .expect("memory list should load");
