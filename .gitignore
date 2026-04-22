@@ -2,6 +2,7 @@
 rocode.jsonc
 .rocode/
 scripts/verify-autoresearch.sh
+.serena/
 # vibe coding part
 AGENT.md
 # Rust build output
