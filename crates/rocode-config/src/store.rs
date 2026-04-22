@@ -8,7 +8,7 @@ use crate::loader::{
 };
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 
 use crate::schema::Config;
 
@@ -18,7 +18,7 @@ use crate::schema::Config;
 /// and invalidates derived caches. Consumers hold `Arc<Config>` snapshots.
 pub struct ConfigStore {
     base: ArcSwap<Config>,
-    plugin_applied: tokio::sync::RwLock<Option<Arc<Config>>>,
+    plugin_applied: ArcSwapOption<Config>,
     project_dir: RwLock<Option<PathBuf>>,
     workspace_identity: RwLock<Option<WorkspaceIdentity>>,
     workspace_mode: RwLock<WorkspaceMode>,
@@ -30,7 +30,7 @@ impl ConfigStore {
     pub fn new(config: Config) -> Self {
         Self {
             base: ArcSwap::from_pointee(config),
-            plugin_applied: tokio::sync::RwLock::new(None),
+            plugin_applied: ArcSwapOption::empty(),
             project_dir: RwLock::new(None),
             workspace_identity: RwLock::new(None),
             workspace_mode: RwLock::new(WorkspaceMode::Shared),
@@ -96,17 +96,17 @@ impl ConfigStore {
 
     /// Get the cached plugin-applied config (if any).
     pub async fn plugin_applied(&self) -> Option<Arc<Config>> {
-        self.plugin_applied.read().await.clone()
+        self.plugin_applied.load_full()
     }
 
     /// Store plugin-applied config after hooks have been executed.
     pub async fn set_plugin_applied(&self, config: Config) {
-        *self.plugin_applied.write().await = Some(Arc::new(config));
+        self.plugin_applied.store(Some(Arc::new(config)));
     }
 
     /// Invalidate the plugin-applied cache. Next consumer must re-run hooks.
     pub async fn invalidate_plugin_cache(&self) {
-        *self.plugin_applied.write().await = None;
+        self.plugin_applied.store(None);
     }
 
     /// Reload base config from disk (if project_dir is known).
@@ -192,7 +192,7 @@ impl ConfigStore {
     }
 
     fn invalidate_plugin_cache_blocking(&self) {
-        *self.plugin_applied.blocking_write() = None;
+        self.plugin_applied.store(None);
     }
 
     fn read_project_dir(&self) -> anyhow::Result<RwLockReadGuard<'_, Option<PathBuf>>> {
