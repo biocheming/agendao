@@ -3,41 +3,68 @@ use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 use std::time::Duration;
 
-use async_trait::async_trait;
-use rocode_cli::{
-    AcpCommandRequest, DesktopWebCommandRequest, ProductHost, ServerCommandRequest,
-    TuiCommandRequest, WebCommandRequest,
-};
 use rocode_launcher as launcher;
 use rocode_server::ServerRuntimeOptions;
 use rocode_tui::AppLaunchConfig;
 
-pub struct Host;
-
-#[async_trait]
-impl ProductHost for Host {
-    async fn run_tui(&self, request: TuiCommandRequest) -> anyhow::Result<()> {
-        run_tui(request).await
-    }
-
-    async fn run_server(&self, request: ServerCommandRequest) -> anyhow::Result<()> {
-        run_server_command(request).await
-    }
-
-    async fn run_web(&self, request: WebCommandRequest) -> anyhow::Result<()> {
-        run_web_command(request).await
-    }
-
-    async fn run_desktop_web(&self, request: DesktopWebCommandRequest) -> anyhow::Result<()> {
-        run_desktop_web_command(request).await
-    }
-
-    async fn run_acp(&self, request: AcpCommandRequest) -> anyhow::Result<()> {
-        run_acp_command(request).await
-    }
+#[derive(Clone, Debug)]
+pub struct TuiCommandRequest {
+    pub project: Option<std::path::PathBuf>,
+    pub model: Option<String>,
+    pub continue_last: bool,
+    pub session: Option<String>,
+    pub fork: bool,
+    pub prompt: Option<String>,
+    pub agent: Option<String>,
+    pub port: u16,
+    pub hostname: String,
+    pub mdns: bool,
+    pub mdns_domain: String,
+    pub cors: Vec<String>,
+    pub attach_url: Option<String>,
+    pub password: Option<String>,
 }
 
-async fn run_server_command(request: ServerCommandRequest) -> anyhow::Result<()> {
+#[derive(Clone, Debug)]
+pub struct ServerCommandRequest {
+    pub port: u16,
+    pub hostname: String,
+    pub dir: Option<std::path::PathBuf>,
+    pub mdns: bool,
+    pub mdns_domain: String,
+    pub cors: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct WebCommandRequest {
+    pub port: u16,
+    pub hostname: String,
+    pub dir: Option<std::path::PathBuf>,
+    pub mdns: bool,
+    pub mdns_domain: String,
+    pub cors: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct AcpCommandRequest {
+    pub port: u16,
+    pub hostname: String,
+    pub mdns: bool,
+    pub mdns_domain: String,
+    pub cors: Vec<String>,
+    pub cwd: std::path::PathBuf,
+}
+
+const DEFAULT_SERVER_PORT: u16 = 3000;
+const SERVER_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+
+pub fn frontend_runtime_context() -> rocode_cli::FrontendRuntimeContext {
+    rocode_cli::FrontendRuntimeContext::new(|port_override| {
+        Box::pin(async move { discover_or_start_local_server(port_override).await })
+    })
+}
+
+pub async fn run_server_command(request: ServerCommandRequest) -> anyhow::Result<()> {
     rocode_server::run_server_runtime(ServerRuntimeOptions {
         port: request.port,
         hostname: request.hostname,
@@ -49,7 +76,7 @@ async fn run_server_command(request: ServerCommandRequest) -> anyhow::Result<()>
     .await
 }
 
-async fn run_web_command(request: WebCommandRequest) -> anyhow::Result<()> {
+pub async fn run_web_command(request: WebCommandRequest) -> anyhow::Result<()> {
     let WebCommandRequest {
         port,
         hostname,
@@ -103,21 +130,7 @@ async fn run_web_command(request: WebCommandRequest) -> anyhow::Result<()> {
     server_task.await?
 }
 
-async fn run_desktop_web_command(request: DesktopWebCommandRequest) -> anyhow::Result<()> {
-    let workspace_dir = launcher::resolve_desktop_workspace("rocode")?;
-    launcher::remember_desktop_workspace("rocode", &workspace_dir);
-    run_web_command(WebCommandRequest {
-        port: request.port,
-        hostname: request.hostname,
-        dir: Some(workspace_dir),
-        mdns: request.mdns,
-        mdns_domain: request.mdns_domain,
-        cors: request.cors,
-    })
-    .await
-}
-
-async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
+pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
     let TuiCommandRequest {
         project,
         model,
@@ -231,7 +244,7 @@ async fn resolve_requested_session(
     Ok(Some(forked.id))
 }
 
-async fn run_acp_command(request: AcpCommandRequest) -> anyhow::Result<()> {
+pub async fn run_acp_command(request: AcpCommandRequest) -> anyhow::Result<()> {
     let AcpCommandRequest {
         port,
         hostname,
@@ -252,7 +265,6 @@ async fn run_acp_command(request: AcpCommandRequest) -> anyhow::Result<()> {
         "Warning: no external ACP stdio bridge runtime found; falling back to HTTP server mode."
     );
     run_server_command(ServerCommandRequest {
-        mode: "acp".to_string(),
         port,
         hostname,
         dir: Some(cwd),
@@ -354,6 +366,81 @@ fn run_acp_bridge_candidate(
     }
 
     Ok(true)
+}
+
+pub async fn discover_or_start_local_server(port_override: Option<u16>) -> anyhow::Result<String> {
+    let base_url = resolve_server_url(port_override);
+
+    if health_check(&base_url).await.is_ok() {
+        tracing::info!("Connected to existing server at {}", base_url);
+        return Ok(base_url);
+    }
+
+    let port = port_override.unwrap_or(DEFAULT_SERVER_PORT);
+    tracing::info!(
+        "No server found — starting local server on 127.0.0.1:{}",
+        port
+    );
+    let current_exe = std::env::current_exe()?;
+    let mut child = tokio::process::Command::new(current_exe)
+        .arg("serve")
+        .arg("--port")
+        .arg(port.to_string())
+        .arg("--hostname")
+        .arg("127.0.0.1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    launcher::wait_for_server_ready(&base_url, SERVER_STARTUP_TIMEOUT, Some(&mut child)).await?;
+    tokio::spawn(async move {
+        match child.wait().await {
+            Ok(status) => tracing::warn!("Background rocode host exited with status {}", status),
+            Err(error) => tracing::warn!("Background rocode host wait failed: {}", error),
+        }
+    });
+
+    tracing::info!("Local server ready at {}", base_url);
+    Ok(base_url)
+}
+
+fn resolve_server_url(port_override: Option<u16>) -> String {
+    if let Ok(url) =
+        std::env::var("ROCODE_SERVER_URL").or_else(|_| std::env::var("OPENCODE_SERVER_URL"))
+    {
+        let url = url.trim().to_string();
+        if !url.is_empty() {
+            return url;
+        }
+    }
+
+    if let Ok(url) =
+        std::env::var("ROCODE_TUI_BASE_URL").or_else(|_| std::env::var("OPENCODE_TUI_BASE_URL"))
+    {
+        let url = url.trim().to_string();
+        if !url.is_empty() {
+            return url;
+        }
+    }
+
+    let port = port_override.unwrap_or(DEFAULT_SERVER_PORT);
+    format!("http://127.0.0.1:{}", port)
+}
+
+async fn health_check(base_url: &str) -> anyhow::Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()?;
+    let resp = client
+        .get(format!("{}/health", base_url.trim_end_matches('/')))
+        .send()
+        .await?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        anyhow::bail!("Health check failed: {}", resp.status());
+    }
 }
 
 fn try_run_external_acp_bridge(

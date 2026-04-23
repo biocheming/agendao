@@ -50,7 +50,7 @@ use crate::clipboard::Clipboard;
 use crate::event_stream::{self, CliServerEvent};
 use crate::providers::{render_help, setup_providers};
 use crate::remote::{parse_output_block, run_non_interactive_attach, RemoteAttachOptions};
-use crate::server_lifecycle::discover_or_start_server;
+use crate::server_lifecycle::FrontendRuntimeContext;
 use crate::util::{
     append_cli_file_attachments, collect_run_input, parse_model_and_provider, truncate_text,
 };
@@ -96,7 +96,10 @@ fn cli_resolve_show_thinking(explicit_flag: bool, config: Option<&Config>, fallb
         .and_then(|ui| ui.show_thinking)
         .unwrap_or(fallback)
 }
-pub(crate) async fn run_non_interactive(options: RunNonInteractiveOptions) -> anyhow::Result<()> {
+pub(crate) async fn run_non_interactive(
+    options: RunNonInteractiveOptions,
+    runtime_context: &FrontendRuntimeContext,
+) -> anyhow::Result<()> {
     let RunNonInteractiveOptions {
         message,
         command,
@@ -139,6 +142,7 @@ pub(crate) async fn run_non_interactive(options: RunNonInteractiveOptions) -> an
             requested_scheduler_profile,
             thinking,
             interactive_mode,
+            runtime_context,
         )
         .await;
     }
@@ -146,7 +150,7 @@ pub(crate) async fn run_non_interactive(options: RunNonInteractiveOptions) -> an
     let base_url = if let Some(base_url) = attach {
         base_url
     } else {
-        discover_or_start_server(port).await?
+        runtime_context.discover_or_start_server(port).await?
     };
     let api_client = CliApiClient::new(base_url.clone());
     let remote_context = api_client.get_workspace_context().await.ok();

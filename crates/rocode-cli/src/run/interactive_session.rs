@@ -8,6 +8,7 @@ pub(super) async fn run_chat_session(
     requested_scheduler_profile: Option<String>,
     thinking_requested: bool,
     interactive_mode: InteractiveCliMode,
+    runtime_context: &FrontendRuntimeContext,
 ) -> anyhow::Result<()> {
     let current_dir = std::env::current_dir()?;
     let config = load_config(&current_dir)?;
@@ -38,7 +39,7 @@ pub(super) async fn run_chat_session(
     }
 
     let agent_registry_arc = Arc::new(AgentRegistry::from_config(&config));
-    let server_url = discover_or_start_server(None).await?;
+    let server_url = runtime_context.discover_or_start_server(None).await?;
     let api_client = Arc::new(CliApiClient::new(server_url.clone()));
     let server_context = api_client.get_workspace_context().await.ok();
     let recent_session_info = cli_load_recent_session_info(&api_client, &current_dir).await;
