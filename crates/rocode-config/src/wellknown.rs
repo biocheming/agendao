@@ -100,15 +100,12 @@ pub async fn load_wellknown() -> Config {
             continue;
         }
 
-        // Set the env var so downstream code (e.g. provider auth) can use it,
-        // matching the TS behaviour: `process.env[value.key] = value.token`
-        std::env::set_var(&auth.key, &auth.token);
-
         let endpoint = format!("{}/.well-known/opencode", url.trim_end_matches('/'));
         tracing::debug!(url = %endpoint, "fetching remote wellknown config");
 
         match fetch_wellknown_config(&client, &endpoint).await {
-            Ok(config) => {
+            Ok(mut config) => {
+                apply_wellknown_auth_to_config(&mut config, auth);
                 set_cached(url.clone(), config.clone());
                 tracing::debug!(url = %url, "loaded remote config from well-known");
                 merged.merge(config);
@@ -120,6 +117,24 @@ pub async fn load_wellknown() -> Config {
     }
 
     merged
+}
+
+fn apply_wellknown_auth_to_config(config: &mut Config, auth: &WellKnownAuth) {
+    let Some(providers) = config.provider.as_mut() else {
+        return;
+    };
+
+    for provider in providers.values_mut() {
+        let matches_auth_env = provider
+            .env
+            .as_ref()
+            .map(|vars| vars.iter().any(|name| name == &auth.key))
+            .unwrap_or(false);
+        if !matches_auth_env || provider.api_key.is_some() {
+            continue;
+        }
+        provider.api_key = Some(auth.token.clone());
+    }
 }
 
 async fn fetch_wellknown_config(client: &reqwest::Client, endpoint: &str) -> Result<Config> {
@@ -238,6 +253,65 @@ mod tests {
     fn cache_miss_for_unknown_url() {
         clear_cache();
         assert!(get_cached("https://unknown.example.com").is_none());
+    }
+
+    #[test]
+    fn apply_wellknown_auth_injects_matching_provider_api_key() {
+        let mut config = Config {
+            provider: Some(HashMap::from([(
+                "openai".to_string(),
+                crate::ProviderConfig {
+                    env: Some(vec!["CORP_TOKEN".to_string()]),
+                    ..Default::default()
+                },
+            )])),
+            ..Default::default()
+        };
+
+        apply_wellknown_auth_to_config(
+            &mut config,
+            &WellKnownAuth {
+                key: "CORP_TOKEN".to_string(),
+                token: "secret-123".to_string(),
+            },
+        );
+
+        let provider = config
+            .provider
+            .as_ref()
+            .and_then(|providers| providers.get("openai"))
+            .expect("provider should exist");
+        assert_eq!(provider.api_key.as_deref(), Some("secret-123"));
+    }
+
+    #[test]
+    fn apply_wellknown_auth_does_not_override_explicit_provider_api_key() {
+        let mut config = Config {
+            provider: Some(HashMap::from([(
+                "openai".to_string(),
+                crate::ProviderConfig {
+                    api_key: Some("explicit-key".to_string()),
+                    env: Some(vec!["CORP_TOKEN".to_string()]),
+                    ..Default::default()
+                },
+            )])),
+            ..Default::default()
+        };
+
+        apply_wellknown_auth_to_config(
+            &mut config,
+            &WellKnownAuth {
+                key: "CORP_TOKEN".to_string(),
+                token: "secret-123".to_string(),
+            },
+        );
+
+        let provider = config
+            .provider
+            .as_ref()
+            .and_then(|providers| providers.get("openai"))
+            .expect("provider should exist");
+        assert_eq!(provider.api_key.as_deref(), Some("explicit-key"));
     }
 
     #[tokio::test]

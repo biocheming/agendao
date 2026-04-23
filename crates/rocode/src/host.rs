@@ -59,8 +59,8 @@ const DEFAULT_SERVER_PORT: u16 = 3000;
 const SERVER_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn frontend_runtime_context() -> rocode_cli::FrontendRuntimeContext {
-    rocode_cli::FrontendRuntimeContext::new(|port_override| {
-        Box::pin(async move { discover_or_start_local_server(port_override).await })
+    rocode_cli::FrontendRuntimeContext::new(|request| {
+        Box::pin(async move { discover_or_start_local_server(request).await })
     })
 }
 
@@ -69,6 +69,7 @@ pub async fn run_server_command(request: ServerCommandRequest) -> anyhow::Result
         port: request.port,
         hostname: request.hostname,
         cwd: request.dir,
+        web_dist: None,
         mdns: request.mdns,
         mdns_domain: request.mdns_domain,
         cors: request.cors,
@@ -112,14 +113,11 @@ pub async fn run_web_command(request: WebCommandRequest) -> anyhow::Result<()> {
     println!("Backend API: {}", backend_url);
     println!("Web interface: {}", launch_url);
 
-    if let Some(web_dist) = web_dist.as_ref() {
-        std::env::set_var("ROCODE_WEB_DIST", web_dist);
-    }
-
     let server_task = tokio::spawn(rocode_server::run_server_runtime(ServerRuntimeOptions {
         port: bind_port,
         hostname,
         cwd: dir,
+        web_dist,
         mdns,
         mdns_domain,
         cors: effective_cors,
@@ -148,16 +146,11 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
         password: _password,
     } = request;
 
-    if let Some(project) = project {
-        std::env::set_current_dir(&project).map_err(|e| {
-            anyhow::anyhow!("Failed to change directory to {}: {}", project.display(), e)
-        })?;
-    }
-
     if fork && !continue_last && session.is_none() {
         anyhow::bail!("--fork requires --continue or --session");
     }
 
+    let working_dir = project.clone();
     let mut server_task = None;
     let base_url = if let Some(url) = attach_url {
         url
@@ -174,7 +167,8 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
             ServerRuntimeOptions {
                 port: bind_port,
                 hostname,
-                cwd: None,
+                cwd: working_dir.clone(),
+                web_dist: None,
                 mdns,
                 mdns_domain,
                 cors,
@@ -196,6 +190,7 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
             initial_prompt: prompt,
             agent_name: agent,
             session_id: selected_session,
+            working_dir,
         })
     })
     .await
@@ -368,15 +363,17 @@ fn run_acp_bridge_candidate(
     Ok(true)
 }
 
-pub async fn discover_or_start_local_server(port_override: Option<u16>) -> anyhow::Result<String> {
-    let base_url = resolve_server_url(port_override);
+pub async fn discover_or_start_local_server(
+    request: rocode_cli::ServerDiscoveryRequest,
+) -> anyhow::Result<String> {
+    let base_url = resolve_server_url(request.port_override);
 
     if health_check(&base_url).await.is_ok() {
         tracing::info!("Connected to existing server at {}", base_url);
         return Ok(base_url);
     }
 
-    let port = port_override.unwrap_or(DEFAULT_SERVER_PORT);
+    let port = request.port_override.unwrap_or(DEFAULT_SERVER_PORT);
     tracing::info!(
         "No server found — starting local server on 127.0.0.1:{}",
         port
@@ -391,6 +388,13 @@ pub async fn discover_or_start_local_server(port_override: Option<u16>) -> anyho
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .args(
+            request
+                .cwd
+                .as_ref()
+                .map(|cwd| vec!["--dir".to_string(), cwd.display().to_string()])
+                .unwrap_or_default(),
+        )
         .spawn()?;
 
     launcher::wait_for_server_ready(&base_url, SERVER_STARTUP_TIMEOUT, Some(&mut child)).await?;

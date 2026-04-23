@@ -32,7 +32,7 @@ use github::{handle_github_command, handle_pr_command};
 use import_export::{export_session_data, import_session_data};
 use mcp_cmd::handle_mcp_command;
 use run::{run_non_interactive, RunNonInteractiveOptions};
-pub use server_lifecycle::FrontendRuntimeContext;
+pub use server_lifecycle::{FrontendRuntimeContext, ServerDiscoveryRequest};
 use session_cmd::{handle_session_command, show_config};
 use skill_cmd::handle_skill_command;
 

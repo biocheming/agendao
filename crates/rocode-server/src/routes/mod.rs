@@ -478,7 +478,7 @@ struct PathsResponse {
     cwd: String,
 }
 
-async fn get_paths() -> Result<Json<PathsResponse>> {
+async fn get_paths(State(state): State<Arc<ServerState>>) -> Result<Json<PathsResponse>> {
     let home = dirs::home_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
@@ -488,9 +488,7 @@ async fn get_paths() -> Result<Json<PathsResponse>> {
     let data = dirs::data_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
-    let cwd = std::env::current_dir()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
+    let cwd = state.project_root().to_string_lossy().to_string();
     Ok(Json(PathsResponse {
         home,
         config,
@@ -536,12 +534,13 @@ struct UiCommandApiSpec {
     argument_kind: rocode_command::UiCommandArgumentKind,
 }
 
-async fn list_commands() -> Result<Json<Vec<CommandApiSpec>>> {
+async fn list_commands(State(state): State<Arc<ServerState>>) -> Result<Json<Vec<CommandApiSpec>>> {
     let mut registry = CommandRegistry::new();
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    registry.load_from_directory(&cwd).map_err(|error| {
-        ApiError::InternalError(format!("Failed to load command registry: {error}"))
-    })?;
+    registry
+        .load_from_directory(&state.project_root())
+        .map_err(|error| {
+            ApiError::InternalError(format!("Failed to load command registry: {error}"))
+        })?;
 
     let mut commands = registry
         .list()

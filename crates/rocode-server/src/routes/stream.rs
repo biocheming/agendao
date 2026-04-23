@@ -169,7 +169,8 @@ pub(crate) async fn stream_message(
             .get_mut(&session_id)
             .ok_or_else(|| ApiError::SessionNotFound(session_id.clone()))?;
 
-        let normalized_directory = resolved_session_directory(session.record().directory.as_str());
+        let normalized_directory =
+            resolved_session_directory(session.record().directory.as_str(), &state.project_root());
         if session.record().directory != normalized_directory {
             session.set_directory(normalized_directory);
         }

@@ -5,7 +5,7 @@ use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
@@ -45,6 +45,7 @@ pub struct ServerRuntimeOptions {
     pub port: u16,
     pub hostname: String,
     pub cwd: Option<PathBuf>,
+    pub web_dist: Option<PathBuf>,
     pub mdns: bool,
     pub mdns_domain: String,
     pub cors: Vec<String>,
@@ -220,6 +221,7 @@ fn spawn_plugin_idle_monitor(loader: Arc<PluginLoader>) {
 }
 
 pub struct ServerState {
+    pub workspace_root: PathBuf,
     pub sessions: Mutex<SessionManager>,
     pub providers: tokio::sync::RwLock<ProviderRegistry>,
     pub catalog_authority: Arc<ModelCatalogAuthority>,
@@ -267,6 +269,10 @@ impl Default for ApiPerfCounters {
 
 impl ServerState {
     pub fn new() -> Self {
+        Self::new_for_workspace(default_workspace_root())
+    }
+
+    pub fn new_for_workspace(workspace_root: PathBuf) -> Self {
         let config_store = Arc::new(rocode_config::ConfigStore::new(
             rocode_config::Config::default(),
         ));
@@ -283,6 +289,7 @@ impl ServerState {
         let runtime_telemetry = Arc::new(RuntimeTelemetryAuthority::new(tx.clone()));
         let runtime_control = runtime_telemetry.runtime_control();
         Self {
+            workspace_root: normalize_workspace_root(workspace_root),
             sessions: Mutex::new(SessionManager::new()),
             providers: tokio::sync::RwLock::new(ProviderRegistry::new()),
             catalog_authority: rocode_provider::default_model_catalog_authority(),
@@ -307,18 +314,39 @@ impl ServerState {
         }
     }
 
+    pub fn workspace_root(&self) -> &Path {
+        &self.workspace_root
+    }
+
+    pub fn project_root(&self) -> PathBuf {
+        self.config_store
+            .project_dir()
+            .unwrap_or_else(|| self.workspace_root.clone())
+    }
+
     pub async fn new_with_storage() -> anyhow::Result<Self> {
-        Self::new_with_storage_for_url(DEFAULT_SERVER_URL.to_string()).await
+        Self::new_with_storage_for_url_in_workspace(
+            DEFAULT_SERVER_URL.to_string(),
+            default_workspace_root(),
+        )
+        .await
     }
 
     pub async fn new_with_storage_for_url(server_url: String) -> anyhow::Result<Self> {
-        let mut state = Self::new();
+        Self::new_with_storage_for_url_in_workspace(server_url, default_workspace_root()).await
+    }
+
+    pub async fn new_with_storage_for_url_in_workspace(
+        server_url: String,
+        workspace_root: PathBuf,
+    ) -> anyhow::Result<Self> {
+        let workspace_root = normalize_workspace_root(workspace_root);
+        let mut state = Self::new_for_workspace(workspace_root.clone());
         let auth_manager = Arc::new(AuthManager::load_from_file(&auth_data_dir()).await);
         state.auth_manager = auth_manager.clone();
 
         // Load config and convert providers to bootstrap format
-        let cwd = std::env::current_dir().unwrap_or_default();
-        let config_store = match rocode_config::ConfigStore::from_project_dir(&cwd) {
+        let config_store = match rocode_config::ConfigStore::from_project_dir(&workspace_root) {
             Ok(store) => Arc::new(store),
             Err(error) => {
                 tracing::warn!(%error, "failed to load config, using defaults");
@@ -334,7 +362,13 @@ impl ServerState {
         ));
 
         // Plugin bootstrap needs config_store for refresh_agent_cache
-        load_plugin_auth_store(&server_url, auth_manager.clone(), &config_store).await;
+        load_plugin_auth_store(
+            &server_url,
+            auth_manager.clone(),
+            &config_store,
+            &workspace_root,
+        )
+        .await;
         let auth_store = auth_manager.list().await;
         let bootstrap_config = {
             let config = config_store.config();
@@ -670,15 +704,8 @@ async fn load_plugin_auth_store(
     server_url: &str,
     auth_manager: Arc<AuthManager>,
     config_store: &rocode_config::ConfigStore,
+    workspace_root: &Path,
 ) {
-    let cwd = match std::env::current_dir() {
-        Ok(cwd) => cwd,
-        Err(error) => {
-            tracing::warn!(%error, "failed to get current directory for plugin bootstrap");
-            return;
-        }
-    };
-
     let config = (*config_store.config()).clone();
 
     let loader = match PluginLoader::new() {
@@ -691,7 +718,7 @@ async fn load_plugin_auth_store(
     init_global(loader.hook_system());
     rocode_plugin::set_global_loader(loader.clone());
 
-    let directory = cwd.to_string_lossy().to_string();
+    let directory = workspace_root.to_string_lossy().to_string();
     let context = PluginContext {
         worktree: directory.clone(),
         directory,
@@ -707,7 +734,10 @@ async fn load_plugin_auth_store(
                 return None;
             }
             let path = cfg.dylib_path()?;
-            Some((name.clone(), resolve_native_plugin_path(&cwd, path)))
+            Some((
+                name.clone(),
+                resolve_native_plugin_path(workspace_root, path),
+            ))
         })
         .collect();
 
@@ -766,6 +796,14 @@ fn resolve_native_plugin_path(cwd: &std::path::Path, raw_path: &str) -> PathBuf 
     } else {
         cwd.join(path)
     }
+}
+
+fn default_workspace_root() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+fn normalize_workspace_root(path: PathBuf) -> PathBuf {
+    path.canonicalize().unwrap_or(path)
 }
 
 impl Default for ServerState {
@@ -955,15 +993,9 @@ fn start_mdns_publisher_if_needed(
 }
 
 pub async fn run_server_runtime(options: ServerRuntimeOptions) -> anyhow::Result<()> {
-    if let Some(cwd) = options.cwd.as_ref() {
-        std::env::set_current_dir(cwd).map_err(|error| {
-            anyhow::anyhow!(
-                "Failed to change workspace directory to {}: {}",
-                cwd.display(),
-                error
-            )
-        })?;
-    }
+    crate::web::configure_web_dist_root(options.web_dist.clone());
+    let workspace_root =
+        normalize_workspace_root(options.cwd.clone().unwrap_or_else(default_workspace_root));
 
     if std::env::var("ROCODE_SERVER_PASSWORD")
         .or_else(|_| std::env::var("OPENCODE_SERVER_PASSWORD"))
@@ -988,26 +1020,24 @@ pub async fn run_server_runtime(options: ServerRuntimeOptions) -> anyhow::Result
     let _mdns_publisher =
         start_mdns_publisher_if_needed(options.mdns, &bind_host, bind_port, &options.mdns_domain);
     let addr: SocketAddr = format!("{}:{}", bind_host, bind_port).parse()?;
-    if let Ok(cwd) = std::env::current_dir() {
-        println!(
-            "Starting ROCode server on {} (workspace: {})",
-            addr,
-            cwd.display()
-        );
-    } else {
-        println!("Starting ROCode server on {}", addr);
-    }
+    println!(
+        "Starting ROCode server on {} (workspace: {})",
+        addr,
+        workspace_root.display()
+    );
 
-    run_server(addr).await
+    run_server(addr, workspace_root).await
 }
 
-pub async fn run_server(addr: SocketAddr) -> anyhow::Result<()> {
+pub async fn run_server(addr: SocketAddr, workspace_root: PathBuf) -> anyhow::Result<()> {
     let server_url = if addr.ip().is_unspecified() {
         format!("http://127.0.0.1:{}", addr.port())
     } else {
         format!("http://{}", addr)
     };
-    let state = Arc::new(ServerState::new_with_storage_for_url(server_url).await?);
+    let state = Arc::new(
+        ServerState::new_with_storage_for_url_in_workspace(server_url, workspace_root).await?,
+    );
 
     let app = routes::router()
         .layer(cors_layer())

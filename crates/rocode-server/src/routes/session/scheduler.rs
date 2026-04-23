@@ -1137,7 +1137,10 @@ pub async fn run_local_scheduler_prompt(
         {
             Some(existing) => existing.id.clone(),
             None => sessions
-                .create("rocode-cli", resolved_session_directory(&req.directory))
+                .create(
+                    "rocode-cli",
+                    resolved_session_directory(&req.directory, &state.project_root()),
+                )
                 .id
                 .clone(),
         }
@@ -1177,7 +1180,8 @@ pub async fn run_local_scheduler_prompt(
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("failed to initialize local scheduler session"))?
     };
-    let normalized_directory = resolved_session_directory(session.record().directory.as_str());
+    let normalized_directory =
+        resolved_session_directory(session.record().directory.as_str(), &state.project_root());
     if session.record().directory != normalized_directory {
         session.set_directory(normalized_directory);
     }

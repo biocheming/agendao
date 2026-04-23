@@ -1,5 +1,5 @@
 use axum::{
-    extract::Path,
+    extract::{Path, State},
     routing::{get, patch},
     Json, Router,
 };
@@ -49,10 +49,9 @@ fn is_git_repository(path: &FsPath) -> bool {
     }
 }
 
-async fn current_project_info() -> Result<ProjectInfo> {
-    let cwd = std::env::current_dir()
-        .map_err(|e| ApiError::BadRequest(format!("Failed to resolve current directory: {}", e)))?;
-    let canonical = cwd
+async fn current_project_info(state: &ServerState) -> Result<ProjectInfo> {
+    let canonical = state
+        .project_root()
         .canonicalize()
         .map_err(|e| ApiError::BadRequest(format!("Failed to resolve project path: {}", e)))?;
     let project_id = canonical.to_string_lossy().to_string();
@@ -78,12 +77,12 @@ async fn current_project_info() -> Result<ProjectInfo> {
     })
 }
 
-async fn list_projects() -> Result<Json<Vec<ProjectInfo>>> {
-    Ok(Json(vec![current_project_info().await?]))
+async fn list_projects(State(state): State<Arc<ServerState>>) -> Result<Json<Vec<ProjectInfo>>> {
+    Ok(Json(vec![current_project_info(state.as_ref()).await?]))
 }
 
-async fn get_current_project() -> Result<Json<ProjectInfo>> {
-    Ok(Json(current_project_info().await?))
+async fn get_current_project(State(state): State<Arc<ServerState>>) -> Result<Json<ProjectInfo>> {
+    Ok(Json(current_project_info(state.as_ref()).await?))
 }
 
 #[derive(Debug, Deserialize)]
@@ -93,10 +92,11 @@ pub struct UpdateProjectRequest {
 }
 
 async fn update_project(
+    State(state): State<Arc<ServerState>>,
     Path(id): Path<String>,
     Json(req): Json<UpdateProjectRequest>,
 ) -> Result<Json<ProjectInfo>> {
-    let current = current_project_info().await?;
+    let current = current_project_info(state.as_ref()).await?;
     if id != current.id {
         return Err(ApiError::NotFound(format!("Project not found: {}", id)));
     }
@@ -111,5 +111,5 @@ async fn update_project(
     }
     drop(metadata);
 
-    Ok(Json(current_project_info().await?))
+    Ok(Json(current_project_info(state.as_ref()).await?))
 }

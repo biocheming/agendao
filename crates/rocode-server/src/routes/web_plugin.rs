@@ -110,9 +110,7 @@ fn web_plugin_roots(state: &ServerState, workspace_path: Option<&str>) -> Vec<Pa
         .map(str::trim)
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
-        .or_else(|| state.config_store.project_dir())
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("."));
+        .unwrap_or_else(|| state.project_root());
     get_plugin_roots(&project_dir, &config.plugin_paths)
 }
 

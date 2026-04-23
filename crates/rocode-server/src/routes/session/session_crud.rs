@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 
 use axum::{
@@ -328,17 +328,16 @@ pub(super) async fn persist_sessions_if_enabled(state: &Arc<ServerState>) {
     }
 }
 
-pub(crate) fn resolved_session_directory(raw: &str) -> String {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+pub(crate) fn resolved_session_directory(raw: &str, workspace_root: &FsPath) -> String {
     let trimmed = raw.trim();
     let candidate = if trimmed.is_empty() || trimmed == "." {
-        cwd
+        workspace_root.to_path_buf()
     } else {
         let path = PathBuf::from(trimmed);
         if path.is_absolute() {
             path
         } else {
-            cwd.join(path)
+            workspace_root.join(path)
         }
     };
     candidate
@@ -522,7 +521,7 @@ pub(super) async fn create_session(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(resolved_session_directory);
+        .map(|value| resolved_session_directory(value, &state.project_root()));
     let requested_project_id = req
         .project_id
         .as_deref()
@@ -542,7 +541,8 @@ pub(super) async fn create_session(
             .create_child(parent_id)
             .ok_or_else(|| ApiError::SessionNotFound(parent_id.clone()))?
     } else {
-        let directory = requested_directory.unwrap_or_else(|| resolved_session_directory("."));
+        let directory = requested_directory
+            .unwrap_or_else(|| resolved_session_directory(".", &state.project_root()));
         let project_id = requested_project_id.unwrap_or_else(|| {
             PathBuf::from(&directory)
                 .file_name()
@@ -552,7 +552,8 @@ pub(super) async fn create_session(
         });
         sessions.create(project_id, directory)
     };
-    let normalized_directory = resolved_session_directory(session.record().directory.as_str());
+    let normalized_directory =
+        resolved_session_directory(session.record().directory.as_str(), &state.project_root());
     if session.record().directory != normalized_directory {
         session.set_directory(normalized_directory);
     }
