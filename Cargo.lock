@@ -3257,14 +3257,18 @@ version = "2026.4.22"
 dependencies = [
  "anyhow",
  "async-trait",
+ "clap",
  "dirs",
+ "reqwest",
  "rocode-cli",
  "rocode-client",
  "rocode-core",
  "rocode-launcher",
  "rocode-server",
  "rocode-tui",
+ "serde_json",
  "tokio",
+ "tracing",
  "tracing-subscriber",
  "which",
 ]

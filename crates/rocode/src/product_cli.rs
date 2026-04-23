@@ -1,13 +1,152 @@
+use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
-use crate::util::parse_http_json;
+use clap::{Args, Parser, Subcommand};
+
+use crate::host::{
+    run_acp_command, run_server_command, run_tui, run_web_command, AcpCommandRequest,
+    ServerCommandRequest, TuiCommandRequest, WebCommandRequest,
+};
 
 const MANAGED_BINARIES: [&str; 1] = ["rocode"];
 
+#[derive(Parser)]
+#[command(name = "rocode")]
+struct ProductCli {
+    #[command(subcommand)]
+    command: Option<ProductCommand>,
+}
+
+#[derive(Subcommand)]
+enum ProductCommand {
+    #[command(about = "Start interactive TUI session")]
+    Tui(TuiArgs),
+    #[command(about = "Attach TUI to a running ROCode server")]
+    Attach(AttachArgs),
+    #[command(about = "Start HTTP server")]
+    Serve(ServerArgs),
+    #[command(about = "Start headless server and open web interface")]
+    Web(WebArgs),
+    #[command(about = "Start ACP (Agent Client Protocol) server")]
+    Acp(AcpArgs),
+    #[command(about = "Generate OpenAPI specification JSON")]
+    Generate,
+    #[command(about = "Upgrade rocode to latest or specific version")]
+    Upgrade {
+        #[arg(value_name = "TARGET")]
+        target: Option<String>,
+        #[arg(short = 'm', long)]
+        method: Option<String>,
+    },
+    #[command(about = "Uninstall rocode and remove related files")]
+    Uninstall {
+        #[arg(short = 'c', long = "keep-config", default_value_t = false)]
+        keep_config: bool,
+        #[arg(short = 'd', long = "keep-data", default_value_t = false)]
+        keep_data: bool,
+        #[arg(long = "dry-run", default_value_t = false)]
+        dry_run: bool,
+        #[arg(short = 'f', long, default_value_t = false)]
+        force: bool,
+    },
+    #[command(about = "Show version")]
+    Version,
+    #[command(about = "Show build and environment info (compiler, target, profile)")]
+    Info,
+}
+
+#[derive(Args)]
+struct TuiArgs {
+    #[arg(value_name = "PROJECT")]
+    project: Option<PathBuf>,
+    #[arg(short = 'm', long)]
+    model: Option<String>,
+    #[arg(short = 'c', long = "continue", default_value_t = false)]
+    continue_last: bool,
+    #[arg(short = 's', long)]
+    session: Option<String>,
+    #[arg(long, default_value_t = false)]
+    fork: bool,
+    #[arg(long)]
+    prompt: Option<String>,
+    #[arg(long)]
+    agent: Option<String>,
+    #[arg(long, default_value_t = 0)]
+    port: u16,
+    #[arg(long, default_value = "127.0.0.1")]
+    hostname: String,
+    #[arg(long, default_value_t = false)]
+    mdns: bool,
+    #[arg(long = "mdns-domain", default_value = "rocode.local")]
+    mdns_domain: String,
+    #[arg(long)]
+    cors: Vec<String>,
+}
+
+#[derive(Args)]
+struct AttachArgs {
+    #[arg(value_name = "URL")]
+    url: String,
+    #[arg(long)]
+    dir: Option<PathBuf>,
+    #[arg(short = 's', long)]
+    session: Option<String>,
+    #[arg(short = 'p', long)]
+    password: Option<String>,
+}
+
+#[derive(Args)]
+struct ServerArgs {
+    #[arg(long, default_value_t = 0)]
+    port: u16,
+    #[arg(long, default_value = "127.0.0.1")]
+    hostname: String,
+    #[arg(long)]
+    dir: Option<PathBuf>,
+    #[arg(long, default_value_t = false)]
+    mdns: bool,
+    #[arg(long = "mdns-domain", default_value = "rocode.local")]
+    mdns_domain: String,
+    #[arg(long)]
+    cors: Vec<String>,
+}
+
+#[derive(Args)]
+struct WebArgs {
+    #[arg(long, default_value_t = 0)]
+    port: u16,
+    #[arg(long, default_value = "127.0.0.1")]
+    hostname: String,
+    #[arg(long)]
+    dir: Option<PathBuf>,
+    #[arg(long, default_value_t = false)]
+    mdns: bool,
+    #[arg(long = "mdns-domain", default_value = "rocode.local")]
+    mdns_domain: String,
+    #[arg(long)]
+    cors: Vec<String>,
+}
+
+#[derive(Args)]
+struct AcpArgs {
+    #[arg(long, default_value_t = 0)]
+    port: u16,
+    #[arg(long, default_value = "127.0.0.1")]
+    hostname: String,
+    #[arg(long, default_value_t = false)]
+    mdns: bool,
+    #[arg(long = "mdns-domain", default_value = "rocode.local")]
+    mdns_domain: String,
+    #[arg(long)]
+    cors: Vec<String>,
+    #[arg(long, default_value = ".")]
+    cwd: PathBuf,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum InstallMethod {
+enum InstallMethod {
     Local,
     Curl,
     Npm,
@@ -20,7 +159,7 @@ pub(crate) enum InstallMethod {
 }
 
 impl InstallMethod {
-    pub(crate) fn parse(value: &str) -> Self {
+    fn parse(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
             "local" => Self::Local,
             "curl" => Self::Curl,
@@ -34,7 +173,7 @@ impl InstallMethod {
         }
     }
 
-    pub(crate) fn as_str(self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
             Self::Local => "local",
             Self::Curl => "curl",
@@ -53,6 +192,148 @@ impl InstallMethod {
 struct RemovalTarget {
     label: String,
     path: PathBuf,
+}
+
+pub async fn dispatch_if_product_command(args: Vec<OsString>) -> anyhow::Result<bool> {
+    let Some(command) = args.get(1).and_then(|value| value.to_str()) else {
+        run_tui(default_tui_request()).await?;
+        return Ok(true);
+    };
+
+    if !matches!(
+        command,
+        "tui"
+            | "attach"
+            | "serve"
+            | "web"
+            | "acp"
+            | "generate"
+            | "upgrade"
+            | "uninstall"
+            | "version"
+            | "info"
+    ) {
+        return Ok(false);
+    }
+
+    let cli = ProductCli::parse_from(args);
+    match cli.command {
+        None => {
+            run_tui(default_tui_request()).await?;
+        }
+        Some(ProductCommand::Tui(args)) => {
+            run_tui(TuiCommandRequest {
+                project: args.project,
+                model: args.model,
+                continue_last: args.continue_last,
+                session: args.session,
+                fork: args.fork,
+                prompt: args.prompt,
+                agent: args.agent,
+                port: args.port,
+                hostname: args.hostname,
+                mdns: args.mdns,
+                mdns_domain: args.mdns_domain,
+                cors: args.cors,
+                attach_url: None,
+                password: None,
+            })
+            .await?;
+        }
+        Some(ProductCommand::Attach(args)) => {
+            run_tui(TuiCommandRequest {
+                project: args.dir,
+                model: None,
+                continue_last: false,
+                session: args.session,
+                fork: false,
+                prompt: None,
+                agent: None,
+                port: 0,
+                hostname: "127.0.0.1".to_string(),
+                mdns: false,
+                mdns_domain: "rocode.local".to_string(),
+                cors: vec![],
+                attach_url: Some(args.url),
+                password: args.password,
+            })
+            .await?;
+        }
+        Some(ProductCommand::Serve(args)) => {
+            run_server_command(ServerCommandRequest {
+                port: args.port,
+                hostname: args.hostname,
+                dir: args.dir,
+                mdns: args.mdns,
+                mdns_domain: args.mdns_domain,
+                cors: args.cors,
+            })
+            .await?;
+        }
+        Some(ProductCommand::Web(args)) => {
+            run_web_command(WebCommandRequest {
+                port: args.port,
+                hostname: args.hostname,
+                dir: args.dir,
+                mdns: args.mdns,
+                mdns_domain: args.mdns_domain,
+                cors: args.cors,
+            })
+            .await?;
+        }
+        Some(ProductCommand::Acp(args)) => {
+            run_acp_command(AcpCommandRequest {
+                port: args.port,
+                hostname: args.hostname,
+                mdns: args.mdns,
+                mdns_domain: args.mdns_domain,
+                cors: args.cors,
+                cwd: args.cwd,
+            })
+            .await?;
+        }
+        Some(ProductCommand::Generate) => {
+            rocode_server::print_openapi_spec().await?;
+        }
+        Some(ProductCommand::Upgrade { target, method }) => {
+            handle_upgrade_command(target, method).await?;
+        }
+        Some(ProductCommand::Uninstall {
+            keep_config,
+            keep_data,
+            dry_run,
+            force,
+        }) => {
+            handle_uninstall_command(keep_config, keep_data, dry_run, force).await?;
+        }
+        Some(ProductCommand::Version) => {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+        }
+        Some(ProductCommand::Info) => {
+            print_build_info();
+        }
+    }
+
+    Ok(true)
+}
+
+fn default_tui_request() -> TuiCommandRequest {
+    TuiCommandRequest {
+        project: None,
+        model: None,
+        continue_last: false,
+        session: None,
+        fork: false,
+        prompt: None,
+        agent: None,
+        port: 0,
+        hostname: "127.0.0.1".to_string(),
+        mdns: false,
+        mdns_domain: "rocode.local".to_string(),
+        cors: vec![],
+        attach_url: None,
+        password: None,
+    }
 }
 
 fn command_text(program: &str, args: &[&str]) -> Option<String> {
@@ -172,12 +453,13 @@ async fn latest_version(method: InstallMethod) -> anyhow::Result<String> {
         | InstallMethod::Curl
         | InstallMethod::Choco
         | InstallMethod::Unknown => {
-            let response = client
+            let json: serde_json::Value = client
                 .get("https://api.github.com/repos/anomalyco/rocode/releases/latest")
-                .header("User-Agent", "rocode-cli-rust")
+                .header("User-Agent", "rocode")
                 .send()
+                .await?
+                .json()
                 .await?;
-            let json: serde_json::Value = parse_http_json(response).await?;
             let tag = json
                 .get("tag_name")
                 .and_then(|v| v.as_str())
@@ -185,11 +467,12 @@ async fn latest_version(method: InstallMethod) -> anyhow::Result<String> {
             Ok(tag.trim_start_matches('v').to_string())
         }
         InstallMethod::Brew => {
-            let response = client
+            let json: serde_json::Value = client
                 .get("https://formulae.brew.sh/api/formula/rocode.json")
                 .send()
+                .await?
+                .json()
                 .await?;
-            let json: serde_json::Value = parse_http_json(response).await?;
             let version = json
                 .get("versions")
                 .and_then(|v| v.get("stable"))
@@ -198,11 +481,12 @@ async fn latest_version(method: InstallMethod) -> anyhow::Result<String> {
             Ok(version.to_string())
         }
         InstallMethod::Npm | InstallMethod::Pnpm | InstallMethod::Bun => {
-            let response = client
+            let json: serde_json::Value = client
                 .get("https://registry.npmjs.org/rocode-ai/latest")
                 .send()
+                .await?
+                .json()
                 .await?;
-            let json: serde_json::Value = parse_http_json(response).await?;
             let version = json
                 .get("version")
                 .and_then(|v| v.as_str())
@@ -210,11 +494,12 @@ async fn latest_version(method: InstallMethod) -> anyhow::Result<String> {
             Ok(version.to_string())
         }
         InstallMethod::Scoop => {
-            let response = client
+            let json: serde_json::Value = client
                 .get("https://raw.githubusercontent.com/ScoopInstaller/Main/master/bucket/rocode.json")
                 .send()
+                .await?
+                .json()
                 .await?;
-            let json: serde_json::Value = parse_http_json(response).await?;
             let version = json
                 .get("version")
                 .and_then(|v| v.as_str())
@@ -277,7 +562,7 @@ fn prompt_yes_no(question: &str) -> anyhow::Result<bool> {
     ))
 }
 
-pub(crate) async fn handle_upgrade_command(
+async fn handle_upgrade_command(
     target: Option<String>,
     method: Option<String>,
 ) -> anyhow::Result<()> {
@@ -314,7 +599,7 @@ pub(crate) async fn handle_upgrade_command(
     Ok(())
 }
 
-pub(crate) async fn handle_uninstall_command(
+async fn handle_uninstall_command(
     keep_config: bool,
     keep_data: bool,
     dry_run: bool,
@@ -402,4 +687,37 @@ pub(crate) async fn handle_uninstall_command(
         println!("Removed {}", target.path.display());
     }
     Ok(())
+}
+
+fn print_build_info() {
+    let built_at = option_env!("ROCODE_BUILD_TIMESTAMP").unwrap_or("unknown");
+    let rustc = option_env!("ROCODE_RUSTC_VERSION").unwrap_or("unknown");
+    let profile = option_env!("ROCODE_BUILD_PROFILE").unwrap_or("unknown");
+    let target = option_env!("TARGET").unwrap_or("unknown");
+    let host = option_env!("HOST").unwrap_or("unknown");
+
+    println!("ROCode {}", env!("CARGO_PKG_VERSION"));
+    println!();
+    println!("Build Info:");
+    println!("  Compiler:   {}", rustc);
+    println!("  Profile:    {}", profile);
+    println!("  Target:     {}", target);
+    println!("  Host:       {}", host);
+    println!("  Built at:   {}", built_at);
+    println!();
+
+    let data = dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("rocode");
+    let cache = dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("rocode");
+    let config = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("rocode");
+
+    println!("Paths:");
+    println!("  Data:       {}", data.display());
+    println!("  Config:     {}", config.display());
+    println!("  Cache:      {}", cache.display());
 }

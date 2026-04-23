@@ -1,6 +1,5 @@
-use host::Host;
-
 mod host;
+mod product_cli;
 
 fn init_logging() {
     let log_dir = dirs::data_local_dir()
@@ -46,5 +45,9 @@ fn init_logging() {
 async fn main() -> anyhow::Result<()> {
     init_logging();
     rocode_cli::spawn_process_reaper();
-    rocode_cli::run_with_host(&Host).await
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if product_cli::dispatch_if_product_command(args.clone()).await? {
+        return Ok(());
+    }
+    rocode_cli::run_frontend_with_context(args, host::frontend_runtime_context()).await
 }

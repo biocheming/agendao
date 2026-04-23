@@ -17,17 +17,23 @@ use crate::api_client::{
 use crate::cli::{
     SkillCommands, SkillHubCommands, SkillHubOutputFormat, SkillSourceArgs, SkillSourceKindArg,
 };
-use crate::server_lifecycle::discover_or_start_server;
+use crate::server_lifecycle::FrontendRuntimeContext;
 use crate::util::truncate_text;
 
-pub(crate) async fn handle_skill_command(action: SkillCommands) -> anyhow::Result<()> {
+pub(crate) async fn handle_skill_command(
+    action: SkillCommands,
+    runtime_context: &FrontendRuntimeContext,
+) -> anyhow::Result<()> {
     match action {
-        SkillCommands::Hub { action } => handle_skill_hub_command(action).await,
+        SkillCommands::Hub { action } => handle_skill_hub_command(action, runtime_context).await,
     }
 }
 
-async fn handle_skill_hub_command(action: SkillHubCommands) -> anyhow::Result<()> {
-    let client = hub_client().await?;
+async fn handle_skill_hub_command(
+    action: SkillHubCommands,
+    runtime_context: &FrontendRuntimeContext,
+) -> anyhow::Result<()> {
+    let client = hub_client(runtime_context).await?;
     match action {
         SkillHubCommands::Status { output } => {
             let managed = client.list_skill_hub_managed().await?;
@@ -299,8 +305,8 @@ async fn handle_skill_hub_command(action: SkillHubCommands) -> anyhow::Result<()
     Ok(())
 }
 
-async fn hub_client() -> anyhow::Result<CliApiClient> {
-    let base_url = discover_or_start_server(None).await?;
+async fn hub_client(runtime_context: &FrontendRuntimeContext) -> anyhow::Result<CliApiClient> {
+    let base_url = runtime_context.discover_or_start_server(None).await?;
     Ok(CliApiClient::new(base_url))
 }
 

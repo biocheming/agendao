@@ -6,49 +6,11 @@ use std::path::PathBuf;
 #[command(about = "ROCode - A Rusted OpenCode Version", long_about = None)]
 pub(crate) struct Cli {
     #[command(subcommand)]
-    pub(crate) command: Option<Commands>,
+    pub(crate) command: Commands,
 }
 
 #[derive(Subcommand)]
 pub(crate) enum Commands {
-    #[command(about = "Start interactive TUI session")]
-    Tui {
-        #[arg(value_name = "PROJECT")]
-        project: Option<PathBuf>,
-        #[arg(short = 'm', long)]
-        model: Option<String>,
-        #[arg(short = 'c', long = "continue", default_value_t = false)]
-        continue_last: bool,
-        #[arg(short = 's', long)]
-        session: Option<String>,
-        #[arg(long, default_value_t = false)]
-        fork: bool,
-        #[arg(long)]
-        prompt: Option<String>,
-        #[arg(long)]
-        agent: Option<String>,
-        #[arg(long, default_value_t = 0)]
-        port: u16,
-        #[arg(long, default_value = "127.0.0.1")]
-        hostname: String,
-        #[arg(long, default_value_t = false)]
-        mdns: bool,
-        #[arg(long = "mdns-domain", default_value = "rocode.local")]
-        mdns_domain: String,
-        #[arg(long)]
-        cors: Vec<String>,
-    },
-    #[command(about = "Attach TUI to a running ROCode server")]
-    Attach {
-        #[arg(value_name = "URL")]
-        url: String,
-        #[arg(long)]
-        dir: Option<PathBuf>,
-        #[arg(short = 's', long)]
-        session: Option<String>,
-        #[arg(short = 'p', long)]
-        password: Option<String>,
-    },
     #[command(about = "Run rocode with a message")]
     Run {
         #[arg(value_name = "MESSAGE", trailing_var_arg = true)]
@@ -87,51 +49,6 @@ pub(crate) enum Commands {
         thinking: bool,
         #[arg(long = "interactive-mode", default_value = "rich")]
         interactive_mode: InteractiveCliMode,
-    },
-    #[command(about = "Start HTTP server")]
-    Serve {
-        #[arg(long, default_value_t = 0)]
-        port: u16,
-        #[arg(long, default_value = "127.0.0.1")]
-        hostname: String,
-        #[arg(long)]
-        dir: Option<PathBuf>,
-        #[arg(long, default_value_t = false)]
-        mdns: bool,
-        #[arg(long = "mdns-domain", default_value = "rocode.local")]
-        mdns_domain: String,
-        #[arg(long)]
-        cors: Vec<String>,
-    },
-    #[command(about = "Start headless server and open web interface")]
-    Web {
-        #[arg(long, default_value_t = 0)]
-        port: u16,
-        #[arg(long, default_value = "127.0.0.1")]
-        hostname: String,
-        #[arg(long)]
-        dir: Option<PathBuf>,
-        #[arg(long, default_value_t = false)]
-        mdns: bool,
-        #[arg(long = "mdns-domain", default_value = "rocode.local")]
-        mdns_domain: String,
-        #[arg(long)]
-        cors: Vec<String>,
-    },
-    #[command(about = "Start ACP (Agent Client Protocol) server")]
-    Acp {
-        #[arg(long, default_value_t = 0)]
-        port: u16,
-        #[arg(long, default_value = "127.0.0.1")]
-        hostname: String,
-        #[arg(long, default_value_t = false)]
-        mdns: bool,
-        #[arg(long = "mdns-domain", default_value = "rocode.local")]
-        mdns_domain: String,
-        #[arg(long)]
-        cors: Vec<String>,
-        #[arg(long, default_value = ".")]
-        cwd: PathBuf,
     },
     #[command(about = "List available models")]
     Models {
@@ -218,30 +135,6 @@ pub(crate) enum Commands {
         #[arg(value_name = "NUMBER")]
         number: u32,
     },
-    #[command(about = "Upgrade rocode to latest or specific version")]
-    Upgrade {
-        #[arg(value_name = "TARGET")]
-        target: Option<String>,
-        #[arg(short = 'm', long)]
-        method: Option<String>,
-    },
-    #[command(about = "Uninstall rocode and remove related files")]
-    Uninstall {
-        #[arg(short = 'c', long = "keep-config", default_value_t = false)]
-        keep_config: bool,
-        #[arg(short = 'd', long = "keep-data", default_value_t = false)]
-        keep_data: bool,
-        #[arg(long = "dry-run", default_value_t = false)]
-        dry_run: bool,
-        #[arg(short = 'f', long, default_value_t = false)]
-        force: bool,
-    },
-    #[command(about = "Generate OpenAPI specification JSON")]
-    Generate,
-    #[command(about = "Show version")]
-    Version,
-    #[command(about = "Show build and environment info (compiler, target, profile)")]
-    Info,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
