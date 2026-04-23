@@ -8,12 +8,12 @@ pub(super) async fn run_chat_session(
     requested_scheduler_profile: Option<String>,
     thinking_requested: bool,
     interactive_mode: InteractiveCliMode,
+    working_dir: PathBuf,
     runtime_context: &FrontendRuntimeContext,
 ) -> anyhow::Result<()> {
-    let current_dir = std::env::current_dir()?;
-    let config = load_config(&current_dir)?;
+    let config = load_config(&working_dir)?;
     let command_registry = CommandRegistry::new();
-    let provider_registry = Arc::new(setup_providers(&config).await?);
+    let provider_registry = Arc::new(setup_providers_for_dir(&config, &working_dir).await?);
 
     if provider_registry.list().is_empty() {
         eprintln!("Error: No API keys configured.");
@@ -39,10 +39,15 @@ pub(super) async fn run_chat_session(
     }
 
     let agent_registry_arc = Arc::new(AgentRegistry::from_config(&config));
-    let server_url = runtime_context.discover_or_start_server(None).await?;
+    let server_url = runtime_context
+        .discover_or_start_server_with_request(crate::ServerDiscoveryRequest {
+            port_override: None,
+            cwd: Some(working_dir.clone()),
+        })
+        .await?;
     let api_client = Arc::new(CliApiClient::new(server_url.clone()));
     let server_context = api_client.get_workspace_context().await.ok();
-    let recent_session_info = cli_load_recent_session_info(&api_client, &current_dir).await;
+    let recent_session_info = cli_load_recent_session_info(&api_client, &working_dir).await;
 
     let (carry_model, carry_provider) = recent_session_info
         .as_ref()
@@ -119,7 +124,7 @@ pub(super) async fn run_chat_session(
             Some(attach_rich_prompt(
                 &mut runtime,
                 &repl_style,
-                &current_dir,
+                &working_dir,
                 &config,
                 provider_registry.as_ref(),
                 agent_registry_arc.as_ref(),
@@ -219,7 +224,7 @@ pub(super) async fn run_chat_session(
                 &mut sse_rx,
                 &provider_registry,
                 &agent_registry_arc,
-                &current_dir,
+                &working_dir,
                 &repl_style,
             )
             .await?
@@ -243,7 +248,7 @@ pub(super) async fn run_chat_session(
                         &mut sse_rx,
                         &provider_registry,
                         &agent_registry_arc,
-                        &current_dir,
+                        &working_dir,
                         &repl_style,
                     )
                     .await?

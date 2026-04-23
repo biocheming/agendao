@@ -48,7 +48,7 @@ use crate::branding::{APP_SHORT_NAME, APP_TAGLINE, APP_VERSION_DATE};
 use crate::cli::{InteractiveCliMode, RunOutputFormat};
 use crate::clipboard::Clipboard;
 use crate::event_stream::{self, CliServerEvent};
-use crate::providers::{render_help, setup_providers};
+use crate::providers::{render_help, setup_providers_for_dir};
 use crate::remote::{parse_output_block, run_non_interactive_attach, RemoteAttachOptions};
 use crate::server_lifecycle::FrontendRuntimeContext;
 use crate::util::{
@@ -120,19 +120,17 @@ pub(crate) async fn run_non_interactive(
         thinking,
         interactive_mode,
     } = options;
-
-    if let Some(dir) = dir {
-        std::env::set_current_dir(&dir).map_err(|e| {
-            anyhow::anyhow!("Failed to change directory to {}: {}", dir.display(), e)
-        })?;
-    }
+    let working_dir = match dir {
+        Some(dir) => dir,
+        None => std::env::current_dir()?,
+    };
 
     if fork && !continue_last && session.is_none() {
         anyhow::bail!("--fork requires --continue or --session");
     }
 
     let mut input = collect_run_input(message)?;
-    append_cli_file_attachments(&mut input, &files)?;
+    append_cli_file_attachments(&mut input, &files, &working_dir)?;
     if input.trim().is_empty() {
         let (provider, model_id) = parse_model_and_provider(model);
         return interactive_session::run_chat_session(
@@ -142,6 +140,7 @@ pub(crate) async fn run_non_interactive(
             requested_scheduler_profile,
             thinking,
             interactive_mode,
+            working_dir,
             runtime_context,
         )
         .await;
@@ -150,7 +149,12 @@ pub(crate) async fn run_non_interactive(
     let base_url = if let Some(base_url) = attach {
         base_url
     } else {
-        runtime_context.discover_or_start_server(port).await?
+        runtime_context
+            .discover_or_start_server_with_request(crate::ServerDiscoveryRequest {
+                port_override: port,
+                cwd: Some(working_dir),
+            })
+            .await?
     };
     let api_client = CliApiClient::new(base_url.clone());
     let remote_context = api_client.get_workspace_context().await.ok();

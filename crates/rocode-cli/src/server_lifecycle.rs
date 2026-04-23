@@ -1,9 +1,18 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
 
-type DiscoverServerHook =
-    dyn Fn(Option<u16>) -> BoxFuture<'static, anyhow::Result<String>> + Send + Sync + 'static;
+#[derive(Clone, Debug, Default)]
+pub struct ServerDiscoveryRequest {
+    pub port_override: Option<u16>,
+    pub cwd: Option<PathBuf>,
+}
+
+type DiscoverServerHook = dyn Fn(ServerDiscoveryRequest) -> BoxFuture<'static, anyhow::Result<String>>
+    + Send
+    + Sync
+    + 'static;
 
 #[derive(Clone)]
 pub struct FrontendRuntimeContext {
@@ -13,7 +22,10 @@ pub struct FrontendRuntimeContext {
 impl FrontendRuntimeContext {
     pub fn new<F>(discover_server: F) -> Self
     where
-        F: Fn(Option<u16>) -> BoxFuture<'static, anyhow::Result<String>> + Send + Sync + 'static,
+        F: Fn(ServerDiscoveryRequest) -> BoxFuture<'static, anyhow::Result<String>>
+            + Send
+            + Sync
+            + 'static,
     {
         Self {
             discover_server: Arc::new(discover_server),
@@ -34,6 +46,17 @@ impl FrontendRuntimeContext {
         &self,
         port_override: Option<u16>,
     ) -> anyhow::Result<String> {
-        (self.discover_server)(port_override).await
+        self.discover_or_start_server_with_request(ServerDiscoveryRequest {
+            port_override,
+            cwd: None,
+        })
+        .await
+    }
+
+    pub async fn discover_or_start_server_with_request(
+        &self,
+        request: ServerDiscoveryRequest,
+    ) -> anyhow::Result<String> {
+        (self.discover_server)(request).await
     }
 }

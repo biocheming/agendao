@@ -18,7 +18,6 @@ use rocode_types::{
     SkillHubSyncPlanRequest, SkillHubSyncPlanResponse, SkillHubTimelineQuery,
     SkillHubTimelineResponse, SkillRemoteInstallPlan, SkillRemoteInstallResponse,
 };
-use std::path::PathBuf;
 use std::sync::Arc;
 
 pub(crate) fn skill_hub_routes() -> Router<Arc<ServerState>> {
@@ -405,11 +404,7 @@ fn map_skill_error_to_api_error(error: SkillError) -> ApiError {
 }
 
 fn skill_governance_authority(state: &Arc<ServerState>) -> SkillGovernanceAuthority {
-    let base_dir = state
-        .config_store
-        .project_dir()
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("."));
+    let base_dir = state.project_root();
     SkillGovernanceAuthority::new(base_dir, Some(state.config_store.clone()))
 }
 

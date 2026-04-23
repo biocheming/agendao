@@ -467,7 +467,15 @@ impl App {
             anyhow::bail!("filename cannot be empty");
         }
         if path.is_relative() {
-            path = std::env::current_dir()?.join(path);
+            let base_dir = {
+                let directory = self.context.directory.read().clone();
+                if directory.trim().is_empty() {
+                    std::env::current_dir()?
+                } else {
+                    PathBuf::from(directory)
+                }
+            };
+            path = base_dir.join(path);
         }
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {

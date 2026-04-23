@@ -272,8 +272,8 @@ impl From<WorktreeInfoStruct> for WorktreeInfo {
     }
 }
 
-async fn list_worktrees() -> Json<Vec<WorktreeInfo>> {
-    let cwd = std::env::current_dir().unwrap_or_default();
+async fn list_worktrees(State(state): State<Arc<ServerState>>) -> Json<Vec<WorktreeInfo>> {
+    let cwd = state.project_root();
     let worktrees = worktree::list_worktrees(&cwd).unwrap_or_default();
     Json(worktrees.into_iter().map(|w| w.into()).collect())
 }
@@ -284,8 +284,11 @@ pub struct CreateWorktreeRequest {
     pub path: Option<String>,
 }
 
-async fn create_worktree(Json(req): Json<CreateWorktreeRequest>) -> Result<Json<WorktreeInfo>> {
-    let cwd = std::env::current_dir().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+async fn create_worktree(
+    State(state): State<Arc<ServerState>>,
+    Json(req): Json<CreateWorktreeRequest>,
+) -> Result<Json<WorktreeInfo>> {
+    let cwd = state.project_root();
 
     let info = worktree::create_worktree(&cwd, req.branch.as_deref(), req.path.as_deref())
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
@@ -299,8 +302,11 @@ pub struct RemoveWorktreeRequest {
     pub force: Option<bool>,
 }
 
-async fn remove_worktree(Json(req): Json<RemoveWorktreeRequest>) -> Result<Json<bool>> {
-    let cwd = std::env::current_dir().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+async fn remove_worktree(
+    State(state): State<Arc<ServerState>>,
+    Json(req): Json<RemoveWorktreeRequest>,
+) -> Result<Json<bool>> {
+    let cwd = state.project_root();
 
     worktree::remove_worktree(&cwd, &req.path, req.force.unwrap_or(false))
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
@@ -308,8 +314,8 @@ async fn remove_worktree(Json(req): Json<RemoveWorktreeRequest>) -> Result<Json<
     Ok(Json(true))
 }
 
-async fn reset_worktree() -> Result<Json<bool>> {
-    let cwd = std::env::current_dir().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+async fn reset_worktree(State(state): State<Arc<ServerState>>) -> Result<Json<bool>> {
+    let cwd = state.project_root();
 
     worktree::prune_worktrees(&cwd).map_err(|e| ApiError::BadRequest(e.to_string()))?;
 

@@ -11,6 +11,7 @@ target/
 marscode/
 plans/
 docs/plans/
+docs/plans/*
 # Cargo local config
 .cargo/config.toml
 

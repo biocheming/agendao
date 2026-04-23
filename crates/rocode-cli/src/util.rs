@@ -35,12 +35,13 @@ pub(crate) fn parse_bool_env(value: &str) -> bool {
 pub(crate) fn append_cli_file_attachments(
     input: &mut String,
     files: &[PathBuf],
+    base_dir: &PathBuf,
 ) -> anyhow::Result<()> {
     for file_path in files {
         let resolved = if file_path.is_absolute() {
             file_path.clone()
         } else {
-            std::env::current_dir()?.join(file_path)
+            base_dir.join(file_path)
         };
         let metadata = fs::metadata(&resolved).map_err(|e| {
             anyhow::anyhow!(
@@ -50,7 +51,7 @@ pub(crate) fn append_cli_file_attachments(
             )
         })?;
         let display = resolved
-            .strip_prefix(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+            .strip_prefix(base_dir)
             .unwrap_or(&resolved)
             .display()
             .to_string();

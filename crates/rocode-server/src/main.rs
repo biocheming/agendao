@@ -23,6 +23,7 @@ async fn main() -> anyhow::Result<()> {
         port: cli.port,
         hostname: cli.hostname,
         cwd: cli.cwd,
+        web_dist: None,
         mdns: cli.mdns,
         mdns_domain: cli.mdns_domain,
         cors: cli.cors,

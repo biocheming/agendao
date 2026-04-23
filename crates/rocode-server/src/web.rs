@@ -1,12 +1,20 @@
 use std::fs;
 use std::path::{Component, Path as FsPath, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
 
 use axum::extract::Path;
 use axum::http::{header, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
+use once_cell::sync::Lazy;
 
+static WEB_DIST_OVERRIDE: Lazy<RwLock<Option<PathBuf>>> = Lazy::new(|| RwLock::new(None));
 static WEB_DIST_ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+pub fn configure_web_dist_root(path: Option<PathBuf>) {
+    if let Ok(mut guard) = WEB_DIST_OVERRIDE.write() {
+        *guard = path.filter(|candidate| has_web_dist(candidate));
+    }
+}
 
 pub async fn web_index() -> Response {
     serve_html("index.html")
@@ -105,8 +113,14 @@ fn sanitize_relative_path(raw: &str) -> Option<PathBuf> {
     }
 }
 
-fn resolved_web_dist_root() -> Option<&'static PathBuf> {
-    WEB_DIST_ROOT.get_or_init(resolve_web_dist_root).as_ref()
+fn resolved_web_dist_root() -> Option<PathBuf> {
+    if let Ok(guard) = WEB_DIST_OVERRIDE.read() {
+        if let Some(path) = guard.as_ref() {
+            return Some(path.clone());
+        }
+    }
+
+    WEB_DIST_ROOT.get_or_init(resolve_web_dist_root).clone()
 }
 
 fn resolve_web_dist_root() -> Option<PathBuf> {
@@ -229,5 +243,18 @@ mod tests {
         fs::write(root.join("app.css"), "ok").expect("app css");
 
         assert!(has_web_dist(root));
+    }
+
+    #[test]
+    fn configured_web_dist_root_overrides_fallback_resolution() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        fs::write(root.join("index.html"), "ok").expect("index");
+        fs::write(root.join("app.js"), "ok").expect("app js");
+        fs::write(root.join("app.css"), "ok").expect("app css");
+
+        configure_web_dist_root(Some(root.to_path_buf()));
+        assert_eq!(resolved_web_dist_root(), Some(root.to_path_buf()));
+        configure_web_dist_root(None);
     }
 }

@@ -17,6 +17,14 @@ const DEFAULT_PLUGIN_SERVER_URL: &str = "http://127.0.0.1:3000";
 pub(crate) async fn setup_providers(
     config: &rocode_config::Config,
 ) -> anyhow::Result<ProviderRegistry> {
+    let cwd = std::env::current_dir()?;
+    setup_providers_for_dir(config, &cwd).await
+}
+
+pub(crate) async fn setup_providers_for_dir(
+    config: &rocode_config::Config,
+    cwd: &Path,
+) -> anyhow::Result<ProviderRegistry> {
     // Ensure models.dev cache exists on first run so bootstrap can read it.
     // Bootstrap is synchronous and only reads the cache file.
     let models_registry = rocode_provider::ModelsRegistry::default();
@@ -34,7 +42,7 @@ pub(crate) async fn setup_providers(
         }
     }
 
-    let auth_store = load_plugin_auth_store(config).await;
+    let auth_store = load_plugin_auth_store(config, cwd).await;
 
     // Convert config providers to bootstrap format
     let bootstrap_providers = convert_config_providers(config);
@@ -189,7 +197,10 @@ fn variant_to_bootstrap(
     values
 }
 
-async fn load_plugin_auth_store(config: &rocode_config::Config) -> HashMap<String, AuthInfo> {
+async fn load_plugin_auth_store(
+    config: &rocode_config::Config,
+    cwd: &Path,
+) -> HashMap<String, AuthInfo> {
     let loader = match PluginLoader::new() {
         Ok(loader) => Arc::new(loader),
         Err(error) => {
@@ -200,13 +211,6 @@ async fn load_plugin_auth_store(config: &rocode_config::Config) -> HashMap<Strin
     init_global(loader.hook_system());
     rocode_plugin::set_global_loader(loader.clone());
 
-    let cwd = match std::env::current_dir() {
-        Ok(cwd) => cwd,
-        Err(error) => {
-            tracing::warn!(%error, "failed to get cwd for plugin loader context");
-            return HashMap::new();
-        }
-    };
     let directory = cwd.to_string_lossy().to_string();
     let server_url = std::env::var("ROCODE_SERVER_URL")
         .or_else(|_| std::env::var("OPENCODE_SERVER_URL"))
@@ -226,7 +230,7 @@ async fn load_plugin_auth_store(config: &rocode_config::Config) -> HashMap<Strin
                 return None;
             }
             let path = cfg.dylib_path()?;
-            Some((name.clone(), resolve_native_plugin_path(&cwd, path)))
+            Some((name.clone(), resolve_native_plugin_path(cwd, path)))
         })
         .collect();
 

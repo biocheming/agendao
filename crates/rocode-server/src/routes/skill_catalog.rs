@@ -19,7 +19,6 @@ use rocode_skill::{
 use rocode_types::SkillGuardReport;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -554,20 +553,12 @@ fn select_skill_views(
 }
 
 fn skill_authority(state: &Arc<ServerState>) -> SkillAuthority {
-    let base_dir = state
-        .config_store
-        .project_dir()
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("."));
+    let base_dir = state.project_root();
     SkillAuthority::new(base_dir, Some(state.config_store.clone()))
 }
 
 fn skill_governance_authority(state: &Arc<ServerState>) -> SkillGovernanceAuthority {
-    let base_dir = state
-        .config_store
-        .project_dir()
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("."));
+    let base_dir = state.project_root();
     SkillGovernanceAuthority::new(base_dir, Some(state.config_store.clone()))
 }
 
@@ -991,8 +982,34 @@ mod tests {
                 action: SkillManageAction::Create,
                 name: Some("server-skill".to_string()),
                 new_name: None,
-                description: Some("from server".to_string()),
-                body: Some("Created through server.".to_string()),
+                description: Some(
+                    "Create a workspace-local server skill through the HTTP management route."
+                        .to_string(),
+                ),
+                body: Some(
+                    [
+                        "# Server Skill",
+                        "",
+                        "## When To Use",
+                        "- Use this skill to validate the route-based skill management flow.",
+                        "",
+                        "## Core Steps",
+                        "1. Accept a valid route payload.",
+                        "2. Persist the skill inside `.rocode/skills`.",
+                        "3. Return the created metadata.",
+                        "",
+                        "## Success Criteria",
+                        "- The skill is written to the workspace catalog.",
+                        "",
+                        "## Validation",
+                        "- Confirm the route payload is accepted.",
+                        "- Confirm the created file exists on disk.",
+                        "",
+                        "## Pitfalls",
+                        "- Do not treat a rejected permission request as a successful write.",
+                    ]
+                    .join("\n"),
+                ),
                 methodology: None,
                 content: None,
                 category: Some("http".to_string()),

@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    extract::Query,
+    extract::{Query, State},
     http::header,
     response::IntoResponse,
     routing::{get, post},
@@ -132,9 +132,8 @@ pub struct DirectoryCreateResponse {
     pub path: String,
 }
 
-fn project_root() -> Result<PathBuf> {
-    std::env::current_dir()
-        .map_err(|e| ApiError::BadRequest(format!("Failed to resolve current directory: {}", e)))
+fn project_root(state: &ServerState) -> Result<PathBuf> {
+    Ok(state.project_root())
 }
 
 fn modified_millis(path: &FsPath) -> Option<i64> {
@@ -337,8 +336,11 @@ fn build_tree_node(path: &FsPath, root: &FsPath) -> Result<FileTreeNode> {
     })
 }
 
-async fn list_files(Query(query): Query<ListFilesQuery>) -> Result<Json<Vec<FileInfo>>> {
-    let default_root = project_root()?;
+async fn list_files(
+    State(state): State<Arc<ServerState>>,
+    Query(query): Query<ListFilesQuery>,
+) -> Result<Json<Vec<FileInfo>>> {
+    let default_root = project_root(state.as_ref())?;
     let root = effective_root_for_input(&query.path, &default_root)?;
     let path = resolve_existing_input_path(&query.path, &root)?;
     let mut files = Vec::new();
@@ -360,8 +362,11 @@ async fn list_files(Query(query): Query<ListFilesQuery>) -> Result<Json<Vec<File
     Ok(Json(files))
 }
 
-async fn get_file_tree(Query(query): Query<FileTreeQuery>) -> Result<Json<FileTreeNode>> {
-    let default_root = project_root()?;
+async fn get_file_tree(
+    State(state): State<Arc<ServerState>>,
+    Query(query): Query<FileTreeQuery>,
+) -> Result<Json<FileTreeNode>> {
+    let default_root = project_root(state.as_ref())?;
     if let Some(input) = query.path.as_deref() {
         let root = effective_root_for_input(input, &default_root)?;
         Ok(Json(build_tree_node(
@@ -374,8 +379,11 @@ async fn get_file_tree(Query(query): Query<FileTreeQuery>) -> Result<Json<FileTr
     }
 }
 
-async fn read_file(Query(query): Query<ListFilesQuery>) -> Result<Json<serde_json::Value>> {
-    let default_root = project_root()?;
+async fn read_file(
+    State(state): State<Arc<ServerState>>,
+    Query(query): Query<ListFilesQuery>,
+) -> Result<Json<serde_json::Value>> {
+    let default_root = project_root(state.as_ref())?;
     let root = effective_root_for_input(&query.path, &default_root)?;
     let path = resolve_existing_input_path(&query.path, &root)?;
 
@@ -391,8 +399,11 @@ async fn read_file(Query(query): Query<ListFilesQuery>) -> Result<Json<serde_jso
     }
 }
 
-async fn write_file(Json(req): Json<WriteFileRequest>) -> Result<Json<FileWriteResponse>> {
-    let default_root = project_root()?;
+async fn write_file(
+    State(state): State<Arc<ServerState>>,
+    Json(req): Json<WriteFileRequest>,
+) -> Result<Json<FileWriteResponse>> {
+    let default_root = project_root(state.as_ref())?;
     let root = effective_root_for_input(&req.path, &default_root)?;
     let path = resolve_output_path(&req.path, &root)?;
 
@@ -428,9 +439,10 @@ async fn write_file(Json(req): Json<WriteFileRequest>) -> Result<Json<FileWriteR
 }
 
 async fn create_directory(
+    State(state): State<Arc<ServerState>>,
     Json(req): Json<CreateDirectoryRequest>,
 ) -> Result<Json<DirectoryCreateResponse>> {
-    let default_root = project_root()?;
+    let default_root = project_root(state.as_ref())?;
     let root = effective_root_for_input(&req.path, &default_root)?;
     let path = resolve_output_path(&req.path, &root)?;
 
@@ -454,8 +466,11 @@ async fn create_directory(
     }))
 }
 
-async fn delete_file(Json(req): Json<DeleteFileRequest>) -> Result<Json<FileDeleteResponse>> {
-    let default_root = project_root()?;
+async fn delete_file(
+    State(state): State<Arc<ServerState>>,
+    Json(req): Json<DeleteFileRequest>,
+) -> Result<Json<FileDeleteResponse>> {
+    let default_root = project_root(state.as_ref())?;
     let root = effective_root_for_input(&req.path, &default_root)?;
     let path = resolve_existing_input_path(&req.path, &root)?;
 
@@ -482,8 +497,11 @@ async fn delete_file(Json(req): Json<DeleteFileRequest>) -> Result<Json<FileDele
     }))
 }
 
-async fn download_file(Query(query): Query<ListFilesQuery>) -> Result<impl IntoResponse> {
-    let default_root = project_root()?;
+async fn download_file(
+    State(state): State<Arc<ServerState>>,
+    Query(query): Query<ListFilesQuery>,
+) -> Result<impl IntoResponse> {
+    let default_root = project_root(state.as_ref())?;
     let root = effective_root_for_input(&query.path, &default_root)?;
     let path = resolve_existing_input_path(&query.path, &root)?;
 
@@ -565,8 +583,11 @@ fn persist_uploaded_files(
     Ok(Json(UploadFilesResponse { files: saved_files }))
 }
 
-async fn upload_files(Json(req): Json<UploadFilesRequest>) -> Result<Json<UploadFilesResponse>> {
-    let default_root = project_root()?;
+async fn upload_files(
+    State(state): State<Arc<ServerState>>,
+    Json(req): Json<UploadFilesRequest>,
+) -> Result<Json<UploadFilesResponse>> {
+    let default_root = project_root(state.as_ref())?;
     if req.files.is_empty() {
         return Err(ApiError::BadRequest(
             "No uploaded files were provided".to_string(),
@@ -583,9 +604,10 @@ async fn upload_files(Json(req): Json<UploadFilesRequest>) -> Result<Json<Upload
     }
 }
 
-async fn get_file_status() -> Result<Json<Vec<FileStatusInfo>>> {
-    let cwd = std::env::current_dir()
-        .map_err(|e| ApiError::BadRequest(format!("Failed to resolve current directory: {}", e)))?;
+async fn get_file_status(
+    State(state): State<Arc<ServerState>>,
+) -> Result<Json<Vec<FileStatusInfo>>> {
+    let cwd = state.project_root();
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(&cwd)
@@ -657,8 +679,11 @@ pub struct SearchResult {
     pub match_text: String,
 }
 
-async fn find_text(Query(query): Query<FindTextQuery>) -> Result<Json<Vec<SearchResult>>> {
-    let default_root = project_root()?;
+async fn find_text(
+    State(state): State<Arc<ServerState>>,
+    Query(query): Query<FindTextQuery>,
+) -> Result<Json<Vec<SearchResult>>> {
+    let default_root = project_root(state.as_ref())?;
     let base_input = query
         .path
         .unwrap_or_else(|| default_root.to_string_lossy().to_string());
@@ -781,8 +806,11 @@ pub struct FindFilesQuery {
     pub limit: Option<usize>,
 }
 
-async fn find_files(Query(query): Query<FindFilesQuery>) -> Result<Json<Vec<String>>> {
-    let base_path = project_root()?;
+async fn find_files(
+    State(state): State<Arc<ServerState>>,
+    Query(query): Query<FindFilesQuery>,
+) -> Result<Json<Vec<String>>> {
+    let base_path = project_root(state.as_ref())?;
     let mut results = Vec::new();
     let limit = query.limit.unwrap_or(100);
     let match_directories = query.file_type.as_deref() != Some("file");
@@ -854,7 +882,10 @@ pub struct SymbolInfo {
     pub line: usize,
 }
 
-async fn find_symbols(Query(query): Query<FindSymbolsQuery>) -> Result<Json<Vec<SymbolInfo>>> {
+async fn find_symbols(
+    State(_state): State<Arc<ServerState>>,
+    Query(query): Query<FindSymbolsQuery>,
+) -> Result<Json<Vec<SymbolInfo>>> {
     let _ = query.query.as_str();
     Ok(Json(Vec::new()))
 }

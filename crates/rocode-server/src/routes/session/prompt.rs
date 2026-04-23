@@ -938,7 +938,7 @@ pub(super) async fn session_prompt(
         let Some(session) = sessions.get(&id) else {
             return Err(ApiError::SessionNotFound(id));
         };
-        resolved_session_directory(session.record().directory.as_str())
+        resolved_session_directory(session.record().directory.as_str(), &state.project_root())
     };
     let _ = ensure_plugin_loader_active(&state).await?;
     let config = if let Some(loader) = get_plugin_loader() {
@@ -1181,7 +1181,10 @@ pub(super) async fn session_prompt(
             };
             session
         };
-        let normalized_directory = resolved_session_directory(session.record().directory.as_str());
+        let normalized_directory = resolved_session_directory(
+            session.record().directory.as_str(),
+            &task_state.project_root(),
+        );
         if session.record().directory != normalized_directory {
             session.set_directory(normalized_directory);
         }

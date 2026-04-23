@@ -278,6 +278,7 @@ pub struct AppLaunchConfig {
     pub model: Option<String>,
     pub session_id: Option<String>,
     pub initial_prompt: Option<String>,
+    pub working_dir: Option<PathBuf>,
 }
 
 impl App {
@@ -292,7 +293,9 @@ impl App {
         let mut pending_initial_submit = false;
         let mut initial_session_id: Option<String> = None;
 
-        if let Ok(dir) = std::env::current_dir() {
+        if let Some(dir) = config.working_dir.as_ref() {
+            *context.directory.write() = dir.display().to_string();
+        } else if let Ok(dir) = std::env::current_dir() {
             *context.directory.write() = dir.display().to_string();
         }
 
