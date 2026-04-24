@@ -875,7 +875,7 @@ pub struct ModelConfig {
     pub temperature: Option<bool>,
     /// Supports both `true` (boolean) and `{ "field": "reasoning_content" }` (object) forms.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub interleaved: Option<serde_json::Value>,
+    pub interleaved: Option<ModelInterleavedConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<HashMap<String, serde_json::Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -898,6 +898,13 @@ pub struct ModelConfig {
     pub experimental: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<ModelProviderConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ModelInterleavedConfig {
+    Bool(bool),
+    Field { field: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
