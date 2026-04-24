@@ -76,6 +76,202 @@ fn merges_maps_recursively_for_same_keys() {
 }
 
 #[test]
+fn provider_model_merge_preserves_and_updates_extended_model_fields() {
+    let mut base = Config {
+        provider: Some(HashMap::from([(
+            "openai".to_string(),
+            ProviderConfig {
+                models: Some(HashMap::from([(
+                    "gpt-5".to_string(),
+                    ModelConfig {
+                        reasoning: Some(true),
+                        interleaved: Some(ModelInterleavedConfig::Field {
+                            field: "reasoning_content".to_string(),
+                        }),
+                        options: Some(HashMap::from([
+                            (
+                                "reasoning".to_string(),
+                                serde_json::json!({"effort": "medium"}),
+                            ),
+                            ("verbosity".to_string(), serde_json::json!("low")),
+                        ])),
+                        cost: Some(ModelCostConfig {
+                            input: Some(1.0),
+                            context_over_200k: Some(Box::new(ModelCostConfig {
+                                output: Some(9.0),
+                                ..Default::default()
+                            })),
+                            ..Default::default()
+                        }),
+                        limit: Some(ModelLimitConfig {
+                            context: Some(128_000),
+                            ..Default::default()
+                        }),
+                        headers: Some(HashMap::from([("x-base".to_string(), "keep".to_string())])),
+                        provider: Some(ModelProviderConfig {
+                            api: Some("https://base.example".to_string()),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                )])),
+                ..Default::default()
+            },
+        )])),
+        ..Default::default()
+    };
+
+    let overlay = Config {
+        provider: Some(HashMap::from([(
+            "openai".to_string(),
+            ProviderConfig {
+                models: Some(HashMap::from([(
+                    "gpt-5".to_string(),
+                    ModelConfig {
+                        attachment: Some(true),
+                        modalities: Some(ModelModalities {
+                            output: Some(vec!["text".to_string(), "audio".to_string()]),
+                            ..Default::default()
+                        }),
+                        options: Some(HashMap::from([
+                            (
+                                "reasoning".to_string(),
+                                serde_json::json!({"summary": "auto"}),
+                            ),
+                            ("parallel_tool_calls".to_string(), serde_json::json!(true)),
+                        ])),
+                        cost: Some(ModelCostConfig {
+                            cache_write: Some(3.0),
+                            context_over_200k: Some(Box::new(ModelCostConfig {
+                                input: Some(7.0),
+                                ..Default::default()
+                            })),
+                            ..Default::default()
+                        }),
+                        limit: Some(ModelLimitConfig {
+                            output: Some(8_192),
+                            ..Default::default()
+                        }),
+                        headers: Some(HashMap::from([
+                            ("x-overlay".to_string(), "set".to_string()),
+                            ("x-base".to_string(), "override".to_string()),
+                        ])),
+                        provider: Some(ModelProviderConfig {
+                            npm: Some("@ai-sdk/openai".to_string()),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                )])),
+                ..Default::default()
+            },
+        )])),
+        ..Default::default()
+    };
+
+    base.merge(overlay);
+
+    let provider = base.provider.unwrap().remove("openai").unwrap();
+    let model = provider.models.unwrap().remove("gpt-5").unwrap();
+    assert_eq!(model.reasoning, Some(true));
+    assert_eq!(model.attachment, Some(true));
+    assert!(matches!(
+        model.interleaved,
+        Some(ModelInterleavedConfig::Field { ref field }) if field == "reasoning_content"
+    ));
+    assert_eq!(
+        model
+            .modalities
+            .as_ref()
+            .and_then(|modalities| modalities.output.as_ref())
+            .cloned(),
+        Some(vec!["text".to_string(), "audio".to_string()])
+    );
+
+    let options = model.options.as_ref().expect("model options");
+    assert_eq!(
+        options.get("reasoning"),
+        Some(&serde_json::json!({"effort": "medium", "summary": "auto"}))
+    );
+    assert_eq!(options.get("verbosity"), Some(&serde_json::json!("low")));
+    assert_eq!(
+        options.get("parallel_tool_calls"),
+        Some(&serde_json::json!(true))
+    );
+
+    let cost = model.cost.as_ref().expect("model cost");
+    assert_eq!(cost.input, Some(1.0));
+    assert_eq!(cost.cache_write, Some(3.0));
+    let over_200k = cost.context_over_200k.as_ref().expect("nested cost");
+    assert_eq!(over_200k.input, Some(7.0));
+    assert_eq!(over_200k.output, Some(9.0));
+
+    let limit = model.limit.as_ref().expect("model limit");
+    assert_eq!(limit.context, Some(128_000));
+    assert_eq!(limit.output, Some(8_192));
+
+    let headers = model.headers.as_ref().expect("headers");
+    assert_eq!(headers.get("x-base").map(String::as_str), Some("override"));
+    assert_eq!(headers.get("x-overlay").map(String::as_str), Some("set"));
+
+    let provider_cfg = model.provider.as_ref().expect("provider override");
+    assert_eq!(provider_cfg.api.as_deref(), Some("https://base.example"));
+    assert_eq!(provider_cfg.npm.as_deref(), Some("@ai-sdk/openai"));
+}
+
+#[test]
+fn provider_merge_replaces_identity_and_env_while_preserving_existing_models() {
+    let mut base = Config {
+        provider: Some(HashMap::from([(
+            "custom".to_string(),
+            ProviderConfig {
+                id: Some("provider-old".to_string()),
+                env: Some(vec!["OLD_TOKEN".to_string()]),
+                models: Some(HashMap::from([(
+                    "baseline".to_string(),
+                    ModelConfig {
+                        model: Some("baseline-model".to_string()),
+                        ..Default::default()
+                    },
+                )])),
+                ..Default::default()
+            },
+        )])),
+        ..Default::default()
+    };
+
+    base.merge(Config {
+        provider: Some(HashMap::from([(
+            "custom".to_string(),
+            ProviderConfig {
+                id: Some("provider-new".to_string()),
+                env: Some(vec!["NEW_TOKEN".to_string(), "FALLBACK_TOKEN".to_string()]),
+                models: Some(HashMap::from([(
+                    "advanced".to_string(),
+                    ModelConfig {
+                        model: Some("advanced-model".to_string()),
+                        ..Default::default()
+                    },
+                )])),
+                ..Default::default()
+            },
+        )])),
+        ..Default::default()
+    });
+
+    let provider = base.provider.unwrap().remove("custom").unwrap();
+    assert_eq!(provider.id.as_deref(), Some("provider-new"));
+    assert_eq!(
+        provider.env,
+        Some(vec!["NEW_TOKEN".to_string(), "FALLBACK_TOKEN".to_string()])
+    );
+
+    let models = provider.models.expect("merged models");
+    assert!(models.contains_key("baseline"));
+    assert!(models.contains_key("advanced"));
+}
+
+#[test]
 fn docs_config_merge_replaces_registry_path() {
     let mut base = Config {
         docs: Some(DocsConfig {
@@ -293,6 +489,122 @@ fn mcp_enabled_flag_overlay_keeps_existing_full_server_fields() {
             );
             assert_eq!(server.timeout, Some(3000));
             assert_eq!(server.enabled, Some(false));
+        }
+        McpServerConfig::Enabled { .. } => panic!("expected full MCP server config"),
+    }
+}
+
+#[test]
+fn mcp_full_server_merge_overwrites_maps_and_preserves_unspecified_fields() {
+    let mut base = Config {
+        mcp: Some(HashMap::from([(
+            "repo".to_string(),
+            McpServerConfig::Full(Box::new(McpServer {
+                server_type: Some("local".to_string()),
+                command: vec!["node".to_string(), "server.js".to_string()],
+                environment: Some(HashMap::from([("A".to_string(), "1".to_string())])),
+                enabled: Some(true),
+                timeout: Some(3000),
+                headers: Some(HashMap::from([("x-base".to_string(), "keep".to_string())])),
+                args: vec!["--stdio".to_string()],
+                env: Some(HashMap::from([("LEGACY".to_string(), "base".to_string())])),
+                client_id: Some("base-client".to_string()),
+                ..Default::default()
+            })),
+        )])),
+        ..Default::default()
+    };
+
+    base.merge(Config {
+        mcp: Some(HashMap::from([(
+            "repo".to_string(),
+            McpServerConfig::Full(Box::new(McpServer {
+                url: Some("https://mcp.example".to_string()),
+                timeout: Some(5000),
+                environment: Some(HashMap::from([
+                    ("A".to_string(), "2".to_string()),
+                    ("B".to_string(), "3".to_string()),
+                ])),
+                headers: Some(HashMap::from([
+                    ("x-base".to_string(), "override".to_string()),
+                    ("x-extra".to_string(), "set".to_string()),
+                ])),
+                env: Some(HashMap::from([(
+                    "LEGACY_2".to_string(),
+                    "overlay".to_string(),
+                )])),
+                authorization_url: Some("https://auth.example".to_string()),
+                ..Default::default()
+            })),
+        )])),
+        ..Default::default()
+    });
+
+    let server = base.mcp.unwrap().remove("repo").unwrap();
+    match server {
+        McpServerConfig::Full(server) => {
+            assert_eq!(server.server_type.as_deref(), Some("local"));
+            assert_eq!(
+                server.command,
+                vec!["node".to_string(), "server.js".to_string()]
+            );
+            assert_eq!(server.url.as_deref(), Some("https://mcp.example"));
+            assert_eq!(server.timeout, Some(5000));
+            assert_eq!(server.enabled, Some(true));
+            assert_eq!(server.args, vec!["--stdio".to_string()]);
+            assert_eq!(server.client_id.as_deref(), Some("base-client"));
+            assert_eq!(
+                server
+                    .environment
+                    .as_ref()
+                    .and_then(|env| env.get("A"))
+                    .map(String::as_str),
+                Some("2")
+            );
+            assert_eq!(
+                server
+                    .environment
+                    .as_ref()
+                    .and_then(|env| env.get("B"))
+                    .map(String::as_str),
+                Some("3")
+            );
+            assert_eq!(
+                server
+                    .headers
+                    .as_ref()
+                    .and_then(|headers| headers.get("x-base"))
+                    .map(String::as_str),
+                Some("override")
+            );
+            assert_eq!(
+                server
+                    .headers
+                    .as_ref()
+                    .and_then(|headers| headers.get("x-extra"))
+                    .map(String::as_str),
+                Some("set")
+            );
+            assert_eq!(
+                server
+                    .env
+                    .as_ref()
+                    .and_then(|env| env.get("LEGACY"))
+                    .map(String::as_str),
+                Some("base")
+            );
+            assert_eq!(
+                server
+                    .env
+                    .as_ref()
+                    .and_then(|env| env.get("LEGACY_2"))
+                    .map(String::as_str),
+                Some("overlay")
+            );
+            assert_eq!(
+                server.authorization_url.as_deref(),
+                Some("https://auth.example")
+            );
         }
         McpServerConfig::Enabled { .. } => panic!("expected full MCP server config"),
     }
@@ -551,6 +863,157 @@ fn web_search_merge_deep_merges_all_fields() {
 }
 
 #[test]
+fn formatter_config_merge_deep_merges_entries_and_overwrites_env_by_key() {
+    let mut base = Config {
+        formatter: Some(FormatterConfig::Enabled(HashMap::from([(
+            "rust".to_string(),
+            FormatterEntry {
+                disabled: Some(false),
+                command: vec!["rustfmt".to_string()],
+                environment: Some(HashMap::from([("A".to_string(), "1".to_string())])),
+                extensions: vec!["rs".to_string()],
+            },
+        )]))),
+        ..Default::default()
+    };
+
+    base.merge(Config {
+        formatter: Some(FormatterConfig::Enabled(HashMap::from([
+            (
+                "rust".to_string(),
+                FormatterEntry {
+                    disabled: Some(true),
+                    command: Vec::new(),
+                    environment: Some(HashMap::from([
+                        ("A".to_string(), "2".to_string()),
+                        ("B".to_string(), "3".to_string()),
+                    ])),
+                    extensions: vec!["rs".to_string(), "rs.in".to_string()],
+                },
+            ),
+            (
+                "markdown".to_string(),
+                FormatterEntry {
+                    command: vec!["prettier".to_string()],
+                    extensions: vec!["md".to_string()],
+                    ..Default::default()
+                },
+            ),
+        ]))),
+        ..Default::default()
+    });
+
+    let formatter = match base.formatter.expect("formatter config should exist") {
+        FormatterConfig::Enabled(entries) => entries,
+        FormatterConfig::Disabled(_) => panic!("expected enabled formatter config"),
+    };
+
+    let rust = formatter.get("rust").expect("rust formatter should exist");
+    assert_eq!(rust.disabled, Some(true));
+    assert_eq!(rust.command, vec!["rustfmt".to_string()]);
+    assert_eq!(
+        rust.environment
+            .as_ref()
+            .and_then(|env| env.get("A"))
+            .map(String::as_str),
+        Some("2")
+    );
+    assert_eq!(
+        rust.environment
+            .as_ref()
+            .and_then(|env| env.get("B"))
+            .map(String::as_str),
+        Some("3")
+    );
+    assert_eq!(rust.extensions, vec!["rs".to_string(), "rs.in".to_string()]);
+
+    let markdown = formatter
+        .get("markdown")
+        .expect("markdown formatter should exist");
+    assert_eq!(markdown.command, vec!["prettier".to_string()]);
+    assert_eq!(markdown.extensions, vec!["md".to_string()]);
+}
+
+#[test]
+fn lsp_config_merge_deep_merges_server_fields_and_initialization_json() {
+    let mut base = Config {
+        lsp: Some(LspConfig::Enabled(HashMap::from([(
+            "rust-analyzer".to_string(),
+            LspServerConfig {
+                command: vec!["rust-analyzer".to_string()],
+                extensions: vec!["rs".to_string()],
+                env: Some(HashMap::from([(
+                    "RUSTUP_TOOLCHAIN".to_string(),
+                    "stable".to_string(),
+                )])),
+                initialization: Some(HashMap::from([
+                    ("top".to_string(), serde_json::json!("keep")),
+                    ("caps".to_string(), serde_json::json!({ "a": 1 })),
+                ])),
+                ..Default::default()
+            },
+        )]))),
+        ..Default::default()
+    };
+
+    base.merge(Config {
+        lsp: Some(LspConfig::Enabled(HashMap::from([(
+            "rust-analyzer".to_string(),
+            LspServerConfig {
+                command: Vec::new(),
+                extensions: vec!["rs".to_string(), "ron".to_string()],
+                disabled: Some(true),
+                env: Some(HashMap::from([
+                    ("RUSTUP_TOOLCHAIN".to_string(), "nightly".to_string()),
+                    ("PROC_MACRO".to_string(), "1".to_string()),
+                ])),
+                initialization: Some(HashMap::from([
+                    ("caps".to_string(), serde_json::json!({ "b": 2 })),
+                    ("extra".to_string(), serde_json::json!(true)),
+                ])),
+            },
+        )]))),
+        ..Default::default()
+    });
+
+    let lsp = match base.lsp.expect("lsp config should exist") {
+        LspConfig::Enabled(entries) => entries,
+        LspConfig::Disabled(_) => panic!("expected enabled lsp config"),
+    };
+
+    let rust = lsp
+        .get("rust-analyzer")
+        .expect("rust-analyzer config should exist");
+    assert_eq!(rust.command, vec!["rust-analyzer".to_string()]);
+    assert_eq!(rust.extensions, vec!["rs".to_string(), "ron".to_string()]);
+    assert_eq!(rust.disabled, Some(true));
+    assert_eq!(
+        rust.env
+            .as_ref()
+            .and_then(|env| env.get("RUSTUP_TOOLCHAIN"))
+            .map(String::as_str),
+        Some("nightly")
+    );
+    assert_eq!(
+        rust.env
+            .as_ref()
+            .and_then(|env| env.get("PROC_MACRO"))
+            .map(String::as_str),
+        Some("1")
+    );
+    let init = rust
+        .initialization
+        .as_ref()
+        .expect("initialization should exist");
+    assert_eq!(init.get("top"), Some(&serde_json::json!("keep")));
+    assert_eq!(init.get("extra"), Some(&serde_json::json!(true)));
+    assert_eq!(
+        init.get("caps"),
+        Some(&serde_json::json!({ "a": 1, "b": 2 }))
+    );
+}
+
+#[test]
 fn voice_config_deserializes_from_camel_and_snake_case() {
     let camel: Config = serde_json::from_value(serde_json::json!({
         "voice": {
@@ -757,4 +1220,38 @@ fn multimodal_config_merge_deep_merges_limits_policy_and_voice() {
     assert_eq!(policy.allow_audio_input, Some(true));
     assert_eq!(policy.allow_image_input, Some(true));
     assert_eq!(policy.allow_file_input, Some(true));
+}
+
+#[test]
+fn experimental_config_merge_replaces_scalar_flags_and_primary_tools() {
+    let mut base = Config {
+        experimental: Some(ExperimentalConfig {
+            disable_paste_summary: Some(true),
+            open_telemetry: Some(false),
+            primary_tools: vec!["read".to_string(), "edit".to_string()],
+            mcp_timeout: Some(1000),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    base.merge(Config {
+        experimental: Some(ExperimentalConfig {
+            batch_tool: Some(true),
+            primary_tools: vec!["bash".to_string()],
+            continue_loop_on_deny: Some(false),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+
+    let experimental = base
+        .experimental
+        .expect("experimental config should exist after merge");
+    assert_eq!(experimental.disable_paste_summary, Some(true));
+    assert_eq!(experimental.open_telemetry, Some(false));
+    assert_eq!(experimental.batch_tool, Some(true));
+    assert_eq!(experimental.continue_loop_on_deny, Some(false));
+    assert_eq!(experimental.mcp_timeout, Some(1000));
+    assert_eq!(experimental.primary_tools, vec!["bash".to_string()]);
 }
