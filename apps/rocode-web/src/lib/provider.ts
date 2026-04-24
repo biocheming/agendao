@@ -94,8 +94,30 @@ export interface ManagedProviderInfoRecord {
   env?: string[];
   base_url?: string | null;
   protocol?: string | null;
-  model_overrides?: Array<{ key: string }>;
+  model_overrides?: ManagedModelOverrideInfoRecord[];
   models?: ProviderModelRecord[];
+}
+
+export interface ManagedModelOverrideInfoRecord {
+  key: string;
+  name?: string | null;
+  model?: string | null;
+  base_url?: string | null;
+  family?: string | null;
+  reasoning?: boolean | null;
+  tool_call?: boolean | null;
+  headers?: Record<string, string> | null;
+  options?: Record<string, unknown> | null;
+  variants?: Record<string, unknown> | null;
+  modalities?: Record<string, unknown> | null;
+  interleaved?: unknown;
+  cost?: Record<string, unknown> | null;
+  limit?: Record<string, unknown> | null;
+  attachment?: boolean | null;
+  temperature?: boolean | null;
+  status?: string | null;
+  release_date?: string | null;
+  experimental?: boolean | null;
 }
 
 export interface ManagedProviderListResponseRecord {

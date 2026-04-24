@@ -1,3 +1,4 @@
+use rocode_config::{Config as AppConfig, ModelConfig};
 use rocode_runtime_context::ResolvedWorkspaceContext;
 
 use crate::common::{
@@ -333,6 +334,12 @@ impl AsyncApiClient {
         Self::json_ok(resp, "get workspace context").await
     }
 
+    pub async fn get_config(&self) -> anyhow::Result<AppConfig> {
+        let url = server_url(&self.base_url, "/config");
+        let resp = self.client.get(&url).send().await?;
+        Self::json_ok(resp, "get config").await
+    }
+
     pub async fn preflight_multimodal(
         &self,
         request: &MultimodalPreflightRequest,
@@ -376,6 +383,49 @@ impl AsyncApiClient {
         let url = server_url(&self.base_url, "/provider/refresh");
         let resp = self.client.post(&url).send().await?;
         Self::json_ok(resp, "refresh provider catalogue").await
+    }
+
+    pub async fn put_provider_model_config(
+        &self,
+        provider_id: &str,
+        model_key: &str,
+        model: &ModelConfig,
+    ) -> anyhow::Result<AppConfig> {
+        let url = server_url(
+            &self.base_url,
+            &format!(
+                "/config/provider/{}/models/{}",
+                urlencoding::encode(provider_id),
+                urlencoding::encode(model_key)
+            ),
+        );
+        let resp = self.client.put(&url).json(model).send().await?;
+        Self::json_ok(
+            resp,
+            &format!("put provider model config `{provider_id}/{model_key}`"),
+        )
+        .await
+    }
+
+    pub async fn delete_provider_model_config(
+        &self,
+        provider_id: &str,
+        model_key: &str,
+    ) -> anyhow::Result<AppConfig> {
+        let url = server_url(
+            &self.base_url,
+            &format!(
+                "/config/provider/{}/models/{}",
+                urlencoding::encode(provider_id),
+                urlencoding::encode(model_key)
+            ),
+        );
+        let resp = self.client.delete(&url).send().await?;
+        Self::json_ok(
+            resp,
+            &format!("delete provider model config `{provider_id}/{model_key}`"),
+        )
+        .await
     }
 
     pub async fn set_auth(&self, provider_id: &str, api_key: &str) -> anyhow::Result<()> {

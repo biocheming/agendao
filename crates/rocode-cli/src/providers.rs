@@ -388,6 +388,18 @@ pub(crate) fn render_help(style: &CliStyle) -> String {
         fmt("/models", "List all available models"),
         fmt("/models refresh", "Refresh the shared model catalogue"),
         fmt("/model <id>", "Switch to a specific model"),
+        fmt(
+            "/model add <provider>/<key> key=value...",
+            "Add a provider-scoped model override",
+        ),
+        fmt(
+            "/model edit <provider>/<key> key=value...",
+            "Edit a configured model override",
+        ),
+        fmt(
+            "/model delete <provider>/<key>",
+            "Delete a configured model override",
+        ),
         fmt("/agents", "List available agents"),
         fmt("/agent <name>", "Switch to a specific agent"),
         fmt("/presets", "List available scheduler presets"),

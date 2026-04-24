@@ -7,6 +7,7 @@ use ratatui::{
         ScrollbarState, Wrap,
     },
 };
+use rocode_config::ModelConfig;
 use std::collections::HashSet;
 
 use crate::api::{
@@ -73,19 +74,110 @@ pub enum PendingSubmit {
         protocol: String,
         api_key: String,
     },
+    ModelOverride {
+        provider_id: String,
+        model_key: String,
+        model: ModelConfig,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProviderConnectMode {
     Known,
     Custom,
+    Models,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProviderModelOverride {
+    pub provider_id: String,
+    pub model_key: String,
+    pub config: ModelConfig,
+}
+
+#[derive(Clone, Debug)]
+pub enum ModelOverrideStep {
+    ProviderId,
+    ModelKey,
+    ModelId,
+    Name,
+    BaseUrl,
+    Family,
+    Flags,
+    Status,
+    ReleaseDate,
+}
+
+#[derive(Clone, Debug)]
+pub struct ModelOverrideState {
+    pub provider_id: String,
+    pub model_key: String,
+    pub model_id: String,
+    pub name: String,
+    pub base_url: String,
+    pub family: String,
+    pub flags: String,
+    pub status: String,
+    pub release_date: String,
+    pub step: ModelOverrideStep,
+}
+
+impl ModelOverrideState {
+    fn new() -> Self {
+        Self {
+            provider_id: String::new(),
+            model_key: String::new(),
+            model_id: String::new(),
+            name: String::new(),
+            base_url: String::new(),
+            family: String::new(),
+            flags: String::new(),
+            status: String::new(),
+            release_date: String::new(),
+            step: ModelOverrideStep::ProviderId,
+        }
+    }
+
+    fn from_override(item: &ProviderModelOverride) -> Self {
+        let mut flags = Vec::new();
+        if item.config.reasoning.unwrap_or(false) {
+            flags.push("reasoning");
+        }
+        if item.config.tool_call.unwrap_or(false) {
+            flags.push("tool_call");
+        }
+        if item.config.attachment.unwrap_or(false) {
+            flags.push("attachment");
+        }
+        if item.config.temperature.unwrap_or(false) {
+            flags.push("temperature");
+        }
+        if item.config.experimental.unwrap_or(false) {
+            flags.push("experimental");
+        }
+
+        Self {
+            provider_id: item.provider_id.clone(),
+            model_key: item.model_key.clone(),
+            model_id: item.config.model.clone().unwrap_or_default(),
+            name: item.config.name.clone().unwrap_or_default(),
+            base_url: item.config.base_url.clone().unwrap_or_default(),
+            family: item.config.family.clone().unwrap_or_default(),
+            flags: flags.join(","),
+            status: item.config.status.clone().unwrap_or_default(),
+            release_date: item.config.release_date.clone().unwrap_or_default(),
+            step: ModelOverrideStep::ProviderId,
+        }
+    }
 }
 
 pub struct ProviderDialog {
     pub providers: Vec<Provider>,
+    pub model_overrides: Vec<ProviderModelOverride>,
     pub resolved_matches: Vec<Provider>,
     pub protocol_options: Vec<ConnectProtocolOption>,
     pub state: ListState,
+    pub model_state: ListState,
     pub open: bool,
     pub selected_provider: Option<Provider>,
     pub api_key_input: String,
@@ -95,6 +187,7 @@ pub struct ProviderDialog {
     /// Set when the user selects "Add custom provider..." from the list.
     /// Contains the accumulated input values and current step.
     pub custom_state: Option<CustomProviderState>,
+    pub model_override_state: Option<ModelOverrideState>,
     /// Index into the fixed protocol list during Protocol step.
     pub protocol_index: usize,
     pub connect_mode: ProviderConnectMode,
@@ -106,15 +199,18 @@ impl ProviderDialog {
     pub fn new() -> Self {
         Self {
             providers: Vec::new(),
+            model_overrides: Vec::new(),
             resolved_matches: Vec::new(),
             protocol_options: Vec::new(),
             state: ListState::default(),
+            model_state: ListState::default(),
             open: false,
             selected_provider: None,
             api_key_input: String::new(),
             input_mode: false,
             submit_result: None,
             custom_state: None,
+            model_override_state: None,
             protocol_index: 0,
             connect_mode: ProviderConnectMode::Known,
             search_query: String::new(),
@@ -181,6 +277,7 @@ impl ProviderDialog {
         self.api_key_input.clear();
         self.selected_provider = None;
         self.custom_state = None;
+        self.model_override_state = None;
         self.protocol_index = 0;
         self.submit_result = None;
         self.connect_mode = ProviderConnectMode::Known;
@@ -188,6 +285,8 @@ impl ProviderDialog {
         self.clear_resolution();
         self.state
             .select((!self.visible_providers().is_empty()).then_some(0));
+        self.model_state
+            .select((!self.model_overrides.is_empty()).then_some(0));
     }
 
     pub fn close(&mut self) {
@@ -196,6 +295,7 @@ impl ProviderDialog {
         self.api_key_input.clear();
         self.selected_provider = None;
         self.custom_state = None;
+        self.model_override_state = None;
         self.protocol_index = 0;
         self.submit_result = None;
         self.connect_mode = ProviderConnectMode::Known;
@@ -212,7 +312,9 @@ impl ProviderDialog {
     }
 
     pub fn accepts_text_input(&self) -> bool {
-        self.input_mode || (self.custom_state.is_some() && !self.is_protocol_step())
+        self.input_mode
+            || (self.custom_state.is_some() && !self.is_protocol_step())
+            || self.model_override_state.is_some()
     }
 
     pub fn set_providers(&mut self, providers: Vec<Provider>) {
@@ -225,6 +327,19 @@ impl ProviderDialog {
         } else if let Some(selected) = self.state.selected() {
             self.state
                 .select(Some(selected.min(visible_len.saturating_sub(1))));
+        }
+    }
+
+    pub fn set_model_overrides(&mut self, overrides: Vec<ProviderModelOverride>) {
+        self.model_overrides = overrides;
+        if self.model_overrides.is_empty() {
+            self.model_state.select(None);
+        } else if self.model_state.selected().is_none() {
+            self.model_state.select(Some(0));
+        } else if let Some(selected) = self.model_state.selected() {
+            self.model_state.select(Some(
+                selected.min(self.model_overrides.len().saturating_sub(1)),
+            ));
         }
     }
 
@@ -251,23 +366,38 @@ impl ProviderDialog {
     }
 
     pub fn move_up(&mut self) {
-        if self.connect_mode != ProviderConnectMode::Known {
-            return;
-        }
-        if let Some(selected) = self.state.selected() {
-            let new = selected.saturating_sub(1);
-            self.state.select(Some(new));
+        match self.connect_mode {
+            ProviderConnectMode::Known => {
+                if let Some(selected) = self.state.selected() {
+                    let new = selected.saturating_sub(1);
+                    self.state.select(Some(new));
+                }
+            }
+            ProviderConnectMode::Models => {
+                if let Some(selected) = self.model_state.selected() {
+                    self.model_state.select(Some(selected.saturating_sub(1)));
+                }
+            }
+            ProviderConnectMode::Custom => {}
         }
     }
 
     pub fn move_down(&mut self) {
-        if self.connect_mode != ProviderConnectMode::Known {
-            return;
-        }
-        if let Some(selected) = self.state.selected() {
-            let max = self.visible_providers().len().saturating_sub(1);
-            let new = (selected + 1).min(max);
-            self.state.select(Some(new));
+        match self.connect_mode {
+            ProviderConnectMode::Known => {
+                if let Some(selected) = self.state.selected() {
+                    let max = self.visible_providers().len().saturating_sub(1);
+                    let new = (selected + 1).min(max);
+                    self.state.select(Some(new));
+                }
+            }
+            ProviderConnectMode::Models => {
+                if let Some(selected) = self.model_state.selected() {
+                    let max = self.model_overrides.len().saturating_sub(1);
+                    self.model_state.select(Some((selected + 1).min(max)));
+                }
+            }
+            ProviderConnectMode::Custom => {}
         }
     }
 
@@ -280,6 +410,10 @@ impl ProviderDialog {
 
     /// Enter input mode for the currently highlighted provider.
     pub fn enter_input_mode(&mut self) {
+        if self.connect_mode == ProviderConnectMode::Models {
+            self.start_model_override_flow();
+            return;
+        }
         if self.connect_mode == ProviderConnectMode::Custom {
             self.start_custom_flow();
             return;
@@ -314,7 +448,8 @@ impl ProviderDialog {
     pub fn toggle_mode_next(&mut self) {
         match self.connect_mode {
             ProviderConnectMode::Known => self.set_mode(ProviderConnectMode::Custom),
-            ProviderConnectMode::Custom => self.set_mode(ProviderConnectMode::Known),
+            ProviderConnectMode::Custom => self.set_mode(ProviderConnectMode::Models),
+            ProviderConnectMode::Models => self.set_mode(ProviderConnectMode::Known),
         }
     }
 
@@ -328,13 +463,102 @@ impl ProviderDialog {
         }
         self.connect_mode = mode;
         self.submit_result = None;
+        self.custom_state = None;
+        self.model_override_state = None;
+        self.input_mode = false;
         if self.connect_mode == ProviderConnectMode::Known {
             self.sync_selection_to_visible();
+        } else if self.connect_mode == ProviderConnectMode::Models
+            && !self.model_overrides.is_empty()
+        {
+            self.model_state
+                .select(self.model_state.selected().or(Some(0)));
         }
     }
 
     fn start_custom_flow(&mut self) {
         self.start_custom_flow_with_prefill(String::new(), String::new(), String::new());
+    }
+
+    fn start_model_override_flow(&mut self) {
+        let default_provider = self
+            .selected_provider()
+            .map(|provider| provider.id)
+            .or_else(|| {
+                self.model_overrides
+                    .first()
+                    .map(|item| item.provider_id.clone())
+            })
+            .unwrap_or_default();
+        let mut state = ModelOverrideState::new();
+        state.provider_id = default_provider;
+        self.model_override_state = Some(state);
+        self.submit_result = None;
+    }
+
+    pub fn start_model_override_edit(&mut self) {
+        let Some(item) = self.selected_model_override() else {
+            return;
+        };
+        self.model_override_state = Some(ModelOverrideState::from_override(&item));
+        self.submit_result = None;
+    }
+
+    pub fn exit_model_override_flow(&mut self) {
+        self.model_override_state = None;
+        self.submit_result = None;
+    }
+
+    pub fn selected_model_override(&self) -> Option<ProviderModelOverride> {
+        self.model_state
+            .selected()
+            .and_then(|index| self.model_overrides.get(index))
+            .cloned()
+    }
+
+    pub fn is_model_override_final_step(&self) -> bool {
+        matches!(
+            self.model_override_state.as_ref().map(|state| &state.step),
+            Some(ModelOverrideStep::ReleaseDate)
+        )
+    }
+
+    pub fn advance_model_override_flow(&mut self) -> bool {
+        if let Some(state) = self.model_override_state.as_mut() {
+            state.step = match state.step {
+                ModelOverrideStep::ProviderId => ModelOverrideStep::ModelKey,
+                ModelOverrideStep::ModelKey => ModelOverrideStep::ModelId,
+                ModelOverrideStep::ModelId => ModelOverrideStep::Name,
+                ModelOverrideStep::Name => ModelOverrideStep::BaseUrl,
+                ModelOverrideStep::BaseUrl => ModelOverrideStep::Family,
+                ModelOverrideStep::Family => ModelOverrideStep::Flags,
+                ModelOverrideStep::Flags => ModelOverrideStep::Status,
+                ModelOverrideStep::Status => ModelOverrideStep::ReleaseDate,
+                ModelOverrideStep::ReleaseDate => return true,
+            };
+        }
+        false
+    }
+
+    pub fn back_model_override_flow(&mut self) {
+        let next_step = match self.model_override_state.as_ref().map(|state| &state.step) {
+            Some(ModelOverrideStep::ProviderId) => {
+                self.model_override_state = None;
+                return;
+            }
+            Some(ModelOverrideStep::ModelKey) => Some(ModelOverrideStep::ProviderId),
+            Some(ModelOverrideStep::ModelId) => Some(ModelOverrideStep::ModelKey),
+            Some(ModelOverrideStep::Name) => Some(ModelOverrideStep::ModelId),
+            Some(ModelOverrideStep::BaseUrl) => Some(ModelOverrideStep::Name),
+            Some(ModelOverrideStep::Family) => Some(ModelOverrideStep::BaseUrl),
+            Some(ModelOverrideStep::Flags) => Some(ModelOverrideStep::Family),
+            Some(ModelOverrideStep::Status) => Some(ModelOverrideStep::Flags),
+            Some(ModelOverrideStep::ReleaseDate) => Some(ModelOverrideStep::Status),
+            None => None,
+        };
+        if let (Some(state), Some(next_step)) = (self.model_override_state.as_mut(), next_step) {
+            state.step = next_step;
+        }
     }
 
     pub fn start_custom_flow_with_prefill(
@@ -440,7 +664,19 @@ impl ProviderDialog {
     }
 
     pub fn push_char(&mut self, c: char) {
-        if let Some(ref mut state) = self.custom_state {
+        if let Some(ref mut state) = self.model_override_state {
+            match state.step {
+                ModelOverrideStep::ProviderId => state.provider_id.push(c),
+                ModelOverrideStep::ModelKey => state.model_key.push(c),
+                ModelOverrideStep::ModelId => state.model_id.push(c),
+                ModelOverrideStep::Name => state.name.push(c),
+                ModelOverrideStep::BaseUrl => state.base_url.push(c),
+                ModelOverrideStep::Family => state.family.push(c),
+                ModelOverrideStep::Flags => state.flags.push(c),
+                ModelOverrideStep::Status => state.status.push(c),
+                ModelOverrideStep::ReleaseDate => state.release_date.push(c),
+            }
+        } else if let Some(ref mut state) = self.custom_state {
             match state.step {
                 CustomProviderStep::ProviderId => state.provider_id.push(c),
                 CustomProviderStep::BaseUrl => state.base_url.push(c),
@@ -454,7 +690,37 @@ impl ProviderDialog {
     }
 
     pub fn pop_char(&mut self) {
-        if let Some(ref mut state) = self.custom_state {
+        if let Some(ref mut state) = self.model_override_state {
+            match state.step {
+                ModelOverrideStep::ProviderId => {
+                    state.provider_id.pop();
+                }
+                ModelOverrideStep::ModelKey => {
+                    state.model_key.pop();
+                }
+                ModelOverrideStep::ModelId => {
+                    state.model_id.pop();
+                }
+                ModelOverrideStep::Name => {
+                    state.name.pop();
+                }
+                ModelOverrideStep::BaseUrl => {
+                    state.base_url.pop();
+                }
+                ModelOverrideStep::Family => {
+                    state.family.pop();
+                }
+                ModelOverrideStep::Flags => {
+                    state.flags.pop();
+                }
+                ModelOverrideStep::Status => {
+                    state.status.pop();
+                }
+                ModelOverrideStep::ReleaseDate => {
+                    state.release_date.pop();
+                }
+            }
+        } else if let Some(ref mut state) = self.custom_state {
             match state.step {
                 CustomProviderStep::ProviderId => {
                     state.provider_id.pop();
@@ -475,7 +741,19 @@ impl ProviderDialog {
 
     /// Set the input directly (for clipboard paste).
     pub fn set_input(&mut self, text: String) {
-        if let Some(ref mut state) = self.custom_state {
+        if let Some(ref mut state) = self.model_override_state {
+            match state.step {
+                ModelOverrideStep::ProviderId => state.provider_id = text,
+                ModelOverrideStep::ModelKey => state.model_key = text,
+                ModelOverrideStep::ModelId => state.model_id = text,
+                ModelOverrideStep::Name => state.name = text,
+                ModelOverrideStep::BaseUrl => state.base_url = text,
+                ModelOverrideStep::Family => state.family = text,
+                ModelOverrideStep::Flags => state.flags = text,
+                ModelOverrideStep::Status => state.status = text,
+                ModelOverrideStep::ReleaseDate => state.release_date = text,
+            }
+        } else if let Some(ref mut state) = self.custom_state {
             match state.step {
                 CustomProviderStep::ProviderId => state.provider_id = text,
                 CustomProviderStep::BaseUrl => state.base_url = text,
@@ -546,6 +824,57 @@ impl ProviderDialog {
     /// For known providers: checks input_mode and api_key_input.
     /// For custom providers: checks custom_state is at ApiKey step with non-empty key.
     pub fn pending_submit(&self) -> Option<PendingSubmit> {
+        if let Some(state) = self.model_override_state.as_ref() {
+            if !matches!(state.step, ModelOverrideStep::ReleaseDate) {
+                return None;
+            }
+            let provider_id = state.provider_id.trim();
+            let model_key = state.model_key.trim();
+            if provider_id.is_empty() || model_key.is_empty() {
+                return None;
+            }
+
+            let mut config = ModelConfig::default();
+            if !state.model_id.trim().is_empty() {
+                config.model = Some(state.model_id.trim().to_string());
+            }
+            if !state.name.trim().is_empty() {
+                config.name = Some(state.name.trim().to_string());
+            }
+            if !state.base_url.trim().is_empty() {
+                config.base_url = Some(state.base_url.trim().to_string());
+            }
+            if !state.family.trim().is_empty() {
+                config.family = Some(state.family.trim().to_string());
+            }
+            if !state.status.trim().is_empty() {
+                config.status = Some(state.status.trim().to_string());
+            }
+            if !state.release_date.trim().is_empty() {
+                config.release_date = Some(state.release_date.trim().to_string());
+            }
+            for flag in state
+                .flags
+                .split(',')
+                .map(str::trim)
+                .filter(|flag| !flag.is_empty())
+            {
+                match flag.to_ascii_lowercase().replace('-', "_").as_str() {
+                    "reasoning" => config.reasoning = Some(true),
+                    "tool_call" | "tools" => config.tool_call = Some(true),
+                    "attachment" => config.attachment = Some(true),
+                    "temperature" => config.temperature = Some(true),
+                    "experimental" => config.experimental = Some(true),
+                    _ => {}
+                }
+            }
+            return Some(PendingSubmit::ModelOverride {
+                provider_id: provider_id.to_string(),
+                model_key: model_key.to_string(),
+                model: config,
+            });
+        }
+
         // Custom provider flow
         if let Some(ref state) = self.custom_state {
             if matches!(state.step, CustomProviderStep::ApiKey) && !state.api_key.trim().is_empty()
@@ -589,7 +918,10 @@ impl ProviderDialog {
             return;
         }
 
-        let visible_count = self.visible_providers().len().max(1) as u16;
+        let visible_count = match self.connect_mode {
+            ProviderConnectMode::Models => self.model_overrides.len().max(1),
+            _ => self.visible_providers().len().max(1),
+        } as u16;
         let height = (visible_count + 8)
             .clamp(12, 22)
             .min(area.height.saturating_sub(4));
@@ -602,7 +934,9 @@ impl ProviderDialog {
         let content_area = super::dialog_inner(block.inner(popup_area));
         surface.render_widget(Clear, popup_area);
 
-        if self.custom_state.is_some() {
+        if self.model_override_state.is_some() {
+            self.render_model_override_input_mode(surface, popup_area, content_area, block, theme);
+        } else if self.custom_state.is_some() {
             self.render_custom_input_mode(surface, popup_area, content_area, block, theme);
         } else if self.input_mode {
             self.render_input_mode(surface, popup_area, content_area, block, theme);
@@ -757,6 +1091,14 @@ impl ProviderDialog {
         } else {
             Style::default().fg(theme.text_muted)
         };
+        let models_style = if self.connect_mode == ProviderConnectMode::Models {
+            Style::default()
+                .fg(theme.primary)
+                .bg(theme.background_element)
+                .bold()
+        } else {
+            Style::default().fg(theme.text_muted)
+        };
 
         let subtitle = match self.connect_mode {
             ProviderConnectMode::Known => {
@@ -764,6 +1106,9 @@ impl ProviderDialog {
             }
             ProviderConnectMode::Custom => {
                 "Create a custom provider with provider id, base URL, protocol and API key."
+            }
+            ProviderConnectMode::Models => {
+                "Manage configured model overrides. N adds, Enter/E edits, D deletes."
             }
         };
 
@@ -773,13 +1118,21 @@ impl ProviderDialog {
                     Span::styled("Known", known_style),
                     Span::raw("  "),
                     Span::styled("Custom", custom_style),
+                    Span::raw("  "),
+                    Span::styled("Models", models_style),
                 ]),
                 Line::from(Span::styled(
                     subtitle,
                     Style::default().fg(theme.text_muted),
                 )),
                 Line::from(Span::styled(
-                    format!("Search: {}", self.search_query),
+                    match self.connect_mode {
+                        ProviderConnectMode::Known => format!("Search: {}", self.search_query),
+                        ProviderConnectMode::Custom => "Manual provider setup wizard".to_string(),
+                        ProviderConnectMode::Models => {
+                            format!("Overrides: {}", self.model_overrides.len())
+                        }
+                    },
                     Style::default().fg(theme.text),
                 )),
             ])
@@ -944,6 +1297,106 @@ impl ProviderDialog {
                     sections[1],
                 );
             }
+            ProviderConnectMode::Models => {
+                if self.model_overrides.is_empty() {
+                    surface.render_widget(
+                        Paragraph::new("No configured model overrides. Press N to add one.")
+                            .wrap(Wrap { trim: false })
+                            .style(
+                                Style::default()
+                                    .fg(theme.text_muted)
+                                    .bg(theme.background_panel),
+                            ),
+                        sections[1],
+                    );
+                } else {
+                    let selected = self.model_state.selected().unwrap_or(0);
+                    let list_area = Rect {
+                        x: sections[1].x,
+                        y: sections[1].y,
+                        width: sections[1].width.saturating_sub(1),
+                        height: sections[1].height,
+                    };
+                    let viewport = list_area.height.max(1) as usize;
+                    let scroll = if selected >= viewport {
+                        selected.saturating_sub(viewport.saturating_sub(1))
+                    } else {
+                        0
+                    };
+
+                    for (row, (index, item)) in self
+                        .model_overrides
+                        .iter()
+                        .enumerate()
+                        .skip(scroll)
+                        .take(viewport)
+                        .enumerate()
+                    {
+                        let is_selected = index == selected;
+                        let row_area = Rect {
+                            x: list_area.x,
+                            y: list_area.y + row as u16,
+                            width: list_area.width,
+                            height: 1,
+                        };
+                        let target = item
+                            .config
+                            .model
+                            .as_deref()
+                            .unwrap_or(item.model_key.as_str());
+                        let display = item.config.name.as_deref().unwrap_or(target);
+                        let line = Line::from(vec![
+                            Span::styled(
+                                format!("{}/{}", item.provider_id, item.model_key),
+                                Style::default()
+                                    .fg(if is_selected {
+                                        theme.primary
+                                    } else {
+                                        theme.text
+                                    })
+                                    .bg(if is_selected {
+                                        theme.background_element
+                                    } else {
+                                        theme.background_panel
+                                    }),
+                            ),
+                            Span::styled(
+                                format!(" -> {} ({})", target, display),
+                                Style::default().fg(theme.text_muted).bg(if is_selected {
+                                    theme.background_element
+                                } else {
+                                    theme.background_panel
+                                }),
+                            ),
+                        ]);
+                        surface.render_widget(Paragraph::new(line), row_area);
+                    }
+
+                    if self.model_overrides.len() > viewport {
+                        let scroll_area = Rect {
+                            x: list_area.x + list_area.width,
+                            y: list_area.y,
+                            width: 1,
+                            height: list_area.height,
+                        };
+                        let mut scrollbar_state = ScrollbarState::new(self.model_overrides.len())
+                            .position(scroll)
+                            .viewport_content_length(viewport);
+                        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                            .begin_symbol(None)
+                            .end_symbol(None)
+                            .track_symbol(Some("│"))
+                            .track_style(Style::default().fg(theme.border_subtle))
+                            .thumb_symbol("█")
+                            .thumb_style(Style::default().fg(theme.primary));
+                        surface.render_stateful_widget(
+                            scrollbar,
+                            scroll_area,
+                            &mut scrollbar_state,
+                        );
+                    }
+                }
+            }
         }
 
         let footer = match self.connect_mode {
@@ -978,6 +1431,16 @@ impl ProviderDialog {
                     Style::default().fg(theme.text_muted),
                 )),
             ],
+            ProviderConnectMode::Models => vec![
+                Line::from(Span::styled(
+                    format!("{} configured overrides", self.model_overrides.len()),
+                    Style::default().fg(theme.text_muted),
+                )),
+                Line::from(Span::styled(
+                    "←/→ or Tab switch mode  ↑↓ select  N add  Enter/E edit  D delete  Esc close",
+                    Style::default().fg(theme.text_muted),
+                )),
+            ],
         };
         surface.render_widget(
             Paragraph::new(footer).wrap(Wrap { trim: false }).style(
@@ -987,6 +1450,111 @@ impl ProviderDialog {
             ),
             sections[2],
         );
+    }
+
+    fn render_model_override_input_mode<S: RenderSurface>(
+        &self,
+        surface: &mut S,
+        popup_area: Rect,
+        content_area: Rect,
+        block: Block,
+        theme: &Theme,
+    ) {
+        let Some(ref state) = self.model_override_state else {
+            return;
+        };
+
+        let (step_label, step_num, total_steps, current_value) = match state.step {
+            ModelOverrideStep::ProviderId => ("Provider ID", 1, 9, state.provider_id.as_str()),
+            ModelOverrideStep::ModelKey => ("Model Key", 2, 9, state.model_key.as_str()),
+            ModelOverrideStep::ModelId => ("Upstream Model ID", 3, 9, state.model_id.as_str()),
+            ModelOverrideStep::Name => ("Display Name", 4, 9, state.name.as_str()),
+            ModelOverrideStep::BaseUrl => ("Base URL", 5, 9, state.base_url.as_str()),
+            ModelOverrideStep::Family => ("Family", 6, 9, state.family.as_str()),
+            ModelOverrideStep::Flags => ("Flags (comma-separated)", 7, 9, state.flags.as_str()),
+            ModelOverrideStep::Status => ("Status", 8, 9, state.status.as_str()),
+            ModelOverrideStep::ReleaseDate => ("Release Date", 9, 9, state.release_date.as_str()),
+        };
+
+        let mut lines = vec![
+            Line::from(Span::styled(
+                format!("Model Override (Step {}/{})", step_num, total_steps),
+                Style::default().fg(theme.primary).bold(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("{}:", step_label),
+                Style::default().fg(theme.text),
+            )),
+            Line::from(Span::styled(
+                format!("> {}█", current_value),
+                Style::default().fg(theme.primary),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!(
+                    "Provider {} / key {} / target {}",
+                    if state.provider_id.is_empty() {
+                        "--"
+                    } else {
+                        state.provider_id.as_str()
+                    },
+                    if state.model_key.is_empty() {
+                        "--"
+                    } else {
+                        state.model_key.as_str()
+                    },
+                    if state.model_id.is_empty() {
+                        "--"
+                    } else {
+                        state.model_id.as_str()
+                    }
+                ),
+                Style::default().fg(theme.text_muted),
+            )),
+            Line::from(Span::styled(
+                "Flags: reasoning, tool_call, attachment, temperature, experimental",
+                Style::default().fg(theme.text_muted),
+            )),
+        ];
+
+        if let Some(ref result) = self.submit_result {
+            lines.push(Line::from(""));
+            match result {
+                SubmitResult::Success => lines.push(Line::from(Span::styled(
+                    "✓ Model override saved.",
+                    Style::default().fg(theme.success),
+                ))),
+                SubmitResult::Failed(msg) => lines.push(Line::from(Span::styled(
+                    format!("✗ {}", msg),
+                    Style::default().fg(theme.error),
+                ))),
+            }
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("Enter", Style::default().fg(theme.text)),
+            Span::styled(
+                if step_num == total_steps {
+                    " save  "
+                } else {
+                    " next  "
+                },
+                Style::default().fg(theme.text_muted),
+            ),
+            Span::styled("Esc", Style::default().fg(theme.text)),
+            Span::styled(" back", Style::default().fg(theme.text_muted)),
+        ]));
+
+        surface.render_widget(
+            block.style(Style::default().bg(theme.background_panel)),
+            popup_area,
+        );
+        let paragraph = Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .style(Style::default().bg(theme.background_panel));
+        surface.render_widget(paragraph, content_area);
     }
 
     fn render_custom_input_mode<S: RenderSurface>(

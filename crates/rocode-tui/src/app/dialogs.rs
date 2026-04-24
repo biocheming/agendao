@@ -1439,8 +1439,41 @@ impl App {
         }
 
         if self.provider_dialog.is_open() {
-            // Check if we're in custom provider flow first
-            if self.provider_dialog.custom_state.is_some() {
+            if self.provider_dialog.model_override_state.is_some() {
+                match key.code {
+                    KeyCode::Esc => {
+                        self.provider_dialog.back_model_override_flow();
+                    }
+                    KeyCode::Backspace => {
+                        self.provider_dialog.pop_char();
+                    }
+                    KeyCode::Enter => {
+                        if self.provider_dialog.is_model_override_final_step() {
+                            if let Some(PendingSubmit::ModelOverride {
+                                provider_id,
+                                model_key,
+                                model,
+                            }) = self.provider_dialog.pending_submit()
+                            {
+                                self.submit_provider_model_override(
+                                    &provider_id,
+                                    &model_key,
+                                    &model,
+                                );
+                            }
+                        } else {
+                            self.provider_dialog.advance_model_override_flow();
+                        }
+                    }
+                    KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.paste_clipboard_to_provider_dialog();
+                    }
+                    KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.provider_dialog.push_char(c);
+                    }
+                    _ => {}
+                }
+            } else if self.provider_dialog.custom_state.is_some() {
                 // Custom provider multi-step flow
                 match key.code {
                     KeyCode::Esc => {
@@ -1533,6 +1566,8 @@ impl App {
                     KeyCode::Enter => {
                         if self.provider_dialog.connect_mode == ProviderConnectMode::Custom {
                             self.provider_dialog.enter_input_mode();
+                        } else if self.provider_dialog.connect_mode == ProviderConnectMode::Models {
+                            self.provider_dialog.start_model_override_edit();
                         } else {
                             self.quick_connect_provider_dialog_selection();
                         }
@@ -1554,6 +1589,21 @@ impl App {
                     {
                         self.provider_dialog.push_search_char(c);
                         self.resolve_provider_dialog_search();
+                    }
+                    KeyCode::Char('n')
+                        if self.provider_dialog.connect_mode == ProviderConnectMode::Models =>
+                    {
+                        self.provider_dialog.enter_input_mode();
+                    }
+                    KeyCode::Char('e')
+                        if self.provider_dialog.connect_mode == ProviderConnectMode::Models =>
+                    {
+                        self.provider_dialog.start_model_override_edit();
+                    }
+                    KeyCode::Char('d')
+                        if self.provider_dialog.connect_mode == ProviderConnectMode::Models =>
+                    {
+                        self.delete_selected_provider_model_override();
                     }
                     _ => {}
                 }
