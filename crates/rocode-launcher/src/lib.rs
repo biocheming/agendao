@@ -188,13 +188,22 @@ pub fn remember_desktop_workspace(app_name: &str, path: &Path) {
     let Some(state_dir) = desktop_state_dir(app_name) else {
         return;
     };
-    if std::fs::create_dir_all(&state_dir).is_err() {
+    if let Err(error) = std::fs::create_dir_all(&state_dir) {
+        tracing::warn!(
+            path = %state_dir.display(),
+            %error,
+            "failed to create desktop launcher state directory"
+        );
         return;
     }
-    let _ = std::fs::write(
-        state_dir.join("last-workspace.txt"),
-        path.display().to_string(),
-    );
+    let state_file = state_dir.join("last-workspace.txt");
+    if let Err(error) = std::fs::write(&state_file, path.display().to_string()) {
+        tracing::warn!(
+            path = %state_file.display(),
+            %error,
+            "failed to persist desktop launcher workspace hint"
+        );
+    }
 }
 
 pub fn resolve_desktop_workspace(app_name: &str) -> anyhow::Result<PathBuf> {

@@ -83,11 +83,15 @@ fn path_to_uri(path: &Path) -> Result<lsp_types::Uri, LspError> {
         .map_err(|e| LspError::InitializeError(format!("Invalid URI: {}", e)))
 }
 
-fn uri_to_path(uri: &lsp_types::Uri) -> PathBuf {
-    Url::parse(&uri.to_string())
-        .ok()
-        .and_then(|u| u.to_file_path().ok())
-        .unwrap_or_default()
+fn uri_to_path(uri: &lsp_types::Uri) -> Option<PathBuf> {
+    let raw = uri.to_string();
+    match Url::parse(&raw).ok().and_then(|u| u.to_file_path().ok()) {
+        Some(path) => Some(path),
+        None => {
+            tracing::warn!(uri = %raw, "failed to convert LSP URI to file path");
+            None
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -259,7 +263,9 @@ impl LspClient {
                                 lsp_types::PublishDiagnosticsParams,
                             >(params)
                             {
-                                let path = uri_to_path(&diag_params.uri);
+                                let Some(path) = uri_to_path(&diag_params.uri) else {
+                                    continue;
+                                };
 
                                 diagnostics
                                     .write()

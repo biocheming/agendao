@@ -62,10 +62,16 @@ impl WebSearchTool {
         let url = format!("{}{}", base_url, endpoint);
 
         Self {
-            client: Client::builder()
+            client: match Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
-                .unwrap(),
+            {
+                Ok(client) => client,
+                Err(error) => {
+                    tracing::warn!(%error, "failed to build configured websearch client, using reqwest default client");
+                    Client::new()
+                }
+            },
             url,
             method,
             default_search_type,

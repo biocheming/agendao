@@ -97,7 +97,7 @@ pub struct ManagedModelOverrideInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub modalities: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub interleaved: Option<serde_json::Value>,
+    pub interleaved: Option<rocode_config::ModelInterleavedConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]

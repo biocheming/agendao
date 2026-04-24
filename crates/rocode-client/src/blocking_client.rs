@@ -1043,7 +1043,9 @@ impl BlockingApiClient {
             Ok(response)
         } else {
             let status = response.status();
-            let text = response.text().unwrap_or_default();
+            let text = response
+                .text()
+                .unwrap_or_else(|error| format!("<body read failed: {}>", error));
             Err(http_error(action, status, text))
         }
     }

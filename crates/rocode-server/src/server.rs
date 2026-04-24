@@ -221,34 +221,34 @@ fn spawn_plugin_idle_monitor(loader: Arc<PluginLoader>) {
 }
 
 pub struct ServerState {
-    pub workspace_root: PathBuf,
-    pub sessions: Mutex<SessionManager>,
-    pub providers: tokio::sync::RwLock<ProviderRegistry>,
-    pub catalog_authority: Arc<ModelCatalogAuthority>,
-    pub resolved_context: tokio::sync::RwLock<ResolvedWorkspaceContext>,
-    pub config_store: Arc<rocode_config::ConfigStore>,
-    pub user_state: Arc<UserStateAuthority>,
-    pub resolved_context_authority: Arc<ResolvedWorkspaceContextAuthority>,
-    pub tool_registry: Arc<rocode_tool::ToolRegistry>,
-    pub prompt_runner: Arc<SessionPrompt>,
+    pub(crate) workspace_root: PathBuf,
+    pub(crate) sessions: Mutex<SessionManager>,
+    pub(crate) providers: tokio::sync::RwLock<ProviderRegistry>,
+    pub(crate) catalog_authority: Arc<ModelCatalogAuthority>,
+    pub(crate) resolved_context: tokio::sync::RwLock<ResolvedWorkspaceContext>,
+    pub(crate) config_store: Arc<rocode_config::ConfigStore>,
+    pub(crate) user_state: Arc<UserStateAuthority>,
+    pub(crate) resolved_context_authority: Arc<ResolvedWorkspaceContextAuthority>,
+    pub(crate) tool_registry: Arc<rocode_tool::ToolRegistry>,
+    pub(crate) prompt_runner: Arc<SessionPrompt>,
     pub(crate) runtime_memory: Arc<RuntimeMemoryAuthority>,
     pub(crate) runtime_telemetry: Arc<RuntimeTelemetryAuthority>,
     // Legacy compatibility fields. Phase 1 keeps them so existing write paths
     // can keep compiling while read paths start going through the authority.
     pub(crate) runtime_control: Arc<RuntimeControlRegistry>,
-    pub auth_manager: Arc<AuthManager>,
-    pub event_bus: broadcast::Sender<String>,
-    pub api_perf: Arc<ApiPerfCounters>,
+    pub(crate) auth_manager: Arc<AuthManager>,
+    pub(crate) event_bus: broadcast::Sender<String>,
+    pub(crate) api_perf: Arc<ApiPerfCounters>,
     pub(crate) session_repo: Option<SessionRepository>,
     pub(crate) message_repo: Option<MessageRepository>,
-    pub category_registry: Arc<rocode_config::CategoryRegistry>,
+    pub(crate) category_registry: Arc<rocode_config::CategoryRegistry>,
     pub(crate) todo_manager: rocode_session::TodoManager,
 }
 
 pub struct ApiPerfCounters {
-    pub list_messages_calls: AtomicU64,
-    pub list_messages_incremental_calls: AtomicU64,
-    pub list_messages_full_calls: AtomicU64,
+    pub(crate) list_messages_calls: AtomicU64,
+    pub(crate) list_messages_incremental_calls: AtomicU64,
+    pub(crate) list_messages_full_calls: AtomicU64,
 }
 
 impl ApiPerfCounters {
@@ -458,7 +458,9 @@ impl ServerState {
     }
 
     pub fn broadcast(&self, event: &str) {
-        let _ = self.event_bus.send(event.to_string());
+        if let Err(error) = self.event_bus.send(event.to_string()) {
+            tracing::warn!(%error, "failed to broadcast server event");
+        }
     }
 
     /// Rebuild the provider registry from the stored bootstrap config,

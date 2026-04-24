@@ -738,7 +738,9 @@ impl RuntimeTelemetryAuthority {
 
     fn broadcast_server_event_payload(event_bus: &broadcast::Sender<String>, event: &ServerEvent) {
         if let Some(payload) = event.to_json_string() {
-            let _ = event_bus.send(payload);
+            if let Err(error) = event_bus.send(payload) {
+                tracing::warn!(%error, "failed to broadcast runtime telemetry event");
+            }
         }
     }
 

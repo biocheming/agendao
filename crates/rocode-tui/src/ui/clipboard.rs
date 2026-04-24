@@ -231,7 +231,15 @@ fn read_image_macos() -> anyhow::Result<String> {
 
     let png_bytes =
         std::fs::read(&temp_path).context("failed to read clipboard image temp file")?;
-    let _ = std::fs::remove_file(&temp_path);
+    if let Err(error) = std::fs::remove_file(&temp_path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(
+                path = %temp_path.display(),
+                %error,
+                "failed to remove clipboard image temp file"
+            );
+        }
+    }
 
     if png_bytes.is_empty() {
         anyhow::bail!("clipboard image temp file was empty");

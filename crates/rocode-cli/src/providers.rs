@@ -157,9 +157,15 @@ fn model_to_bootstrap(id: &str, model: &rocode_config::ModelConfig) -> Bootstrap
         reasoning: model.reasoning,
         attachment: model.attachment,
         tool_call: model.tool_call,
-        interleaved: model.interleaved.as_ref().map(|v| match v {
-            serde_json::Value::Bool(b) => *b,
-            _ => true, // object form means interleaved is supported
+        interleaved: model.interleaved.as_ref().map(|value| match value {
+            rocode_config::ModelInterleavedConfig::Bool(enabled) => {
+                rocode_provider::bootstrap::InterleavedConfig::Bool(*enabled)
+            }
+            rocode_config::ModelInterleavedConfig::Field { field } => {
+                rocode_provider::bootstrap::InterleavedConfig::Field {
+                    field: field.clone(),
+                }
+            }
         }),
         cost,
         limit,

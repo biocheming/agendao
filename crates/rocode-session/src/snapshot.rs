@@ -58,7 +58,15 @@ impl Snapshot {
                         } else {
                             directory.join(&relative)
                         };
-                        let _ = fs::remove_file(absolute);
+                        if let Err(error) = fs::remove_file(&absolute) {
+                            if error.kind() != std::io::ErrorKind::NotFound {
+                                tracing::warn!(
+                                    path = %absolute.display(),
+                                    %error,
+                                    "failed to remove file missing from snapshot tree during revert"
+                                );
+                            }
+                        }
                     }
                 }
             }

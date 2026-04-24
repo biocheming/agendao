@@ -119,7 +119,16 @@ impl PluginLoader {
         if ipc_dir.exists() {
             if let Ok(entries) = std::fs::read_dir(&ipc_dir) {
                 for entry in entries.flatten() {
-                    let _ = std::fs::remove_file(entry.path());
+                    let path = entry.path();
+                    if let Err(error) = std::fs::remove_file(&path) {
+                        if error.kind() != std::io::ErrorKind::NotFound {
+                            tracing::warn!(
+                                path = %path.display(),
+                                %error,
+                                "failed to remove stale plugin IPC file"
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -143,7 +152,15 @@ impl PluginLoader {
                         .map(|t| t < cutoff)
                         .unwrap_or(false);
                     if stale {
-                        let _ = std::fs::remove_dir_all(&path);
+                        if let Err(error) = std::fs::remove_dir_all(&path) {
+                            if error.kind() != std::io::ErrorKind::NotFound {
+                                tracing::warn!(
+                                    path = %path.display(),
+                                    %error,
+                                    "failed to remove stale plugin IPC directory"
+                                );
+                            }
+                        }
                     }
                 }
             }

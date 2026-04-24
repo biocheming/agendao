@@ -564,8 +564,13 @@ fn create_protocol_provider(
         if runtime.is_pipeline_enabled() {
             let pipeline = match manifest.as_ref() {
                 Some(manifest) => Pipeline::from_manifest(manifest).unwrap_or_else(|err| {
-                    tracing::warn!(
+                    tracing::error!(
                         provider = provider_id,
+                        protocol_path = runtime_config.protocol_path.as_deref().unwrap_or("env/auto"),
+                        protocol_version = runtime_config
+                            .protocol_version
+                            .as_deref()
+                            .unwrap_or(manifest.protocol_version.as_str()),
                         error = %err,
                         "failed to build runtime pipeline from manifest, using provider defaults"
                     );

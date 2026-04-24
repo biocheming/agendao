@@ -176,7 +176,10 @@ impl ProtocolImpl for VertexProtocol {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|error| format!("<body read failed: {}>", error));
             return Err(ProviderError::api_error_with_status(
                 format!("{}: {}", status, body),
                 status.as_u16(),
@@ -223,7 +226,10 @@ impl ProtocolImpl for VertexProtocol {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|error| format!("<body read failed: {}>", error));
             return Err(ProviderError::api_error_with_status(
                 format!("{}: {}", status, body),
                 status.as_u16(),

@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{LockResult, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::loader::{
     resolve_configured_path, update_config, write_config, ConfigAuthority, WorkspaceIdentity,
@@ -61,6 +61,10 @@ impl ConfigStore {
         let patch_config: Config = serde_json::from_value(patch)?;
         if let Some(project_dir) = self.read_project_dir()?.as_deref() {
             update_config(project_dir, &patch_config)?;
+        } else {
+            tracing::warn!(
+                "config patch applied in memory only because project_dir is unset; change will not persist to disk"
+            );
         }
         updated.merge(patch_config);
 
@@ -83,6 +87,10 @@ impl ConfigStore {
 
         if let Some(project_dir) = self.read_project_dir()?.as_deref() {
             write_config(project_dir, &updated)?;
+        } else {
+            tracing::warn!(
+                "config replacement applied in memory only because project_dir is unset; change will not persist to disk"
+            );
         }
 
         let new_arc = Arc::new(updated);
@@ -164,7 +172,7 @@ impl ConfigStore {
         self.read_project_dir()
             .map(|guard| guard.clone())
             .unwrap_or_else(|error| {
-                tracing::warn!(%error, "failed to read project_dir from config store");
+                tracing::error!(%error, "failed to read project_dir from config store");
                 None
             })
     }
@@ -173,7 +181,7 @@ impl ConfigStore {
         self.read_workspace_identity()
             .map(|guard| guard.clone())
             .unwrap_or_else(|error| {
-                tracing::warn!(%error, "failed to read workspace_identity from config store");
+                tracing::error!(%error, "failed to read workspace_identity from config store");
                 None
             })
     }
@@ -182,7 +190,7 @@ impl ConfigStore {
         self.read_workspace_mode()
             .map(|guard| *guard)
             .unwrap_or_else(|error| {
-                tracing::warn!(%error, "failed to read workspace_mode from config store");
+                tracing::error!(%error, "failed to read workspace_mode from config store");
                 WorkspaceMode::Shared
             })
     }
@@ -196,43 +204,63 @@ impl ConfigStore {
     }
 
     fn read_project_dir(&self) -> anyhow::Result<RwLockReadGuard<'_, Option<PathBuf>>> {
-        self.project_dir
-            .read()
-            .map_err(|_| anyhow::anyhow!("project_dir lock poisoned"))
+        recover_read_lock(self.project_dir.read(), "project_dir")
     }
 
     fn write_project_dir(&self) -> anyhow::Result<RwLockWriteGuard<'_, Option<PathBuf>>> {
-        self.project_dir
-            .write()
-            .map_err(|_| anyhow::anyhow!("project_dir lock poisoned"))
+        recover_write_lock(self.project_dir.write(), "project_dir")
     }
 
     fn read_workspace_identity(
         &self,
     ) -> anyhow::Result<RwLockReadGuard<'_, Option<WorkspaceIdentity>>> {
-        self.workspace_identity
-            .read()
-            .map_err(|_| anyhow::anyhow!("workspace_identity lock poisoned"))
+        recover_read_lock(self.workspace_identity.read(), "workspace_identity")
     }
 
     fn write_workspace_identity(
         &self,
     ) -> anyhow::Result<RwLockWriteGuard<'_, Option<WorkspaceIdentity>>> {
-        self.workspace_identity
-            .write()
-            .map_err(|_| anyhow::anyhow!("workspace_identity lock poisoned"))
+        recover_write_lock(self.workspace_identity.write(), "workspace_identity")
     }
 
     fn read_workspace_mode(&self) -> anyhow::Result<RwLockReadGuard<'_, WorkspaceMode>> {
-        self.workspace_mode
-            .read()
-            .map_err(|_| anyhow::anyhow!("workspace_mode lock poisoned"))
+        recover_read_lock(self.workspace_mode.read(), "workspace_mode")
     }
 
     fn write_workspace_mode(&self) -> anyhow::Result<RwLockWriteGuard<'_, WorkspaceMode>> {
-        self.workspace_mode
-            .write()
-            .map_err(|_| anyhow::anyhow!("workspace_mode lock poisoned"))
+        recover_write_lock(self.workspace_mode.write(), "workspace_mode")
+    }
+}
+
+fn recover_read_lock<'a, T>(
+    result: LockResult<RwLockReadGuard<'a, T>>,
+    lock_name: &'static str,
+) -> anyhow::Result<RwLockReadGuard<'a, T>> {
+    match result {
+        Ok(guard) => Ok(guard),
+        Err(poisoned) => {
+            tracing::error!(
+                lock = lock_name,
+                "recovering from poisoned config store read lock"
+            );
+            Ok(poisoned.into_inner())
+        }
+    }
+}
+
+fn recover_write_lock<'a, T>(
+    result: LockResult<RwLockWriteGuard<'a, T>>,
+    lock_name: &'static str,
+) -> anyhow::Result<RwLockWriteGuard<'a, T>> {
+    match result {
+        Ok(guard) => Ok(guard),
+        Err(poisoned) => {
+            tracing::error!(
+                lock = lock_name,
+                "recovering from poisoned config store write lock"
+            );
+            Ok(poisoned.into_inner())
+        }
     }
 }
 
@@ -317,6 +345,32 @@ mod tests {
             Some(PathBuf::from(
                 "/tmp/rocode-project/.rocode/scheduler/sisyphus.jsonc"
             ))
+        );
+    }
+
+    #[test]
+    fn poisoned_project_dir_lock_is_recovered() {
+        let store = Arc::new(ConfigStore::new(Config::default()));
+        {
+            let mut guard = store
+                .project_dir
+                .write()
+                .expect("project_dir write should succeed before poison");
+            *guard = Some(PathBuf::from("/tmp/rocode-project"));
+        }
+
+        let poisoned = store.clone();
+        let _ = std::panic::catch_unwind(move || {
+            let _guard = poisoned
+                .project_dir
+                .write()
+                .expect("project_dir write should succeed before panic");
+            panic!("poison project_dir lock");
+        });
+
+        assert_eq!(
+            store.project_dir(),
+            Some(PathBuf::from("/tmp/rocode-project"))
         );
     }
 

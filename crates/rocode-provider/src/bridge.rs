@@ -305,7 +305,10 @@ impl ProtocolImpl for DriverBasedProtocol {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|error| format!("<body read failed: {}>", error));
             return Err(ProviderError::ApiError(format!("{}: {}", status, body)));
         }
 
@@ -382,7 +385,10 @@ impl ProtocolImpl for DriverBasedProtocol {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|error| format!("<body read failed: {}>", error));
             return Err(ProviderError::ApiError(format!("{}: {}", status, body)));
         }
 
@@ -399,7 +405,16 @@ impl ProtocolImpl for DriverBasedProtocol {
             async move {
                 match result {
                     Ok(value) => {
-                        let data = serde_json::to_string(&value).ok()?;
+                        let data = match serde_json::to_string(&value) {
+                            Ok(data) => data,
+                            Err(error) => {
+                                tracing::error!(%error, value = ?value, "failed to serialize provider stream event");
+                                return Some(Err(ProviderError::StreamError(format!(
+                                    "failed to serialize provider stream event: {}",
+                                    error
+                                ))));
+                            }
+                        };
                         match driver.parse_stream_event(&data) {
                             Ok(Some(streaming_event)) => {
                                 let events = streaming_event_to_stream_events(streaming_event);

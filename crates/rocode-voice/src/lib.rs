@@ -45,6 +45,19 @@ struct CommandContext {
     mime: String,
 }
 
+fn cleanup_voice_file(file: &std::path::Path, reason: &str) {
+    if let Err(error) = fs::remove_file(file) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(
+                path = %file.display(),
+                %error,
+                reason,
+                "failed to remove voice temp file"
+            );
+        }
+    }
+}
+
 pub fn capture_voice(options: VoiceCaptureOptions) -> Result<VoiceCaptureResult> {
     let config = options.config.unwrap_or_default();
     let duration_seconds = config.duration_seconds.unwrap_or(15).max(1);
@@ -74,7 +87,7 @@ pub fn capture_voice(options: VoiceCaptureOptions) -> Result<VoiceCaptureResult>
         )
     })?;
     if metadata.len() == 0 {
-        let _ = fs::remove_file(&file);
+        cleanup_voice_file(&file, "empty recording");
         return Err(anyhow!(
             "voice recorder completed but produced an empty audio file"
         ));
@@ -87,7 +100,7 @@ pub fn capture_voice(options: VoiceCaptureOptions) -> Result<VoiceCaptureResult>
             .with_context(|| format!("voice transcription failed via {}", transcriber.label))?;
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if stdout.is_empty() {
-            let _ = fs::remove_file(&file);
+            cleanup_voice_file(&file, "empty transcript");
             return Err(anyhow!(
                 "voice transcribe command completed but returned an empty transcript"
             ));
@@ -114,7 +127,7 @@ pub fn capture_voice(options: VoiceCaptureOptions) -> Result<VoiceCaptureResult>
         None
     };
 
-    let _ = fs::remove_file(&file);
+    cleanup_voice_file(&file, "capture complete");
 
     if attachment.is_none() && transcript.is_none() {
         return Err(anyhow!(
@@ -154,7 +167,7 @@ fn run_recorder_command(
             match run_command(&command, false) {
                 Ok(_) => return Ok(command),
                 Err(error) => {
-                    let _ = fs::remove_file(&context.file);
+                    cleanup_voice_file(&context.file, "recorder attempt failed");
                     attempted.push(format!("{}: {}", command.label, error));
                 }
             }
