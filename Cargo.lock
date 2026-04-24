@@ -3368,6 +3368,7 @@ dependencies = [
  "rocode-state",
  "serde",
  "serde_json",
+ "urlencoding",
 ]
 
 [[package]]

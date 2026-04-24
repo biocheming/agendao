@@ -49,6 +49,7 @@ import { cn } from "@/lib/utils";
 import type {
   ConnectProtocolOption,
   KnownProviderEntry,
+  ManagedModelOverrideInfoRecord,
   ManagedProviderInfoRecord,
   ProviderConnectDraft,
   ProviderRecord,
@@ -134,6 +135,22 @@ interface AppConfigSnapshot extends Record<string, unknown> {
   plugin?: Record<string, unknown>;
   mcp?: Record<string, unknown>;
   schedulerPath?: string | null;
+}
+
+interface ModelOverrideDraft {
+  providerId: string;
+  modelKey: string;
+  modelId: string;
+  name: string;
+  baseUrl: string;
+  family: string;
+  status: string;
+  releaseDate: string;
+  reasoning: boolean;
+  toolCall: boolean;
+  attachment: boolean;
+  temperature: boolean;
+  experimental: boolean;
 }
 
 interface SettingsDrawerProps {
@@ -257,6 +274,45 @@ function statusTone(status: string | null | undefined) {
   }
 }
 
+function emptyModelOverrideDraft(providerId = ""): ModelOverrideDraft {
+  return {
+    providerId,
+    modelKey: "",
+    modelId: "",
+    name: "",
+    baseUrl: "",
+    family: "",
+    status: "",
+    releaseDate: "",
+    reasoning: false,
+    toolCall: false,
+    attachment: false,
+    temperature: false,
+    experimental: false,
+  };
+}
+
+function modelOverrideDraftFromRecord(
+  providerId: string,
+  record: ManagedModelOverrideInfoRecord,
+): ModelOverrideDraft {
+  return {
+    providerId,
+    modelKey: record.key,
+    modelId: record.model ?? "",
+    name: record.name ?? "",
+    baseUrl: record.base_url ?? "",
+    family: record.family ?? "",
+    status: record.status ?? "",
+    releaseDate: record.release_date ?? "",
+    reasoning: Boolean(record.reasoning),
+    toolCall: Boolean(record.tool_call),
+    attachment: Boolean(record.attachment),
+    temperature: Boolean(record.temperature),
+    experimental: Boolean(record.experimental),
+  };
+}
+
 export function SettingsDrawer({
   onClose,
   theme,
@@ -304,6 +360,13 @@ export function SettingsDrawer({
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [configSnapshot, setConfigSnapshot] = useState<AppConfigSnapshot | null>(null);
   const [managedProviders, setManagedProviders] = useState<ManagedProviderInfoRecord[]>([]);
+  const [modelOverrideDraft, setModelOverrideDraft] = useState<ModelOverrideDraft>(
+    emptyModelOverrideDraft(),
+  );
+  const [editingModelTarget, setEditingModelTarget] = useState<{
+    providerId: string;
+    modelKey: string;
+  } | null>(null);
   const [schedulerConfig, setSchedulerConfig] = useState<SchedulerConfigResponse | null>(null);
   const [schedulerPathDraft, setSchedulerPathDraft] = useState("");
   const [schedulerContentDraft, setSchedulerContentDraft] = useState("");
@@ -493,6 +556,33 @@ export function SettingsDrawer({
         (item) => memoryRecordIdValue(item.id) === (selectedMemoryId ?? ""),
       ) ?? null,
     [memoryListResponse?.items, selectedMemoryId],
+  );
+  const providerChoices = useMemo(() => {
+    const seen = new Set<string>();
+    const values = [
+      ...managedProviders.map((provider) => provider.id),
+      ...providers.map((provider) => provider.id),
+      ...knownProviders.map((provider) => provider.id),
+    ];
+    return values.filter((value) => {
+      const key = value.trim();
+      if (!key || seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+  }, [knownProviders, managedProviders, providers]);
+  const configuredModelOverrides = useMemo(
+    () =>
+      managedProviders.flatMap((provider) =>
+        (provider.model_overrides ?? []).map((override) => ({
+          providerId: provider.id,
+          providerName: provider.name,
+          override,
+        })),
+      ),
+    [managedProviders],
   );
   const skillsMutationsEnabled = Boolean(selectedSessionId);
 
@@ -722,6 +812,16 @@ export function SettingsDrawer({
   useEffect(() => {
     void reloadSettingsData();
   }, [reloadSettingsData]);
+
+  useEffect(() => {
+    if (modelOverrideDraft.providerId.trim() || providerChoices.length === 0) {
+      return;
+    }
+    setModelOverrideDraft((current) => ({
+      ...current,
+      providerId: providerChoices[0],
+    }));
+  }, [modelOverrideDraft.providerId, providerChoices]);
 
   useEffect(() => {
     if (activeTab !== "memory") {
@@ -1080,6 +1180,83 @@ export function SettingsDrawer({
         await api(`/provider/${encodeURIComponent(providerId)}`, { method: "DELETE" });
       },
       `Removed provider ${providerId}.`,
+    );
+  };
+
+  const resetModelOverrideDraft = useCallback(
+    (providerId?: string) => {
+      setEditingModelTarget(null);
+      setModelOverrideDraft(
+        emptyModelOverrideDraft(
+          providerId ?? modelOverrideDraft.providerId ?? providerChoices[0] ?? "",
+        ),
+      );
+    },
+    [modelOverrideDraft.providerId, providerChoices],
+  );
+
+  const editModelOverride = useCallback(
+    (providerId: string, record: ManagedModelOverrideInfoRecord) => {
+      setEditingModelTarget({ providerId, modelKey: record.key });
+      setModelOverrideDraft(modelOverrideDraftFromRecord(providerId, record));
+    },
+    [],
+  );
+
+  const saveModelOverride = async () => {
+    const providerId = modelOverrideDraft.providerId.trim();
+    const modelKey = modelOverrideDraft.modelKey.trim();
+    if (!providerId) {
+      throw new Error("Provider ID is required.");
+    }
+    if (!modelKey) {
+      throw new Error("Model key is required.");
+    }
+
+    await runMutation(
+      `provider:model:save:${providerId}:${modelKey}`,
+      async () => {
+        await api(
+          `/config/provider/${encodeURIComponent(providerId)}/models/${encodeURIComponent(modelKey)}`,
+          {
+            method: "PUT",
+            body: JSON.stringify({
+              model: modelOverrideDraft.modelId.trim() || undefined,
+              name: modelOverrideDraft.name.trim() || undefined,
+              base_url: modelOverrideDraft.baseUrl.trim() || undefined,
+              family: modelOverrideDraft.family.trim() || undefined,
+              status: modelOverrideDraft.status.trim() || undefined,
+              release_date: modelOverrideDraft.releaseDate.trim() || undefined,
+              reasoning: modelOverrideDraft.reasoning,
+              tool_call: modelOverrideDraft.toolCall,
+              attachment: modelOverrideDraft.attachment,
+              temperature: modelOverrideDraft.temperature,
+              experimental: modelOverrideDraft.experimental,
+            }),
+          },
+        );
+        resetModelOverrideDraft(providerId);
+      },
+      `Saved model override ${providerId}/${modelKey}.`,
+    );
+  };
+
+  const deleteModelOverride = async (providerId: string, modelKey: string) => {
+    await runMutation(
+      `provider:model:delete:${providerId}:${modelKey}`,
+      async () => {
+        await api(
+          `/config/provider/${encodeURIComponent(providerId)}/models/${encodeURIComponent(modelKey)}`,
+          { method: "DELETE" },
+        );
+        if (
+          editingModelTarget?.providerId === providerId &&
+          editingModelTarget?.modelKey === modelKey
+        ) {
+          resetModelOverrideDraft(providerId);
+        }
+      },
+      `Removed model override ${providerId}/${modelKey}.`,
     );
   };
 
@@ -1882,6 +2059,307 @@ export function SettingsDrawer({
                     </button>
                   </div>
                 ))}
+              </div>
+
+              <div className="grid gap-4 rounded-lg border border-border/35 bg-card/70 p-5">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="m-0 text-xs tracking-widest uppercase text-muted-foreground font-semibold">Model Overrides</p>
+                    <p className="m-0 text-sm text-muted-foreground">
+                      Add or edit provider-scoped model entries used by web, CLI and TUI.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span>{configuredModelOverrides.length} configured</span>
+                    <button
+                      className={secondaryButtonClass}
+                      type="button"
+                      onClick={() => resetModelOverrideDraft()}
+                    >
+                      {editingModelTarget ? "New Override" : "Reset"}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <label className={formFieldClass}>
+                    <span className={formLabelClass}>Provider ID</span>
+                    <input
+                      className={inputClass}
+                      list="settings-model-provider-options"
+                      value={modelOverrideDraft.providerId}
+                      onChange={(event) =>
+                        setModelOverrideDraft((current) => ({
+                          ...current,
+                          providerId: event.target.value,
+                        }))
+                      }
+                    />
+                    <datalist id="settings-model-provider-options">
+                      {providerChoices.map((providerId) => (
+                        <option key={providerId} value={providerId} />
+                      ))}
+                    </datalist>
+                  </label>
+                  <label className={formFieldClass}>
+                    <span className={formLabelClass}>Model Key</span>
+                    <input
+                      className={inputClass}
+                      value={modelOverrideDraft.modelKey}
+                      disabled={Boolean(editingModelTarget)}
+                      onChange={(event) =>
+                        setModelOverrideDraft((current) => ({
+                          ...current,
+                          modelKey: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className={formFieldClass}>
+                    <span className={formLabelClass}>Upstream Model ID</span>
+                    <input
+                      className={inputClass}
+                      placeholder="gpt-4.1, qwen-max, claude-sonnet-4..."
+                      value={modelOverrideDraft.modelId}
+                      onChange={(event) =>
+                        setModelOverrideDraft((current) => ({
+                          ...current,
+                          modelId: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className={formFieldClass}>
+                    <span className={formLabelClass}>Display Name</span>
+                    <input
+                      className={inputClass}
+                      value={modelOverrideDraft.name}
+                      onChange={(event) =>
+                        setModelOverrideDraft((current) => ({
+                          ...current,
+                          name: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className={formFieldClass}>
+                    <span className={formLabelClass}>Base URL</span>
+                    <input
+                      className={inputClass}
+                      value={modelOverrideDraft.baseUrl}
+                      onChange={(event) =>
+                        setModelOverrideDraft((current) => ({
+                          ...current,
+                          baseUrl: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className={formFieldClass}>
+                    <span className={formLabelClass}>Family</span>
+                    <input
+                      className={inputClass}
+                      value={modelOverrideDraft.family}
+                      onChange={(event) =>
+                        setModelOverrideDraft((current) => ({
+                          ...current,
+                          family: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className={formFieldClass}>
+                    <span className={formLabelClass}>Status</span>
+                    <input
+                      className={inputClass}
+                      value={modelOverrideDraft.status}
+                      onChange={(event) =>
+                        setModelOverrideDraft((current) => ({
+                          ...current,
+                          status: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className={formFieldClass}>
+                    <span className={formLabelClass}>Release Date</span>
+                    <input
+                      className={inputClass}
+                      placeholder="2026-04-24"
+                      value={modelOverrideDraft.releaseDate}
+                      onChange={(event) =>
+                        setModelOverrideDraft((current) => ({
+                          ...current,
+                          releaseDate: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
+
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                  <label className={checkboxRowClass}>
+                    <input
+                      className={checkboxClass}
+                      type="checkbox"
+                      checked={modelOverrideDraft.reasoning}
+                      onChange={(event) =>
+                        setModelOverrideDraft((current) => ({
+                          ...current,
+                          reasoning: event.target.checked,
+                        }))
+                      }
+                    />
+                    Reasoning
+                  </label>
+                  <label className={checkboxRowClass}>
+                    <input
+                      className={checkboxClass}
+                      type="checkbox"
+                      checked={modelOverrideDraft.toolCall}
+                      onChange={(event) =>
+                        setModelOverrideDraft((current) => ({
+                          ...current,
+                          toolCall: event.target.checked,
+                        }))
+                      }
+                    />
+                    Tool Call
+                  </label>
+                  <label className={checkboxRowClass}>
+                    <input
+                      className={checkboxClass}
+                      type="checkbox"
+                      checked={modelOverrideDraft.attachment}
+                      onChange={(event) =>
+                        setModelOverrideDraft((current) => ({
+                          ...current,
+                          attachment: event.target.checked,
+                        }))
+                      }
+                    />
+                    Attachment
+                  </label>
+                  <label className={checkboxRowClass}>
+                    <input
+                      className={checkboxClass}
+                      type="checkbox"
+                      checked={modelOverrideDraft.temperature}
+                      onChange={(event) =>
+                        setModelOverrideDraft((current) => ({
+                          ...current,
+                          temperature: event.target.checked,
+                        }))
+                      }
+                    />
+                    Temperature
+                  </label>
+                  <label className={checkboxRowClass}>
+                    <input
+                      className={checkboxClass}
+                      type="checkbox"
+                      checked={modelOverrideDraft.experimental}
+                      onChange={(event) =>
+                        setModelOverrideDraft((current) => ({
+                          ...current,
+                          experimental: event.target.checked,
+                        }))
+                      }
+                    />
+                    Experimental
+                  </label>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    className={primaryButtonClass}
+                    type="button"
+                    disabled={
+                      !modelOverrideDraft.providerId.trim() ||
+                      !modelOverrideDraft.modelKey.trim() ||
+                      busyKey ===
+                        `provider:model:save:${modelOverrideDraft.providerId.trim()}:${modelOverrideDraft.modelKey.trim()}`
+                    }
+                    onClick={() => void saveModelOverride()}
+                  >
+                    {editingModelTarget ? "Save Override" : "Add Override"}
+                  </button>
+                  {editingModelTarget ? (
+                    <button
+                      className={secondaryButtonClass}
+                      type="button"
+                      onClick={() => resetModelOverrideDraft(modelOverrideDraft.providerId)}
+                    >
+                      Cancel Edit
+                    </button>
+                  ) : null}
+                </div>
+
+                <div className="grid gap-3">
+                  {configuredModelOverrides.length ? (
+                    configuredModelOverrides.map(({ providerId, providerName, override }) => (
+                      <div
+                        key={`${providerId}/${override.key}`}
+                        className="rounded-lg border border-border/35 bg-muted/20 p-4"
+                      >
+                        <div className="flex items-start justify-between gap-4">
+                          <div>
+                            <strong>{providerId}/{override.key}</strong>
+                            <p className="m-0 text-sm text-muted-foreground leading-relaxed">
+                              {providerName}
+                              {override.model ? ` · model ${override.model}` : ""}
+                              {override.name ? ` · ${override.name}` : ""}
+                            </p>
+                            <p className="m-0 text-sm text-muted-foreground leading-relaxed">
+                              {[
+                                override.base_url ? `base ${override.base_url}` : null,
+                                override.family ? `family ${override.family}` : null,
+                                override.status ? `status ${override.status}` : null,
+                                override.release_date ? `release ${override.release_date}` : null,
+                              ]
+                                .filter(Boolean)
+                                .join(" · ") || "No extra metadata"}
+                            </p>
+                            <p className="m-0 text-sm text-muted-foreground leading-relaxed">
+                              {[
+                                override.reasoning ? "reasoning" : null,
+                                override.tool_call ? "tool-call" : null,
+                                override.attachment ? "attachment" : null,
+                                override.temperature ? "temperature" : null,
+                                override.experimental ? "experimental" : null,
+                              ]
+                                .filter(Boolean)
+                                .join(" · ") || "No capability flags set"}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              className={secondaryButtonClass}
+                              type="button"
+                              onClick={() => editModelOverride(providerId, override)}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              className={secondaryButtonClass}
+                              type="button"
+                              disabled={
+                                busyKey === `provider:model:delete:${providerId}:${override.key}`
+                              }
+                              onClick={() => void deleteModelOverride(providerId, override.key)}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="m-0 text-sm text-muted-foreground">
+                      No model overrides are configured yet.
+                    </p>
+                  )}
+                </div>
               </div>
 
               <div className="grid gap-3">

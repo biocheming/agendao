@@ -77,8 +77,9 @@ pub use mcp::{McpDialog, McpItem};
 pub use model_select::{Model, ModelSelectDialog};
 pub use prompt_stash::{PromptStashDialog, StashItem};
 pub use provider::{
-    provider_from_connect_draft, CustomProviderState, CustomProviderStep, PendingSubmit, Provider,
-    ProviderConnectMode, ProviderDialog, ProviderStatus, SubmitResult,
+    provider_from_connect_draft, CustomProviderState, CustomProviderStep, ModelOverrideState,
+    ModelOverrideStep, PendingSubmit, Provider, ProviderConnectMode, ProviderDialog,
+    ProviderModelOverride, ProviderStatus, SubmitResult,
 };
 pub use recovery_action::{RecoveryActionDialog, RecoveryActionItem};
 pub use session_export::SessionExportDialog;

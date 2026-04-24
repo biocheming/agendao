@@ -3,7 +3,7 @@ use std::sync::RwLock;
 
 use reqwest::blocking::{Client, Response};
 use rocode_command::stage_protocol::StageEvent;
-use rocode_config::Config as AppConfig;
+use rocode_config::{Config as AppConfig, ModelConfig};
 use rocode_runtime_context::ResolvedWorkspaceContext;
 use rocode_state::RecentModelEntry;
 use serde::Serialize;
@@ -420,6 +420,39 @@ impl BlockingApiClient {
 
     pub fn patch_config(&self, patch: &serde_json::Value) -> anyhow::Result<AppConfig> {
         self.patch_json("/config", "patch config", patch)
+    }
+
+    pub fn put_provider_model_config(
+        &self,
+        provider_id: &str,
+        model_key: &str,
+        model: &ModelConfig,
+    ) -> anyhow::Result<AppConfig> {
+        self.put_json(
+            &format!(
+                "/config/provider/{}/models/{}",
+                urlencoding::encode(provider_id),
+                urlencoding::encode(model_key)
+            ),
+            &format!("put provider model config `{provider_id}/{model_key}`"),
+            model,
+        )
+    }
+
+    pub fn delete_provider_model_config(
+        &self,
+        provider_id: &str,
+        model_key: &str,
+    ) -> anyhow::Result<AppConfig> {
+        let response = self.delete_expect_success(
+            &format!(
+                "/config/provider/{}/models/{}",
+                urlencoding::encode(provider_id),
+                urlencoding::encode(model_key)
+            ),
+            &format!("delete provider model config `{provider_id}/{model_key}`"),
+        )?;
+        Self::json_ok(response, "delete provider model config")
     }
 
     pub fn get_all_providers(&self) -> anyhow::Result<FullProviderListResponse> {

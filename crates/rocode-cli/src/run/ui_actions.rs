@@ -16,6 +16,175 @@ fn cli_normalize_model_ref(model_ref: &str) -> String {
     }
 }
 
+enum CliModelCommand {
+    List,
+    Refresh,
+    Select(String),
+    Add {
+        provider_id: String,
+        model_key: String,
+        config: rocode_config::ModelConfig,
+    },
+    Edit {
+        provider_id: String,
+        model_key: String,
+        config: rocode_config::ModelConfig,
+    },
+    Delete {
+        provider_id: String,
+        model_key: String,
+    },
+}
+
+fn cli_split_provider_model_key(value: &str) -> anyhow::Result<(String, String)> {
+    let trimmed = value.trim();
+    let Some((provider_id, model_key)) = trimmed.split_once('/') else {
+        anyhow::bail!("Expected <provider>/<model-key>.");
+    };
+    let provider_id = provider_id.trim();
+    let model_key = model_key.trim();
+    if provider_id.is_empty() || model_key.is_empty() {
+        anyhow::bail!("Expected <provider>/<model-key>.");
+    }
+    Ok((provider_id.to_string(), model_key.to_string()))
+}
+
+fn cli_model_optional_string(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("null")
+        || trimmed.eq_ignore_ascii_case("none")
+        || trimmed == "-"
+    {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn cli_model_optional_bool(raw: &str) -> anyhow::Result<Option<bool>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("null")
+        || trimmed.eq_ignore_ascii_case("none")
+        || trimmed == "-"
+    {
+        return Ok(None);
+    }
+    if matches!(
+        trimmed.to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    ) {
+        return Ok(Some(true));
+    }
+    if matches!(
+        trimmed.to_ascii_lowercase().as_str(),
+        "0" | "false" | "no" | "off"
+    ) {
+        return Ok(Some(false));
+    }
+    anyhow::bail!("Invalid boolean value `{trimmed}`; use true/false.");
+}
+
+fn cli_apply_model_config_assignments(
+    config: &mut rocode_config::ModelConfig,
+    assignments: &[&str],
+) -> anyhow::Result<()> {
+    for assignment in assignments {
+        let Some((raw_key, raw_value)) = assignment.split_once('=') else {
+            anyhow::bail!("Expected key=value assignment, got `{assignment}`.");
+        };
+        let key = raw_key.trim().to_ascii_lowercase().replace('-', "_");
+        let value = raw_value.trim();
+        match key.as_str() {
+            "id" | "model" => config.model = cli_model_optional_string(value),
+            "name" => config.name = cli_model_optional_string(value),
+            "base_url" | "baseurl" => config.base_url = cli_model_optional_string(value),
+            "family" => config.family = cli_model_optional_string(value),
+            "status" => config.status = cli_model_optional_string(value),
+            "release_date" | "releasedate" => {
+                config.release_date = cli_model_optional_string(value)
+            }
+            "reasoning" => config.reasoning = cli_model_optional_bool(value)?,
+            "tool_call" | "tools" => config.tool_call = cli_model_optional_bool(value)?,
+            "attachment" => config.attachment = cli_model_optional_bool(value)?,
+            "temperature" => config.temperature = cli_model_optional_bool(value)?,
+            "experimental" => config.experimental = cli_model_optional_bool(value)?,
+            _ => anyhow::bail!(
+                "Unknown model field `{raw_key}`. Supported fields: id, name, base_url, family, status, release_date, reasoning, tool_call, attachment, temperature, experimental."
+            ),
+        }
+    }
+    Ok(())
+}
+
+fn cli_parse_model_command(
+    argument: Option<&str>,
+    current_config: Option<&rocode_config::Config>,
+) -> anyhow::Result<CliModelCommand> {
+    let Some(argument) = argument.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(CliModelCommand::List);
+    };
+    if argument.eq_ignore_ascii_case("refresh") {
+        return Ok(CliModelCommand::Refresh);
+    }
+
+    let tokens = argument.split_whitespace().collect::<Vec<_>>();
+    if tokens.is_empty() {
+        return Ok(CliModelCommand::List);
+    }
+
+    match tokens[0].to_ascii_lowercase().as_str() {
+        "add" => {
+            if tokens.len() < 2 {
+                anyhow::bail!(
+                    "Usage: /model add <provider>/<model-key> [id=...] [name=...] [base_url=...] [family=...] [reasoning=true|false] ..."
+                );
+            }
+            let (provider_id, model_key) = cli_split_provider_model_key(tokens[1])?;
+            let mut config = rocode_config::ModelConfig::default();
+            cli_apply_model_config_assignments(&mut config, &tokens[2..])?;
+            Ok(CliModelCommand::Add {
+                provider_id,
+                model_key,
+                config,
+            })
+        }
+        "edit" => {
+            if tokens.len() < 3 {
+                anyhow::bail!(
+                    "Usage: /model edit <provider>/<model-key> key=value [key=value ...]"
+                );
+            }
+            let (provider_id, model_key) = cli_split_provider_model_key(tokens[1])?;
+            let mut config = current_config
+                .and_then(|cfg| cfg.provider.as_ref())
+                .and_then(|providers| providers.get(&provider_id))
+                .and_then(|provider| provider.models.as_ref())
+                .and_then(|models| models.get(&model_key))
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("No configured model override `{provider_id}/{model_key}` found."))?;
+            cli_apply_model_config_assignments(&mut config, &tokens[2..])?;
+            Ok(CliModelCommand::Edit {
+                provider_id,
+                model_key,
+                config,
+            })
+        }
+        "delete" | "remove" | "rm" => {
+            if tokens.len() != 2 {
+                anyhow::bail!("Usage: /model delete <provider>/<model-key>");
+            }
+            let (provider_id, model_key) = cli_split_provider_model_key(tokens[1])?;
+            Ok(CliModelCommand::Delete {
+                provider_id,
+                model_key,
+            })
+        }
+        _ => Ok(CliModelCommand::Select(argument.to_string())),
+    }
+}
+
 async fn cli_prompt_action_select(
     runtime: &CliExecutionRuntime,
     header: Option<&str>,
@@ -686,8 +855,24 @@ async fn cli_execute_ui_action(
             Ok(CliUiActionOutcome::Continue)
         }
         UiActionId::OpenModelList => {
-            if let Some(model_ref) = argument.map(str::trim).filter(|value| !value.is_empty()) {
-                if model_ref.eq_ignore_ascii_case("refresh") {
+            let current_config = api_client.get_config().await.ok();
+            let parsed_command = match cli_parse_model_command(argument, current_config.as_ref()) {
+                Ok(command) => command,
+                Err(error) => {
+                    let _ = print_block(
+                        Some(runtime),
+                        OutputBlock::Status(StatusBlock::error(format!(
+                            "Invalid /model usage: {}",
+                            error
+                        ))),
+                        repl_style,
+                    );
+                    return Ok(CliUiActionOutcome::Continue);
+                }
+            };
+
+            match parsed_command {
+                CliModelCommand::Refresh => {
                     match api_client.refresh_provider_catalog().await {
                         Ok(result) => {
                             let message = result.status_message();
@@ -714,56 +899,129 @@ async fn cli_execute_ui_action(
                     }
                     return Ok(CliUiActionOutcome::Continue);
                 }
-
-                let normalized_model_ref = cli_normalize_model_ref(model_ref);
-                let exists = match api_client.get_all_providers().await {
-                    Ok(response) => response.all.into_iter().any(|provider| {
-                        provider.models.into_iter().any(|model| {
-                            format!("{}/{}", provider.id, model.id) == normalized_model_ref
-                        })
-                    }),
-                    Err(_) => {
-                        let mut fallback_exists = false;
-                        for provider in provider_registry.list() {
-                            for model in provider.models() {
-                                if format!("{}/{}", provider.id(), model.id) == normalized_model_ref
-                                {
-                                    fallback_exists = true;
+                CliModelCommand::Select(model_ref) => {
+                    let normalized_model_ref = cli_normalize_model_ref(&model_ref);
+                    let exists = match api_client.get_all_providers().await {
+                        Ok(response) => response.all.into_iter().any(|provider| {
+                            provider.models.into_iter().any(|model| {
+                                format!("{}/{}", provider.id, model.id) == normalized_model_ref
+                            })
+                        }),
+                        Err(_) => {
+                            let mut fallback_exists = false;
+                            for provider in provider_registry.list() {
+                                for model in provider.models() {
+                                    if format!("{}/{}", provider.id(), model.id)
+                                        == normalized_model_ref
+                                    {
+                                        fallback_exists = true;
+                                        break;
+                                    }
+                                }
+                                if fallback_exists {
                                     break;
                                 }
                             }
-                            if fallback_exists {
-                                break;
-                            }
+                            fallback_exists
                         }
-                        fallback_exists
+                    };
+                    if exists {
+                        runtime.resolved_model_label = normalized_model_ref.clone();
+                        if let Ok(mut projection) = runtime.frontend_projection.lock() {
+                            projection.current_model_label = Some(normalized_model_ref.clone());
+                        }
+                        let _ = print_block(
+                            Some(runtime),
+                            OutputBlock::Status(StatusBlock::title(format!(
+                                "Model set to {}",
+                                normalized_model_ref
+                            ))),
+                            repl_style,
+                        );
+                    } else {
+                        let _ = print_block(
+                            Some(runtime),
+                            OutputBlock::Status(StatusBlock::warning(format!(
+                                "Unknown model: {}",
+                                model_ref
+                            ))),
+                            repl_style,
+                        );
                     }
-                };
-                if exists {
-                    runtime.resolved_model_label = normalized_model_ref.clone();
-                    if let Ok(mut projection) = runtime.frontend_projection.lock() {
-                        projection.current_model_label = Some(normalized_model_ref.clone());
-                    }
-                    let _ = print_block(
-                        Some(runtime),
-                        OutputBlock::Status(StatusBlock::title(format!(
-                            "Model set to {}",
-                            normalized_model_ref
-                        ))),
-                        repl_style,
-                    );
-                } else {
-                    let _ = print_block(
-                        Some(runtime),
-                        OutputBlock::Status(StatusBlock::warning(format!(
-                            "Unknown model: {}",
-                            model_ref
-                        ))),
-                        repl_style,
-                    );
+                    return Ok(CliUiActionOutcome::Continue);
                 }
-                return Ok(CliUiActionOutcome::Continue);
+                CliModelCommand::Add {
+                    provider_id,
+                    model_key,
+                    config,
+                }
+                | CliModelCommand::Edit {
+                    provider_id,
+                    model_key,
+                    config,
+                } => {
+                    match api_client
+                        .put_provider_model_config(&provider_id, &model_key, &config)
+                        .await
+                    {
+                        Ok(_) => {
+                            let label = config.model.as_deref().unwrap_or(model_key.as_str());
+                            let _ = print_block(
+                                Some(runtime),
+                                OutputBlock::Status(StatusBlock::title(format!(
+                                    "Saved model override {} / {} -> {}",
+                                    provider_id, model_key, label
+                                ))),
+                                repl_style,
+                            );
+                        }
+                        Err(error) => {
+                            let _ = print_block(
+                                Some(runtime),
+                                OutputBlock::Status(StatusBlock::error(format!(
+                                    "Failed to save model override {} / {}: {}",
+                                    provider_id, model_key, error
+                                ))),
+                                repl_style,
+                            );
+                        }
+                    }
+                    return Ok(CliUiActionOutcome::Continue);
+                }
+                CliModelCommand::Delete {
+                    provider_id,
+                    model_key,
+                } => {
+                    match api_client
+                        .delete_provider_model_config(&provider_id, &model_key)
+                        .await
+                    {
+                        Ok(_) => {
+                            let _ = print_block(
+                                Some(runtime),
+                                OutputBlock::Status(StatusBlock::title(format!(
+                                    "Removed model override {} / {}",
+                                    provider_id, model_key
+                                ))),
+                                repl_style,
+                            );
+                        }
+                        Err(error) => {
+                            let _ = print_block(
+                                Some(runtime),
+                                OutputBlock::Status(StatusBlock::error(format!(
+                                    "Failed to remove model override {} / {}: {}",
+                                    provider_id, model_key, error
+                                ))),
+                                repl_style,
+                            );
+                        }
+                    }
+                    return Ok(CliUiActionOutcome::Continue);
+                }
+                CliModelCommand::List => {}
             }
+
             let style = CliStyle::detect();
             let mut lines = match api_client.get_all_providers().await {
                 Ok(response) => response
@@ -789,6 +1047,43 @@ async fn cli_execute_ui_action(
             };
             lines.sort();
             lines.dedup();
+            if let Some(config) = current_config.as_ref() {
+                let configured = config
+                    .provider
+                    .as_ref()
+                    .map(|providers| {
+                        let mut items = providers
+                            .iter()
+                            .flat_map(|(provider_id, provider)| {
+                                provider
+                                    .models
+                                    .as_ref()
+                                    .into_iter()
+                                    .flat_map(move |models| {
+                                        models.iter().map(move |(model_key, model)| {
+                                            let target = model
+                                                .model
+                                                .as_deref()
+                                                .unwrap_or(model_key.as_str());
+                                            let display = model.name.as_deref().unwrap_or(target);
+                                            format!(
+                                                "{} / {} -> {} ({})",
+                                                provider_id, model_key, target, display
+                                            )
+                                        })
+                                    })
+                            })
+                            .collect::<Vec<_>>();
+                        items.sort();
+                        items
+                    })
+                    .unwrap_or_default();
+                if !configured.is_empty() {
+                    lines.push(String::new());
+                    lines.push("Configured model overrides:".to_string());
+                    lines.extend(configured);
+                }
+            }
             let _ =
                 print_cli_list_on_surface(Some(runtime), "Available Models", None, &lines, &style);
             Ok(CliUiActionOutcome::Continue)

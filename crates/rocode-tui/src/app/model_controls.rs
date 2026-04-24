@@ -133,11 +133,32 @@ impl App {
         };
         if let Ok(schema) = client.get_provider_connect_schema() {
             self.provider_dialog.populate_from_connect_schema(schema);
-            return;
-        }
-        if let Ok(resp) = client.get_known_providers() {
+        } else if let Ok(resp) = client.get_known_providers() {
             self.provider_dialog.populate_from_known(resp.providers);
             self.provider_dialog.clear_resolution();
+        }
+
+        if let Ok(config) = client.get_config() {
+            let mut overrides = config
+                .provider
+                .unwrap_or_default()
+                .into_iter()
+                .flat_map(|(provider_id, provider)| {
+                    provider.models.unwrap_or_default().into_iter().map(
+                        move |(model_key, config)| crate::components::ProviderModelOverride {
+                            provider_id: provider_id.clone(),
+                            model_key,
+                            config,
+                        },
+                    )
+                })
+                .collect::<Vec<_>>();
+            overrides.sort_by(|a, b| {
+                a.provider_id
+                    .cmp(&b.provider_id)
+                    .then_with(|| a.model_key.cmp(&b.model_key))
+            });
+            self.provider_dialog.set_model_overrides(overrides);
         }
     }
 
@@ -303,6 +324,70 @@ impl App {
             Err(e) => {
                 self.provider_dialog
                     .set_submit_result(SubmitResult::Failed(e.to_string()));
+            }
+        }
+    }
+
+    pub(super) fn submit_provider_model_override(
+        &mut self,
+        provider_id: &str,
+        model_key: &str,
+        model: &rocode_config::ModelConfig,
+    ) {
+        use crate::components::SubmitResult;
+        let Some(client) = self.context.get_api_client() else {
+            self.provider_dialog
+                .set_submit_result(SubmitResult::Failed("No API connection".to_string()));
+            return;
+        };
+        match client.put_provider_model_config(provider_id, model_key, model) {
+            Ok(_) => {
+                self.provider_dialog.exit_model_override_flow();
+                self.provider_dialog
+                    .set_submit_result(SubmitResult::Success);
+                self.toast.show(
+                    crate::components::ToastVariant::Success,
+                    &format!("Saved model override {}/{}", provider_id, model_key),
+                    3000,
+                );
+                self.populate_provider_dialog();
+                self.refresh_model_dialog();
+            }
+            Err(error) => {
+                self.provider_dialog
+                    .set_submit_result(SubmitResult::Failed(error.to_string()));
+            }
+        }
+    }
+
+    pub(super) fn delete_selected_provider_model_override(&mut self) {
+        use crate::components::SubmitResult;
+        let Some(client) = self.context.get_api_client() else {
+            self.provider_dialog
+                .set_submit_result(SubmitResult::Failed("No API connection".to_string()));
+            return;
+        };
+        let Some(selected) = self.provider_dialog.selected_model_override() else {
+            return;
+        };
+        match client.delete_provider_model_config(&selected.provider_id, &selected.model_key) {
+            Ok(_) => {
+                self.provider_dialog
+                    .set_submit_result(SubmitResult::Success);
+                self.toast.show(
+                    crate::components::ToastVariant::Success,
+                    &format!(
+                        "Removed model override {}/{}",
+                        selected.provider_id, selected.model_key
+                    ),
+                    3000,
+                );
+                self.populate_provider_dialog();
+                self.refresh_model_dialog();
+            }
+            Err(error) => {
+                self.provider_dialog
+                    .set_submit_result(SubmitResult::Failed(error.to_string()));
             }
         }
     }
