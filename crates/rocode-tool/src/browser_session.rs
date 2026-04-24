@@ -8,8 +8,8 @@ use tokio::sync::RwLock;
 use url::Url;
 
 use crate::web_page::{
-    convert_html_to_markdown, ensure_http_url, extract_title, strip_html, DEFAULT_WEB_TIMEOUT_SECS,
-    DEFAULT_WEB_USER_AGENT, MAX_WEB_RESPONSE_SIZE, MAX_WEB_TIMEOUT_SECS,
+    convert_html_to_markdown, ensure_http_url, ensure_safe_http_url, extract_title, strip_html,
+    DEFAULT_WEB_TIMEOUT_SECS, DEFAULT_WEB_USER_AGENT, MAX_WEB_RESPONSE_SIZE, MAX_WEB_TIMEOUT_SECS,
 };
 use crate::{Metadata, PermissionRequest, Tool, ToolContext, ToolError, ToolResult};
 
@@ -121,13 +121,16 @@ impl BrowserSessionManager {
         input: &BrowserSessionInput,
     ) -> Result<BrowserSessionView, ToolError> {
         let id = format!("browser_{}", uuid::Uuid::new_v4().simple());
-        let base_url = input
+        let base_url = if let Some(base_url) = input
             .base_url
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .map(parse_absolute_url)
-            .transpose()?;
+        {
+            Some(ensure_safe_http_url(base_url).await?)
+        } else {
+            None
+        };
 
         let user_agent = input
             .user_agent
@@ -452,12 +455,6 @@ fn required_session_id(input: &BrowserSessionInput) -> Result<String, ToolError>
         })
 }
 
-fn parse_absolute_url(raw: &str) -> Result<Url, ToolError> {
-    ensure_http_url(raw)?;
-    Url::parse(raw)
-        .map_err(|e| ToolError::InvalidArguments(format!("invalid URL `{}`: {}", raw, e)))
-}
-
 async fn resolve_target_url(
     session: &BrowserSessionRecord,
     input: &BrowserSessionInput,
@@ -471,7 +468,7 @@ async fn resolve_target_url(
         .ok_or_else(|| ToolError::InvalidArguments("visit requires url or path".to_string()))?;
 
     if target.starts_with("http://") || target.starts_with("https://") {
-        return parse_absolute_url(target);
+        return ensure_safe_http_url(target).await;
     }
 
     let state = session.state.read().await;
@@ -480,18 +477,20 @@ async fn resolve_target_url(
         .as_ref()
         .and_then(|page| Url::parse(&page.url).ok());
     if let Some(current) = current {
-        return current.join(target).map_err(|e| {
+        let joined = current.join(target).map_err(|e| {
             ToolError::InvalidArguments(format!("invalid relative target `{}`: {}", target, e))
-        });
+        })?;
+        return ensure_safe_http_url(joined.as_str()).await;
     }
     drop(state);
 
     let base = session.base_url.as_ref().ok_or_else(|| {
         ToolError::InvalidArguments("relative visit requires current page or base_url".to_string())
     })?;
-    base.join(target).map_err(|e| {
+    let joined = base.join(target).map_err(|e| {
         ToolError::InvalidArguments(format!("invalid relative target `{}`: {}", target, e))
-    })
+    })?;
+    ensure_safe_http_url(joined.as_str()).await
 }
 
 async fn fetch_page(

@@ -60,7 +60,17 @@ fn auth_file_path() -> PathBuf {
 async fn read_all() -> HashMap<String, AuthEntry> {
     let path = auth_file_path();
     match fs::read_to_string(&path).await {
-        Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
+        Ok(contents) => match serde_json::from_str(&contents) {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::error!(
+                    path = %path.display(),
+                    %error,
+                    "failed to parse MCP auth store, using empty state"
+                );
+                HashMap::new()
+            }
+        },
         Err(_) => HashMap::new(),
     }
 }

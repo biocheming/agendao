@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use reqwest::Client;
 
 use crate::web_page::{
-    build_web_client, convert_html_to_markdown, ensure_http_url, strip_html,
+    build_web_client, convert_html_to_markdown, ensure_safe_http_url, strip_html,
     DEFAULT_WEB_TIMEOUT_SECS, MAX_WEB_RESPONSE_SIZE, MAX_WEB_TIMEOUT_SECS,
 };
 use serde::{Deserialize, Serialize};
@@ -77,7 +77,8 @@ impl Tool for WebFetchTool {
 
         let url = input.url.clone();
 
-        ensure_http_url(&url)?;
+        let safe_url = ensure_safe_http_url(&url).await?;
+        let url = safe_url.to_string();
 
         ctx.ask_permission(
             crate::PermissionRequest::new("webfetch")

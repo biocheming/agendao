@@ -389,7 +389,15 @@ fn append_session_id(directory: &Path, session_id: &str) -> anyhow::Result<Optio
 
 fn clear_boulder_state(directory: &Path) {
     let file_path = boulder_file_path(directory);
-    let _ = fs::remove_file(file_path);
+    if let Err(error) = fs::remove_file(&file_path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(
+                path = %file_path.display(),
+                %error,
+                "failed to clear boulder state file"
+            );
+        }
+    }
 }
 
 fn find_prometheus_plans(directory: &Path) -> Vec<PathBuf> {

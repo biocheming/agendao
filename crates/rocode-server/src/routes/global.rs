@@ -22,7 +22,6 @@ pub(crate) fn global_routes() -> Router<Arc<ServerState>> {
         .route("/diagnostics", get(global_diagnostics))
         .route("/perf", get(global_perf))
         .route("/config", get(get_global_config))
-        .route("/dispose", post(dispose_all))
 }
 
 pub(crate) fn experimental_routes() -> Router<Arc<ServerState>> {
@@ -98,10 +97,6 @@ async fn global_perf(State(state): State<Arc<ServerState>>) -> Json<GlobalPerfRe
             .list_messages_full_calls
             .load(Ordering::Relaxed),
     })
-}
-
-async fn dispose_all() -> Json<bool> {
-    Json(true)
 }
 
 #[derive(Debug, Serialize)]

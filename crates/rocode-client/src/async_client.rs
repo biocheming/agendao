@@ -685,7 +685,10 @@ impl AsyncApiClient {
         if status.is_success() {
             Ok(resp.bytes().await?.to_vec())
         } else {
-            let text = resp.text().await.unwrap_or_default();
+            let text = resp
+                .text()
+                .await
+                .unwrap_or_else(|error| format!("<body read failed: {}>", error));
             Err(http_error(action, status, text))
         }
     }

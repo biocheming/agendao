@@ -3472,6 +3472,7 @@ dependencies = [
  "dirs",
  "reqwest",
  "tokio",
+ "tracing",
  "url",
  "which",
 ]
@@ -3929,6 +3930,7 @@ dependencies = [
  "anyhow",
  "base64",
  "rocode-config",
+ "tracing",
  "uuid",
  "which",
 ]

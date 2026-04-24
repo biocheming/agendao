@@ -107,7 +107,10 @@ impl SearchBuilder {
 impl Default for SearchBuilder {
     fn default() -> Self {
         Self {
-            search_location: std::env::current_dir().expect("Failed to get current directory"),
+            search_location: std::env::current_dir().unwrap_or_else(|error| {
+                tracing::warn!(%error, "failed to resolve current directory for SearchBuilder default, falling back to `.`");
+                PathBuf::from(".")
+            }),
             more_locations: None,
             search_input: None,
             file_ext: None,

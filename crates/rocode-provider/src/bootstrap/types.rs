@@ -189,7 +189,7 @@ pub struct ConfigModel {
     #[serde(default)]
     pub tool_call: Option<bool>,
     #[serde(default)]
-    pub interleaved: Option<bool>,
+    pub interleaved: Option<InterleavedConfig>,
     #[serde(default)]
     pub cost: Option<ConfigModelCost>,
     #[serde(default)]

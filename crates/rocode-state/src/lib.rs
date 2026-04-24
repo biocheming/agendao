@@ -3,7 +3,7 @@ use rocode_config::{ConfigStore, UiRecentModelConfig, WorkspaceIdentity, Workspa
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -50,6 +50,22 @@ pub struct UserStateAuthority {
     global_path: PathBuf,
     workspace_path: Option<PathBuf>,
     write_lock: Mutex<()>,
+}
+
+fn state_file_locks() -> &'static std::sync::Mutex<HashMap<PathBuf, Arc<Mutex<()>>>> {
+    static STATE_FILE_LOCKS: OnceLock<std::sync::Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
+        OnceLock::new();
+    STATE_FILE_LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+fn state_file_lock(path: &Path) -> Arc<Mutex<()>> {
+    let mut locks = state_file_locks()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    locks
+        .entry(path.to_path_buf())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
 }
 
 impl UserStateAuthority {
@@ -113,11 +129,18 @@ impl UserStateAuthority {
         let _guard = self.write_lock.lock().await;
         match self.mode {
             WorkspaceMode::Isolated => {
+                let Some(workspace_path) = self.workspace_path.as_ref() else {
+                    return Ok(());
+                };
+                let file_lock = state_file_lock(workspace_path);
+                let _file_guard = file_lock.lock().await;
                 let mut state = self.read_workspace_state().await?;
                 state.recent_models = recent.to_vec();
                 self.write_workspace_state(&state).await?;
             }
             WorkspaceMode::Shared => {
+                let file_lock = state_file_lock(&self.global_path);
+                let _file_guard = file_lock.lock().await;
                 let mut state = self.read_global_state().await?;
                 state.recent_models = recent.to_vec();
                 state.workspaces.insert(
@@ -168,7 +191,17 @@ where
     T: for<'de> Deserialize<'de> + Default,
 {
     match tokio::fs::read_to_string(path).await {
-        Ok(raw) => Ok(serde_json::from_str::<T>(&raw).unwrap_or_default()),
+        Ok(raw) => match serde_json::from_str::<T>(&raw) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                tracing::error!(
+                    path = %path.display(),
+                    %error,
+                    "failed to parse persisted state file, using default value"
+                );
+                Ok(T::default())
+            }
+        },
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
         Err(error) => Err(error.into()),
     }
@@ -217,7 +250,9 @@ mod tests {
 
     impl Drop for TestDir {
         fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
+            if let Err(error) = fs::remove_dir_all(&self.path) {
+                tracing::warn!(path = %self.path.display(), %error, "failed to remove test temp dir");
+            }
         }
     }
 
@@ -371,5 +406,13 @@ mod tests {
                 .recent_models,
             recent_b
         );
+    }
+
+    #[test]
+    fn state_file_lock_reuses_lock_for_same_path() {
+        let path = PathBuf::from("/tmp/rocode-state-test.json");
+        let first = state_file_lock(&path);
+        let second = state_file_lock(&path);
+        assert!(Arc::ptr_eq(&first, &second));
     }
 }

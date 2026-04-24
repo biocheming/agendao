@@ -145,7 +145,10 @@ impl Tool for CodeSearchTool {
 
                 if !response.status().is_success() {
                     let status = response.status();
-                    let error_text = response.text().await.unwrap_or_default();
+                    let error_text = response
+                        .text()
+                        .await
+                        .unwrap_or_else(|error| format!("<body read failed: {}>", error));
                     return Err(ToolError::ExecutionError(format!("Code search error ({}): {}", status, error_text)));
                 }
 

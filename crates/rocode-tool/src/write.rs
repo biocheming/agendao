@@ -113,8 +113,24 @@ impl Tool for WriteTool {
             .await?;
         }
 
-        let old_content = fs::read_to_string(&path).await.unwrap_or_default();
-        let exists = !old_content.is_empty();
+        let exists = match fs::metadata(&path).await {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => {
+                return Err(ToolError::ExecutionError(format!(
+                    "Failed to inspect existing file: {}",
+                    error
+                )));
+            }
+        };
+
+        let old_content = if exists {
+            fs::read_to_string(&path).await.map_err(|error| {
+                ToolError::ExecutionError(format!("Failed to read existing file: {}", error))
+            })?
+        } else {
+            String::new()
+        };
 
         if exists {
             ctx.do_file_time_assert(path_str.clone()).await?;

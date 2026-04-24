@@ -255,7 +255,10 @@ impl ProtocolImpl for BedrockProtocol {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|error| format!("<body read failed: {}>", error));
             return Err(ProviderError::ApiError(format!("{}: {}", status, body)));
         }
 
@@ -305,7 +308,10 @@ impl ProtocolImpl for BedrockProtocol {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|error| format!("<body read failed: {}>", error));
             return Err(ProviderError::ApiError(format!("{}: {}", status, body)));
         }
 

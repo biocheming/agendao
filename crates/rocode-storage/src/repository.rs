@@ -78,6 +78,21 @@ ON CONFLICT(id) DO UPDATE SET
     validation_status = excluded.validation_status
 "#;
 
+fn serialize_json_for_db<T: Serialize>(context: &str, field: &str, value: &T) -> Option<String> {
+    match serde_json::to_string(value) {
+        Ok(json) => Some(json),
+        Err(error) => {
+            tracing::error!(
+                context,
+                field,
+                %error,
+                "failed to serialize field for database persistence"
+            );
+            None
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct MemoryRepositoryFilter {
     pub scopes: Vec<MemoryScope>,
@@ -890,9 +905,21 @@ fn bind_memory_record_upsert<'q>(
         .bind(memory_status_to_str(&record.status))
         .bind(&record.title)
         .bind(&record.summary)
-        .bind(serde_json::to_string(&record.trigger_conditions).ok())
-        .bind(serde_json::to_string(&record.normalized_facts).ok())
-        .bind(serde_json::to_string(&record.boundaries).ok())
+        .bind(serialize_json_for_db(
+            "memory_record_upsert",
+            "trigger_conditions",
+            &record.trigger_conditions,
+        ))
+        .bind(serialize_json_for_db(
+            "memory_record_upsert",
+            "normalized_facts",
+            &record.normalized_facts,
+        ))
+        .bind(serialize_json_for_db(
+            "memory_record_upsert",
+            "boundaries",
+            &record.boundaries,
+        ))
         .bind(record.confidence.map(f64::from))
         .bind(&record.source_session_id)
         .bind(&record.workspace_identity)
@@ -941,24 +968,27 @@ fn bind_session_upsert<'q>(
                 .unwrap_or(0),
         )
         .bind(
-            session
-                .summary
-                .as_ref()
-                .and_then(|s| serde_json::to_string(&s.diffs).ok()),
+            session.summary.as_ref().and_then(|s| {
+                serialize_json_for_db("session_upsert_bind", "summary_diffs", &s.diffs)
+            }),
         )
         .bind(
             session
                 .revert
                 .as_ref()
-                .and_then(|r| serde_json::to_string(r).ok()),
+                .and_then(|r| serialize_json_for_db("session_upsert_bind", "revert", r)),
         )
         .bind(
             session
                 .permission
                 .as_ref()
-                .and_then(|p| serde_json::to_string(p).ok()),
+                .and_then(|p| serialize_json_for_db("session_upsert_bind", "permission", p)),
         )
-        .bind(serde_json::to_string(&session.metadata).ok())
+        .bind(serialize_json_for_db(
+            "session_upsert_bind",
+            "metadata",
+            &session.metadata,
+        ))
         .bind(usage.map(|u| u.input_tokens as i64).unwrap_or(0))
         .bind(usage.map(|u| u.output_tokens as i64).unwrap_or(0))
         .bind(usage.map(|u| u.reasoning_tokens as i64).unwrap_or(0))
@@ -1088,18 +1118,18 @@ impl SessionRepository {
         let summary_diffs = session
             .summary
             .as_ref()
-            .and_then(|s| serde_json::to_string(&s.diffs).ok());
+            .and_then(|s| serialize_json_for_db("session_create", "summary_diffs", &s.diffs));
 
         let revert_json = session
             .revert
             .as_ref()
-            .and_then(|r| serde_json::to_string(r).ok());
+            .and_then(|r| serialize_json_for_db("session_create", "revert", r));
 
         let permission_json = session
             .permission
             .as_ref()
-            .and_then(|p| serde_json::to_string(p).ok());
-        let metadata_json = serde_json::to_string(&session.metadata).ok();
+            .and_then(|p| serialize_json_for_db("session_create", "permission", p));
+        let metadata_json = serialize_json_for_db("session_create", "metadata", &session.metadata);
 
         let share_url = session.share.as_ref().map(|s| s.url.as_str());
 
@@ -1233,20 +1263,20 @@ impl SessionRepository {
         let summary_diffs = session
             .summary
             .as_ref()
-            .and_then(|s| serde_json::to_string(&s.diffs).ok());
+            .and_then(|s| serialize_json_for_db("session_update", "summary_diffs", &s.diffs));
 
         let revert_json = session
             .revert
             .as_ref()
-            .and_then(|r| serde_json::to_string(r).ok());
+            .and_then(|r| serialize_json_for_db("session_update", "revert", r));
 
         let permission_json = session
             .permission
             .as_ref()
-            .and_then(|p| serde_json::to_string(p).ok());
+            .and_then(|p| serialize_json_for_db("session_update", "permission", p));
 
         let share_url = session.share.as_ref().map(|s| s.url.as_str());
-        let metadata_json = serde_json::to_string(&session.metadata).ok();
+        let metadata_json = serialize_json_for_db("session_update", "metadata", &session.metadata);
 
         let usage = session.usage.as_ref();
 

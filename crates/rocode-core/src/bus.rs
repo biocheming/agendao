@@ -52,7 +52,13 @@ impl Bus {
             properties: properties.clone(),
         };
 
-        let _ = self.tx.send(event.clone());
+        if let Err(error) = self.tx.send(event.clone()) {
+            tracing::debug!(
+                event_type = def.event_type,
+                "broadcast event had no active receivers: {}",
+                error
+            );
+        }
 
         let subscribers = self.subscribers.read().await;
         if let Some(subs) = subscribers.get(def.event_type) {

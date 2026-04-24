@@ -146,9 +146,14 @@ impl ProcessRegistry {
     /// Processes without a callback skip straight to SIGTERM → SIGKILL.
     pub fn kill(&self, pid: u32) -> Result<(), std::io::Error> {
         // Fire graceful shutdown callback if registered.
-        if let Some(callback) = self.shutdown_callbacks.read().get(&pid) {
-            let cb = callback.clone();
+        let shutdown_callback = self.shutdown_callbacks.read().get(&pid).cloned();
+        if let Some(cb) = shutdown_callback {
             cb();
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            if !is_process_alive(pid) {
+                self.unregister(pid);
+                return Ok(());
+            }
         }
 
         #[cfg(unix)]
@@ -163,11 +168,17 @@ impl ProcessRegistry {
                 }
                 return Err(err);
             }
-            // Brief wait then SIGKILL (best-effort, non-blocking)
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(500));
-                unsafe { libc::kill(pid as i32, libc::SIGKILL) };
-            });
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            if is_process_alive(pid) {
+                let kill_ret = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+                if kill_ret != 0 {
+                    let err = Error::last_os_error();
+                    if err.kind() != ErrorKind::PermissionDenied {
+                        self.unregister(pid);
+                    }
+                    return Err(err);
+                }
+            }
             self.unregister(pid);
             Ok(())
         }
@@ -211,7 +222,10 @@ impl ProcessRegistry {
 
     fn compute_cpu_percent(&self, pid: u32, current_ticks: u64) -> f32 {
         let mut prev = self.prev_cpu.write();
-        let total_now = read_total_cpu_ticks().unwrap_or(1);
+        let Some(total_now) = read_total_cpu_ticks() else {
+            prev.insert(pid, (current_ticks, 0));
+            return 0.0;
+        };
         let (prev_ticks, prev_total) = prev.get(&pid).copied().unwrap_or((0, total_now));
         prev.insert(pid, (current_ticks, total_now));
 
@@ -322,7 +336,7 @@ fn read_total_cpu_ticks() -> Option<u64> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        Some(1)
+        None
     }
 }
 
@@ -403,6 +417,15 @@ fn parse_parent_pid_from_stat(stat: &str) -> Option<u32> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    fn registry_test_guard() -> MutexGuard<'static, ()> {
+        static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("process registry test lock should not be poisoned")
+    }
 
     #[test]
     fn test_register_with_shutdown_stores_callback() {
@@ -481,6 +504,7 @@ mod tests {
 
     #[test]
     fn test_guard_drop_unregisters() {
+        let _test_guard = registry_test_guard();
         // Use global_registry so guard drop actually unregisters the right registry
         let pid = 888_888_001;
         let guard = global_registry().register(pid, "guard-test".to_string(), ProcessKind::Bash);
@@ -493,6 +517,7 @@ mod tests {
 
     #[test]
     fn test_guard_defuse_skips_unregister() {
+        let _test_guard = registry_test_guard();
         let pid = 888_888_002;
         let guard = global_registry().register(pid, "defuse-test".to_string(), ProcessKind::Bash);
         assert!(global_registry().list().iter().any(|p| p.pid == pid));
@@ -511,6 +536,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_reaper_cleans_dead_pids() {
+        let _test_guard = registry_test_guard();
         // Register a PID that definitely doesn't exist
         let dead_pid = 999_777_001;
         let guard =

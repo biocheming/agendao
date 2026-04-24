@@ -1,5 +1,7 @@
 use regex::Regex;
 use reqwest::Client;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use url::{Host, Url};
 
 use crate::ToolError;
 
@@ -10,20 +12,128 @@ pub(crate) const DEFAULT_WEB_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 
 pub(crate) fn build_web_client() -> Client {
-    Client::builder()
+    match Client::builder()
         .user_agent(DEFAULT_WEB_USER_AGENT)
         .timeout(std::time::Duration::from_secs(MAX_WEB_TIMEOUT_SECS))
         .build()
-        .expect("web client should build")
+    {
+        Ok(client) => client,
+        Err(error) => {
+            tracing::warn!(%error, "failed to build configured web client, using reqwest default client");
+            Client::new()
+        }
+    }
 }
 
 pub(crate) fn ensure_http_url(url: &str) -> Result<(), ToolError> {
-    if url.starts_with("http://") || url.starts_with("https://") {
+    let parsed = parse_http_url(url)?;
+    validate_http_url_host(&parsed)?;
+    Ok(())
+}
+
+pub(crate) async fn ensure_safe_http_url(url: &str) -> Result<Url, ToolError> {
+    let parsed = parse_http_url(url)?;
+    validate_http_url_host(&parsed)?;
+    validate_resolved_host(&parsed).await?;
+    Ok(parsed)
+}
+
+fn parse_http_url(url: &str) -> Result<Url, ToolError> {
+    let parsed = Url::parse(url).map_err(|error| {
+        ToolError::InvalidArguments(format!("invalid URL `{}`: {}", url, error))
+    })?;
+
+    match parsed.scheme() {
+        "http" | "https" => {}
+        _ => {
+            return Err(ToolError::InvalidArguments(
+                "URL must start with http:// or https://".to_string(),
+            ));
+        }
+    }
+
+    Ok(parsed)
+}
+
+fn validate_http_url_host(parsed: &Url) -> Result<(), ToolError> {
+    let host = parsed.host().ok_or_else(|| {
+        ToolError::InvalidArguments(format!("URL `{}` must include a host", parsed))
+    })?;
+
+    match host {
+        Host::Ipv4(ip) if is_blocked_ip(IpAddr::V4(ip)) => Err(ToolError::PermissionDenied(
+            format!("refusing to access local or private address `{}`", ip),
+        )),
+        Host::Ipv6(ip) if is_blocked_ip(IpAddr::V6(ip)) => Err(ToolError::PermissionDenied(
+            format!("refusing to access local or private address `{}`", ip),
+        )),
+        Host::Domain(domain) if is_blocked_host(domain) => Err(ToolError::PermissionDenied(
+            format!("refusing to access local host `{}`", domain),
+        )),
+        _ => Ok(()),
+    }
+}
+
+async fn validate_resolved_host(parsed: &Url) -> Result<(), ToolError> {
+    let Some(domain) = parsed.host_str() else {
+        return Ok(());
+    };
+    if parsed
+        .host()
+        .is_some_and(|host| !matches!(host, Host::Domain(_)))
+    {
         return Ok(());
     }
-    Err(ToolError::InvalidArguments(
-        "URL must start with http:// or https://".to_string(),
-    ))
+
+    let port = parsed.port_or_known_default().ok_or_else(|| {
+        ToolError::InvalidArguments(format!("URL `{}` must include a valid port", parsed))
+    })?;
+
+    let resolved = tokio::net::lookup_host((domain, port))
+        .await
+        .map_err(|error| {
+            ToolError::ExecutionError(format!("failed to resolve host `{}`: {}", domain, error))
+        })?;
+
+    for addr in resolved {
+        if is_blocked_ip(addr.ip()) {
+            return Err(ToolError::PermissionDenied(format!(
+                "refusing to access host `{}` resolved to local or private address `{}`",
+                domain,
+                addr.ip()
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn is_blocked_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host.eq_ignore_ascii_case("localhost.localdomain")
+        || host.to_ascii_lowercase().ends_with(".localhost")
+}
+
+fn is_blocked_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => is_blocked_ipv4(ip),
+        IpAddr::V6(ip) => is_blocked_ipv6(ip),
+    }
+}
+
+fn is_blocked_ipv4(ip: Ipv4Addr) -> bool {
+    ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+        || ip.octets()[0] == 0
+        || ip.octets()[0] == 127
+        || (ip.octets()[0] == 100 && (64..=127).contains(&ip.octets()[1]))
+}
+
+fn is_blocked_ipv6(ip: Ipv6Addr) -> bool {
+    ip.is_loopback() || ip.is_unspecified() || ip.is_unique_local() || ip.is_unicast_link_local()
 }
 
 pub(crate) fn convert_html_to_markdown(html: &str) -> String {

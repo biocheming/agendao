@@ -630,8 +630,8 @@ fn config_to_provider_model(
             }
         });
 
-    let interleaved = match cfg.interleaved {
-        Some(value) => InterleavedConfig::Bool(value),
+    let interleaved = match cfg.interleaved.as_ref() {
+        Some(value) => value.clone(),
         None => existing
             .map(|provider| provider.capabilities.interleaved.clone())
             .unwrap_or_default(),

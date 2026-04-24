@@ -12,3 +12,4 @@ reqwest = { workspace = true }
 tokio = { workspace = true }
 url = { workspace = true }
 which = { workspace = true }
+tracing = { workspace = true }

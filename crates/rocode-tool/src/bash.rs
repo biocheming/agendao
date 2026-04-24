@@ -14,21 +14,115 @@ const MAX_OUTPUT_BYTES: usize = 50 * 1024;
 
 #[cfg(unix)]
 async fn kill_process_tree(pid: u32) {
-    let _ = tokio::process::Command::new("pkill")
-        .arg("-TERM")
-        .arg("-P")
-        .arg(pid.to_string())
-        .status()
-        .await;
+    let pid_str = pid.to_string();
+    send_pkill_signal("-TERM", &pid_str).await;
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let _ = tokio::process::Command::new("pkill")
-        .arg("-KILL")
+    if child_processes_exist(&pid_str).await {
+        send_pkill_signal("-KILL", &pid_str).await;
+    }
+}
+
+#[cfg(unix)]
+async fn send_pkill_signal(signal: &str, pid_str: &str) {
+    match tokio::process::Command::new("pkill")
+        .arg(signal)
         .arg("-P")
-        .arg(pid.to_string())
+        .arg(pid_str)
         .status()
-        .await;
+        .await
+    {
+        Ok(status) if status.success() || status.code() == Some(1) => {}
+        Ok(status) => {
+            tracing::warn!(
+                signal,
+                pid = pid_str,
+                status = ?status.code(),
+                "pkill exited unsuccessfully while terminating bash child processes"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                signal,
+                pid = pid_str,
+                %error,
+                "failed to invoke pkill while terminating bash child processes"
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn child_processes_exist(pid_str: &str) -> bool {
+    match tokio::process::Command::new("pgrep")
+        .arg("-P")
+        .arg(pid_str)
+        .status()
+        .await
+    {
+        Ok(status) => status.success(),
+        Err(error) => {
+            tracing::warn!(
+                pid = pid_str,
+                %error,
+                "failed to inspect bash child processes before escalating to SIGKILL"
+            );
+            true
+        }
+    }
+}
+
+fn should_inherit_shell_env(key: &str) -> bool {
+    const SAFE_EXACT_KEYS: &[&str] = &[
+        "APPDATA",
+        "COLORTERM",
+        "COMSPEC",
+        "DISPLAY",
+        "HOME",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "LANG",
+        "LOCALAPPDATA",
+        "LOGNAME",
+        "NO_PROXY",
+        "OLDPWD",
+        "OS",
+        "PATH",
+        "PATHEXT",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "PWD",
+        "SHELL",
+        "SSH_AUTH_SOCK",
+        "SSH_AGENT_PID",
+        "SYSTEMROOT",
+        "TEMP",
+        "TERM",
+        "TMP",
+        "TMPDIR",
+        "USER",
+        "USERNAME",
+        "USERPROFILE",
+        "VISUAL",
+        "WAYLAND_DISPLAY",
+        "WINDIR",
+        "XAUTHORITY",
+    ];
+    const SAFE_PREFIXES: &[&str] = &["LC_", "XDG_"];
+
+    let upper = key.to_ascii_uppercase();
+    SAFE_EXACT_KEYS.contains(&upper.as_str())
+        || SAFE_PREFIXES.iter().any(|prefix| upper.starts_with(prefix))
+}
+
+fn inherited_shell_env() -> std::collections::HashMap<String, String> {
+    std::env::vars()
+        .filter(|(key, _)| should_inherit_shell_env(key))
+        .collect()
 }
 
 pub struct BashTool;
@@ -143,10 +237,7 @@ impl Tool for BashTool {
 
         let title = description.clone();
 
-        let mut env_vars = std::collections::HashMap::new();
-        for (key, value) in std::env::vars() {
-            env_vars.insert(key, value);
-        }
+        let mut env_vars = inherited_shell_env();
         if let Some(extra_env) = ctx.extra.get("env") {
             if let Some(env_obj) = extra_env.as_object() {
                 for (key, value) in env_obj {

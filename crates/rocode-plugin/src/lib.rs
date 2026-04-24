@@ -488,13 +488,22 @@ static GLOBAL_NATIVE_PLUGIN_LOADER: std::sync::OnceLock<
 
 /// Set the global plugin loader. Called during bootstrap (server or CLI).
 pub fn set_global_loader(loader: Arc<subprocess::loader::PluginLoader>) {
-    let mut guard = GLOBAL_PLUGIN_LOADER.write().unwrap();
+    let mut guard = GLOBAL_PLUGIN_LOADER.write().unwrap_or_else(|error| {
+        tracing::error!(%error, "global plugin loader lock poisoned during write; recovering");
+        error.into_inner()
+    });
     *guard = Some(loader);
 }
 
 /// Get the global plugin loader, if one has been set.
 pub fn global_loader() -> Option<Arc<subprocess::loader::PluginLoader>> {
-    GLOBAL_PLUGIN_LOADER.read().unwrap().clone()
+    GLOBAL_PLUGIN_LOADER
+        .read()
+        .unwrap_or_else(|error| {
+            tracing::error!(%error, "global plugin loader lock poisoned during read; recovering");
+            error.into_inner()
+        })
+        .clone()
 }
 
 /// Get the global native plugin loader, creating one on first use.

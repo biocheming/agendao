@@ -218,7 +218,11 @@ async fn put_provider_model_config(
                 .entry(key.clone())
                 .or_insert_with(ProviderConfig::default);
             let models = provider.models.get_or_insert_with(HashMap::new);
-            models.insert(model_key.clone(), model);
+            if let Some(existing) = models.get_mut(&model_key) {
+                merge_model_config(existing, model);
+            } else {
+                models.insert(model_key.clone(), model);
+            }
             Ok(())
         })
         .map_err(|error| crate::ApiError::BadRequest(error.to_string()))?;
@@ -257,6 +261,179 @@ async fn put_plugin_config(
         })
         .map_err(|error| crate::ApiError::BadRequest(error.to_string()))?;
     finalize_config_change(&state, updated).await
+}
+
+fn merge_model_config(existing: &mut ModelConfig, patch: ModelConfig) {
+    let ModelConfig {
+        name,
+        model,
+        api_key,
+        base_url,
+        variants,
+        tool_call,
+        modalities,
+        reasoning,
+        attachment,
+        temperature,
+        interleaved,
+        options,
+        cost,
+        limit,
+        headers,
+        family,
+        status,
+        release_date,
+        experimental,
+        provider,
+    } = patch;
+
+    if let Some(value) = name {
+        existing.name = Some(value);
+    }
+    if let Some(value) = model {
+        existing.model = Some(value);
+    }
+    if let Some(value) = api_key {
+        existing.api_key = Some(value);
+    }
+    if let Some(value) = base_url {
+        existing.base_url = Some(value);
+    }
+    if let Some(value) = variants {
+        existing.variants = Some(value);
+    }
+    if let Some(value) = tool_call {
+        existing.tool_call = Some(value);
+    }
+    if let Some(value) = modalities {
+        existing.modalities = Some(value);
+    }
+    if let Some(value) = reasoning {
+        existing.reasoning = Some(value);
+    }
+    if let Some(value) = attachment {
+        existing.attachment = Some(value);
+    }
+    if let Some(value) = temperature {
+        existing.temperature = Some(value);
+    }
+    if let Some(value) = interleaved {
+        existing.interleaved = Some(value);
+    }
+    if let Some(value) = options {
+        existing.options = Some(value);
+    }
+    if let Some(value) = cost {
+        existing.cost = Some(value);
+    }
+    if let Some(value) = limit {
+        existing.limit = Some(value);
+    }
+    if let Some(value) = headers {
+        existing.headers = Some(value);
+    }
+    if let Some(value) = family {
+        existing.family = Some(value);
+    }
+    if let Some(value) = status {
+        existing.status = Some(value);
+    }
+    if let Some(value) = release_date {
+        existing.release_date = Some(value);
+    }
+    if let Some(value) = experimental {
+        existing.experimental = Some(value);
+    }
+    if let Some(value) = provider {
+        existing.provider = Some(value);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_model_config;
+    use rocode_config::ModelConfig;
+    use std::collections::HashMap;
+
+    #[test]
+    fn merge_model_config_preserves_unedited_fields() {
+        let mut existing = ModelConfig {
+            name: Some("Existing Name".to_string()),
+            model: Some("existing-id".to_string()),
+            base_url: Some("https://example.invalid".to_string()),
+            headers: Some(HashMap::from([(
+                "Authorization".to_string(),
+                "Bearer secret".to_string(),
+            )])),
+            options: Some(HashMap::from([(
+                "tier".to_string(),
+                serde_json::json!("premium"),
+            )])),
+            ..ModelConfig::default()
+        };
+
+        let patch = ModelConfig {
+            name: Some("Updated Name".to_string()),
+            reasoning: Some(true),
+            ..ModelConfig::default()
+        };
+
+        merge_model_config(&mut existing, patch);
+
+        assert_eq!(existing.name.as_deref(), Some("Updated Name"));
+        assert_eq!(existing.model.as_deref(), Some("existing-id"));
+        assert_eq!(
+            existing.base_url.as_deref(),
+            Some("https://example.invalid")
+        );
+        assert_eq!(
+            existing
+                .headers
+                .as_ref()
+                .and_then(|headers| headers.get("Authorization"))
+                .map(String::as_str),
+            Some("Bearer secret")
+        );
+        assert_eq!(
+            existing
+                .options
+                .as_ref()
+                .and_then(|options| options.get("tier")),
+            Some(&serde_json::json!("premium"))
+        );
+        assert_eq!(existing.reasoning, Some(true));
+    }
+
+    #[test]
+    fn merge_model_config_replaces_explicit_fields() {
+        let mut existing = ModelConfig {
+            reasoning: Some(true),
+            headers: Some(HashMap::from([("X-Old".to_string(), "1".to_string())])),
+            ..ModelConfig::default()
+        };
+
+        let patch = ModelConfig {
+            reasoning: Some(false),
+            headers: Some(HashMap::from([("X-New".to_string(), "2".to_string())])),
+            ..ModelConfig::default()
+        };
+
+        merge_model_config(&mut existing, patch);
+
+        assert_eq!(existing.reasoning, Some(false));
+        assert_eq!(
+            existing
+                .headers
+                .as_ref()
+                .and_then(|headers| headers.get("X-New"))
+                .map(String::as_str),
+            Some("2")
+        );
+        assert!(existing
+            .headers
+            .as_ref()
+            .is_some_and(|headers| !headers.contains_key("X-Old")));
+    }
 }
 
 async fn delete_plugin_config(

@@ -431,7 +431,10 @@ impl OpenAIResponsesLanguageModel {
                     .map_err(|e| ProviderError::NetworkError(e.to_string()))?;
                 let status = response.status();
                 if !status.is_success() {
-                    let body = response.text().await.unwrap_or_default();
+                    let body = response
+                        .text()
+                        .await
+                        .unwrap_or_else(|error| format!("<body read failed: {}>", error));
                     return Err(ProviderError::ApiErrorWithStatus {
                         message: body,
                         status_code: status.as_u16(),

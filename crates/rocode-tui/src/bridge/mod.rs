@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -95,6 +96,16 @@ impl RuntimeErrorSink {
 
     fn take(&self) -> Option<anyhow::Error> {
         self.error.lock().take()
+    }
+}
+
+fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "non-string panic payload".to_string()
     }
 }
 
@@ -223,9 +234,11 @@ impl Component for ReactiveRouteComponent {
             app.apply_reactive_selection(buffer, area);
         }));
 
-        if result.is_err() {
-            self.errors
-                .store(anyhow::anyhow!("reactive route render panicked"));
+        if let Err(payload) = result {
+            self.errors.store(anyhow::anyhow!(
+                "reactive route render panicked: {}",
+                panic_payload_message(payload.as_ref())
+            ));
         }
     }
 }
@@ -269,9 +282,11 @@ impl Component for ReactiveSessionViewComponent {
             Ok(cursor) => {
                 *self.cursor.lock() = cursor;
             }
-            Err(_) => {
-                self.errors
-                    .store(anyhow::anyhow!("reactive session render panicked"));
+            Err(payload) => {
+                self.errors.store(anyhow::anyhow!(
+                    "reactive session render panicked: {}",
+                    panic_payload_message(payload.as_ref())
+                ));
             }
         }
     }
