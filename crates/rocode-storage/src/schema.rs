@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     
     -- Usage stats
     usage_input_tokens INTEGER DEFAULT 0,
+    usage_context_tokens INTEGER DEFAULT 0,
     usage_output_tokens INTEGER DEFAULT 0,
     usage_reasoning_tokens INTEGER DEFAULT 0,
     usage_cache_write_tokens INTEGER DEFAULT 0,
@@ -63,6 +64,7 @@ CREATE TABLE IF NOT EXISTS messages (
 
     -- Token usage
     tokens_input INTEGER DEFAULT 0,
+    tokens_context INTEGER DEFAULT 0,
     tokens_output INTEGER DEFAULT 0,
     tokens_reasoning INTEGER DEFAULT 0,
     tokens_cache_read INTEGER DEFAULT 0,
@@ -320,6 +322,10 @@ CREATE INDEX IF NOT EXISTS idx_memory_retrieval_log_session ON memory_retrieval_
 pub const ADD_MESSAGES_FINISH_COLUMN: &str = "ALTER TABLE messages ADD COLUMN finish TEXT";
 pub const ADD_SESSIONS_METADATA_COLUMN: &str = "ALTER TABLE sessions ADD COLUMN metadata TEXT";
 pub const ADD_MESSAGES_METADATA_COLUMN: &str = "ALTER TABLE messages ADD COLUMN metadata TEXT";
+pub const ADD_SESSIONS_USAGE_CONTEXT_COLUMN: &str =
+    "ALTER TABLE sessions ADD COLUMN usage_context_tokens INTEGER DEFAULT 0";
+pub const ADD_MESSAGES_TOKENS_CONTEXT_COLUMN: &str =
+    "ALTER TABLE messages ADD COLUMN tokens_context INTEGER DEFAULT 0";
 
 /// All migration statements to run
 pub const ALL_MIGRATIONS: &[&str] = &[
@@ -341,4 +347,6 @@ pub const ALL_MIGRATIONS: &[&str] = &[
     ADD_MESSAGES_FINISH_COLUMN,
     ADD_SESSIONS_METADATA_COLUMN,
     ADD_MESSAGES_METADATA_COLUMN,
+    ADD_SESSIONS_USAGE_CONTEXT_COLUMN,
+    ADD_MESSAGES_TOKENS_CONTEXT_COLUMN,
 ];

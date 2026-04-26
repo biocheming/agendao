@@ -128,7 +128,44 @@ impl Database {
             }
         }
 
+        self.repair_shifted_message_payload_rows().await?;
         self.run_tool_call_input_data_migration().await?;
+
+        Ok(())
+    }
+
+    async fn repair_shifted_message_payload_rows(&self) -> Result<(), DatabaseError> {
+        let result = sqlx::query(
+            r#"
+            UPDATE messages
+            SET
+                data = CAST(tokens_input AS TEXT),
+                metadata = CASE
+                    WHEN typeof(model_id) = 'text' AND trim(CAST(model_id AS TEXT)) LIKE '{%'
+                    THEN CAST(model_id AS TEXT)
+                    ELSE metadata
+                END,
+                model_id = NULL,
+                tokens_input = 0,
+                tokens_context = 0,
+                tokens_output = 0,
+                tokens_reasoning = 0,
+                tokens_cache_read = 0,
+                tokens_cache_write = 0,
+                cost = 0.0
+            WHERE (data IS NULL OR data = '')
+              AND typeof(tokens_input) = 'text'
+              AND trim(CAST(tokens_input AS TEXT)) LIKE '[%'
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
+
+        let repaired = result.rows_affected();
+        if repaired > 0 {
+            info!(repaired, "repaired shifted message payload rows");
+        }
 
         Ok(())
     }

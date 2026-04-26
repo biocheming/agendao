@@ -21,16 +21,18 @@ INSERT INTO sessions (
     id, project_id, parent_id, slug, directory, title, version, share_url,
     summary_additions, summary_deletions, summary_files, summary_diffs,
     revert, permission, metadata,
-    usage_input_tokens, usage_output_tokens, usage_reasoning_tokens,
+    usage_input_tokens, usage_context_tokens, usage_output_tokens, usage_reasoning_tokens,
     usage_cache_write_tokens, usage_cache_read_tokens, usage_total_cost,
     status, created_at, updated_at, time_compacting, time_archived
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     title = excluded.title, version = excluded.version, share_url = excluded.share_url,
     summary_additions = excluded.summary_additions, summary_deletions = excluded.summary_deletions,
     summary_files = excluded.summary_files, summary_diffs = excluded.summary_diffs,
     revert = excluded.revert, permission = excluded.permission, metadata = excluded.metadata,
-    usage_input_tokens = excluded.usage_input_tokens, usage_output_tokens = excluded.usage_output_tokens,
+    usage_input_tokens = excluded.usage_input_tokens,
+    usage_context_tokens = excluded.usage_context_tokens,
+    usage_output_tokens = excluded.usage_output_tokens,
     usage_reasoning_tokens = excluded.usage_reasoning_tokens,
     usage_cache_write_tokens = excluded.usage_cache_write_tokens,
     usage_cache_read_tokens = excluded.usage_cache_read_tokens,
@@ -42,10 +44,10 @@ ON CONFLICT(id) DO UPDATE SET
 const MESSAGE_UPSERT_SQL: &str = r#"
 INSERT INTO messages (
     id, session_id, role, created_at, provider_id, model_id,
-    tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
+    tokens_input, tokens_context, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
     cost, finish, metadata, data
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     session_id = excluded.session_id,
     role = excluded.role,
@@ -53,6 +55,7 @@ ON CONFLICT(id) DO UPDATE SET
     provider_id = excluded.provider_id,
     model_id = excluded.model_id,
     tokens_input = excluded.tokens_input,
+    tokens_context = excluded.tokens_context,
     tokens_output = excluded.tokens_output,
     tokens_reasoning = excluded.tokens_reasoning,
     tokens_cache_read = excluded.tokens_cache_read,
@@ -1002,6 +1005,7 @@ fn bind_session_upsert<'q>(
             &session.metadata,
         ))
         .bind(usage.map(|u| u.input_tokens as i64).unwrap_or(0))
+        .bind(usage.map(|u| u.context_tokens as i64).unwrap_or(0))
         .bind(usage.map(|u| u.output_tokens as i64).unwrap_or(0))
         .bind(usage.map(|u| u.reasoning_tokens as i64).unwrap_or(0))
         .bind(usage.map(|u| u.cache_write_tokens as i64).unwrap_or(0))
@@ -1039,6 +1043,7 @@ fn message_model_id(message: &SessionMessage) -> Option<&str> {
 
 fn message_usage_from_row(
     tokens_input: Option<i64>,
+    tokens_context: Option<i64>,
     tokens_output: Option<i64>,
     tokens_reasoning: Option<i64>,
     tokens_cache_read: Option<i64>,
@@ -1046,6 +1051,7 @@ fn message_usage_from_row(
     cost: Option<f64>,
 ) -> Option<rocode_types::MessageUsage> {
     let has_usage = tokens_input.unwrap_or(0) > 0
+        || tokens_context.unwrap_or(0) > 0
         || tokens_output.unwrap_or(0) > 0
         || tokens_reasoning.unwrap_or(0) > 0
         || tokens_cache_read.unwrap_or(0) > 0
@@ -1061,7 +1067,7 @@ fn message_usage_from_row(
         reasoning_tokens: tokens_reasoning.unwrap_or(0) as u64,
         cache_read_tokens: tokens_cache_read.unwrap_or(0) as u64,
         cache_write_tokens: tokens_cache_write.unwrap_or(0) as u64,
-        context_tokens: tokens_input.unwrap_or(0) as u64,
+        context_tokens: tokens_context.unwrap_or(0) as u64,
         total_cost: cost.unwrap_or(0.0),
     })
 }
@@ -1084,6 +1090,7 @@ struct SessionRow {
     permission: Option<String>,
     metadata: Option<String>,
     usage_input_tokens: Option<i64>,
+    usage_context_tokens: Option<i64>,
     usage_output_tokens: Option<i64>,
     usage_reasoning_tokens: Option<i64>,
     usage_cache_write_tokens: Option<i64>,
@@ -1143,11 +1150,11 @@ impl SessionRow {
             usage: if self.usage_input_tokens.is_some() {
                 Some(SessionUsage {
                     input_tokens: self.usage_input_tokens.unwrap_or(0) as u64,
+                    context_tokens: self.usage_context_tokens.unwrap_or(0) as u64,
                     output_tokens: self.usage_output_tokens.unwrap_or(0) as u64,
                     reasoning_tokens: self.usage_reasoning_tokens.unwrap_or(0) as u64,
                     cache_write_tokens: self.usage_cache_write_tokens.unwrap_or(0) as u64,
                     cache_read_tokens: self.usage_cache_read_tokens.unwrap_or(0) as u64,
-                    context_tokens: self.usage_input_tokens.unwrap_or(0) as u64,
                     total_cost: self.usage_total_cost.unwrap_or(0.0),
                 })
             } else {
@@ -1197,10 +1204,10 @@ impl SessionRepository {
                 id, project_id, parent_id, slug, directory, title, version, share_url,
                 summary_additions, summary_deletions, summary_files, summary_diffs,
                 revert, permission, metadata,
-                usage_input_tokens, usage_output_tokens, usage_reasoning_tokens,
+                usage_input_tokens, usage_context_tokens, usage_output_tokens, usage_reasoning_tokens,
                 usage_cache_write_tokens, usage_cache_read_tokens, usage_total_cost,
                 status, created_at, updated_at, time_compacting, time_archived
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&session.id)
@@ -1237,6 +1244,7 @@ impl SessionRepository {
         .bind(permission_json)
         .bind(metadata_json)
         .bind(usage.map(|u| u.input_tokens as i64).unwrap_or(0))
+        .bind(usage.map(|u| u.context_tokens as i64).unwrap_or(0))
         .bind(usage.map(|u| u.output_tokens as i64).unwrap_or(0))
         .bind(usage.map(|u| u.reasoning_tokens as i64).unwrap_or(0))
         .bind(usage.map(|u| u.cache_write_tokens as i64).unwrap_or(0))
@@ -1260,7 +1268,7 @@ impl SessionRepository {
                 id, project_id, parent_id, slug, directory, title, version, share_url,
                 summary_additions, summary_deletions, summary_files, summary_diffs,
                 revert, permission, metadata,
-                usage_input_tokens, usage_output_tokens, usage_reasoning_tokens,
+                usage_input_tokens, usage_context_tokens, usage_output_tokens, usage_reasoning_tokens,
                 usage_cache_write_tokens, usage_cache_read_tokens, usage_total_cost,
                 status, created_at, updated_at, time_compacting, time_archived
             FROM sessions WHERE id = ?"#,
@@ -1284,7 +1292,7 @@ impl SessionRepository {
                         id, project_id, parent_id, slug, directory, title, version, share_url,
                         summary_additions, summary_deletions, summary_files, summary_diffs,
                         revert, permission, metadata,
-                        usage_input_tokens, usage_output_tokens, usage_reasoning_tokens,
+                        usage_input_tokens, usage_context_tokens, usage_output_tokens, usage_reasoning_tokens,
                         usage_cache_write_tokens, usage_cache_read_tokens, usage_total_cost,
                         status, created_at, updated_at, time_compacting, time_archived
                     FROM sessions WHERE project_id = ? 
@@ -1300,7 +1308,7 @@ impl SessionRepository {
                         id, project_id, parent_id, slug, directory, title, version, share_url,
                         summary_additions, summary_deletions, summary_files, summary_diffs,
                         revert, permission, metadata,
-                        usage_input_tokens, usage_output_tokens, usage_reasoning_tokens,
+                        usage_input_tokens, usage_context_tokens, usage_output_tokens, usage_reasoning_tokens,
                         usage_cache_write_tokens, usage_cache_read_tokens, usage_total_cost,
                         status, created_at, updated_at, time_compacting, time_archived
                     FROM sessions 
@@ -1342,7 +1350,7 @@ impl SessionRepository {
                 title = ?, version = ?, share_url = ?,
                 summary_additions = ?, summary_deletions = ?, summary_files = ?, summary_diffs = ?,
                 revert = ?, permission = ?, metadata = ?,
-                usage_input_tokens = ?, usage_output_tokens = ?, usage_reasoning_tokens = ?,
+                usage_input_tokens = ?, usage_context_tokens = ?, usage_output_tokens = ?, usage_reasoning_tokens = ?,
                 usage_cache_write_tokens = ?, usage_cache_read_tokens = ?, usage_total_cost = ?,
                 status = ?, updated_at = ?, time_compacting = ?, time_archived = ?
             WHERE id = ?
@@ -1377,6 +1385,7 @@ impl SessionRepository {
         .bind(permission_json)
         .bind(metadata_json)
         .bind(usage.map(|u| u.input_tokens as i64).unwrap_or(0))
+        .bind(usage.map(|u| u.context_tokens as i64).unwrap_or(0))
         .bind(usage.map(|u| u.output_tokens as i64).unwrap_or(0))
         .bind(usage.map(|u| u.reasoning_tokens as i64).unwrap_or(0))
         .bind(usage.map(|u| u.cache_write_tokens as i64).unwrap_or(0))
@@ -1418,7 +1427,7 @@ impl SessionRepository {
                 id, project_id, parent_id, slug, directory, title, version, share_url,
                 summary_additions, summary_deletions, summary_files, summary_diffs,
                 revert, permission, metadata,
-                usage_input_tokens, usage_output_tokens, usage_reasoning_tokens,
+                usage_input_tokens, usage_context_tokens, usage_output_tokens, usage_reasoning_tokens,
                 usage_cache_write_tokens, usage_cache_read_tokens, usage_total_cost,
                 status, created_at, updated_at, time_compacting, time_archived
             FROM sessions WHERE parent_id = ? 
@@ -1718,10 +1727,10 @@ impl MessageRepository {
             r#"
             INSERT INTO messages (
                 id, session_id, role, created_at, provider_id, model_id,
-                tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
+                tokens_input, tokens_context, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
                 cost, finish, metadata, data
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&message.id)
@@ -1731,6 +1740,7 @@ impl MessageRepository {
         .bind(message_model_provider_id(message))
         .bind(message_model_id(message))
         .bind(usage.map(|u| u.input_tokens as i64).unwrap_or(0))
+        .bind(usage.map(|u| u.context_tokens as i64).unwrap_or(0))
         .bind(usage.map(|u| u.output_tokens as i64).unwrap_or(0))
         .bind(usage.map(|u| u.reasoning_tokens as i64).unwrap_or(0))
         .bind(usage.map(|u| u.cache_read_tokens as i64).unwrap_or(0))
@@ -1761,6 +1771,7 @@ impl MessageRepository {
             .bind(message_model_provider_id(message))
             .bind(message_model_id(message))
             .bind(usage.map(|u| u.input_tokens as i64).unwrap_or(0))
+            .bind(usage.map(|u| u.context_tokens as i64).unwrap_or(0))
             .bind(usage.map(|u| u.output_tokens as i64).unwrap_or(0))
             .bind(usage.map(|u| u.reasoning_tokens as i64).unwrap_or(0))
             .bind(usage.map(|u| u.cache_read_tokens as i64).unwrap_or(0))
@@ -1787,6 +1798,7 @@ impl MessageRepository {
             role: String,
             created_at: i64,
             tokens_input: Option<i64>,
+            tokens_context: Option<i64>,
             tokens_output: Option<i64>,
             tokens_reasoning: Option<i64>,
             tokens_cache_read: Option<i64>,
@@ -1800,7 +1812,7 @@ impl MessageRepository {
         let rows = sqlx::query_as::<_, MessageRow>(
             r#"SELECT
                    id, session_id, role, created_at,
-                   tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
+                   tokens_input, tokens_context, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
                    cost, finish, metadata, data
                FROM messages WHERE session_id = ? ORDER BY created_at ASC"#,
         )
@@ -1840,6 +1852,7 @@ impl MessageRepository {
                         .unwrap_or_default(),
                     usage: message_usage_from_row(
                         row.tokens_input,
+                        row.tokens_context,
                         row.tokens_output,
                         row.tokens_reasoning,
                         row.tokens_cache_read,
@@ -1862,6 +1875,7 @@ impl MessageRepository {
             role: String,
             created_at: i64,
             tokens_input: Option<i64>,
+            tokens_context: Option<i64>,
             tokens_output: Option<i64>,
             tokens_reasoning: Option<i64>,
             tokens_cache_read: Option<i64>,
@@ -1875,7 +1889,7 @@ impl MessageRepository {
         let row = sqlx::query_as::<_, MessageRow>(
             r#"SELECT
                    id, session_id, role, created_at,
-                   tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
+                   tokens_input, tokens_context, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
                    cost, finish, metadata, data
                FROM messages WHERE id = ?"#,
         )
@@ -1914,6 +1928,7 @@ impl MessageRepository {
                         .unwrap_or_default(),
                     usage: message_usage_from_row(
                         row.tokens_input,
+                        row.tokens_context,
                         row.tokens_output,
                         row.tokens_reasoning,
                         row.tokens_cache_read,
@@ -2481,6 +2496,7 @@ mod tests {
             reasoning_tokens: 12,
             cache_read_tokens: 4,
             cache_write_tokens: 2,
+            context_tokens: 12_345,
             total_cost: 0.1234,
         });
 
@@ -2493,7 +2509,37 @@ mod tests {
         assert_eq!(usage.reasoning_tokens, 12);
         assert_eq!(usage.cache_read_tokens, 4);
         assert_eq!(usage.cache_write_tokens, 2);
+        assert_eq!(usage.context_tokens, 12_345);
         assert!((usage.total_cost - 0.1234).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn session_usage_context_tokens_roundtrips() {
+        let db = Database::in_memory().await.unwrap();
+        let session_repo = SessionRepository::new(db.pool().clone());
+
+        let mut session = make_session("s_usage_context");
+        session.usage = Some(SessionUsage {
+            input_tokens: 100_000,
+            context_tokens: 42_000,
+            output_tokens: 250,
+            reasoning_tokens: 32,
+            cache_write_tokens: 7,
+            cache_read_tokens: 11,
+            total_cost: 0.5678,
+        });
+
+        session_repo.upsert(&session).await.unwrap();
+
+        let loaded = session_repo.get("s_usage_context").await.unwrap().unwrap();
+        let usage = loaded.usage.expect("usage should roundtrip");
+        assert_eq!(usage.input_tokens, 100_000);
+        assert_eq!(usage.context_tokens, 42_000);
+        assert_eq!(usage.output_tokens, 250);
+        assert_eq!(usage.reasoning_tokens, 32);
+        assert_eq!(usage.cache_write_tokens, 7);
+        assert_eq!(usage.cache_read_tokens, 11);
+        assert!((usage.total_cost - 0.5678).abs() < f64::EPSILON);
     }
 
     #[tokio::test]

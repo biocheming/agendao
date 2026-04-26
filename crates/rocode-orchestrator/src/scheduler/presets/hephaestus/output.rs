@@ -10,6 +10,31 @@ fn first_meaningful_line(content: &str) -> &str {
         .unwrap_or("No summary provided.")
 }
 
+fn first_body_line_after_delivery_summary(content: &str) -> &str {
+    let mut seen_delivery_summary = false;
+    for line in content.lines().map(str::trim) {
+        if line.is_empty() {
+            continue;
+        }
+        if line == "## Delivery Summary" {
+            seen_delivery_summary = true;
+            continue;
+        }
+        if seen_delivery_summary {
+            return line;
+        }
+    }
+    first_meaningful_line(content)
+}
+
+fn strip_delivery_summary_heading(content: &str) -> &str {
+    content
+        .trim()
+        .strip_prefix("## Delivery Summary")
+        .map(str::trim_start)
+        .unwrap_or_else(|| content.trim())
+}
+
 pub fn normalize_hephaestus_final_output(output: &str) -> String {
     let trimmed = output.trim();
     if trimmed.is_empty() {
@@ -26,14 +51,14 @@ pub fn normalize_hephaestus_final_output(output: &str) -> String {
         && trimmed.contains("**What Changed**")
         && trimmed.contains("**Verification**")
     {
-        let summary = first_meaningful_line(trimmed);
+        let summary = first_body_line_after_delivery_summary(trimmed);
         return [
             format!("## Delivery Summary\n{summary}"),
             structured_section(
                 "Completion Status",
                 "- Preserve the Hephaestus finish-gate result only: done when completion is proved, otherwise state the concrete blocker or retry gap explicitly.",
             ),
-            trimmed.to_string(),
+            strip_delivery_summary_heading(trimmed).to_string(),
         ]
         .join("\n\n");
     }
@@ -85,5 +110,6 @@ mod tests {
         assert!(normalized.contains("**Completion Status**"));
         assert!(normalized.contains("**What Changed**"));
         assert!(normalized.contains("**Verification**"));
+        assert_eq!(normalized.matches("## Delivery Summary").count(), 1);
     }
 }

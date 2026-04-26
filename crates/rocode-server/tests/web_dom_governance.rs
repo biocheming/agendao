@@ -6,6 +6,14 @@ fn web_dom_governance_suite_passes() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let test_file = manifest_dir.join("web").join("app.dom.test.mjs");
 
+    if !test_file.is_file() {
+        eprintln!(
+            "skipping web DOM governance tests; {} is not present",
+            test_file.display()
+        );
+        return;
+    }
+
     let output = Command::new("node")
         .arg("--test")
         .arg(&test_file)

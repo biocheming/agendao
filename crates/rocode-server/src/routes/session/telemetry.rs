@@ -228,6 +228,7 @@ mod tests {
             reasoning_tokens: 3,
             cache_write_tokens: 2,
             cache_read_tokens: 1,
+            context_tokens: 0,
             total_cost: 0.42,
         });
 
@@ -251,6 +252,7 @@ mod tests {
             reasoning_tokens: 3,
             cache_write_tokens: 4,
             cache_read_tokens: 5,
+            context_tokens: 0,
             total_cost: 0.12,
         });
 
@@ -265,6 +267,7 @@ mod tests {
                 step_total: Some(3),
                 status: StageStatus::Waiting,
                 prompt_tokens: Some(11),
+                context_tokens: None,
                 completion_tokens: Some(7),
                 reasoning_tokens: Some(5),
                 cache_read_tokens: Some(2),
@@ -299,6 +302,7 @@ mod tests {
                 reasoning_tokens: 3,
                 cache_write_tokens: 4,
                 cache_read_tokens: 5,
+                context_tokens: 0,
                 total_cost: 0.12,
             },
             memory: None,
@@ -456,6 +460,7 @@ mod tests {
                         reasoning_tokens: 3,
                         cache_write_tokens: 4,
                         cache_read_tokens: 5,
+                        context_tokens: 0,
                         total_cost: 0.25,
                     },
                     stage_summaries: vec![],
@@ -576,6 +581,7 @@ mod tests {
             reasoning_tokens: 3,
             cache_write_tokens: 4,
             cache_read_tokens: 5,
+            context_tokens: 0,
             total_cost: 0.25,
         });
 
@@ -610,6 +616,7 @@ mod tests {
                     reasoning_tokens: 3,
                     cache_write_tokens: 4,
                     cache_read_tokens: 5,
+                    context_tokens: 0,
                     total_cost: 0.25,
                 },
             )

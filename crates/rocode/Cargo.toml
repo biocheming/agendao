@@ -12,7 +12,7 @@ path = "src/main.rs"
 [dependencies]
 rocode-cli = { path = "../rocode-cli" }
 rocode-client = { path = "../rocode-client" }
-rocode-launcher = { path = "../rocode-launcher" }
+rocode-launcher = { path = "../rocode-launcher", features = ["embedded-web"] }
 rocode-server = { path = "../rocode-server" }
 rocode-tui = { path = "../rocode-tui" }
 rocode-core = { path = "../rocode-core" }

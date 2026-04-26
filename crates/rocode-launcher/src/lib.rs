@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
@@ -5,8 +6,25 @@ use std::time::Duration;
 
 use anyhow::Context;
 use reqwest::Client as HttpClient;
+#[cfg(feature = "embedded-web")]
+use rust_embed::RustEmbed;
 use tokio::process::Child;
 use url::Url;
+
+#[cfg(feature = "embedded-web")]
+#[derive(RustEmbed)]
+#[folder = "../../apps/rocode-web/dist"]
+struct EmbeddedWebAssets;
+
+#[cfg(feature = "embedded-web")]
+pub fn embedded_web_asset(path: &str) -> Option<Cow<'static, [u8]>> {
+    EmbeddedWebAssets::get(path).map(|file| file.data)
+}
+
+#[cfg(not(feature = "embedded-web"))]
+pub fn embedded_web_asset(_path: &str) -> Option<Cow<'static, [u8]>> {
+    None
+}
 
 pub fn resolve_web_dist_dir() -> anyhow::Result<PathBuf> {
     if let Some(path) = try_resolve_web_dist_dir() {

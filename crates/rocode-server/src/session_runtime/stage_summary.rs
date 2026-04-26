@@ -70,6 +70,7 @@ mod tests {
             step_total: None,
             status: StageStatus::Running,
             prompt_tokens: None,
+            context_tokens: None,
             completion_tokens: None,
             reasoning_tokens: None,
             cache_read_tokens: None,
