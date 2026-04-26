@@ -85,6 +85,7 @@ rocode models openrouter --refresh --verbose
 ```
 
 这组命令会直接反映当前模型目录，而不是只看静态内置列表。
+其中 `rocode models --refresh` 会显式强制刷新 `https://models.dev/api.json`；如果你在交互式会话里操作，对应命令是 `/models refresh`。
 
 ### 2.2 管理认证
 
@@ -172,6 +173,7 @@ ROCode 现在区分：
 - 左侧是当前 workspace 的 session tree
 - sidebar 已支持多选与删除确认，适合批量清理 session
 - settings 会显示 workspace mode / workspace root
+- `Settings -> Providers -> Model Overrides` 里的 `Provider ID` 现在是稳定的 provider 下拉，不再依赖浏览器对 `datalist` 的兼容性
 - skills 面板会显示 managed skill、distribution、artifact cache、lifecycle、timeline
 - isolated workspace 模式下会明确提示“当前不会继承 global config”
 - composer 现在默认单行起始、最多扩展到 10 行，并提供按 provider 分组、可过滤的 model picker

@@ -201,6 +201,12 @@ rocode models --refresh
 rocode models zhipu --refresh --verbose
 ```
 
+说明：
+
+- `rocode models --refresh` 会主动向 `https://models.dev/api.json` 发起一次强制刷新，而不是只复用本地 `ETag` 条件缓存
+- 在交互式 CLI / TUI / Web 会话中，对应的斜杠命令是 `/models refresh`
+- Web `Settings -> Providers -> Model Overrides` 中的 `Provider ID` 现在使用稳定的下拉选择，来源会合并已管理 provider、当前 provider 列表和已知 provider 目录
+
 常用认证命令：
 
 ```bash

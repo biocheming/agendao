@@ -264,7 +264,7 @@ rocode models [PROVIDER] [选项]
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `PROVIDER` | string | -- | 按提供商筛选 |
-| `--refresh` | flag | false | 刷新缓存 |
+| `--refresh` | flag | false | 强制刷新 `models.dev` 目录并更新本地缓存 |
 | `--verbose` | flag | false | 显示详细信息 |
 
 ### 示例
@@ -274,6 +274,11 @@ rocode models
 rocode models zhipuai --verbose
 rocode models --refresh
 ```
+
+说明：
+
+- `rocode models --refresh` 会主动请求 `https://models.dev/api.json` 并更新本地 provider/model catalog
+- 在交互式会话里，对应的斜杠命令是 `/models refresh`
 
 ---
 
