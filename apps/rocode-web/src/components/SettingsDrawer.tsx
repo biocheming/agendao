@@ -573,6 +573,22 @@ export function SettingsDrawer({
       return true;
     });
   }, [knownProviders, managedProviders, providers]);
+  const modelOverrideProviderOptions = useMemo(() => {
+    const selectedProviderId = modelOverrideDraft.providerId.trim();
+    if (!selectedProviderId || providerChoices.includes(selectedProviderId)) {
+      return providerChoices.map((providerId) => ({
+        id: providerId,
+        label: providerId,
+      }));
+    }
+    return [
+      { id: selectedProviderId, label: `${selectedProviderId} (custom)` },
+      ...providerChoices.map((providerId) => ({
+        id: providerId,
+        label: providerId,
+      })),
+    ];
+  }, [modelOverrideDraft.providerId, providerChoices]);
   const configuredModelOverrides = useMemo(
     () =>
       managedProviders.flatMap((provider) =>
@@ -2084,22 +2100,32 @@ export function SettingsDrawer({
                 <div className="grid gap-4 md:grid-cols-2">
                   <label className={formFieldClass}>
                     <span className={formLabelClass}>Provider ID</span>
-                    <input
-                      className={inputClass}
-                      list="settings-model-provider-options"
-                      value={modelOverrideDraft.providerId}
+                    <select
+                      className={selectClass}
+                      value={modelOverrideDraft.providerId.trim()}
+                      disabled={modelOverrideProviderOptions.length === 0}
+                      data-testid="settings-model-override-provider"
                       onChange={(event) =>
                         setModelOverrideDraft((current) => ({
                           ...current,
                           providerId: event.target.value,
                         }))
                       }
-                    />
-                    <datalist id="settings-model-provider-options">
-                      {providerChoices.map((providerId) => (
-                        <option key={providerId} value={providerId} />
+                    >
+                      <option value="" disabled>
+                        {modelOverrideProviderOptions.length
+                          ? "Select a provider"
+                          : "No providers available"}
+                      </option>
+                      {modelOverrideProviderOptions.map(({ id, label }) => (
+                        <option key={id} value={id}>
+                          {label}
+                        </option>
                       ))}
-                    </datalist>
+                    </select>
+                    <span className={formHintClass}>
+                      Model overrides attach to a concrete provider and are shared by Web, CLI, and TUI.
+                    </span>
                   </label>
                   <label className={formFieldClass}>
                     <span className={formLabelClass}>Model Key</span>
