@@ -1,6 +1,6 @@
 use crate::models::{ModelsData, MODELS_DEV_URL};
 use once_cell::sync::Lazy;
-use reqwest::header::{ETAG, IF_NONE_MATCH};
+use reqwest::header::{CACHE_CONTROL, ETAG, IF_NONE_MATCH, PRAGMA};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -88,7 +88,7 @@ impl ModelCatalogAuthority {
         self.store_snapshot(loaded.clone()).await;
 
         if loaded.data.is_empty() {
-            return self.refresh_locked(Some(loaded)).await.snapshot;
+            return self.refresh_locked(Some(loaded), false).await.snapshot;
         }
 
         loaded
@@ -110,8 +110,7 @@ impl ModelCatalogAuthority {
             .await
             .clone()
             .or_else(|| self.load_cached_snapshot_sync());
-        let _ = force;
-        self.refresh_locked(current).await
+        self.refresh_locked(current, force).await
     }
 
     pub fn load_cached_data_sync(&self) -> ModelsData {
@@ -120,7 +119,11 @@ impl ModelCatalogAuthority {
             .unwrap_or_default()
     }
 
-    async fn refresh_locked(&self, current: Option<CatalogSnapshot>) -> CatalogRefreshResult {
+    async fn refresh_locked(
+        &self,
+        current: Option<CatalogSnapshot>,
+        force: bool,
+    ) -> CatalogRefreshResult {
         let current = current
             .unwrap_or_else(|| self.allocate_snapshot(HashMap::new(), CatalogMetadata::default()));
         let now = chrono::Utc::now().timestamp_millis();
@@ -131,7 +134,11 @@ impl ModelCatalogAuthority {
             .header("User-Agent", CATALOG_USER_AGENT)
             .timeout(std::time::Duration::from_secs(10));
 
-        if let Some(etag) = current.metadata.etag.as_deref() {
+        if force {
+            request = request
+                .header(CACHE_CONTROL, "no-cache")
+                .header(PRAGMA, "no-cache");
+        } else if let Some(etag) = current.metadata.etag.as_deref() {
             request = request.header(IF_NONE_MATCH, etag);
         }
 
