@@ -43,10 +43,10 @@ authors = ["Biocheming"]
 license = "MIT"
 
 [profile.release]
-strip = "debuginfo"
-lto = "thin"
-codegen-units = 1
-debug = 0
+#strip = "debuginfo"
+#lto = "thin"
+#codegen-units = 1
+#debug = 0
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
