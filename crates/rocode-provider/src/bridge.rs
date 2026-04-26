@@ -99,6 +99,7 @@ pub fn streaming_event_to_stream_events(event: StreamingEvent) -> Vec<StreamEven
                 events.push(StreamEvent::Usage {
                     prompt_tokens: su.prompt_tokens,
                     completion_tokens: su.completion_tokens,
+                    context_tokens: su.context_tokens.max(su.prompt_tokens),
                 });
             }
 
@@ -611,6 +612,7 @@ fn extract_usage(value: &serde_json::Value) -> StreamUsage {
     StreamUsage {
         prompt_tokens: prompt,
         completion_tokens: completion,
+        context_tokens: prompt.max(cache_read.saturating_add(cache_write)),
         reasoning_tokens: reasoning,
         cache_read_tokens: cache_read,
         cache_write_tokens: cache_write,
@@ -729,9 +731,11 @@ mod tests {
             StreamEvent::Usage {
                 prompt_tokens,
                 completion_tokens,
+                context_tokens,
             } => {
                 assert_eq!(*prompt_tokens, 100);
                 assert_eq!(*completion_tokens, 50);
+                assert_eq!(*context_tokens, 100);
             }
             other => panic!("expected Usage, got: {:?}", other),
         }
@@ -753,9 +757,11 @@ mod tests {
             StreamEvent::Usage {
                 prompt_tokens,
                 completion_tokens,
+                context_tokens,
             } => {
                 assert_eq!(*prompt_tokens, 200);
                 assert_eq!(*completion_tokens, 80);
+                assert_eq!(*context_tokens, 200);
             }
             other => panic!("expected Usage, got: {:?}", other),
         }

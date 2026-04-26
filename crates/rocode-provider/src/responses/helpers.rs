@@ -753,6 +753,7 @@ pub(super) fn usage_to_stream_usage(usage: &ResponsesUsage) -> StreamUsage {
     StreamUsage {
         prompt_tokens: usage.input_tokens,
         completion_tokens: usage.output_tokens,
+        context_tokens: usage.input_tokens,
         reasoning_tokens: usage
             .output_tokens_details
             .as_ref()

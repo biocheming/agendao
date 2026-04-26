@@ -1184,13 +1184,20 @@ impl Prompt {
         if reasoning > 0 {
             spans.push(Span::raw("  "));
             spans.push(Span::styled("R", Style::default().fg(theme.text_muted)));
-            spans.push(Span::styled(format_number(reasoning), Style::default().fg(theme.text)));
+            spans.push(Span::styled(
+                format_number(reasoning),
+                Style::default().fg(theme.text),
+            ));
         }
         if cache_read > 0 || cache_write > 0 {
             spans.push(Span::raw("  "));
             spans.push(Span::styled("C", Style::default().fg(theme.text_muted)));
             spans.push(Span::styled(
-                format!("{}/{}", format_number(cache_read), format_number(cache_write)),
+                format!(
+                    "{}/{}",
+                    format_number(cache_read),
+                    format_number(cache_write)
+                ),
                 Style::default().fg(theme.text),
             ));
         }

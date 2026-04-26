@@ -50,7 +50,7 @@ tokio-stream = { workspace = true }
 futures = { workspace = true }
 unicode-width = "0.1"
 uuid = { workspace = true }
-reqwest = { workspace = true, features = ["blocking"] }
+reqwest = { workspace = true }
 reqwest-eventsource = { workspace = true }
 dirs = { workspace = true }
 base64 = { workspace = true }

@@ -1,32 +1,43 @@
+use std::collections::HashMap;
+
 use rocode_config::{Config as AppConfig, ModelConfig};
 use rocode_runtime_context::ResolvedWorkspaceContext;
+use rocode_state::RecentModelEntry;
+use serde::Serialize;
 
 use crate::common::{
-    build_connect_provider_request, build_session_list_params, http_error, server_url, HTTP_TIMEOUT,
+    build_connect_provider_request, build_session_list_params, http_error, server_url,
+    FormatterStatusResponse, LspStatusResponse, RecentModelsPayload, HTTP_TIMEOUT,
 };
 use crate::{
-    CompactRequest, CompactResponse, CreateSessionRequest, ExecutionModeInfo, FullProviderListResponse,
-    McpStatusInfo, MemoryConflictResponse, MemoryConsolidationRequest, MemoryConsolidationResponse,
-    MemoryConsolidationRunListResponse, MemoryConsolidationRunQuery, MemoryDetailView,
-    MemoryListQuery, MemoryListResponse, MemoryRetrievalPreviewResponse, MemoryRetrievalQuery,
-    MemoryRuleHitListResponse, MemoryRuleHitQuery, MemoryRulePackListResponse,
-    MemoryValidationReportResponse, MultimodalPreflightRequest, MultimodalPreflightResponse,
-    PromptPart, PromptRequest, PromptResponse, ProviderConnectSchemaResponse, QuestionInfo,
+    AgentInfo, ApiDiffEntry, ApiTodoItem, CompactRequest, CompactResponse, CreateSessionRequest,
+    ExecuteRecoveryRequest, ExecuteShellRequest, ExecutionModeInfo, FullProviderListResponse,
+    KnownProvidersResponse, McpAuthStartInfo, McpStatusInfo, MemoryConflictResponse,
+    MemoryConsolidationRequest, MemoryConsolidationResponse, MemoryConsolidationRunListResponse,
+    MemoryConsolidationRunQuery, MemoryDetailView, MemoryListQuery, MemoryListResponse,
+    MemoryRetrievalPreviewResponse, MemoryRetrievalQuery, MemoryRuleHitListResponse,
+    MemoryRuleHitQuery, MemoryRulePackListResponse, MemoryValidationReportResponse, MessageInfo,
+    MultimodalCapabilitiesResponse, MultimodalPolicyResponse, MultimodalPreflightRequest,
+    MultimodalPreflightResponse, PermissionRequestInfo, PromptPart, PromptRequest, PromptResponse,
+    ProviderConnectSchemaResponse, ProviderListResponse, QuestionInfo, RecoveryActionKind,
     RefreshProviderCatalogResponse, ResolveProviderConnectRequest, ResolveProviderConnectResponse,
-    SessionEventsQuery, SessionInfo, SessionInsightsResponse, SessionListItem, SessionListResponse,
-    SessionTelemetrySnapshot, ShareResponse, SkillCatalogEntry, SkillCatalogQuery,
-    SkillDetailQuery, SkillDetailResponse, SkillHubArtifactCacheResponse, SkillHubAuditResponse,
-    SkillHubDistributionResponse, SkillHubGuardRunRequest, SkillHubGuardRunResponse,
-    SkillHubIndexRefreshRequest, SkillHubIndexRefreshResponse, SkillHubIndexResponse,
-    SkillHubLifecycleResponse, SkillHubManagedDetachRequest, SkillHubManagedDetachResponse,
-    SkillHubManagedRemoveRequest, SkillHubManagedRemoveResponse, SkillHubManagedResponse,
-    SkillHubPolicyResponse, SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
+    RevertRequest, RevertResponse, SessionEventsQuery, SessionExecutionTopology, SessionInfo,
+    SessionInsightsResponse, SessionListItem, SessionListResponse, SessionRecoveryProtocol,
+    SessionRuntimeState, SessionStatusInfo, SessionTelemetrySnapshot, ShareResponse,
+    SkillCatalogEntry, SkillCatalogQuery, SkillDetailQuery, SkillDetailResponse,
+    SkillHubArtifactCacheResponse, SkillHubAuditResponse, SkillHubDistributionResponse,
+    SkillHubGuardRunRequest, SkillHubGuardRunResponse, SkillHubIndexRefreshRequest,
+    SkillHubIndexRefreshResponse, SkillHubIndexResponse, SkillHubLifecycleResponse,
+    SkillHubManagedDetachRequest, SkillHubManagedDetachResponse, SkillHubManagedRemoveRequest,
+    SkillHubManagedRemoveResponse, SkillHubManagedResponse, SkillHubPolicyResponse,
+    SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
     SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest, SkillHubSyncApplyRequest,
     SkillHubSyncPlanRequest, SkillHubSyncPlanResponse, SkillHubTimelineQuery,
-    SkillHubTimelineResponse, SkillRemoteInstallPlan, SkillRemoteInstallResponse,
-    UpdateSessionRequest,
+    SkillHubTimelineResponse, SkillManageRequest, SkillManageResponse, SkillRemoteInstallPlan,
+    SkillRemoteInstallResponse, UpdateSessionRequest,
 };
 
+#[derive(Clone)]
 pub struct AsyncApiClient {
     client: reqwest::Client,
     base_url: String,
@@ -83,6 +94,40 @@ impl AsyncApiClient {
         Ok(response.items)
     }
 
+    pub async fn list_sessions_filtered(
+        &self,
+        search: Option<&str>,
+        limit: Option<usize>,
+    ) -> anyhow::Result<Vec<SessionListItem>> {
+        self.list_sessions(search, limit).await
+    }
+
+    pub async fn get_session_status(&self) -> anyhow::Result<HashMap<String, SessionStatusInfo>> {
+        self.get_json("/session/status", "get session status").await
+    }
+
+    pub async fn get_session_executions(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<SessionExecutionTopology> {
+        self.get_json(
+            &format!("/session/{}/executions", session_id),
+            &format!("get session executions `{}`", session_id),
+        )
+        .await
+    }
+
+    pub async fn get_session_runtime(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<SessionRuntimeState> {
+        self.get_json(
+            &format!("/session/{}/runtime", session_id),
+            &format!("get session runtime `{}`", session_id),
+        )
+        .await
+    }
+
     pub async fn update_session_title(
         &self,
         session_id: &str,
@@ -94,6 +139,19 @@ impl AsyncApiClient {
         };
         let resp = self.client.patch(&url).json(&req).send().await?;
         Self::json_ok(resp, "update session title").await
+    }
+
+    pub async fn delete_session(&self, session_id: &str) -> anyhow::Result<bool> {
+        let value: serde_json::Value = self
+            .delete_json(
+                &format!("/session/{}", session_id),
+                &format!("delete session `{}`", session_id),
+            )
+            .await?;
+        Ok(value
+            .get("deleted")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true))
     }
 
     pub async fn send_prompt(
@@ -144,10 +202,38 @@ impl AsyncApiClient {
         Self::json_ok(resp, "send command prompt").await
     }
 
+    pub async fn execute_shell(
+        &self,
+        session_id: &str,
+        command: String,
+        workdir: Option<String>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let request = ExecuteShellRequest { command, workdir };
+        self.post_json(
+            &format!("/session/{}/shell", session_id),
+            "execute shell command",
+            &request,
+        )
+        .await
+    }
+
     pub async fn abort_session(&self, session_id: &str) -> anyhow::Result<serde_json::Value> {
         let url = server_url(&self.base_url, &format!("/session/{}/abort", session_id));
         let resp = self.client.post(&url).send().await?;
         Self::json_ok(resp, "abort session").await
+    }
+
+    pub async fn cancel_tool_call(
+        &self,
+        session_id: &str,
+        tool_call_id: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        let url = server_url(
+            &self.base_url,
+            &format!("/session/{}/tool/{}/cancel", session_id, tool_call_id),
+        );
+        let resp = self.client.post(&url).send().await?;
+        Self::json_ok(resp, &format!("cancel tool call `{}`", tool_call_id)).await
     }
 
     pub async fn list_questions(&self) -> anyhow::Result<Vec<QuestionInfo>> {
@@ -173,6 +259,10 @@ impl AsyncApiClient {
         let resp = self.client.post(&url).send().await?;
         Self::expect_success(resp, &format!("reject question `{}`", question_id)).await?;
         Ok(())
+    }
+
+    pub async fn list_permissions(&self) -> anyhow::Result<Vec<PermissionRequestInfo>> {
+        self.get_json("/permission", "list permissions").await
     }
 
     pub async fn reply_permission(
@@ -223,6 +313,50 @@ impl AsyncApiClient {
         let url = server_url(&self.base_url, &format!("/session/{}/events", session_id));
         let resp = self.client.get(&url).query(query).send().await?;
         Self::json_ok(resp, "get session events").await
+    }
+
+    pub async fn get_session_todos(&self, session_id: &str) -> anyhow::Result<Vec<ApiTodoItem>> {
+        let url = server_url(&self.base_url, &format!("/session/{}/todo", session_id));
+        let resp = self.client.get(&url).send().await?;
+        if !resp.status().is_success() {
+            return Ok(Vec::new());
+        }
+        Ok(resp.json::<Vec<ApiTodoItem>>().await?)
+    }
+
+    pub async fn get_session_diff(&self, session_id: &str) -> anyhow::Result<Vec<ApiDiffEntry>> {
+        let url = server_url(&self.base_url, &format!("/session/{}/diff", session_id));
+        let resp = self.client.get(&url).send().await?;
+        if !resp.status().is_success() {
+            return Ok(Vec::new());
+        }
+        Ok(resp.json::<Vec<ApiDiffEntry>>().await?)
+    }
+
+    pub async fn get_session_recovery(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<SessionRecoveryProtocol> {
+        self.get_json(
+            &format!("/session/{}/recovery", session_id),
+            &format!("get session recovery `{}`", session_id),
+        )
+        .await
+    }
+
+    pub async fn execute_session_recovery(
+        &self,
+        session_id: &str,
+        action: RecoveryActionKind,
+        target_id: Option<String>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let request = ExecuteRecoveryRequest { action, target_id };
+        self.post_json(
+            &format!("/session/{}/recovery/execute", session_id),
+            &format!("execute session recovery `{}`", session_id),
+            &request,
+        )
+        .await
     }
 
     pub async fn list_memory(
@@ -340,6 +474,30 @@ impl AsyncApiClient {
         Self::json_ok(resp, "get config").await
     }
 
+    pub async fn get_config_providers(&self) -> anyhow::Result<ProviderListResponse> {
+        self.get_json("/config/providers", "get config providers")
+            .await
+    }
+
+    pub async fn get_multimodal_policy(&self) -> anyhow::Result<MultimodalPolicyResponse> {
+        self.get_json("/multimodal/policy", "get multimodal policy")
+            .await
+    }
+
+    pub async fn get_multimodal_capabilities(
+        &self,
+        model: Option<&str>,
+    ) -> anyhow::Result<MultimodalCapabilitiesResponse> {
+        let url = server_url(&self.base_url, "/multimodal/capabilities");
+        let req = if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
+            self.client.get(&url).query(&[("model", model)])
+        } else {
+            self.client.get(&url)
+        };
+        let resp = req.send().await?;
+        Self::json_ok(resp, "get multimodal capabilities").await
+    }
+
     pub async fn preflight_multimodal(
         &self,
         request: &MultimodalPreflightRequest,
@@ -349,10 +507,42 @@ impl AsyncApiClient {
         Self::json_ok(resp, "post multimodal preflight").await
     }
 
+    pub async fn get_recent_models(&self) -> anyhow::Result<Vec<RecentModelEntry>> {
+        let payload: RecentModelsPayload = self
+            .get_json("/workspace/recent-models", "get recent models")
+            .await?;
+        Ok(payload.recent_models)
+    }
+
+    pub async fn put_recent_models(
+        &self,
+        recent_models: &[RecentModelEntry],
+    ) -> anyhow::Result<Vec<RecentModelEntry>> {
+        let payload: RecentModelsPayload = self
+            .put_json(
+                "/workspace/recent-models",
+                "save recent models",
+                &RecentModelsPayload {
+                    recent_models: recent_models.to_vec(),
+                },
+            )
+            .await?;
+        Ok(payload.recent_models)
+    }
+
+    pub async fn patch_config(&self, patch: &serde_json::Value) -> anyhow::Result<AppConfig> {
+        self.patch_json("/config", "patch config", patch).await
+    }
+
     pub async fn get_all_providers(&self) -> anyhow::Result<FullProviderListResponse> {
         let url = server_url(&self.base_url, "/provider");
         let resp = self.client.get(&url).send().await?;
         Self::json_ok(resp, "get all providers").await
+    }
+
+    pub async fn get_known_providers(&self) -> anyhow::Result<KnownProvidersResponse> {
+        self.get_json("/provider/known", "get known providers")
+            .await
     }
 
     pub async fn get_provider_connect_schema(
@@ -433,6 +623,22 @@ impl AsyncApiClient {
             .await
     }
 
+    pub async fn register_custom_provider(
+        &self,
+        provider_id: &str,
+        base_url: &str,
+        protocol: &str,
+        api_key: &str,
+    ) -> anyhow::Result<()> {
+        self.connect_provider(
+            provider_id,
+            api_key,
+            Some(base_url.to_string()),
+            Some(protocol.to_string()),
+        )
+        .await
+    }
+
     pub async fn connect_provider(
         &self,
         provider_id: &str,
@@ -451,6 +657,10 @@ impl AsyncApiClient {
         let url = server_url(&self.base_url, "/mode");
         let resp = self.client.get(&url).send().await?;
         Self::json_ok(resp, "list execution modes").await
+    }
+
+    pub async fn list_agents(&self) -> anyhow::Result<Vec<AgentInfo>> {
+        self.get_json("/agent", "list agents").await
     }
 
     pub async fn list_skills(
@@ -472,6 +682,15 @@ impl AsyncApiClient {
         let url = server_url(&self.base_url, "/skill/detail");
         let resp = self.client.get(&url).query(query).send().await?;
         Self::json_ok(resp, &format!("get skill detail `{}`", query.name)).await
+    }
+
+    pub async fn manage_skill(
+        &self,
+        req: &SkillManageRequest,
+    ) -> anyhow::Result<SkillManageResponse> {
+        let url = server_url(&self.base_url, "/skill/manage");
+        let resp = self.client.post(&url).json(req).send().await?;
+        Self::json_ok(resp, "manage skill").await
     }
 
     pub async fn list_skill_hub_managed(&self) -> anyhow::Result<SkillHubManagedResponse> {
@@ -622,20 +841,99 @@ impl AsyncApiClient {
     pub async fn get_mcp_status(&self) -> anyhow::Result<Vec<McpStatusInfo>> {
         let url = server_url(&self.base_url, "/mcp");
         let resp = self.client.get(&url).send().await?;
-        let map: std::collections::HashMap<String, McpStatusInfo> =
-            Self::json_ok(resp, "get MCP status").await?;
+        let map: HashMap<String, McpStatusInfo> = Self::json_ok(resp, "get MCP status").await?;
         let mut servers: Vec<McpStatusInfo> = map.into_values().collect();
         servers.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(servers)
     }
 
+    pub async fn start_mcp_auth(&self, name: &str) -> anyhow::Result<McpAuthStartInfo> {
+        self.post_json_no_body(
+            &format!("/mcp/{}/auth/start", name),
+            &format!("start MCP auth `{}`", name),
+        )
+        .await
+    }
+
+    pub async fn authenticate_mcp(&self, name: &str) -> anyhow::Result<McpStatusInfo> {
+        self.post_json_no_body(
+            &format!("/mcp/{}/auth", name),
+            &format!("authenticate MCP `{}`", name),
+        )
+        .await
+    }
+
+    pub async fn remove_mcp_auth(&self, name: &str) -> anyhow::Result<bool> {
+        let value: serde_json::Value = self
+            .delete_json(
+                &format!("/mcp/{}/auth", name),
+                &format!("remove MCP auth `{}`", name),
+            )
+            .await?;
+        Ok(value
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true))
+    }
+
+    pub async fn connect_mcp(&self, name: &str) -> anyhow::Result<bool> {
+        let resp = self
+            .post_expect_success(
+                &format!("/mcp/{}/connect", name),
+                &format!("connect MCP `{}`", name),
+                Option::<&serde_json::Value>::None,
+            )
+            .await?;
+        Ok(serde_json::from_slice::<bool>(&resp).unwrap_or(true))
+    }
+
+    pub async fn disconnect_mcp(&self, name: &str) -> anyhow::Result<bool> {
+        let resp = self
+            .post_expect_success(
+                &format!("/mcp/{}/disconnect", name),
+                &format!("disconnect MCP `{}`", name),
+                Option::<&serde_json::Value>::None,
+            )
+            .await?;
+        Ok(serde_json::from_slice::<bool>(&resp).unwrap_or(true))
+    }
+
+    pub async fn get_messages(&self, session_id: &str) -> anyhow::Result<Vec<MessageInfo>> {
+        self.get_messages_after(session_id, None, None).await
+    }
+
+    pub async fn get_messages_after(
+        &self,
+        session_id: &str,
+        after: Option<&str>,
+        limit: Option<usize>,
+    ) -> anyhow::Result<Vec<MessageInfo>> {
+        let url = server_url(&self.base_url, &format!("/session/{}/message", session_id));
+        let mut params: Vec<(&str, String)> = Vec::new();
+        if let Some(after) = after.map(str::trim).filter(|value| !value.is_empty()) {
+            params.push(("after", after.to_string()));
+        }
+        if let Some(limit) = limit.filter(|value| *value > 0) {
+            params.push(("limit", limit.to_string()));
+        }
+        let req = if params.is_empty() {
+            self.client.get(&url)
+        } else {
+            self.client.get(&url).query(&params)
+        };
+        let resp = req.send().await?;
+        Self::json_ok(resp, "get messages").await
+    }
+
     pub async fn get_lsp_servers(&self) -> anyhow::Result<Vec<String>> {
-        let url = server_url(&self.base_url, "/lsp");
-        let resp = self.client.get(&url).send().await?;
-        let v: serde_json::Value = Self::json_ok(resp, "get LSP status").await?;
-        Ok(v.get("servers")
-            .and_then(|s| serde_json::from_value::<Vec<String>>(s.clone()).ok())
-            .unwrap_or_default())
+        let status: LspStatusResponse = self.get_json("/lsp", "get LSP status").await?;
+        Ok(status.servers)
+    }
+
+    pub async fn get_formatters(&self) -> anyhow::Result<Vec<String>> {
+        let status: FormatterStatusResponse =
+            self.get_json("/formatter", "get formatter status").await?;
+        Ok(status.formatters)
     }
 
     pub async fn share_session(&self, session_id: &str) -> anyhow::Result<ShareResponse> {
@@ -672,6 +970,22 @@ impl AsyncApiClient {
         Self::json_ok(resp, &format!("compact session `{}`", session_id)).await
     }
 
+    pub async fn revert_session(
+        &self,
+        session_id: &str,
+        message_id: &str,
+    ) -> anyhow::Result<RevertResponse> {
+        let request = RevertRequest {
+            message_id: message_id.to_string(),
+        };
+        self.post_json(
+            &format!("/session/{}/revert", session_id),
+            &format!("revert session `{}`", session_id),
+            &request,
+        )
+        .await
+    }
+
     pub async fn fork_session(
         &self,
         session_id: &str,
@@ -689,6 +1003,84 @@ impl AsyncApiClient {
         };
         let resp = req.send().await?;
         Self::json_ok(resp, &format!("fork session `{}`", session_id)).await
+    }
+
+    async fn get_json<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        action: &str,
+    ) -> anyhow::Result<T> {
+        let url = server_url(&self.base_url, path);
+        let resp = self.client.get(&url).send().await?;
+        Self::json_ok(resp, action).await
+    }
+
+    async fn post_json<T: serde::de::DeserializeOwned, B: Serialize + ?Sized>(
+        &self,
+        path: &str,
+        action: &str,
+        body: &B,
+    ) -> anyhow::Result<T> {
+        let bytes = self.post_expect_success(path, action, Some(body)).await?;
+        Ok(serde_json::from_slice(&bytes)?)
+    }
+
+    async fn post_json_no_body<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        action: &str,
+    ) -> anyhow::Result<T> {
+        let bytes = self
+            .post_expect_success(path, action, Option::<&serde_json::Value>::None)
+            .await?;
+        Ok(serde_json::from_slice(&bytes)?)
+    }
+
+    async fn post_expect_success<B: Serialize + ?Sized>(
+        &self,
+        path: &str,
+        action: &str,
+        body: Option<&B>,
+    ) -> anyhow::Result<Vec<u8>> {
+        let url = server_url(&self.base_url, path);
+        let request = self.client.post(url);
+        let resp = match body {
+            Some(body) => request.json(body).send().await?,
+            None => request.send().await?,
+        };
+        Self::expect_success(resp, action).await
+    }
+
+    async fn patch_json<T: serde::de::DeserializeOwned, B: Serialize + ?Sized>(
+        &self,
+        path: &str,
+        action: &str,
+        body: &B,
+    ) -> anyhow::Result<T> {
+        let url = server_url(&self.base_url, path);
+        let resp = self.client.patch(&url).json(body).send().await?;
+        Self::json_ok(resp, action).await
+    }
+
+    async fn put_json<T: serde::de::DeserializeOwned, B: Serialize + ?Sized>(
+        &self,
+        path: &str,
+        action: &str,
+        body: &B,
+    ) -> anyhow::Result<T> {
+        let url = server_url(&self.base_url, path);
+        let resp = self.client.put(&url).json(body).send().await?;
+        Self::json_ok(resp, action).await
+    }
+
+    async fn delete_json<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        action: &str,
+    ) -> anyhow::Result<T> {
+        let url = server_url(&self.base_url, path);
+        let resp = self.client.delete(&url).send().await?;
+        Self::json_ok(resp, action).await
     }
 
     async fn expect_success(resp: reqwest::Response, action: &str) -> anyhow::Result<Vec<u8>> {

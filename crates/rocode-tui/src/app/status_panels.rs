@@ -2228,7 +2228,7 @@ fn format_stage_runtime_line(stage: &rocode_command::stage_protocol::StageSummar
             }
         ));
     }
-    if let Some(tokens) = stage.estimated_context_tokens {
+    if let Some(tokens) = stage.context_tokens.or(stage.estimated_context_tokens) {
         parts.push(format!("ctx {}", tokens));
     }
     parts.join(" · ")
@@ -2363,11 +2363,8 @@ fn active_stage_status_blocks(
             strategy
         )));
     }
-    if let Some(tokens) = stage.estimated_context_tokens {
-        blocks.push(StatusBlock::muted(format!(
-            "Estimated context tokens: {}",
-            tokens
-        )));
+    if let Some(tokens) = stage.context_tokens.or(stage.estimated_context_tokens) {
+        blocks.push(StatusBlock::muted(format!("Context tokens: {}", tokens)));
     }
     if let Some(prompt_tokens) = stage.prompt_tokens {
         blocks.push(StatusBlock::normal(format!(

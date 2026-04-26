@@ -26,85 +26,33 @@ impl LoopConversation {
     }
 
     fn add_assistant_turn(&mut self, reasoning: &str, text: &str, tool_calls: &[ToolCallReady]) {
-        if reasoning.is_empty() && tool_calls.is_empty() {
-            self.messages
-                .push(rocode_provider::Message::assistant(text.to_string()));
-            return;
-        }
+        let provider_tool_calls: Vec<rocode_provider::ToolUse> = tool_calls
+            .iter()
+            .map(|tc| rocode_provider::ToolUse {
+                id: tc.id.clone(),
+                name: tc.name.clone(),
+                input: tc.arguments.clone(),
+            })
+            .collect();
 
-        let mut parts = Vec::new();
-        if !reasoning.is_empty() {
-            parts.push(rocode_provider::ContentPart {
-                content_type: "reasoning".to_string(),
-                text: Some(reasoning.to_string()),
-                image_url: None,
-                tool_use: None,
-                tool_result: None,
-                cache_control: None,
-                filename: None,
-                media_type: None,
-                provider_options: None,
-            });
+        if let Some(message) = rocode_provider::Message::assistant_turn(
+            Some(reasoning),
+            Some(text),
+            &provider_tool_calls,
+        ) {
+            self.messages.push(message);
         }
-        if !text.is_empty() {
-            parts.push(rocode_provider::ContentPart {
-                content_type: "text".to_string(),
-                text: Some(text.to_string()),
-                image_url: None,
-                tool_use: None,
-                tool_result: None,
-                cache_control: None,
-                filename: None,
-                media_type: None,
-                provider_options: None,
-            });
-        }
-        for tc in tool_calls {
-            parts.push(rocode_provider::ContentPart {
-                content_type: "tool_use".to_string(),
-                text: None,
-                image_url: None,
-                tool_use: Some(rocode_provider::ToolUse {
-                    id: tc.id.clone(),
-                    name: tc.name.clone(),
-                    input: tc.arguments.clone(),
-                }),
-                tool_result: None,
-                cache_control: None,
-                filename: None,
-                media_type: None,
-                provider_options: None,
-            });
-        }
-        self.messages.push(rocode_provider::Message {
-            role: rocode_provider::Role::Assistant,
-            content: rocode_provider::Content::Parts(parts),
-            cache_control: None,
-            provider_options: None,
-        });
     }
 
     fn add_tool_result(&mut self, call_id: &str, output: &str, is_error: bool) {
-        self.messages.push(rocode_provider::Message {
-            role: rocode_provider::Role::Tool,
-            content: rocode_provider::Content::Parts(vec![rocode_provider::ContentPart {
-                content_type: "tool_result".to_string(),
-                text: None,
-                image_url: None,
-                tool_use: None,
-                tool_result: Some(rocode_provider::ToolResult {
-                    tool_use_id: call_id.to_string(),
-                    content: output.to_string(),
-                    is_error: Some(is_error),
-                }),
-                cache_control: None,
-                filename: None,
-                media_type: None,
-                provider_options: None,
-            }]),
-            cache_control: None,
-            provider_options: None,
-        });
+        self.messages
+            .push(rocode_provider::Message::tool_parts(vec![
+                rocode_provider::ContentPart::tool_result(
+                    call_id.to_string(),
+                    output.to_string(),
+                    Some(is_error),
+                ),
+            ]));
     }
 }
 

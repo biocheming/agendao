@@ -106,20 +106,20 @@ impl SessionPrompt {
                 }
 
                 if !assistant_parts.is_empty() {
-                    messages.push(Message {
-                        role: Role::Assistant,
-                        content: Self::parts_to_content(&assistant_parts),
-                        cache_control: None,
-                        provider_options: None,
-                    });
+                    messages.push(Message::assistant_parts(
+                        match Self::parts_to_content(&assistant_parts) {
+                            Content::Parts(parts) => parts,
+                            Content::Text(text) => vec![ContentPart::text(text)],
+                        },
+                    ));
                 }
                 if !tool_parts.is_empty() {
-                    messages.push(Message {
-                        role: Role::Tool,
-                        content: Self::parts_to_content(&tool_parts),
-                        cache_control: None,
-                        provider_options: None,
-                    });
+                    messages.push(Message::tool_parts(
+                        match Self::parts_to_content(&tool_parts) {
+                            Content::Parts(parts) => parts,
+                            Content::Text(text) => vec![ContentPart::text(text)],
+                        },
+                    ));
                 }
                 continue;
             }
@@ -163,105 +163,47 @@ impl SessionPrompt {
         let content_parts: Vec<ContentPart> = parts
             .iter()
             .filter_map(|p| match &p.part_type {
-                PartType::Text { text, .. } => Some(ContentPart {
-                    content_type: "text".to_string(),
-                    text: Some(text.clone()),
-                    image_url: None,
-                    tool_use: None,
-                    tool_result: None,
-                    cache_control: None,
-                    filename: None,
-                    media_type: None,
-                    provider_options: None,
-                }),
-                PartType::Reasoning { text } => Some(ContentPart {
-                    content_type: "reasoning".to_string(),
-                    text: Some(text.clone()),
-                    image_url: None,
-                    tool_use: None,
-                    tool_result: None,
-                    cache_control: None,
-                    filename: None,
-                    media_type: None,
-                    provider_options: None,
-                }),
+                PartType::Text { text, .. } => Some(ContentPart::text(text.clone())),
+                PartType::Reasoning { text } => Some(ContentPart::reasoning(text.clone())),
                 PartType::ToolCall {
                     id, name, input, ..
-                } => Some(ContentPart {
-                    content_type: "tool_use".to_string(),
-                    text: None,
-                    image_url: None,
-                    tool_use: Some(rocode_provider::ToolUse {
-                        id: id.clone(),
-                        name: name.clone(),
-                        input: input.clone(),
-                    }),
-                    tool_result: None,
-                    cache_control: None,
-                    filename: None,
-                    media_type: None,
-                    provider_options: None,
-                }),
+                } => Some(ContentPart::tool_use(
+                    id.clone(),
+                    name.clone(),
+                    input.clone(),
+                )),
                 PartType::ToolResult {
                     tool_call_id,
                     content,
                     is_error,
                     ..
-                } => Some(ContentPart {
-                    content_type: "tool_result".to_string(),
-                    text: None,
-                    image_url: None,
-                    tool_use: None,
-                    tool_result: Some(rocode_provider::ToolResult {
-                        tool_use_id: tool_call_id.clone(),
-                        content: content.clone(),
-                        is_error: Some(*is_error),
-                    }),
-                    cache_control: None,
-                    filename: None,
-                    media_type: None,
-                    provider_options: None,
-                }),
+                } => Some(ContentPart::tool_result(
+                    tool_call_id.clone(),
+                    content.clone(),
+                    Some(*is_error),
+                )),
                 PartType::File {
                     url,
                     filename,
                     mime,
                 } => {
                     if mime.starts_with("image/") {
-                        Some(ContentPart {
-                            content_type: "image_url".to_string(),
-                            text: None,
-                            image_url: Some(rocode_provider::ImageUrl { url: url.clone() }),
-                            tool_use: None,
-                            tool_result: None,
-                            cache_control: None,
-                            filename: Some(filename.clone()),
-                            media_type: Some(mime.clone()),
-                            provider_options: None,
-                        })
+                        Some(ContentPart::image_url(
+                            url.clone(),
+                            Some(filename.clone()),
+                            Some(mime.clone()),
+                        ))
                     } else if mime.starts_with("audio/") {
-                        Some(ContentPart {
-                            content_type: "file".to_string(),
-                            text: None,
-                            image_url: Some(rocode_provider::ImageUrl { url: url.clone() }),
-                            tool_use: None,
-                            tool_result: None,
-                            cache_control: None,
-                            filename: Some(filename.clone()),
-                            media_type: Some(mime.clone()),
-                            provider_options: None,
-                        })
+                        Some(ContentPart::file(
+                            url.clone(),
+                            Some(filename.clone()),
+                            Some(mime.clone()),
+                        ))
                     } else {
                         Some(ContentPart {
-                            content_type: "text".to_string(),
-                            text: Some(format!("[File: {} ({})]", filename, mime)),
-                            image_url: None,
-                            tool_use: None,
-                            tool_result: None,
-                            cache_control: None,
                             filename: Some(filename.clone()),
                             media_type: Some(mime.clone()),
-                            provider_options: None,
+                            ..ContentPart::text(format!("[File: {} ({})]", filename, mime))
                         })
                     }
                 }
@@ -418,8 +360,12 @@ impl SessionPrompt {
         model_id: &str,
         max_output_tokens: Option<u64>,
         compaction_config: &CompactionConfig,
+        live_context_tokens: Option<u64>,
     ) -> bool {
         if Self::should_back_off_auto_compaction(messages) {
+            return false;
+        }
+        if !compaction_config.auto {
             return false;
         }
 
@@ -444,10 +390,32 @@ impl SessionPrompt {
         } else {
             usage.input + usage.output + usage.cache_read + usage.cache_write
         };
+        let live_context_tokens = live_context_tokens.filter(|tokens| *tokens > 0);
+        if let Some(live_context_tokens) = live_context_tokens {
+            let live_usage = TokenUsage {
+                input: live_context_tokens,
+                output: 0,
+                cache_read: 0,
+                cache_write: 0,
+                total: live_context_tokens,
+            };
+            if engine.is_overflow(&live_usage, &limits) {
+                return true;
+            }
+        }
         if usage_count > 0
             && Self::should_trigger_proactive_compaction(usage_count, &limits, compaction_config)
         {
             return true;
+        }
+        if let Some(live_context_tokens) = live_context_tokens {
+            if Self::should_trigger_proactive_compaction(
+                live_context_tokens,
+                &limits,
+                compaction_config,
+            ) {
+                return true;
+            }
         }
 
         // Estimate total content size across ALL part types (not just text).
@@ -1022,7 +990,8 @@ impl SessionPrompt {
         let focus = focus.map(str::trim).filter(|value| !value.is_empty());
         let focus_terms: Vec<String> = focus
             .map(|value| {
-                value.split_whitespace()
+                value
+                    .split_whitespace()
                     .map(|term| term.trim().to_ascii_lowercase())
                     .filter(|term| !term.is_empty())
                     .take(8)
@@ -1310,6 +1279,7 @@ mod tests {
             "tiny-model",
             None,
             &CompactionConfig::default(),
+            None,
         );
         assert!(compact);
     }
@@ -1340,6 +1310,7 @@ mod tests {
             "big-model",
             None,
             &CompactionConfig::default(),
+            None,
         );
         assert!(
             compact,
@@ -1373,10 +1344,25 @@ mod tests {
             "limited-model",
             None,
             &CompactionConfig::default(),
+            None,
         );
         assert!(
             compact,
             "should trigger proactive compaction when input tokens approach the budget"
+        );
+
+        let live_only = SessionMessage::user("ses_test", "small message");
+        let compact = SessionPrompt::should_compact(
+            &[live_only],
+            &provider,
+            "limited-model",
+            None,
+            &CompactionConfig::default(),
+            Some(48_000),
+        );
+        assert!(
+            compact,
+            "should trigger proactive compaction from live context telemetry"
         );
     }
 
@@ -1397,6 +1383,7 @@ mod tests {
                 reserved: None,
                 prune: true,
             },
+            None,
         );
         assert!(
             !compact,
@@ -1421,6 +1408,7 @@ mod tests {
                 reserved: Some(1_000),
                 prune: true,
             },
+            None,
         );
         assert!(
             compact,
@@ -1450,6 +1438,7 @@ mod tests {
             "estimated-model",
             None,
             &CompactionConfig::default(),
+            None,
         );
         assert!(
             compact,
@@ -1491,6 +1480,7 @@ mod tests {
             "estimated-model",
             None,
             &CompactionConfig::default(),
+            None,
         );
         assert!(
             !compact,
@@ -1592,6 +1582,7 @@ mod tests {
             reasoning_tokens: 50,
             cache_read_tokens: 30,
             cache_write_tokens: 20,
+            context_tokens: 100,
             total_cost: 0.0,
         });
 

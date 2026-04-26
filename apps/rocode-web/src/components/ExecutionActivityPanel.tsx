@@ -40,11 +40,20 @@ function formatDateTime(ts?: number | null) {
 }
 
 function currentContextEstimate(activity: ExecutionActivityState) {
+  if (typeof activity.sessionUsage?.context_tokens === "number" && activity.sessionUsage.context_tokens > 0) {
+    const activeEstimate = activity.activeStageSummary?.estimated_context_tokens;
+    return typeof activeEstimate === "number" && activeEstimate > 0
+      ? Math.max(activity.sessionUsage.context_tokens, activeEstimate)
+      : activity.sessionUsage.context_tokens;
+  }
+  if (typeof activity.activeStageSummary?.context_tokens === "number") {
+    return activity.activeStageSummary.context_tokens;
+  }
   if (typeof activity.activeStageSummary?.estimated_context_tokens === "number") {
     return activity.activeStageSummary.estimated_context_tokens;
   }
   for (let index = activity.stageSummaries.length - 1; index >= 0; index -= 1) {
-    const estimate = activity.stageSummaries[index]?.estimated_context_tokens;
+    const estimate = activity.stageSummaries[index]?.context_tokens ?? activity.stageSummaries[index]?.estimated_context_tokens;
     if (typeof estimate === "number" && Number.isFinite(estimate) && estimate > 0) {
       return estimate;
     }
@@ -105,7 +114,9 @@ function stageSummaryMeta(stage: ExecutionActivityState["stageSummaries"][number
       `budget ${stage.skill_tree_budget}${stage.skill_tree_truncated ? " truncated" : ""}`,
     );
   }
-  if (typeof stage.estimated_context_tokens === "number") {
+  if (typeof stage.context_tokens === "number") {
+    parts.push(`ctx ${stage.context_tokens}`);
+  } else if (typeof stage.estimated_context_tokens === "number") {
     parts.push(`ctx ${stage.estimated_context_tokens}`);
   }
   return parts;

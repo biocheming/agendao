@@ -34,7 +34,9 @@ use crate::session_runtime::{
     visible_assistant_text_from_orchestrator_output, ModelPricing, SessionSchedulerLifecycleHook,
 };
 use crate::{ApiError, Result, ServerState};
-use rocode_session::prompt::{OutputBlockEvent, OutputBlockHook};
+use rocode_session::prompt::{
+    auto_compact_session_with_focus_if_needed, OutputBlockEvent, OutputBlockHook,
+};
 
 use super::super::permission::request_permission;
 use super::super::tui::request_question_answers;
@@ -1098,6 +1100,43 @@ pub(crate) fn apply_skill_tree_telemetry_metadata(
     );
 }
 
+fn maybe_auto_compact_scheduler_session(
+    session: &mut rocode_session::Session,
+    provider: &dyn rocode_provider::Provider,
+    model_id: &str,
+    max_output_tokens: Option<u64>,
+    config_store: Option<&rocode_config::ConfigStore>,
+    live_context_tokens: Option<u64>,
+    focus: Option<&str>,
+    phase: &str,
+) -> bool {
+    let Some(summary) = auto_compact_session_with_focus_if_needed(
+        session,
+        provider,
+        model_id,
+        max_output_tokens,
+        config_store,
+        live_context_tokens,
+        focus,
+    ) else {
+        return false;
+    };
+
+    if let Some(message) = session.messages_mut().last_mut() {
+        message.metadata.insert(
+            "context_compaction_phase".to_string(),
+            serde_json::json!(phase),
+        );
+        message.metadata.insert(
+            "context_compaction_notice".to_string(),
+            serde_json::json!("Context compacted"),
+        );
+    }
+
+    tracing::info!(phase, summary, "scheduler context compacted");
+    true
+}
+
 #[derive(Debug, Clone)]
 pub struct LocalSchedulerPromptRequest {
     pub session_id: Option<String>,
@@ -1128,6 +1167,7 @@ pub struct LocalSchedulerPromptOutcome {
     pub assistant_text: String,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    pub context_tokens: u64,
     pub cancelled: bool,
 }
 
@@ -1228,6 +1268,23 @@ pub async fn run_local_scheduler_prompt(
         session.insert_metadata("scheduler_root_agent", serde_json::json!(root_agent));
     } else {
         session.remove_metadata("scheduler_root_agent");
+    }
+
+    let pre_compact_live_tokens = request_skill_tree_plan
+        .as_ref()
+        .map(|plan| plan.estimated_tokens() as u64);
+    if maybe_auto_compact_scheduler_session(
+        &mut session,
+        provider.as_ref(),
+        &model_id,
+        request_config.compiled_request.max_tokens,
+        Some(state.config_store.as_ref()),
+        pre_compact_live_tokens,
+        Some(&req.prompt_text),
+        "scheduler.pre_run",
+    ) {
+        let mut sessions = state.sessions.lock().await;
+        sessions.update(session.clone());
     }
 
     let (memory_frozen_snapshot_block, _memory_prefetch_packet, memory_prefetch_block) =
@@ -1412,6 +1469,7 @@ pub async fn run_local_scheduler_prompt(
 
     let mut prompt_tokens = 0;
     let mut completion_tokens = 0;
+    let mut context_tokens = 0;
     let mut cancelled = false;
     if let Some(assistant) = session.get_message_mut(&assistant_message_id) {
         assistant.metadata.insert(
@@ -1462,6 +1520,7 @@ pub async fn run_local_scheduler_prompt(
                 );
                 if let Some(usage) = output_usage(&output.metadata) {
                     prompt_tokens = usage.prompt_tokens;
+                    context_tokens = usage.context_tokens.max(usage.prompt_tokens);
                     completion_tokens = usage.completion_tokens;
                     let cost = model_pricing
                         .map(|p| {
@@ -1479,6 +1538,7 @@ pub async fn run_local_scheduler_prompt(
                         reasoning_tokens: usage.reasoning_tokens,
                         cache_read_tokens: usage.cache_read_tokens,
                         cache_write_tokens: usage.cache_write_tokens,
+                        context_tokens: usage.context_tokens.max(usage.prompt_tokens),
                         total_cost: cost,
                     });
                 }
@@ -1511,6 +1571,19 @@ pub async fn run_local_scheduler_prompt(
         .get_message(&assistant_message_id)
         .map(assistant_visible_text)
         .unwrap_or_default();
+
+    maybe_auto_compact_scheduler_session(
+        &mut session,
+        provider.as_ref(),
+        &model_id,
+        request_config.compiled_request.max_tokens,
+        Some(state.config_store.as_ref()),
+        (context_tokens > 0)
+            .then_some(context_tokens)
+            .or_else(|| (prompt_tokens > 0).then_some(prompt_tokens)),
+        Some(&req.prompt_text),
+        "scheduler.post_run",
+    );
 
     let _ = state
         .runtime_telemetry
@@ -1550,6 +1623,7 @@ pub async fn run_local_scheduler_prompt(
         assistant_text,
         prompt_tokens,
         completion_tokens,
+        context_tokens,
         cancelled,
     })
 }

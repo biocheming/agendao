@@ -37,68 +37,31 @@ impl OrchestratorConversation {
     }
 
     pub fn add_assistant_with_tools(&mut self, content: &str, tool_calls: Vec<ToolCallInput>) {
-        let mut parts = Vec::new();
-        if !content.is_empty() {
-            parts.push(rocode_provider::ContentPart {
-                content_type: "text".to_string(),
-                text: Some(content.to_string()),
-                image_url: None,
-                tool_use: None,
-                tool_result: None,
-                cache_control: None,
-                filename: None,
-                media_type: None,
-                provider_options: None,
-            });
-        }
+        let provider_tool_calls: Vec<rocode_provider::ToolUse> = tool_calls
+            .into_iter()
+            .map(|call| rocode_provider::ToolUse {
+                id: call.id,
+                name: call.name,
+                input: call.arguments,
+            })
+            .collect();
 
-        for call in tool_calls {
-            parts.push(rocode_provider::ContentPart {
-                content_type: "tool_use".to_string(),
-                text: None,
-                image_url: None,
-                tool_use: Some(rocode_provider::ToolUse {
-                    id: call.id,
-                    name: call.name,
-                    input: call.arguments,
-                }),
-                tool_result: None,
-                cache_control: None,
-                filename: None,
-                media_type: None,
-                provider_options: None,
-            });
+        if let Some(message) =
+            rocode_provider::Message::assistant_turn(None, Some(content), &provider_tool_calls)
+        {
+            self.messages.push(message);
         }
-
-        self.messages.push(rocode_provider::Message {
-            role: rocode_provider::Role::Assistant,
-            content: rocode_provider::Content::Parts(parts),
-            cache_control: None,
-            provider_options: None,
-        });
     }
 
     pub fn add_tool_result(&mut self, call_id: &str, _name: &str, content: String, is_error: bool) {
-        self.messages.push(rocode_provider::Message {
-            role: rocode_provider::Role::Tool,
-            content: rocode_provider::Content::Parts(vec![rocode_provider::ContentPart {
-                content_type: "tool_result".to_string(),
-                text: None,
-                image_url: None,
-                tool_use: None,
-                tool_result: Some(rocode_provider::ToolResult {
-                    tool_use_id: call_id.to_string(),
+        self.messages
+            .push(rocode_provider::Message::tool_parts(vec![
+                rocode_provider::ContentPart::tool_result(
+                    call_id.to_string(),
                     content,
-                    is_error: Some(is_error),
-                }),
-                cache_control: None,
-                filename: None,
-                media_type: None,
-                provider_options: None,
-            }]),
-            cache_control: None,
-            provider_options: None,
-        });
+                    Some(is_error),
+                ),
+            ]));
     }
 
     pub fn messages(&self) -> &[rocode_provider::Message] {

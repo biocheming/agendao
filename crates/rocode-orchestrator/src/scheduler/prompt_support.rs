@@ -2,6 +2,9 @@ use super::prompt_context::{AvailableAgentMeta, AvailableCategoryMeta};
 use super::SchedulerSkillRef;
 use std::collections::BTreeMap;
 
+const COMPACT_SKILLS_PER_CATEGORY: usize = 12;
+const COMPACT_SKILL_DESCRIPTION_CHARS: usize = 96;
+
 pub(crate) const TONE_AND_STYLE: &str = r#"<Tone_and_Style>
 ## Communication Style
 
@@ -173,7 +176,7 @@ pub(crate) fn build_category_skills_guide(
         lines.push(String::new());
         lines.push("#### Available Skills".to_string());
         lines.push(String::new());
-        lines.push(render_skill_catalog(skill_list));
+        lines.push(render_compact_skill_catalog(skill_list));
         lines.push(String::new());
         lines.push(
             "> Read this index first, then use `skill_view(name)` before EVERY delegation. If a skill exposes supporting files, continue with `skill_view(name, file_path)`."
@@ -350,7 +353,7 @@ pub(crate) fn build_capabilities_summary(
     if !skill_list.is_empty() {
         sections.push(String::new());
         sections.push("**Skills:**".to_string());
-        sections.push(render_skill_catalog(skill_list));
+        sections.push(render_compact_skill_catalog(skill_list));
         sections.push(
             "Use `skill_view(name)` to inspect any relevant skill before relying on it."
                 .to_string(),
@@ -393,6 +396,63 @@ pub(crate) fn render_skill_catalog(skill_list: &[SchedulerSkillRef]) -> String {
     output
 }
 
+pub(crate) fn render_compact_skill_catalog(skill_list: &[SchedulerSkillRef]) -> String {
+    if skill_list.is_empty() {
+        return "<available_skills compact=\"true\" />".to_string();
+    }
+
+    let mut grouped = BTreeMap::<String, Vec<&SchedulerSkillRef>>::new();
+    for skill in skill_list {
+        let category = skill
+            .category
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("general")
+            .to_string();
+        grouped.entry(category).or_default().push(skill);
+    }
+
+    let mut output = String::from("<available_skills compact=\"true\">\n");
+    for (category, mut skills) in grouped {
+        skills.sort_by(|left, right| left.name.cmp(&right.name));
+        output.push_str(&format!("  {}:", category));
+        let names = skills
+            .iter()
+            .take(COMPACT_SKILLS_PER_CATEGORY)
+            .map(|skill| compact_skill_entry(skill))
+            .collect::<Vec<_>>()
+            .join(", ");
+        output.push(' ');
+        output.push_str(&names);
+        let omitted = skills.len().saturating_sub(COMPACT_SKILLS_PER_CATEGORY);
+        if omitted > 0 {
+            output.push_str(&format!(" (+{} more; use skill_list/skill_view)", omitted));
+        }
+        output.push('\n');
+    }
+    output.push_str("</available_skills>");
+    output
+}
+
+fn compact_skill_entry(skill: &SchedulerSkillRef) -> String {
+    let description = skill.description.trim();
+    if description.is_empty() {
+        return skill.name.clone();
+    }
+
+    let first_sentence = description.split('.').next().unwrap_or(description).trim();
+    let short = first_sentence
+        .chars()
+        .take(COMPACT_SKILL_DESCRIPTION_CHARS)
+        .collect::<String>();
+    if short.is_empty() {
+        skill.name.clone()
+    } else {
+        format!("{}: {}", skill.name, short)
+    }
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -413,11 +473,29 @@ mod tests {
             }],
         );
 
-        assert!(summary.contains("<available_skills>"));
+        assert!(summary.contains("<available_skills compact=\"true\">"));
         assert!(summary.contains(
             "Use `skill_view(name)` to inspect any relevant skill before relying on it."
         ));
         assert!(summary.contains("After completing a complex task (5+ tool calls)"));
         assert!(summary.contains("patch it immediately with `skill_manage`"));
+    }
+
+    #[test]
+    fn compact_skill_catalog_limits_large_categories() {
+        let skills = (0..20)
+            .map(|index| SchedulerSkillRef {
+                name: format!("skill-{index:02}"),
+                description: "A very long skill description that should be shortened before being placed in hot scheduler prompts.".to_string(),
+                category: Some("debug".to_string()),
+            })
+            .collect::<Vec<_>>();
+
+        let summary = render_compact_skill_catalog(&skills);
+
+        assert!(summary.contains("compact=\"true\""));
+        assert!(summary.contains("skill-00"));
+        assert!(summary.contains("(+8 more; use skill_list/skill_view)"));
+        assert!(!summary.contains("skill-19"));
     }
 }

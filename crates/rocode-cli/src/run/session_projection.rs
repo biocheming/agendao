@@ -388,7 +388,7 @@ fn cli_stage_runtime_line(stage: &rocode_command::stage_protocol::StageSummary) 
             truncated
         ));
     }
-    if let Some(context_tokens) = stage.estimated_context_tokens {
+    if let Some(context_tokens) = stage.context_tokens.or(stage.estimated_context_tokens) {
         parts.push(format!("ctx {}", format_token_count(context_tokens)));
     }
     parts.join(" · ")
@@ -471,6 +471,8 @@ enum CliContextPressure {
 
 #[cfg_attr(not(test), allow(dead_code))]
 fn cli_current_context_tokens(projection: &CliFrontendProjection) -> Option<u64> {
+    let usage_context_tokens = (projection.token_stats.context_tokens > 0)
+        .then_some(projection.token_stats.context_tokens);
     let active_stage_id = projection
         .session_runtime
         .as_ref()
@@ -483,15 +485,13 @@ fn cli_current_context_tokens(projection: &CliFrontendProjection) -> Option<u64>
             .and_then(|stage| stage.estimated_context_tokens)
             .filter(|tokens| *tokens > 0)
         {
-            return Some(tokens);
+            return Some(usage_context_tokens.map_or(tokens, |usage| usage.max(tokens)));
         }
     }
 
-    projection
-        .stage_summaries
-        .iter()
-        .rev()
-        .find_map(|stage| stage.estimated_context_tokens.filter(|tokens| *tokens > 0))
+    usage_context_tokens.or_else(|| {
+        (projection.last_turn_tokens.input_tokens > 0).then_some(projection.last_turn_tokens.input_tokens)
+    })
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -551,9 +551,9 @@ fn cli_runtime_snapshot_lines(
         if let Some(focus) = stage.focus.as_deref() {
             lines.push(format!("Focus: {}", focus));
         }
-        if let Some(context_tokens) = stage.estimated_context_tokens {
+        if let Some(context_tokens) = stage.context_tokens.or(stage.estimated_context_tokens) {
             lines.push(format!(
-                "Estimated context: {}",
+                "Context: {}",
                 format_token_count(context_tokens)
             ));
         }

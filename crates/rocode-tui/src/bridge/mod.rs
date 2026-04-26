@@ -109,6 +109,39 @@ fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
     }
 }
 
+fn process_app_event_blocking(app: &Arc<Mutex<App>>, event: &Event) -> anyhow::Result<bool> {
+    app.lock().process_event(event)
+}
+
+fn drain_app_pending_events_blocking(app: &Arc<Mutex<App>>, limit: usize) -> anyhow::Result<bool> {
+    app.lock().drain_pending_events(limit)
+}
+
+fn draw_app_frame_blocking(
+    terminal: &mut crate::app::terminal::Tui,
+    app: &Arc<Mutex<App>>,
+    errors: &Arc<RuntimeErrorSink>,
+) -> anyhow::Result<Arc<Mutex<Option<(u16, u16)>>>> {
+    let reactive_cursor = Arc::new(Mutex::new(None));
+    debug_assert!(
+        app.lock().can_render_reactive_route(),
+        "legacy frame fallback should be unreachable after reratui migration"
+    );
+    terminal.draw(|frame| {
+        reset_component_position_counter();
+        let root = Element::component(ReactiveRootComponent {
+            app: app.clone(),
+            cursor: reactive_cursor.clone(),
+            errors: errors.clone(),
+        });
+        root.render(frame.area(), frame.buffer_mut());
+        if let Some((x, y)) = *reactive_cursor.lock() {
+            frame.set_cursor_position((x, y));
+        }
+    })?;
+    Ok(reactive_cursor)
+}
+
 #[derive(Clone)]
 struct TerminalEventBridge {
     app: Arc<Mutex<App>>,
@@ -162,7 +195,7 @@ impl Component for TerminalEventBridge {
             return;
         };
 
-        if let Err(error) = self.app.lock().process_event(&event) {
+        if let Err(error) = process_app_event_blocking(&self.app, &event) {
             self.errors.store(error);
         }
     }
@@ -356,11 +389,11 @@ async fn run_app_async(app: Arc<Mutex<App>>) -> anyhow::Result<()> {
             let mut should_draw = first_frame;
 
             if last_tick.elapsed() >= frame_interval {
-                should_draw |= app.lock().process_event(&Event::Tick)?;
+                should_draw |= process_app_event_blocking(&app, &Event::Tick)?;
                 last_tick = Instant::now();
             }
 
-            should_draw |= app.lock().drain_pending_events(MAX_EVENTS_PER_FRAME)?;
+            should_draw |= drain_app_pending_events_blocking(&app, MAX_EVENTS_PER_FRAME)?;
 
             let bridge_event = polled_event.as_ref().and_then(|event| {
                 if map_crossterm_event(event.clone()).is_some() {
@@ -402,23 +435,7 @@ async fn run_app_async(app: Arc<Mutex<App>>) -> anyhow::Result<()> {
             }
 
             if should_draw {
-                let reactive_cursor = Arc::new(Mutex::new(None));
-                debug_assert!(
-                    app.lock().can_render_reactive_route(),
-                    "legacy frame fallback should be unreachable after reratui migration"
-                );
-                terminal.draw(|frame| {
-                    reset_component_position_counter();
-                    let root = Element::component(ReactiveRootComponent {
-                        app: app.clone(),
-                        cursor: reactive_cursor.clone(),
-                        errors: errors.clone(),
-                    });
-                    root.render(frame.area(), frame.buffer_mut());
-                    if let Some((x, y)) = *reactive_cursor.lock() {
-                        frame.set_cursor_position((x, y));
-                    }
-                })?;
+                let _ = draw_app_frame_blocking(&mut terminal, &app, &errors)?;
                 first_frame = false;
             }
 

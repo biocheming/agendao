@@ -47,6 +47,7 @@ import {
 } from "./lib/multimodal";
 import type {
   FeedMessage,
+  MessagePartRecord,
   MessageRecord,
   OutputBlock,
   OutputField,
@@ -332,6 +333,65 @@ function toFeedMessage(block: OutputBlock): FeedMessage {
   };
 }
 
+function outputBlockSemanticRank(block: OutputBlock): number {
+  switch (block.kind) {
+    case "scheduler_stage":
+      return 0;
+    case "reasoning":
+      return 1;
+    case "tool":
+    case "session_event":
+    case "queue_item":
+      return 2;
+    case "message":
+      return block.role === "assistant" ? 4 : 3;
+    case "status":
+      return 5;
+    default:
+      return 3;
+  }
+}
+
+function messagePartSemanticRank(part: MessagePartRecord): number {
+  if (part.output_block) {
+    return outputBlockSemanticRank(part.output_block);
+  }
+  switch (part.type) {
+    case "reasoning":
+      return 1;
+    case "tool_call":
+    case "tool_result":
+      return 2;
+    case "text":
+      return 4;
+    default:
+      return 3;
+  }
+}
+
+function orderedMessageParts(parts: MessagePartRecord[] = []): MessagePartRecord[] {
+  return parts
+    .map((part, index) => ({ part, index }))
+    .sort((left, right) => {
+      const rankDelta = messagePartSemanticRank(left.part) - messagePartSemanticRank(right.part);
+      return rankDelta || left.index - right.index;
+    })
+    .map(({ part }) => part);
+}
+
+function orderRelatedFeedMessages(messages: FeedMessage[]): FeedMessage[] {
+  return messages
+    .map((message, index) => ({ message, index }))
+    .sort((left, right) => {
+      if (!left.message.id || left.message.id !== right.message.id) {
+        return left.index - right.index;
+      }
+      const rankDelta = outputBlockSemanticRank(left.message) - outputBlockSemanticRank(right.message);
+      return rankDelta || left.index - right.index;
+    })
+    .map(({ message }) => message);
+}
+
 function createOptimisticUserFeedMessage(text: string): FeedMessage {
   return {
     kind: "message",
@@ -512,7 +572,7 @@ function buildFeedFromHistory(history: MessageRecord[], showThinking: boolean): 
     let startedReasoning = false;
     let startedText = false;
 
-    for (const part of message.parts ?? []) {
+    for (const part of orderedMessageParts(message.parts)) {
       if (part.ignored) {
         continue;
       }
@@ -623,6 +683,46 @@ function buildFeedFromHistory(history: MessageRecord[], showThinking: boolean): 
   return messages;
 }
 
+function estimateContextTokensFromHistory(history: MessageRecord[]): number | null {
+  const tailStart = Math.max(
+    0,
+    history.findLastIndex((message) =>
+      (message.parts ?? []).some(
+        (part) => part.type === "compaction" || (part.type === "text" && part.text?.startsWith("Compacted ")),
+      ),
+    ),
+  );
+  const tail = history.slice(tailStart);
+
+  for (let index = tail.length - 1; index >= 0; index -= 1) {
+    const message = tail[index];
+    if (message?.role !== "assistant") continue;
+    const inputTokens = message.tokens?.input;
+    if (typeof inputTokens === "number" && Number.isFinite(inputTokens) && inputTokens > 0) {
+      return inputTokens;
+    }
+    const schedulerPromptTokens = message.metadata?.scheduler_stage_prompt_tokens;
+    if (typeof schedulerPromptTokens === "number" && Number.isFinite(schedulerPromptTokens) && schedulerPromptTokens > 0) {
+      return schedulerPromptTokens;
+    }
+  }
+
+  let totalChars = 0;
+  for (const message of tail) {
+    for (const part of message.parts ?? []) {
+      if (part.type === "text" || part.type === "reasoning") {
+        totalChars += part.text?.length ?? 0;
+      } else if (part.type === "file") {
+        totalChars += (part.file?.url?.length ?? 0) + (part.file?.filename?.length ?? 0) + (part.file?.mime?.length ?? 0);
+      } else if (part.output_block) {
+        totalChars += normalizeBlockText(part.output_block).length;
+      }
+    }
+  }
+
+  return totalChars > 0 ? Math.max(1, Math.floor(totalChars / 4)) : null;
+}
+
 function isStreamingTextBlock(block: OutputBlock): boolean {
   return block.kind === "message" || block.kind === "reasoning";
 }
@@ -717,12 +817,12 @@ function mergeHistoryWithLiveBlocks(
   liveBlocks: OutputBlock[],
   showThinking: boolean,
 ): FeedMessage[] {
-  return liveBlocks.reduce((current, block) => {
+  return orderRelatedFeedMessages(liveBlocks.reduce((current, block) => {
     if (isStreamingTextBlock(block)) {
       return mergeLiveTextBlock(current, block, showThinking);
     }
     return applyOutputBlock(current, block, showThinking);
-  }, buildFeedFromHistory(history, showThinking));
+  }, buildFeedFromHistory(history, showThinking)));
 }
 
 function modeKey(mode: ExecutionMode): string {
@@ -957,17 +1057,18 @@ export default function App() {
   });
   const sessionUsage = executionActivity.sessionUsage ?? currentSession?.telemetry?.usage ?? null;
   const composerContextTokens = useMemo(() => {
-    if (typeof executionActivity.activeStageSummary?.estimated_context_tokens === "number") {
-      return executionActivity.activeStageSummary.estimated_context_tokens;
+    const usageContext = sessionUsage?.context_tokens;
+    const activeEstimate = executionActivity.activeStageSummary?.estimated_context_tokens;
+    if (typeof usageContext === "number" && Number.isFinite(usageContext) && usageContext > 0) {
+      return typeof activeEstimate === "number" && Number.isFinite(activeEstimate) && activeEstimate > 0
+        ? Math.max(usageContext, activeEstimate)
+        : usageContext;
     }
-    for (let index = executionActivity.stageSummaries.length - 1; index >= 0; index -= 1) {
-      const estimate = executionActivity.stageSummaries[index]?.estimated_context_tokens;
-      if (typeof estimate === "number" && Number.isFinite(estimate) && estimate > 0) {
-        return estimate;
-      }
+    if (typeof activeEstimate === "number" && Number.isFinite(activeEstimate) && activeEstimate > 0) {
+      return activeEstimate;
     }
-    return null;
-  }, [executionActivity.activeStageSummary?.estimated_context_tokens, executionActivity.stageSummaries]);
+    return estimateContextTokensFromHistory(messageHistory);
+  }, [executionActivity.activeStageSummary?.estimated_context_tokens, messageHistory, sessionUsage?.context_tokens]);
   const sessionCumulativeTokens = useMemo(() => {
     if (!sessionUsage) return 0;
     return (

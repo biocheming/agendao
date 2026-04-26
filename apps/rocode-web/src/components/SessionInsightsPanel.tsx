@@ -80,17 +80,26 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
     [insights],
   );
   const currentContextTokens = useMemo(() => {
+    if (typeof activity.sessionUsage?.context_tokens === "number" && activity.sessionUsage.context_tokens > 0) {
+      const activeEstimate = activity.activeStageSummary?.estimated_context_tokens;
+      return typeof activeEstimate === "number" && activeEstimate > 0
+        ? Math.max(activity.sessionUsage.context_tokens, activeEstimate)
+        : activity.sessionUsage.context_tokens;
+    }
+    if (typeof activity.activeStageSummary?.context_tokens === "number") {
+      return activity.activeStageSummary.context_tokens;
+    }
     if (typeof activity.activeStageSummary?.estimated_context_tokens === "number") {
       return activity.activeStageSummary.estimated_context_tokens;
     }
     for (let index = activity.stageSummaries.length - 1; index >= 0; index -= 1) {
-      const estimate = activity.stageSummaries[index]?.estimated_context_tokens;
+      const estimate = activity.stageSummaries[index]?.context_tokens ?? activity.stageSummaries[index]?.estimated_context_tokens;
       if (typeof estimate === "number" && Number.isFinite(estimate) && estimate > 0) {
         return estimate;
       }
     }
     return null;
-  }, [activity.activeStageSummary?.estimated_context_tokens, activity.stageSummaries]);
+  }, [activity.activeStageSummary?.context_tokens, activity.activeStageSummary?.estimated_context_tokens, activity.sessionUsage?.context_tokens, activity.stageSummaries]);
   const panelActionClass = "roc-action roc-action-pill";
   const compactActionClass = "roc-action roc-action-compact justify-self-start";
   const detailTileClass = "roc-rail-item grid gap-1 bg-card/45";

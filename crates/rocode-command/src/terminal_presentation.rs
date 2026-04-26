@@ -896,7 +896,19 @@ pub fn compose_assistant_segments(
         }
     }
 
+    segments.sort_by_key(assistant_segment_semantic_key);
     segments
+}
+
+fn assistant_segment_semantic_key(segment: &TerminalAssistantSegment) -> (u8, usize) {
+    match segment {
+        TerminalAssistantSegment::Reasoning { part_index, .. } => (1, *part_index),
+        TerminalAssistantSegment::ToolCall { part_index, .. } => (2, *part_index),
+        TerminalAssistantSegment::File { part_index, .. }
+        | TerminalAssistantSegment::Image { part_index, .. } => (3, *part_index),
+        TerminalAssistantSegment::Text { part_index, .. } => (4, *part_index),
+        TerminalAssistantSegment::Spacer => (5, usize::MAX),
+    }
 }
 
 #[cfg(test)]
@@ -1010,12 +1022,12 @@ mod tests {
         assert!(matches!(
             segments.as_slice(),
             [
-                TerminalAssistantSegment::Text { .. },
                 TerminalAssistantSegment::Reasoning { .. },
                 TerminalAssistantSegment::ToolCall {
                     state: TerminalToolState::Running,
                     ..
                 },
+                TerminalAssistantSegment::Text { .. },
                 TerminalAssistantSegment::Text { .. }
             ]
         ));
@@ -1120,6 +1132,41 @@ mod tests {
                 TerminalMessagePart::Reasoning { text } if text == "thinking"
             )
         }));
+    }
+
+    #[test]
+    fn compose_assistant_segments_orders_reasoning_and_tools_before_final_text() {
+        let msg = message(
+            "assistant-1",
+            TerminalMessageRole::Assistant,
+            vec![
+                TerminalMessagePart::Text {
+                    text: "final answer".to_string(),
+                },
+                TerminalMessagePart::Reasoning {
+                    text: "thinking".to_string(),
+                },
+                TerminalMessagePart::ToolCall {
+                    id: "tool-1".to_string(),
+                    name: "search".to_string(),
+                    arguments: "{}".to_string(),
+                },
+            ],
+        );
+
+        let segments = compose_assistant_segments(&msg, &HashMap::new(), None, true)
+            .into_iter()
+            .map(|segment| match segment {
+                TerminalAssistantSegment::Reasoning { .. } => "reasoning",
+                TerminalAssistantSegment::ToolCall { .. } => "tool",
+                TerminalAssistantSegment::Text { .. } => "text",
+                TerminalAssistantSegment::File { .. } => "file",
+                TerminalAssistantSegment::Image { .. } => "image",
+                TerminalAssistantSegment::Spacer => "spacer",
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(segments, vec!["reasoning", "tool", "text"]);
     }
 
     #[test]

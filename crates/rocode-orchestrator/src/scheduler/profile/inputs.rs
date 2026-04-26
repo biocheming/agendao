@@ -1,5 +1,7 @@
 use super::*;
-use crate::scheduler::prompt_support::{render_skill_catalog, SKILLS_GUIDANCE};
+use crate::scheduler::prompt_support::{
+    render_compact_skill_catalog, render_skill_catalog, SKILLS_GUIDANCE,
+};
 
 pub(in crate::scheduler) struct RetryComposeRequest<'a> {
     pub(in crate::scheduler) original_input: &'a str,
@@ -52,7 +54,7 @@ request-analysis"
 Use `skill_view(name)` to inspect a relevant skill before relying on it.
 
 {SKILLS_GUIDANCE}",
-                render_skill_catalog(effective_skill_list),
+                render_compact_skill_catalog(effective_skill_list),
             ));
         }
 

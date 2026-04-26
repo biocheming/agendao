@@ -117,6 +117,84 @@ impl Default for ContentPart {
     }
 }
 
+impl ContentPart {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            content_type: "text".to_string(),
+            text: Some(text.into()),
+            ..Default::default()
+        }
+    }
+
+    pub fn reasoning(text: impl Into<String>) -> Self {
+        Self {
+            content_type: "reasoning".to_string(),
+            text: Some(text.into()),
+            ..Default::default()
+        }
+    }
+
+    pub fn tool_use(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        input: serde_json::Value,
+    ) -> Self {
+        Self {
+            content_type: "tool_use".to_string(),
+            tool_use: Some(ToolUse {
+                id: id.into(),
+                name: name.into(),
+                input,
+            }),
+            ..Default::default()
+        }
+    }
+
+    pub fn tool_result(
+        tool_use_id: impl Into<String>,
+        content: impl Into<String>,
+        is_error: Option<bool>,
+    ) -> Self {
+        Self {
+            content_type: "tool_result".to_string(),
+            tool_result: Some(ToolResult {
+                tool_use_id: tool_use_id.into(),
+                content: content.into(),
+                is_error,
+            }),
+            ..Default::default()
+        }
+    }
+
+    pub fn image_url(
+        url: impl Into<String>,
+        filename: Option<String>,
+        media_type: Option<String>,
+    ) -> Self {
+        Self {
+            content_type: "image_url".to_string(),
+            image_url: Some(ImageUrl { url: url.into() }),
+            filename,
+            media_type,
+            ..Default::default()
+        }
+    }
+
+    pub fn file(
+        url: impl Into<String>,
+        filename: Option<String>,
+        media_type: Option<String>,
+    ) -> Self {
+        Self {
+            content_type: "file".to_string(),
+            image_url: Some(ImageUrl { url: url.into() }),
+            filename,
+            media_type,
+            ..Default::default()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageUrl {
     pub url: String,
@@ -221,6 +299,52 @@ impl Message {
         }
     }
 
+    pub fn assistant_parts(parts: Vec<ContentPart>) -> Self {
+        Self {
+            role: Role::Assistant,
+            content: Content::Parts(parts),
+            cache_control: None,
+            provider_options: None,
+        }
+    }
+
+    pub fn tool_parts(parts: Vec<ContentPart>) -> Self {
+        Self {
+            role: Role::Tool,
+            content: Content::Parts(parts),
+            cache_control: None,
+            provider_options: None,
+        }
+    }
+
+    pub fn assistant_turn(
+        reasoning: Option<&str>,
+        text: Option<&str>,
+        tool_calls: &[ToolUse],
+    ) -> Option<Self> {
+        let mut parts = Vec::new();
+
+        if let Some(reasoning) = reasoning.filter(|value| !value.is_empty()) {
+            parts.push(ContentPart::reasoning(reasoning.to_string()));
+        }
+        if let Some(text) = text.filter(|value| !value.is_empty()) {
+            parts.push(ContentPart::text(text.to_string()));
+        }
+        for tool_call in tool_calls {
+            parts.push(ContentPart::tool_use(
+                tool_call.id.clone(),
+                tool_call.name.clone(),
+                tool_call.input.clone(),
+            ));
+        }
+
+        if parts.is_empty() {
+            None
+        } else {
+            Some(Self::assistant_parts(parts))
+        }
+    }
+
     pub fn system(content: impl Into<String>) -> Self {
         Self {
             role: Role::System,
@@ -286,6 +410,7 @@ impl ChatRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn tool_definition_serializes_to_openai_compatible_format() {
@@ -306,5 +431,40 @@ mod tests {
         assert_eq!(value["function"]["name"], "bash");
         assert_eq!(value["function"]["description"], "Execute shell commands");
         assert_eq!(value["function"]["parameters"]["type"], "object");
+    }
+
+    #[test]
+    fn assistant_turn_preserves_reasoning_before_tool_calls() {
+        let tool_calls = vec![ToolUse {
+            id: "tool-call-1".to_string(),
+            name: "read".to_string(),
+            input: json!({ "path": "/tmp/a" }),
+        }];
+
+        let message = Message::assistant_turn(
+            Some("need to inspect first"),
+            Some("working on it"),
+            &tool_calls,
+        )
+        .expect("assistant turn should exist");
+
+        match message.content {
+            Content::Parts(parts) => {
+                assert_eq!(parts.len(), 3);
+                assert_eq!(parts[0].content_type, "reasoning");
+                assert_eq!(parts[0].text.as_deref(), Some("need to inspect first"));
+                assert_eq!(parts[1].content_type, "text");
+                assert_eq!(parts[1].text.as_deref(), Some("working on it"));
+                assert_eq!(parts[2].content_type, "tool_use");
+                assert_eq!(
+                    parts[2]
+                        .tool_use
+                        .as_ref()
+                        .map(|tool_use| tool_use.name.as_str()),
+                    Some("read")
+                );
+            }
+            other => panic!("expected parts content, got {other:?}"),
+        }
     }
 }

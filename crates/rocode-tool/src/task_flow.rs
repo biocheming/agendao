@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use rocode_core::agent_task_registry::{global_task_registry, AgentTask, AgentTaskStatus};
 
@@ -20,6 +20,11 @@ Phase 1 status:
 - get/list are implemented as read-only registry-backed operations
 - cancel is implemented via orchestration lifecycle mediation
 - create/resume are implemented as thin adapters over the existing `task` tool
+
+Important call-shape rules:
+- `create` requires both `agent` and `prompt`
+- `resume` requires `task_id`, `agent`, and `prompt`
+- `todo_item` / `todo_items` / `todos` only describe todo projection data; they do not replace delegated execution inputs
 "#;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -54,6 +59,13 @@ struct TaskFlowTodoItemInput {
     priority: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum TaskFlowTodoItemsInput {
+    One(TaskFlowTodoItemInput),
+    Many(Vec<TaskFlowTodoItemInput>),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TaskFlowInput {
@@ -74,8 +86,13 @@ struct TaskFlowInput {
     run_in_background: bool,
     #[serde(default, alias = "sync_todo")]
     sync_todo: bool,
-    #[serde(default, alias = "todo_item")]
-    todo_item: Option<TaskFlowTodoItemInput>,
+    #[serde(
+        default,
+        alias = "todo_item",
+        alias = "todos",
+        deserialize_with = "deserialize_task_flow_todo_items"
+    )]
+    todo_items: Vec<TaskFlowTodoItemInput>,
     #[serde(default, alias = "status_filter")]
     status_filter: Option<Vec<String>>,
     #[serde(default = "default_limit")]
@@ -118,6 +135,21 @@ struct TaskFlowModelView {
     model_id: String,
 }
 
+fn deserialize_task_flow_todo_items<'de, D>(
+    deserializer: D,
+) -> Result<Vec<TaskFlowTodoItemInput>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(
+        match Option::<TaskFlowTodoItemsInput>::deserialize(deserializer)? {
+            Some(TaskFlowTodoItemsInput::One(item)) => vec![item],
+            Some(TaskFlowTodoItemsInput::Many(items)) => items,
+            None => Vec::new(),
+        },
+    )
+}
+
 fn default_limit() -> usize {
     DEFAULT_LIMIT
 }
@@ -147,6 +179,18 @@ impl Tool for TaskFlowTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
+        let todo_item_schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "content": { "type": "string" },
+                "status": {
+                    "type": "string",
+                    "enum": ["pending", "in_progress", "completed"]
+                },
+                "priority": { "type": "string" }
+            },
+            "required": ["content"]
+        });
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -161,7 +205,7 @@ impl Tool for TaskFlowTool {
                 },
                 "agent": {
                     "type": "string",
-                    "description": "Agent name to delegate to for create"
+                    "description": "Agent name to delegate to for create or resume"
                 },
                 "description": {
                     "type": "string",
@@ -191,16 +235,27 @@ impl Tool for TaskFlowTool {
                     "description": "Whether to project task lifecycle into the session todo board"
                 },
                 "todo_item": {
-                    "type": "object",
-                    "properties": {
-                        "content": { "type": "string" },
-                        "status": {
-                            "type": "string",
-                            "enum": ["pending", "in_progress", "completed"]
-                        },
-                        "priority": { "type": "string" }
-                    },
-                    "required": ["content"]
+                    "description": "Single todo item or an array of todo items to seed/sync alongside the delegated task. This augments create; it does not replace the required agent/prompt inputs.",
+                    "oneOf": [
+                        todo_item_schema.clone(),
+                        {
+                            "type": "array",
+                            "items": todo_item_schema.clone(),
+                            "minItems": 1
+                        }
+                    ]
+                },
+                "todo_items": {
+                    "type": "array",
+                    "items": todo_item_schema.clone(),
+                    "minItems": 1,
+                    "description": "Preferred plural form for multiple todo items"
+                },
+                "todos": {
+                    "type": "array",
+                    "items": todo_item_schema,
+                    "minItems": 1,
+                    "description": "Compatibility alias for multiple todo items"
                 },
                 "status_filter": {
                     "type": "array",
@@ -227,7 +282,49 @@ impl Tool for TaskFlowTool {
                     "description": "Allowed tools for a dynamically constructed agent (create only). Only tools available to the parent can be granted."
                 }
             },
-            "required": ["operation"]
+            "required": ["operation"],
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {
+                            "operation": { "const": "create" }
+                        }
+                    },
+                    "then": {
+                        "required": ["operation", "agent", "prompt"]
+                    }
+                },
+                {
+                    "if": {
+                        "properties": {
+                            "operation": { "const": "resume" }
+                        }
+                    },
+                    "then": {
+                        "required": ["operation", "task_id", "agent", "prompt"]
+                    }
+                },
+                {
+                    "if": {
+                        "properties": {
+                            "operation": { "const": "get" }
+                        }
+                    },
+                    "then": {
+                        "required": ["operation", "task_id"]
+                    }
+                },
+                {
+                    "if": {
+                        "properties": {
+                            "operation": { "const": "cancel" }
+                        }
+                    },
+                    "then": {
+                        "required": ["operation", "task_id"]
+                    }
+                }
+            ]
         })
     }
 
@@ -440,7 +537,7 @@ async fn project_task_to_todo(
     }
 
     let mut todos = todo_ctx.do_todo_get().await?;
-    todos.push(build_projection_todo_item(input, view));
+    todos.extend(build_projection_todo_items(input, view));
 
     TodoWriteTool
         .execute(
@@ -454,21 +551,56 @@ async fn project_task_to_todo(
     Ok(true)
 }
 
-fn build_projection_todo_item(input: &TaskFlowInput, view: &TaskFlowTaskView) -> TodoItemData {
+fn build_projection_todo_items(
+    input: &TaskFlowInput,
+    view: &TaskFlowTaskView,
+) -> Vec<TodoItemData> {
+    if input.todo_items.is_empty() {
+        return vec![build_fallback_projection_todo_item(input, view)];
+    }
+
+    input
+        .todo_items
+        .iter()
+        .map(|item| build_explicit_projection_todo_item(item, &view.status))
+        .collect()
+}
+
+fn build_explicit_projection_todo_item(
+    item: &TaskFlowTodoItemInput,
+    task_status: &str,
+) -> TodoItemData {
+    let content = item.content.trim().to_string();
+    let status = item
+        .status
+        .as_deref()
+        .map(normalize_projection_todo_status)
+        .unwrap_or_else(|| task_status_to_todo_status(task_status))
+        .to_string();
+    let priority = item
+        .priority
+        .as_deref()
+        .map(normalize_projection_todo_priority)
+        .unwrap_or("medium")
+        .to_string();
+
+    TodoItemData {
+        content,
+        status,
+        priority,
+    }
+}
+
+fn build_fallback_projection_todo_item(
+    input: &TaskFlowInput,
+    view: &TaskFlowTaskView,
+) -> TodoItemData {
     let content = input
-        .todo_item
-        .as_ref()
-        .map(|item| item.content.trim())
+        .description
+        .as_deref()
+        .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
-        .or_else(|| {
-            input
-                .description
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToString::to_string)
-        })
         .or_else(|| {
             input
                 .prompt
@@ -488,25 +620,10 @@ fn build_projection_todo_item(input: &TaskFlowInput, view: &TaskFlowTaskView) ->
         })
         .unwrap_or_else(|| format!("Delegated {} task", view.agent));
 
-    let status = input
-        .todo_item
-        .as_ref()
-        .and_then(|item| item.status.as_deref())
-        .map(normalize_projection_todo_status)
-        .unwrap_or_else(|| task_status_to_todo_status(&view.status))
-        .to_string();
-    let priority = input
-        .todo_item
-        .as_ref()
-        .and_then(|item| item.priority.as_deref())
-        .map(normalize_projection_todo_priority)
-        .unwrap_or("medium")
-        .to_string();
-
     TodoItemData {
         content,
-        status,
-        priority,
+        status: task_status_to_todo_status(&view.status).to_string(),
+        priority: "medium".to_string(),
     }
 }
 
@@ -765,14 +882,23 @@ fn validate_input(input: &TaskFlowInput) -> Result<(), ToolError> {
         )));
     }
 
-    if let Some(todo_item) = input.todo_item.as_ref() {
+    for (index, todo_item) in input.todo_items.iter().enumerate() {
+        let field_prefix = if input.todo_items.len() == 1 {
+            "todo_item".to_string()
+        } else {
+            format!("todo_items[{index}]")
+        };
         if todo_item.content.trim().is_empty() {
-            return Err(ToolError::InvalidArguments(
-                "todo_item.content must be non-empty".to_string(),
-            ));
+            return Err(ToolError::InvalidArguments(format!(
+                "{field_prefix}.content must be non-empty"
+            )));
         }
         if let Some(status) = todo_item.status.as_deref() {
-            validate_todo_status(status)?;
+            validate_todo_status(status).map_err(|_| {
+                ToolError::InvalidArguments(format!(
+                    "{field_prefix}.status must be one of: pending, in_progress, completed"
+                ))
+            })?;
         }
     }
 
@@ -882,7 +1008,7 @@ mod tests {
             load_skills: None,
             run_in_background: false,
             sync_todo: false,
-            todo_item: None,
+            todo_items: Vec::new(),
             status_filter: None,
             limit: DEFAULT_LIMIT,
             agent_prompt: None,
@@ -915,7 +1041,7 @@ mod tests {
             load_skills: None,
             run_in_background: false,
             sync_todo: false,
-            todo_item: None,
+            todo_items: Vec::new(),
             status_filter: None,
             limit: DEFAULT_LIMIT,
             agent_prompt: None,
@@ -939,7 +1065,7 @@ mod tests {
             load_skills: None,
             run_in_background: false,
             sync_todo: false,
-            todo_item: None,
+            todo_items: Vec::new(),
             status_filter: None,
             limit: DEFAULT_LIMIT,
             agent_prompt: None,
@@ -972,7 +1098,7 @@ mod tests {
             load_skills: None,
             run_in_background: false,
             sync_todo: false,
-            todo_item: None,
+            todo_items: Vec::new(),
             status_filter: Some(vec!["running".to_string(), "completed".to_string()]),
             limit: 0,
             agent_prompt: None,
@@ -1019,11 +1145,11 @@ mod tests {
             load_skills: None,
             run_in_background: false,
             sync_todo: true,
-            todo_item: Some(TaskFlowTodoItemInput {
+            todo_items: vec![TaskFlowTodoItemInput {
                 content: "   ".to_string(),
                 status: Some("pending".to_string()),
                 priority: None,
-            }),
+            }],
             status_filter: None,
             limit: DEFAULT_LIMIT,
             agent_prompt: None,
@@ -1035,17 +1161,62 @@ mod tests {
         }
 
         let input = TaskFlowInput {
-            todo_item: Some(TaskFlowTodoItemInput {
+            todo_items: vec![TaskFlowTodoItemInput {
                 content: "Track task".to_string(),
                 status: Some("bogus".to_string()),
                 priority: None,
-            }),
+            }],
             ..input
         };
         match validate_input(&input) {
             Err(ToolError::InvalidArguments(msg)) => assert!(msg.contains("todo_item.status")),
             other => panic!("unexpected result: {:?}", other),
         }
+    }
+
+    #[test]
+    fn todo_item_array_is_deserialized_and_validated() {
+        let input: TaskFlowInput = serde_json::from_value(serde_json::json!({
+            "operation": "create",
+            "agent": "build",
+            "prompt": "Investigate",
+            "todo_item": [
+                {
+                    "content": "Design variants",
+                    "status": "in_progress",
+                    "priority": "high"
+                },
+                {
+                    "content": "Rank candidates",
+                    "status": "pending"
+                }
+            ]
+        }))
+        .expect("array-form todo_item should deserialize");
+
+        assert_eq!(input.todo_items.len(), 2);
+        assert_eq!(input.todo_items[0].content, "Design variants");
+        assert_eq!(input.todo_items[1].content, "Rank candidates");
+        validate_input(&input).expect("array-form todo items should validate");
+    }
+
+    #[test]
+    fn todos_alias_is_deserialized() {
+        let input: TaskFlowInput = serde_json::from_value(serde_json::json!({
+            "operation": "create",
+            "agent": "build",
+            "prompt": "Investigate",
+            "todos": [
+                {
+                    "content": "Track delegated work",
+                    "status": "pending"
+                }
+            ]
+        }))
+        .expect("todos alias should deserialize");
+
+        assert_eq!(input.todo_items.len(), 1);
+        assert_eq!(input.todo_items[0].content, "Track delegated work");
     }
 
     #[test]
@@ -1134,7 +1305,7 @@ mod tests {
             load_skills: None,
             run_in_background: false,
             sync_todo: false,
-            todo_item: None,
+            todo_items: Vec::new(),
             status_filter: None,
             limit: DEFAULT_LIMIT,
             agent_prompt: None,
@@ -1174,7 +1345,7 @@ mod tests {
             load_skills: None,
             run_in_background: false,
             sync_todo: false,
-            todo_item: None,
+            todo_items: Vec::new(),
             status_filter: None,
             limit: DEFAULT_LIMIT,
             agent_prompt: None,
@@ -1460,6 +1631,92 @@ mod tests {
 
         let prompt_calls = prompt_calls.lock().await.clone();
         assert_eq!(prompt_calls.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn execute_create_syncs_multiple_todo_items_when_requested() {
+        let updated_todos = Arc::new(Mutex::new(Vec::<crate::TodoItemData>::new()));
+
+        let ctx = ToolContext::new("session-1".into(), "message-1".into(), ".".into())
+            .with_get_agent_info(|name| async move {
+                if name == "build" {
+                    Ok(Some(crate::TaskAgentInfo {
+                        name: "build".to_string(),
+                        model: None,
+                        can_use_task: true,
+                        steps: Some(4),
+                        execution: None,
+                        max_tokens: None,
+                        temperature: None,
+                        top_p: None,
+                        variant: None,
+                    }))
+                } else {
+                    Ok(None)
+                }
+            })
+            .with_get_last_model(|_session_id| async move { Ok(Some("provider-x:model-y".into())) })
+            .with_create_subsession(|_agent, _title, _model, _disabled_tools| async move {
+                Ok("task_build_345".to_string())
+            })
+            .with_prompt_subsession(|_session_id, _prompt| async move {
+                Ok("subagent output".to_string())
+            })
+            .with_todo_get(|_session_id| async move {
+                Ok(vec![crate::TodoItemData {
+                    content: "existing item".to_string(),
+                    status: "pending".to_string(),
+                    priority: "medium".to_string(),
+                }])
+            })
+            .with_todo_update({
+                let updated_todos = updated_todos.clone();
+                move |_session_id, todos| {
+                    let updated_todos = updated_todos.clone();
+                    async move {
+                        *updated_todos.lock().await = todos;
+                        Ok(())
+                    }
+                }
+            });
+
+        let result = TaskFlowTool::new()
+            .execute(
+                serde_json::json!({
+                    "operation": "create",
+                    "agent": "build",
+                    "description": "Investigate issue",
+                    "prompt": "Please inspect runtime behavior",
+                    "sync_todo": true,
+                    "todo_item": [
+                        {
+                            "content": "Design variants",
+                            "status": "in_progress",
+                            "priority": "high"
+                        },
+                        {
+                            "content": "Rank candidates",
+                            "status": "pending",
+                            "priority": "low"
+                        }
+                    ]
+                }),
+                ctx,
+            )
+            .await
+            .expect("create should succeed");
+
+        assert_eq!(result.metadata["todoSynced"], serde_json::json!(true));
+
+        let todos = updated_todos.lock().await.clone();
+        assert_eq!(todos.len(), 3);
+        assert_eq!(todos[0].content, "existing item");
+        assert_eq!(todos[1].content, "Design variants");
+        assert_eq!(todos[1].status, "in_progress");
+        assert_eq!(todos[1].priority, "high");
+        assert_eq!(todos[2].content, "Rank candidates");
+        assert_eq!(todos[2].status, "pending");
+        assert_eq!(todos[2].priority, "low");
     }
 
     #[tokio::test]

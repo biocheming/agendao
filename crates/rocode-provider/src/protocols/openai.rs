@@ -1755,10 +1755,7 @@ mod tests {
         );
         assert_eq!(converted[0]["tool_calls"][0]["function"]["name"], "read");
         assert_eq!(converted[1]["role"], "tool");
-        assert_eq!(
-            converted[1]["content"],
-            "[Tool execution was interrupted]"
-        );
+        assert_eq!(converted[1]["content"], "[Tool execution was interrupted]");
     }
 
     #[test]
