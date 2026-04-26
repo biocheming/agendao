@@ -24,6 +24,7 @@ async fn main() -> anyhow::Result<()> {
         hostname: cli.hostname,
         cwd: cli.cwd,
         web_dist: None,
+        embedded_web_assets: None,
         mdns: cli.mdns,
         mdns_domain: cli.mdns_domain,
         cors: cli.cors,

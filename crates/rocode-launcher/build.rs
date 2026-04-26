@@ -6,6 +6,10 @@ use std::process::Command;
 use std::time::SystemTime;
 
 fn main() {
+    if env::var_os("CARGO_FEATURE_EMBEDDED_WEB").is_none() {
+        return;
+    }
+
     if let Err(error) = ensure_embedded_web_dist() {
         panic!("failed to prepare embedded web frontend assets: {error}");
     }

@@ -2378,15 +2378,10 @@ fn write_scheduler_gate_metadata(
     {
         fields.push(decision_field("Next Action", next_input, Some("warning")));
     }
-    let mut sections = Vec::new();
-    if let Some(final_response) = decision
-        .final_response
-        .as_deref()
-        .filter(|value| !value.is_empty())
-    {
-        sections.push(decision_section("Final Response", final_response));
-    }
-    write_scheduler_decision_metadata(message, "gate", "Decision", fields, sections);
+    // Keep final_response out of the stage card. It is rendered as the final
+    // assistant delivery; duplicating it here makes the conclusion appear
+    // before the execution trace in both TUI and Web.
+    write_scheduler_decision_metadata(message, "gate", "Decision", fields, Vec::new());
     message.metadata.insert(
         "scheduler_gate_status".to_string(),
         serde_json::json!(status),
@@ -2898,22 +2893,12 @@ pub fn decision_from_stage_text(stage: &str, text: &str) -> Option<SchedulerDeci
                     tone: Some("warning".to_string()),
                 });
             }
-            let sections = decision
-                .final_response
-                .filter(|value| !value.is_empty())
-                .map(|body| {
-                    vec![SchedulerDecisionSection {
-                        title: "Final Response".to_string(),
-                        body,
-                    }]
-                })
-                .unwrap_or_default();
             Some(SchedulerDecisionBlock {
                 kind: "gate".to_string(),
                 title: "Decision".to_string(),
                 spec: default_decision_render_spec(),
                 fields,
-                sections,
+                sections: Vec::new(),
             })
         }
         _ => None,
@@ -3183,6 +3168,38 @@ mod tests {
         );
     }
 
+    #[test]
+    fn gate_decision_block_does_not_duplicate_final_response_section() {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert(
+            "scheduler_stage".to_string(),
+            serde_json::json!("coordination-gate"),
+        );
+        metadata.insert(
+            "scheduler_decision_kind".to_string(),
+            serde_json::json!("gate"),
+        );
+        metadata.insert(
+            "scheduler_decision_title".to_string(),
+            serde_json::json!("Decision"),
+        );
+        metadata.insert(
+            "scheduler_decision_fields".to_string(),
+            serde_json::json!([{"label":"Outcome","value":"Done","tone":"status"}]),
+        );
+        metadata.insert(
+            "scheduler_decision_sections".to_string(),
+            serde_json::json!([]),
+        );
+        metadata.insert(
+            "scheduler_gate_final_response".to_string(),
+            serde_json::json!("## Delivery Summary\nDone."),
+        );
+
+        let decision = scheduler_decision_block(&metadata, "coordination-gate", "{}").unwrap();
+        assert!(decision.sections.is_empty());
+    }
+
     #[tokio::test]
     async fn emit_internal_scheduler_stage_message_is_still_renderable() {
         let state = Arc::new(ServerState::new());
@@ -3380,6 +3397,7 @@ mod tests {
             &rocode_orchestrator::runtime::events::StepUsage {
                 prompt_tokens: 1200,
                 completion_tokens: 320,
+                context_tokens: 0,
                 reasoning_tokens: 40,
                 cache_read_tokens: 2,
                 cache_write_tokens: 1,
@@ -3394,6 +3412,7 @@ mod tests {
             &rocode_orchestrator::runtime::events::StepUsage {
                 prompt_tokens: 1300,
                 completion_tokens: 340,
+                context_tokens: 0,
                 reasoning_tokens: 0,
                 cache_read_tokens: 2,
                 cache_write_tokens: 1,
@@ -3465,6 +3484,7 @@ mod tests {
             &rocode_orchestrator::runtime::events::StepUsage {
                 prompt_tokens: 1_000_000,
                 completion_tokens: 100_000,
+                context_tokens: 0,
                 reasoning_tokens: 0,
                 cache_read_tokens: 500_000,
                 cache_write_tokens: 200_000,
@@ -3521,6 +3541,7 @@ mod tests {
             &rocode_orchestrator::runtime::events::StepUsage {
                 prompt_tokens: 1200,
                 completion_tokens: 0,
+                context_tokens: 0,
                 reasoning_tokens: 0,
                 cache_read_tokens: 0,
                 cache_write_tokens: 0,
@@ -3535,6 +3556,7 @@ mod tests {
             &rocode_orchestrator::runtime::events::StepUsage {
                 prompt_tokens: 0,
                 completion_tokens: 320,
+                context_tokens: 0,
                 reasoning_tokens: 40,
                 cache_read_tokens: 2,
                 cache_write_tokens: 1,

@@ -46,6 +46,7 @@ pub struct ServerRuntimeOptions {
     pub hostname: String,
     pub cwd: Option<PathBuf>,
     pub web_dist: Option<PathBuf>,
+    pub embedded_web_assets: Option<crate::web::EmbeddedWebAssetLoader>,
     pub mdns: bool,
     pub mdns_domain: String,
     pub cors: Vec<String>,
@@ -996,16 +997,12 @@ fn start_mdns_publisher_if_needed(
 
 pub async fn run_server_runtime(options: ServerRuntimeOptions) -> anyhow::Result<()> {
     crate::web::configure_web_dist_root(options.web_dist.clone());
+    crate::web::configure_embedded_web_assets(options.embedded_web_assets);
     let workspace_root =
         normalize_workspace_root(options.cwd.clone().unwrap_or_else(default_workspace_root));
 
-    if std::env::var("ROCODE_SERVER_PASSWORD")
-        .or_else(|_| std::env::var("OPENCODE_SERVER_PASSWORD"))
-        .is_err()
-    {
-        eprintln!(
-            "Warning: ROCODE_SERVER_PASSWORD is not set; server is unsecured (legacy fallback: OPENCODE_SERVER_PASSWORD)."
-        );
+    if std::env::var("ROCODE_SERVER_PASSWORD").is_err() {
+        eprintln!("Warning: ROCODE_SERVER_PASSWORD is not set; server is unsecured.");
     }
 
     let bind_host = if options.mdns && options.hostname == "127.0.0.1" {

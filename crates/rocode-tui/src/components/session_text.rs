@@ -1003,21 +1003,11 @@ fn decision_card_from_text(
                     tone: Some("warning".to_string()),
                 });
             }
-            let sections = decision
-                .final_response
-                .filter(|value| !value.is_empty())
-                .map(|response| {
-                    vec![DecisionSection {
-                        title: "Final Response".to_string(),
-                        body: response,
-                    }]
-                })
-                .unwrap_or_default();
             Some(DecisionCard {
                 title: "Decision".to_string(),
                 spec: default_decision_render_spec(),
                 fields,
-                sections,
+                sections: Vec::new(),
             })
         }
         _ => None,

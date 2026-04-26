@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fs;
 use std::path::{Component, Path as FsPath, PathBuf};
 use std::sync::{OnceLock, RwLock};
@@ -6,18 +7,23 @@ use axum::extract::Path;
 use axum::http::{header, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use once_cell::sync::Lazy;
-use rust_embed::RustEmbed;
 
-#[derive(RustEmbed)]
-#[folder = "../../apps/rocode-web/dist"]
-struct WebAssets;
+pub type EmbeddedWebAssetLoader = fn(&str) -> Option<Cow<'static, [u8]>>;
 
 static WEB_DIST_OVERRIDE: Lazy<RwLock<Option<PathBuf>>> = Lazy::new(|| RwLock::new(None));
+static EMBEDDED_WEB_ASSET_LOADER: Lazy<RwLock<Option<EmbeddedWebAssetLoader>>> =
+    Lazy::new(|| RwLock::new(None));
 static WEB_DIST_ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 pub fn configure_web_dist_root(path: Option<PathBuf>) {
     if let Ok(mut guard) = WEB_DIST_OVERRIDE.write() {
-        *guard = path.filter(|candidate| has_web_dist(candidate));
+        *guard = path;
+    }
+}
+
+pub fn configure_embedded_web_assets(loader: Option<EmbeddedWebAssetLoader>) {
+    if let Ok(mut guard) = EMBEDDED_WEB_ASSET_LOADER.write() {
+        *guard = loader;
     }
 }
 
@@ -105,10 +111,14 @@ fn load_web_file(relative: &str) -> Result<Vec<u8>, WebServeError> {
         }
     }
 
-    // 2. Embedded assets (production single-binary)
+    // 2. Embedded assets supplied by the product shell.
     let path_str = relative.to_string_lossy().replace('\\', "/");
-    if let Some(file) = WebAssets::get(path_str.as_str()) {
-        return Ok(file.data.into_owned());
+    if let Ok(guard) = EMBEDDED_WEB_ASSET_LOADER.read() {
+        if let Some(loader) = *guard {
+            if let Some(bytes) = loader(path_str.as_str()) {
+                return Ok(bytes.into_owned());
+            }
+        }
     }
 
     // 3. Development fallback (search nearby directories)
@@ -267,12 +277,13 @@ mod tests {
     fn configured_web_dist_root_overrides_fallback_resolution() {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path();
-        fs::write(root.join("index.html"), "ok").expect("index");
+        fs::write(root.join("index.html"), "override").expect("index");
         fs::write(root.join("app.js"), "ok").expect("app js");
         fs::write(root.join("app.css"), "ok").expect("app css");
 
         configure_web_dist_root(Some(root.to_path_buf()));
-        assert_eq!(resolved_web_dist_root(), Some(root.to_path_buf()));
+        let bytes = load_web_file("index.html").unwrap_or_else(|_| panic!("index should load"));
+        assert_eq!(bytes, b"override");
         configure_web_dist_root(None);
     }
 }
