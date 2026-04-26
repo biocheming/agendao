@@ -205,13 +205,13 @@ rocode serve [选项]
 
 启动后台服务器并打开 Web 浏览器界面。
 
-当前 Web 前端由独立应用 `apps/rocode-web` 构建，ROCode 在运行时加载外部 `dist/` 目录。默认查找顺序包括：
+当前默认行为是：
 
-- `ROCODE_WEB_DIST`
-- 已安装布局中的 `share/rocode/web`
-- macOS bundle 中的 `Contents/Resources/web`
+- `rocode web` / `rocode serve` 优先使用编译进 `rocode` 二进制的内嵌 Web 资源
+- 如果显式设置 `ROCODE_WEB_DIST`，server 会改为使用该外部 `dist/` 目录作为运行时覆盖
+- 已安装布局中的 `share/rocode/web`、macOS bundle 中的 `Contents/Resources/web` 仍可作为兼容性外部资源来源
 
-如果这些路径都不可用，launcher 会在启动前直接报错，而不是先打开一个缺失前端资源的空页面。
+从源码构建时，`rocode-server` 的 `build.rs` 会自动检查 `apps/rocode-web/dist` 是否缺失或过期；只有 Web 源码变更时才会增量触发一次 `npm run build`。
 
 开发态也支持独立 Web dev server：
 

@@ -42,9 +42,8 @@ ROCode 目前以源码形式分发。克隆仓库并构建：
 git clone <repo-url>
 cd rocode
 
-# Web 前端单独构建
+# 首次构建前安装 Web 前端依赖
 npm --prefix apps/rocode-web install
-npm --prefix apps/rocode-web run build
 
 # 推荐：构建并安装单一分发入口
 ./scripts/install-local.sh release ~/.local
@@ -57,12 +56,19 @@ npm --prefix apps/rocode-web run build
 ~/.local/share/rocode/web
 ```
 
+默认运行时会优先使用内嵌进 `rocode` 二进制的 Web 资源。`share/rocode/web` 仍会被安装，用作显式外部覆盖与兼容性回退。
+
 如果只想构建、不立即安装：
 
 ```bash
 cargo build --release -p rocode
-npm --prefix apps/rocode-web run build
 ```
+
+说明：
+
+- `crates/rocode-server/build.rs` 会自动检查 `apps/rocode-web/dist` 是否缺失或过期
+- 只有当前端源码变化时，才会增量触发 `npm --prefix apps/rocode-web run build`
+- 如果 Web 没有变化，不会在每次 release 构建时重复打包前端
 
 ### 方式二：cargo install
 
@@ -113,7 +119,7 @@ which rocode
 成功安装后输出类似：
 
 ```
-ROCode 2026.4.22
+ROCode 2026.4.26
 ```
 
 查看完整构建信息：
@@ -125,14 +131,14 @@ rocode info
 输出包括编译器版本、目标平台、构建配置和数据路径：
 
 ```
-ROCode 2026.4.22
+ROCode 2026.4.26
 
 Build Info:
   Compiler:   rustc 1.xx.x
   Profile:    release
   Target:     x86_64-unknown-linux-gnu
   Host:       x86_64-unknown-linux-gnu
-  Built at:   2026-04-22T...
+  Built at:   2026-04-26T...
 
 Paths:
   Data:       ~/.local/share/rocode
@@ -260,7 +266,7 @@ ROCode 使用以下标准目录（遵循 XDG 规范）：
 | `ALIBABA_CN_API_KEY` | 阿里云百炼 API 密钥 |
 | `KIMI_FOR_CODING_API_KEY` | Moonshot Kimi API 密钥 |
 | `ROCODE_SERVER_URL` | 服务器 URL（默认 `http://127.0.0.1:3000`） |
-| `ROCODE_WEB_DIST` | 覆盖 ROCode 加载外部 Web 前端 `dist/` 目录的位置 |
+| `ROCODE_WEB_DIST` | 显式覆盖默认内嵌 Web 资源，改为加载外部 `dist/` 目录 |
 | `ROCODE_CONFIG_DIR` | 覆盖配置目录路径 |
 | `RUST_LOG` | 日志级别过滤（如 `debug`、`rocode_provider=trace`） |
 
@@ -298,17 +304,16 @@ rocode uninstall --dry-run                   # 仅预览将删除的文件
 
 ```bash
 rocode upgrade
-rocode upgrade v2026.4.22           # 升级到指定版本
+rocode upgrade v2026.4.26           # 升级到指定版本
 rocode upgrade --method brew       # 显式指定包管理器方式
 ```
 
-如果你是从源码 / 本地安装脚本安装的，请整体重装三件套，而不是只替换 `rocode`：
+如果你是从源码 / 本地安装脚本安装的，推荐整体重装；`rocode` 会自动决定是否需要重新构建内嵌 Web：
 
 ```bash
 cd rocode
 git pull
 npm --prefix apps/rocode-web install
-npm --prefix apps/rocode-web run build
 ./scripts/install-local.sh release ~/.local
 ```
 
