@@ -228,6 +228,11 @@ pub struct MessageUsage {
     pub reasoning_tokens: u64,
     pub cache_write_tokens: u64,
     pub cache_read_tokens: u64,
+    /// Latest prompt/context window occupancy for this assistant turn.
+    /// This is not cumulative: it is the number that should drive context
+    /// pressure meters and auto-compaction decisions.
+    #[serde(default)]
+    pub context_tokens: u64,
     pub total_cost: f64,
 }
 

@@ -351,6 +351,7 @@ pub struct SchedulerStageBlock {
     #[serde(default)]
     pub total_agent_count: u32,
     pub prompt_tokens: Option<u64>,
+    pub context_tokens: Option<u64>,
     pub completion_tokens: Option<u64>,
     pub reasoning_tokens: Option<u64>,
     pub cache_read_tokens: Option<u64>,
@@ -429,6 +430,10 @@ impl SchedulerStageBlock {
         let prompt_tokens = metadata
             .get("scheduler_stage_prompt_tokens")
             .and_then(|v| v.as_u64());
+        let context_tokens = metadata
+            .get("scheduler_stage_context_tokens")
+            .and_then(|v| v.as_u64())
+            .or(prompt_tokens);
         let completion_tokens = metadata
             .get("scheduler_stage_completion_tokens")
             .and_then(|v| v.as_u64());
@@ -519,6 +524,7 @@ impl SchedulerStageBlock {
             done_agent_count,
             total_agent_count,
             prompt_tokens,
+            context_tokens,
             completion_tokens,
             reasoning_tokens,
             cache_read_tokens,
@@ -538,6 +544,7 @@ impl SchedulerStageBlock {
             step_total: parse_step_limit_from_budget(self.loop_budget.as_deref()),
             status: StageStatus::from_str_lossy(self.status.as_deref()),
             prompt_tokens: self.prompt_tokens,
+            context_tokens: self.context_tokens,
             completion_tokens: self.completion_tokens,
             reasoning_tokens: self.reasoning_tokens,
             cache_read_tokens: self.cache_read_tokens,

@@ -321,6 +321,10 @@ pub(crate) fn parse_output_block(payload: &serde_json::Value) -> Option<OutputBl
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as u32,
             prompt_tokens: payload.get("prompt_tokens").and_then(|v| v.as_u64()),
+            context_tokens: payload
+                .get("context_tokens")
+                .and_then(|v| v.as_u64())
+                .or_else(|| payload.get("prompt_tokens").and_then(|v| v.as_u64())),
             completion_tokens: payload.get("completion_tokens").and_then(|v| v.as_u64()),
             reasoning_tokens: payload.get("reasoning_tokens").and_then(|v| v.as_u64()),
             cache_read_tokens: payload.get("cache_read_tokens").and_then(|v| v.as_u64()),

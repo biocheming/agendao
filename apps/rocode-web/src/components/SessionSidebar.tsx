@@ -226,7 +226,7 @@ export function SessionSidebar({
   }, [workspaceQuery, workspaces]);
 
   const visibleSessionCount = useMemo(() => {
-    const walk = (nodes: SessionTreeNode[]) =>
+    const walk = (nodes: SessionTreeNode[]): number =>
       nodes.reduce((total, node) => total + 1 + walk(node.children), 0);
     return walk(sessionTree);
   }, [sessionTree]);

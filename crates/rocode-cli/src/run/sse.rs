@@ -928,6 +928,7 @@ async fn cli_refresh_server_info(
                         telemetry.usage.reasoning_tokens,
                         telemetry.usage.cache_read_tokens,
                         telemetry.usage.cache_write_tokens,
+                        telemetry.usage.context_tokens,
                         telemetry.usage.total_cost,
                     );
                 }

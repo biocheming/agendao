@@ -91,6 +91,7 @@ async fn emit_latest_assistant_usage(
             reasoning_tokens: usage.reasoning_tokens,
             cache_write_tokens: usage.cache_write_tokens,
             cache_read_tokens: usage.cache_read_tokens,
+            context_tokens: usage.context_tokens,
             total_cost: usage.total_cost,
         },
     )

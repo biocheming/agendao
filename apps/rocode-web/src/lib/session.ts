@@ -12,6 +12,7 @@ export interface PersistedSessionTelemetrySnapshot {
     reasoning_tokens: number;
     cache_write_tokens: number;
     cache_read_tokens: number;
+    context_tokens?: number;
     total_cost: number;
   };
   stage_summaries: PersistedStageTelemetrySummary[];

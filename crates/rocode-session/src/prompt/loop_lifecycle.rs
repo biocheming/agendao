@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use rocode_execution_types::{session_runtime_request_defaults, CompiledExecutionRequest};
 use rocode_content::output_blocks::{OutputBlock, StatusBlock};
+use rocode_execution_types::{session_runtime_request_defaults, CompiledExecutionRequest};
 use rocode_orchestrator::runtime::events::{
     CancelToken as RuntimeCancelToken, LoopError as RuntimeLoopError,
 };
@@ -418,6 +418,7 @@ impl SessionPrompt {
             model_id,
             compiled_request.max_tokens,
             &compaction_config,
+            None,
         ) {
             return;
         }
@@ -611,6 +612,7 @@ impl SessionPrompt {
                 reasoning_tokens: step_output.reasoning_tokens,
                 cache_read_tokens: step_output.cache_read_tokens,
                 cache_write_tokens: step_output.cache_write_tokens,
+                context_tokens: step_output.prompt_tokens,
                 ..Default::default()
             });
         }

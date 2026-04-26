@@ -1,4 +1,4 @@
-use super::super::prompt_support::{build_capabilities_summary, render_skill_catalog};
+use super::super::prompt_support::{build_capabilities_summary, render_compact_skill_catalog};
 use super::super::SchedulerSkillRef;
 use super::super::{SchedulerLoopBudget, SchedulerSessionProjection};
 use super::{SchedulerProfilePlan, SchedulerStageKind};
@@ -140,7 +140,7 @@ pub(in crate::scheduler) fn profile_prompt_suffix(
     if !effective_skill_list.is_empty() {
         sections.push(format!(
             "Skills:\n{}\nUse `skill_view(name)` to inspect a skill before using it.",
-            render_skill_catalog(effective_skill_list)
+            render_compact_skill_catalog(effective_skill_list)
         ));
     }
 

@@ -768,6 +768,7 @@ struct CliSessionTokenStats {
     reasoning_tokens: u64,
     cache_read_tokens: u64,
     cache_write_tokens: u64,
+    context_tokens: u64,
     total_cost: f64,
 }
 
@@ -779,6 +780,7 @@ impl CliSessionTokenStats {
         reasoning_tokens: u64,
         cache_read_tokens: u64,
         cache_write_tokens: u64,
+        context_tokens: u64,
         total_cost: f64,
     ) {
         self.input_tokens = input_tokens;
@@ -786,6 +788,7 @@ impl CliSessionTokenStats {
         self.reasoning_tokens = reasoning_tokens;
         self.cache_read_tokens = cache_read_tokens;
         self.cache_write_tokens = cache_write_tokens;
+        self.context_tokens = context_tokens;
         self.total_tokens = input_tokens
             + output_tokens
             + reasoning_tokens
@@ -888,6 +891,8 @@ impl Default for CliFrontendProjection {
 
 impl CliFrontendProjection {
     fn current_context_tokens(&self) -> Option<u64> {
+        let usage_context_tokens = (self.token_stats.context_tokens > 0)
+            .then_some(self.token_stats.context_tokens);
         let active_stage_id = self
             .session_runtime
             .as_ref()
@@ -900,14 +905,13 @@ impl CliFrontendProjection {
                 .and_then(|stage| stage.estimated_context_tokens)
                 .filter(|tokens| *tokens > 0)
             {
-                return Some(tokens);
+                return Some(usage_context_tokens.map_or(tokens, |usage| usage.max(tokens)));
             }
         }
 
-        self.stage_summaries
-            .iter()
-            .rev()
-            .find_map(|stage| stage.estimated_context_tokens.filter(|tokens| *tokens > 0))
+        usage_context_tokens.or_else(|| {
+            (self.last_turn_tokens.input_tokens > 0).then_some(self.last_turn_tokens.input_tokens)
+        })
     }
 
     fn context_pressure_note(&self, percent: Option<u64>) -> Option<&'static str> {

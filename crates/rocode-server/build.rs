@@ -12,7 +12,8 @@ fn main() {
 }
 
 fn ensure_embedded_web_dist() -> Result<(), String> {
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").map_err(|err| err.to_string())?);
+    let manifest_dir =
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").map_err(|err| err.to_string())?);
     let repo_root = manifest_dir
         .parent()
         .and_then(Path::parent)

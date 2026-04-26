@@ -83,6 +83,7 @@ pub enum StreamEvent {
     Usage {
         prompt_tokens: u64,
         completion_tokens: u64,
+        context_tokens: u64,
     },
     /// Stream finished (maps to "finish" in TS).
     Finish,
@@ -120,6 +121,8 @@ pub struct ToolResultOutput {
 pub struct StreamUsage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    #[serde(default)]
+    pub context_tokens: u64,
     #[serde(default)]
     pub reasoning_tokens: u64,
     #[serde(default)]
@@ -645,6 +648,7 @@ pub fn parse_ethnopic_value_stateful(
                     return Some(StreamEvent::Usage {
                         prompt_tokens: usage.input_tokens,
                         completion_tokens: usage.output_tokens,
+                        context_tokens: usage.input_tokens,
                     });
                 }
             }
@@ -669,6 +673,7 @@ pub fn parse_openai_value(value: serde_json::Value) -> Vec<StreamEvent> {
     let usage = event.usage.as_ref().map(|u| StreamUsage {
         prompt_tokens: u.prompt_tokens,
         completion_tokens: u.completion_tokens,
+        context_tokens: u.prompt_tokens,
         ..Default::default()
     });
 
@@ -744,6 +749,7 @@ pub fn parse_openai_value(value: serde_json::Value) -> Vec<StreamEvent> {
         events.push(StreamEvent::Usage {
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,
+            context_tokens: usage.prompt_tokens,
         });
     }
 

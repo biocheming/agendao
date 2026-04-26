@@ -1177,8 +1177,8 @@ pub(super) async fn start_compaction(
     let session = sessions
         .get_mut(&id)
         .ok_or_else(|| ApiError::SessionNotFound(id.clone()))?;
-    let success = rocode_session::compact_session_now_with_focus(session, req.focus.as_deref())
-        .is_some();
+    let success =
+        rocode_session::compact_session_now_with_focus(session, req.focus.as_deref()).is_some();
     drop(sessions);
     broadcast_session_updated(state.as_ref(), &id, "session.compact");
     persist_sessions_if_enabled(&state).await;

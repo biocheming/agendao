@@ -3,6 +3,7 @@ use crate::bridge::UiBridge;
 use futures::StreamExt;
 use reqwest::Url;
 use reqwest_eventsource::{Event as SseEvent, EventSource};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tokio::task::JoinHandle;
@@ -44,24 +45,32 @@ pub(super) fn resolve_tui_base_url(base_url_override: Option<&str>) -> String {
         "http://127.0.0.1:4096",
         "http://localhost:4096",
     ];
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(Duration::from_millis(300))
-        .build()
-    {
-        Ok(client) => client,
-        Err(_) => return "http://localhost:3000".to_string(),
-    };
-
     for base in candidates {
-        let health_url = format!("{}/health", base);
-        if let Ok(response) = client.get(&health_url).send() {
-            if response.status().is_success() {
-                return base.to_string();
-            }
+        if endpoint_accepts_tcp(base) {
+            return base.to_string();
         }
     }
 
     "http://localhost:3000".to_string()
+}
+
+fn endpoint_accepts_tcp(base: &str) -> bool {
+    let Ok(url) = Url::parse(base) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let Some(port) = url.port_or_known_default() else {
+        return false;
+    };
+    let addrs: Vec<SocketAddr> = match (host, port).to_socket_addrs() {
+        Ok(addrs) => addrs.collect(),
+        Err(_) => return false,
+    };
+    addrs
+        .iter()
+        .any(|addr| TcpStream::connect_timeout(addr, Duration::from_millis(300)).is_ok())
 }
 
 /// Shared session filter. Updated by the app when the active session changes.

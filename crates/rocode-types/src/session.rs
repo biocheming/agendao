@@ -77,6 +77,11 @@ pub struct SessionUsage {
     pub reasoning_tokens: u64,
     pub cache_write_tokens: u64,
     pub cache_read_tokens: u64,
+    /// Latest prompt/context window occupancy for the session.
+    /// Unlike the other fields, this is not cumulative; it tracks the most
+    /// recent assistant turn's context pressure for UI meters and compaction.
+    #[serde(default)]
+    pub context_tokens: u64,
     pub total_cost: f64,
 }
 

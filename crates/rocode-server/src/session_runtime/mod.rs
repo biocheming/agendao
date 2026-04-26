@@ -450,6 +450,10 @@ fn write_stage_usage_totals(
 ) {
     let prompt_tokens = committed_usage.prompt_tokens + live_usage.prompt_tokens;
     let completion_tokens = committed_usage.completion_tokens + live_usage.completion_tokens;
+    let context_tokens = committed_usage
+        .context_tokens
+        .max(live_usage.context_tokens)
+        .max(prompt_tokens);
     let reasoning_tokens = committed_usage.reasoning_tokens + live_usage.reasoning_tokens;
     let cache_read_tokens = committed_usage.cache_read_tokens + live_usage.cache_read_tokens;
     let cache_write_tokens = committed_usage.cache_write_tokens + live_usage.cache_write_tokens;
@@ -457,6 +461,7 @@ fn write_stage_usage_totals(
     let mut has_any_visible_usage = false;
     for (key, value) in [
         ("scheduler_stage_prompt_tokens", prompt_tokens),
+        ("scheduler_stage_context_tokens", context_tokens),
         ("scheduler_stage_completion_tokens", completion_tokens),
         ("scheduler_stage_reasoning_tokens", reasoning_tokens),
         ("scheduler_stage_cache_read_tokens", cache_read_tokens),
@@ -490,6 +495,7 @@ fn write_stage_usage_totals(
             reasoning_tokens,
             cache_write_tokens,
             cache_read_tokens,
+            context_tokens,
             total_cost,
         });
     } else {
@@ -1730,15 +1736,48 @@ fn summarize_task_flow_args(tool_args: &serde_json::Value) -> Option<String> {
     if let Some(prompt) = tool_args.get("prompt").and_then(|value| value.as_str()) {
         lines.push(format!("- prompt: {}", collapse_text(prompt, 88)));
     }
-    if let Some(todo_item) = tool_args
-        .get("todo_item")
-        .and_then(|value| value.as_object())
-    {
-        if let Some(content) = todo_item.get("content").and_then(|value| value.as_str()) {
-            lines.push(format!("- todo: {}", collapse_text(content, 88)));
+    let todo_items = task_flow_todo_labels(tool_args);
+    if !todo_items.is_empty() {
+        for (index, content) in todo_items.iter().take(3).enumerate() {
+            let label = if todo_items.len() == 1 {
+                "todo".to_string()
+            } else {
+                format!("todo {}", index + 1)
+            };
+            lines.push(format!("- {}: {}", label, collapse_text(content, 88)));
+        }
+        if todo_items.len() > 3 {
+            lines.push(format!("- more todos: {}", todo_items.len() - 3));
         }
     }
     Some(lines.join("\n"))
+}
+
+fn task_flow_todo_labels(tool_args: &serde_json::Value) -> Vec<String> {
+    let Some(todo_value) = tool_args
+        .get("todo_items")
+        .or_else(|| tool_args.get("todos"))
+        .or_else(|| tool_args.get("todo_item"))
+    else {
+        return Vec::new();
+    };
+
+    match todo_value {
+        serde_json::Value::Object(todo) => todo
+            .get("content")
+            .and_then(|value| value.as_str())
+            .map(|value| vec![value.to_string()])
+            .unwrap_or_default(),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .filter_map(|item| {
+                item.get("content")
+                    .and_then(|value| value.as_str())
+                    .map(ToString::to_string)
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// Runtime evidence for which scheduler capabilities were actually activated

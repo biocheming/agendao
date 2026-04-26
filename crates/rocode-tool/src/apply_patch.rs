@@ -720,29 +720,254 @@ fn apply_hunks(original: &str, hunks: &[Hunk]) -> Result<String, ToolError> {
     Ok(lines.join("\n"))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiffLine<'a> {
+    Equal(&'a str),
+    Remove(&'a str),
+    Add(&'a str),
+}
+
+impl DiffLine<'_> {
+    fn consumes_old(&self) -> bool {
+        matches!(self, DiffLine::Equal(_) | DiffLine::Remove(_))
+    }
+
+    fn consumes_new(&self) -> bool {
+        matches!(self, DiffLine::Equal(_) | DiffLine::Add(_))
+    }
+
+    fn is_change(&self) -> bool {
+        !matches!(self, DiffLine::Equal(_))
+    }
+
+    fn render(&self, out: &mut String) {
+        match self {
+            DiffLine::Equal(line) => out.push_str(&format!(" {}\n", line)),
+            DiffLine::Remove(line) => out.push_str(&format!("-{}\n", line)),
+            DiffLine::Add(line) => out.push_str(&format!("+{}\n", line)),
+        }
+    }
+}
+
+const DIFF_CONTEXT_LINES: usize = 3;
+const MAX_LCS_CELLS: usize = 1_000_000;
+
 fn generate_diff(path: &str, old: &str, new: &str) -> String {
     let old_lines: Vec<&str> = old.lines().collect();
     let new_lines: Vec<&str> = new.lines().collect();
 
     let mut diff = format!("--- a/{}\n+++ b/{}\n", path, path);
-
-    let old_count = old_lines.len();
-    let new_count = new_lines.len();
-
-    diff.push_str(&format!(
-        "@@ -1,{} +1,{} @@\n",
-        old_count.max(1),
-        new_count.max(1)
-    ));
-
-    for line in &old_lines {
-        diff.push_str(&format!("-{}\n", line));
-    }
-    for line in &new_lines {
-        diff.push_str(&format!("+{}\n", line));
+    if old_lines == new_lines {
+        return diff;
     }
 
+    let ops = if old_lines.len().saturating_mul(new_lines.len()) <= MAX_LCS_CELLS {
+        lcs_diff_lines(&old_lines, &new_lines)
+    } else {
+        trimmed_diff_lines(&old_lines, &new_lines)
+    };
+
+    append_unified_hunks(&mut diff, &ops);
     diff
+}
+
+fn lcs_diff_lines<'a>(old_lines: &[&'a str], new_lines: &[&'a str]) -> Vec<DiffLine<'a>> {
+    let width = new_lines.len() + 1;
+    let mut dp = vec![0u32; (old_lines.len() + 1) * width];
+
+    for i in (0..old_lines.len()).rev() {
+        for j in (0..new_lines.len()).rev() {
+            let index = i * width + j;
+            dp[index] = if old_lines[i] == new_lines[j] {
+                dp[(i + 1) * width + j + 1] + 1
+            } else {
+                dp[(i + 1) * width + j].max(dp[i * width + j + 1])
+            };
+        }
+    }
+
+    let mut ops = Vec::new();
+    let mut old_index = 0;
+    let mut new_index = 0;
+    while old_index < old_lines.len() || new_index < new_lines.len() {
+        if old_index < old_lines.len()
+            && new_index < new_lines.len()
+            && old_lines[old_index] == new_lines[new_index]
+        {
+            ops.push(DiffLine::Equal(old_lines[old_index]));
+            old_index += 1;
+            new_index += 1;
+        } else if old_index < old_lines.len()
+            && (new_index == new_lines.len()
+                || dp[(old_index + 1) * width + new_index] >= dp[old_index * width + new_index + 1])
+        {
+            ops.push(DiffLine::Remove(old_lines[old_index]));
+            old_index += 1;
+        } else if new_index < new_lines.len() {
+            ops.push(DiffLine::Add(new_lines[new_index]));
+            new_index += 1;
+        }
+    }
+
+    ops
+}
+
+fn trimmed_diff_lines<'a>(old_lines: &[&'a str], new_lines: &[&'a str]) -> Vec<DiffLine<'a>> {
+    let mut prefix = 0;
+    while prefix < old_lines.len()
+        && prefix < new_lines.len()
+        && old_lines[prefix] == new_lines[prefix]
+    {
+        prefix += 1;
+    }
+
+    let mut suffix = 0;
+    while suffix < old_lines.len().saturating_sub(prefix)
+        && suffix < new_lines.len().saturating_sub(prefix)
+        && old_lines[old_lines.len() - 1 - suffix] == new_lines[new_lines.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+
+    let context_start = prefix.saturating_sub(DIFF_CONTEXT_LINES);
+    let old_change_end = old_lines.len().saturating_sub(suffix);
+    let new_change_end = new_lines.len().saturating_sub(suffix);
+    let old_context_end = (old_change_end + DIFF_CONTEXT_LINES).min(old_lines.len());
+    let new_context_end = (new_change_end + DIFF_CONTEXT_LINES).min(new_lines.len());
+
+    let mut ops = Vec::new();
+    for line in &old_lines[context_start..prefix] {
+        ops.push(DiffLine::Equal(line));
+    }
+    for line in &old_lines[prefix..old_change_end] {
+        ops.push(DiffLine::Remove(line));
+    }
+    for line in &new_lines[prefix..new_change_end] {
+        ops.push(DiffLine::Add(line));
+    }
+    for line in &old_lines[old_change_end..old_context_end] {
+        ops.push(DiffLine::Equal(line));
+    }
+    if new_context_end > new_change_end && old_context_end == old_change_end {
+        for line in &new_lines[new_change_end..new_context_end] {
+            ops.push(DiffLine::Equal(line));
+        }
+    }
+
+    ops
+}
+
+fn append_unified_hunks(diff: &mut String, ops: &[DiffLine<'_>]) {
+    let mut index = 0;
+    let mut old_consumed_before: usize = 0;
+    let mut new_consumed_before: usize = 0;
+
+    while index < ops.len() {
+        while index < ops.len() && !ops[index].is_change() {
+            if ops[index].consumes_old() {
+                old_consumed_before += 1;
+            }
+            if ops[index].consumes_new() {
+                new_consumed_before += 1;
+            }
+            index += 1;
+        }
+        if index >= ops.len() {
+            break;
+        }
+
+        let hunk_start = index.saturating_sub(DIFF_CONTEXT_LINES);
+        let mut old_before_hunk = old_consumed_before;
+        let mut new_before_hunk = new_consumed_before;
+        for op in &ops[hunk_start..index] {
+            if op.consumes_old() {
+                old_before_hunk = old_before_hunk.saturating_sub(1);
+            }
+            if op.consumes_new() {
+                new_before_hunk = new_before_hunk.saturating_sub(1);
+            }
+        }
+
+        let mut scan = index;
+        let mut last_change = index;
+        while scan < ops.len() {
+            if ops[scan].is_change() {
+                last_change = scan;
+            } else if scan.saturating_sub(last_change) > DIFF_CONTEXT_LINES {
+                break;
+            }
+            scan += 1;
+        }
+        let hunk_end = (last_change + DIFF_CONTEXT_LINES + 1).min(ops.len());
+        let hunk = &ops[hunk_start..hunk_end];
+        let old_count = hunk.iter().filter(|op| op.consumes_old()).count();
+        let new_count = hunk.iter().filter(|op| op.consumes_new()).count();
+        let old_start = hunk_start_line(old_before_hunk, old_count);
+        let new_start = hunk_start_line(new_before_hunk, new_count);
+
+        diff.push_str(&format!(
+            "@@ -{},{} +{},{} @@\n",
+            old_start, old_count, new_start, new_count
+        ));
+        for op in hunk {
+            op.render(diff);
+        }
+
+        while index < hunk_end {
+            if ops[index].consumes_old() {
+                old_consumed_before += 1;
+            }
+            if ops[index].consumes_new() {
+                new_consumed_before += 1;
+            }
+            index += 1;
+        }
+    }
+}
+
+fn hunk_start_line(consumed_before: usize, count: usize) -> usize {
+    if count == 0 {
+        consumed_before
+    } else {
+        consumed_before + 1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generate_diff_keeps_unchanged_lines_as_context() {
+        let diff = generate_diff("demo.txt", "one\ntwo\nthree\n", "one\nTWO\nthree\n");
+
+        assert!(diff.contains(" one\n"));
+        assert!(diff.contains("-two\n"));
+        assert!(diff.contains("+TWO\n"));
+        assert!(diff.contains(" three\n"));
+        assert!(!diff.contains("-one\n"));
+        assert!(!diff.contains("+one\n"));
+    }
+
+    #[test]
+    fn generate_diff_omits_distant_unchanged_lines() {
+        let old = (1..=12)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut new_lines = (1..=12)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>();
+        new_lines[5] = "line six".to_string();
+        let new = new_lines.join("\n");
+
+        let diff = generate_diff("demo.txt", &old, &new);
+
+        assert!(diff.contains("-line 6\n"));
+        assert!(diff.contains("+line six\n"));
+        assert!(!diff.contains(" line 1\n"));
+        assert!(!diff.contains(" line 12\n"));
+    }
 }
 
 async fn collect_lsp_diagnostics_for_targets(

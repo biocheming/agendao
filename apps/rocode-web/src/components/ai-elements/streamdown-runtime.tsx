@@ -1,8 +1,10 @@
 "use client";
 
 import { cjk } from "@streamdown/cjk";
+import type { CodeHighlighterPlugin } from "@streamdown/code";
+import type { MathPlugin } from "@streamdown/math";
 import { memo, useEffect, useMemo, useState } from "react";
-import { Streamdown } from "streamdown";
+import { Streamdown, type DiagramPlugin, type PluginConfig } from "streamdown";
 
 const linkSafetyOff = { enabled: false } as const;
 
@@ -28,9 +30,9 @@ function mightNeedMermaid(content: string): boolean {
 
 export const StreamdownRenderer = memo(
   ({ children, className, unsafeLinks = false }: StreamdownRendererProps) => {
-    const [codePlugin, setCodePlugin] = useState<unknown>(null);
-    const [mathPlugin, setMathPlugin] = useState<unknown>(null);
-    const [mermaidPlugin, setMermaidPlugin] = useState<unknown>(null);
+    const [codePlugin, setCodePlugin] = useState<CodeHighlighterPlugin | null>(null);
+    const [mathPlugin, setMathPlugin] = useState<MathPlugin | null>(null);
+    const [mermaidPlugin, setMermaidPlugin] = useState<DiagramPlugin | null>(null);
     const needsCode = useMemo(() => mightNeedCode(children), [children]);
     const needsMath = useMemo(() => mightNeedMath(children), [children]);
     const needsMermaid = useMemo(() => mightNeedMermaid(children), [children]);
@@ -71,7 +73,7 @@ export const StreamdownRenderer = memo(
       void import("@streamdown/math")
         .then((module) => {
           if (!cancelled) {
-            setMathPlugin(module.createMathPlugin({ singleDollarTextMath: true }));
+            setMathPlugin(module.createMathPlugin({ singleDollarTextMath: true }) as MathPlugin);
           }
         })
         .catch((error) => {
@@ -95,7 +97,7 @@ export const StreamdownRenderer = memo(
       void import("../../lib/streamdownMermaidPlugin")
         .then((module) => {
           if (!cancelled) {
-            setMermaidPlugin(module.rocodeMermaidPlugin);
+            setMermaidPlugin(module.rocodeMermaidPlugin as DiagramPlugin);
           }
         })
         .catch((error) => {
@@ -107,7 +109,7 @@ export const StreamdownRenderer = memo(
       };
     }, [mermaidPlugin, needsMermaid]);
 
-    const plugins = useMemo(
+    const plugins = useMemo<PluginConfig>(
       () => ({
         cjk,
         ...(codePlugin ? { code: codePlugin } : {}),

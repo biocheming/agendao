@@ -414,7 +414,10 @@ pub(crate) fn render_help(style: &CliStyle) -> String {
         fmt("/sessions", "List local sessions"),
         fmt("/parent", "Return to the parent session"),
         fmt("/tasks", "List agent tasks"),
-        fmt("/compact [focus]", "Compact conversation history, optionally around a topic"),
+        fmt(
+            "/compact [focus]",
+            "Compact conversation history, optionally around a topic",
+        ),
         fmt("/copy", "Copy last assistant reply"),
     ];
 

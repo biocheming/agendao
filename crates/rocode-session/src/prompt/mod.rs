@@ -46,7 +46,7 @@ use rocode_types::MemoryRetrievalPacket;
 
 use crate::instruction::{InstructionLoader, InstructionSource};
 use crate::system::SystemPrompt;
-use crate::{MessageRole, PartType, Session, SessionStateManager};
+use crate::{MessageRole, PartType, Session, SessionMessage, SessionStateManager};
 
 const MAX_STEPS: u32 = 100;
 const STREAM_UPDATE_INTERVAL_MS: u64 = 120;
@@ -239,9 +239,116 @@ pub fn compact_session_now(session: &mut Session) -> Option<String> {
     compact_session_now_with_focus(session, None)
 }
 
-pub fn compact_session_now_with_focus(session: &mut Session, focus: Option<&str>) -> Option<String> {
+pub fn compact_session_now_with_focus(
+    session: &mut Session,
+    focus: Option<&str>,
+) -> Option<String> {
     let filtered = SessionPrompt::filter_compacted_messages(&session.messages);
     SessionPrompt::trigger_compaction(session, &filtered, focus)
+}
+
+pub fn auto_compact_session_with_focus_if_needed(
+    session: &mut Session,
+    provider: &dyn rocode_provider::Provider,
+    model_id: &str,
+    max_output_tokens: Option<u64>,
+    config_store: Option<&rocode_config::ConfigStore>,
+    live_context_tokens: Option<u64>,
+    focus: Option<&str>,
+) -> Option<String> {
+    let filtered = SessionPrompt::filter_compacted_messages(&session.messages);
+    let compaction_config = SessionPrompt::runtime_compaction_config(config_store);
+    if !SessionPrompt::should_compact(
+        &filtered,
+        provider,
+        model_id,
+        max_output_tokens,
+        &compaction_config,
+        live_context_tokens,
+    ) {
+        return None;
+    }
+    SessionPrompt::trigger_compaction(session, &filtered, focus)
+}
+
+pub fn estimate_current_context_tokens(messages: &[SessionMessage]) -> Option<u64> {
+    let filtered = SessionPrompt::filter_compacted_messages(messages);
+    latest_prompt_input_tokens(&filtered).or_else(|| estimate_tail_content_tokens(&filtered))
+}
+
+fn latest_prompt_input_tokens(messages: &[SessionMessage]) -> Option<u64> {
+    messages.iter().rev().find_map(|message| {
+        if !matches!(message.role, MessageRole::Assistant) {
+            return None;
+        }
+
+        message
+            .usage
+            .as_ref()
+            .map(|usage| usage.context_tokens.max(usage.input_tokens))
+            .filter(|tokens| *tokens > 0)
+            .or_else(|| metadata_u64(message, "scheduler_stage_context_tokens"))
+            .or_else(|| metadata_u64(message, "tokens_input"))
+            .or_else(|| metadata_usage_u64(message, "prompt_tokens"))
+            .or_else(|| metadata_u64(message, "scheduler_stage_prompt_tokens"))
+    })
+}
+
+fn estimate_tail_content_tokens(messages: &[SessionMessage]) -> Option<u64> {
+    let total_chars: usize = messages
+        .iter()
+        .flat_map(|message| message.parts.iter())
+        .map(|part| match &part.part_type {
+            PartType::Text { text, .. } => text.len(),
+            PartType::ToolResult { content, title, .. } => {
+                content.len() + title.as_ref().map_or(0, |title| title.len())
+            }
+            PartType::ToolCall { input, raw, .. } => {
+                serde_json::to_string(input).map_or(0, |value| value.len())
+                    + raw.as_ref().map_or(0, |value| value.len())
+            }
+            PartType::Reasoning { text } => text.len(),
+            PartType::File {
+                url,
+                filename,
+                mime,
+            } => url.len() + filename.len() + mime.len(),
+            PartType::Snapshot { content } => content.len(),
+            PartType::Patch {
+                old_string,
+                new_string,
+                filepath,
+            } => old_string.len() + new_string.len() + filepath.len(),
+            PartType::Compaction { summary } => summary.len(),
+            PartType::StepFinish { output, .. } => output.as_ref().map_or(0, |value| value.len()),
+            PartType::StepStart { name, .. } => name.len(),
+            PartType::Agent { name, status } => name.len() + status.len(),
+            PartType::Subtask {
+                description,
+                status,
+                ..
+            } => description.len() + status.len(),
+            PartType::Retry { reason, .. } => reason.len(),
+        })
+        .sum();
+
+    if total_chars == 0 {
+        None
+    } else {
+        Some((total_chars as u64 / 4).max(1))
+    }
+}
+
+fn metadata_u64(message: &SessionMessage, key: &str) -> Option<u64> {
+    message.metadata.get(key).and_then(|value| value.as_u64())
+}
+
+fn metadata_usage_u64(message: &SessionMessage, key: &str) -> Option<u64> {
+    message
+        .metadata
+        .get("usage")
+        .and_then(|value| value.get(key))
+        .and_then(|value| value.as_u64())
 }
 
 type StreamToolResultEntry = (

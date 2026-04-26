@@ -984,6 +984,7 @@ mod tests {
                 usage: rocode_provider::StreamUsage {
                     prompt_tokens: 100,
                     completion_tokens: 50,
+                    context_tokens: 100,
                     reasoning_tokens: 20,
                     cache_read_tokens: 10,
                     cache_write_tokens: 5,

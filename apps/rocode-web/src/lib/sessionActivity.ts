@@ -37,6 +37,7 @@ export interface SessionUsageRecord {
   reasoning_tokens: number;
   cache_write_tokens: number;
   cache_read_tokens: number;
+  context_tokens?: number;
   total_cost: number;
 }
 
@@ -49,6 +50,7 @@ export interface StageSummaryRecord {
   step_total?: number | null;
   status: string;
   prompt_tokens?: number | null;
+  context_tokens?: number | null;
   completion_tokens?: number | null;
   reasoning_tokens?: number | null;
   cache_read_tokens?: number | null;

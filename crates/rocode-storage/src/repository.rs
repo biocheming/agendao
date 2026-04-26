@@ -40,12 +40,24 @@ ON CONFLICT(id) DO UPDATE SET
 "#;
 
 const MESSAGE_UPSERT_SQL: &str = r#"
-INSERT INTO messages (id, session_id, role, created_at, finish, metadata, data)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO messages (
+    id, session_id, role, created_at, provider_id, model_id,
+    tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
+    cost, finish, metadata, data
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     session_id = excluded.session_id,
     role = excluded.role,
     created_at = excluded.created_at,
+    provider_id = excluded.provider_id,
+    model_id = excluded.model_id,
+    tokens_input = excluded.tokens_input,
+    tokens_output = excluded.tokens_output,
+    tokens_reasoning = excluded.tokens_reasoning,
+    tokens_cache_read = excluded.tokens_cache_read,
+    tokens_cache_write = excluded.tokens_cache_write,
+    cost = excluded.cost,
     finish = excluded.finish,
     metadata = excluded.metadata,
     data = excluded.data
@@ -1011,6 +1023,49 @@ fn role_to_str(role: &MessageRole) -> &'static str {
     }
 }
 
+fn message_model_provider_id(message: &SessionMessage) -> Option<&str> {
+    message
+        .metadata
+        .get("model_provider")
+        .and_then(|value| value.as_str())
+}
+
+fn message_model_id(message: &SessionMessage) -> Option<&str> {
+    message
+        .metadata
+        .get("model_id")
+        .and_then(|value| value.as_str())
+}
+
+fn message_usage_from_row(
+    tokens_input: Option<i64>,
+    tokens_output: Option<i64>,
+    tokens_reasoning: Option<i64>,
+    tokens_cache_read: Option<i64>,
+    tokens_cache_write: Option<i64>,
+    cost: Option<f64>,
+) -> Option<rocode_types::MessageUsage> {
+    let has_usage = tokens_input.unwrap_or(0) > 0
+        || tokens_output.unwrap_or(0) > 0
+        || tokens_reasoning.unwrap_or(0) > 0
+        || tokens_cache_read.unwrap_or(0) > 0
+        || tokens_cache_write.unwrap_or(0) > 0
+        || cost.unwrap_or(0.0) > 0.0;
+    if !has_usage {
+        return None;
+    }
+
+    Some(rocode_types::MessageUsage {
+        input_tokens: tokens_input.unwrap_or(0) as u64,
+        output_tokens: tokens_output.unwrap_or(0) as u64,
+        reasoning_tokens: tokens_reasoning.unwrap_or(0) as u64,
+        cache_read_tokens: tokens_cache_read.unwrap_or(0) as u64,
+        cache_write_tokens: tokens_cache_write.unwrap_or(0) as u64,
+        context_tokens: tokens_input.unwrap_or(0) as u64,
+        total_cost: cost.unwrap_or(0.0),
+    })
+}
+
 #[derive(Debug, FromRow)]
 struct SessionRow {
     id: String,
@@ -1092,6 +1147,7 @@ impl SessionRow {
                     reasoning_tokens: self.usage_reasoning_tokens.unwrap_or(0) as u64,
                     cache_write_tokens: self.usage_cache_write_tokens.unwrap_or(0) as u64,
                     cache_read_tokens: self.usage_cache_read_tokens.unwrap_or(0) as u64,
+                    context_tokens: self.usage_input_tokens.unwrap_or(0) as u64,
                     total_cost: self.usage_total_cost.unwrap_or(0.0),
                 })
             } else {
@@ -1649,6 +1705,7 @@ impl MessageRepository {
             .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
         let metadata_json = serde_json::to_string(&message.metadata)
             .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
+        let usage = message.usage.as_ref();
 
         let role_str = match message.role {
             MessageRole::User => "user",
@@ -1659,14 +1716,26 @@ impl MessageRepository {
 
         sqlx::query(
             r#"
-            INSERT INTO messages (id, session_id, role, created_at, finish, metadata, data)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (
+                id, session_id, role, created_at, provider_id, model_id,
+                tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
+                cost, finish, metadata, data
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&message.id)
         .bind(&message.session_id)
         .bind(role_str)
         .bind(message.created_at.timestamp_millis())
+        .bind(message_model_provider_id(message))
+        .bind(message_model_id(message))
+        .bind(usage.map(|u| u.input_tokens as i64).unwrap_or(0))
+        .bind(usage.map(|u| u.output_tokens as i64).unwrap_or(0))
+        .bind(usage.map(|u| u.reasoning_tokens as i64).unwrap_or(0))
+        .bind(usage.map(|u| u.cache_read_tokens as i64).unwrap_or(0))
+        .bind(usage.map(|u| u.cache_write_tokens as i64).unwrap_or(0))
+        .bind(usage.map(|u| u.total_cost).unwrap_or(0.0))
         .bind(&message.finish)
         .bind(&metadata_json)
         .bind(&data_json)
@@ -1682,12 +1751,21 @@ impl MessageRepository {
             .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
         let metadata_json = serde_json::to_string(&message.metadata)
             .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
+        let usage = message.usage.as_ref();
 
         sqlx::query(MESSAGE_UPSERT_SQL)
             .bind(&message.id)
             .bind(&message.session_id)
             .bind(role_to_str(&message.role))
             .bind(message.created_at.timestamp_millis())
+            .bind(message_model_provider_id(message))
+            .bind(message_model_id(message))
+            .bind(usage.map(|u| u.input_tokens as i64).unwrap_or(0))
+            .bind(usage.map(|u| u.output_tokens as i64).unwrap_or(0))
+            .bind(usage.map(|u| u.reasoning_tokens as i64).unwrap_or(0))
+            .bind(usage.map(|u| u.cache_read_tokens as i64).unwrap_or(0))
+            .bind(usage.map(|u| u.cache_write_tokens as i64).unwrap_or(0))
+            .bind(usage.map(|u| u.total_cost).unwrap_or(0.0))
             .bind(&message.finish)
             .bind(&metadata_json)
             .bind(&data_json)
@@ -1708,13 +1786,22 @@ impl MessageRepository {
             session_id: String,
             role: String,
             created_at: i64,
+            tokens_input: Option<i64>,
+            tokens_output: Option<i64>,
+            tokens_reasoning: Option<i64>,
+            tokens_cache_read: Option<i64>,
+            tokens_cache_write: Option<i64>,
+            cost: Option<f64>,
             finish: Option<String>,
             metadata: Option<String>,
             data: Option<String>,
         }
 
         let rows = sqlx::query_as::<_, MessageRow>(
-            r#"SELECT id, session_id, role, created_at, finish, metadata, data
+            r#"SELECT
+                   id, session_id, role, created_at,
+                   tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
+                   cost, finish, metadata, data
                FROM messages WHERE session_id = ? ORDER BY created_at ASC"#,
         )
         .bind(session_id)
@@ -1751,7 +1838,14 @@ impl MessageRepository {
                         .metadata
                         .and_then(|m| serde_json::from_str(&m).ok())
                         .unwrap_or_default(),
-                    usage: None,
+                    usage: message_usage_from_row(
+                        row.tokens_input,
+                        row.tokens_output,
+                        row.tokens_reasoning,
+                        row.tokens_cache_read,
+                        row.tokens_cache_write,
+                        row.cost,
+                    ),
                     finish: row.finish,
                 })
             })
@@ -1767,13 +1861,22 @@ impl MessageRepository {
             session_id: String,
             role: String,
             created_at: i64,
+            tokens_input: Option<i64>,
+            tokens_output: Option<i64>,
+            tokens_reasoning: Option<i64>,
+            tokens_cache_read: Option<i64>,
+            tokens_cache_write: Option<i64>,
+            cost: Option<f64>,
             finish: Option<String>,
             metadata: Option<String>,
             data: Option<String>,
         }
 
         let row = sqlx::query_as::<_, MessageRow>(
-            r#"SELECT id, session_id, role, created_at, finish, metadata, data
+            r#"SELECT
+                   id, session_id, role, created_at,
+                   tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
+                   cost, finish, metadata, data
                FROM messages WHERE id = ?"#,
         )
         .bind(id)
@@ -1809,7 +1912,14 @@ impl MessageRepository {
                         .metadata
                         .and_then(|m| serde_json::from_str(&m).ok())
                         .unwrap_or_default(),
-                    usage: None,
+                    usage: message_usage_from_row(
+                        row.tokens_input,
+                        row.tokens_output,
+                        row.tokens_reasoning,
+                        row.tokens_cache_read,
+                        row.tokens_cache_write,
+                        row.cost,
+                    ),
                     finish: row.finish,
                 }))
             }
@@ -2347,6 +2457,43 @@ mod tests {
             loaded.metadata.get("mode"),
             Some(&serde_json::json!("sisyphus"))
         );
+    }
+
+    #[tokio::test]
+    async fn message_usage_roundtrips() {
+        let db = Database::in_memory().await.unwrap();
+        let session_repo = SessionRepository::new(db.pool().clone());
+        let message_repo = MessageRepository::new(db.pool().clone());
+
+        session_repo.upsert(&make_session("s_usage")).await.unwrap();
+
+        let mut message = make_message("m_usage", "s_usage", MessageRole::Assistant);
+        message
+            .metadata
+            .insert("model_provider".to_string(), serde_json::json!("deepseek"));
+        message.metadata.insert(
+            "model_id".to_string(),
+            serde_json::json!("deepseek-v4-flash"),
+        );
+        message.usage = Some(rocode_types::MessageUsage {
+            input_tokens: 43_218,
+            output_tokens: 155,
+            reasoning_tokens: 12,
+            cache_read_tokens: 4,
+            cache_write_tokens: 2,
+            total_cost: 0.1234,
+        });
+
+        message_repo.upsert(&message).await.unwrap();
+
+        let loaded = message_repo.get("m_usage").await.unwrap().unwrap();
+        let usage = loaded.usage.expect("usage should roundtrip");
+        assert_eq!(usage.input_tokens, 43_218);
+        assert_eq!(usage.output_tokens, 155);
+        assert_eq!(usage.reasoning_tokens, 12);
+        assert_eq!(usage.cache_read_tokens, 4);
+        assert_eq!(usage.cache_write_tokens, 2);
+        assert!((usage.total_cost - 0.1234).abs() < f64::EPSILON);
     }
 
     #[tokio::test]

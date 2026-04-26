@@ -106,6 +106,8 @@ pub struct StepUsage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     #[serde(default)]
+    pub context_tokens: u64,
+    #[serde(default)]
     pub reasoning_tokens: u64,
     #[serde(default)]
     pub cache_read_tokens: u64,
@@ -117,6 +119,7 @@ impl StepUsage {
     pub fn merge_snapshot(&mut self, snapshot: &Self) {
         self.prompt_tokens = self.prompt_tokens.max(snapshot.prompt_tokens);
         self.completion_tokens = self.completion_tokens.max(snapshot.completion_tokens);
+        self.context_tokens = self.context_tokens.max(snapshot.context_tokens);
         self.reasoning_tokens = self.reasoning_tokens.max(snapshot.reasoning_tokens);
         self.cache_read_tokens = self.cache_read_tokens.max(snapshot.cache_read_tokens);
         self.cache_write_tokens = self.cache_write_tokens.max(snapshot.cache_write_tokens);
@@ -125,6 +128,9 @@ impl StepUsage {
     pub fn accumulate(&mut self, delta: &Self) {
         self.prompt_tokens += delta.prompt_tokens;
         self.completion_tokens += delta.completion_tokens;
+        self.context_tokens = self
+            .context_tokens
+            .max(delta.context_tokens.max(delta.prompt_tokens));
         self.reasoning_tokens += delta.reasoning_tokens;
         self.cache_read_tokens += delta.cache_read_tokens;
         self.cache_write_tokens += delta.cache_write_tokens;

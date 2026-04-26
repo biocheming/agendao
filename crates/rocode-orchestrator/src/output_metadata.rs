@@ -27,6 +27,8 @@ pub struct OutputUsage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     #[serde(default)]
+    pub context_tokens: u64,
+    #[serde(default)]
     pub reasoning_tokens: u64,
     #[serde(default)]
     pub cache_read_tokens: u64,
@@ -38,6 +40,7 @@ impl OutputUsage {
     pub fn is_zero(&self) -> bool {
         self.prompt_tokens == 0
             && self.completion_tokens == 0
+            && self.context_tokens == 0
             && self.reasoning_tokens == 0
             && self.cache_read_tokens == 0
             && self.cache_write_tokens == 0
@@ -46,6 +49,9 @@ impl OutputUsage {
     pub fn accumulate(&mut self, other: &OutputUsage) {
         self.prompt_tokens += other.prompt_tokens;
         self.completion_tokens += other.completion_tokens;
+        self.context_tokens = self
+            .context_tokens
+            .max(other.context_tokens.max(other.prompt_tokens));
         self.reasoning_tokens += other.reasoning_tokens;
         self.cache_read_tokens += other.cache_read_tokens;
         self.cache_write_tokens += other.cache_write_tokens;
@@ -57,6 +63,7 @@ impl From<StepUsage> for OutputUsage {
         Self {
             prompt_tokens: value.prompt_tokens,
             completion_tokens: value.completion_tokens,
+            context_tokens: value.context_tokens.max(value.prompt_tokens),
             reasoning_tokens: value.reasoning_tokens,
             cache_read_tokens: value.cache_read_tokens,
             cache_write_tokens: value.cache_write_tokens,
@@ -69,6 +76,7 @@ impl From<&StepUsage> for OutputUsage {
         Self {
             prompt_tokens: value.prompt_tokens,
             completion_tokens: value.completion_tokens,
+            context_tokens: value.context_tokens.max(value.prompt_tokens),
             reasoning_tokens: value.reasoning_tokens,
             cache_read_tokens: value.cache_read_tokens,
             cache_write_tokens: value.cache_write_tokens,
@@ -234,6 +242,7 @@ mod tests {
             &OutputUsage {
                 prompt_tokens: 10,
                 completion_tokens: 4,
+                context_tokens: 10,
                 reasoning_tokens: 2,
                 cache_read_tokens: 1,
                 cache_write_tokens: 0,
@@ -246,6 +255,7 @@ mod tests {
             &OutputUsage {
                 prompt_tokens: 7,
                 completion_tokens: 3,
+                context_tokens: 7,
                 reasoning_tokens: 1,
                 cache_read_tokens: 0,
                 cache_write_tokens: 5,
@@ -259,6 +269,7 @@ mod tests {
             OutputUsage {
                 prompt_tokens: 17,
                 completion_tokens: 7,
+                context_tokens: 10,
                 reasoning_tokens: 3,
                 cache_read_tokens: 1,
                 cache_write_tokens: 5,

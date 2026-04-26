@@ -77,6 +77,7 @@ mod tests {
                 reasoning_tokens: 3,
                 cache_write_tokens: 4,
                 cache_read_tokens: 5,
+                context_tokens: 10,
                 total_cost: 0.25,
             },
             stage_summaries: vec![PersistedStageTelemetrySummary {

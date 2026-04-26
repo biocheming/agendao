@@ -97,6 +97,7 @@ pub fn normalize(event: StreamEvent) -> Vec<LoopEvent> {
             let step_usage = StepUsage {
                 prompt_tokens: usage.prompt_tokens,
                 completion_tokens: usage.completion_tokens,
+                context_tokens: usage.context_tokens.max(usage.prompt_tokens),
                 reasoning_tokens: usage.reasoning_tokens,
                 cache_read_tokens: usage.cache_read_tokens,
                 cache_write_tokens: usage.cache_write_tokens,
@@ -110,6 +111,7 @@ pub fn normalize(event: StreamEvent) -> Vec<LoopEvent> {
         StreamEvent::Usage {
             prompt_tokens,
             completion_tokens,
+            context_tokens,
         } => {
             // Standalone usage event (e.g. ethnopic message_start).
             // Emit as StepDone-like usage update without changing finish reason.
@@ -119,6 +121,7 @@ pub fn normalize(event: StreamEvent) -> Vec<LoopEvent> {
                 usage: Some(StepUsage {
                     prompt_tokens,
                     completion_tokens,
+                    context_tokens: context_tokens.max(prompt_tokens),
                     ..Default::default()
                 }),
             }]

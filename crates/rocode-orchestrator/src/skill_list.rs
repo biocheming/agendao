@@ -305,56 +305,22 @@ impl SkillListSink {
         if self.assistant_flushed {
             return;
         }
-        let mut parts = Vec::new();
-        if !self.step_reasoning.is_empty() {
-            parts.push(rocode_provider::ContentPart {
-                content_type: "reasoning".to_string(),
-                text: Some(self.step_reasoning.clone()),
-                image_url: None,
-                tool_use: None,
-                tool_result: None,
-                cache_control: None,
-                filename: None,
-                media_type: None,
-                provider_options: None,
-            });
+        let tool_calls: Vec<rocode_provider::ToolUse> = self
+            .step_tool_calls
+            .iter()
+            .map(|tc| rocode_provider::ToolUse {
+                id: tc.id.clone(),
+                name: tc.name.clone(),
+                input: tc.arguments.clone(),
+            })
+            .collect();
+        if let Some(message) = rocode_provider::Message::assistant_turn(
+            Some(&self.step_reasoning),
+            Some(&self.step_text),
+            &tool_calls,
+        ) {
+            self.messages.push(message);
         }
-        if !self.step_text.is_empty() {
-            parts.push(rocode_provider::ContentPart {
-                content_type: "text".to_string(),
-                text: Some(self.step_text.clone()),
-                image_url: None,
-                tool_use: None,
-                tool_result: None,
-                cache_control: None,
-                filename: None,
-                media_type: None,
-                provider_options: None,
-            });
-        }
-        for tc in &self.step_tool_calls {
-            parts.push(rocode_provider::ContentPart {
-                content_type: "tool_use".to_string(),
-                text: None,
-                image_url: None,
-                tool_use: Some(rocode_provider::ToolUse {
-                    id: tc.id.clone(),
-                    name: tc.name.clone(),
-                    input: tc.arguments.clone(),
-                }),
-                tool_result: None,
-                cache_control: None,
-                filename: None,
-                media_type: None,
-                provider_options: None,
-            });
-        }
-        self.messages.push(rocode_provider::Message {
-            role: rocode_provider::Role::Assistant,
-            content: rocode_provider::Content::Parts(parts),
-            cache_control: None,
-            provider_options: None,
-        });
         self.assistant_flushed = true;
     }
 }
@@ -410,26 +376,14 @@ impl LoopSink for SkillListSink {
         self.flush_assistant_with_tools();
 
         // Add tool result message.
-        self.messages.push(rocode_provider::Message {
-            role: rocode_provider::Role::Tool,
-            content: rocode_provider::Content::Parts(vec![rocode_provider::ContentPart {
-                content_type: "tool_result".to_string(),
-                text: None,
-                image_url: None,
-                tool_use: None,
-                tool_result: Some(rocode_provider::ToolResult {
-                    tool_use_id: result.tool_call_id.clone(),
-                    content: result.output.clone(),
-                    is_error: Some(result.is_error),
-                }),
-                cache_control: None,
-                filename: None,
-                media_type: None,
-                provider_options: None,
-            }]),
-            cache_control: None,
-            provider_options: None,
-        });
+        self.messages
+            .push(rocode_provider::Message::tool_parts(vec![
+                rocode_provider::ContentPart::tool_result(
+                    result.tool_call_id.clone(),
+                    result.output.clone(),
+                    Some(result.is_error),
+                ),
+            ]));
         if let Some(target) =
             continuation_target_from_tool_metadata(&result.tool_name, result.metadata.as_ref())
         {
@@ -483,41 +437,12 @@ impl LoopSink for SkillListSink {
                     append_output_usage(&mut self.output_metadata, &OutputUsage::from(usage));
                 }
                 if !self.assistant_flushed {
-                    if !self.step_reasoning.is_empty() {
-                        let mut parts = vec![rocode_provider::ContentPart {
-                            content_type: "reasoning".to_string(),
-                            text: Some(self.step_reasoning.clone()),
-                            image_url: None,
-                            tool_use: None,
-                            tool_result: None,
-                            cache_control: None,
-                            filename: None,
-                            media_type: None,
-                            provider_options: None,
-                        }];
-                        if !self.step_text.is_empty() {
-                            parts.push(rocode_provider::ContentPart {
-                                content_type: "text".to_string(),
-                                text: Some(self.step_text.clone()),
-                                image_url: None,
-                                tool_use: None,
-                                tool_result: None,
-                                cache_control: None,
-                                filename: None,
-                                media_type: None,
-                                provider_options: None,
-                            });
-                        }
-                        self.messages.push(rocode_provider::Message {
-                            role: rocode_provider::Role::Assistant,
-                            content: rocode_provider::Content::Parts(parts),
-                            cache_control: None,
-                            provider_options: None,
-                        });
-                    } else {
-                        // No tool calls this step → add plain assistant message.
-                        self.messages
-                            .push(rocode_provider::Message::assistant(self.step_text.clone()));
+                    if let Some(message) = rocode_provider::Message::assistant_turn(
+                        Some(&self.step_reasoning),
+                        Some(&self.step_text),
+                        &[],
+                    ) {
+                        self.messages.push(message);
                     }
                     self.assistant_flushed = true;
                 }
@@ -777,5 +702,105 @@ mod tests {
             continuation_targets[0].agent_task_id.as_deref(),
             Some("agent-task-123")
         );
+    }
+
+    #[tokio::test]
+    async fn execute_replays_reasoning_into_next_orchestration() {
+        struct CapturingModelResolver {
+            streams: Mutex<Vec<rocode_provider::StreamResult>>,
+            requests: Mutex<Vec<Vec<rocode_provider::Message>>>,
+        }
+
+        #[async_trait]
+        impl ModelResolver for CapturingModelResolver {
+            async fn chat_stream(
+                &self,
+                _model: Option<&ModelRef>,
+                messages: Vec<rocode_provider::Message>,
+                _tools: Vec<rocode_provider::ToolDefinition>,
+                _exec_ctx: &ExecutionContext,
+            ) -> Result<rocode_provider::StreamResult, OrchestratorError> {
+                self.requests.lock().await.push(messages);
+                self.streams
+                    .lock()
+                    .await
+                    .pop()
+                    .ok_or_else(|| OrchestratorError::Other("missing test stream".to_string()))
+            }
+        }
+
+        let tool_executor: Arc<dyn ToolExecutor> = Arc::new(TestToolExecutor);
+        let resolver = Arc::new(CapturingModelResolver {
+            streams: Mutex::new(vec![
+                stream_from(vec![rocode_provider::StreamEvent::Done]),
+                stream_from(vec![
+                    rocode_provider::StreamEvent::TextDelta("stage two".to_string()),
+                    rocode_provider::StreamEvent::Done,
+                ]),
+                stream_from(vec![
+                    rocode_provider::StreamEvent::ReasoningDelta {
+                        id: "reasoning-1".to_string(),
+                        text: "need tool output first".to_string(),
+                    },
+                    rocode_provider::StreamEvent::ToolCallEnd {
+                        id: "tool-call-1".to_string(),
+                        name: "echo".to_string(),
+                        input: json!({"value":"x"}),
+                    },
+                    rocode_provider::StreamEvent::Done,
+                ]),
+            ]),
+            requests: Mutex::new(Vec::new()),
+        });
+        let context = OrchestratorContext {
+            agent_resolver: Arc::new(TestAgentResolver),
+            model_resolver: resolver.clone(),
+            tool_executor: tool_executor.clone(),
+            lifecycle_hook: Arc::new(TestLifecycleHook),
+            cancel_token: Arc::new(crate::runtime::events::NeverCancel),
+            exec_ctx: ExecutionContext {
+                session_id: "test".to_string(),
+                workdir: ".".to_string(),
+                agent_name: "test-agent".to_string(),
+                metadata: HashMap::new(),
+            },
+        };
+
+        let mut orchestrator = SkillListOrchestrator::new(
+            AgentDescriptor {
+                name: "test-agent".to_string(),
+                system_prompt: None,
+                model: Some(ModelRef {
+                    provider_id: "openai".to_string(),
+                    model_id: "gpt-test".to_string(),
+                }),
+                max_steps: Some(4),
+                temperature: None,
+                allowed_tools: Vec::new(),
+            },
+            ToolRunner::new(tool_executor),
+        );
+
+        let first = orchestrator.execute("first run", &context).await.unwrap();
+        assert_eq!(first.tool_calls_count, 1);
+
+        let _second = orchestrator.execute("second run", &context).await.unwrap();
+
+        let requests = resolver.requests.lock().await.clone();
+        assert!(requests.len() >= 3);
+        let second_run_first_request = &requests[2];
+        let assistant_with_reasoning = second_run_first_request
+            .iter()
+            .find(|message| matches!(message.role, rocode_provider::Role::Assistant))
+            .expect("second execute should replay assistant history");
+
+        match &assistant_with_reasoning.content {
+            rocode_provider::Content::Parts(parts) => {
+                assert_eq!(parts[0].content_type, "reasoning");
+                assert_eq!(parts[0].text.as_deref(), Some("need tool output first"));
+                assert_eq!(parts[1].content_type, "tool_use");
+            }
+            other => panic!("expected assistant parts replay, got {other:?}"),
+        }
     }
 }
