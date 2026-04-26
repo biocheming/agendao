@@ -30,6 +30,10 @@ type LegacyToolResult = (
 
 type LegacyToolResultMap = HashMap<String, LegacyToolResult>;
 
+const CONTEXT_AUTO_COMPACT_THRESHOLD_PERCENT: u64 = 90;
+const AUTO_COMPACTION_RECENT_WINDOW_MESSAGES: usize = 12;
+const AUTO_COMPACTION_MIN_MESSAGES_AFTER_LAST: usize = 4;
+
 struct LegacyToolStateInput<'a> {
     tool_call_id: &'a str,
     tool_name: &'a str,
@@ -330,6 +334,73 @@ impl SessionPrompt {
         usage
     }
 
+    fn context_usage_percent(used: u64, limit: u64) -> Option<u64> {
+        if limit == 0 {
+            return None;
+        }
+        Some(((used as f64 / limit as f64) * 100.0).round() as u64)
+    }
+
+    fn effective_compaction_limit(
+        limits: &ModelLimits,
+        compaction_config: &CompactionConfig,
+    ) -> u64 {
+        let reserved = compaction_config
+            .reserved
+            .unwrap_or_else(|| 20_000_u64.min(limits.max_output));
+        limits
+            .max_input
+            .map(|input| input.saturating_sub(reserved))
+            .unwrap_or_else(|| limits.context.saturating_sub(limits.max_output))
+    }
+
+    fn should_trigger_proactive_compaction(
+        used_tokens: u64,
+        limits: &ModelLimits,
+        compaction_config: &CompactionConfig,
+    ) -> bool {
+        let limit = Self::effective_compaction_limit(limits, compaction_config);
+        Self::context_usage_percent(used_tokens, limit)
+            .map(|percent| percent >= CONTEXT_AUTO_COMPACT_THRESHOLD_PERCENT)
+            .unwrap_or(false)
+    }
+
+    fn should_back_off_auto_compaction(messages: &[SessionMessage]) -> bool {
+        let recent_compaction_offsets: Vec<usize> = messages
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| {
+                message
+                    .parts
+                    .iter()
+                    .any(|part| matches!(part.part_type, PartType::Compaction { .. }))
+            })
+            .map(|(index, _)| index)
+            .collect();
+
+        let Some(last_compaction_index) = recent_compaction_offsets.last().copied() else {
+            return false;
+        };
+
+        let messages_since_last = messages.len().saturating_sub(last_compaction_index + 1);
+        if messages_since_last < AUTO_COMPACTION_MIN_MESSAGES_AFTER_LAST {
+            return true;
+        }
+
+        messages
+            .iter()
+            .rev()
+            .take(AUTO_COMPACTION_RECENT_WINDOW_MESSAGES)
+            .filter(|message| {
+                message
+                    .parts
+                    .iter()
+                    .any(|part| matches!(part.part_type, PartType::Compaction { .. }))
+            })
+            .count()
+            >= 2
+    }
+
     pub(super) fn should_compact(
         messages: &[SessionMessage],
         provider: &dyn Provider,
@@ -337,6 +408,10 @@ impl SessionPrompt {
         max_output_tokens: Option<u64>,
         compaction_config: &CompactionConfig,
     ) -> bool {
+        if Self::should_back_off_auto_compaction(messages) {
+            return false;
+        }
+
         let usage = Self::token_usage_from_messages(messages);
         let model = provider.get_model(model_id);
         let limits = ModelLimits {
@@ -350,6 +425,17 @@ impl SessionPrompt {
         };
         let engine = CompactionEngine::new(compaction_config.clone());
         if engine.is_overflow(&usage, &limits) {
+            return true;
+        }
+
+        let usage_count = if usage.total > 0 {
+            usage.total
+        } else {
+            usage.input + usage.output + usage.cache_read + usage.cache_write
+        };
+        if usage_count > 0
+            && Self::should_trigger_proactive_compaction(usage_count, &limits, compaction_config)
+        {
             return true;
         }
 
@@ -372,6 +458,27 @@ impl SessionPrompt {
                 _ => 0,
             })
             .sum();
+
+        let estimated_input_tokens = (total_chars as u64) / 4;
+        let estimated_usage = TokenUsage {
+            input: estimated_input_tokens,
+            output: 0,
+            cache_read: 0,
+            cache_write: 0,
+            total: estimated_input_tokens,
+        };
+        if estimated_input_tokens > 0 && engine.is_overflow(&estimated_usage, &limits) {
+            return true;
+        }
+        if estimated_input_tokens > 0
+            && Self::should_trigger_proactive_compaction(
+                estimated_input_tokens,
+                &limits,
+                compaction_config,
+            )
+        {
+            return true;
+        }
 
         // Hard cap: 5MB of content to stay under typical 6MB API body limits
         // (leaves ~1MB for JSON overhead, tool definitions, system prompt).
@@ -883,6 +990,7 @@ impl SessionPrompt {
     pub(super) fn trigger_compaction(
         session: &mut Session,
         messages: &[SessionMessage],
+        focus: Option<&str>,
     ) -> Option<String> {
         let total_messages = messages.len();
         if total_messages < 10 {
@@ -890,7 +998,7 @@ impl SessionPrompt {
         }
 
         let keep_count = total_messages / 2;
-        let summary_parts: Vec<String> = messages
+        let default_summary_parts: Vec<String> = messages
             .iter()
             .take(keep_count)
             .flat_map(|m| m.parts.iter())
@@ -900,9 +1008,53 @@ impl SessionPrompt {
             })
             .collect();
 
+        let focus = focus.map(str::trim).filter(|value| !value.is_empty());
+        let focus_terms: Vec<String> = focus
+            .map(|value| {
+                value.split_whitespace()
+                    .map(|term| term.trim().to_ascii_lowercase())
+                    .filter(|term| !term.is_empty())
+                    .take(8)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let summary_parts = if focus_terms.is_empty() {
+            default_summary_parts
+        } else {
+            let mut focused_parts: Vec<String> = messages
+                .iter()
+                .take(keep_count)
+                .flat_map(|message| message.parts.iter())
+                .filter_map(|part| match &part.part_type {
+                    PartType::Text { text, .. } => Some(text),
+                    _ => None,
+                })
+                .filter(|text| {
+                    let lowercase = text.to_ascii_lowercase();
+                    focus_terms.iter().any(|term| lowercase.contains(term))
+                })
+                .cloned()
+                .collect();
+            if focused_parts.is_empty() {
+                default_summary_parts
+            } else {
+                let existing_parts = focused_parts.clone();
+                focused_parts.extend(
+                    default_summary_parts
+                        .into_iter()
+                        .filter(|text| !existing_parts.iter().any(|existing| existing == text))
+                        .take(12),
+                );
+                focused_parts
+            }
+        };
+
         let summary = format!(
-            "Compacted {} messages. Summary: {}...",
+            "Compacted {} messages.{} Summary: {}...",
             total_messages - keep_count,
+            focus
+                .map(|value| format!(" Focused on `{value}`."))
+                .unwrap_or_default(),
             summary_parts
                 .join(" ")
                 .chars()
@@ -1213,7 +1365,7 @@ mod tests {
         );
         assert!(
             compact,
-            "should trigger compaction when input tokens approach max_input_tokens"
+            "should trigger proactive compaction when input tokens approach the budget"
         );
     }
 
@@ -1263,6 +1415,98 @@ mod tests {
             compact,
             "should trigger compaction when reserved token budget shrinks usable input"
         );
+    }
+
+    #[test]
+    fn should_compact_estimates_current_input_without_usage_metadata() {
+        let provider = StaticModelProvider::with_model("estimated-model", 2_000, 256);
+        let mut msg = SessionMessage::user("ses_test", "");
+        msg.parts.clear();
+        msg.parts.push(crate::MessagePart {
+            id: "part_estimated".to_string(),
+            part_type: PartType::Text {
+                text: "x".repeat(7_500),
+                synthetic: None,
+                ignored: None,
+            },
+            created_at: chrono::Utc::now(),
+            message_id: None,
+        });
+
+        let compact = SessionPrompt::should_compact(
+            &[msg],
+            &provider,
+            "estimated-model",
+            None,
+            &CompactionConfig::default(),
+        );
+        assert!(
+            compact,
+            "should trigger compaction from current message content even without usage metadata"
+        );
+    }
+
+    #[test]
+    fn should_compact_backs_off_after_recent_compactions() {
+        let provider = StaticModelProvider::with_model("estimated-model", 2_000, 256);
+        let session_id = "ses_test".to_string();
+
+        let mut compacted = SessionMessage::assistant(session_id.clone());
+        compacted.parts.push(crate::MessagePart {
+            id: "part_compacted".to_string(),
+            part_type: PartType::Compaction {
+                summary: "Earlier turns summarized".to_string(),
+            },
+            created_at: chrono::Utc::now(),
+            message_id: None,
+        });
+
+        let mut msg = SessionMessage::user(session_id, "");
+        msg.parts.clear();
+        msg.parts.push(crate::MessagePart {
+            id: "part_estimated".to_string(),
+            part_type: PartType::Text {
+                text: "x".repeat(7_500),
+                synthetic: None,
+                ignored: None,
+            },
+            created_at: chrono::Utc::now(),
+            message_id: None,
+        });
+
+        let compact = SessionPrompt::should_compact(
+            &[compacted, msg],
+            &provider,
+            "estimated-model",
+            None,
+            &CompactionConfig::default(),
+        );
+        assert!(
+            !compact,
+            "should back off auto-compaction when the last compaction was too recent"
+        );
+    }
+
+    #[test]
+    fn trigger_compaction_mentions_focus_topic() {
+        let mut session = Session::new("proj", ".");
+        let session_id = session.id.clone();
+
+        let messages: Vec<SessionMessage> = (0..10)
+            .map(|index| {
+                let text = if index % 2 == 0 {
+                    format!("xterm terminal integration note {index}")
+                } else {
+                    format!("other note {index}")
+                };
+                SessionMessage::user(session_id.clone(), text)
+            })
+            .collect();
+
+        let summary = SessionPrompt::trigger_compaction(&mut session, &messages, Some("xterm"))
+            .expect("focused compaction should produce a summary");
+        assert!(summary.contains("Focused on `xterm`."));
+        assert!(summary.to_ascii_lowercase().contains("xterm"));
     }
 
     #[test]

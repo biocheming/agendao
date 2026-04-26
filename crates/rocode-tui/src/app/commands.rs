@@ -136,6 +136,10 @@ impl App {
                 }
                 Ok(())
             }
+            UiActionId::CompactSession => {
+                self.handle_compact_session(argument);
+                Ok(())
+            }
             UiActionId::OpenAgentList | UiActionId::OpenPresetList | UiActionId::OpenModeList => {
                 let Some(mode_ref) = argument else {
                     return self.execute_ui_action(invocation.action_id);
@@ -186,7 +190,7 @@ impl App {
                         Ok(())
                     }
                     "compact" => {
-                        self.handle_compact_session();
+                        self.handle_compact_session(None);
                         Ok(())
                     }
                     "delete" => {
@@ -420,7 +424,7 @@ impl App {
                 self.handle_fork_session();
             }
             UiActionId::CompactSession => {
-                self.handle_compact_session();
+                self.handle_compact_session(None);
             }
             UiActionId::Timeline => {
                 self.handle_open_timeline();
@@ -676,7 +680,7 @@ impl App {
             | InteractiveCommand::ListSessions
             | InteractiveCommand::ParentSession
             | InteractiveCommand::ListTasks
-            | InteractiveCommand::Compact
+            | InteractiveCommand::Compact(_)
             | InteractiveCommand::Copy
             | InteractiveCommand::ListAgents
             | InteractiveCommand::ToggleSidebar

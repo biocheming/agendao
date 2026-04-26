@@ -818,6 +818,12 @@ pub struct CompactResponse {
     pub success: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CompactRequest {
+    #[serde(default)]
+    pub focus: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RevertRequest {
     pub message_id: String,

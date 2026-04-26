@@ -836,44 +836,29 @@ pub fn compose_assistant_segments(
     show_thinking: bool,
 ) -> Vec<TerminalAssistantSegment> {
     let mut segments = Vec::new();
-    let mut prev_was_text = false;
-    let mut prev_was_tool = false;
 
     for (part_index, part) in message.parts.iter().enumerate() {
         match part {
             TerminalMessagePart::Text { text } => {
-                if prev_was_tool {
-                    segments.push(TerminalAssistantSegment::Spacer);
-                }
                 segments.push(TerminalAssistantSegment::Text {
                     part_index,
                     text: text.clone(),
                 });
-                prev_was_text = true;
-                prev_was_tool = false;
             }
             TerminalMessagePart::Reasoning { text } => {
                 if !show_thinking {
                     continue;
                 }
-                if prev_was_text || prev_was_tool {
-                    segments.push(TerminalAssistantSegment::Spacer);
-                }
                 segments.push(TerminalAssistantSegment::Reasoning {
                     part_index,
                     text: text.clone(),
                 });
-                prev_was_text = false;
-                prev_was_tool = false;
             }
             TerminalMessagePart::ToolCall {
                 id,
                 name,
                 arguments,
             } => {
-                if prev_was_text {
-                    segments.push(TerminalAssistantSegment::Spacer);
-                }
                 let state = if let Some(info) = tool_results.get(id) {
                     if info.is_error {
                         TerminalToolState::Failed
@@ -893,8 +878,6 @@ pub fn compose_assistant_segments(
                     state,
                     result: tool_results.get(id).cloned(),
                 });
-                prev_was_text = false;
-                prev_was_tool = true;
             }
             TerminalMessagePart::ToolResult { .. } => {}
             TerminalMessagePart::File { path, mime } => {
@@ -903,16 +886,12 @@ pub fn compose_assistant_segments(
                     path: path.clone(),
                     mime: mime.clone(),
                 });
-                prev_was_text = false;
-                prev_was_tool = false;
             }
             TerminalMessagePart::Image { url } => {
                 segments.push(TerminalAssistantSegment::Image {
                     part_index,
                     url: url.clone(),
                 });
-                prev_was_text = false;
-                prev_was_tool = false;
             }
         }
     }
@@ -1032,13 +1011,11 @@ mod tests {
             segments.as_slice(),
             [
                 TerminalAssistantSegment::Text { .. },
-                TerminalAssistantSegment::Spacer,
                 TerminalAssistantSegment::Reasoning { .. },
                 TerminalAssistantSegment::ToolCall {
                     state: TerminalToolState::Running,
                     ..
                 },
-                TerminalAssistantSegment::Spacer,
                 TerminalAssistantSegment::Text { .. }
             ]
         ));

@@ -228,7 +228,7 @@ pub enum InteractiveCommand {
     ListTasks,
     ShowTask(String),
     KillTask(String),
-    Compact,
+    Compact(Option<String>),
     Copy,
     ListAgents,
     SelectAgent(String),
@@ -275,7 +275,7 @@ impl InteractiveCommand {
             Self::ListSessions => (UiActionId::OpenSessionList, None),
             Self::ParentSession => (UiActionId::NavigateParentSession, None),
             Self::ListTasks => (UiActionId::ListTasks, None),
-            Self::Compact => (UiActionId::CompactSession, None),
+            Self::Compact(focus) => (UiActionId::CompactSession, focus.clone()),
             Self::Copy => (UiActionId::CopySession, None),
             Self::ListAgents => (UiActionId::OpenAgentList, None),
             Self::SelectAgent(name) => (UiActionId::OpenAgentList, Some(name.clone())),
@@ -424,7 +424,13 @@ pub fn parse_interactive_command(input: &str) -> Option<InteractiveCommand> {
                 }
             }
         }
-        "compact" => Some(InteractiveCommand::Compact),
+        "compact" => {
+            if arg.is_empty() {
+                Some(InteractiveCommand::Compact(None))
+            } else {
+                Some(InteractiveCommand::Compact(Some(arg)))
+            }
+        }
         "copy" => Some(InteractiveCommand::Copy),
         "agent" | "agents" => {
             if arg.is_empty() {
@@ -554,7 +560,13 @@ mod tests {
         );
         assert_eq!(
             parse_interactive_command("/compact"),
-            Some(InteractiveCommand::Compact)
+            Some(InteractiveCommand::Compact(None))
+        );
+        assert_eq!(
+            parse_interactive_command("/compact grep tool results"),
+            Some(InteractiveCommand::Compact(Some(
+                "grep tool results".to_string()
+            )))
         );
         assert_eq!(
             parse_interactive_command("/copy"),
@@ -909,7 +921,7 @@ mod tests {
             Some(UiActionId::ToggleSidebar)
         );
         assert_eq!(
-            InteractiveCommand::Compact.ui_action_id(),
+            InteractiveCommand::Compact(None).ui_action_id(),
             Some(UiActionId::CompactSession)
         );
         assert_eq!(

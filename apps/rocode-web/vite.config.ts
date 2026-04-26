@@ -4,16 +4,38 @@ import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 
 function manualChunks(id: string) {
-  if (!id.includes("node_modules")) {
+  const normalizedId = id.replaceAll("\\", "/");
+  if (!normalizedId.includes("/node_modules/")) {
     return undefined;
   }
 
-  if (id.includes("@xterm/")) {
+  if (normalizedId.includes("/@xterm/")) {
     return "vendor-terminal";
   }
 
-  if (id.includes("/react/") || id.includes("/react-dom/") || id.includes("/scheduler/")) {
+  if (
+    normalizedId.includes("/react/") ||
+    normalizedId.includes("/react-dom/") ||
+    normalizedId.includes("/scheduler/")
+  ) {
     return "vendor-react";
+  }
+
+  if (
+    normalizedId.includes("/lucide-react/") ||
+    normalizedId.includes("/motion/")
+  ) {
+    return "vendor-visuals";
+  }
+
+  if (
+    normalizedId.includes("/@radix-ui/") ||
+    normalizedId.includes("/cmdk/") ||
+    normalizedId.includes("/class-variance-authority/") ||
+    normalizedId.includes("/clsx/") ||
+    normalizedId.includes("/tailwind-merge/")
+  ) {
+    return "vendor-ui";
   }
 
   return undefined;
@@ -32,6 +54,7 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     minify: "esbuild",
+    chunkSizeWarningLimit: 1000,
     cssCodeSplit: false,
     modulePreload: false,
     rollupOptions: {

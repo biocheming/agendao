@@ -688,17 +688,85 @@ impl Sidebar {
                 .rev()
                 .find(|m| matches!(m.role, MessageRole::Assistant))
                 .and_then(|m| m.model.as_deref());
+            let last_assistant = messages
+                .iter()
+                .rev()
+                .find(|m| matches!(m.role, MessageRole::Assistant));
+            let current_context_tokens = self.context.current_context_tokens();
             let active_model_info = self.context.resolve_model_info(active_model);
             sections.push(SidebarSection {
                 key: "context",
-                title: "Context",
+                title: "Usage",
                 lines: {
                     let mut lines = Vec::new();
-                    lines.push(sidebar_context_line(
+                    let shown_context_tokens = current_context_tokens.unwrap_or(total_tokens);
+                    let context_limit =
+                        active_model_info.as_ref().map(|model| model.context_window);
+                    lines.push(sidebar_usage_line(
                         &theme,
-                        total_tokens,
-                        active_model_info.as_ref().map(|model| model.context_window),
+                        "Current",
+                        shown_context_tokens,
+                        context_limit,
                     ));
+                    if let Some(note) = context_limit
+                        .and_then(|limit| context_usage_percent(shown_context_tokens, limit))
+                        .and_then(|percent| context_pressure_note(Some(percent)))
+                    {
+                        lines.push(Line::from(vec![
+                            Span::styled("State  ", Style::default().fg(theme.text_muted)),
+                            Span::styled(note, Style::default().fg(theme.warning)),
+                        ]));
+                    }
+                    if total_tokens > 0 {
+                        lines.push(Line::from(vec![
+                            Span::styled("Session ", Style::default().fg(theme.text_muted)),
+                            Span::styled(
+                                format!("{} cumulative", format_compact_number(total_tokens)),
+                                Style::default().fg(theme.text),
+                            ),
+                        ]));
+                    }
+                    if let Some(turn) = last_assistant.filter(|message| {
+                        message.tokens.input > 0
+                            || message.tokens.output > 0
+                            || message.tokens.reasoning > 0
+                            || message.tokens.cache_read > 0
+                            || message.tokens.cache_write > 0
+                    }) {
+                        lines.push(Line::from(vec![
+                            Span::styled("Turn   ", Style::default().fg(theme.text_muted)),
+                            Span::styled(
+                                format!(
+                                    "↑{}  ↓{}",
+                                    format_compact_number(turn.tokens.input),
+                                    format_compact_number(turn.tokens.output)
+                                ),
+                                Style::default().fg(theme.text),
+                            ),
+                        ]));
+                        if turn.tokens.reasoning > 0 {
+                            lines.push(Line::from(vec![
+                                Span::styled("Reason ", Style::default().fg(theme.text_muted)),
+                                Span::styled(
+                                    format_compact_number(turn.tokens.reasoning),
+                                    Style::default().fg(theme.text),
+                                ),
+                            ]));
+                        }
+                        if turn.tokens.cache_read > 0 || turn.tokens.cache_write > 0 {
+                            lines.push(Line::from(vec![
+                                Span::styled("Cache  ", Style::default().fg(theme.text_muted)),
+                                Span::styled(
+                                    format!(
+                                        "read {} · write {}",
+                                        format_compact_number(turn.tokens.cache_read),
+                                        format_compact_number(turn.tokens.cache_write)
+                                    ),
+                                    Style::default().fg(theme.text),
+                                ),
+                            ]));
+                        }
+                    }
                     if let Some(model) = active_model_info.as_ref() {
                         if let (Some(input_price), Some(output_price)) =
                             (model.cost_per_million_input, model.cost_per_million_output)
@@ -1973,18 +2041,26 @@ fn context_usage_percent(used: u64, limit: u64) -> Option<u64> {
 fn context_usage_style(theme: &Theme, percent: Option<u64>) -> Style {
     let color = match percent {
         Some(pct) if pct >= 95 => theme.error,
-        Some(pct) if pct > 80 => theme.warning,
-        Some(pct) if pct >= 50 => theme.warning,
+        Some(pct) if pct >= 80 => theme.warning,
         Some(_) => theme.success,
         None => theme.text_muted,
     };
     Style::default().fg(color)
 }
 
-fn sidebar_context_line(theme: &Theme, used: u64, limit: Option<u64>) -> Line<'static> {
+fn context_pressure_note(percent: Option<u64>) -> Option<&'static str> {
+    match percent {
+        Some(pct) if pct >= 95 => Some("compact now"),
+        Some(pct) if pct >= 90 => Some("auto-compact soon"),
+        Some(pct) if pct >= 80 => Some("warning"),
+        _ => None,
+    }
+}
+
+fn sidebar_usage_line(theme: &Theme, label: &str, used: u64, limit: Option<u64>) -> Line<'static> {
     let Some(limit) = limit.filter(|limit| *limit > 0) else {
         return Line::from(vec![
-            Span::styled("Ctx    ", Style::default().fg(theme.text_muted)),
+            Span::styled(format!("{label:<7}"), Style::default().fg(theme.text_muted)),
             Span::styled(format_compact_number(used), Style::default().fg(theme.text)),
         ]);
     };
@@ -1994,7 +2070,7 @@ fn sidebar_context_line(theme: &Theme, used: u64, limit: Option<u64>) -> Line<'s
     let percent_label = percent.map_or_else(|| "--".to_string(), |pct| format!("{pct}%"));
 
     Line::from(vec![
-        Span::styled("Ctx    ", Style::default().fg(theme.text_muted)),
+        Span::styled(format!("{label:<7}"), Style::default().fg(theme.text_muted)),
         Span::styled(
             format!(
                 "{}/{}",

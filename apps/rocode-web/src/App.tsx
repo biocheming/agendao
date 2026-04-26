@@ -101,7 +101,7 @@ import {
   XIcon,
 } from "lucide-react";
 
-type ThemeId = "daylight" | "sunset" | "graphite" | "midnight";
+type ThemeId = "daylight" | "sunset" | "cobalt";
 
 interface ExecutionMode {
   id: string;
@@ -141,8 +141,7 @@ type PendingCommandInvocation = PendingCommandInvocationRecord;
 const THEMES: Array<{ id: ThemeId; label: string }> = [
   { id: "daylight", label: "Daylight" },
   { id: "sunset", label: "Sunset" },
-  { id: "graphite", label: "Graphite" },
-  { id: "midnight", label: "Midnight" },
+  { id: "cobalt", label: "Cobalt" },
 ];
 
 function formatCompactTokenCount(value?: number | null) {
@@ -969,7 +968,7 @@ export default function App() {
     }
     return null;
   }, [executionActivity.activeStageSummary?.estimated_context_tokens, executionActivity.stageSummaries]);
-  const usedContextTokens = useMemo(() => {
+  const sessionCumulativeTokens = useMemo(() => {
     if (!sessionUsage) return 0;
     return (
       sessionUsage.input_tokens +
@@ -979,35 +978,23 @@ export default function App() {
       sessionUsage.cache_write_tokens
     );
   }, [sessionUsage]);
-  const headerContextSummary = useMemo(() => {
+  const headerUsageSummary = useMemo(() => {
     const parts: string[] = [];
-    if (usedContextTokens > 0) {
-      const limit = activeProviderModel?.context_window ?? null;
-      parts.push(
-        limit && limit > 0
-          ? `ctx ${formatCompactTokenCount(usedContextTokens)}/${formatCompactTokenCount(limit)}`
-          : `ctx ${formatCompactTokenCount(usedContextTokens)}`,
-      );
+    if (sessionCumulativeTokens > 0) {
+      parts.push(`session ${formatCompactTokenCount(sessionCumulativeTokens)} total`);
     }
     if (typeof sessionUsage?.total_cost === "number") {
       parts.push(formatCompactMoney(sessionUsage.total_cost));
     }
-    const inputPrice = formatCompactPrice(activeProviderModel?.cost_per_million_input ?? null);
-    const outputPrice = formatCompactPrice(activeProviderModel?.cost_per_million_output ?? null);
-    if (inputPrice && outputPrice) {
-      parts.push(`$${inputPrice}/$${outputPrice}/1M`);
-    }
     return parts.join(" · ");
-  }, [activeProviderModel, sessionUsage?.total_cost, usedContextTokens]);
-  const headerContextTitle = useMemo(() => {
+  }, [
+    sessionCumulativeTokens,
+    sessionUsage?.total_cost,
+  ]);
+  const headerUsageTitle = useMemo(() => {
     const detail: string[] = [];
-    if (usedContextTokens > 0) {
-      const limit = activeProviderModel?.context_window ?? null;
-      detail.push(
-        limit && limit > 0
-          ? `Context estimate ${usedContextTokens} / ${limit} tokens`
-          : `Context estimate ${usedContextTokens} tokens`,
-      );
+    if (sessionCumulativeTokens > 0) {
+      detail.push(`Session cumulative tokens ${sessionCumulativeTokens}`);
     }
     if (typeof sessionUsage?.total_cost === "number") {
       detail.push(`Total cost ${formatCompactMoney(sessionUsage.total_cost)}`);
@@ -1021,7 +1008,24 @@ export default function App() {
       );
     }
     return detail.join(" | ");
-  }, [activeProviderModel, sessionUsage?.total_cost, usedContextTokens]);
+  }, [
+    activeProviderModel,
+    sessionCumulativeTokens,
+    sessionUsage?.total_cost,
+  ]);
+  const lastAssistantTurnTokens = useMemo(() => {
+    for (let index = messageHistory.length - 1; index >= 0; index -= 1) {
+      const message = messageHistory[index];
+      if (message?.role !== "assistant") continue;
+      const tokens = message.tokens;
+      if (!tokens) continue;
+      return {
+        input: tokens.input ?? 0,
+        output: tokens.output ?? 0,
+      };
+    }
+    return null;
+  }, [messageHistory]);
   const modeDisplayLabel = useMemo(
     () => formatModeDisplayLabel(selectedMode, currentSession, modes),
     [currentSession, modes, selectedMode],
@@ -2300,7 +2304,7 @@ export default function App() {
       <header className="roc-appbar relative flex shrink-0 items-center justify-between px-4 py-1.5 md:px-5">
         <div className="flex min-w-0 items-center gap-3">
           <img
-            src="/web/brand/rocode-logo.png"
+            src="/web/brand/rocode-logo.svg"
             alt="ROCode"
             className="h-7 w-auto max-w-[9.5rem] shrink-0 object-contain md:h-8 md:max-w-[10.5rem]"
           />
@@ -2383,7 +2387,7 @@ export default function App() {
             </div>
           ) : null}
           {banner ? (
-            <div className="mx-auto w-full max-w-[76rem] px-4 pt-3 md:px-5">
+            <div className="mx-auto w-full max-w-[88rem] px-4 pt-3 md:px-5">
               <div className="roc-banner flex items-start gap-3" data-tone="warning">
                 <div className="roc-status-orb mt-0.5 shrink-0" data-tone="loading">
                   <AlertTriangleIcon className="size-4" />
@@ -2404,14 +2408,14 @@ export default function App() {
             </div>
           ) : null}
 
-          <div className="mx-auto w-full max-w-[76rem] px-4 pt-4 pb-1 md:px-5">
+          <div className="mx-auto w-full max-w-[88rem] px-4 pt-4 pb-1 md:px-5">
             <SessionHeader
               title={currentSession?.title || currentWorkspaceSummary?.label || "New Session"}
               subtitle={sessionSubtitle}
               pathLabel={workspacePathLabel || null}
               workspaceLabel={currentWorkspaceSummary?.label || null}
-              contextSummary={headerContextSummary || null}
-              contextTitle={headerContextTitle || null}
+              usageSummary={headerUsageSummary || null}
+              usageTitle={headerUsageTitle || null}
               modeLabel={modeDisplayLabel}
               modelLabel={modelDisplayLabel}
               activeStageId={schedulerNavigation.previewStageId ?? schedulerNavigation.activeStageId}
@@ -2462,7 +2466,8 @@ export default function App() {
               workspaceRootPath={workspaceBasePath || workspaceRootPath}
               contextTokensUsed={composerContextTokens}
               contextTokensLimit={activeProviderModel?.context_window ?? null}
-              sessionCost={sessionUsage?.total_cost ?? null}
+              lastTurnInputTokens={lastAssistantTurnTokens?.input ?? null}
+              lastTurnOutputTokens={lastAssistantTurnTokens?.output ?? null}
               inputPricePerMillion={activeProviderModel?.cost_per_million_input ?? null}
               outputPricePerMillion={activeProviderModel?.cost_per_million_output ?? null}
               activeStageId={schedulerNavigation.activeStageId}

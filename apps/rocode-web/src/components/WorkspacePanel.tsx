@@ -6,15 +6,18 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import type { FileTreeNodeRecord } from "@/lib/workspace";
 import { WorkspaceTreeNode } from "./WorkspaceTreeNode";
+import { DeferredTerminalPanel } from "./DeferredTerminalPanel";
 import {
   FolderTreeIcon,
   LightbulbIcon,
   EyeIcon,
+  TerminalSquareIcon,
   PlusIcon,
   FolderPlusIcon,
   UploadIcon,
 } from "lucide-react";
 import type { useExecutionActivity } from "../hooks/useExecutionActivity";
+import type { useTerminalSessions } from "../hooks/useTerminalSessions";
 
 const SessionInsightsPanel = lazy(async () => {
   const module = await import("./SessionInsightsPanel");
@@ -26,7 +29,7 @@ const FilePreviewPane = lazy(async () => {
   return { default: module.FilePreviewPane };
 });
 
-export type WorkspacePanelTab = "files" | "insights" | "preview";
+export type WorkspacePanelTab = "files" | "insights" | "preview" | "terminal";
 
 interface WorkspacePanelProps {
   apiJson: <T>(path: string, options?: RequestInit) => Promise<T>;
@@ -63,7 +66,7 @@ interface WorkspacePanelProps {
     restoreActiveStage: () => void;
   };
   terminalExpanded: boolean;
-  terminalSessions: unknown;
+  terminalSessions: ReturnType<typeof useTerminalSessions>;
   onExpandTerminal: () => void;
   onCreateWorkspaceFile: () => Promise<void>;
   onCreateWorkspaceDirectory: () => Promise<void>;
@@ -95,6 +98,9 @@ export function WorkspacePanel({
   onActiveTabChange,
   schedulerNavigation,
   executionActivity,
+  terminalExpanded,
+  terminalSessions,
+  onExpandTerminal,
 }: WorkspacePanelProps) {
   const workspaceUploadInputRef = useRef<HTMLInputElement | null>(null);
   const workspaceRootName =
@@ -143,6 +149,22 @@ export function WorkspacePanel({
           >
             <EyeIcon className="size-3.25" />
             <span>Preview</span>
+          </button>
+          <button
+            className={cn(
+              "inline-flex items-center justify-center gap-1.5 rounded-full px-2.5 py-1.5 text-[10.5px] font-medium transition-colors",
+              activeTab === "terminal"
+                ? "bg-foreground/8 text-foreground"
+                : "text-muted-foreground hover:bg-accent/45 hover:text-foreground"
+            )}
+            type="button"
+            onClick={() => {
+              onActiveTabChange("terminal");
+              onExpandTerminal();
+            }}
+          >
+            <TerminalSquareIcon className="size-3.25" />
+            <span>Terminal</span>
           </button>
         </div>
         <div className="flex items-center gap-0.5 flex-shrink-0">
@@ -230,6 +252,15 @@ export function WorkspacePanel({
           >
             <FilePreviewPane filePath={selectedWorkspacePath} />
           </Suspense>
+        ) : null}
+        {activeTab === "terminal" ? (
+          <div className="h-full p-2">
+            <DeferredTerminalPanel
+              expanded={terminalExpanded}
+              onExpand={onExpandTerminal}
+              terminal={terminalSessions}
+            />
+          </div>
         ) : null}
       </div>
 

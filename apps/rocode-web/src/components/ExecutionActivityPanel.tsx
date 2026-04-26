@@ -39,6 +39,19 @@ function formatDateTime(ts?: number | null) {
   return new Date(ts).toLocaleString();
 }
 
+function currentContextEstimate(activity: ExecutionActivityState) {
+  if (typeof activity.activeStageSummary?.estimated_context_tokens === "number") {
+    return activity.activeStageSummary.estimated_context_tokens;
+  }
+  for (let index = activity.stageSummaries.length - 1; index >= 0; index -= 1) {
+    const estimate = activity.stageSummaries[index]?.estimated_context_tokens;
+    if (typeof estimate === "number" && Number.isFinite(estimate) && estimate > 0) {
+      return estimate;
+    }
+  }
+  return null;
+}
+
 function eventWindowLabel(page: number, count: number, pageSize: number) {
   if (count === 0) return `page ${page} · items 0`;
   const start = (page - 1) * pageSize + 1;
@@ -227,6 +240,7 @@ export function ExecutionActivityPanel({
   onNavigateToolCall,
 }: ExecutionActivityPanelProps) {
   const [pageDraft, setPageDraft] = useState(String(activity.activityPage));
+  const contextEstimate = currentContextEstimate(activity);
   const executionJump = executionJumpTarget(activity.selectedExecution);
   const selectedEventJump = eventJumpTarget(activity.selectedEvent);
   const selectedEventChildSessionId = eventChildSessionId(activity.selectedEvent);
@@ -292,7 +306,7 @@ export function ExecutionActivityPanel({
           {activity.sessionUsage ? (
             <div className="grid gap-3 md:grid-cols-2">
               <div className={sideSectionClass}>
-                <p className="roc-section-label">Session Usage</p>
+                <p className="roc-section-label">Session Cumulative</p>
                 <div className="roc-rail-meta-list">
                   <span className="roc-badge px-3 py-1.5 text-xs">input {activity.sessionUsage.input_tokens}</span>
                   <span className="roc-badge px-3 py-1.5 text-xs">output {activity.sessionUsage.output_tokens}</span>
@@ -300,6 +314,11 @@ export function ExecutionActivityPanel({
                   <span className="roc-badge px-3 py-1.5 text-xs">cache read {activity.sessionUsage.cache_read_tokens}</span>
                   <span className="roc-badge px-3 py-1.5 text-xs">cache write {activity.sessionUsage.cache_write_tokens}</span>
                 </div>
+                {contextEstimate ? (
+                  <p className="text-sm text-muted-foreground leading-relaxed">
+                    Current context estimate {contextEstimate}
+                  </p>
+                ) : null}
                 <p className="text-sm text-muted-foreground leading-relaxed">Total cost {formatMoney(activity.sessionUsage.total_cost)}</p>
               </div>
               <div className={sideSectionClass}>

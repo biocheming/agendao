@@ -9,7 +9,7 @@ import {
 } from "./ai-elements/conversation";
 import { Button } from "./ui/button";
 import { Shimmer } from "./ai-elements/shimmer";
-import { ChevronUpIcon, LoaderCircleIcon, SparklesIcon } from "lucide-react";
+import { BrainCircuitIcon, ChevronUpIcon, Layers2, LoaderCircleIcon, SparklesIcon, WrenchIcon } from "lucide-react";
 import type { FeedMessage } from "../lib/history";
 
 const INITIAL_VISIBLE_MESSAGES = 18;
@@ -180,16 +180,16 @@ export function ConversationFeedPanel({
 
   return (
     <Conversation className="h-full min-w-0 overflow-x-hidden border-0 bg-transparent">
-      <ConversationContent className="mx-auto w-full max-w-[76rem] px-4 pb-6 pt-3 md:px-5 md:pb-7 md:pt-3.5">
+      <ConversationContent className="mx-auto w-full max-w-[88rem] px-4 pb-6 pt-3 md:px-5 md:pb-7 md:pt-3.5">
         {historyLoading && messages.length === 0 ? <FeedLoadingState /> : null}
         {!historyLoading && messages.length === 0 ? (
           <ConversationEmptyState
-            className="roc-panel min-h-[22rem] gap-4"
+            className="roc-panel min-h-[22rem] gap-5"
             icon={<SparklesIcon className="size-5" />}
             title="Conversation starts here"
             description="Ask for code changes, debugging, or exploration. The feed will turn into a readable execution narrative instead of a raw event log."
           >
-            <div className="flex max-w-2xl flex-col items-center gap-4">
+            <div className="flex max-w-3xl flex-col items-center gap-5">
               <div className="text-muted-foreground">
                 <SparklesIcon className="size-5" />
               </div>
@@ -199,6 +199,37 @@ export function ConversationFeedPanel({
                   Ask for code changes, debugging, or exploration. The feed will turn into a readable execution narrative instead of a raw event log.
                 </p>
               </div>
+
+              <div className="roc-empty-capability-grid">
+                <div className="roc-empty-capability-card">
+                  <div className="roc-empty-capability-icon">
+                    <BrainCircuitIcon className="size-4.5" />
+                  </div>
+                  <div className="roc-empty-capability-title">Multi-Model</div>
+                  <div className="roc-empty-capability-desc">
+                    Choose execution mode and model per task — from reasoning to fast completion
+                  </div>
+                </div>
+                <div className="roc-empty-capability-card">
+                  <div className="roc-empty-capability-icon">
+                    <WrenchIcon className="size-4.5" />
+                  </div>
+                  <div className="roc-empty-capability-title">Tool-Augmented</div>
+                  <div className="roc-empty-capability-desc">
+                    File operations, terminal, web search, and code review — all integrated
+                  </div>
+                </div>
+                <div className="roc-empty-capability-card">
+                  <div className="roc-empty-capability-icon">
+                    <Layers2 className="size-4.5" />
+                  </div>
+                  <div className="roc-empty-capability-title">Context-Aware</div>
+                  <div className="roc-empty-capability-desc">
+                    Session memory, workspace state, and provenance tracking across turns
+                  </div>
+                </div>
+              </div>
+
               <div className="flex flex-wrap items-center justify-center gap-2">
                 <span className="roc-empty-suggestion">Refactor a component without changing behavior</span>
                 <span className="roc-empty-suggestion">Trace a failing session and explain the root cause</span>

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::api::{ApiClient, SessionExecutionTopology, SessionTelemetrySnapshot};
 use crate::bridge::{UiBridge, UiBridgeSnapshot};
 use crate::components::SessionView;
-use crate::context::{ChildSessionInfo, KeybindRegistry, SessionContext};
+use crate::context::{ChildSessionInfo, KeybindRegistry, MessageRole, SessionContext, TokenUsage};
 use crate::event::{CustomEvent, Event};
 use crate::router::Router;
 use crate::theme::Theme;
@@ -457,6 +457,32 @@ impl AppContext {
 
     pub fn session_runtime(&self) -> Option<crate::api::SessionRuntimeState> {
         self.session.read().session_runtime.clone()
+    }
+
+    pub fn current_context_tokens(&self) -> Option<u64> {
+        current_context_tokens_from_state(&self.session.read())
+    }
+
+    pub fn last_assistant_turn_tokens(&self) -> Option<TokenUsage> {
+        self.session
+            .read()
+            .current_messages()
+            .iter()
+            .rev()
+            .find(|message| matches!(message.role, MessageRole::Assistant))
+            .map(|message| message.tokens.clone())
+    }
+
+    pub fn last_assistant_model(&self) -> Option<String> {
+        self.session
+            .read()
+            .current_messages()
+            .iter()
+            .rev()
+            .find(|message| matches!(message.role, MessageRole::Assistant))
+            .and_then(|message| message.model.as_ref())
+            .map(|model| model.trim().to_string())
+            .filter(|model| !model.is_empty())
     }
 
     pub fn go_back(&self) -> Option<crate::router::Route> {
@@ -1028,6 +1054,30 @@ impl AppContext {
             .as_ref()
             .and_then(|r| r.pending_question.as_ref().map(|q| q.request_id.clone()))
     }
+}
+
+fn current_context_tokens_from_state(state: &SessionState) -> Option<u64> {
+    let active_stage_id = state
+        .session_runtime
+        .as_ref()
+        .and_then(|runtime| runtime.active_stage_id.as_deref());
+    if let Some(active_stage_id) = active_stage_id {
+        if let Some(tokens) = state
+            .stage_summaries
+            .iter()
+            .find(|stage| stage.stage_id == active_stage_id)
+            .and_then(|stage| stage.estimated_context_tokens)
+            .filter(|tokens| *tokens > 0)
+        {
+            return Some(tokens);
+        }
+    }
+
+    state
+        .stage_summaries
+        .iter()
+        .rev()
+        .find_map(|stage| stage.estimated_context_tokens.filter(|tokens| *tokens > 0))
 }
 
 impl Default for AppContext {

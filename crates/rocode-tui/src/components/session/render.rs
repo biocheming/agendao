@@ -145,7 +145,7 @@ fn resolve_session_render_model(
         thinking_bg: message_palette::thinking_message_bg(&theme),
         assistant_border: message_palette::assistant_border_color(&theme),
         thinking_border: message_palette::thinking_border_color(&theme),
-        message_gap_lines: 1,
+        message_gap_lines: 0,
     };
     let (rendered_messages, next_message_cache) =
         render_session_message_items(area, buffer, &resources, expanded_reasoning, message_cache);
@@ -887,7 +887,7 @@ fn build_assistant_render_resources(
         thinking_bg: context.thinking_bg,
         assistant_border: context.assistant_border,
         thinking_border: context.thinking_border,
-        message_gap_lines: 1,
+        message_gap_lines: 0,
     }
 }
 
@@ -1648,33 +1648,50 @@ fn context_usage_bar(percent: Option<u64>, width: usize) -> String {
     )
 }
 
+fn context_pressure_suffix(percent: Option<u64>) -> Option<&'static str> {
+    match percent {
+        Some(pct) if pct >= 95 => Some("compact now"),
+        Some(pct) if pct >= 90 => Some("auto-compact soon"),
+        Some(pct) if pct >= 80 => Some("warning"),
+        _ => None,
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
 fn format_context_usage_label(used: u64, limit: Option<u64>) -> String {
     let Some(limit) = limit.filter(|limit| *limit > 0) else {
         return format_compact_number(used);
     };
 
     let percent = context_usage_percent(used, limit);
-    format!(
+    let mut label = format!(
         "{}/{} {}%",
         format_compact_number(used),
         format_compact_number(limit),
         percent.unwrap_or(0)
-    )
+    );
+    if let Some(suffix) = context_pressure_suffix(percent) {
+        label.push(' ');
+        label.push_str(suffix);
+    }
+    label
 }
 
 fn format_context_usage_meter(used: u64, limit: Option<u64>) -> Option<(String, Option<u64>)> {
     let limit = limit.filter(|limit| *limit > 0)?;
     let percent = context_usage_percent(used, limit);
-    Some((
-        format!(
-            "{}/{} {} {}%",
-            format_compact_number(used),
-            format_compact_number(limit),
-            context_usage_bar(percent, 8),
-            percent.unwrap_or(0)
-        ),
-        percent,
-    ))
+    let mut label = format!(
+        "{}/{} {} {}%",
+        format_compact_number(used),
+        format_compact_number(limit),
+        context_usage_bar(percent, 8),
+        percent.unwrap_or(0)
+    );
+    if let Some(suffix) = context_pressure_suffix(percent) {
+        label.push(' ');
+        label.push_str(suffix);
+    }
+    Some((label, percent))
 }
 
 fn total_session_tokens(usage: &rocode_session::SessionUsage) -> u64 {
@@ -1685,10 +1702,12 @@ fn total_session_tokens(usage: &rocode_session::SessionUsage) -> u64 {
         + usage.cache_write_tokens
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn format_price_pair(input: f64, output: f64) -> String {
     format!("${}/{} /1M", format_price(input), format_price(output))
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn format_price(value: f64) -> String {
     if value >= 10.0 {
         format!("{value:.0}")

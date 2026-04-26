@@ -684,10 +684,8 @@ async fn cli_execute_ui_action(
             Ok(CliUiActionOutcome::Continue)
         }
         UiActionId::CompactSession => {
-            if argument.is_some() {
-                return Ok(CliUiActionOutcome::Continue);
-            }
-            cli_execute_compact_session_action(runtime, api_client, repl_style).await;
+            cli_execute_compact_session_action(runtime, api_client, repl_style, argument.as_deref())
+                .await;
             Ok(CliUiActionOutcome::Continue)
         }
         UiActionId::ShowStatus => {
@@ -1597,7 +1595,8 @@ async fn cli_execute_ui_action(
                         return Ok(CliUiActionOutcome::Continue);
                     }
                     "compact" => {
-                        cli_execute_compact_session_action(runtime, api_client, repl_style).await;
+                        cli_execute_compact_session_action(runtime, api_client, repl_style, None)
+                            .await;
                         return Ok(CliUiActionOutcome::Continue);
                     }
                     _ => match api_client.list_sessions(Some(target), Some(20)).await {

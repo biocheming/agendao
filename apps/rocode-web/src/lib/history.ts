@@ -83,6 +83,13 @@ export interface MessagePartRecord {
 export interface MessageRecord {
   id: string;
   role: string;
+  tokens?: {
+    input: number;
+    output: number;
+    reasoning: number;
+    cache_read: number;
+    cache_write: number;
+  };
   parts?: MessagePartRecord[];
   metadata?: Record<string, unknown> | null;
   multimodal?: PersistedMultimodalExplain | null;

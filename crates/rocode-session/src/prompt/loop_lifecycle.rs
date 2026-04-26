@@ -7,6 +7,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use rocode_execution_types::{session_runtime_request_defaults, CompiledExecutionRequest};
+use rocode_content::output_blocks::{OutputBlock, StatusBlock};
 use rocode_orchestrator::runtime::events::{
     CancelToken as RuntimeCancelToken, LoopError as RuntimeLoopError,
 };
@@ -74,6 +75,22 @@ struct RuntimeStepInput {
 }
 
 impl SessionPrompt {
+    async fn emit_context_compaction_status(
+        output_block_hook: Option<&super::OutputBlockHook>,
+        session_id: &str,
+        block: StatusBlock,
+    ) {
+        let Some(output_block_hook) = output_block_hook else {
+            return;
+        };
+        output_block_hook(super::OutputBlockEvent {
+            session_id: session_id.to_string(),
+            block: OutputBlock::Status(block),
+            id: None,
+        })
+        .await;
+    }
+
     pub async fn prompt_with_update_hook(
         &self,
         input: PromptInput,
@@ -392,6 +409,7 @@ impl SessionPrompt {
         filtered_messages: &[SessionMessage],
         compiled_request: &CompiledExecutionRequest,
         config_store: Option<&rocode_config::ConfigStore>,
+        output_block_hook: Option<&super::OutputBlockHook>,
     ) {
         let compaction_config = Self::runtime_compaction_config(config_store);
         if !Self::should_compact(
@@ -408,6 +426,12 @@ impl SessionPrompt {
             "Context overflow detected, triggering compaction for session {}",
             session_id
         );
+        Self::emit_context_compaction_status(
+            output_block_hook,
+            session_id,
+            StatusBlock::warning("Auto-compacting context to stay within the model window..."),
+        )
+        .await;
 
         let parent_id = filtered_messages
             .last()
@@ -440,14 +464,35 @@ impl SessionPrompt {
                     "LLM compaction complete for session {}, continuing",
                     session_id
                 );
+                Self::emit_context_compaction_status(
+                    output_block_hook,
+                    session_id,
+                    StatusBlock::success("Context compacted. Continuing the session."),
+                )
+                .await;
             }
             Ok(CompactionResult::Stop) => {
                 tracing::warn!(
                     "LLM compaction returned stop for session {}, falling back to simple compaction",
                     session_id
                 );
-                if let Some(summary) = Self::trigger_compaction(session, filtered_messages) {
+                if let Some(summary) = Self::trigger_compaction(session, filtered_messages, None) {
                     tracing::info!("Fallback compaction (from stop) complete: {}", summary);
+                    Self::emit_context_compaction_status(
+                        output_block_hook,
+                        session_id,
+                        StatusBlock::success("Context compacted. Continuing the session."),
+                    )
+                    .await;
+                } else {
+                    Self::emit_context_compaction_status(
+                        output_block_hook,
+                        session_id,
+                        StatusBlock::warning(
+                            "Auto-compaction ran, but the context could not be reduced.",
+                        ),
+                    )
+                    .await;
                 }
             }
             Err(e) => {
@@ -456,8 +501,23 @@ impl SessionPrompt {
                     session_id,
                     e
                 );
-                if let Some(summary) = Self::trigger_compaction(session, filtered_messages) {
+                if let Some(summary) = Self::trigger_compaction(session, filtered_messages, None) {
                     tracing::info!("Fallback compaction complete: {}", summary);
+                    Self::emit_context_compaction_status(
+                        output_block_hook,
+                        session_id,
+                        StatusBlock::success("Context compacted. Continuing the session."),
+                    )
+                    .await;
+                } else {
+                    Self::emit_context_compaction_status(
+                        output_block_hook,
+                        session_id,
+                        StatusBlock::warning(
+                            "Auto-compaction failed, and the context could not be reduced.",
+                        ),
+                    )
+                    .await;
                 }
             }
         }
@@ -676,6 +736,7 @@ impl SessionPrompt {
                 &filtered_messages,
                 &prompt_ctx.compiled_request,
                 prompt_ctx.config_store.as_deref(),
+                prompt_ctx.hooks.output_block_hook.as_ref(),
             )
             .await;
 

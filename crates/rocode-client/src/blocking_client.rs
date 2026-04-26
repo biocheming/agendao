@@ -13,7 +13,7 @@ use crate::common::{
     FormatterStatusResponse, LspStatusResponse, RecentModelsPayload, HTTP_TIMEOUT,
 };
 use crate::{
-    AgentInfo, ApiDiffEntry, ApiTodoItem, CompactResponse, ConnectProviderRequest,
+    AgentInfo, ApiDiffEntry, ApiTodoItem, CompactRequest, CompactResponse, ConnectProviderRequest,
     CreateSessionRequest, ExecuteRecoveryRequest, ExecuteShellRequest, ExecutionModeInfo,
     FullProviderListResponse, KnownProvidersResponse, McpAuthStartInfo, McpStatusInfo,
     MemoryConflictResponse, MemoryConsolidationRequest, MemoryConsolidationResponse,
@@ -882,11 +882,21 @@ impl BlockingApiClient {
             .unwrap_or(true))
     }
 
-    pub fn compact_session(&self, session_id: &str) -> anyhow::Result<CompactResponse> {
-        self.post_json_no_body(
-            &format!("/session/{}/compact", session_id),
-            &format!("compact session `{}`", session_id),
-        )
+    pub fn compact_session(
+        &self,
+        session_id: &str,
+        focus: Option<&str>,
+    ) -> anyhow::Result<CompactResponse> {
+        let url = server_url(&self.base_url, &format!("/session/{}/compact", session_id));
+        let req = if let Some(focus) = focus.map(str::trim).filter(|value| !value.is_empty()) {
+            self.client.post(&url).query(&CompactRequest {
+                focus: Some(focus.to_string()),
+            })
+        } else {
+            self.client.post(&url)
+        };
+        let resp = req.send()?;
+        Self::json_ok(resp, &format!("compact session `{}`", session_id))
     }
 
     pub fn revert_session(

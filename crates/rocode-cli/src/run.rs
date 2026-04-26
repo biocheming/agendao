@@ -640,9 +640,10 @@ mod tests {
         cli_render_retained_layout, cli_render_startup_banner, cli_resolve_registry_ui_action,
         cli_resolve_show_thinking, cli_session_update_requires_refresh,
         cli_set_root_server_session, cli_should_emit_scheduler_stage_block, CliExecutionRuntime,
-        CliFrontendPhase, CliFrontendProjection, CliObservedExecutionTopology, CliPromptCatalog,
-        CliPromptSelectionState, CliRecentSessionInfo, CliRetainedTranscript, CliSessionTokenStats,
-        PermissionMemory, TerminalStreamAccumulator,
+        CliFrontendPhase, CliFrontendProjection, CliLastTurnTokenStats,
+        CliObservedExecutionTopology, CliPromptCatalog, CliPromptSelectionState,
+        CliRecentSessionInfo, CliRetainedTranscript, CliSessionTokenStats, PermissionMemory,
+        TerminalStreamAccumulator,
     };
     use crate::api_client::SessionListItem;
     use crate::api_client::{SessionListHints, SessionListTime};
@@ -1217,6 +1218,7 @@ mod tests {
             current_model_label: Some("openai/gpt-4.1".to_string()),
             scroll_offset: 0,
             token_stats: CliSessionTokenStats::default(),
+            last_turn_tokens: CliLastTurnTokenStats::default(),
             model_catalog: HashMap::new(),
             mcp_servers: Vec::new(),
             lsp_servers: Vec::new(),
