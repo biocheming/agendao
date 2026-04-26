@@ -582,6 +582,92 @@ mod tests {
         assert_eq!(reasoning, vec![("r-1", "thinking about this...")]);
     }
 
+    #[tokio::test]
+    async fn golden_reasoning_is_replayed_into_followup_model_request() {
+        struct CapturingModelCaller {
+            streams: Mutex<Vec<Vec<StreamEvent>>>,
+            requests: Mutex<Vec<LoopRequest>>,
+        }
+
+        impl CapturingModelCaller {
+            fn new(streams: Vec<Vec<StreamEvent>>) -> Self {
+                let mut reversed = streams;
+                reversed.reverse();
+                Self {
+                    streams: Mutex::new(reversed),
+                    requests: Mutex::new(Vec::new()),
+                }
+            }
+
+            fn requests(&self) -> Vec<LoopRequest> {
+                self.requests.lock().unwrap().clone()
+            }
+        }
+
+        #[async_trait]
+        impl ModelCaller for CapturingModelCaller {
+            async fn call_stream(&self, req: LoopRequest) -> Result<StreamResult, LoopError> {
+                self.requests.lock().unwrap().push(req);
+                let events = self
+                    .streams
+                    .lock()
+                    .unwrap()
+                    .pop()
+                    .ok_or_else(|| LoopError::Other("no more fake streams".into()))?;
+                Ok(Box::pin(stream::iter(
+                    events
+                        .into_iter()
+                        .map(Ok::<_, rocode_provider::ProviderError>),
+                )))
+            }
+        }
+
+        let model = CapturingModelCaller::new(vec![
+            vec![
+                StreamEvent::ReasoningDelta {
+                    id: "r-1".into(),
+                    text: "need tool output first".into(),
+                },
+                StreamEvent::ToolCallEnd {
+                    id: "tc-1".into(),
+                    name: "read".into(),
+                    input: json!({"path": "/tmp/x"}),
+                },
+                StreamEvent::Done,
+            ],
+            vec![StreamEvent::TextDelta("done".into()), StreamEvent::Done],
+        ]);
+        let tools = FakeToolDispatcher::new().with_result("read", "file data", false);
+        let mut sink = RecordingSink::default();
+
+        let outcome = run_loop(
+            &model,
+            &tools,
+            &mut sink,
+            &default_policy(),
+            &NeverCancel,
+            vec![user_msg("inspect /tmp/x")],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.finish_reason, FinishReason::EndTurn);
+        assert_eq!(outcome.total_steps, 2);
+
+        let requests = model.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].messages.len(), 3);
+
+        match &requests[1].messages[1].content {
+            rocode_provider::Content::Parts(parts) => {
+                assert_eq!(parts[0].content_type, "reasoning");
+                assert_eq!(parts[0].text.as_deref(), Some("need tool output first"));
+                assert_eq!(parts[1].content_type, "tool_use");
+            }
+            other => panic!("expected assistant parts in second request, got {other:?}"),
+        }
+    }
+
     /// Fixture 8: Cancellation at checkpoint 1 (before model call).
     #[tokio::test]
     async fn golden_cancel_before_model_call() {

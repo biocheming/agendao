@@ -25,13 +25,27 @@ impl LoopConversation {
         &self.messages
     }
 
-    fn add_assistant_text(&mut self, text: &str) {
-        self.messages
-            .push(rocode_provider::Message::assistant(text.to_string()));
-    }
+    fn add_assistant_turn(&mut self, reasoning: &str, text: &str, tool_calls: &[ToolCallReady]) {
+        if reasoning.is_empty() && tool_calls.is_empty() {
+            self.messages
+                .push(rocode_provider::Message::assistant(text.to_string()));
+            return;
+        }
 
-    fn add_assistant_with_tools(&mut self, text: &str, tool_calls: &[ToolCallReady]) {
         let mut parts = Vec::new();
+        if !reasoning.is_empty() {
+            parts.push(rocode_provider::ContentPart {
+                content_type: "reasoning".to_string(),
+                text: Some(reasoning.to_string()),
+                image_url: None,
+                tool_use: None,
+                tool_result: None,
+                cache_control: None,
+                filename: None,
+                media_type: None,
+                provider_options: None,
+            });
+        }
         if !text.is_empty() {
             parts.push(rocode_provider::ContentPart {
                 content_type: "text".to_string(),
@@ -162,6 +176,7 @@ pub async fn run_loop<S: LoopSink>(
 
         // ── Consume stream: normalize → dispatch to sink ─────────────
         let mut step_content = String::new();
+        let mut step_reasoning = String::new();
         let mut step_tool_calls: Vec<ToolCallReady> = Vec::new();
         let mut step_usage: Option<StepUsage> = None;
         let mut had_error = false;
@@ -197,6 +212,9 @@ pub async fn run_loop<S: LoopSink>(
 
                         match loop_event {
                             LoopEvent::TextChunk(text) => step_content.push_str(&text),
+                            LoopEvent::ReasoningChunk { text, .. } => {
+                                step_reasoning.push_str(&text)
+                            }
                             LoopEvent::ToolCallReady(tc) => step_tool_calls.push(tc),
                             LoopEvent::StepDone { usage: Some(u), .. } => {
                                 if let Some(existing) = step_usage.as_mut() {
@@ -236,7 +254,7 @@ pub async fn run_loop<S: LoopSink>(
 
         // ── No tool calls → model finished ───────────────────────────
         if step_tool_calls.is_empty() {
-            conversation.add_assistant_text(&step_content);
+            conversation.add_assistant_turn(&step_reasoning, &step_content, &[]);
             sink.on_step_boundary(&StepBoundary::End {
                 step,
                 finish_reason: FinishReason::EndTurn,
@@ -256,7 +274,7 @@ pub async fn run_loop<S: LoopSink>(
         }
 
         // ── Has tool calls → execute them ────────────────────────────
-        conversation.add_assistant_with_tools(&step_content, &step_tool_calls);
+        conversation.add_assistant_turn(&step_reasoning, &step_content, &step_tool_calls);
         let step_tc_count = step_tool_calls.len() as u32;
         total_tool_calls += step_tc_count;
 
