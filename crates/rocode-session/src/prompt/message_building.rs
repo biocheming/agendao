@@ -174,6 +174,17 @@ impl SessionPrompt {
                     media_type: None,
                     provider_options: None,
                 }),
+                PartType::Reasoning { text } => Some(ContentPart {
+                    content_type: "reasoning".to_string(),
+                    text: Some(text.clone()),
+                    image_url: None,
+                    tool_use: None,
+                    tool_result: None,
+                    cache_control: None,
+                    filename: None,
+                    media_type: None,
+                    provider_options: None,
+                }),
                 PartType::ToolCall {
                     id, name, input, ..
                 } => Some(ContentPart {
@@ -1626,6 +1637,63 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert!(matches!(messages[0].role, Role::Assistant));
         assert!(matches!(messages[1].role, Role::Tool));
+    }
+
+    #[test]
+    fn build_chat_messages_preserves_reasoning_parts() {
+        let sid = "sid".to_string();
+        let mut assistant = SessionMessage::assistant(sid);
+        assistant.add_reasoning("internal trace");
+        assistant.add_text("visible answer");
+
+        let messages = SessionPrompt::build_chat_messages(&[assistant], None).unwrap();
+        assert_eq!(messages.len(), 1);
+
+        match &messages[0].content {
+            Content::Parts(parts) => {
+                assert_eq!(parts.len(), 2);
+                assert_eq!(parts[0].content_type, "reasoning");
+                assert_eq!(parts[0].text.as_deref(), Some("internal trace"));
+                assert_eq!(parts[1].content_type, "text");
+                assert_eq!(parts[1].text.as_deref(), Some("visible answer"));
+            }
+            other => panic!("expected parts content, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_chat_messages_preserves_reasoning_alongside_tool_calls() {
+        let sid = "sid".to_string();
+        let mut assistant = SessionMessage::assistant(sid);
+        assistant.add_reasoning("reasoning before tool");
+        assistant.add_text("checking workspace");
+        assistant.add_tool_call(
+            "tool-call-0",
+            "ls",
+            serde_json::json!({ "path": "/tmp/workspace" }),
+        );
+
+        let messages = SessionPrompt::build_chat_messages(&[assistant], None).unwrap();
+        assert_eq!(messages.len(), 1);
+
+        match &messages[0].content {
+            Content::Parts(parts) => {
+                assert_eq!(parts.len(), 3);
+                assert_eq!(parts[0].content_type, "reasoning");
+                assert_eq!(parts[0].text.as_deref(), Some("reasoning before tool"));
+                assert_eq!(parts[1].content_type, "text");
+                assert_eq!(parts[1].text.as_deref(), Some("checking workspace"));
+                assert_eq!(parts[2].content_type, "tool_use");
+                assert_eq!(
+                    parts[2]
+                        .tool_use
+                        .as_ref()
+                        .map(|tool_use| tool_use.id.as_str()),
+                    Some("tool-call-0")
+                );
+            }
+            other => panic!("expected parts content, got {other:?}"),
+        }
     }
 
     #[test]

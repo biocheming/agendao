@@ -600,6 +600,7 @@ fn assistant_message_to_openai(content: &crate::Content) -> (Value, Vec<String>)
         ),
         crate::Content::Parts(parts) => {
             let mut text = String::new();
+            let mut reasoning_content = String::new();
             let mut tool_calls = Vec::new();
 
             for part in parts {
@@ -607,6 +608,11 @@ fn assistant_message_to_openai(content: &crate::Content) -> (Value, Vec<String>)
                     "text" => {
                         if let Some(part_text) = &part.text {
                             text.push_str(part_text);
+                        }
+                    }
+                    "reasoning" => {
+                        if let Some(part_text) = &part.text {
+                            reasoning_content.push_str(part_text);
                         }
                     }
                     "tool_use" => {
@@ -636,6 +642,12 @@ fn assistant_message_to_openai(content: &crate::Content) -> (Value, Vec<String>)
 
             let mut message = Map::new();
             message.insert("role".to_string(), Value::String("assistant".to_string()));
+            if !reasoning_content.is_empty() {
+                message.insert(
+                    "reasoning_content".to_string(),
+                    Value::String(reasoning_content),
+                );
+            }
             if tool_calls.is_empty() {
                 message.insert("content".to_string(), Value::String(text));
             } else {
@@ -1681,6 +1693,72 @@ mod tests {
         assert_eq!(parts[0].text.as_deref(), Some("thinking trace"));
         assert_eq!(parts[1].content_type, "text");
         assert_eq!(parts[1].text.as_deref(), Some("final answer"));
+    }
+
+    #[test]
+    fn assistant_reasoning_parts_round_trip_to_reasoning_content() {
+        let assistant = Message {
+            role: Role::Assistant,
+            content: crate::Content::Parts(vec![
+                crate::ContentPart {
+                    content_type: "reasoning".to_string(),
+                    text: Some("internal trace".to_string()),
+                    ..Default::default()
+                },
+                crate::ContentPart {
+                    content_type: "text".to_string(),
+                    text: Some("final answer".to_string()),
+                    ..Default::default()
+                },
+            ]),
+            cache_control: None,
+            provider_options: None,
+        };
+
+        let converted = to_openai_compatible_chat_messages(&[assistant]);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0]["role"], "assistant");
+        assert_eq!(converted[0]["reasoning_content"], "internal trace");
+        assert_eq!(converted[0]["content"], "final answer");
+    }
+
+    #[test]
+    fn assistant_reasoning_survives_alongside_tool_calls() {
+        let assistant = Message {
+            role: Role::Assistant,
+            content: crate::Content::Parts(vec![
+                crate::ContentPart {
+                    content_type: "reasoning".to_string(),
+                    text: Some("need to inspect a file first".to_string()),
+                    ..Default::default()
+                },
+                crate::ContentPart {
+                    content_type: "tool_use".to_string(),
+                    tool_use: Some(crate::ToolUse {
+                        id: "call_reasoning".to_string(),
+                        name: "read".to_string(),
+                        input: serde_json::json!({ "file_path": "README.md" }),
+                    }),
+                    ..Default::default()
+                },
+            ]),
+            cache_control: None,
+            provider_options: None,
+        };
+
+        let converted = to_openai_compatible_chat_messages(&[assistant]);
+        assert_eq!(converted.len(), 2);
+        assert_eq!(converted[0]["role"], "assistant");
+        assert_eq!(
+            converted[0]["reasoning_content"],
+            "need to inspect a file first"
+        );
+        assert_eq!(converted[0]["tool_calls"][0]["function"]["name"], "read");
+        assert_eq!(converted[1]["role"], "tool");
+        assert_eq!(
+            converted[1]["content"],
+            "[Tool execution was interrupted]"
+        );
     }
 
     #[test]

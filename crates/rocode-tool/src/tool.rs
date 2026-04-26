@@ -630,7 +630,9 @@ impl ToolContext {
             callback(session_id, prompt).await
         } else {
             Err(ToolError::ExecutionError(
-                "Subsession prompt callback not configured".to_string(),
+                "The current execution environment does not support subagent sessions (task/task_flow). \
+                 This usually happens when the tool context was created without a prompt_subsession callback."
+                    .to_string(),
             ))
         }
     }

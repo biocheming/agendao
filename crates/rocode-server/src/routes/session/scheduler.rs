@@ -567,6 +567,16 @@ impl SessionSchedulerToolExecutor {
                         }))
                 }
             }
+        })
+        .with_create_subsession(|agent, _title, _model, _disabled_tools| async move {
+            Ok(format!("scheduler_task_{}_{}", agent, uuid::Uuid::new_v4()))
+        })
+        .with_prompt_subsession(|_session_id, _prompt| async move {
+            Err(rocode_tool::ToolError::ExecutionError(
+                "The scheduler execution environment does not support subagent sessions (task/task_flow). \
+                 Use 'agent' execution mode instead of 'scheduler' for workflows that require subagents."
+                    .to_string(),
+            ))
         });
         base_ctx.call_id = exec_ctx
             .metadata
