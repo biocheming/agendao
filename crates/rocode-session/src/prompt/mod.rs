@@ -235,6 +235,15 @@ pub struct SessionPrompt {
     config_store: Option<Arc<rocode_config::ConfigStore>>,
 }
 
+pub fn compact_session_now(session: &mut Session) -> Option<String> {
+    compact_session_now_with_focus(session, None)
+}
+
+pub fn compact_session_now_with_focus(session: &mut Session, focus: Option<&str>) -> Option<String> {
+    let filtered = SessionPrompt::filter_compacted_messages(&session.messages);
+    SessionPrompt::trigger_compaction(session, &filtered, focus)
+}
+
 type StreamToolResultEntry = (
     String,
     String,

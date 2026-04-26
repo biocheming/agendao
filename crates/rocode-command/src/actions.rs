@@ -129,6 +129,7 @@ impl UiCommandSpec {
 pub fn ui_command_argument_kind(action_id: UiActionId) -> UiCommandArgumentKind {
     match action_id {
         UiActionId::ConnectProvider => UiCommandArgumentKind::Text,
+        UiActionId::CompactSession => UiCommandArgumentKind::Text,
         UiActionId::OpenSessionList => UiCommandArgumentKind::SessionTarget,
         UiActionId::OpenModelList => UiCommandArgumentKind::ModelRef,
         UiActionId::OpenModeList => UiCommandArgumentKind::ModeRef,
@@ -261,7 +262,7 @@ pub fn builtin_ui_commands() -> Vec<UiCommandSpec> {
         UiCommandSpec {
             action_id: UiActionId::CompactSession,
             title: "Compact Session",
-            description: "Summarize and compress session history",
+            description: "Summarize and compress session history; optional focus topic",
             category: UiCommandCategory::Session,
             keybind: None,
             include_in_palette: false,

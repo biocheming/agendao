@@ -46,7 +46,7 @@ pub async fn print_openapi_spec() -> anyhow::Result<()> {
         ("/session/{id}/revert", "post", "sessionRevert"),
         ("/session/{id}/revert", "delete", "sessionRevertClear"),
         ("/session/{id}/unrevert", "post", "sessionUnrevert"),
-        ("/session/{id}/compaction", "post", "sessionCompaction"),
+        ("/session/{id}/compact", "post", "sessionCompaction"),
         ("/session/{id}/summarize", "post", "sessionSummarize"),
         ("/session/{id}/init", "post", "sessionInit"),
         ("/session/{id}/command", "post", "sessionCommand"),

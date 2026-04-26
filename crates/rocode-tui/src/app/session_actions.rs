@@ -214,7 +214,7 @@ impl App {
         }
     }
 
-    pub(super) fn handle_compact_session(&mut self) {
+    pub(super) fn handle_compact_session(&mut self, focus: Option<&str>) {
         let Some(session_id) = self.current_session_id() else {
             self.alert_dialog
                 .set_message("No active session to compact.");
@@ -224,11 +224,19 @@ impl App {
         let Some(client) = self.context.get_api_client() else {
             return;
         };
-        match client.compact_session(&session_id) {
-            Ok(_) => {
+        match client.compact_session(&session_id, focus) {
+            Ok(response) => {
                 let _ = self.sync_session_from_server(&session_id);
-                self.alert_dialog
-                    .set_message("Session compacted successfully.");
+                let message = if response.success {
+                    focus
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(|value| format!("Session compacted around focus:\n{}", value))
+                        .unwrap_or_else(|| "Session compacted successfully.".to_string())
+                } else {
+                    "Nothing to compact yet.".to_string()
+                };
+                self.alert_dialog.set_message(&message);
                 self.open_alert_dialog();
             }
             Err(err) => {

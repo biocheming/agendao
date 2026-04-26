@@ -12,7 +12,7 @@ use rocode_types::{
     SessionListItem, SessionListResponse, SessionListSummary, SessionRevertInfo, SessionShareInfo,
     SessionStatusInfo, SessionSummaryInfo, SessionTimeInfo, SessionTodoInfo,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::runtime_control::SessionRunStatus;
 use crate::session_runtime::events::broadcast_session_updated;
@@ -113,6 +113,17 @@ pub struct ExecuteCommandRequest {
     pub arguments: Option<String>,
     pub model: Option<String>,
     pub agent: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct CompactSessionResponse {
+    success: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct CompactRequest {
+    #[serde(default)]
+    focus: Option<String>,
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────
@@ -829,13 +840,14 @@ mod tests {
     use super::collect_session_tree_ids;
     use super::{
         get_session_children, session_list_contract, session_to_info, session_to_list_item,
+        start_compaction, CompactRequest,
     };
     use crate::ServerState;
-    use axum::extract::{Path, State};
+    use axum::extract::{Path, Query, State};
     use rocode_command::stage_protocol::StageStatus;
     use rocode_session::{
-        persist_session_telemetry_snapshot, PersistedStageTelemetrySummary, Session,
-        SessionTelemetrySnapshot, SessionTelemetrySnapshotVersion,
+        persist_session_telemetry_snapshot, MessageRole, PartType, PersistedStageTelemetrySummary,
+        Session, SessionMessage, SessionTelemetrySnapshot, SessionTelemetrySnapshotVersion,
     };
     use std::sync::Arc;
 
@@ -990,6 +1002,101 @@ mod tests {
             .non_search_fields
             .contains(&"hints".to_string()));
     }
+
+    #[tokio::test]
+    async fn start_compaction_route_compacts_session_messages() {
+        let state = Arc::new(ServerState::new());
+        let session_id = {
+            let mut sessions = state.sessions.lock().await;
+            let mut session = sessions.create("project", "/tmp/project");
+            for index in 0..10 {
+                session.push_message(SessionMessage::user(
+                    session.id.clone(),
+                    format!("message {index}"),
+                ));
+            }
+            let session_id = session.id.clone();
+            sessions.update(session);
+            session_id
+        };
+
+        let axum::Json(response) = start_compaction(
+            State(state.clone()),
+            Path(session_id.clone()),
+            Query(CompactRequest::default()),
+        )
+        .await
+        .expect("compaction route should succeed");
+
+        assert!(response.success);
+
+        let sessions = state.sessions.lock().await;
+        let session = sessions
+            .get(&session_id)
+            .expect("session should still exist after compaction");
+        let last_message = session
+            .messages
+            .last()
+            .expect("compaction should append a summary message");
+        assert!(matches!(last_message.role, MessageRole::Assistant));
+        assert!(last_message
+            .parts
+            .iter()
+            .any(|part| matches!(part.part_type, PartType::Compaction { .. })));
+    }
+
+    #[tokio::test]
+    async fn start_compaction_route_preserves_focus_topic_in_summary() {
+        let state = Arc::new(ServerState::new());
+        let session_id = {
+            let mut sessions = state.sessions.lock().await;
+            let mut session = sessions.create("project", "/tmp/project");
+            for line in [
+                "Investigate xterm integration in the browser shell",
+                "Hook xterm terminal resize events",
+                "Add context meter support",
+                "Document xterm startup path",
+                "Review other recent changes",
+                "Capture current shell behavior",
+                "Summarize xterm tradeoffs",
+                "Check prompt handling",
+                "Finish xterm notes",
+                "Prepare compaction",
+            ] {
+                session.push_message(SessionMessage::user(session.id.clone(), line));
+            }
+            let session_id = session.id.clone();
+            sessions.update(session);
+            session_id
+        };
+
+        let axum::Json(response) = start_compaction(
+            State(state.clone()),
+            Path(session_id.clone()),
+            Query(CompactRequest {
+                focus: Some("xterm".to_string()),
+            }),
+        )
+        .await
+        .expect("focused compaction route should succeed");
+
+        assert!(response.success);
+
+        let sessions = state.sessions.lock().await;
+        let session = sessions
+            .get(&session_id)
+            .expect("session should still exist after focused compaction");
+        let summary = session
+            .messages
+            .last()
+            .and_then(|message| message.parts.last())
+            .and_then(|part| match &part.part_type {
+                PartType::Compaction { summary } => Some(summary.as_str()),
+                _ => None,
+            })
+            .expect("focused compaction should append a compaction summary");
+        assert!(summary.contains("Focused on `xterm`."));
+    }
 }
 
 pub(super) async fn set_session_summary(
@@ -1064,16 +1171,18 @@ pub(super) async fn clear_session_revert(
 pub(super) async fn start_compaction(
     State(state): State<Arc<ServerState>>,
     Path(id): Path<String>,
-) -> Result<Json<SessionInfo>> {
+    Query(req): Query<CompactRequest>,
+) -> Result<Json<CompactSessionResponse>> {
     let mut sessions = state.sessions.lock().await;
     let session = sessions
         .get_mut(&id)
         .ok_or_else(|| ApiError::SessionNotFound(id.clone()))?;
-    session.start_compacting();
-    let info = session_to_info(session);
+    let success = rocode_session::compact_session_now_with_focus(session, req.focus.as_deref())
+        .is_some();
     drop(sessions);
+    broadcast_session_updated(state.as_ref(), &id, "session.compact");
     persist_sessions_if_enabled(&state).await;
-    Ok(Json(info))
+    Ok(Json(CompactSessionResponse { success }))
 }
 
 pub(super) async fn get_message(

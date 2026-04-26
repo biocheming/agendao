@@ -795,6 +795,12 @@ impl CliSessionTokenStats {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct CliLastTurnTokenStats {
+    input_tokens: u64,
+    output_tokens: u64,
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Default)]
 struct CliModelCatalogEntry {
@@ -844,6 +850,8 @@ struct CliFrontendProjection {
     scroll_offset: usize,
     /// Cumulative token usage for the current session.
     token_stats: CliSessionTokenStats,
+    /// Latest completed turn token usage, sourced from usage SSE events.
+    last_turn_tokens: CliLastTurnTokenStats,
     model_catalog: std::collections::HashMap<String, CliModelCatalogEntry>,
     /// MCP server statuses fetched from the server.
     mcp_servers: Vec<CliMcpServerStatus>,
@@ -870,6 +878,7 @@ impl Default for CliFrontendProjection {
             current_model_label: None,
             scroll_offset: 0,
             token_stats: CliSessionTokenStats::default(),
+            last_turn_tokens: CliLastTurnTokenStats::default(),
             model_catalog: std::collections::HashMap::new(),
             mcp_servers: Vec::new(),
             lsp_servers: Vec::new(),
@@ -878,6 +887,38 @@ impl Default for CliFrontendProjection {
 }
 
 impl CliFrontendProjection {
+    fn current_context_tokens(&self) -> Option<u64> {
+        let active_stage_id = self
+            .session_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.active_stage_id.as_deref());
+        if let Some(active_stage_id) = active_stage_id {
+            if let Some(tokens) = self
+                .stage_summaries
+                .iter()
+                .find(|stage| stage.stage_id == active_stage_id)
+                .and_then(|stage| stage.estimated_context_tokens)
+                .filter(|tokens| *tokens > 0)
+            {
+                return Some(tokens);
+            }
+        }
+
+        self.stage_summaries
+            .iter()
+            .rev()
+            .find_map(|stage| stage.estimated_context_tokens.filter(|tokens| *tokens > 0))
+    }
+
+    fn context_pressure_note(&self, percent: Option<u64>) -> Option<&'static str> {
+        match percent {
+            Some(percent) if percent >= 95 => Some("compact now"),
+            Some(percent) if percent >= 90 => Some("auto-compact soon"),
+            Some(percent) if percent >= 80 => Some("warning"),
+            _ => None,
+        }
+    }
+
     fn footer_text(&self) -> String {
         let state = match self.phase {
             CliFrontendPhase::Idle => "Ready".to_string(),
@@ -899,6 +940,33 @@ impl CliFrontendProjection {
         }
         if self.queue_len > 0 {
             parts.push(format!("queue {}", self.queue_len));
+        }
+        if let Some(current_tokens) = self.current_context_tokens() {
+            let context_window = self
+                .current_model_label
+                .as_deref()
+                .and_then(|label| self.model_catalog.get(label))
+                .and_then(|entry| entry.context_window)
+                .filter(|value| *value > 0);
+            if let Some(limit) = context_window {
+                let percent = (((current_tokens as f64 / limit as f64) * 100.0).round() as u64)
+                    .max(1);
+                let mut label = format!(
+                    "ctx {}/{} {}%",
+                    format_token_count(current_tokens),
+                    format_token_count(limit),
+                    percent
+                );
+                if let Some(note) = self.context_pressure_note(Some(percent)) {
+                    label.push(' ');
+                    label.push_str(note);
+                }
+                parts.push(label);
+            } else {
+                parts.push(format!("ctx {}", format_token_count(current_tokens)));
+            }
+        } else if self.token_stats.total_tokens > 0 {
+            parts.push(format!("total {}", format_token_count(self.token_stats.total_tokens)));
         }
         if let Some(browser) = self.events_browser.as_ref() {
             let page = (browser.offset / browser.filter.limit.unwrap_or(24).max(1)) + 1;

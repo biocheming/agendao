@@ -5,7 +5,7 @@ use crate::common::{
     build_connect_provider_request, build_session_list_params, http_error, server_url, HTTP_TIMEOUT,
 };
 use crate::{
-    CompactResponse, CreateSessionRequest, ExecutionModeInfo, FullProviderListResponse,
+    CompactRequest, CompactResponse, CreateSessionRequest, ExecutionModeInfo, FullProviderListResponse,
     McpStatusInfo, MemoryConflictResponse, MemoryConsolidationRequest, MemoryConsolidationResponse,
     MemoryConsolidationRunListResponse, MemoryConsolidationRunQuery, MemoryDetailView,
     MemoryListQuery, MemoryListResponse, MemoryRetrievalPreviewResponse, MemoryRetrievalQuery,
@@ -655,9 +655,20 @@ impl AsyncApiClient {
             .unwrap_or(true))
     }
 
-    pub async fn compact_session(&self, session_id: &str) -> anyhow::Result<CompactResponse> {
+    pub async fn compact_session(
+        &self,
+        session_id: &str,
+        focus: Option<&str>,
+    ) -> anyhow::Result<CompactResponse> {
         let url = server_url(&self.base_url, &format!("/session/{}/compact", session_id));
-        let resp = self.client.post(&url).send().await?;
+        let req = if let Some(focus) = focus.map(str::trim).filter(|value| !value.is_empty()) {
+            self.client.post(&url).query(&CompactRequest {
+                focus: Some(focus.to_string()),
+            })
+        } else {
+            self.client.post(&url)
+        };
+        let resp = req.send().await?;
         Self::json_ok(resp, &format!("compact session `{}`", session_id)).await
     }
 

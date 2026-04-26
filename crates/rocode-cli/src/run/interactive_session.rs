@@ -437,7 +437,7 @@ pub(super) async fn run_chat_session(
                             );
                         }
                     },
-                    InteractiveCommand::Compact => {}
+                    InteractiveCommand::Compact(_) => {}
                     InteractiveCommand::ShowTask(id) => {
                         cli_show_task(&id, Some(&runtime));
                     }

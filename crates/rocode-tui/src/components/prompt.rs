@@ -1164,23 +1164,40 @@ impl Prompt {
     }
 
     fn render_token_line(&self, theme: &Theme) -> Line<'static> {
-        let Some((input, output)) = self.current_session_token_io() else {
+        let Some((input, output, reasoning, cache_read, cache_write)) =
+            self.current_session_token_io()
+        else {
             return Line::from("");
         };
-        if input == 0 && output == 0 {
+        if input == 0 && output == 0 && reasoning == 0 && cache_read == 0 && cache_write == 0 {
             return Line::from("");
         }
 
-        Line::from(vec![
+        let mut spans = vec![
+            Span::styled("Turn ", Style::default().fg(theme.text_muted)),
             Span::styled("↑", Style::default().fg(theme.text_muted)),
             Span::styled(format_number(input), Style::default().fg(theme.text)),
             Span::raw("  "),
             Span::styled("↓", Style::default().fg(theme.text_muted)),
             Span::styled(format_number(output), Style::default().fg(theme.text)),
-        ])
+        ];
+        if reasoning > 0 {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled("R", Style::default().fg(theme.text_muted)));
+            spans.push(Span::styled(format_number(reasoning), Style::default().fg(theme.text)));
+        }
+        if cache_read > 0 || cache_write > 0 {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled("C", Style::default().fg(theme.text_muted)));
+            spans.push(Span::styled(
+                format!("{}/{}", format_number(cache_read), format_number(cache_write)),
+                Style::default().fg(theme.text),
+            ));
+        }
+        Line::from(spans)
     }
 
-    fn current_session_token_io(&self) -> Option<(u64, u64)> {
+    fn current_session_token_io(&self) -> Option<(u64, u64, u64, u64, u64)> {
         let session_id = match self.context.current_route() {
             crate::router::Route::Session { session_id } => session_id,
             _ => return None,
@@ -1191,7 +1208,13 @@ impl Prompt {
             .iter()
             .rev()
             .find(|message| matches!(message.role, MessageRole::Assistant))?;
-        Some((last_assistant.tokens.input, last_assistant.tokens.output))
+        Some((
+            last_assistant.tokens.input,
+            last_assistant.tokens.output,
+            last_assistant.tokens.reasoning,
+            last_assistant.tokens.cache_read,
+            last_assistant.tokens.cache_write,
+        ))
     }
 
     fn interrupt_confirmation_active(&self) -> bool {

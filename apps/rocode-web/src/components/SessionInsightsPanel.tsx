@@ -79,6 +79,18 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
       ) ?? [],
     [insights],
   );
+  const currentContextTokens = useMemo(() => {
+    if (typeof activity.activeStageSummary?.estimated_context_tokens === "number") {
+      return activity.activeStageSummary.estimated_context_tokens;
+    }
+    for (let index = activity.stageSummaries.length - 1; index >= 0; index -= 1) {
+      const estimate = activity.stageSummaries[index]?.estimated_context_tokens;
+      if (typeof estimate === "number" && Number.isFinite(estimate) && estimate > 0) {
+        return estimate;
+      }
+    }
+    return null;
+  }, [activity.activeStageSummary?.estimated_context_tokens, activity.stageSummaries]);
   const panelActionClass = "roc-action roc-action-pill";
   const compactActionClass = "roc-action roc-action-compact justify-self-start";
   const detailTileClass = "roc-rail-item grid gap-1 bg-card/45";
@@ -147,8 +159,16 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
                 <span className="roc-badge px-3 py-1.5 text-xs">status {insights.telemetry.last_run_status}</span>
                 <span className="roc-badge px-3 py-1.5 text-xs">stages {insights.telemetry.stage_summaries.length}</span>
               </div>
+              {currentContextTokens ? (
+                <p className="text-sm text-muted-foreground leading-relaxed">
+                  Current context estimate {currentContextTokens}
+                </p>
+              ) : null}
               <p className="text-sm text-muted-foreground leading-relaxed">
-                Input {insights.telemetry.usage.input_tokens} · output {insights.telemetry.usage.output_tokens} · reasoning {insights.telemetry.usage.reasoning_tokens} · cost {formatMoney(insights.telemetry.usage.total_cost)}
+                Session cumulative {insights.telemetry.usage.input_tokens + insights.telemetry.usage.output_tokens + insights.telemetry.usage.reasoning_tokens + insights.telemetry.usage.cache_read_tokens + insights.telemetry.usage.cache_write_tokens} total · input {insights.telemetry.usage.input_tokens} · output {insights.telemetry.usage.output_tokens} · reasoning {insights.telemetry.usage.reasoning_tokens}
+              </p>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                Cache read {insights.telemetry.usage.cache_read_tokens} · cache write {insights.telemetry.usage.cache_write_tokens} · cost {formatMoney(insights.telemetry.usage.total_cost)}
               </p>
               <p className="text-sm text-muted-foreground leading-relaxed">
                 Updated {formatDateTime(insights.telemetry.updated_at)}

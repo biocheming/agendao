@@ -75,6 +75,21 @@ function formatCompactCapacity(value?: number | null) {
   return formatCompactTokenCount(value).replace(".0k", "k").replace(".0M", "M");
 }
 
+function contextPressureLabel(percent?: number | null) {
+  if (percent == null) return null;
+  if (percent >= 95) return "compact now";
+  if (percent >= 90) return "auto-compact soon";
+  if (percent >= 80) return "warning";
+  return null;
+}
+
+function contextPressureTone(percent?: number | null) {
+  if (percent == null) return "normal";
+  if (percent >= 95) return "critical";
+  if (percent >= 80) return "warning";
+  return "normal";
+}
+
 function findProviderModel(
   providers: ProviderRecord[],
   selectedModel: string,
@@ -185,7 +200,8 @@ interface ComposerPanelProps {
   workspaceRootPath: string;
   contextTokensUsed?: number | null;
   contextTokensLimit?: number | null;
-  sessionCost?: number | null;
+  lastTurnInputTokens?: number | null;
+  lastTurnOutputTokens?: number | null;
   inputPricePerMillion?: number | null;
   outputPricePerMillion?: number | null;
   activeStageId: string | null;
@@ -231,7 +247,8 @@ export function ComposerPanel({
   workspaceRootPath,
   contextTokensUsed = null,
   contextTokensLimit = null,
-  sessionCost = null,
+  lastTurnInputTokens = null,
+  lastTurnOutputTokens = null,
   inputPricePerMillion = null,
   outputPricePerMillion = null,
   activeStageId,
@@ -395,14 +412,30 @@ export function ComposerPanel({
     hasContextEstimate && hasContextLimit
       ? Math.max(0, Math.min(1, contextTokensUsed / contextTokensLimit))
       : null;
-  const contextPercent =
-    contextRatio === null ? null : `${Math.max(1, Math.round(contextRatio * 100))}%`;
+  const contextPercentValue =
+    contextRatio === null ? null : Math.max(1, Math.round(contextRatio * 100));
+  const contextPercent = contextPercentValue === null ? null : `${contextPercentValue}%`;
+  const contextPressure = contextPressureLabel(contextPercentValue);
+  const contextPressureClass = cn(
+    "font-medium",
+    contextPressureTone(contextPercentValue) === "critical"
+      ? "text-destructive"
+      : contextPressureTone(contextPercentValue) === "warning"
+        ? "text-amber-700 dark:text-amber-300"
+        : "text-muted-foreground",
+  );
   const pricingLabel = (() => {
     const input = formatCompactPrice(inputPricePerMillion);
     const output = formatCompactPrice(outputPricePerMillion);
     if (!input || !output) return null;
     return `$${input} in · $${output} out / 1M`;
   })();
+  const turnUsageLabel =
+    typeof lastTurnInputTokens === "number" &&
+    typeof lastTurnOutputTokens === "number" &&
+    (lastTurnInputTokens > 0 || lastTurnOutputTokens > 0)
+      ? `Turn ↑${formatCompactTokenCount(lastTurnInputTokens)} ↓${formatCompactTokenCount(lastTurnOutputTokens)}`
+      : null;
   const contextSummary = hasContextEstimate
     ? hasContextLimit
       ? `${formatCompactTokenCount(contextTokensUsed)} / ${formatCompactTokenCount(contextTokensLimit)}`
@@ -761,18 +794,17 @@ export function ComposerPanel({
                         <span className="font-medium text-foreground/88">
                           {contextSummary}
                           {contextPercent ? <span className="text-muted-foreground"> · {contextPercent}</span> : null}
+                          {contextPressure ? <span className={contextPressureClass}> · {contextPressure}</span> : null}
                         </span>
                       ) : (
                         <span className="text-muted-foreground">Awaiting telemetry</span>
                       )}
+                      {turnUsageLabel ? (
+                        <span className="text-muted-foreground">{turnUsageLabel}</span>
+                      ) : null}
                       {contextCount > 0 ? (
                         <span className="roc-badge">
                           {references.length} refs · {attachments.length} files
-                        </span>
-                      ) : null}
-                      {sessionCost != null && sessionCost > 0 ? (
-                        <span className="text-muted-foreground">
-                          ${sessionCost.toFixed(2)}
                         </span>
                       ) : null}
                       {pricingLabel ? (

@@ -1,7 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-@custom-variant dark (&:is([data-theme="graphite"] *, [data-theme="midnight"] *));
+@custom-variant dark (&:is([data-theme="cobalt"] *));
 
 @theme inline {
   --color-background: var(--background);
@@ -86,7 +86,7 @@ html[data-theme="daylight"] {
   --roc-shadow-sm: inset 0 1px 0 oklch(1 0 0 / 40%);
   --roc-shadow-md: 0 8px 24px -12px oklch(0.28 0.08 255 / 10%);
   --roc-shadow-lg: 0 16px 48px -16px oklch(0.28 0.08 255 / 14%), 0 0 0 1px oklch(0.53 0.19 257 / 6%);
-  --roc-hero: oklch(0.55 0.2 257);
+  --roc-hero: oklch(0.63 0.22 35);
 }
 
 /* ─── Theme: Sunset (warm tinted light) ──────────────────────────── */
@@ -126,87 +126,48 @@ html[data-theme="sunset"] {
   --roc-shadow-sm: inset 0 1px 0 oklch(1 0 0 / 35%);
   --roc-shadow-md: 0 8px 24px -12px oklch(0.42 0.12 28 / 10%);
   --roc-shadow-lg: 0 16px 48px -16px oklch(0.42 0.12 28 / 14%), 0 0 0 1px oklch(0.63 0.2 34 / 6%);
-  --roc-hero: oklch(0.63 0.2 34);
+  --roc-hero: oklch(0.63 0.22 35);
 }
 
-/* ─── Theme: Graphite (cool dark) ────────────────────────────────── */
-html[data-theme="graphite"] {
+/* ─── Theme: Cobalt (brand-aligned dark) ─────────────────────────── */
+html[data-theme="cobalt"] {
   color-scheme: dark;
-  --background: oklch(0.15 0.01 260);
-  --foreground: oklch(0.93 0.005 260);
-  --card: oklch(0.19 0.01 260);
-  --card-foreground: oklch(0.93 0.005 260);
-  --popover: oklch(0.22 0.012 260);
-  --popover-foreground: oklch(0.93 0.005 260);
-  --primary: oklch(0.74 0.16 235);
-  --primary-foreground: oklch(0.15 0.01 260);
-  --secondary: oklch(0.22 0.01 260);
-  --secondary-foreground: oklch(0.93 0.005 260);
-  --muted: oklch(0.22 0.01 260);
-  --muted-foreground: oklch(0.60 0.01 260);
-  --accent: oklch(0.25 0.05 238);
-  --accent-foreground: oklch(0.93 0.005 260);
+  --radius: 0.5rem;
+  --background: oklch(0.20 0.025 195);
+  --foreground: oklch(0.88 0.005 195);
+  --card: oklch(0.25 0.025 195);
+  --card-foreground: oklch(0.88 0.005 195);
+  --popover: oklch(0.28 0.025 195);
+  --popover-foreground: oklch(0.88 0.005 195);
+  --primary: oklch(0.63 0.22 35);
+  --primary-foreground: oklch(0.98 0.005 35);
+  --secondary: oklch(0.28 0.02 195);
+  --secondary-foreground: oklch(0.88 0.005 195);
+  --muted: oklch(0.28 0.02 195);
+  --muted-foreground: oklch(0.60 0.01 195);
+  --accent: oklch(0.30 0.04 195);
+  --accent-foreground: oklch(0.88 0.005 195);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 8%);
   --input: oklch(1 0 0 / 12%);
-  --ring: oklch(0.7 0.16 235);
-  --chart-1: oklch(0.74 0.16 235);
+  --ring: oklch(0.63 0.22 35);
+  --chart-1: oklch(0.63 0.22 35);
   --chart-2: oklch(0.696 0.17 162.48);
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.13 0.01 260);
-  --sidebar-foreground: oklch(0.93 0.005 260);
-  --sidebar-primary: oklch(0.74 0.16 235);
-  --sidebar-primary-foreground: oklch(0.93 0.005 260);
-  --sidebar-accent: oklch(0.24 0.04 238);
-  --sidebar-accent-foreground: oklch(0.93 0.005 260);
+  --sidebar: oklch(0.17 0.025 195);
+  --sidebar-foreground: oklch(0.88 0.005 195);
+  --sidebar-primary: oklch(0.63 0.22 35);
+  --sidebar-primary-foreground: oklch(0.98 0.005 35);
+  --sidebar-accent: oklch(0.30 0.04 195);
+  --sidebar-accent-foreground: oklch(0.88 0.005 195);
   --sidebar-border: oklch(1 0 0 / 8%);
-  --sidebar-ring: oklch(0.7 0.16 235);
+  --sidebar-ring: oklch(0.63 0.22 35);
   --roc-shadow-sm: inset 0 1px 0 oklch(1 0 0 / 4%);
   --roc-shadow-md: 0 8px 24px -12px oklch(0 0 0 / 32%);
   --roc-shadow-lg: 0 16px 48px -16px oklch(0 0 0 / 44%), 0 0 0 1px oklch(1 0 0 / 6%);
-  --roc-hero: oklch(0.74 0.16 235);
-}
-
-/* ─── Theme: Midnight (warm-tinted dark) ─────────────────────────── */
-html[data-theme="midnight"] {
-  color-scheme: dark;
-  --background: oklch(0.15 0.015 250);
-  --foreground: oklch(0.94 0.008 85);
-  --card: oklch(0.19 0.015 250);
-  --card-foreground: oklch(0.94 0.008 85);
-  --popover: oklch(0.22 0.018 250);
-  --popover-foreground: oklch(0.94 0.008 85);
-  --primary: oklch(0.79 0.15 78);
-  --primary-foreground: oklch(0.15 0.015 250);
-  --secondary: oklch(0.24 0.015 250);
-  --secondary-foreground: oklch(0.94 0.008 85);
-  --muted: oklch(0.24 0.015 250);
-  --muted-foreground: oklch(0.62 0.012 250);
-  --accent: oklch(0.28 0.045 64);
-  --accent-foreground: oklch(0.94 0.008 85);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 8%);
-  --input: oklch(1 0 0 / 12%);
-  --ring: oklch(0.73 0.14 78);
-  --chart-1: oklch(0.79 0.15 78);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.12 0.015 250);
-  --sidebar-foreground: oklch(0.94 0.008 85);
-  --sidebar-primary: oklch(0.79 0.15 78);
-  --sidebar-primary-foreground: oklch(0.94 0.008 85);
-  --sidebar-accent: oklch(0.28 0.045 64);
-  --sidebar-accent-foreground: oklch(0.94 0.008 85);
-  --sidebar-border: oklch(1 0 0 / 6%);
-  --sidebar-ring: oklch(0.73 0.14 78);
-  --roc-shadow-sm: inset 0 1px 0 oklch(1 0 0 / 4%);
-  --roc-shadow-md: 0 8px 24px -12px oklch(0 0 0 / 34%);
-  --roc-shadow-lg: 0 16px 48px -16px oklch(0 0 0 / 46%), 0 0 0 1px oklch(1 0 0 / 6%);
-  --roc-hero: oklch(0.79 0.15 78);
+  --roc-hero: oklch(0.63 0.22 35);
 }
 
 @layer base {
@@ -228,8 +189,12 @@ html[data-theme="midnight"] {
   /* ─── Surfaces ───────────────────────────────────────────────────── */
 
   .roc-panel {
-    @apply rounded-xl border border-border/30 bg-card transition-colors;
+    @apply rounded-2xl border border-border/30 bg-card transition-all duration-200;
     box-shadow: var(--roc-shadow-md);
+  }
+
+  .roc-panel:hover {
+    box-shadow: var(--roc-shadow-lg);
   }
 
   .roc-section {
@@ -248,11 +213,11 @@ html[data-theme="midnight"] {
   }
 
   .roc-sidebar-item {
-    @apply w-full rounded-lg border border-transparent bg-transparent px-3 py-1.5 text-left transition-colors;
+    @apply w-full rounded-lg border border-transparent bg-transparent px-3 py-1.5 text-left transition-all duration-150;
   }
 
   .roc-sidebar-item:hover {
-    @apply bg-sidebar-accent;
+    @apply bg-sidebar-accent translate-x-0.5;
   }
 
   .roc-sidebar-item[data-active="true"] {
@@ -285,6 +250,7 @@ html[data-theme="midnight"] {
   .roc-message-card[data-highlighted="true"] {
     border-color: oklch(from var(--primary) l c h / 30%);
     box-shadow: var(--roc-shadow-md);
+    animation: roc-fade-rise 0.35s ease-out;
   }
 
   .roc-message-card[data-active="true"] {
@@ -306,6 +272,7 @@ html[data-theme="midnight"] {
 
   .roc-message-body {
     @apply min-w-0 max-w-full overflow-x-auto text-[15px] leading-6.5;
+    text-wrap: pretty;
   }
 
   .roc-message-footer {
@@ -319,7 +286,7 @@ html[data-theme="midnight"] {
   /* ─── Detail cards ───────────────────────────────────────────────── */
 
   .roc-detail-card {
-    @apply rounded-xl border border-border/30 bg-card px-4 py-3 transition-colors;
+    @apply rounded-lg border border-border/30 bg-card px-4 py-3 transition-colors;
     box-shadow: var(--roc-shadow-sm);
   }
 
@@ -343,6 +310,7 @@ html[data-theme="midnight"] {
 
   .roc-detail-title {
     @apply text-sm font-semibold tracking-tight text-foreground;
+    font-family: var(--font-serif);
   }
 
   .roc-detail-summary {
@@ -402,6 +370,92 @@ html[data-theme="midnight"] {
     @apply flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border/30 px-4 py-8 text-center text-sm text-muted-foreground;
   }
 
+  /* ─── Empty state capability cards ──────────────────────────────── */
+
+  .roc-empty-capability-grid {
+    @apply grid grid-cols-1 sm:grid-cols-3 gap-3 w-full max-w-3xl;
+  }
+
+  .roc-empty-capability-card {
+    @apply flex flex-col items-center gap-2 rounded-xl border border-border/30 bg-card/60 p-4 text-center transition-colors;
+    box-shadow: var(--roc-shadow-sm);
+  }
+
+  .roc-empty-capability-card:hover {
+    @apply bg-card border-border/50;
+  }
+
+  .roc-empty-capability-icon {
+    @apply flex size-9 items-center justify-center rounded-xl border border-primary/15 bg-primary/8 text-primary;
+  }
+
+  .roc-empty-capability-title {
+    @apply text-sm font-semibold tracking-tight text-foreground;
+    font-family: var(--font-serif);
+  }
+
+  .roc-empty-capability-desc {
+    @apply text-xs leading-5 text-muted-foreground;
+  }
+
+  .roc-empty-suggestion {
+    @apply inline-flex items-center rounded-lg border border-border/30 bg-background px-3 py-2 text-sm text-foreground transition-colors cursor-pointer;
+    box-shadow: var(--roc-shadow-sm);
+  }
+
+  .roc-empty-suggestion:hover {
+    @apply bg-accent text-accent-foreground;
+  }
+
+  .roc-empty-suggestion:active {
+    @apply bg-primary/10 border-primary/30;
+  }
+
+  /* ─── Empty state geometric illustrations ───────────────────────── */
+
+  .roc-empty-illustration {
+    @apply relative flex items-center justify-center;
+    width: 120px;
+    height: 120px;
+  }
+
+  .roc-empty-illustration-ring {
+    @apply absolute rounded-full;
+    width: 100px;
+    height: 100px;
+    border: 2px solid oklch(from var(--roc-hero) l c h / 15%);
+  }
+
+  .roc-empty-illustration-ring-inner {
+    @apply absolute rounded-full;
+    width: 64px;
+    height: 64px;
+    border: 2px solid oklch(from var(--roc-hero) l c h / 25%);
+  }
+
+  .roc-empty-illustration-dot {
+    @apply absolute rounded-full;
+    width: 10px;
+    height: 10px;
+    background: var(--roc-hero);
+    opacity: 0.7;
+  }
+
+  .roc-empty-illustration-square {
+    @apply absolute;
+    width: 14px;
+    height: 14px;
+    background: oklch(from var(--roc-hero) l c h / 50%);
+    border-radius: 3px;
+  }
+
+  .roc-empty-illustration-center {
+    @apply absolute rounded-full;
+    width: 20px;
+    height: 20px;
+    background: oklch(from var(--roc-hero) l c h / 20%);
+  }
+
   /* ─── Rail / Side panels ─────────────────────────────────────────── */
 
   .roc-rail-panel {
@@ -443,6 +497,7 @@ html[data-theme="midnight"] {
 
   .roc-rail-section-title {
     @apply text-sm font-semibold tracking-tight text-foreground;
+    font-family: var(--font-serif);
   }
 
   .roc-rail-section-note {
@@ -495,6 +550,7 @@ html[data-theme="midnight"] {
   .roc-session-title {
     @apply min-w-0 truncate text-xl font-semibold tracking-[-0.03em] text-primary;
     font-family: var(--font-serif);
+    text-wrap: balance;
   }
 
   .roc-session-subtitle {
@@ -522,12 +578,13 @@ html[data-theme="midnight"] {
   /* ─── Actions ────────────────────────────────────────────────────── */
 
   .roc-action {
-    @apply inline-flex items-center justify-center rounded-lg border border-border/30 bg-card px-3 py-1.5 text-sm font-medium text-foreground transition-colors;
+    @apply inline-flex items-center justify-center rounded-lg border border-border/30 bg-card px-3 py-1.5 text-sm font-medium text-foreground transition-all duration-150;
     box-shadow: var(--roc-shadow-sm);
   }
 
   .roc-action:hover {
-    @apply bg-accent text-accent-foreground;
+    @apply bg-accent text-accent-foreground -translate-y-px;
+    box-shadow: var(--roc-shadow-md);
   }
 
   .roc-action:disabled {
@@ -535,12 +592,13 @@ html[data-theme="midnight"] {
   }
 
   .roc-primary-action {
-    @apply border-primary/30 bg-primary text-primary-foreground;
+    @apply border-primary/30 bg-primary text-primary-foreground transition-all duration-150;
     box-shadow: var(--roc-shadow-md);
   }
 
   .roc-primary-action:hover {
-    @apply bg-primary/90;
+    @apply bg-primary/90 -translate-y-px;
+    box-shadow: var(--roc-shadow-lg);
   }
 
   .roc-action-compact {
@@ -572,11 +630,8 @@ html[data-theme="midnight"] {
   }
 
   .roc-form-select {
-    @apply min-h-9 w-full appearance-none rounded-lg border border-input bg-background px-3 py-2 pr-9 text-sm text-foreground outline-none transition-[border-color,box-shadow] disabled:pointer-events-none disabled:opacity-50;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M4 6.5 8 10.5 12 6.5' stroke='%236b7280' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-    background-position: right 0.85rem center;
-    background-repeat: no-repeat;
-    background-size: 0.8rem;
+    @apply min-h-9 w-full rounded-lg border border-input bg-background px-3 py-2 pr-3 text-sm text-foreground outline-none transition-[border-color,box-shadow] disabled:pointer-events-none disabled:opacity-50;
+    cursor: pointer;
   }
 
   .roc-form-select:focus-visible {
@@ -618,7 +673,7 @@ html[data-theme="midnight"] {
   }
 
   .roc-structured-disclosure {
-    @apply rounded-xl border border-border/30 bg-card px-4 py-3 transition-colors;
+    @apply rounded-lg border border-border/30 bg-card px-4 py-3 transition-colors;
   }
 
   .roc-structured-summary {
@@ -680,7 +735,7 @@ html[data-theme="midnight"] {
   }
 
   .roc-status-orb {
-    @apply flex size-9 items-center justify-center rounded-xl border border-border/30 bg-background text-muted-foreground;
+    @apply flex size-9 items-center justify-center rounded-lg border border-border/30 bg-background text-muted-foreground;
   }
 
   .roc-status-orb[data-tone="danger"] {
@@ -694,8 +749,12 @@ html[data-theme="midnight"] {
   /* ─── Composer ───────────────────────────────────────────────────── */
 
   .roc-composer-shell {
-    @apply overflow-hidden rounded-2xl border border-border/30 bg-card transition-colors;
+    @apply overflow-hidden rounded-2xl border border-border/30 bg-card transition-all duration-200;
     box-shadow: var(--roc-shadow-lg);
+  }
+
+  .roc-composer-shell:hover {
+    box-shadow: var(--roc-shadow-lg), 0 0 0 1px oklch(from var(--primary) l c h / 8%);
   }
 
   .roc-composer-shell[data-drag-active="true"] {
@@ -756,7 +815,7 @@ html[data-theme="midnight"] {
   }
 
   .roc-terminal-viewport {
-    @apply min-h-[24rem] rounded-xl border border-border/30 bg-background p-3;
+    @apply min-h-[24rem] rounded-lg border border-border/30 bg-background p-3;
   }
 
   /* ─── Misc ───────────────────────────────────────────────────────── */
@@ -767,7 +826,7 @@ html[data-theme="midnight"] {
   }
 
   .roc-skeleton-panel {
-    @apply rounded-xl border border-border/30 bg-muted/50;
+    @apply rounded-lg border border-border/30 bg-muted/50;
     animation: roc-pulse 1.8s ease-in-out infinite;
   }
 
@@ -789,6 +848,7 @@ html[data-theme="midnight"] {
   .roc-markdown-flow {
     @apply min-w-0 text-[15px] leading-6.5 text-foreground/92;
     overflow-wrap: break-word;
+    text-wrap: pretty;
   }
 
   .roc-markdown-flow > * + * {
@@ -799,6 +859,7 @@ html[data-theme="midnight"] {
     @apply text-[15px] leading-6.5;
     overflow-wrap: break-word;
     word-break: break-word;
+    text-wrap: pretty;
   }
 
   .roc-markdown-flow strong {
@@ -893,6 +954,7 @@ html[data-theme="midnight"] {
 
   .roc-markdown-flow blockquote {
     @apply rounded-r-[20px] border-l-[3px] border-primary/35 bg-muted/32 px-4 py-3 text-foreground/82;
+    font-family: var(--font-serif);
   }
 
   .roc-markdown-flow [data-streamdown="blockquote"] {

@@ -6,6 +6,11 @@ use axum::extract::Path;
 use axum::http::{header, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use once_cell::sync::Lazy;
+use rust_embed::RustEmbed;
+
+#[derive(RustEmbed)]
+#[folder = "../../apps/rocode-web/dist"]
+struct WebAssets;
 
 static WEB_DIST_OVERRIDE: Lazy<RwLock<Option<PathBuf>>> = Lazy::new(|| RwLock::new(None));
 static WEB_DIST_ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
@@ -73,7 +78,7 @@ fn serve_path(relative: &str) -> Response {
             .into_response(),
         Err(WebServeError::Unavailable) => (
             StatusCode::SERVICE_UNAVAILABLE,
-            "ROCode Web frontend assets are unavailable. Build apps/rocode-web or set ROCODE_WEB_DIST.",
+            "ROCode Web frontend assets are unavailable.",
         )
             .into_response(),
         Err(WebServeError::InvalidPath) | Err(WebServeError::MissingFile) => {
@@ -88,9 +93,27 @@ fn serve_path(relative: &str) -> Response {
 }
 
 fn load_web_file(relative: &str) -> Result<Vec<u8>, WebServeError> {
-    let web_root = resolved_web_dist_root().ok_or(WebServeError::Unavailable)?;
     let relative = sanitize_relative_path(relative).ok_or(WebServeError::InvalidPath)?;
-    let absolute = web_root.join(relative);
+
+    // 1. Runtime override (development / ROCODE_WEB_DIST)
+    if let Ok(guard) = WEB_DIST_OVERRIDE.read() {
+        if let Some(root) = guard.as_ref() {
+            let absolute = root.join(&relative);
+            if absolute.is_file() {
+                return fs::read(absolute).map_err(WebServeError::Io);
+            }
+        }
+    }
+
+    // 2. Embedded assets (production single-binary)
+    let path_str = relative.to_string_lossy().replace('\\', "/");
+    if let Some(file) = WebAssets::get(path_str.as_str()) {
+        return Ok(file.data.into_owned());
+    }
+
+    // 3. Development fallback (search nearby directories)
+    let web_root = resolved_web_dist_root().ok_or(WebServeError::Unavailable)?;
+    let absolute = web_root.join(&relative);
     if !absolute.is_file() {
         return Err(WebServeError::MissingFile);
     }
@@ -114,12 +137,6 @@ fn sanitize_relative_path(raw: &str) -> Option<PathBuf> {
 }
 
 fn resolved_web_dist_root() -> Option<PathBuf> {
-    if let Ok(guard) = WEB_DIST_OVERRIDE.read() {
-        if let Some(path) = guard.as_ref() {
-            return Some(path.clone());
-        }
-    }
-
     WEB_DIST_ROOT.get_or_init(resolve_web_dist_root).clone()
 }
 
@@ -176,6 +193,7 @@ fn mime_for_path(path: &str) -> &'static str {
         "ico" => HeaderValueStatic::ICON,
         "js" => HeaderValueStatic::JS_UTF8,
         "png" => HeaderValueStatic::PNG,
+        "svg" => HeaderValueStatic::SVG_UTF8,
         "ttf" => HeaderValueStatic::TTF,
         "woff" => HeaderValueStatic::WOFF,
         "woff2" => HeaderValueStatic::WOFF2,
@@ -194,8 +212,7 @@ fn web_frontend_unavailable_page() -> String {
         "  </head>",
         "  <body>",
         "    <h1>ROCode Web frontend is unavailable</h1>",
-        "    <p>The backend no longer embeds Web assets.</p>",
-        "    <p>Build <code>apps/rocode-web</code> separately and point the server at its <code>dist/</code> directory with <code>ROCODE_WEB_DIST</code>, or install a release package that includes <code>share/rocode/web</code>.</p>",
+        "    <p>Build apps/rocode-web first: <code>cd apps/rocode-web && npm ci && npx vite build</code></p>",
         "  </body>",
         "</html>",
     ]
@@ -212,6 +229,7 @@ impl HeaderValueStatic {
     const NO_STORE: &'static str = "no-store";
     const OCTET_STREAM: &'static str = "application/octet-stream";
     const PNG: &'static str = "image/png";
+    const SVG_UTF8: &'static str = "image/svg+xml";
     const TTF: &'static str = "font/ttf";
     const WOFF: &'static str = "font/woff";
     const WOFF2: &'static str = "font/woff2";

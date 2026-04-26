@@ -461,6 +461,59 @@ fn cli_active_stage_summary<'a>(
     })
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CliContextPressure {
+    Warning,
+    AutoCompactSoon,
+    Critical,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn cli_current_context_tokens(projection: &CliFrontendProjection) -> Option<u64> {
+    let active_stage_id = projection
+        .session_runtime
+        .as_ref()
+        .and_then(|runtime| runtime.active_stage_id.as_deref());
+    if let Some(active_stage_id) = active_stage_id {
+        if let Some(tokens) = projection
+            .stage_summaries
+            .iter()
+            .find(|stage| stage.stage_id == active_stage_id)
+            .and_then(|stage| stage.estimated_context_tokens)
+            .filter(|tokens| *tokens > 0)
+        {
+            return Some(tokens);
+        }
+    }
+
+    projection
+        .stage_summaries
+        .iter()
+        .rev()
+        .find_map(|stage| stage.estimated_context_tokens.filter(|tokens| *tokens > 0))
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn cli_context_pressure(percent: Option<u64>) -> Option<CliContextPressure> {
+    match percent {
+        Some(percent) if percent >= 95 => Some(CliContextPressure::Critical),
+        Some(percent) if percent >= 90 => Some(CliContextPressure::AutoCompactSoon),
+        Some(percent) if percent >= 80 => Some(CliContextPressure::Warning),
+        _ => None,
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn cli_context_pressure_note(percent: Option<u64>) -> Option<&'static str> {
+    match cli_context_pressure(percent) {
+        Some(CliContextPressure::Critical) => Some("compact now"),
+        Some(CliContextPressure::AutoCompactSoon) => Some("auto-compact soon"),
+        Some(CliContextPressure::Warning) => Some("warning"),
+        None => None,
+    }
+}
+
 fn cli_runtime_snapshot_lines(
     session_id: &str,
     telemetry: &crate::api_client::SessionTelemetrySnapshot,
@@ -634,30 +687,84 @@ fn cli_runtime_snapshot_lines(
 fn cli_usage_snapshot_lines(
     session_id: &str,
     telemetry: &crate::api_client::SessionTelemetrySnapshot,
+    projection: Option<&CliFrontendProjection>,
 ) -> Vec<String> {
     let usage = &telemetry.usage;
-    let mut lines = vec![
-        format!("Session: {}", session_id),
-        format!("Input tokens: {}", format_token_count(usage.input_tokens)),
-        format!("Output tokens: {}", format_token_count(usage.output_tokens)),
-        format!(
-            "Reasoning tokens: {}",
-            format_token_count(usage.reasoning_tokens)
-        ),
-        format!(
-            "Cache read tokens: {}",
-            format_token_count(usage.cache_read_tokens)
-        ),
-        format!(
-            "Cache write tokens: {}",
-            format_token_count(usage.cache_write_tokens)
-        ),
-        format!("Total cost: ${:.4}", usage.total_cost),
-    ];
+    let mut lines = vec![format!("Session: {}", session_id)];
+
+    if let Some(projection) = projection {
+        if let Some(current_tokens) = projection.current_context_tokens() {
+            lines.push(String::new());
+            lines.push("Current context".to_string());
+            if let Some(model) = cli_lookup_model_catalog_entry(projection)
+                .filter(|model| model.context_window.unwrap_or(0) > 0)
+            {
+                let limit = model.context_window.unwrap_or(0);
+                let percent = cli_context_usage_percent(current_tokens, limit);
+                lines.push(format!(
+                    "  Pressure: {}",
+                    cli_format_context_meter(current_tokens, Some(limit))
+                ));
+                if let Some(note) = cli_context_pressure_note(percent) {
+                    lines.push(format!("  State: {}", note));
+                }
+            } else {
+                lines.push(format!(
+                    "  Pressure: {}",
+                    format_token_count(current_tokens)
+                ));
+            }
+        }
+
+        let last_turn = &projection.last_turn_tokens;
+        if last_turn.input_tokens > 0 || last_turn.output_tokens > 0 {
+            lines.push(String::new());
+            lines.push("Last turn".to_string());
+            lines.push(format!(
+                "  Input {} · Output {}",
+                format_token_count(last_turn.input_tokens),
+                format_token_count(last_turn.output_tokens)
+            ));
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("Session cumulative".to_string());
+    lines.push(format!(
+        "  Total: {}",
+        format_token_count(
+            usage.input_tokens
+                + usage.output_tokens
+                + usage.reasoning_tokens
+                + usage.cache_read_tokens
+                + usage.cache_write_tokens
+        )
+    ));
+    lines.push(format!(
+        "  Input: {}",
+        format_token_count(usage.input_tokens)
+    ));
+    lines.push(format!(
+        "  Output: {}",
+        format_token_count(usage.output_tokens)
+    ));
+    lines.push(format!(
+        "  Reasoning: {}",
+        format_token_count(usage.reasoning_tokens)
+    ));
+    lines.push(format!(
+        "  Cache read: {}",
+        format_token_count(usage.cache_read_tokens)
+    ));
+    lines.push(format!(
+        "  Cache write: {}",
+        format_token_count(usage.cache_write_tokens)
+    ));
+    lines.push(format!("  Cost: ${:.4}", usage.total_cost));
 
     if !telemetry.stages.is_empty() {
         lines.push(String::new());
-        lines.push(format!("Stage usage ({})", telemetry.stages.len()));
+        lines.push(format!("Stage totals ({})", telemetry.stages.len()));
         for stage in &telemetry.stages {
             lines.push(format!("  {}", cli_stage_usage_line(stage)));
         }
@@ -690,10 +797,20 @@ fn cli_session_insights_lines(
             telemetry.version, telemetry.last_run_status, telemetry.updated_at
         ));
         lines.push(format!(
-            "  Usage: in {} out {} reasoning {} cache {}/{} cost ${:.4}",
+            "  Session cumulative: total {} · input {} · output {} · reasoning {}",
+            format_token_count(
+                telemetry.usage.input_tokens
+                    + telemetry.usage.output_tokens
+                    + telemetry.usage.reasoning_tokens
+                    + telemetry.usage.cache_read_tokens
+                    + telemetry.usage.cache_write_tokens
+            ),
             format_token_count(telemetry.usage.input_tokens),
             format_token_count(telemetry.usage.output_tokens),
             format_token_count(telemetry.usage.reasoning_tokens),
+        ));
+        lines.push(format!(
+            "  Cache read {} · cache write {} · cost ${:.4}",
             format_token_count(telemetry.usage.cache_read_tokens),
             format_token_count(telemetry.usage.cache_write_tokens),
             telemetry.usage.total_cost
@@ -1075,7 +1192,12 @@ async fn cli_print_usage_snapshot(
 
     match api_client.get_session_telemetry(&session_id).await {
         Ok(telemetry) => {
-            let lines = cli_usage_snapshot_lines(&session_id, &telemetry);
+            let projection = runtime
+                .frontend_projection
+                .lock()
+                .ok()
+                .map(|projection| projection.clone());
+            let lines = cli_usage_snapshot_lines(&session_id, &telemetry, projection.as_ref());
             let footer =
                 "Source: /session/{id}/telemetry · stage totals come from authority summaries";
             let _ = print_cli_list_on_surface(
@@ -2168,6 +2290,7 @@ async fn cli_execute_compact_session_action(
     runtime: &mut CliExecutionRuntime,
     api_client: &CliApiClient,
     repl_style: &CliStyle,
+    focus: Option<&str>,
 ) {
     let Some(session_id) = runtime.server_session_id.clone() else {
         let _ = print_block(
@@ -2178,13 +2301,19 @@ async fn cli_execute_compact_session_action(
         return;
     };
 
-    match api_client.compact_session(&session_id).await {
-        Ok(_) => {
-            let _ = print_block(
-                Some(runtime),
-                OutputBlock::Status(StatusBlock::title("Session compacted successfully.")),
-                repl_style,
-            );
+    match api_client.compact_session(&session_id, focus).await {
+        Ok(response) => {
+            let block = if response.success {
+                let label = focus
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| format!("Session compacted around focus: {value}"))
+                    .unwrap_or_else(|| "Session compacted successfully.".to_string());
+                StatusBlock::title(label)
+            } else {
+                StatusBlock::warning("Nothing to compact yet.")
+            };
+            let _ = print_block(Some(runtime), OutputBlock::Status(block), repl_style);
             if let Ok(mut proj) = runtime.frontend_projection.lock() {
                 proj.session_runtime = None;
                 proj.stage_summaries.clear();
@@ -2503,34 +2632,71 @@ fn cli_sidebar_lines(
         }
     }
 
-    // ── Context (token usage + cost) ────────────────────────────
+    // ── Usage (current context + session totals + last turn) ────
     let ts = &projection.token_stats;
     let model_info = cli_lookup_model_catalog_entry(projection);
-    if ts.total_tokens > 0 || model_info.is_some() {
+    let current_context_tokens = cli_current_context_tokens(projection);
+    let last_turn = &projection.last_turn_tokens;
+    if current_context_tokens.is_some()
+        || ts.total_tokens > 0
+        || model_info.is_some()
+        || last_turn.input_tokens > 0
+        || last_turn.output_tokens > 0
+    {
         lines.push(String::new());
-        lines.push("─ Context ─".to_string());
-        if ts.total_tokens > 0 {
+        lines.push("─ Usage ─".to_string());
+        if let Some(current_tokens) = current_context_tokens {
             if let Some(model) = model_info.filter(|model| model.context_window.unwrap_or(0) > 0) {
                 let limit = model.context_window.unwrap_or(0);
+                let percent = cli_context_usage_percent(current_tokens, limit);
                 lines.push(format!(
-                    "Ctx:    {}",
-                    cli_format_context_meter(ts.total_tokens, Some(limit))
+                    "Current: {}",
+                    cli_format_context_meter(current_tokens, Some(limit))
                 ));
+                if let Some(note) = cli_context_pressure_note(percent) {
+                    lines.push(format!("State:   {} ({})", note, percent.unwrap_or(0)));
+                }
             } else {
-                lines.push(format!("Ctx:    {}", format_token_count(ts.total_tokens)));
+                lines.push(format!("Current: {}", format_token_count(current_tokens)));
             }
+        }
+        if ts.total_tokens > 0 {
+            lines.push(format!(
+                "Session: {} cumulative",
+                format_token_count(ts.total_tokens)
+            ));
+        }
+        if last_turn.input_tokens > 0 || last_turn.output_tokens > 0 {
+            lines.push(format!(
+                "Turn:    ↑{}  ↓{}",
+                format_token_count(last_turn.input_tokens),
+                format_token_count(last_turn.output_tokens)
+            ));
+        }
+        if ts.reasoning_tokens > 0 {
+            lines.push(format!(
+                "Reason:  {}",
+                format_token_count(ts.reasoning_tokens)
+            ));
+        }
+        if ts.cache_read_tokens > 0 || ts.cache_write_tokens > 0 {
+            lines.push(format!(
+                "Cache:   read {} · write {}",
+                format_token_count(ts.cache_read_tokens),
+                format_token_count(ts.cache_write_tokens)
+            ));
         }
         if let Some(model) = model_info {
             if let (Some(input_price), Some(output_price)) =
                 (model.cost_per_million_input, model.cost_per_million_output)
             {
                 lines.push(format!(
-                    "Price:  {}",
+                    "Price:   {}",
                     cli_format_price_pair(input_price, output_price)
                 ));
             }
         }
-        lines.push(format!("Cost:   ${:.4}", ts.total_cost));
+        lines.push(format!("Cost:    ${:.4}", ts.total_cost));
     }
 
     // ── MCP servers ─────────────────────────────────────────────
@@ -2916,9 +3082,9 @@ fn cli_render_retained_layout(
 #[cfg(test)]
 mod session_projection_tests {
     use super::{
-        CLI_EVENTS_DEFAULT_PAGE_SIZE, CliEventsCommandInput, CliEventsQueryInput,
         cli_context_usage_bar, cli_default_events_query_input, cli_format_context_meter,
-        cli_parse_events_command_input, cli_parse_events_query_input,
+        cli_parse_events_command_input, cli_parse_events_query_input, CliEventsCommandInput,
+        CliEventsQueryInput, CLI_EVENTS_DEFAULT_PAGE_SIZE,
     };
 
     #[test]

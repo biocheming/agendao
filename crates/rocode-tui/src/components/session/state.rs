@@ -238,6 +238,7 @@ impl SessionRenderSnapshot {
                         .map(|m| m.cost)
                         .sum()
                 });
+            let current_context_tokens = context.current_context_tokens();
 
             let usage = last_assistant.and_then(|assistant_msg| {
                 let total_tokens = context
@@ -252,21 +253,9 @@ impl SessionRenderSnapshot {
                     return None;
                 }
 
-                let model = context.resolve_model_info(assistant_msg.model.as_deref());
                 let mut parts = Vec::new();
-                let context_text = format_context_usage_label(
-                    total_tokens,
-                    model.as_ref().map(|model| model.context_window),
-                );
-                parts.push(context_text);
+                parts.push(format!("session {} total", format_compact_number(total_tokens)));
                 parts.push(format!("${:.4}", total_cost));
-                if let Some(model) = model.as_ref() {
-                    if let (Some(input_price), Some(output_price)) =
-                        (model.cost_per_million_input, model.cost_per_million_output)
-                    {
-                        parts.push(format_price_pair(input_price, output_price));
-                    }
-                }
                 Some(parts.join("  ·  "))
             });
             let footer_context_meter = last_assistant.and_then(|assistant_msg| {
@@ -283,7 +272,7 @@ impl SessionRenderSnapshot {
                 }
                 let model = context.resolve_model_info(assistant_msg.model.as_deref());
                 format_context_usage_meter(
-                    total_tokens,
+                    current_context_tokens.unwrap_or(total_tokens),
                     model.as_ref().map(|model| model.context_window),
                 )
             });

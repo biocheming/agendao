@@ -860,8 +860,7 @@ impl SessionView {
 
         let meter_style = match footer.context_meter_percent {
             Some(percent) if percent >= 95 => Style::default().fg(theme.error),
-            Some(percent) if percent > 80 => Style::default().fg(theme.warning),
-            Some(percent) if percent >= 50 => Style::default().fg(theme.warning),
+            Some(percent) if percent >= 80 => Style::default().fg(theme.warning),
             Some(_) => Style::default().fg(theme.success),
             None => Style::default().fg(theme.text_muted),
         };

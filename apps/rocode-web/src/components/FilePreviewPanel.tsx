@@ -383,11 +383,19 @@ export function FilePreviewEmptyState({
   icon?: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-4 p-8">
-      {icon || <FileIcon className="size-16 opacity-20" />}
-      <div className="text-center">
-        <h3 className="font-semibold text-lg mb-1">{title}</h3>
-        <p className="text-sm">{description}</p>
+    <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-5 p-8">
+      {icon || (
+        <div className="roc-empty-illustration">
+          <div className="roc-empty-illustration-ring" />
+          <div className="roc-empty-illustration-ring-inner" />
+          <div className="roc-empty-illustration-center" />
+          <div className="roc-empty-illustration-dot" style={{ top: '8px', right: '18px' }} />
+          <div className="roc-empty-illustration-square" style={{ bottom: '16px', left: '14px' }} />
+        </div>
+      )}
+      <div className="text-center space-y-1">
+        <h3 className="font-semibold text-lg tracking-tight text-foreground">{title}</h3>
+        <p className="text-sm leading-6">{description}</p>
       </div>
     </div>
   );

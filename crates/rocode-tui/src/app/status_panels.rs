@@ -823,8 +823,19 @@ impl App {
         }
 
         if let Some(usage) = usage.as_ref() {
+            if let Some(current_tokens) = self.context.current_context_tokens() {
+                let context_limit = self
+                    .context
+                    .resolve_model_info(self.context.last_assistant_model().as_deref())
+                    .map(|model| model.context_window);
+                blocks.push(StatusBlock::normal(format!(
+                    "Current context: {}",
+                    tui_format_context_usage_label(current_tokens, context_limit)
+                )));
+            }
             blocks.push(StatusBlock::normal(format!(
-                "Usage: in {} out {} reasoning {} cache {}/{} cost ${:.4}",
+                "Session cumulative: {} total · input {} · output {} · reasoning {} · cache {}/{} · cost ${:.4}",
+                tui_total_session_tokens(usage),
                 usage.input_tokens,
                 usage.output_tokens,
                 usage.reasoning_tokens,
@@ -921,7 +932,19 @@ impl App {
             Ok(telemetry) => {
                 self.context
                     .apply_session_telemetry_snapshot(telemetry.clone());
-                let lines = tui_usage_status_lines(&session_id, &telemetry);
+                let current_context_tokens = self.context.current_context_tokens();
+                let context_limit = self
+                    .context
+                    .resolve_model_info(self.context.last_assistant_model().as_deref())
+                    .map(|model| model.context_window);
+                let last_turn_tokens = self.context.last_assistant_turn_tokens();
+                let lines = tui_usage_status_lines(
+                    &session_id,
+                    &telemetry,
+                    current_context_tokens,
+                    context_limit,
+                    last_turn_tokens.as_ref(),
+                );
                 self.status_dialog.set_title("Usage");
                 self.status_dialog.set_footer_hint(Some(
                     "Esc close · values come from /session/{id}/telemetry".to_string(),
@@ -1744,25 +1767,58 @@ fn tui_runtime_status_lines(
 fn tui_usage_status_lines(
     session_id: &str,
     telemetry: &crate::api::SessionTelemetrySnapshot,
+    current_context_tokens: Option<u64>,
+    current_context_limit: Option<u64>,
+    last_turn_tokens: Option<&crate::context::TokenUsage>,
 ) -> Vec<StatusLine> {
     let usage = &telemetry.usage;
     let mut lines = vec![
         StatusLine::title("Session Usage"),
         StatusLine::normal(format!("Session: {}", session_id)),
-        StatusLine::normal(format!(
-            "Input {} · Output {} · Reasoning {}",
-            usage.input_tokens, usage.output_tokens, usage.reasoning_tokens
-        )),
-        StatusLine::normal(format!(
-            "Cache read {} · Cache write {} · Cost ${:.4}",
-            usage.cache_read_tokens, usage.cache_write_tokens, usage.total_cost
-        )),
     ];
+
+    if let Some(current_tokens) = current_context_tokens {
+        lines.push(StatusLine::muted(String::new()));
+        lines.push(StatusLine::title("Current Context"));
+        lines.push(StatusLine::normal(format!(
+            "Pressure: {}",
+            tui_format_context_usage_label(current_tokens, current_context_limit)
+        )));
+        if let Some(limit) = current_context_limit.filter(|limit| *limit > 0) {
+            if let Some(percent) = tui_context_usage_percent(current_tokens, limit) {
+                if let Some(note) = tui_context_pressure_note(Some(percent)) {
+                    lines.push(StatusLine::muted(format!("State: {}", note)));
+                }
+            }
+        }
+    }
+
+    if let Some(tokens) = last_turn_tokens.filter(|tokens| tui_has_turn_usage(tokens)) {
+        lines.push(StatusLine::muted(String::new()));
+        lines.push(StatusLine::title("Last Turn"));
+        lines.push(StatusLine::normal(tui_format_last_turn_usage(tokens)));
+    }
+
+    lines.push(StatusLine::muted(String::new()));
+    lines.push(StatusLine::title("Session Cumulative"));
+    lines.push(StatusLine::normal(format!(
+        "Total {} · Cost ${:.4}",
+        tui_total_session_tokens(usage),
+        usage.total_cost
+    )));
+    lines.push(StatusLine::normal(format!(
+        "Input {} · Output {} · Reasoning {}",
+        usage.input_tokens, usage.output_tokens, usage.reasoning_tokens
+    )));
+    lines.push(StatusLine::normal(format!(
+        "Cache read {} · Cache write {}",
+        usage.cache_read_tokens, usage.cache_write_tokens
+    )));
 
     if !telemetry.stages.is_empty() {
         lines.push(StatusLine::muted(String::new()));
         lines.push(StatusLine::title(format!(
-            "Stage Usage ({})",
+            "Stage Totals ({})",
             telemetry.stages.len()
         )));
         for stage in &telemetry.stages {
@@ -1796,10 +1852,17 @@ fn tui_session_insights_lines(
             telemetry.last_run_status, telemetry.version
         )));
         lines.push(StatusLine::normal(format!(
-            "Usage: in {} · out {} · reasoning {}",
+            "Session cumulative: total {} · input {} · output {} · reasoning {}",
+            tui_total_session_tokens(&telemetry.usage),
             telemetry.usage.input_tokens,
             telemetry.usage.output_tokens,
             telemetry.usage.reasoning_tokens
+        )));
+        lines.push(StatusLine::muted(format!(
+            "Cache read {} · Cache write {} · Cost ${:.4}",
+            telemetry.usage.cache_read_tokens,
+            telemetry.usage.cache_write_tokens,
+            telemetry.usage.total_cost
         )));
         lines.push(StatusLine::muted(format!(
             "Persisted stages: {}",
@@ -2208,6 +2271,64 @@ fn format_stage_usage_summary_line(stage: &rocode_command::stage_protocol::Stage
     }
     if let Some(retry_attempt) = stage.retry_attempt {
         parts.push(format!("retry {}", retry_attempt));
+    }
+    parts.join(" · ")
+}
+
+fn tui_total_session_tokens(usage: &rocode_session::SessionUsage) -> u64 {
+    usage.input_tokens
+        + usage.output_tokens
+        + usage.reasoning_tokens
+        + usage.cache_read_tokens
+        + usage.cache_write_tokens
+}
+
+fn tui_context_usage_percent(used: u64, limit: u64) -> Option<u64> {
+    if limit == 0 {
+        return None;
+    }
+    Some(((used as f64 / limit as f64) * 100.0).round() as u64)
+}
+
+fn tui_context_pressure_note(percent: Option<u64>) -> Option<&'static str> {
+    match percent {
+        Some(pct) if pct >= 95 => Some("compact now"),
+        Some(pct) if pct >= 90 => Some("auto-compact soon"),
+        Some(pct) if pct >= 80 => Some("warning"),
+        _ => None,
+    }
+}
+
+fn tui_format_context_usage_label(used: u64, limit: Option<u64>) -> String {
+    let Some(limit) = limit.filter(|limit| *limit > 0) else {
+        return used.to_string();
+    };
+
+    let percent = tui_context_usage_percent(used, limit).unwrap_or(0);
+    format!("{}/{} ({}%)", used, limit, percent)
+}
+
+fn tui_has_turn_usage(tokens: &crate::context::TokenUsage) -> bool {
+    tokens.input > 0
+        || tokens.output > 0
+        || tokens.reasoning > 0
+        || tokens.cache_read > 0
+        || tokens.cache_write > 0
+}
+
+fn tui_format_last_turn_usage(tokens: &crate::context::TokenUsage) -> String {
+    let mut parts = vec![
+        format!("Input {}", tokens.input),
+        format!("Output {}", tokens.output),
+    ];
+    if tokens.reasoning > 0 {
+        parts.push(format!("Reasoning {}", tokens.reasoning));
+    }
+    if tokens.cache_read > 0 || tokens.cache_write > 0 {
+        parts.push(format!(
+            "Cache {}/{}",
+            tokens.cache_read, tokens.cache_write
+        ));
     }
     parts.join(" · ")
 }

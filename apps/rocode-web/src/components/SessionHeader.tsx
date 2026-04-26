@@ -6,8 +6,8 @@ interface SessionHeaderProps {
   subtitle?: string | null;
   pathLabel?: string | null;
   workspaceLabel?: string | null;
-  contextSummary?: string | null;
-  contextTitle?: string | null;
+  usageSummary?: string | null;
+  usageTitle?: string | null;
   modeLabel?: string | null;
   modelLabel?: string | null;
   activeStageId: string | null;
@@ -26,8 +26,8 @@ export function SessionHeader({
   subtitle = null,
   pathLabel = null,
   workspaceLabel = null,
-  contextSummary = null,
-  contextTitle = null,
+  usageSummary = null,
+  usageTitle = null,
   modeLabel = null,
   modelLabel = null,
   activeStageId,
@@ -63,9 +63,9 @@ export function SessionHeader({
         </div>
 
         <div className="flex shrink-0 flex-wrap items-center gap-1.5 xl:justify-end">
-          {contextSummary ? (
-            <span className="roc-badge" title={contextTitle || contextSummary}>
-              {contextSummary}
+          {usageSummary ? (
+            <span className="roc-badge" title={usageTitle || usageSummary}>
+              {usageSummary}
             </span>
           ) : null}
           {activeStageId ? (

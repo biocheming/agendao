@@ -92,6 +92,7 @@ pub(crate) fn session_routes() -> Router<Arc<ServerState>> {
             post(session_revert).delete(clear_session_revert),
         )
         .route("/{id}/unrevert", post(session_unrevert))
+        .route("/{id}/compact", post(start_compaction))
         .route("/{id}/compaction", post(start_compaction))
         .route("/{id}/command", post(execute_command))
         .route("/{id}/shell", post(execute_shell))

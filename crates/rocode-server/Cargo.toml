@@ -48,6 +48,7 @@ uuid = { workspace = true }
 once_cell = { workspace = true }
 portable-pty = { workspace = true }
 base64 = { workspace = true }
+rust-embed = "8"
 
 [dev-dependencies]
 tempfile = "3"

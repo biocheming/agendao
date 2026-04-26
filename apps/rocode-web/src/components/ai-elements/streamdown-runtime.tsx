@@ -1,18 +1,24 @@
 "use client";
 
 import { cjk } from "@streamdown/cjk";
-import { code } from "@streamdown/code";
-import { createMathPlugin } from "@streamdown/math";
 import { memo, useEffect, useMemo, useState } from "react";
 import { Streamdown } from "streamdown";
 
 const linkSafetyOff = { enabled: false } as const;
-const mathPlugin = createMathPlugin({ singleDollarTextMath: true });
 
 interface StreamdownRendererProps {
   children: string;
   className?: string;
   unsafeLinks?: boolean;
+}
+
+function mightNeedCode(content: string): boolean {
+  return /(?:^|\n)(?:```|~~~)/.test(content);
+}
+
+function mightNeedMath(content: string): boolean {
+  return /\$\$[\s\S]+?\$\$|\\\([\s\S]+?\\\)|\\\[[\s\S]+?\\\]|(^|[^\\])\$(?:[^$\n\\]|\\.)+\$/m
+    .test(content);
 }
 
 function mightNeedMermaid(content: string): boolean {
@@ -22,8 +28,60 @@ function mightNeedMermaid(content: string): boolean {
 
 export const StreamdownRenderer = memo(
   ({ children, className, unsafeLinks = false }: StreamdownRendererProps) => {
+    const [codePlugin, setCodePlugin] = useState<unknown>(null);
+    const [mathPlugin, setMathPlugin] = useState<unknown>(null);
     const [mermaidPlugin, setMermaidPlugin] = useState<unknown>(null);
+    const needsCode = useMemo(() => mightNeedCode(children), [children]);
+    const needsMath = useMemo(() => mightNeedMath(children), [children]);
     const needsMermaid = useMemo(() => mightNeedMermaid(children), [children]);
+
+    useEffect(() => {
+      let cancelled = false;
+
+      if (!needsCode || codePlugin) {
+        return () => {
+          cancelled = true;
+        };
+      }
+
+      void import("../../lib/streamdownCodePlugin")
+        .then((module) => {
+          if (!cancelled) {
+            setCodePlugin(module.rocodeCodePlugin);
+          }
+        })
+        .catch((error) => {
+          console.error("Failed to load code highlighter:", error);
+        });
+
+      return () => {
+        cancelled = true;
+      };
+    }, [codePlugin, needsCode]);
+
+    useEffect(() => {
+      let cancelled = false;
+
+      if (!needsMath || mathPlugin) {
+        return () => {
+          cancelled = true;
+        };
+      }
+
+      void import("@streamdown/math")
+        .then((module) => {
+          if (!cancelled) {
+            setMathPlugin(module.createMathPlugin({ singleDollarTextMath: true }));
+          }
+        })
+        .catch((error) => {
+          console.error("Failed to load math renderer:", error);
+        });
+
+      return () => {
+        cancelled = true;
+      };
+    }, [mathPlugin, needsMath]);
 
     useEffect(() => {
       let cancelled = false;
@@ -34,10 +92,10 @@ export const StreamdownRenderer = memo(
         };
       }
 
-      void import("@streamdown/mermaid")
+      void import("../../lib/streamdownMermaidPlugin")
         .then((module) => {
           if (!cancelled) {
-            setMermaidPlugin(module.mermaid);
+            setMermaidPlugin(module.rocodeMermaidPlugin);
           }
         })
         .catch((error) => {
@@ -52,11 +110,11 @@ export const StreamdownRenderer = memo(
     const plugins = useMemo(
       () => ({
         cjk,
-        code,
-        math: mathPlugin,
+        ...(codePlugin ? { code: codePlugin } : {}),
+        ...(mathPlugin ? { math: mathPlugin } : {}),
         ...(mermaidPlugin ? { mermaid: mermaidPlugin } : {}),
       }),
-      [mermaidPlugin],
+      [codePlugin, mathPlugin, mermaidPlugin],
     );
 
     return (

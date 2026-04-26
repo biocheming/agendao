@@ -26,7 +26,8 @@ interface ComposerSectionProps {
   workspaceRootPath: string;
   contextTokensUsed?: number | null;
   contextTokensLimit?: number | null;
-  sessionCost?: number | null;
+  lastTurnInputTokens?: number | null;
+  lastTurnOutputTokens?: number | null;
   inputPricePerMillion?: number | null;
   outputPricePerMillion?: number | null;
   activeStageId: string | null;
@@ -52,7 +53,7 @@ interface ComposerSectionProps {
 
 export function ComposerSection(props: ComposerSectionProps) {
   return (
-    <div className="mx-auto w-full max-w-[76rem]">
+    <div className="mx-auto w-full max-w-[88rem]">
       <ComposerPanel {...props} />
     </div>
   );

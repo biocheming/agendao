@@ -646,6 +646,8 @@ fn handle_sse_event(runtime: &CliExecutionRuntime, event: CliServerEvent, style:
             }
             tracing::debug!(prompt_tokens, completion_tokens, ?message_id, "token usage");
             if let Ok(mut projection) = runtime.frontend_projection.lock() {
+                projection.last_turn_tokens.input_tokens = prompt_tokens;
+                projection.last_turn_tokens.output_tokens = completion_tokens;
                 projection.token_stats.input_tokens = projection
                     .token_stats
                     .input_tokens
