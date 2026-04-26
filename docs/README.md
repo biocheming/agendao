@@ -1,6 +1,6 @@
 # ROCode Docs
 
-文档基线：`v2026.4.22`（更新日期：`2026-04-22`）
+文档基线：`v2026.4.26`（更新日期：`2026-04-26`）
 
 This directory contains product-facing examples and design references for ROCode features.
 
@@ -9,7 +9,7 @@ This directory contains product-facing examples and design references for ROCode
 - `README.md`
   - 项目总览、启动方式、当前公开能力范围
 - `installation.md`
-  - 单一 `rocode` 分发入口的安装、升级、卸载与 Web 资源布局说明
+  - 单一 `rocode` 分发入口的安装、升级、卸载，以及默认内嵌 Web 资源与可选外部覆盖说明
 - `../CHANGELOG.md`
   - 当前版本发布说明与最近一次交付摘要
 - `../USER_GUIDE.md`
@@ -100,12 +100,13 @@ The current schema IDs are:
 
 ## Web Frontend Entry
 
-当前默认 Web 前端是 `apps/rocode-web`（React 版本）：
+当前默认 Web 前端源码目录是 `apps/rocode-web`（React 版本）：
 
 - `/` 是正式 Web 入口
 - `/web/*` 是正式静态资源前缀
-- 后端 runtime 不再运行 npm，也不再内嵌静态资源
-- `apps/rocode-web` 是当前正式 Web 前端源码目录，后端不再内嵌或构建 Web 资源
+- `rocode-server` 会把 `apps/rocode-web/dist` 内嵌进发布二进制
+- `build.rs` 只会在 Web 源码缺失或变更时增量触发 `npm run build`
+- `rocode web` 默认优先使用内嵌资源；仅在显式设置 `ROCODE_WEB_DIST` 或使用 `ROCODE_WEB_DEV_URL` 时走外部覆盖/开发路径
 - 当前 Web 交互已包含可过滤 model picker、批量 session 删除确认和更高密度的消息阅读节奏
 
 ## Skill Hub CLI

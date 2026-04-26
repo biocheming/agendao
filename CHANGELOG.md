@@ -1,10 +1,11 @@
 # Changelog
 
-## 2026.4.22
+## 2026.4.26
 
-- 同步工作区版本到 `v2026.4.22`，仅更新 ROCode 自有包元数据、Web 根包版本与 `Cargo.lock`/`package-lock.json` 中的 ROCode 自身条目。
-- 收紧 `scripts/sync_version.sh`：不再自动重写 README、安装指南和示例文档，避免脚本误改历史日期、版本示例或第三方依赖说明。
-- 逐份刷新根文档、命令说明、安装页、调度/插件/任务文档与插件示例，补齐 `/abort` 的控制通道语义、agent task 取消边界，以及当前插件引导行为。
+- 同步工作区版本到 `v2026.4.26`，更新 ROCode 自有包元数据、Web 根包版本与相关 lock 文件中的 ROCode 自身条目。
+- `rocode web` 默认改为优先使用内嵌 Web 资源；仅在显式设置 `ROCODE_WEB_DIST` 时才走外部 `dist/` 覆盖。
+- `rocode-server/build.rs` 新增 Web 资源增量构建机制：只有 `apps/rocode-web` 源码缺失或变更时，才会自动触发 `npm run build` 并重新内嵌。
+- 刷新 README、安装页、命令参考和文档入口，统一当前 Web 分发/构建机制与版本基线描述。
 
 ## 2026.4.21
 

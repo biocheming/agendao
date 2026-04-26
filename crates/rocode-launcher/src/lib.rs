@@ -14,19 +14,23 @@ pub fn resolve_web_dist_dir() -> anyhow::Result<PathBuf> {
     }
 
     anyhow::bail!(
-        "ROCode Web frontend assets were not found. Build `apps/rocode-web` and set ROCODE_WEB_DIST, or install a package that includes `share/rocode/web`."
+        "ROCode Web frontend assets were not found. By default ROCode expects embedded web assets; for external assets, build `apps/rocode-web` and set `ROCODE_WEB_DIST`, or install a package that includes `share/rocode/web`."
     )
 }
 
+pub fn try_resolve_web_dist_override() -> Option<PathBuf> {
+    let value = std::env::var("ROCODE_WEB_DIST").ok()?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(trimmed);
+    has_web_dist(&path).then_some(path)
+}
+
 pub fn try_resolve_web_dist_dir() -> Option<PathBuf> {
-    if let Ok(value) = std::env::var("ROCODE_WEB_DIST") {
-        let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            let path = PathBuf::from(trimmed);
-            if has_web_dist(&path) {
-                return Some(path);
-            }
-        }
+    if let Some(path) = try_resolve_web_dist_override() {
+        return Some(path);
     }
 
     let mut candidates = Vec::new();

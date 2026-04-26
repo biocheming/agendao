@@ -100,10 +100,12 @@ pub async fn run_web_command(request: WebCommandRequest) -> anyhow::Result<()> {
         launcher::push_origin_if_missing(&mut effective_cors, dev_url);
         println!("Web dev server: {}", dev_url);
         None
-    } else {
-        let web_dist = launcher::resolve_web_dist_dir()?;
-        println!("Web assets: {}", web_dist.display());
+    } else if let Some(web_dist) = launcher::try_resolve_web_dist_override() {
+        println!("Web assets override: {}", web_dist.display());
         Some(web_dist)
+    } else {
+        println!("Web assets: embedded");
+        None
     };
     let launch_url = if let Some(dev_url) = web_dev_url {
         launcher::append_browser_api_base(dev_url, &backend_url)
