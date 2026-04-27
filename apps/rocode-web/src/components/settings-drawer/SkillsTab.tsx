@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type {
   ManagedSkillRecord,
   SkillArtifactCacheEntryRecord,
@@ -279,6 +279,7 @@ export function SkillsTab({
   } = styles;
 
   const [activeSubtab, setActiveSubtab] = useState<SkillSubtabId>("overview");
+  const [hubSearchDraft, setHubSearchDraft] = useState("");
   const selectedSourceId = skillSyncSourceId.trim();
   const selectedSourceLocator = skillSyncLocator.trim();
   const selectedRemoteSkillName = remoteInstallSkillName.trim();
@@ -298,6 +299,65 @@ export function SkillsTab({
   const recentGuardReports = [...skillGuardReports]
     .sort((left, right) => right.scanned_at - left.scanned_at)
     .slice(0, 4);
+  const hubSearchResults = useMemo(() => {
+    const query = hubSearchDraft.trim().toLowerCase();
+    const rows = skillSourceIndices.flatMap((snapshot) =>
+      snapshot.entries.map((entry) => {
+        const searchText = [
+          entry.skill_name,
+          entry.description ?? "",
+          entry.category ?? "",
+          entry.revision ?? "",
+          snapshot.source.source_id,
+          snapshot.source.source_kind,
+          snapshot.source.locator,
+          snapshot.source.revision ?? "",
+        ]
+          .join("\n")
+          .toLowerCase();
+        const installedRecord = managedRecordBySkill.get(entry.skill_name.trim().toLowerCase()) ?? null;
+        const distribution = skillDistributions.find(
+          (record) =>
+            record.source.source_id === snapshot.source.source_id &&
+            record.skill_name.trim().toLowerCase() === entry.skill_name.trim().toLowerCase(),
+        ) ?? null;
+        const lifecycle = distribution
+          ? skillLifecycle.find((record) => record.distribution_id === distribution.distribution_id) ?? null
+          : skillLifecycle.find(
+              (record) =>
+                record.source_id === snapshot.source.source_id &&
+                record.skill_name.trim().toLowerCase() === entry.skill_name.trim().toLowerCase(),
+            ) ?? null;
+        const score = entry.skill_name.trim().toLowerCase() === query
+          ? 0
+          : entry.skill_name.trim().toLowerCase().startsWith(query)
+            ? 1
+            : searchText.includes(query)
+              ? 2
+              : 3;
+        return { distribution, entry, installedRecord, lifecycle, score, searchText, source: snapshot.source };
+      }),
+    );
+    return rows
+      .filter((row) => !query || row.searchText.includes(query))
+      .sort((left, right) => {
+        if (left.score !== right.score) return left.score - right.score;
+        if (!!left.installedRecord !== !!right.installedRecord) return left.installedRecord ? -1 : 1;
+        return left.entry.skill_name.localeCompare(right.entry.skill_name);
+      })
+      .slice(0, 24);
+  }, [hubSearchDraft, managedRecordBySkill, skillDistributions, skillLifecycle, skillSourceIndices]);
+
+  const selectHubRemoteSkill = (
+    source: SkillSourceRefRecord,
+    skillName: string,
+  ) => {
+    onSkillSyncSourceIdChange(source.source_id);
+    onSkillSyncSourceKindChange(source.source_kind);
+    onSkillSyncLocatorChange(source.locator);
+    onSkillSyncRevisionChange(source.revision ?? "");
+    onRemoteInstallSkillNameChange(skillName);
+  };
 
   return (
     <div className="relative grid gap-4">
@@ -449,6 +509,96 @@ export function SkillsTab({
 
       {activeSubtab === "hub" ? (
         <div className="grid gap-5">
+          {/* Search + select */}
+          <div>
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Search Remote Skills</span>
+              <span className="text-xs text-muted-foreground">
+                {hubSearchResults.length} shown · {skillSourceIndices.reduce((count, source) => count + source.entries.length, 0)} indexed
+              </span>
+            </div>
+
+            <div className="grid gap-3">
+              <input
+                type="search"
+                placeholder="Search by skill name, category, description, source, or revision"
+                value={hubSearchDraft}
+                onChange={(event) => setHubSearchDraft(event.target.value)}
+              />
+
+              {skillSourceIndices.length ? (
+                <div className="max-h-[22rem] overflow-y-auto pr-1 grid gap-2">
+                  {hubSearchResults.length ? hubSearchResults.map((result) => {
+                    const selected =
+                      result.source.source_id === selectedSourceId &&
+                      result.entry.skill_name.trim().toLowerCase() === selectedRemoteSkillName.toLowerCase();
+                    const lifecycleState = result.lifecycle?.state ?? result.distribution?.lifecycle ?? null;
+                    return (
+                      <button
+                        key={`${result.source.source_id}:${result.entry.skill_name}:${result.entry.revision ?? ""}`}
+                        type="button"
+                        className={cn(
+                          "grid gap-2 rounded-lg border-l-2 px-4 py-3 text-left text-sm transition-colors",
+                          selected
+                            ? "border-l-foreground/50 bg-foreground/5"
+                            : "border-l-transparent bg-muted/20 hover:bg-muted/40",
+                        )}
+                        onClick={() => selectHubRemoteSkill(result.source, result.entry.skill_name)}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <strong className="block truncate text-foreground">{result.entry.skill_name}</strong>
+                            <p className="m-0 mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                              {result.entry.description || "No description provided."}
+                            </p>
+                          </div>
+                          <span className="shrink-0 rounded-full border border-border/40 bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            {result.source.source_id}
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5 text-[10px]">
+                          {result.entry.category ? (
+                            <span className="rounded-full border border-border/40 bg-muted px-2 py-0.5 text-muted-foreground">
+                              {result.entry.category}
+                            </span>
+                          ) : null}
+                          <span className="rounded-full border border-border/40 bg-muted px-2 py-0.5 text-muted-foreground">
+                            {result.entry.revision || result.source.revision || "unversioned"}
+                          </span>
+                          {result.installedRecord ? (
+                            <span
+                              className={cn(
+                                "rounded-full border px-2 py-0.5",
+                                result.installedRecord.locally_modified || result.installedRecord.deleted_locally
+                                  ? "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-950/60 dark:text-amber-200"
+                                  : "border-green-300 bg-green-50 text-green-800 dark:border-green-700 dark:bg-green-950 dark:text-green-300",
+                              )}
+                            >
+                              {managedSkillStateLabel(result.installedRecord)}
+                            </span>
+                          ) : null}
+                          {lifecycleState ? (
+                            <span className={cn("rounded-full border px-2 py-0.5", lifecycleStatusClass(lifecycleState))}>
+                              {lifecycleState}
+                            </span>
+                          ) : null}
+                        </div>
+                      </button>
+                    );
+                  }) : (
+                    <div className="rounded-lg border border-border/40 bg-muted/20 px-4 py-6 text-center text-sm text-muted-foreground">
+                      No remote skills matched this search. Refresh the source index or try another query.
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="rounded-lg border border-border/40 bg-muted/20 px-4 py-6 text-center text-sm text-muted-foreground">
+                  No source index is cached yet. Configure a source below, then refresh the source index.
+                </div>
+              )}
+            </div>
+          </div>
+
           {/* Source config */}
           <div>
             <div className="flex items-center justify-between gap-3 mb-3">
