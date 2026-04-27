@@ -4,6 +4,10 @@ import {
   type MemoryDetailResponseRecord,
   memoryRecordIdValue,
 } from "../lib/memory";
+import {
+  currentContextTokensFromSources,
+  isLiveStageStatus,
+} from "../lib/contextPressure";
 import { multimodalCombinedWarnings, multimodalDisplayLabel } from "../lib/multimodal";
 
 type ExecutionActivityState = ReturnType<typeof useExecutionActivity>;
@@ -33,8 +37,44 @@ function formatMoney(value?: number | null) {
   return `$${value.toFixed(4)}`;
 }
 
+function formatCompactTokenCount(value: number) {
+  if (!Number.isFinite(value)) return "0";
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+  if (abs >= 1_000) return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}K`;
+  return String(Math.round(value));
+}
+
+function totalUsageTokens(usage?: {
+  input_tokens?: number;
+  output_tokens?: number;
+  reasoning_tokens?: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+} | null) {
+  if (!usage) return 0;
+  return (
+    (usage.input_tokens ?? 0) +
+    (usage.output_tokens ?? 0) +
+    (usage.reasoning_tokens ?? 0) +
+    (usage.cache_read_tokens ?? 0) +
+    (usage.cache_write_tokens ?? 0)
+  );
+}
+
 export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanelProps) {
   const insights = activity.sessionInsights;
+  const telemetry = insights?.telemetry ?? null;
+  const telemetryUsage = telemetry?.usage ?? null;
+  const telemetryStages = telemetry?.stage_summaries ?? [];
+  const memory = insights?.memory ?? null;
+  const memorySummary = memory?.summary ?? null;
+  const memoryAllowedScopes = memorySummary?.allowed_scopes ?? [];
+  const memoryRecentRuleHits = memorySummary?.recent_rule_hits ?? [];
+  const memoryRecentSessionRecords = memory?.recent_session_records ?? [];
+  const memoryFrozenItems = memory?.frozen_snapshot?.items ?? [];
+  const memoryPrefetchItems = memory?.last_prefetch_packet?.items ?? [];
+  const multimodal = insights?.multimodal ?? null;
   const [selectedMemoryId, setSelectedMemoryId] = useState<string | null>(null);
   const [selectedMemoryDetail, setSelectedMemoryDetail] = useState<MemoryDetailResponseRecord | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -57,49 +97,35 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
 
   const insightMemoryIds = useMemo(() => {
     const ids = new Set<string>();
-    insights?.memory?.summary.recent_rule_hits.forEach((hit) => {
+    memoryRecentRuleHits.forEach((hit) => {
       const memoryId = memoryRecordIdValue(hit.memory_id);
       if (memoryId) ids.add(memoryId);
     });
-    (insights?.memory?.frozen_snapshot?.items ?? []).forEach((item) =>
+    memoryFrozenItems.forEach((item) =>
       ids.add(memoryRecordIdValue(item.card.id)),
     );
-    (insights?.memory?.last_prefetch_packet?.items ?? []).forEach((item) =>
+    memoryPrefetchItems.forEach((item) =>
       ids.add(memoryRecordIdValue(item.card.id)),
     );
-    insights?.memory?.recent_session_records.forEach((item) =>
+    memoryRecentSessionRecords.forEach((item) =>
       ids.add(memoryRecordIdValue(item.id)),
     );
     return ids;
-  }, [insights]);
+  }, [memoryFrozenItems, memoryPrefetchItems, memoryRecentRuleHits, memoryRecentSessionRecords]);
   const skillLinkedRecords = useMemo(
     () =>
-      insights?.memory?.recent_session_records.filter(
+      memoryRecentSessionRecords.filter(
         (item) => item.linked_skill_name || item.derived_skill_name,
-      ) ?? [],
-    [insights],
+      ),
+    [memoryRecentSessionRecords],
   );
   const currentContextTokens = useMemo(() => {
-    if (typeof activity.sessionUsage?.context_tokens === "number" && activity.sessionUsage.context_tokens > 0) {
-      const activeEstimate = activity.activeStageSummary?.estimated_context_tokens;
-      return typeof activeEstimate === "number" && activeEstimate > 0
-        ? Math.max(activity.sessionUsage.context_tokens, activeEstimate)
-        : activity.sessionUsage.context_tokens;
-    }
-    if (typeof activity.activeStageSummary?.context_tokens === "number") {
-      return activity.activeStageSummary.context_tokens;
-    }
-    if (typeof activity.activeStageSummary?.estimated_context_tokens === "number") {
-      return activity.activeStageSummary.estimated_context_tokens;
-    }
-    for (let index = activity.stageSummaries.length - 1; index >= 0; index -= 1) {
-      const estimate = activity.stageSummaries[index]?.context_tokens ?? activity.stageSummaries[index]?.estimated_context_tokens;
-      if (typeof estimate === "number" && Number.isFinite(estimate) && estimate > 0) {
-        return estimate;
-      }
-    }
-    return null;
-  }, [activity.activeStageSummary?.context_tokens, activity.activeStageSummary?.estimated_context_tokens, activity.sessionUsage?.context_tokens, activity.stageSummaries]);
+    const activeStage = activity.activeStageSummary;
+    const activeStageContext = activeStage && isLiveStageStatus(activeStage.status)
+      ? activeStage.context_tokens ?? activeStage.estimated_context_tokens
+      : null;
+    return currentContextTokensFromSources(activity.sessionUsage?.context_tokens, activeStageContext);
+  }, [activity.activeStageSummary, activity.sessionUsage?.context_tokens]);
   const panelActionClass = "roc-action roc-action-pill";
   const compactActionClass = "roc-action roc-action-compact justify-self-start";
   const detailTileClass = "roc-rail-item grid gap-1 bg-card/45";
@@ -130,10 +156,11 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
 
       {!insights ? (
         <div className="roc-rail-empty">
-          <div className="roc-section-label">Runtime Explain</div>
-          <p className="text-sm font-semibold tracking-tight text-foreground">No session insights loaded yet.</p>
+          <div className="roc-section-label">Insights</div>
+          <p className="text-sm font-semibold tracking-tight text-foreground">No session insights yet.</p>
           <p className="text-sm leading-6 text-muted-foreground">
-            Refresh activity after a session run to inspect telemetry, memory, and multimodal runtime detail.
+            Run a prompt or press Refresh after activity is recorded. This tab surfaces memory hits,
+            multimodal attachments, and live context telemetry rather than duplicating the file preview.
           </p>
         </div>
       ) : (
@@ -157,69 +184,69 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
             </div>
           </dl>
 
-          {insights.telemetry ? (
+          {telemetry ? (
             <div className="roc-rail-section">
               <div className="roc-rail-section-copy">
-                <p className="roc-section-label">Persisted Telemetry</p>
-                <h4 className="roc-rail-section-title">Stored Run Snapshot</h4>
+                <p className="roc-section-label">Runtime Telemetry</p>
+                <h4 className="roc-rail-section-title">Current Run Snapshot</h4>
               </div>
               <div className="roc-rail-meta-list">
-                <span className="roc-badge px-3 py-1.5 text-xs">version {insights.telemetry.version}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">status {insights.telemetry.last_run_status}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">stages {insights.telemetry.stage_summaries.length}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">version {telemetry.version}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">status {telemetry.last_run_status}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">stages {telemetryStages.length}</span>
               </div>
               {currentContextTokens ? (
                 <p className="text-sm text-muted-foreground leading-relaxed">
-                  Current context estimate {currentContextTokens}
+                  Current live context {formatCompactTokenCount(currentContextTokens)}
                 </p>
               ) : null}
               <p className="text-sm text-muted-foreground leading-relaxed">
-                Session cumulative {insights.telemetry.usage.input_tokens + insights.telemetry.usage.output_tokens + insights.telemetry.usage.reasoning_tokens + insights.telemetry.usage.cache_read_tokens + insights.telemetry.usage.cache_write_tokens} total · input {insights.telemetry.usage.input_tokens} · output {insights.telemetry.usage.output_tokens} · reasoning {insights.telemetry.usage.reasoning_tokens}
+                Session cumulative {totalUsageTokens(telemetryUsage)} total · input {telemetryUsage?.input_tokens ?? 0} · output {telemetryUsage?.output_tokens ?? 0} · reasoning {telemetryUsage?.reasoning_tokens ?? 0}
               </p>
               <p className="text-sm text-muted-foreground leading-relaxed">
-                Cache read {insights.telemetry.usage.cache_read_tokens} · cache write {insights.telemetry.usage.cache_write_tokens} · cost {formatMoney(insights.telemetry.usage.total_cost)}
+                Cache read {telemetryUsage?.cache_read_tokens ?? 0} · cache write {telemetryUsage?.cache_write_tokens ?? 0} · cost {formatMoney(telemetryUsage?.total_cost)}
               </p>
               <p className="text-sm text-muted-foreground leading-relaxed">
-                Updated {formatDateTime(insights.telemetry.updated_at)}
+                Updated {formatDateTime(telemetry.updated_at)}
               </p>
             </div>
           ) : null}
 
-          {insights.multimodal ? (
+          {multimodal ? (
             <div className="roc-rail-section">
               <div className="roc-rail-section-copy">
                 <p className="roc-section-label">Multimodal Explain</p>
-                <h4 className="roc-rail-section-title">{multimodalDisplayLabel(insights.multimodal) || "Attachment-backed input"}</h4>
+                <h4 className="roc-rail-section-title">{multimodalDisplayLabel(multimodal) || "Attachment-backed input"}</h4>
               </div>
               <div className="roc-rail-meta-list">
-                <span className="roc-badge px-3 py-1.5 text-xs">message {insights.multimodal.user_message_id}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">attachments {insights.multimodal.attachment_count}</span>
-                {insights.multimodal.kinds.map((kind) => (
+                <span className="roc-badge px-3 py-1.5 text-xs">message {multimodal.user_message_id}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">attachments {multimodal.attachment_count}</span>
+                {(multimodal.kinds ?? []).map((kind) => (
                   <span key={`kind:${kind}`} className="roc-badge px-3 py-1.5 text-xs">
                     {kind}
                   </span>
                 ))}
               </div>
               <div className="grid gap-1 text-sm text-muted-foreground">
-                <p>Resolved model: {insights.multimodal.resolved_model || "--"}</p>
-                <p>Badges: {insights.multimodal.badges.join(", ") || "--"}</p>
-                <p>Hard block: {insights.multimodal.hard_block ? "yes" : "no"}</p>
+                <p>Resolved model: {multimodal.resolved_model || "--"}</p>
+                <p>Badges: {(multimodal.badges ?? []).join(", ") || "--"}</p>
+                <p>Hard block: {multimodal.hard_block ? "yes" : "no"}</p>
                 <p>
                   Unsupported parts:{" "}
-                  {insights.multimodal.unsupported_parts.join(", ") || "none"}
+                  {(multimodal.unsupported_parts ?? []).join(", ") || "none"}
                 </p>
                 <p>
                   Recommended downgrade:{" "}
-                  {insights.multimodal.recommended_downgrade || "none"}
+                  {multimodal.recommended_downgrade || "none"}
                 </p>
                 <p>
                   Transport replaced parts:{" "}
-                  {insights.multimodal.transport_replaced_parts.join(", ") || "none"}
+                  {(multimodal.transport_replaced_parts ?? []).join(", ") || "none"}
                 </p>
               </div>
-              {insights.multimodal.attachments.length ? (
+              {(multimodal.attachments ?? []).length ? (
                 <div className="grid gap-2 md:grid-cols-2">
-                  {insights.multimodal.attachments.map((attachment) => (
+                  {(multimodal.attachments ?? []).map((attachment) => (
                     <div
                       key={`multimodal:${attachment.filename}:${attachment.mime}`}
                       className={detailTileClass}
@@ -230,10 +257,10 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
                   ))}
                 </div>
               ) : null}
-              {multimodalCombinedWarnings(insights.multimodal).length ? (
+              {multimodalCombinedWarnings(multimodal).length ? (
                 <div className="grid gap-2">
                   <p className="roc-section-label">Warnings</p>
-                  {multimodalCombinedWarnings(insights.multimodal).map((warning, index) => (
+                  {multimodalCombinedWarnings(multimodal).map((warning, index) => (
                     <div key={`multimodal-warning:${index}`} className="roc-rail-item bg-card/45 text-sm text-muted-foreground">
                       {warning}
                     </div>
@@ -252,7 +279,7 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
               <div className="roc-rail-meta-list">
                 <span className="roc-badge px-3 py-1.5 text-xs">snapshot {insights.memory.summary.frozen_snapshot_items}</span>
                 <span className="roc-badge px-3 py-1.5 text-xs">prefetch {insights.memory.summary.last_prefetch_items}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">rule hits {insights.memory.summary.recent_rule_hits.length}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">rule hits {memoryRecentRuleHits.length}</span>
                 <span className="roc-badge px-3 py-1.5 text-xs">warnings {insights.memory.summary.warning_count}</span>
                 <span className="roc-badge px-3 py-1.5 text-xs">methodology {insights.memory.summary.methodology_candidate_count}</span>
                 <span className="roc-badge px-3 py-1.5 text-xs">skill targets {insights.memory.summary.derived_skill_candidate_count}</span>
@@ -261,7 +288,7 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
               </div>
               <div className="grid gap-1 text-sm text-muted-foreground">
                 <p>Workspace key: {insights.memory.summary.workspace_key}</p>
-                <p>Allowed scopes: {insights.memory.summary.allowed_scopes.join(", ") || "--"}</p>
+                <p>Allowed scopes: {memoryAllowedScopes.join(", ") || "--"}</p>
                 <p>Frozen snapshot generated: {formatDateTime(insights.memory.summary.frozen_snapshot_generated_at)}</p>
                 <p>Last prefetch generated: {formatDateTime(insights.memory.summary.last_prefetch_generated_at)}</p>
                 <p>Last prefetch query: {insights.memory.summary.last_prefetch_query?.trim() || "No query captured"}</p>
@@ -311,9 +338,9 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
                   </p>
                 </div>
               ) : null}
-              {insights.memory.summary.recent_rule_hits.length ? (
+              {memoryRecentRuleHits.length ? (
                 <div className="grid gap-2 md:grid-cols-2">
-                  {insights.memory.summary.recent_rule_hits.map((hit) => (
+                  {memoryRecentRuleHits.map((hit) => (
                     <div key={hit.id} className={detailTileClass}>
                       <div className="flex flex-wrap items-center gap-2">
                         <strong>{hit.hit_kind}</strong>
@@ -348,10 +375,10 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
                   <p>
                     Frozen snapshot scopes: {(insights.memory.frozen_snapshot.scopes ?? []).join(", ") || "--"}
                   </p>
-                  {(insights.memory.frozen_snapshot.items ?? []).length ? (
+                  {memoryFrozenItems.length ? (
                     <div className="grid gap-2">
                       <p className="roc-section-label">Frozen Items</p>
-                      {(insights.memory.frozen_snapshot.items ?? []).map((item) => (
+                      {memoryFrozenItems.map((item) => (
                         <div
                           key={`frozen:${memoryRecordIdValue(item.card.id)}`}
                           className={detailTileClass}
@@ -385,11 +412,11 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
                   <p>
                     Prefetch scopes: {(insights.memory.last_prefetch_packet.scopes ?? []).join(", ") || "--"}
                   </p>
-                  <p>Prefetch recalled items: {(insights.memory.last_prefetch_packet.items ?? []).length}</p>
-                  {(insights.memory.last_prefetch_packet.items ?? []).length ? (
+                  <p>Prefetch recalled items: {memoryPrefetchItems.length}</p>
+                  {memoryPrefetchItems.length ? (
                     <div className="grid gap-2">
                       <p className="roc-section-label">Prefetch Items</p>
-                      {(insights.memory.last_prefetch_packet.items ?? []).map((item) => (
+                      {memoryPrefetchItems.map((item) => (
                         <div
                           key={`prefetch:${memoryRecordIdValue(item.card.id)}`}
                           className={detailTileClass}
@@ -417,11 +444,11 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
                   ) : null}
                 </div>
               ) : null}
-              {insights.memory.recent_session_records.length ? (
+              {memoryRecentSessionRecords.length ? (
                 <div className="grid gap-2 text-sm text-muted-foreground">
                   <p className="roc-section-label">Session Memory Writes</p>
-                  <div className="grid gap-2 md:grid-cols-2">
-                    {insights.memory.recent_session_records.map((record) => (
+                  <div className="grid gap-2">
+                    {memoryRecentSessionRecords.map((record) => (
                       <div
                         key={`session:${memoryRecordIdValue(record.id)}`}
                         className={detailTileClass}

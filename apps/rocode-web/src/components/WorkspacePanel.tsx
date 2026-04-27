@@ -5,19 +5,17 @@ import { Suspense, lazy, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import type { FileTreeNodeRecord } from "@/lib/workspace";
+import { PanelErrorBoundary } from "./PanelErrorBoundary";
 import { WorkspaceTreeNode } from "./WorkspaceTreeNode";
-import { DeferredTerminalPanel } from "./DeferredTerminalPanel";
 import {
   FolderTreeIcon,
   LightbulbIcon,
   EyeIcon,
-  TerminalSquareIcon,
   PlusIcon,
   FolderPlusIcon,
   UploadIcon,
 } from "lucide-react";
 import type { useExecutionActivity } from "../hooks/useExecutionActivity";
-import type { useTerminalSessions } from "../hooks/useTerminalSessions";
 
 const SessionInsightsPanel = lazy(async () => {
   const module = await import("./SessionInsightsPanel");
@@ -29,7 +27,7 @@ const FilePreviewPane = lazy(async () => {
   return { default: module.FilePreviewPane };
 });
 
-export type WorkspacePanelTab = "files" | "insights" | "preview" | "terminal";
+export type WorkspacePanelTab = "files" | "insights" | "preview";
 
 interface WorkspacePanelProps {
   apiJson: <T>(path: string, options?: RequestInit) => Promise<T>;
@@ -65,9 +63,6 @@ interface WorkspacePanelProps {
     previewStage: (stageId: string | null) => void;
     restoreActiveStage: () => void;
   };
-  terminalExpanded: boolean;
-  terminalSessions: ReturnType<typeof useTerminalSessions>;
-  onExpandTerminal: () => void;
   onCreateWorkspaceFile: () => Promise<void>;
   onCreateWorkspaceDirectory: () => Promise<void>;
   onUploadWorkspaceFiles: (event: ChangeEvent<HTMLInputElement>) => void;
@@ -98,9 +93,6 @@ export function WorkspacePanel({
   onActiveTabChange,
   schedulerNavigation,
   executionActivity,
-  terminalExpanded,
-  terminalSessions,
-  onExpandTerminal,
 }: WorkspacePanelProps) {
   const workspaceUploadInputRef = useRef<HTMLInputElement | null>(null);
   const workspaceRootName =
@@ -108,11 +100,11 @@ export function WorkspacePanel({
 
   return (
     <div className="flex flex-col h-full overflow-hidden" data-testid="workspace-panel">
-      <div className="flex items-center justify-between border-b border-border shrink-0 px-2">
+      <div className="flex items-center justify-between border-b border-border shrink-0 px-3 py-2">
         <div className="flex min-w-0 flex-1 items-center">
           <button
             className={cn(
-              "inline-flex min-w-0 items-center justify-center gap-1.5 rounded-full px-2.5 py-1.5 text-[10.5px] font-medium transition-colors",
+              "inline-flex min-w-0 items-center justify-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-medium transition-colors",
               activeTab === "files"
                 ? "bg-foreground/8 text-foreground"
                 : "text-muted-foreground hover:bg-accent/45 hover:text-foreground"
@@ -126,7 +118,7 @@ export function WorkspacePanel({
           </button>
           <button
             className={cn(
-              "inline-flex items-center justify-center gap-1.5 rounded-full px-2.5 py-1.5 text-[10.5px] font-medium transition-colors",
+              "inline-flex items-center justify-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-medium transition-colors",
               activeTab === "insights"
                 ? "bg-foreground/8 text-foreground"
                 : "text-muted-foreground hover:bg-accent/45 hover:text-foreground"
@@ -139,7 +131,7 @@ export function WorkspacePanel({
           </button>
           <button
             className={cn(
-              "inline-flex items-center justify-center gap-1.5 rounded-full px-2.5 py-1.5 text-[10.5px] font-medium transition-colors",
+              "inline-flex items-center justify-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-medium transition-colors",
               activeTab === "preview"
                 ? "bg-foreground/8 text-foreground"
                 : "text-muted-foreground hover:bg-accent/45 hover:text-foreground"
@@ -149,22 +141,6 @@ export function WorkspacePanel({
           >
             <EyeIcon className="size-3.25" />
             <span>Preview</span>
-          </button>
-          <button
-            className={cn(
-              "inline-flex items-center justify-center gap-1.5 rounded-full px-2.5 py-1.5 text-[10.5px] font-medium transition-colors",
-              activeTab === "terminal"
-                ? "bg-foreground/8 text-foreground"
-                : "text-muted-foreground hover:bg-accent/45 hover:text-foreground"
-            )}
-            type="button"
-            onClick={() => {
-              onActiveTabChange("terminal");
-              onExpandTerminal();
-            }}
-          >
-            <TerminalSquareIcon className="size-3.25" />
-            <span>Terminal</span>
           </button>
         </div>
         <div className="flex items-center gap-0.5 flex-shrink-0">
@@ -199,19 +175,21 @@ export function WorkspacePanel({
       </div>
 
       {/* File Tree */}
-      <div className="flex-1 overflow-auto py-1">
+      <div className="flex-1 min-h-0 overflow-auto py-1">
         {activeTab === "insights" ? (
-          <Suspense
-            fallback={
-              <div className="flex items-center justify-center py-6 text-muted-foreground/60">
-                <span className="text-[10px]">Loading insights...</span>
+          <PanelErrorBoundary label="Insights">
+            <Suspense
+              fallback={
+                <div className="flex items-center justify-center py-6 text-muted-foreground/60">
+                  <span className="text-[10px]">Loading insights...</span>
+                </div>
+              }
+            >
+              <div className="p-2">
+                <SessionInsightsPanel activity={executionActivity} apiJson={apiJson} />
               </div>
-            }
-          >
-            <div className="p-2">
-              <SessionInsightsPanel activity={executionActivity} apiJson={apiJson} />
-            </div>
-          </Suspense>
+            </Suspense>
+          </PanelErrorBoundary>
         ) : null}
         {activeTab === "files"
           ? workspaceLoading
@@ -243,24 +221,17 @@ export function WorkspacePanel({
               )
           : null}
         {activeTab === "preview" ? (
-          <Suspense
-            fallback={
-              <div className="flex items-center justify-center py-6 text-muted-foreground/60">
-                <span className="text-[10px]">Loading preview...</span>
-              </div>
-            }
-          >
-            <FilePreviewPane filePath={selectedWorkspacePath} />
-          </Suspense>
-        ) : null}
-        {activeTab === "terminal" ? (
-          <div className="h-full p-2">
-            <DeferredTerminalPanel
-              expanded={terminalExpanded}
-              onExpand={onExpandTerminal}
-              terminal={terminalSessions}
-            />
-          </div>
+          <PanelErrorBoundary label="Preview">
+            <Suspense
+              fallback={
+                <div className="flex items-center justify-center py-6 text-muted-foreground/60">
+                  <span className="text-[10px]">Loading preview...</span>
+                </div>
+              }
+            >
+              <FilePreviewPane filePath={selectedWorkspacePath} />
+            </Suspense>
+          </PanelErrorBoundary>
         ) : null}
       </div>
 

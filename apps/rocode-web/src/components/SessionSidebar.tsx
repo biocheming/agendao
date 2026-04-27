@@ -24,6 +24,8 @@ import {
 import { Input } from "@/components/ui/input";
 import type { SessionTreeNode, WorkspaceSummary } from "@/lib/sidebar";
 
+const ROCODE_LOGO_SRC = `${import.meta.env.BASE_URL}brand/rocode-logo.svg`;
+
 interface SessionSidebarProps {
   workspaces: WorkspaceSummary[];
   currentWorkspacePath: string | null;
@@ -321,7 +323,15 @@ export function SessionSidebar({
   return (
     <aside className="roc-sidebar-shell flex h-full flex-col" data-testid="session-sidebar">
       <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto px-3 py-3">
-        <section className="px-1 pt-1">
+        <section className="flex flex-col items-start gap-2 px-1 pt-1">
+          <div className="flex px-0.5 py-1">
+            <img
+              src={ROCODE_LOGO_SRC}
+              alt="ROCode"
+              className="h-8 w-auto max-w-[9.5rem] object-contain"
+              draggable={false}
+            />
+          </div>
           <button
             type="button"
             className="inline-flex items-center gap-2 rounded-full border border-border/45 bg-background/68 px-3 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"

@@ -126,7 +126,7 @@ function TextPreview({ filePath }: { filePath: string }) {
   }
 
   return (
-    <pre className="p-3 overflow-auto h-full text-xs font-mono whitespace-pre-wrap break-words text-foreground/80">
+    <pre className="h-full overflow-auto p-4 font-mono text-[12.5px] leading-5 text-foreground whitespace-pre">
       {content}
     </pre>
   );

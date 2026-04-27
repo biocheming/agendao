@@ -897,30 +897,21 @@ impl CliFrontendProjection {
             .session_runtime
             .as_ref()
             .and_then(|runtime| runtime.active_stage_id.as_deref());
-        if let Some(active_stage_id) = active_stage_id {
-            if let Some(tokens) = self
-                .stage_summaries
+        let active_stage_context_tokens = active_stage_id.and_then(|active_stage_id| {
+            self.stage_summaries
                 .iter()
                 .find(|stage| stage.stage_id == active_stage_id)
                 .and_then(|stage| stage.estimated_context_tokens)
-                .filter(|tokens| *tokens > 0)
-            {
-                return Some(usage_context_tokens.map_or(tokens, |usage| usage.max(tokens)));
-            }
-        }
+        });
 
-        usage_context_tokens.or_else(|| {
-            (self.last_turn_tokens.input_tokens > 0).then_some(self.last_turn_tokens.input_tokens)
-        })
+        rocode_types::current_context_tokens_from_sources(
+            usage_context_tokens,
+            active_stage_context_tokens,
+        )
     }
 
     fn context_pressure_note(&self, percent: Option<u64>) -> Option<&'static str> {
-        match percent {
-            Some(percent) if percent >= 95 => Some("compact now"),
-            Some(percent) if percent >= 90 => Some("auto-compact soon"),
-            Some(percent) if percent >= 80 => Some("warning"),
-            _ => None,
-        }
+        rocode_types::context_pressure_label(percent)
     }
 
     fn footer_text(&self) -> String {

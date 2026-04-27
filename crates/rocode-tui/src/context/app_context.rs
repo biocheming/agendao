@@ -9,10 +9,7 @@ use std::sync::Arc;
 use crate::api::{ApiClient, SessionExecutionTopology, SessionTelemetrySnapshot};
 use crate::bridge::{UiBridge, UiBridgeSnapshot};
 use crate::components::SessionView;
-use crate::context::{
-    ChildSessionInfo, KeybindRegistry, Message, MessagePart, MessageRole, SessionContext,
-    TokenUsage,
-};
+use crate::context::{ChildSessionInfo, KeybindRegistry, MessageRole, SessionContext, TokenUsage};
 use crate::event::{CustomEvent, Event};
 use crate::router::Router;
 use crate::theme::Theme;
@@ -1069,74 +1066,18 @@ fn current_context_tokens_from_state(state: &SessionState) -> Option<u64> {
         .session_runtime
         .as_ref()
         .and_then(|runtime| runtime.active_stage_id.as_deref());
-    if let Some(active_stage_id) = active_stage_id {
-        if let Some(tokens) = state
+    let active_stage_context_tokens = active_stage_id.and_then(|active_stage_id| {
+        state
             .stage_summaries
             .iter()
             .find(|stage| stage.stage_id == active_stage_id)
             .and_then(|stage| stage.estimated_context_tokens)
-            .filter(|tokens| *tokens > 0)
-        {
-            return Some(usage_context_tokens.map_or(tokens, |usage| usage.max(tokens)));
-        }
-    }
+    });
 
-    usage_context_tokens
-        .or_else(|| estimate_current_context_tokens_from_messages(&state.data.current_messages()))
-}
-
-fn estimate_current_context_tokens_from_messages(messages: &[&Message]) -> Option<u64> {
-    let tail_start = messages
-        .iter()
-        .rposition(|message| {
-            message.parts.iter().any(
-                |part| matches!(part, MessagePart::Text { text } if text.starts_with("Compacted ")),
-            )
-        })
-        .unwrap_or(0);
-    let tail = &messages[tail_start..];
-
-    latest_prompt_input_tokens(tail).or_else(|| estimate_tail_content_tokens(tail))
-}
-
-fn latest_prompt_input_tokens(messages: &[&Message]) -> Option<u64> {
-    messages.iter().rev().find_map(|message| {
-        if !matches!(message.role, MessageRole::Assistant) {
-            return None;
-        }
-        if message.tokens.input > 0 {
-            return Some(message.tokens.input);
-        }
-        message
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.get("scheduler_stage_prompt_tokens"))
-            .and_then(|value| value.as_u64())
-            .filter(|tokens| *tokens > 0)
-    })
-}
-
-fn estimate_tail_content_tokens(messages: &[&Message]) -> Option<u64> {
-    let total_chars: usize = messages
-        .iter()
-        .flat_map(|message| message.parts.iter())
-        .map(|part| match part {
-            MessagePart::Text { text } | MessagePart::Reasoning { text } => text.len(),
-            MessagePart::File { path, mime } => path.len() + mime.len(),
-            MessagePart::Image { url } => url.len(),
-            MessagePart::ToolCall {
-                name, arguments, ..
-            } => name.len() + arguments.len(),
-            MessagePart::ToolResult { result, title, .. } => {
-                result.len() + title.as_ref().map_or(0, |value| value.len())
-            }
-        })
-        .sum();
-    if total_chars == 0 {
-        None
-    } else {
-        Some((total_chars as u64 / 4).max(1))
-    }
+    rocode_types::current_context_tokens_from_sources(
+        usage_context_tokens,
+        active_stage_context_tokens,
+    )
 }
 
 impl Default for AppContext {

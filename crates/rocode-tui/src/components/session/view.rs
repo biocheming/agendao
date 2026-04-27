@@ -858,11 +858,14 @@ impl SessionView {
             }
         }
 
-        let meter_style = match footer.context_meter_percent {
-            Some(percent) if percent >= 95 => Style::default().fg(theme.error),
-            Some(percent) if percent >= 80 => Style::default().fg(theme.warning),
-            Some(_) => Style::default().fg(theme.success),
-            None => Style::default().fg(theme.text_muted),
+        let meter_style = match rocode_types::context_pressure_for_percent(footer.context_meter_percent) {
+            rocode_types::ContextPressure::Critical => Style::default().fg(theme.error),
+            rocode_types::ContextPressure::AutoCompactSoon
+            | rocode_types::ContextPressure::Warning => Style::default().fg(theme.warning),
+            rocode_types::ContextPressure::Normal if footer.context_meter_percent.is_some() => {
+                Style::default().fg(theme.success)
+            }
+            rocode_types::ContextPressure::Normal => Style::default().fg(theme.text_muted),
         };
         let mut left_spans = vec![Span::styled(
             footer.directory.clone(),

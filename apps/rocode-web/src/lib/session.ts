@@ -1,7 +1,28 @@
 export interface PersistedStageTelemetrySummary {
   stage_id: string;
   stage_name: string;
+  index?: number | null;
+  total?: number | null;
+  step?: number | null;
+  step_total?: number | null;
   status: string;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  reasoning_tokens?: number | null;
+  cache_read_tokens?: number | null;
+  cache_write_tokens?: number | null;
+  focus?: string | null;
+  last_event?: string | null;
+  waiting_on?: string | null;
+  estimated_context_tokens?: number | null;
+  skill_tree_budget?: number | null;
+  skill_tree_truncation_strategy?: string | null;
+  skill_tree_truncated?: boolean | null;
+  retry_attempt?: number | null;
+  active_agent_count?: number;
+  active_tool_count?: number;
+  child_session_count?: number;
+  primary_child_session_id?: string | null;
 }
 
 export interface PersistedSessionTelemetrySnapshot {

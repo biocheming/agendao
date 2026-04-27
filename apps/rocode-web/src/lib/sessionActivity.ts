@@ -4,6 +4,7 @@ import type {
   SessionMemoryTelemetryRecord,
 } from "./memory";
 import type { SessionMultimodalInsight } from "./multimodal";
+import type { PersistedSessionTelemetrySnapshot } from "./session";
 
 export interface ExecutionNodeRecord {
   id: string;
@@ -69,15 +70,6 @@ export interface StageSummaryRecord {
   primary_child_session_id?: string | null;
 }
 
-export interface SessionInsightsTelemetryRecord {
-  version: string;
-  usage: SessionUsageRecord;
-  stage_summaries: StageSummaryRecord[];
-  memory?: SessionMemoryTelemetryRecord | null;
-  last_run_status: string;
-  updated_at: number;
-}
-
 export interface SessionInsightsMemoryRecord {
   summary: SessionMemoryTelemetryRecord;
   frozen_snapshot?: MemoryRetrievalPacketRecord | null;
@@ -90,7 +82,7 @@ export interface SessionInsightsRecord {
   title: string;
   directory: string;
   updated: number;
-  telemetry?: SessionInsightsTelemetryRecord | null;
+  telemetry?: PersistedSessionTelemetrySnapshot | null;
   memory?: SessionInsightsMemoryRecord | null;
   multimodal?: SessionMultimodalInsight | null;
 }

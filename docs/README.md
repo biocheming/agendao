@@ -1,6 +1,6 @@
 # ROCode Docs
 
-文档基线：`v2026.4.26`（更新日期：`2026-04-26`）
+文档基线：`v2026.4.27`（更新日期：`2026-04-27`）
 
 This directory contains product-facing examples and design references for ROCode features.
 

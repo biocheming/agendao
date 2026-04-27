@@ -9,6 +9,7 @@ import type { FeedMessage } from "../lib/history";
 import type { FileTreeNodeRecord } from "../lib/workspace";
 import { WorkspaceTreeNode } from "./WorkspaceTreeNode";
 import { DeferredTerminalPanel } from "./DeferredTerminalPanel";
+import { PanelErrorBoundary } from "./PanelErrorBoundary";
 
 const ExecutionActivityPanel = React.lazy(async () => {
   const module = await import("./ExecutionActivityPanel");
@@ -303,27 +304,33 @@ export function WorkspaceInspectorPanel({
         )}
       </div>
 
-      <Suspense fallback={<InspectorLoadingCard label="scheduler activity" />}>
-        <ExecutionActivityPanel
-          activity={executionActivity}
-          activeStageId={activeStageId}
-          previewStageId={previewStageId}
-          onJumpToConversation={conversationJump.jumpOrQueueConversationTarget}
-          onNavigateStage={schedulerNavigation.navigateToStage}
-          onNavigateChildSession={schedulerNavigation.navigateToChildSession}
-          onNavigateToolCall={schedulerNavigation.navigateToToolCall}
+      <PanelErrorBoundary label="Scheduler Activity">
+        <Suspense fallback={<InspectorLoadingCard label="scheduler activity" />}>
+          <ExecutionActivityPanel
+            activity={executionActivity}
+            activeStageId={activeStageId}
+            previewStageId={previewStageId}
+            onJumpToConversation={conversationJump.jumpOrQueueConversationTarget}
+            onNavigateStage={schedulerNavigation.navigateToStage}
+            onNavigateChildSession={schedulerNavigation.navigateToChildSession}
+            onNavigateToolCall={schedulerNavigation.navigateToToolCall}
+          />
+        </Suspense>
+      </PanelErrorBoundary>
+
+      <PanelErrorBoundary label="Session Insights">
+        <Suspense fallback={<InspectorLoadingCard label="session insights" />}>
+          <SessionInsightsPanel activity={executionActivity} apiJson={apiJson} />
+        </Suspense>
+      </PanelErrorBoundary>
+
+      <PanelErrorBoundary label="Terminal">
+        <DeferredTerminalPanel
+          expanded={terminalExpanded}
+          onExpand={onExpandTerminal}
+          terminal={terminalSessions}
         />
-      </Suspense>
-
-      <Suspense fallback={<InspectorLoadingCard label="session insights" />}>
-        <SessionInsightsPanel activity={executionActivity} apiJson={apiJson} />
-      </Suspense>
-
-      <DeferredTerminalPanel
-        expanded={terminalExpanded}
-        onExpand={onExpandTerminal}
-        terminal={terminalSessions}
-      />
+      </PanelErrorBoundary>
     </div>
   );
 }

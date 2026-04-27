@@ -85,6 +85,7 @@ export interface MessageRecord {
   role: string;
   tokens?: {
     input: number;
+    context?: number;
     output: number;
     reasoning: number;
     cache_read: number;
