@@ -45,18 +45,20 @@ pub(crate) fn skill_hub_routes() -> Router<Arc<ServerState>> {
 async fn list_managed_skills(
     State(state): State<Arc<ServerState>>,
 ) -> Result<Json<SkillHubManagedResponse>> {
-    let authority = skill_governance_authority(&state);
-    let managed_skills = authority
-        .refresh_managed_workspace_state()
-        .map_err(map_skill_error_to_api_error)?;
+    let managed_skills = run_skill_hub_blocking(state, |authority| {
+        authority
+            .refresh_managed_workspace_state()
+            .map_err(map_skill_error_to_api_error)
+    })
+    .await?;
     Ok(Json(SkillHubManagedResponse { managed_skills }))
 }
 
 async fn list_source_indices(
     State(state): State<Arc<ServerState>>,
 ) -> Result<Json<SkillHubIndexResponse>> {
-    let authority = skill_governance_authority(&state);
-    let snapshot = authority.governance_snapshot();
+    let snapshot = run_skill_hub_blocking(state, |authority| Ok(authority.governance_snapshot()))
+        .await?;
     Ok(Json(SkillHubIndexResponse {
         source_indices: snapshot.source_indices,
     }))
@@ -65,68 +67,67 @@ async fn list_source_indices(
 async fn list_distributions(
     State(state): State<Arc<ServerState>>,
 ) -> Result<Json<SkillHubDistributionResponse>> {
-    let authority = skill_governance_authority(&state);
-    Ok(Json(SkillHubDistributionResponse {
-        distributions: authority.distributions(),
-    }))
+    let distributions = run_skill_hub_blocking(state, |authority| Ok(authority.distributions()))
+        .await?;
+    Ok(Json(SkillHubDistributionResponse { distributions }))
 }
 
 async fn list_artifact_cache(
     State(state): State<Arc<ServerState>>,
 ) -> Result<Json<SkillHubArtifactCacheResponse>> {
-    let authority = skill_governance_authority(&state);
-    Ok(Json(SkillHubArtifactCacheResponse {
-        artifact_cache: authority.artifact_cache(),
-    }))
+    let artifact_cache =
+        run_skill_hub_blocking(state, |authority| Ok(authority.artifact_cache())).await?;
+    Ok(Json(SkillHubArtifactCacheResponse { artifact_cache }))
 }
 
 async fn get_artifact_policy(
     State(state): State<Arc<ServerState>>,
 ) -> Result<Json<SkillHubPolicyResponse>> {
-    let authority = skill_governance_authority(&state);
-    Ok(Json(SkillHubPolicyResponse {
-        policy: authority.artifact_policy(),
-    }))
+    let policy = run_skill_hub_blocking(state, |authority| Ok(authority.artifact_policy())).await?;
+    Ok(Json(SkillHubPolicyResponse { policy }))
 }
 
 async fn list_lifecycle_records(
     State(state): State<Arc<ServerState>>,
 ) -> Result<Json<SkillHubLifecycleResponse>> {
-    let authority = skill_governance_authority(&state);
-    Ok(Json(SkillHubLifecycleResponse {
-        lifecycle: authority.lifecycle_records(),
-    }))
+    let lifecycle =
+        run_skill_hub_blocking(state, |authority| Ok(authority.lifecycle_records())).await?;
+    Ok(Json(SkillHubLifecycleResponse { lifecycle }))
 }
 
 async fn refresh_source_index(
     State(state): State<Arc<ServerState>>,
     Json(req): Json<SkillHubIndexRefreshRequest>,
 ) -> Result<Json<SkillHubIndexRefreshResponse>> {
-    let authority = skill_governance_authority(&state);
-    let snapshot = authority
-        .refresh_source_index(&req.source, "route:/skill/hub/index/refresh")
-        .map_err(map_skill_error_to_api_error)?;
+    let source = req.source;
+    let snapshot = run_skill_hub_blocking(state, move |authority| {
+        authority
+            .refresh_source_index(&source, "route:/skill/hub/index/refresh")
+            .map_err(map_skill_error_to_api_error)
+    })
+    .await?;
     Ok(Json(SkillHubIndexRefreshResponse { snapshot }))
 }
 
 async fn list_audit_events(
     State(state): State<Arc<ServerState>>,
 ) -> Result<Json<SkillHubAuditResponse>> {
-    let authority = skill_governance_authority(&state);
-    Ok(Json(SkillHubAuditResponse {
-        audit_events: authority.audit_tail(),
-    }))
+    let audit_events = run_skill_hub_blocking(state, |authority| Ok(authority.audit_tail())).await?;
+    Ok(Json(SkillHubAuditResponse { audit_events }))
 }
 
 async fn list_governance_timeline(
     State(state): State<Arc<ServerState>>,
     Query(mut query): Query<SkillHubTimelineQuery>,
 ) -> Result<Json<SkillHubTimelineResponse>> {
-    let authority = skill_governance_authority(&state);
     query.skill_name = trimmed_option(query.skill_name);
     query.source_id = trimmed_option(query.source_id);
+    let entries = run_skill_hub_blocking(state, move |authority| {
+        Ok(authority.governance_timeline(&query))
+    })
+    .await?;
     Ok(Json(SkillHubTimelineResponse {
-        entries: authority.governance_timeline(&query),
+        entries,
     }))
 }
 
@@ -134,10 +135,13 @@ async fn plan_skill_sync(
     State(state): State<Arc<ServerState>>,
     Json(req): Json<SkillHubSyncPlanRequest>,
 ) -> Result<Json<SkillHubSyncPlanResponse>> {
-    let authority = skill_governance_authority(&state);
-    let plan = authority
-        .plan_sync(&req.source)
-        .map_err(map_skill_error_to_api_error)?;
+    let source = req.source;
+    let plan = run_skill_hub_blocking(state, move |authority| {
+        authority
+            .plan_sync(&source)
+            .map_err(map_skill_error_to_api_error)
+    })
+    .await?;
     Ok(Json(SkillHubSyncPlanResponse {
         plan,
         guard_reports: Vec::new(),
@@ -148,14 +152,20 @@ async fn run_skill_guard(
     State(state): State<Arc<ServerState>>,
     Json(req): Json<SkillHubGuardRunRequest>,
 ) -> Result<Json<SkillHubGuardRunResponse>> {
-    let authority = skill_governance_authority(&state);
-    let reports = match (trimmed_option(req.skill_name), req.source) {
-        (Some(skill_name), None) => authority
-            .run_guard_for_skill(&skill_name, "route:/skill/hub/guard/run")
-            .map_err(map_skill_error_to_api_error)?,
-        (None, Some(source)) => authority
-            .run_guard_for_source(&source, "route:/skill/hub/guard/run")
-            .map_err(map_skill_error_to_api_error)?,
+    let target = (trimmed_option(req.skill_name), req.source);
+    let reports = match target {
+        (Some(skill_name), None) => run_skill_hub_blocking(state, move |authority| {
+            authority
+                .run_guard_for_skill(&skill_name, "route:/skill/hub/guard/run")
+                .map_err(map_skill_error_to_api_error)
+        })
+        .await?,
+        (None, Some(source)) => run_skill_hub_blocking(state, move |authority| {
+            authority
+                .run_guard_for_source(&source, "route:/skill/hub/guard/run")
+                .map_err(map_skill_error_to_api_error)
+        })
+        .await?,
         (Some(_), Some(_)) => {
             return Err(ApiError::BadRequest(
                 "guard run accepts either `skill_name` or `source`, not both".to_string(),
@@ -174,11 +184,14 @@ async fn plan_remote_install(
     State(state): State<Arc<ServerState>>,
     Json(req): Json<SkillHubRemoteInstallPlanRequest>,
 ) -> Result<Json<SkillRemoteInstallPlan>> {
-    let authority = skill_governance_authority(&state);
     let skill_name = required_string(Some(req.skill_name), "skill_name")?;
-    let response = authority
-        .plan_remote_install(&req.source, &skill_name, "route:/skill/hub/install/plan")
-        .map_err(map_skill_error_to_api_error)?;
+    let source = req.source;
+    let response = run_skill_hub_blocking(state, move |authority| {
+        authority
+            .plan_remote_install(&source, &skill_name, "route:/skill/hub/install/plan")
+            .map_err(map_skill_error_to_api_error)
+    })
+    .await?;
     Ok(Json(response))
 }
 
@@ -196,10 +209,13 @@ async fn apply_remote_install(
     .await
     .map_err(map_tool_error_to_api_error)?;
 
-    let authority = skill_governance_authority(&state);
-    let response = authority
-        .apply_remote_install(&req.source, &skill_name, "route:/skill/hub/install/apply")
-        .map_err(map_skill_error_to_api_error)?;
+    let source = req.source;
+    let response = run_skill_hub_blocking(state, move |authority| {
+        authority
+            .apply_remote_install(&source, &skill_name, "route:/skill/hub/install/apply")
+            .map_err(map_skill_error_to_api_error)
+    })
+    .await?;
     Ok(Json(response))
 }
 
@@ -207,11 +223,14 @@ async fn plan_remote_update(
     State(state): State<Arc<ServerState>>,
     Json(req): Json<SkillHubRemoteUpdatePlanRequest>,
 ) -> Result<Json<SkillRemoteInstallPlan>> {
-    let authority = skill_governance_authority(&state);
     let skill_name = required_string(Some(req.skill_name), "skill_name")?;
-    let response = authority
-        .plan_remote_update(&req.source, &skill_name, "route:/skill/hub/update/plan")
-        .map_err(map_skill_error_to_api_error)?;
+    let source = req.source;
+    let response = run_skill_hub_blocking(state, move |authority| {
+        authority
+            .plan_remote_update(&source, &skill_name, "route:/skill/hub/update/plan")
+            .map_err(map_skill_error_to_api_error)
+    })
+    .await?;
     Ok(Json(response))
 }
 
@@ -229,10 +248,13 @@ async fn apply_remote_update(
     .await
     .map_err(map_tool_error_to_api_error)?;
 
-    let authority = skill_governance_authority(&state);
-    let response = authority
-        .apply_remote_update(&req.source, &skill_name, "route:/skill/hub/update/apply")
-        .map_err(map_skill_error_to_api_error)?;
+    let source = req.source;
+    let response = run_skill_hub_blocking(state, move |authority| {
+        authority
+            .apply_remote_update(&source, &skill_name, "route:/skill/hub/update/apply")
+            .map_err(map_skill_error_to_api_error)
+    })
+    .await?;
     Ok(Json(response))
 }
 
@@ -250,10 +272,13 @@ async fn detach_managed_skill(
     .await
     .map_err(map_tool_error_to_api_error)?;
 
-    let authority = skill_governance_authority(&state);
-    let response = authority
-        .detach_managed_skill(&req.source, &skill_name, "route:/skill/hub/detach")
-        .map_err(map_skill_error_to_api_error)?;
+    let source = req.source;
+    let response = run_skill_hub_blocking(state, move |authority| {
+        authority
+            .detach_managed_skill(&source, &skill_name, "route:/skill/hub/detach")
+            .map_err(map_skill_error_to_api_error)
+    })
+    .await?;
     Ok(Json(response))
 }
 
@@ -271,10 +296,13 @@ async fn remove_managed_skill(
     .await
     .map_err(map_tool_error_to_api_error)?;
 
-    let authority = skill_governance_authority(&state);
-    let response = authority
-        .remove_managed_skill(&req.source, &skill_name, "route:/skill/hub/remove")
-        .map_err(map_skill_error_to_api_error)?;
+    let source = req.source;
+    let response = run_skill_hub_blocking(state, move |authority| {
+        authority
+            .remove_managed_skill(&source, &skill_name, "route:/skill/hub/remove")
+            .map_err(map_skill_error_to_api_error)
+    })
+    .await?;
     Ok(Json(response))
 }
 
@@ -291,10 +319,13 @@ async fn apply_skill_sync(
     .await
     .map_err(map_tool_error_to_api_error)?;
 
-    let authority = skill_governance_authority(&state);
-    let response = authority
-        .apply_sync(&req.source, "route:/skill/hub/sync/apply")
-        .map_err(map_skill_error_to_api_error)?;
+    let source = req.source;
+    let response = run_skill_hub_blocking(state, move |authority| {
+        authority
+            .apply_sync(&source, "route:/skill/hub/sync/apply")
+            .map_err(map_skill_error_to_api_error)
+    })
+    .await?;
     Ok(Json(SkillHubSyncPlanResponse {
         plan: response.plan,
         guard_reports: response.guard_reports,
@@ -401,6 +432,19 @@ fn map_skill_error_to_api_error(error: SkillError) -> ApiError {
         | SkillError::WriteFailed { .. }
         | SkillError::CachePoisoned { .. } => ApiError::InternalError(error.to_string()),
     }
+}
+
+async fn run_skill_hub_blocking<T, F>(state: Arc<ServerState>, operation: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce(SkillGovernanceAuthority) -> Result<T> + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let authority = skill_governance_authority(&state);
+        operation(authority)
+    })
+    .await
+    .map_err(|error| ApiError::InternalError(format!("skill hub task failed to join: {error}")))?
 }
 
 fn skill_governance_authority(state: &Arc<ServerState>) -> SkillGovernanceAuthority {
