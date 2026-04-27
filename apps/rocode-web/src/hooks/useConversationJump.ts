@@ -3,12 +3,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 export interface FeedJumpMessage {
   feedId: string;
+  anchorId?: string;
   kind?: string;
   id?: string;
   stage_id?: string;
 }
 
 export interface ConversationJumpTarget {
+  messageId?: string | null;
   executionId?: string | null;
   toolCallId?: string | null;
   stageId?: string | null;
@@ -28,6 +30,18 @@ function toolCallIdFromExecutionId(executionId?: string | null) {
 
 function findConversationTarget(messages: FeedJumpMessage[], target: ConversationJumpTarget) {
   const toolCallId = target.toolCallId || toolCallIdFromExecutionId(target.executionId);
+  if (target.messageId) {
+    const anchorMessage = [...messages]
+      .reverse()
+      .find(
+        (message) =>
+          message.anchorId === target.messageId ||
+          message.id === target.messageId ||
+          message.feedId === target.messageId,
+      );
+    if (anchorMessage) return anchorMessage;
+  }
+
   if (toolCallId) {
     const toolMessage = [...messages]
       .reverse()

@@ -98,5 +98,6 @@ export interface MessageRecord {
 
 export interface FeedMessage extends OutputBlock {
   feedId: string;
+  anchorId?: string;
   text: string;
 }

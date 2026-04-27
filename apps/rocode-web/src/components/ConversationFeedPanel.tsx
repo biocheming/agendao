@@ -21,9 +21,13 @@ interface ConversationFeedPanelProps {
   historyLoading: boolean;
   messages: FeedMessage[];
   highlightedFeedId: string | null;
+  highlightedMessageIds?: Set<string>;
   activeStageId: string | null;
   activeToolCallId: string | null;
+  selectedMessageIds?: Set<string>;
   streaming?: boolean;
+  onCopyMessageLink?: (message: FeedMessage) => Promise<void> | void;
+  onToggleMessageSelected?: (message: FeedMessage) => void;
   onNavigateStage: (stageId: string) => void;
   onNavigateChildSession: (
     sessionId: string,
@@ -117,9 +121,13 @@ export function ConversationFeedPanel({
   historyLoading,
   messages,
   highlightedFeedId,
+  highlightedMessageIds,
   activeStageId,
   activeToolCallId,
+  selectedMessageIds,
   streaming = false,
+  onCopyMessageLink,
+  onToggleMessageSelected,
   onNavigateStage,
   onNavigateChildSession,
 }: ConversationFeedPanelProps) {
@@ -251,9 +259,12 @@ export function ConversationFeedPanel({
               <MessageCard
                 key={message.feedId}
                 message={message}
-                highlighted={highlightedFeedId === message.feedId}
+                highlighted={highlightedFeedId === message.feedId || Boolean(message.anchorId && highlightedMessageIds?.has(message.anchorId))}
+                selected={Boolean(message.anchorId && selectedMessageIds?.has(message.anchorId))}
                 activeStageId={activeStageId}
                 activeToolCallId={activeToolCallId}
+                onCopyMessageLink={onCopyMessageLink}
+                onToggleSelected={onToggleMessageSelected}
                 onNavigateStage={onNavigateStage}
                 onNavigateChildSession={onNavigateChildSession}
               />

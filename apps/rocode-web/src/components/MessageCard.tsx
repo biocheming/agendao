@@ -27,8 +27,11 @@ import {
 interface MessageCardProps {
   message: FeedMessage;
   highlighted?: boolean;
+  selected?: boolean;
   activeStageId?: string | null;
   activeToolCallId?: string | null;
+  onCopyMessageLink?: (message: FeedMessage) => Promise<void> | void;
+  onToggleSelected?: (message: FeedMessage) => void;
   onNavigateStage: (stageId: string) => void;
   onNavigateChildSession: (
     sessionId: string,
@@ -467,8 +470,11 @@ function ToolBlock({ message, active }: { message: OutputBlock; active: boolean 
 export function MessageCard({
   message,
   highlighted = false,
+  selected = false,
   activeStageId = null,
   activeToolCallId = null,
+  onCopyMessageLink,
+  onToggleSelected,
   onNavigateStage,
   onNavigateChildSession,
 }: MessageCardProps) {
@@ -528,6 +534,7 @@ export function MessageCard({
       className={cn("grid min-w-0 gap-1", isUser && "justify-items-end")}
       data-testid="message-card"
       data-feed-id={message.feedId}
+      data-message-anchor={message.anchorId}
       data-block-id={message.id}
       data-stage-id={message.stage_id}
       data-kind={message.kind}
@@ -541,6 +548,15 @@ export function MessageCard({
         >
           <div className="roc-message-meta-row">
             <div className="roc-message-meta-group">
+              {onToggleSelected && message.anchorId ? (
+                <input
+                  type="checkbox"
+                  className="h-3.5 w-3.5 accent-current"
+                  checked={selected}
+                  aria-label="Select message"
+                  onChange={() => onToggleSelected(message)}
+                />
+              ) : null}
               <span className="roc-section-label">{roleLabel}</span>
               {clock ? <span className="roc-badge">{clock}</span> : null}
             </div>
@@ -585,6 +601,24 @@ export function MessageCard({
                 {summary ? <p className="roc-message-summary">{summary}</p> : null}
               </div>
               <TooltipProvider>
+                {onCopyMessageLink && message.anchorId ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="roc-action roc-action-compact h-7 w-7 rounded-full text-muted-foreground hover:text-foreground"
+                        title="Copy message link"
+                        onClick={() => void onCopyMessageLink(message)}
+                      >
+                        <InfoIcon className="size-3.5" />
+                        <span className="sr-only">Copy message link</span>
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">Copy message link</TooltipContent>
+                  </Tooltip>
+                ) : null}
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
