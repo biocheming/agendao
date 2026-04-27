@@ -122,7 +122,7 @@ export function InteractionOverlays({
       ) : null}
 
       {permission ? (
-        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center" data-testid="permission-overlay" onClick={() => onReplyPermission("reject")}>
+        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center" data-testid="permission-overlay">
           <section className="w-full max-w-lg bg-card rounded-3xl border border-border shadow-2xl p-6 flex flex-col gap-5" data-testid="permission-modal" onClick={(event) => event.stopPropagation()}>
             <header className="flex items-center justify-between">
               <h2>Permission</h2>
