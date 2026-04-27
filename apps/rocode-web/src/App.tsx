@@ -1673,8 +1673,15 @@ export default function App() {
         return;
       }
 
-      if (type === "permission.resolved" && eventSessionId === selectedSessionRef.current) {
-        setPermission(null);
+      if (type === "permission.resolved") {
+        const resolvedPermissionId = String(event.permissionID ?? "");
+        setPermission((current) => {
+          if (!current) return null;
+          if (resolvedPermissionId && current.permission_id !== resolvedPermissionId) {
+            return current;
+          }
+          return null;
+        });
         setPermissionSubmitting(false);
       }
     };
@@ -2022,17 +2029,20 @@ export default function App() {
   };
 
   const replyPermission = async (reply: "once" | "always" | "reject") => {
-    if (!permission) return;
+    const currentPermission = permission;
+    if (!currentPermission || permissionSubmitting) return;
     setPermissionSubmitting(true);
     try {
-      await api(`/permission/${permission.permission_id}/reply`, {
+      await api(`/permission/${currentPermission.permission_id}/reply`, {
         method: "POST",
         body: JSON.stringify({ reply }),
       });
-      setPermission(null);
     } catch (error) {
       setBanner(`Permission reply failed: ${formatError(error)}`);
     } finally {
+      setPermission((current) =>
+        current?.permission_id === currentPermission.permission_id ? null : current,
+      );
       setPermissionSubmitting(false);
     }
   };
