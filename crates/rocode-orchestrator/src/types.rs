@@ -27,7 +27,7 @@ pub struct AgentDescriptor {
     pub allowed_tools: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelRef {
     #[serde(alias = "providerId")]
     pub provider_id: String,

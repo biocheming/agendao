@@ -5,9 +5,12 @@ use crate::iterative_workflow::{
 };
 use crate::tool_runner::{ToolCallInput, ToolRunner};
 use crate::types::{ExecutionContext, OrchestratorOutput};
+use crate::verifier_engine::{VerifierEngine, VerifierRuntimeState};
+use crate::verifier_trace::{trajectory_fingerprint, VerifierCommandTrace, VerifierTraceSnapshot};
 use crate::workflow_artifacts::{
     workflow_run_dir, WorkflowArtifactWriter, WorkflowBaselineRecord, WorkflowCommandArtifact,
     WorkflowIterationRecord, WorkflowModeArtifact, WorkflowRunSummaryRecord,
+    WorkflowVerifierSummary,
 };
 use crate::workflow_mode::{
     mode_protocol_for, ModeFinalizeContext, ModeIterationContext, WorkflowModeProtocol,
@@ -44,6 +47,8 @@ pub struct WorkflowController {
     rework_attempts: u32,
     stuck_counter: u32,
     pending_tool_calls: u32,
+    verifier_state: Option<VerifierRuntimeState>,
+    verifier_engine: Option<VerifierEngine>,
 }
 
 impl WorkflowController {
@@ -63,13 +68,36 @@ impl WorkflowController {
         let policy = config.decision_policy.clone().ok_or_else(|| {
             OrchestratorError::Other("workflow decisionPolicy is required".to_string())
         })?;
+        let verify_mode = matches!(
+            config.workflow.mode,
+            crate::iterative_workflow::IterativeWorkflowMode::Verify
+        );
+        let verifier_engine = if verify_mode {
+            Some(VerifierEngine::new(
+                config
+                    .verifier
+                    .clone()
+                    .expect("verify mode requires verifier config"),
+                objective.goal.clone(),
+                objective.direction,
+            ))
+        } else {
+            None
+        };
+        let artifacts = WorkflowArtifactWriter::new(&config, &exec_ctx, profile_name.as_deref())?;
+        let mut verifier_state = verify_mode.then(VerifierRuntimeState::new);
+        if let (Some(engine), Some(state)) = (verifier_engine.as_ref(), verifier_state.as_mut()) {
+            if let Some(cache) = artifacts.read_verifier_cache()? {
+                engine.import_cache(state, cache);
+            }
+        }
 
         Ok(Some(Self {
             objective: objective.clone(),
             runner: VerificationRunner::new(tool_runner, exec_ctx.clone()),
             evaluator: ObjectiveEvaluator::new(&objective)?,
             policy: DecisionPolicy::new(policy, config.iteration_policy.clone()),
-            artifacts: WorkflowArtifactWriter::new(&config, &exec_ctx, profile_name.as_deref())?,
+            artifacts,
             mode_protocol: mode_protocol_for(&config),
             mode_iteration_notes: Vec::new(),
             pending_iteration_brief: None,
@@ -81,7 +109,21 @@ impl WorkflowController {
             rework_attempts: 0,
             stuck_counter: 0,
             pending_tool_calls: 0,
+            verifier_state,
+            verifier_engine,
         }))
+    }
+
+    pub fn bind_verifier_judge(
+        &mut self,
+        model_resolver: std::sync::Arc<dyn crate::traits::ModelResolver>,
+        lifecycle_hook: std::sync::Arc<dyn crate::traits::LifecycleHook>,
+        cancel_token: std::sync::Arc<dyn crate::runtime::events::CancelToken>,
+        exec_ctx: ExecutionContext,
+    ) {
+        if let Some(engine) = self.verifier_engine.as_mut() {
+            engine.bind_judge(model_resolver, lifecycle_hook, cancel_token, exec_ctx);
+        }
     }
 
     pub fn supports(config: &IterativeWorkflowConfig) -> bool {
@@ -283,6 +325,7 @@ impl WorkflowController {
     pub(crate) async fn evaluate_round(
         &mut self,
         iteration: u32,
+        execution_output: &OrchestratorOutput,
         structured_artifacts: Vec<WorkflowModeArtifact>,
     ) -> Result<WorkflowGateResult, OrchestratorError> {
         let objective = self.objective().clone();
@@ -318,6 +361,12 @@ impl WorkflowController {
             }
         }
 
+        let verifier_change_summary = self
+            .active_checkpoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.change_summary(&self.objective.scope.include))
+            .unwrap_or_default();
+
         if let Err(err) = self.apply_checkpoint_outcome(&decision) {
             let reason = format!("snapshot action failed: {err}");
             let _ = self.orphan_active_checkpoint();
@@ -329,9 +378,20 @@ impl WorkflowController {
             iteration,
             &decision,
             &evaluation,
-            structured_artifacts,
+            structured_artifacts.clone(),
             &mut gate_decision,
         );
+        if let Some(latest_candidate_id) = self.record_verifier_candidate(
+            iteration,
+            execution_output,
+            &decision,
+            &evaluation,
+            &structured_artifacts,
+            verifier_change_summary,
+        ) {
+            self.select_verifier_candidate(&latest_candidate_id).await;
+        }
+        self.apply_selected_verifier_terminal_override(&mut gate_decision);
         let workspace_update = match decision {
             IterationDecision::Keep | IterationDecision::StopSatisfied => self
                 .workspace
@@ -377,6 +437,98 @@ impl WorkflowController {
 
     fn objective(&self) -> &ObjectiveDefinition {
         &self.objective
+    }
+
+    fn record_verifier_candidate(
+        &mut self,
+        iteration: u32,
+        execution_output: &OrchestratorOutput,
+        decision: &IterationDecision,
+        evaluation: &ObjectiveEvaluation,
+        structured_artifacts: &[WorkflowModeArtifact],
+        change_summary: Vec<String>,
+    ) -> Option<String> {
+        if !matches!(
+            self.config.workflow.mode,
+            crate::iterative_workflow::IterativeWorkflowMode::Verify
+        ) {
+            return None;
+        }
+        if !matches!(
+            decision,
+            IterationDecision::Keep | IterationDecision::StopSatisfied
+        ) {
+            return None;
+        }
+
+        let (Some(engine), Some(state)) =
+            (self.verifier_engine.as_ref(), self.verifier_state.as_mut())
+        else {
+            return None;
+        };
+
+        Some(engine.record_candidate(
+            state,
+            iteration,
+            execution_output.content.clone(),
+            evaluation.metric.as_ref().map(|sample| sample.value),
+            build_verifier_trace_snapshot(
+                iteration,
+                execution_output,
+                evaluation,
+                self.objective.direction,
+                change_summary,
+                summarize_execution_metadata_for_verifier(execution_output),
+                summarize_mode_artifacts_for_verifier(structured_artifacts),
+            ),
+        ))
+    }
+
+    async fn select_verifier_candidate(&mut self, latest_candidate_id: &str) {
+        let (Some(engine), Some(state)) =
+            (self.verifier_engine.as_ref(), self.verifier_state.as_mut())
+        else {
+            return;
+        };
+        engine.select_candidate(state, latest_candidate_id).await;
+    }
+
+    fn apply_selected_verifier_terminal_override(
+        &self,
+        gate_decision: &mut SchedulerExecutionGateDecision,
+    ) {
+        if !matches!(
+            self.config.workflow.mode,
+            crate::iterative_workflow::IterativeWorkflowMode::Verify
+        ) {
+            return;
+        }
+        if gate_decision.status != SchedulerExecutionGateStatus::Done {
+            return;
+        }
+        let Some(candidate) = self.selected_verifier_candidate() else {
+            return;
+        };
+        if !candidate.output_content.trim().is_empty() {
+            gate_decision.final_response = Some(candidate.output_content.clone());
+        }
+        gate_decision.summary = format!(
+            "{} Selected verifier candidate {}.",
+            gate_decision.summary.trim(),
+            candidate.candidate_id
+        )
+        .trim()
+        .to_string();
+    }
+
+    fn selected_verifier_candidate(&self) -> Option<&crate::verifier_engine::VerifierCandidate> {
+        let state = self.verifier_state.as_ref()?;
+        self.verifier_engine.as_ref()?.selected_candidate(state)
+    }
+
+    fn build_verifier_summary(&self) -> Option<WorkflowVerifierSummary> {
+        let state = self.verifier_state.as_ref()?;
+        Some(self.verifier_engine.as_ref()?.build_summary(state))
     }
 
     fn apply_mode_gate_annotation(
@@ -471,15 +623,46 @@ impl WorkflowController {
         });
         summary.kept_commits = workspace_update.kept_commits;
         summary.squashed_commit = workspace_update.squashed_commit;
-        summary.mode_report = Some(self.mode_protocol.finalize_report(
+        let mut mode_report = self.mode_protocol.finalize_report(
             &ModeFinalizeContext {
                 iterations_completed: summary.iterations_completed,
                 objective_satisfied: summary.objective_satisfied,
                 final_decision: summary.final_decision.clone(),
             },
             &self.mode_iteration_notes,
-        ));
+        );
+        if let Some(selected) = self.selected_verifier_candidate() {
+            mode_report.final_notes.push(format!(
+                "Selected verifier candidate {} from iteration {}.",
+                selected.candidate_id, selected.source_iteration
+            ));
+        }
+        if let (Some(engine), Some(state)) =
+            (self.verifier_engine.as_ref(), self.verifier_state.as_ref())
+        {
+            mode_report.final_notes.extend(engine.judge_notes(state));
+        }
+        summary.mode_report = Some(mode_report);
         summary.mode_artifacts = self.mode_protocol.export_artifacts();
+        if let (Some(engine), Some(state)) =
+            (self.verifier_engine.as_ref(), self.verifier_state.as_ref())
+        {
+            summary
+                .mode_artifacts
+                .extend(engine.export_artifacts(state));
+            self.artifacts
+                .write_verifier_cache(&engine.export_cache(state))?;
+        }
+        summary.verifier = self.build_verifier_summary();
+        if matches!(
+            self.config.workflow.mode,
+            crate::iterative_workflow::IterativeWorkflowMode::Verify
+        ) && summary.objective_satisfied
+        {
+            if let Some(selected) = self.selected_verifier_candidate() {
+                summary.final_response = Some(selected.output_content.clone());
+            }
+        }
         self.artifacts.write_summary(&summary)?;
         Ok(())
     }
@@ -1648,6 +1831,108 @@ fn command_artifact(result: &CommandRunResult) -> WorkflowCommandArtifact {
     }
 }
 
+fn build_verifier_trace_snapshot(
+    iteration: u32,
+    execution_output: &OrchestratorOutput,
+    evaluation: &ObjectiveEvaluation,
+    objective_direction: ObjectiveDirection,
+    change_summary: Vec<String>,
+    execution_metadata_summary: Vec<String>,
+    artifact_summary: Vec<String>,
+) -> VerifierTraceSnapshot {
+    let candidate_id = format!("cand-{iteration:03}");
+    let verify = verifier_command_trace("verify", &evaluation.verify);
+    let guard = evaluation
+        .guard
+        .as_ref()
+        .map(|guard| verifier_command_trace("guard", guard));
+    let trajectory_fingerprint = trajectory_fingerprint(
+        &candidate_id,
+        iteration,
+        &execution_output.content,
+        execution_output.steps,
+        execution_output.tool_calls_count,
+        &execution_metadata_summary,
+        evaluation.metric.as_ref().map(|sample| sample.value),
+        objective_direction,
+        &verify,
+        guard.as_ref(),
+        &change_summary,
+        &artifact_summary,
+    );
+    VerifierTraceSnapshot {
+        candidate_id,
+        source_iteration: iteration,
+        trajectory_fingerprint,
+        final_response: execution_output.content.clone(),
+        execution_steps: execution_output.steps,
+        execution_tool_calls: execution_output.tool_calls_count,
+        execution_metadata_summary,
+        metric_value: evaluation.metric.as_ref().map(|sample| sample.value),
+        objective_direction,
+        verify,
+        guard,
+        change_summary,
+        artifact_summary,
+    }
+}
+
+fn summarize_execution_metadata_for_verifier(output: &OrchestratorOutput) -> Vec<String> {
+    let mut entries = output
+        .metadata
+        .iter()
+        .map(|(key, value)| {
+            format!(
+                "{}={}",
+                key,
+                trim_verifier_metadata_value(&value.to_string(), 360)
+            )
+        })
+        .collect::<Vec<_>>();
+    entries.sort();
+    entries.truncate(32);
+    entries
+}
+
+fn trim_verifier_metadata_value(value: &str, max_chars: usize) -> String {
+    let trimmed = value.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    trimmed.chars().take(max_chars).collect::<String>()
+}
+
+fn summarize_mode_artifacts_for_verifier(artifacts: &[WorkflowModeArtifact]) -> Vec<String> {
+    artifacts
+        .iter()
+        .flat_map(|artifact| {
+            artifact.entries.iter().map(|entry| {
+                let evidence = if entry.evidence.is_empty() {
+                    String::new()
+                } else {
+                    format!(" evidence={}", entry.evidence.join(" | "))
+                };
+                format!(
+                    "{}:{} status={} title={} detail={}{}",
+                    artifact.name, entry.key, entry.status, entry.title, entry.detail, evidence
+                )
+            })
+        })
+        .take(32)
+        .collect()
+}
+
+fn verifier_command_trace(name: &'static str, result: &CommandRunResult) -> VerifierCommandTrace {
+    VerifierCommandTrace {
+        name,
+        exit_code: result.exit_code,
+        passed: result.passed(),
+        timed_out: result.timed_out,
+        runtime_error: result.runtime_error.clone(),
+        output: result.output.clone(),
+    }
+}
+
 fn yes_no(value: bool) -> &'static str {
     if value {
         "yes"
@@ -1678,6 +1963,63 @@ impl WorkspaceCheckpoint {
     fn execution_workdir(&self) -> Option<&Path> {
         self.ref_data.execution_workdir()
     }
+
+    fn change_summary(&self, scope_include: &[String]) -> Vec<String> {
+        match &self.ref_data {
+            CheckpointRefData::PatchFile {
+                entries, workdir, ..
+            } => {
+                let mut summary = entries
+                    .iter()
+                    .filter_map(|entry| {
+                        let current_path = workdir.join(Path::new(&entry.relative_path));
+                        let backup = std::fs::read(&entry.backup_path).ok()?;
+                        match std::fs::read(current_path) {
+                            Ok(current) if current == backup => None,
+                            Ok(current) => Some(format!(
+                                "modified {} ({} -> {} bytes)",
+                                entry.relative_path,
+                                backup.len(),
+                                current.len()
+                            )),
+                            Err(_) => Some(format!("deleted {}", entry.relative_path)),
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                if summary.is_empty() {
+                    summary
+                        .push("no scoped file modifications detected from checkpoint".to_string());
+                }
+                summary
+            }
+            CheckpointRefData::GitBranch {
+                execution_root,
+                branch_name,
+                ..
+            } => vec![format!(
+                "git-branch checkpoint branch={} execution_root={} scope={}",
+                branch_name,
+                execution_root.display(),
+                scope_include.join(",")
+            )],
+            CheckpointRefData::GitStash { captured_paths, .. } => {
+                if captured_paths.is_empty() {
+                    vec!["git-stash checkpoint captured no scoped paths".to_string()]
+                } else {
+                    captured_paths
+                        .iter()
+                        .take(32)
+                        .map(|path| format!("git-stash captured {path}"))
+                        .collect()
+                }
+            }
+            CheckpointRefData::Worktree { execution_root, .. } => vec![format!(
+                "worktree checkpoint execution_root={} scope={}",
+                execution_root.display(),
+                scope_include.join(",")
+            )],
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1690,6 +2032,7 @@ struct SnapshotEntry {
 enum CheckpointRefData {
     PatchFile {
         root: PathBuf,
+        workdir: PathBuf,
         entries: Vec<SnapshotEntry>,
     },
     GitBranch {
@@ -1871,7 +2214,11 @@ impl SnapshotEngine {
             strategy: self.strategy,
             created_at: SystemTime::now(),
             status: CheckpointStatus::Active,
-            ref_data: CheckpointRefData::PatchFile { root, entries },
+            ref_data: CheckpointRefData::PatchFile {
+                root,
+                workdir: self.workdir.clone(),
+                entries,
+            },
         })
     }
 
@@ -2714,10 +3061,11 @@ fn now_nanos() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::ToolExecutor;
+    use crate::traits::{ModelResolver, ToolExecutor};
     use crate::workflow_artifacts::WorkflowModeArtifactEntry;
     use crate::{ToolExecError, ToolOutput};
     use async_trait::async_trait;
+    use futures::stream;
     use serde_json::json;
     use std::collections::{HashMap, VecDeque};
     use std::path::{Path, PathBuf};
@@ -2790,6 +3138,7 @@ mod tests {
             security: None,
             debug: None,
             fix: None,
+            verifier: None,
             ship: None,
         }
     }
@@ -2819,6 +3168,74 @@ mod tests {
             }),
         });
         config
+    }
+
+    fn verify_workflow_config() -> IterativeWorkflowConfig {
+        let mut config = workflow_config_with_artifacts();
+        config.workflow.mode = crate::iterative_workflow::IterativeWorkflowMode::Verify;
+        config.verifier = Some(crate::iterative_workflow::VerifierConfig {
+            model: crate::ModelRef {
+                provider_id: "openai".to_string(),
+                model_id: "gpt-5".to_string(),
+            },
+            criteria: vec![crate::iterative_workflow::VerifierCriterionDefinition {
+                id: "spec".to_string(),
+                name: "Spec adherence".to_string(),
+                description: "Prefer the candidate that best satisfies the request.".to_string(),
+                weight: None,
+                aggregation: None,
+            }],
+            granularity: None,
+            repetitions: Some(1),
+            selection: Some(crate::iterative_workflow::VerifierSelectionStrategy::RoundRobin),
+            max_candidates: Some(3),
+            use_logprobs: Some(false),
+            trace_format: Some(crate::iterative_workflow::VerifierTraceFormat::Compact),
+        });
+        config
+    }
+
+    fn verify_workflow_config_with_verifier(
+        selection: crate::iterative_workflow::VerifierSelectionStrategy,
+        repetitions: u32,
+    ) -> IterativeWorkflowConfig {
+        let mut config = verify_workflow_config();
+        let verifier = config.verifier.as_mut().expect("verifier should exist");
+        verifier.selection = Some(selection);
+        verifier.repetitions = Some(repetitions);
+        config
+    }
+
+    fn configure_verify_judge_test(
+        config: &mut IterativeWorkflowConfig,
+        max_iterations: u32,
+        required_metric: f64,
+    ) {
+        config
+            .objective
+            .as_mut()
+            .expect("objective should exist")
+            .satisfied_when = Some(crate::iterative_workflow::SatisfiedWhenDefinition {
+            metric_at_least: Some(required_metric),
+            metric_at_most: None,
+            metric_equals: None,
+        });
+        config
+            .iteration_policy
+            .as_mut()
+            .expect("iteration policy should exist")
+            .max_iterations = Some(max_iterations);
+        config
+            .decision_policy
+            .as_mut()
+            .expect("decision policy should exist")
+            .keep_conditions = vec![KeepCondition::VerifyPassed];
+        config
+            .decision_policy
+            .as_mut()
+            .expect("decision policy should exist")
+            .discard_conditions
+            .retain(|condition| !matches!(condition, DiscardCondition::MetricRegressed));
     }
 
     fn workflow_config_with_commit_policy(squash_on_completion: bool) -> IterativeWorkflowConfig {
@@ -2888,6 +3305,190 @@ mod tests {
         }
     }
 
+    struct ScriptedModelResolver {
+        streams: Mutex<Vec<rocode_provider::StreamResult>>,
+        captured_inputs: Arc<Mutex<Vec<String>>>,
+        captured_metadata: Arc<Mutex<Vec<HashMap<String, serde_json::Value>>>>,
+    }
+
+    impl ScriptedModelResolver {
+        fn new(streams: Vec<rocode_provider::StreamResult>) -> Self {
+            Self {
+                streams: Mutex::new(streams),
+                captured_inputs: Arc::new(Mutex::new(Vec::new())),
+                captured_metadata: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn captured_inputs(&self) -> Arc<Mutex<Vec<String>>> {
+            self.captured_inputs.clone()
+        }
+
+        fn captured_metadata(&self) -> Arc<Mutex<Vec<HashMap<String, serde_json::Value>>>> {
+            self.captured_metadata.clone()
+        }
+
+        fn extract_last_user_text(messages: &[rocode_provider::Message]) -> String {
+            messages
+                .iter()
+                .rev()
+                .find_map(|message| match (&message.role, &message.content) {
+                    (rocode_provider::Role::User, rocode_provider::Content::Text(text)) => {
+                        Some(text.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_default()
+        }
+    }
+
+    #[async_trait]
+    impl ModelResolver for ScriptedModelResolver {
+        async fn chat_stream(
+            &self,
+            _model: Option<&crate::ModelRef>,
+            messages: Vec<rocode_provider::Message>,
+            _tools: Vec<rocode_provider::ToolDefinition>,
+            exec_ctx: &ExecutionContext,
+        ) -> Result<rocode_provider::StreamResult, OrchestratorError> {
+            self.captured_inputs
+                .lock()
+                .await
+                .push(Self::extract_last_user_text(&messages));
+            self.captured_metadata
+                .lock()
+                .await
+                .push(exec_ctx.metadata.clone());
+
+            self.streams.lock().await.pop().ok_or_else(|| {
+                OrchestratorError::Other("missing scripted model stream".to_string())
+            })
+        }
+    }
+
+    struct CapturingLifecycleHook {
+        events: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl CapturingLifecycleHook {
+        fn new() -> Self {
+            Self {
+                events: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn events(&self) -> Arc<Mutex<Vec<String>>> {
+            self.events.clone()
+        }
+    }
+
+    #[async_trait]
+    impl crate::traits::LifecycleHook for CapturingLifecycleHook {
+        async fn on_orchestration_start(
+            &self,
+            _agent_name: &str,
+            _max_steps: Option<u32>,
+            _exec_ctx: &ExecutionContext,
+        ) {
+        }
+
+        async fn on_step_start(
+            &self,
+            _agent_name: &str,
+            _model_id: &str,
+            _step: u32,
+            _exec_ctx: &ExecutionContext,
+        ) {
+        }
+
+        async fn on_orchestration_end(
+            &self,
+            _agent_name: &str,
+            _steps: u32,
+            _exec_ctx: &ExecutionContext,
+        ) {
+        }
+
+        async fn on_scheduler_stage_start(
+            &self,
+            _agent_name: &str,
+            stage_name: &str,
+            _stage_index: u32,
+            _capabilities: Option<&crate::scheduler::SchedulerStageCapabilities>,
+            exec_ctx: &ExecutionContext,
+        ) {
+            let job_key = exec_ctx
+                .metadata
+                .get("workflow_verifier_score_job_key")
+                .and_then(|value| value.as_str())
+                .unwrap_or("missing");
+            self.events
+                .lock()
+                .await
+                .push(format!("start:{stage_name}:{job_key}"));
+        }
+
+        async fn on_scheduler_stage_end(
+            &self,
+            _agent_name: &str,
+            stage_name: &str,
+            _stage_index: u32,
+            _stage_total: u32,
+            content: &str,
+            exec_ctx: &ExecutionContext,
+        ) {
+            let job_key = exec_ctx
+                .metadata
+                .get("workflow_verifier_score_job_key")
+                .and_then(|value| value.as_str())
+                .unwrap_or("missing");
+            self.events
+                .lock()
+                .await
+                .push(format!("end:{stage_name}:{job_key}:{content}"));
+        }
+    }
+
+    struct ImmediateCancel;
+
+    impl crate::runtime::events::CancelToken for ImmediateCancel {
+        fn is_cancelled(&self) -> bool {
+            true
+        }
+    }
+
+    fn stream_from_text(text: &str) -> rocode_provider::StreamResult {
+        Box::pin(stream::iter(vec![
+            Ok::<_, rocode_provider::ProviderError>(rocode_provider::StreamEvent::TextDelta(
+                text.to_string(),
+            )),
+            Ok::<_, rocode_provider::ProviderError>(rocode_provider::StreamEvent::Done),
+        ]))
+    }
+
+    fn stream_from_logprob_scores() -> rocode_provider::StreamResult {
+        let metadata = json!({
+            "logprobs": [[
+                {"token":"<score_A>","logprob":0.0,"top_logprobs":[]},
+                {"token":"T","logprob":0.9f64.ln(),"top_logprobs":[{"token":"A","logprob":0.1f64.ln()}]},
+                {"token":"</score_A>\n<score_B>","logprob":0.0,"top_logprobs":[]},
+                {"token":"A","logprob":0.9f64.ln(),"top_logprobs":[{"token":"T","logprob":0.1f64.ln()}]},
+                {"token":"</score_B>","logprob":0.0,"top_logprobs":[]}
+            ]]
+        });
+        Box::pin(stream::iter(vec![
+            Ok::<_, rocode_provider::ProviderError>(rocode_provider::StreamEvent::TextDelta(
+                "<score_A>T</score_A>\n<score_B>A</score_B>".to_string(),
+            )),
+            Ok::<_, rocode_provider::ProviderError>(rocode_provider::StreamEvent::FinishStep {
+                finish_reason: Some("stop".to_string()),
+                usage: rocode_provider::StreamUsage::default(),
+                provider_metadata: Some(metadata),
+            }),
+            Ok::<_, rocode_provider::ProviderError>(rocode_provider::StreamEvent::Done),
+        ]))
+    }
+
     fn new_temp_workdir() -> PathBuf {
         let path = std::env::temp_dir().join(format!("rocode-workflow-runtime-{}", now_nanos()));
         std::fs::create_dir_all(path.join("src")).expect("temp workdir should create");
@@ -2949,7 +3550,7 @@ mod tests {
             .await
             .expect("baseline should capture");
         let result = controller
-            .evaluate_round(1, Vec::new())
+            .evaluate_round(1, &OrchestratorOutput::empty(), Vec::new())
             .await
             .expect("workflow evaluation should succeed");
 
@@ -2962,6 +3563,1595 @@ mod tests {
             .output
             .content
             .contains("Domain Decision: stop-satisfied"));
+
+        std::fs::remove_dir_all(&workdir).expect("temp workdir should clean up");
+    }
+
+    #[tokio::test]
+    async fn verify_mode_persists_selected_candidate_summary() {
+        let workdir = new_temp_workdir();
+        std::fs::write(workdir.join("src/lib.rs"), "baseline\n")
+            .expect("baseline file should write");
+        let mut config = verify_workflow_config();
+        configure_verify_judge_test(&mut config, 2, 13.0);
+        let executor = Arc::new(ScriptedToolExecutor {
+            responses: Mutex::new(VecDeque::from(vec![
+                Ok(ToolOutput {
+                    output: "score=10".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+                Ok(ToolOutput {
+                    output: "score=12".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+                Ok(ToolOutput {
+                    output: "score=11".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+            ])),
+        });
+        let judge = Arc::new(ScriptedModelResolver::new(vec![stream_from_text(
+            r#"{"winner":"cand-002","rationale":"Candidate two better satisfies the request.","scores":[{"criterion_id":"spec","winner":"cand-002","score_a":3.0,"score_b":5.0,"explanation":"Candidate two is more aligned."}]}"#,
+        )]));
+        let captured_inputs = judge.captured_inputs();
+        let mut controller = WorkflowController::from_config(
+            config,
+            ToolRunner::new(executor),
+            test_exec_ctx(&workdir),
+            Some("verify-run".to_string()),
+        )
+        .expect("controller construction should succeed")
+        .expect("workflow should activate controller");
+        controller.bind_verifier_judge(
+            judge,
+            Arc::new(crate::traits::NoopLifecycleHook),
+            Arc::new(crate::runtime::events::NeverCancel),
+            test_exec_ctx(&workdir),
+        );
+
+        controller
+            .capture_baseline()
+            .await
+            .expect("baseline should capture");
+        controller
+            .begin_iteration(1)
+            .expect("first verify iteration should begin");
+        let first_output = OrchestratorOutput {
+            content: "candidate one execution output".to_string(),
+            steps: 1,
+            tool_calls_count: 0,
+            metadata: HashMap::new(),
+            finish_reason: crate::runtime::events::FinishReason::EndTurn,
+        };
+        let first = controller
+            .evaluate_round(1, &first_output, Vec::new())
+            .await
+            .expect("first verify round should succeed");
+        assert_eq!(first.decision, IterationDecision::Keep);
+
+        controller
+            .begin_iteration(2)
+            .expect("second verify iteration should begin");
+        let second_output = OrchestratorOutput {
+            content: "candidate two execution output".to_string(),
+            steps: 1,
+            tool_calls_count: 0,
+            metadata: HashMap::new(),
+            finish_reason: crate::runtime::events::FinishReason::EndTurn,
+        };
+        let second = controller
+            .evaluate_round(2, &second_output, Vec::new())
+            .await
+            .expect("second verify round should succeed");
+        assert_eq!(second.decision, IterationDecision::Keep);
+        assert_eq!(
+            second.gate_decision.status,
+            SchedulerExecutionGateStatus::Done
+        );
+        assert_eq!(
+            second.gate_decision.final_response.as_deref(),
+            Some("candidate two execution output")
+        );
+
+        controller
+            .persist_run_summary(WorkflowRunSummaryRecord {
+                iterations_completed: 2,
+                final_iteration: Some(2),
+                baseline_metric: None,
+                best_metric: None,
+                final_metric: None,
+                kept_commits: Vec::new(),
+                best_commit: None,
+                squashed_commit: None,
+                final_decision: Some(second.decision.label().to_string()),
+                final_gate_status: Some(gate_status_label(second.gate_decision.status).to_string()),
+                final_summary: Some(second.gate_decision.summary.clone()),
+                final_response: second.gate_decision.final_response.clone(),
+                verifier: None,
+                mode_report: None,
+                mode_artifacts: Vec::new(),
+                objective_satisfied: true,
+                cancelled: false,
+                exhausted_budget: false,
+            })
+            .expect("verify summary should persist");
+
+        let manifest: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                workdir
+                    .join(".rocode")
+                    .join("autoresearch")
+                    .join("workflow-test")
+                    .join("run-manifest.json"),
+            )
+            .expect("manifest should read"),
+        )
+        .expect("manifest should parse");
+        assert_eq!(
+            manifest["verifier"]["selected_candidate_id"].as_str(),
+            Some("cand-002")
+        );
+        assert_eq!(
+            manifest["verifier"]["candidates_considered"].as_u64(),
+            Some(2)
+        );
+        assert_eq!(manifest["verifier"]["used_judge"].as_bool(), Some(true));
+        assert_eq!(
+            manifest["verifier"]["judge_rationale"].as_str(),
+            Some("Candidate two better satisfies the request.")
+        );
+        assert_eq!(
+            manifest["verifier"]["criterion_scores"][0]["criterion_id"].as_str(),
+            Some("spec")
+        );
+        assert_eq!(
+            manifest["verifier"]["criterion_scores"][0]["winner_candidate_id"].as_str(),
+            Some("cand-002")
+        );
+        assert_eq!(
+            manifest["verifier"]["criterion_scores"][0]["score_a"].as_str(),
+            Some("3.0000")
+        );
+        assert_eq!(
+            manifest["verifier"]["criterion_scores"][0]["score_b"].as_str(),
+            Some("5.0000")
+        );
+
+        let summary: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                workdir
+                    .join(".rocode")
+                    .join("autoresearch")
+                    .join("workflow-test")
+                    .join("summary.json"),
+            )
+            .expect("summary should read"),
+        )
+        .expect("summary should parse");
+        assert_eq!(
+            summary["final_response"].as_str(),
+            Some("candidate two execution output")
+        );
+        assert_eq!(
+            summary["verifier"]["judge_rationale"].as_str(),
+            Some("Candidate two better satisfies the request.")
+        );
+        assert_eq!(
+            summary["verifier"]["criterion_scores"][0]["criterion_id"].as_str(),
+            Some("spec")
+        );
+        assert!(summary["mode_report"]["final_notes"]
+            .as_array()
+            .expect("final notes should be an array")
+            .iter()
+            .any(|note| note.as_str().is_some_and(|text| text
+                .contains("Verifier rationale: Candidate two better satisfies the request."))));
+        assert!(captured_inputs
+            .lock()
+            .await
+            .iter()
+            .any(|input| input.contains("cand-001") && input.contains("cand-002")));
+
+        std::fs::remove_dir_all(&workdir).expect("temp workdir should clean up");
+    }
+
+    #[tokio::test]
+    async fn verify_mode_judge_prompt_includes_patch_and_artifact_trace() {
+        let workdir = new_temp_workdir();
+        std::fs::write(workdir.join("src/lib.rs"), "baseline\n")
+            .expect("baseline file should write");
+        let mut config = verify_workflow_config();
+        configure_verify_judge_test(&mut config, 2, 13.0);
+        let executor = Arc::new(ScriptedToolExecutor {
+            responses: Mutex::new(VecDeque::from(vec![
+                Ok(ToolOutput {
+                    output: "score=10".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+                Ok(ToolOutput {
+                    output: "score=12".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+                Ok(ToolOutput {
+                    output: "score=11".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+            ])),
+        });
+        let judge = Arc::new(ScriptedModelResolver::new(vec![stream_from_text(
+            r#"{"winner":"cand-002"}"#,
+        )]));
+        let captured_inputs = judge.captured_inputs();
+        let mut controller = WorkflowController::from_config(
+            config,
+            ToolRunner::new(executor),
+            test_exec_ctx(&workdir),
+            Some("verify-trace-evidence".to_string()),
+        )
+        .expect("controller construction should succeed")
+        .expect("workflow should activate controller");
+        controller.bind_verifier_judge(
+            judge,
+            Arc::new(crate::traits::NoopLifecycleHook),
+            Arc::new(crate::runtime::events::NeverCancel),
+            test_exec_ctx(&workdir),
+        );
+
+        controller
+            .capture_baseline()
+            .await
+            .expect("baseline should capture");
+        controller
+            .begin_iteration(1)
+            .expect("first verify iteration should begin");
+        std::fs::write(workdir.join("src/lib.rs"), "candidate one\n")
+            .expect("first candidate mutation should write");
+        controller
+            .evaluate_round(
+                1,
+                &OrchestratorOutput {
+                    content: "candidate one execution output".to_string(),
+                    steps: 4,
+                    tool_calls_count: 2,
+                    metadata: HashMap::from([(
+                        "tool_window".to_string(),
+                        json!("edit src/lib.rs; run cargo test"),
+                    )]),
+                    finish_reason: crate::runtime::events::FinishReason::EndTurn,
+                },
+                Vec::new(),
+            )
+            .await
+            .expect("first verify round should succeed");
+
+        controller
+            .begin_iteration(2)
+            .expect("second verify iteration should begin");
+        std::fs::write(workdir.join("src/lib.rs"), "candidate two\n")
+            .expect("second candidate mutation should write");
+        controller
+            .evaluate_round(
+                2,
+                &OrchestratorOutput {
+                    content: "candidate two execution output".to_string(),
+                    steps: 5,
+                    tool_calls_count: 3,
+                    metadata: HashMap::from([(
+                        "tool_window".to_string(),
+                        json!("edit src/lib.rs; rerun cargo test"),
+                    )]),
+                    finish_reason: crate::runtime::events::FinishReason::EndTurn,
+                },
+                vec![WorkflowModeArtifact {
+                    name: "candidate-registry".to_string(),
+                    description: "Verifier candidates".to_string(),
+                    entries: vec![WorkflowModeArtifactEntry {
+                        iteration: Some(2),
+                        key: "cand-002".to_string(),
+                        title: "Candidate two".to_string(),
+                        status: "kept".to_string(),
+                        detail: "contains updated implementation evidence".to_string(),
+                        evidence: vec!["src/lib.rs changed".to_string()],
+                    }],
+                }],
+            )
+            .await
+            .expect("second verify round should succeed");
+
+        let inputs = captured_inputs.lock().await.clone();
+        assert_eq!(inputs.len(), 1);
+        let prompt = inputs.first().expect("judge prompt should be captured");
+        assert!(prompt.contains("workspace_changes:"));
+        assert!(prompt.contains("modified src/lib.rs"));
+        assert!(prompt.contains("trajectory_fingerprint:"));
+        assert!(prompt.contains("execution_summary:"));
+        assert!(prompt.contains("steps: 5"));
+        assert!(prompt.contains("tool_calls: 3"));
+        assert!(prompt.contains("execution_metadata:"));
+        assert!(prompt.contains("tool_window"));
+        assert!(prompt.contains("structured_artifacts:"));
+        assert!(prompt.contains("candidate-registry:cand-002"));
+        assert!(prompt.contains("evidence=src/lib.rs changed"));
+
+        std::fs::remove_dir_all(&workdir).expect("temp workdir should clean up");
+    }
+
+    #[tokio::test]
+    async fn verify_mode_uses_logprob_expected_reward_when_enabled() {
+        let workdir = new_temp_workdir();
+        std::fs::write(workdir.join("src/lib.rs"), "baseline\n")
+            .expect("baseline file should write");
+        let mut config = verify_workflow_config();
+        configure_verify_judge_test(&mut config, 2, 13.0);
+        config
+            .verifier
+            .as_mut()
+            .expect("verifier should exist")
+            .use_logprobs = Some(true);
+        let executor = Arc::new(ScriptedToolExecutor {
+            responses: Mutex::new(VecDeque::from(vec![
+                Ok(ToolOutput {
+                    output: "score=10".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+                Ok(ToolOutput {
+                    output: "score=12".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+                Ok(ToolOutput {
+                    output: "score=11".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+            ])),
+        });
+        let judge = Arc::new(ScriptedModelResolver::new(vec![
+            stream_from_logprob_scores(),
+        ]));
+        let captured_metadata = judge.captured_metadata();
+        let lifecycle = Arc::new(CapturingLifecycleHook::new());
+        let lifecycle_events = lifecycle.events();
+        let mut controller = WorkflowController::from_config(
+            config,
+            ToolRunner::new(executor),
+            test_exec_ctx(&workdir),
+            Some("verify-logprobs".to_string()),
+        )
+        .expect("controller construction should succeed")
+        .expect("workflow should activate controller");
+        controller.bind_verifier_judge(
+            judge,
+            lifecycle,
+            Arc::new(crate::runtime::events::NeverCancel),
+            test_exec_ctx(&workdir),
+        );
+
+        controller
+            .capture_baseline()
+            .await
+            .expect("baseline should capture");
+        controller.begin_iteration(1).expect("first iteration");
+        let first_output = OrchestratorOutput {
+            content: "candidate one execution output".to_string(),
+            steps: 1,
+            tool_calls_count: 0,
+            metadata: HashMap::new(),
+            finish_reason: crate::runtime::events::FinishReason::EndTurn,
+        };
+        controller
+            .evaluate_round(1, &first_output, Vec::new())
+            .await
+            .expect("first round should evaluate");
+        controller.begin_iteration(2).expect("second iteration");
+        let second_output = OrchestratorOutput {
+            content: "candidate two execution output".to_string(),
+            steps: 1,
+            tool_calls_count: 0,
+            metadata: HashMap::new(),
+            finish_reason: crate::runtime::events::FinishReason::EndTurn,
+        };
+        let second = controller
+            .evaluate_round(2, &second_output, Vec::new())
+            .await
+            .expect("second round should evaluate");
+
+        assert_eq!(
+            second.gate_decision.final_response.as_deref(),
+            Some("candidate two execution output")
+        );
+
+        controller
+            .persist_run_summary(WorkflowRunSummaryRecord {
+                iterations_completed: 2,
+                final_iteration: Some(2),
+                baseline_metric: None,
+                best_metric: None,
+                final_metric: None,
+                kept_commits: Vec::new(),
+                best_commit: None,
+                squashed_commit: None,
+                final_decision: Some(second.decision.label().to_string()),
+                final_gate_status: Some(gate_status_label(second.gate_decision.status).to_string()),
+                final_summary: Some(second.gate_decision.summary.clone()),
+                final_response: second.gate_decision.final_response.clone(),
+                verifier: None,
+                mode_report: None,
+                mode_artifacts: Vec::new(),
+                objective_satisfied: true,
+                cancelled: false,
+                exhausted_budget: false,
+            })
+            .expect("verify summary should persist");
+
+        let summary: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                workdir
+                    .join(".rocode")
+                    .join("autoresearch")
+                    .join("workflow-test")
+                    .join("summary.json"),
+            )
+            .expect("summary should read"),
+        )
+        .expect("summary should parse");
+        assert_eq!(
+            summary["verifier"]["selected_candidate_id"].as_str(),
+            Some("cand-002")
+        );
+        assert_eq!(summary["verifier"]["used_logprobs"].as_bool(), Some(true));
+        assert_eq!(
+            summary["verifier"]["criterion_scores"][0]["winner_candidate_id"].as_str(),
+            Some("cand-002")
+        );
+        assert_eq!(summary["verifier"]["judge_calls"].as_u64(), Some(1));
+        let mode_artifacts = std::fs::read_to_string(
+            workdir
+                .join(".rocode")
+                .join("autoresearch")
+                .join("workflow-test")
+                .join("mode-artifacts.json"),
+        )
+        .expect("mode artifacts should read");
+        assert!(mode_artifacts.contains("\"name\": \"score-job-matrix\""));
+        assert!(mode_artifacts.contains("\"name\": \"round-robin-win-counts\""));
+        assert!(mode_artifacts.contains("requested_logprobs=true"));
+        assert!(mode_artifacts.contains("requested_top_logprobs=20"));
+        assert!(mode_artifacts.contains("logprob_status=requested-usable"));
+        assert!(mode_artifacts.contains("fallback=none"));
+        assert!(mode_artifacts.contains("formula_mean"));
+        let metadata = captured_metadata.lock().await.clone();
+        assert_eq!(
+            metadata[0]["workflow_verifier_stage"].as_str(),
+            Some("score-job")
+        );
+        assert_eq!(
+            metadata[0]["workflow_verifier_criterion_id"].as_str(),
+            Some("spec")
+        );
+        assert_eq!(
+            metadata[0]["workflow_verifier_requested_top_logprobs"].as_u64(),
+            Some(20)
+        );
+        let events = lifecycle_events.lock().await.clone();
+        assert!(events.iter().any(|event| {
+            event.starts_with("start:verifier-score-job:") && event.contains("criterion=")
+        }));
+        assert!(events.iter().any(|event| {
+            event.starts_with("end:verifier-score-job:") && event.contains("used_logprobs=true")
+        }));
+
+        std::fs::remove_dir_all(&workdir).expect("temp workdir should clean up");
+    }
+
+    #[tokio::test]
+    async fn verify_mode_reports_logprob_capability_fallback_reason() {
+        let workdir = new_temp_workdir();
+        std::fs::write(workdir.join("src/lib.rs"), "baseline\n")
+            .expect("baseline file should write");
+        let mut config = verify_workflow_config();
+        configure_verify_judge_test(&mut config, 2, 13.0);
+        config
+            .verifier
+            .as_mut()
+            .expect("verifier should exist")
+            .use_logprobs = Some(true);
+        let executor = Arc::new(ScriptedToolExecutor {
+            responses: Mutex::new(VecDeque::from(vec![
+                Ok(ToolOutput {
+                    output: "score=10".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+                Ok(ToolOutput {
+                    output: "score=12".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+                Ok(ToolOutput {
+                    output: "score=11".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+            ])),
+        });
+        let judge = Arc::new(ScriptedModelResolver::new(vec![stream_from_text(
+            "<score_A>T</score_A>\n<score_B>A</score_B>",
+        )]));
+        let mut controller = WorkflowController::from_config(
+            config,
+            ToolRunner::new(executor),
+            test_exec_ctx(&workdir),
+            Some("verify-logprob-fallback".to_string()),
+        )
+        .expect("controller construction should succeed")
+        .expect("workflow should activate controller");
+        controller.bind_verifier_judge(
+            judge,
+            Arc::new(crate::traits::NoopLifecycleHook),
+            Arc::new(crate::runtime::events::NeverCancel),
+            test_exec_ctx(&workdir),
+        );
+
+        controller
+            .capture_baseline()
+            .await
+            .expect("baseline should capture");
+        controller.begin_iteration(1).expect("first iteration");
+        controller
+            .evaluate_round(
+                1,
+                &OrchestratorOutput {
+                    content: "candidate one execution output".to_string(),
+                    steps: 1,
+                    tool_calls_count: 0,
+                    metadata: HashMap::new(),
+                    finish_reason: crate::runtime::events::FinishReason::EndTurn,
+                },
+                Vec::new(),
+            )
+            .await
+            .expect("first round should evaluate");
+        controller.begin_iteration(2).expect("second iteration");
+        let second = controller
+            .evaluate_round(
+                2,
+                &OrchestratorOutput {
+                    content: "candidate two execution output".to_string(),
+                    steps: 1,
+                    tool_calls_count: 0,
+                    metadata: HashMap::new(),
+                    finish_reason: crate::runtime::events::FinishReason::EndTurn,
+                },
+                Vec::new(),
+            )
+            .await
+            .expect("second round should evaluate");
+
+        assert_eq!(
+            second.gate_decision.final_response.as_deref(),
+            Some("candidate two execution output")
+        );
+        controller
+            .persist_run_summary(WorkflowRunSummaryRecord {
+                iterations_completed: 2,
+                final_iteration: Some(2),
+                baseline_metric: None,
+                best_metric: None,
+                final_metric: None,
+                kept_commits: Vec::new(),
+                best_commit: None,
+                squashed_commit: None,
+                final_decision: Some(second.decision.label().to_string()),
+                final_gate_status: Some(gate_status_label(second.gate_decision.status).to_string()),
+                final_summary: Some(second.gate_decision.summary.clone()),
+                final_response: second.gate_decision.final_response.clone(),
+                verifier: None,
+                mode_report: None,
+                mode_artifacts: Vec::new(),
+                objective_satisfied: true,
+                cancelled: false,
+                exhausted_budget: false,
+            })
+            .expect("verify summary should persist");
+        let mode_artifacts = std::fs::read_to_string(
+            workdir
+                .join(".rocode")
+                .join("autoresearch")
+                .join("workflow-test")
+                .join("mode-artifacts.json"),
+        )
+        .expect("mode artifacts should read");
+        assert!(mode_artifacts.contains("used_logprobs=false"));
+        assert!(mode_artifacts.contains("fallback=text-tag"));
+        assert!(mode_artifacts.contains("logprob_status=requested-missing-provider-metadata"));
+
+        std::fs::remove_dir_all(&workdir).expect("temp workdir should clean up");
+    }
+
+    #[tokio::test]
+    async fn verify_mode_score_job_respects_cancellation_before_model_call() {
+        let workdir = new_temp_workdir();
+        std::fs::write(workdir.join("src/lib.rs"), "baseline\n")
+            .expect("baseline file should write");
+        let mut config = verify_workflow_config();
+        configure_verify_judge_test(&mut config, 2, 13.0);
+        config
+            .verifier
+            .as_mut()
+            .expect("verifier should exist")
+            .use_logprobs = Some(true);
+        let executor = Arc::new(ScriptedToolExecutor {
+            responses: Mutex::new(VecDeque::from(vec![
+                Ok(ToolOutput {
+                    output: "score=10".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+                Ok(ToolOutput {
+                    output: "score=12".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+                Ok(ToolOutput {
+                    output: "score=11".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+            ])),
+        });
+        let judge = Arc::new(ScriptedModelResolver::new(vec![
+            stream_from_logprob_scores(),
+        ]));
+        let captured_inputs = judge.captured_inputs();
+        let mut controller = WorkflowController::from_config(
+            config,
+            ToolRunner::new(executor),
+            test_exec_ctx(&workdir),
+            Some("verify-cancel-score-job".to_string()),
+        )
+        .expect("controller construction should succeed")
+        .expect("workflow should activate controller");
+        controller.bind_verifier_judge(
+            judge,
+            Arc::new(crate::traits::NoopLifecycleHook),
+            Arc::new(ImmediateCancel),
+            test_exec_ctx(&workdir),
+        );
+
+        controller
+            .capture_baseline()
+            .await
+            .expect("baseline should capture");
+        controller.begin_iteration(1).expect("first iteration");
+        controller
+            .evaluate_round(
+                1,
+                &OrchestratorOutput {
+                    content: "candidate one execution output".to_string(),
+                    steps: 1,
+                    tool_calls_count: 0,
+                    metadata: HashMap::new(),
+                    finish_reason: crate::runtime::events::FinishReason::EndTurn,
+                },
+                Vec::new(),
+            )
+            .await
+            .expect("first round should evaluate");
+        controller.begin_iteration(2).expect("second iteration");
+        let second = controller
+            .evaluate_round(
+                2,
+                &OrchestratorOutput {
+                    content: "candidate two execution output".to_string(),
+                    steps: 1,
+                    tool_calls_count: 0,
+                    metadata: HashMap::new(),
+                    finish_reason: crate::runtime::events::FinishReason::EndTurn,
+                },
+                Vec::new(),
+            )
+            .await
+            .expect("second round should evaluate");
+
+        assert_eq!(
+            second.gate_decision.final_response.as_deref(),
+            Some("candidate one execution output")
+        );
+        assert!(captured_inputs.lock().await.is_empty());
+
+        controller
+            .persist_run_summary(WorkflowRunSummaryRecord {
+                iterations_completed: 2,
+                final_iteration: Some(2),
+                baseline_metric: None,
+                best_metric: None,
+                final_metric: None,
+                kept_commits: Vec::new(),
+                best_commit: None,
+                squashed_commit: None,
+                final_decision: Some(second.decision.label().to_string()),
+                final_gate_status: Some(gate_status_label(second.gate_decision.status).to_string()),
+                final_summary: Some(second.gate_decision.summary.clone()),
+                final_response: second.gate_decision.final_response.clone(),
+                verifier: None,
+                mode_report: None,
+                mode_artifacts: Vec::new(),
+                objective_satisfied: true,
+                cancelled: false,
+                exhausted_budget: false,
+            })
+            .expect("verify summary should persist");
+        let mode_artifacts = std::fs::read_to_string(
+            workdir
+                .join(".rocode")
+                .join("autoresearch")
+                .join("workflow-test")
+                .join("mode-artifacts.json"),
+        )
+        .expect("mode artifacts should read");
+        assert!(mode_artifacts.contains("fallback=error"));
+        assert!(mode_artifacts.contains("cancelled before model call"));
+
+        std::fs::remove_dir_all(&workdir).expect("temp workdir should clean up");
+    }
+
+    #[tokio::test]
+    async fn verify_mode_reuses_persistent_pairwise_cache_across_runs() {
+        let workdir = new_temp_workdir();
+        std::fs::write(workdir.join("src/lib.rs"), "baseline\n")
+            .expect("baseline file should write");
+        let mut config = verify_workflow_config();
+        configure_verify_judge_test(&mut config, 2, 13.0);
+
+        let run_once = |streams: Vec<rocode_provider::StreamResult>| {
+            let executor = Arc::new(ScriptedToolExecutor {
+                responses: Mutex::new(VecDeque::from(vec![
+                    Ok(ToolOutput {
+                        output: "score=10".to_string(),
+                        is_error: false,
+                        title: None,
+                        metadata: Some(json!({"exit_code": 0})),
+                    }),
+                    Ok(ToolOutput {
+                        output: "score=12".to_string(),
+                        is_error: false,
+                        title: None,
+                        metadata: Some(json!({"exit_code": 0})),
+                    }),
+                    Ok(ToolOutput {
+                        output: "score=11".to_string(),
+                        is_error: false,
+                        title: None,
+                        metadata: Some(json!({"exit_code": 0})),
+                    }),
+                ])),
+            });
+            let judge = Arc::new(ScriptedModelResolver::new(streams));
+            (executor, judge)
+        };
+
+        let (executor, judge) = run_once(vec![stream_from_text(r#"{"winner":"cand-002"}"#)]);
+        let mut first_controller = WorkflowController::from_config(
+            config.clone(),
+            ToolRunner::new(executor),
+            test_exec_ctx(&workdir),
+            Some("verify-persistent-cache".to_string()),
+        )
+        .expect("first controller construction should succeed")
+        .expect("first workflow should activate controller");
+        first_controller.bind_verifier_judge(
+            judge,
+            Arc::new(crate::traits::NoopLifecycleHook),
+            Arc::new(crate::runtime::events::NeverCancel),
+            test_exec_ctx(&workdir),
+        );
+        first_controller
+            .capture_baseline()
+            .await
+            .expect("first baseline should capture");
+        for iteration in 1..=2 {
+            first_controller
+                .begin_iteration(iteration)
+                .expect("first run iteration should begin");
+            let result = first_controller
+                .evaluate_round(
+                    iteration,
+                    &OrchestratorOutput {
+                        content: format!("candidate {iteration} execution output"),
+                        steps: 1,
+                        tool_calls_count: 0,
+                        metadata: HashMap::new(),
+                        finish_reason: crate::runtime::events::FinishReason::EndTurn,
+                    },
+                    Vec::new(),
+                )
+                .await
+                .expect("first run should evaluate");
+            if iteration == 2 {
+                first_controller
+                    .persist_run_summary(WorkflowRunSummaryRecord {
+                        iterations_completed: 2,
+                        final_iteration: Some(2),
+                        baseline_metric: None,
+                        best_metric: None,
+                        final_metric: None,
+                        kept_commits: Vec::new(),
+                        best_commit: None,
+                        squashed_commit: None,
+                        final_decision: Some(result.decision.label().to_string()),
+                        final_gate_status: Some(
+                            gate_status_label(result.gate_decision.status).to_string(),
+                        ),
+                        final_summary: Some(result.gate_decision.summary.clone()),
+                        final_response: result.gate_decision.final_response.clone(),
+                        verifier: None,
+                        mode_report: None,
+                        mode_artifacts: Vec::new(),
+                        objective_satisfied: true,
+                        cancelled: false,
+                        exhausted_budget: false,
+                    })
+                    .expect("first summary should persist");
+            }
+        }
+
+        let (executor, judge) = run_once(Vec::new());
+        let captured_inputs = judge.captured_inputs();
+        let mut second_controller = WorkflowController::from_config(
+            config,
+            ToolRunner::new(executor),
+            test_exec_ctx(&workdir),
+            Some("verify-persistent-cache".to_string()),
+        )
+        .expect("second controller construction should succeed")
+        .expect("second workflow should activate controller");
+        second_controller.bind_verifier_judge(
+            judge,
+            Arc::new(crate::traits::NoopLifecycleHook),
+            Arc::new(crate::runtime::events::NeverCancel),
+            test_exec_ctx(&workdir),
+        );
+        second_controller
+            .capture_baseline()
+            .await
+            .expect("second baseline should capture");
+        let mut second_result = None;
+        for iteration in 1..=2 {
+            second_controller
+                .begin_iteration(iteration)
+                .expect("second run iteration should begin");
+            let result = second_controller
+                .evaluate_round(
+                    iteration,
+                    &OrchestratorOutput {
+                        content: format!("candidate {iteration} execution output"),
+                        steps: 1,
+                        tool_calls_count: 0,
+                        metadata: HashMap::new(),
+                        finish_reason: crate::runtime::events::FinishReason::EndTurn,
+                    },
+                    Vec::new(),
+                )
+                .await
+                .expect("second run should evaluate from persistent cache");
+            if iteration == 2 {
+                second_result = Some(result);
+            }
+        }
+        assert!(
+            captured_inputs.lock().await.is_empty(),
+            "persistent cache should avoid second-run judge calls"
+        );
+        let second_result = second_result.expect("second result should exist");
+        second_controller
+            .persist_run_summary(WorkflowRunSummaryRecord {
+                iterations_completed: 2,
+                final_iteration: Some(2),
+                baseline_metric: None,
+                best_metric: None,
+                final_metric: None,
+                kept_commits: Vec::new(),
+                best_commit: None,
+                squashed_commit: None,
+                final_decision: Some(second_result.decision.label().to_string()),
+                final_gate_status: Some(
+                    gate_status_label(second_result.gate_decision.status).to_string(),
+                ),
+                final_summary: Some(second_result.gate_decision.summary.clone()),
+                final_response: second_result.gate_decision.final_response.clone(),
+                verifier: None,
+                mode_report: None,
+                mode_artifacts: Vec::new(),
+                objective_satisfied: true,
+                cancelled: false,
+                exhausted_budget: false,
+            })
+            .expect("second summary should persist");
+
+        let summary: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                workdir
+                    .join(".rocode")
+                    .join("autoresearch")
+                    .join("workflow-test")
+                    .join("summary.json"),
+            )
+            .expect("summary should read"),
+        )
+        .expect("summary should parse");
+        assert_eq!(summary["verifier"]["judge_calls"].as_u64(), Some(0));
+        assert_eq!(summary["verifier"]["cache_hits"].as_u64(), Some(1));
+        assert_eq!(
+            summary["verifier"]["selected_candidate_id"].as_str(),
+            Some("cand-002")
+        );
+
+        std::fs::remove_dir_all(&workdir).expect("temp workdir should clean up");
+    }
+
+    #[tokio::test]
+    async fn verify_mode_round_robin_uses_majority_vote() {
+        let workdir = new_temp_workdir();
+        std::fs::write(workdir.join("src/lib.rs"), "baseline\n")
+            .expect("baseline file should write");
+        let mut config = verify_workflow_config_with_verifier(
+            crate::iterative_workflow::VerifierSelectionStrategy::RoundRobin,
+            3,
+        );
+        configure_verify_judge_test(&mut config, 2, 13.0);
+        let executor = Arc::new(ScriptedToolExecutor {
+            responses: Mutex::new(VecDeque::from(vec![
+                Ok(ToolOutput {
+                    output: "score=10".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+                Ok(ToolOutput {
+                    output: "score=12".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+                Ok(ToolOutput {
+                    output: "score=11".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+            ])),
+        });
+        let judge = Arc::new(ScriptedModelResolver::new(vec![
+            stream_from_text(r#"{"winner":"cand-002"}"#),
+            stream_from_text(r#"{"winner":"cand-002"}"#),
+            stream_from_text(r#"{"winner":"cand-001"}"#),
+        ]));
+        let captured_inputs = judge.captured_inputs();
+        let mut controller = WorkflowController::from_config(
+            config,
+            ToolRunner::new(executor),
+            test_exec_ctx(&workdir),
+            Some("verify-round-robin".to_string()),
+        )
+        .expect("controller construction should succeed")
+        .expect("workflow should activate controller");
+        controller.bind_verifier_judge(
+            judge,
+            Arc::new(crate::traits::NoopLifecycleHook),
+            Arc::new(crate::runtime::events::NeverCancel),
+            test_exec_ctx(&workdir),
+        );
+
+        controller
+            .capture_baseline()
+            .await
+            .expect("baseline should capture");
+        controller
+            .begin_iteration(1)
+            .expect("first verify iteration should begin");
+        controller
+            .evaluate_round(
+                1,
+                &OrchestratorOutput {
+                    content: "candidate one execution output".to_string(),
+                    steps: 1,
+                    tool_calls_count: 0,
+                    metadata: HashMap::new(),
+                    finish_reason: crate::runtime::events::FinishReason::EndTurn,
+                },
+                Vec::new(),
+            )
+            .await
+            .expect("first verify round should succeed");
+
+        controller
+            .begin_iteration(2)
+            .expect("second verify iteration should begin");
+        let second = controller
+            .evaluate_round(
+                2,
+                &OrchestratorOutput {
+                    content: "candidate two execution output".to_string(),
+                    steps: 1,
+                    tool_calls_count: 0,
+                    metadata: HashMap::new(),
+                    finish_reason: crate::runtime::events::FinishReason::EndTurn,
+                },
+                Vec::new(),
+            )
+            .await
+            .expect("second verify round should succeed");
+
+        assert_eq!(
+            second.gate_decision.final_response.as_deref(),
+            Some("candidate two execution output")
+        );
+        let inputs = captured_inputs.lock().await.clone();
+        assert_eq!(inputs.len(), 3);
+        assert!(inputs.iter().any(|input| input.contains("Comparison: 1/3")));
+        assert!(inputs.iter().any(|input| input.contains("Comparison: 2/3")));
+        assert!(inputs.iter().any(|input| input.contains("Comparison: 3/3")));
+
+        std::fs::remove_dir_all(&workdir).expect("temp workdir should clean up");
+    }
+
+    #[tokio::test]
+    async fn verify_mode_round_robin_scores_all_candidate_pairs() {
+        let workdir = new_temp_workdir();
+        std::fs::write(workdir.join("src/lib.rs"), "baseline\n")
+            .expect("baseline file should write");
+        let mut config = verify_workflow_config_with_verifier(
+            crate::iterative_workflow::VerifierSelectionStrategy::RoundRobin,
+            1,
+        );
+        configure_verify_judge_test(&mut config, 3, 20.0);
+        let executor = Arc::new(ScriptedToolExecutor {
+            responses: Mutex::new(VecDeque::from(vec![
+                Ok(ToolOutput {
+                    output: "score=10".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+                Ok(ToolOutput {
+                    output: "score=12".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+                Ok(ToolOutput {
+                    output: "score=11".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+                Ok(ToolOutput {
+                    output: "score=10".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+            ])),
+        });
+        let judge = Arc::new(ScriptedModelResolver::new(vec![
+            stream_from_text(r#"{"winner":"cand-003"}"#),
+            stream_from_text(r#"{"winner":"cand-003"}"#),
+            stream_from_text(r#"{"winner":"cand-002"}"#),
+        ]));
+        let captured_inputs = judge.captured_inputs();
+        let mut controller = WorkflowController::from_config(
+            config,
+            ToolRunner::new(executor),
+            test_exec_ctx(&workdir),
+            Some("verify-round-robin-all-pairs".to_string()),
+        )
+        .expect("controller construction should succeed")
+        .expect("workflow should activate controller");
+        controller.bind_verifier_judge(
+            judge,
+            Arc::new(crate::traits::NoopLifecycleHook),
+            Arc::new(crate::runtime::events::NeverCancel),
+            test_exec_ctx(&workdir),
+        );
+
+        controller
+            .capture_baseline()
+            .await
+            .expect("baseline should capture");
+        let mut final_result = None;
+        for iteration in 1..=3 {
+            controller
+                .begin_iteration(iteration)
+                .expect("verify iteration should begin");
+            let result = controller
+                .evaluate_round(
+                    iteration,
+                    &OrchestratorOutput {
+                        content: format!("candidate {iteration} execution output"),
+                        steps: 1,
+                        tool_calls_count: 0,
+                        metadata: HashMap::new(),
+                        finish_reason: crate::runtime::events::FinishReason::EndTurn,
+                    },
+                    Vec::new(),
+                )
+                .await
+                .expect("verify round should succeed");
+            if iteration == 3 {
+                assert_eq!(
+                    result.gate_decision.final_response.as_deref(),
+                    Some("candidate 3 execution output")
+                );
+                final_result = Some(result);
+            }
+        }
+
+        let inputs = captured_inputs.lock().await.clone();
+        assert_eq!(inputs.len(), 3);
+        assert!(inputs
+            .iter()
+            .any(|input| { input.contains("id: cand-001") && input.contains("id: cand-002") }));
+        let final_round_inputs = &inputs[1..];
+        assert!(final_round_inputs
+            .iter()
+            .any(|input| { input.contains("id: cand-001") && input.contains("id: cand-003") }));
+        assert!(final_round_inputs
+            .iter()
+            .any(|input| { input.contains("id: cand-002") && input.contains("id: cand-003") }));
+
+        let final_result = final_result.expect("final result should be captured");
+        controller
+            .persist_run_summary(WorkflowRunSummaryRecord {
+                iterations_completed: 3,
+                final_iteration: Some(3),
+                baseline_metric: None,
+                best_metric: None,
+                final_metric: None,
+                kept_commits: Vec::new(),
+                best_commit: None,
+                squashed_commit: None,
+                final_decision: Some(final_result.decision.label().to_string()),
+                final_gate_status: Some(
+                    gate_status_label(final_result.gate_decision.status).to_string(),
+                ),
+                final_summary: Some(final_result.gate_decision.summary.clone()),
+                final_response: final_result.gate_decision.final_response.clone(),
+                verifier: None,
+                mode_report: None,
+                mode_artifacts: Vec::new(),
+                objective_satisfied: true,
+                cancelled: false,
+                exhausted_budget: false,
+            })
+            .expect("verify summary should persist");
+
+        let summary: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                workdir
+                    .join(".rocode")
+                    .join("autoresearch")
+                    .join("workflow-test")
+                    .join("summary.json"),
+            )
+            .expect("summary should read"),
+        )
+        .expect("summary should parse");
+        assert_eq!(
+            summary["verifier"]["pairwise_comparisons"].as_u64(),
+            Some(4)
+        );
+        assert_eq!(summary["verifier"]["judge_calls"].as_u64(), Some(3));
+        assert_eq!(summary["verifier"]["cache_hits"].as_u64(), Some(1));
+        let mode_artifacts = std::fs::read_to_string(
+            workdir
+                .join(".rocode")
+                .join("autoresearch")
+                .join("workflow-test")
+                .join("mode-artifacts.json"),
+        )
+        .expect("mode artifacts should read");
+        assert!(mode_artifacts.contains("\"name\": \"pairwise-score-matrix\""));
+        assert!(mode_artifacts.contains("\"name\": \"selection-report\""));
+        assert!(mode_artifacts.contains("\"status\": \"cached\""));
+
+        std::fs::remove_dir_all(&workdir).expect("temp workdir should clean up");
+    }
+
+    #[tokio::test]
+    async fn verify_mode_scores_can_override_top_level_winner_votes() {
+        let workdir = new_temp_workdir();
+        std::fs::write(workdir.join("src/lib.rs"), "baseline\n")
+            .expect("baseline file should write");
+        let mut config = verify_workflow_config_with_verifier(
+            crate::iterative_workflow::VerifierSelectionStrategy::RoundRobin,
+            3,
+        );
+        configure_verify_judge_test(&mut config, 2, 13.0);
+        let executor = Arc::new(ScriptedToolExecutor {
+            responses: Mutex::new(VecDeque::from(vec![
+                Ok(ToolOutput {
+                    output: "score=10".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+                Ok(ToolOutput {
+                    output: "score=12".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+                Ok(ToolOutput {
+                    output: "score=11".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+            ])),
+        });
+        let judge = Arc::new(ScriptedModelResolver::new(vec![
+            stream_from_text(
+                r#"{"winner":"cand-001","scores":[{"criterion_id":"spec","winner":"cand-002","score_a":3.0,"score_b":5.0,"explanation":"candidate two better follows the request"}]}"#,
+            ),
+            stream_from_text(
+                r#"{"winner":"cand-001","scores":[{"criterion_id":"spec","winner":"cand-002","score_a":2.0,"score_b":4.0,"explanation":"candidate two stays more aligned"}]}"#,
+            ),
+            stream_from_text(
+                r#"{"winner":"cand-002","scores":[{"criterion_id":"spec","winner":"cand-002","score_a":1.0,"score_b":5.0,"explanation":"candidate two is clearly stronger"}]}"#,
+            ),
+        ]));
+        let mut controller = WorkflowController::from_config(
+            config,
+            ToolRunner::new(executor),
+            test_exec_ctx(&workdir),
+            Some("verify-score-override".to_string()),
+        )
+        .expect("controller construction should succeed")
+        .expect("workflow should activate controller");
+        controller.bind_verifier_judge(
+            judge,
+            Arc::new(crate::traits::NoopLifecycleHook),
+            Arc::new(crate::runtime::events::NeverCancel),
+            test_exec_ctx(&workdir),
+        );
+
+        controller
+            .capture_baseline()
+            .await
+            .expect("baseline should capture");
+        controller
+            .begin_iteration(1)
+            .expect("first verify iteration should begin");
+        controller
+            .evaluate_round(
+                1,
+                &OrchestratorOutput {
+                    content: "candidate one execution output".to_string(),
+                    steps: 1,
+                    tool_calls_count: 0,
+                    metadata: HashMap::new(),
+                    finish_reason: crate::runtime::events::FinishReason::EndTurn,
+                },
+                Vec::new(),
+            )
+            .await
+            .expect("first verify round should succeed");
+
+        controller
+            .begin_iteration(2)
+            .expect("second verify iteration should begin");
+        let second = controller
+            .evaluate_round(
+                2,
+                &OrchestratorOutput {
+                    content: "candidate two execution output".to_string(),
+                    steps: 1,
+                    tool_calls_count: 0,
+                    metadata: HashMap::new(),
+                    finish_reason: crate::runtime::events::FinishReason::EndTurn,
+                },
+                Vec::new(),
+            )
+            .await
+            .expect("second verify round should succeed");
+
+        assert_eq!(
+            second.gate_decision.final_response.as_deref(),
+            Some("candidate two execution output")
+        );
+
+        controller
+            .persist_run_summary(WorkflowRunSummaryRecord {
+                iterations_completed: 2,
+                final_iteration: Some(2),
+                baseline_metric: None,
+                best_metric: None,
+                final_metric: None,
+                kept_commits: Vec::new(),
+                best_commit: None,
+                squashed_commit: None,
+                final_decision: Some(second.decision.label().to_string()),
+                final_gate_status: Some(gate_status_label(second.gate_decision.status).to_string()),
+                final_summary: Some(second.gate_decision.summary.clone()),
+                final_response: second.gate_decision.final_response.clone(),
+                verifier: None,
+                mode_report: None,
+                mode_artifacts: Vec::new(),
+                objective_satisfied: true,
+                cancelled: false,
+                exhausted_budget: false,
+            })
+            .expect("verify summary should persist");
+
+        let summary: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                workdir
+                    .join(".rocode")
+                    .join("autoresearch")
+                    .join("workflow-test")
+                    .join("summary.json"),
+            )
+            .expect("summary should read"),
+        )
+        .expect("summary should parse");
+        let notes = summary["mode_report"]["final_notes"]
+            .as_array()
+            .expect("final notes should be an array")
+            .iter()
+            .filter_map(|note| note.as_str())
+            .collect::<Vec<_>>();
+        assert!(notes
+            .iter()
+            .any(|note| note.contains("spec -> cand-002 (2.0/4.7)")));
+
+        std::fs::remove_dir_all(&workdir).expect("temp workdir should clean up");
+    }
+
+    #[tokio::test]
+    async fn verify_mode_criterion_weight_can_control_selection() {
+        let workdir = new_temp_workdir();
+        std::fs::write(workdir.join("src/lib.rs"), "baseline\n")
+            .expect("baseline file should write");
+        let mut config = verify_workflow_config_with_verifier(
+            crate::iterative_workflow::VerifierSelectionStrategy::RoundRobin,
+            1,
+        );
+        configure_verify_judge_test(&mut config, 2, 13.0);
+        config
+            .verifier
+            .as_mut()
+            .expect("verifier should exist")
+            .criteria = vec![
+            crate::iterative_workflow::VerifierCriterionDefinition {
+                id: "spec".to_string(),
+                name: "Spec adherence".to_string(),
+                description: "Base request satisfaction.".to_string(),
+                weight: Some(1.0),
+                aggregation: Some(
+                    crate::iterative_workflow::VerifierCriterionAggregation::WinnerVote,
+                ),
+            },
+            crate::iterative_workflow::VerifierCriterionDefinition {
+                id: "safety".to_string(),
+                name: "Safety".to_string(),
+                description: "Prefer the safer answer when there is tradeoff.".to_string(),
+                weight: Some(5.0),
+                aggregation: Some(
+                    crate::iterative_workflow::VerifierCriterionAggregation::WinnerVote,
+                ),
+            },
+        ];
+        let executor = Arc::new(ScriptedToolExecutor {
+            responses: Mutex::new(VecDeque::from(vec![
+                Ok(ToolOutput {
+                    output: "score=10".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+                Ok(ToolOutput {
+                    output: "score=12".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+                Ok(ToolOutput {
+                    output: "score=11".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+            ])),
+        });
+        let judge = Arc::new(ScriptedModelResolver::new(vec![stream_from_text(
+            r#"{"winner":"cand-001","scores":[{"criterion_id":"spec","winner":"cand-001","explanation":"candidate one is slightly more polished"},{"criterion_id":"safety","winner":"cand-002","explanation":"candidate two is materially safer"}]}"#,
+        )]));
+        let mut controller = WorkflowController::from_config(
+            config,
+            ToolRunner::new(executor),
+            test_exec_ctx(&workdir),
+            Some("verify-weighted-criteria".to_string()),
+        )
+        .expect("controller construction should succeed")
+        .expect("workflow should activate controller");
+        controller.bind_verifier_judge(
+            judge,
+            Arc::new(crate::traits::NoopLifecycleHook),
+            Arc::new(crate::runtime::events::NeverCancel),
+            test_exec_ctx(&workdir),
+        );
+
+        controller
+            .capture_baseline()
+            .await
+            .expect("baseline should capture");
+        controller
+            .begin_iteration(1)
+            .expect("first verify iteration should begin");
+        controller
+            .evaluate_round(
+                1,
+                &OrchestratorOutput {
+                    content: "candidate one execution output".to_string(),
+                    steps: 1,
+                    tool_calls_count: 0,
+                    metadata: HashMap::new(),
+                    finish_reason: crate::runtime::events::FinishReason::EndTurn,
+                },
+                Vec::new(),
+            )
+            .await
+            .expect("first verify round should succeed");
+
+        controller
+            .begin_iteration(2)
+            .expect("second verify iteration should begin");
+        let second = controller
+            .evaluate_round(
+                2,
+                &OrchestratorOutput {
+                    content: "candidate two execution output".to_string(),
+                    steps: 1,
+                    tool_calls_count: 0,
+                    metadata: HashMap::new(),
+                    finish_reason: crate::runtime::events::FinishReason::EndTurn,
+                },
+                Vec::new(),
+            )
+            .await
+            .expect("second verify round should succeed");
+
+        assert_eq!(
+            second.gate_decision.final_response.as_deref(),
+            Some("candidate two execution output")
+        );
+
+        std::fs::remove_dir_all(&workdir).expect("temp workdir should clean up");
+    }
+
+    #[tokio::test]
+    async fn verify_mode_tournament_re_evaluates_candidate_pool() {
+        let workdir = new_temp_workdir();
+        std::fs::write(workdir.join("src/lib.rs"), "baseline\n")
+            .expect("baseline file should write");
+        let mut config = verify_workflow_config_with_verifier(
+            crate::iterative_workflow::VerifierSelectionStrategy::Tournament,
+            1,
+        );
+        configure_verify_judge_test(&mut config, 3, 20.0);
+        let executor = Arc::new(ScriptedToolExecutor {
+            responses: Mutex::new(VecDeque::from(vec![
+                Ok(ToolOutput {
+                    output: "score=10".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+                Ok(ToolOutput {
+                    output: "score=12".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+                Ok(ToolOutput {
+                    output: "score=11".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+                Ok(ToolOutput {
+                    output: "score=10".to_string(),
+                    is_error: false,
+                    title: None,
+                    metadata: Some(json!({"exit_code": 0})),
+                }),
+            ])),
+        });
+        let judge = Arc::new(ScriptedModelResolver::new(vec![
+            stream_from_text(r#"{"winner":"cand-003"}"#),
+            stream_from_text(r#"{"winner":"cand-001"}"#),
+        ]));
+        let captured_inputs = judge.captured_inputs();
+        let mut controller = WorkflowController::from_config(
+            config,
+            ToolRunner::new(executor),
+            test_exec_ctx(&workdir),
+            Some("verify-tournament".to_string()),
+        )
+        .expect("controller construction should succeed")
+        .expect("workflow should activate controller");
+        controller.bind_verifier_judge(
+            judge,
+            Arc::new(crate::traits::NoopLifecycleHook),
+            Arc::new(crate::runtime::events::NeverCancel),
+            test_exec_ctx(&workdir),
+        );
+
+        controller
+            .capture_baseline()
+            .await
+            .expect("baseline should capture");
+        for iteration in 1..=3 {
+            controller
+                .begin_iteration(iteration)
+                .expect("verify iteration should begin");
+            let result = controller
+                .evaluate_round(
+                    iteration,
+                    &OrchestratorOutput {
+                        content: format!("candidate {iteration} execution output"),
+                        steps: 1,
+                        tool_calls_count: 0,
+                        metadata: HashMap::new(),
+                        finish_reason: crate::runtime::events::FinishReason::EndTurn,
+                    },
+                    Vec::new(),
+                )
+                .await
+                .expect("verify round should succeed");
+            if iteration == 3 {
+                assert_eq!(
+                    result.gate_decision.status,
+                    SchedulerExecutionGateStatus::Done
+                );
+                assert_eq!(
+                    result.gate_decision.final_response.as_deref(),
+                    Some("candidate 3 execution output")
+                );
+            }
+        }
+
+        let inputs = captured_inputs.lock().await.clone();
+        assert_eq!(inputs.len(), 2);
+        assert!(inputs
+            .iter()
+            .all(|input| input.contains("Selection strategy: tournament")));
+        assert!(inputs
+            .iter()
+            .any(|input| { input.contains("id: cand-001") && input.contains("id: cand-003") }));
 
         std::fs::remove_dir_all(&workdir).expect("temp workdir should clean up");
     }
@@ -3007,7 +5197,7 @@ mod tests {
             .expect("iteration mutation should write");
         std::fs::write(workdir.join("src/new.rs"), "new file\n").expect("new file should write");
         let result = controller
-            .evaluate_round(1, Vec::new())
+            .evaluate_round(1, &OrchestratorOutput::empty(), Vec::new())
             .await
             .expect("workflow evaluation should succeed");
 
@@ -3067,6 +5257,7 @@ mod tests {
         let result = controller
             .evaluate_round(
                 1,
+                &OrchestratorOutput::empty(),
                 vec![WorkflowModeArtifact {
                     name: "finding-registry".to_string(),
                     description: "Security findings".to_string(),
@@ -3096,6 +5287,7 @@ mod tests {
                 final_gate_status: Some(gate_status_label(result.gate_decision.status).to_string()),
                 final_summary: Some(result.gate_decision.summary.clone()),
                 final_response: result.gate_decision.final_response.clone(),
+                verifier: None,
                 mode_report: None,
                 mode_artifacts: Vec::new(),
                 objective_satisfied: true,
@@ -3175,7 +5367,7 @@ mod tests {
             .await
             .expect("baseline should capture");
         let first_result = first_controller
-            .evaluate_round(1, Vec::new())
+            .evaluate_round(1, &OrchestratorOutput::empty(), Vec::new())
             .await
             .expect("first workflow evaluation should succeed");
         first_controller
@@ -3194,6 +5386,7 @@ mod tests {
                 ),
                 final_summary: Some(first_result.gate_decision.summary.clone()),
                 final_response: first_result.gate_decision.final_response.clone(),
+                verifier: None,
                 mode_report: None,
                 mode_artifacts: Vec::new(),
                 objective_satisfied: true,
@@ -3275,7 +5468,7 @@ mod tests {
         std::fs::write(workdir.join("src/lib.rs"), "candidate\n")
             .expect("candidate mutation should write");
         let result = controller
-            .evaluate_round(1, Vec::new())
+            .evaluate_round(1, &OrchestratorOutput::empty(), Vec::new())
             .await
             .expect("workflow evaluation should succeed");
         controller
@@ -3292,6 +5485,7 @@ mod tests {
                 final_gate_status: Some(gate_status_label(result.gate_decision.status).to_string()),
                 final_summary: Some(result.gate_decision.summary.clone()),
                 final_response: result.gate_decision.final_response.clone(),
+                verifier: None,
                 mode_report: None,
                 mode_artifacts: Vec::new(),
                 objective_satisfied: true,
@@ -3361,7 +5555,7 @@ mod tests {
         std::fs::write(workdir.join("src/lib.rs"), "candidate-one\n")
             .expect("first candidate mutation should write");
         let first = controller
-            .evaluate_round(1, Vec::new())
+            .evaluate_round(1, &OrchestratorOutput::empty(), Vec::new())
             .await
             .expect("first workflow evaluation should succeed");
         assert_eq!(first.decision, IterationDecision::Keep);
@@ -3372,7 +5566,7 @@ mod tests {
         std::fs::write(workdir.join("src/lib.rs"), "candidate-two\n")
             .expect("second candidate mutation should write");
         let second = controller
-            .evaluate_round(2, Vec::new())
+            .evaluate_round(2, &OrchestratorOutput::empty(), Vec::new())
             .await
             .expect("second workflow evaluation should succeed");
         assert_eq!(second.decision, IterationDecision::StopSatisfied);
@@ -3391,6 +5585,7 @@ mod tests {
                 final_gate_status: Some(gate_status_label(second.gate_decision.status).to_string()),
                 final_summary: Some(second.gate_decision.summary.clone()),
                 final_response: second.gate_decision.final_response.clone(),
+                verifier: None,
                 mode_report: None,
                 mode_artifacts: Vec::new(),
                 objective_satisfied: true,
@@ -3454,6 +5649,7 @@ mod tests {
         let result = controller
             .evaluate_round(
                 1,
+                &OrchestratorOutput::empty(),
                 vec![WorkflowModeArtifact {
                     name: "finding-registry".to_string(),
                     description: "Security findings".to_string(),
@@ -3495,6 +5691,7 @@ mod tests {
                 final_gate_status: Some(gate_status_label(result.gate_decision.status).to_string()),
                 final_summary: Some(result.gate_decision.summary.clone()),
                 final_response: result.gate_decision.final_response.clone(),
+                verifier: None,
                 mode_report: None,
                 mode_artifacts: Vec::new(),
                 objective_satisfied: false,
@@ -3758,7 +5955,7 @@ mod tests {
             .expect("new candidate file should write");
 
         let result = controller
-            .evaluate_round(1, Vec::new())
+            .evaluate_round(1, &OrchestratorOutput::empty(), Vec::new())
             .await
             .expect("workflow evaluation should succeed");
 

@@ -60,6 +60,7 @@ pub(crate) fn mode_protocol_for(config: &IterativeWorkflowConfig) -> Box<dyn Wor
         }
         IterativeWorkflowMode::Debug => Box::new(DebugModeProtocol::new(config.debug.as_ref())),
         IterativeWorkflowMode::Fix => Box::new(FixModeProtocol::new(config.fix.as_ref())),
+        IterativeWorkflowMode::Verify => Box::new(VerifyModeProtocol::new(config)),
         IterativeWorkflowMode::Ship => Box::new(ShipModeProtocol::new(config.ship.as_ref())),
     }
 }
@@ -163,6 +164,7 @@ fn mode_artifact_name(mode: IterativeWorkflowMode) -> &'static str {
         IterativeWorkflowMode::Security => "finding-registry",
         IterativeWorkflowMode::Debug => "hypothesis-log",
         IterativeWorkflowMode::Fix => "repair-log",
+        IterativeWorkflowMode::Verify => "candidate-registry",
         IterativeWorkflowMode::Ship => "ship-checklist",
     }
 }
@@ -227,6 +229,7 @@ fn parse_mode_name(value: &str) -> Option<IterativeWorkflowMode> {
         "security" => Some(IterativeWorkflowMode::Security),
         "debug" => Some(IterativeWorkflowMode::Debug),
         "fix" => Some(IterativeWorkflowMode::Fix),
+        "verify" => Some(IterativeWorkflowMode::Verify),
         "ship" => Some(IterativeWorkflowMode::Ship),
         _ => None,
     }
@@ -456,6 +459,116 @@ impl WorkflowModeProtocol for RunModeProtocol {
             iteration_notes: iteration_notes.to_vec(),
             final_notes: vec![format!(
                 "Run protocol finished after {} iterations with decision {:?}.",
+                ctx.iterations_completed, ctx.final_decision
+            )],
+        }
+    }
+}
+
+struct VerifyModeProtocol {
+    goal: Option<String>,
+    criteria_count: usize,
+    entries: Vec<WorkflowModeArtifactEntry>,
+}
+
+impl VerifyModeProtocol {
+    fn new(config: &IterativeWorkflowConfig) -> Self {
+        Self {
+            goal: config
+                .objective
+                .as_ref()
+                .map(|objective| objective.goal.clone()),
+            criteria_count: config
+                .verifier
+                .as_ref()
+                .map(|verifier| verifier.criteria.len())
+                .unwrap_or(0),
+            entries: Vec::new(),
+        }
+    }
+}
+
+impl WorkflowModeProtocol for VerifyModeProtocol {
+    fn mode(&self) -> &'static str {
+        "verify"
+    }
+
+    fn protocol_name(&self) -> &'static str {
+        "candidate-admission-and-selection"
+    }
+
+    fn config_notes(&self) -> Vec<String> {
+        let mut notes = Vec::new();
+        if let Some(goal) = self.goal.as_ref() {
+            notes.push(format!("Compare candidates against objective: {goal}"));
+        }
+        notes.push(format!(
+            "Verifier criteria configured: {}",
+            self.criteria_count
+        ));
+        notes
+    }
+
+    fn iteration_brief(&self, iteration: u32) -> Option<String> {
+        Some(format!(
+            "Iteration {iteration}: generate a candidate that is not only correct, but auditable enough to win later verifier comparison."
+        ))
+    }
+
+    fn annotate_gate(&self, ctx: &ModeIterationContext) -> ModeGateAnnotation {
+        ModeGateAnnotation {
+            summary_suffix: Some(
+                "Verify protocol tracks viable candidates for later selection.".to_string(),
+            ),
+            next_input_prefix: (ctx.gate_status == "continue").then(|| {
+                "Preserve strong verification evidence and keep the result comparable against prior candidates.".to_string()
+            }),
+            iteration_note: Some(format!(
+                "iter {} => verify decision={} verify_passed={}",
+                ctx.iteration, ctx.decision, ctx.verify_passed
+            )),
+        }
+    }
+
+    fn record_iteration(&mut self, ctx: &ModeIterationContext) {
+        let status = if matches!(ctx.decision.as_str(), "keep" | "stop-satisfied") {
+            "candidate"
+        } else {
+            ctx.gate_status.as_str()
+        };
+        self.entries.push(WorkflowModeArtifactEntry {
+            iteration: Some(ctx.iteration),
+            key: format!("cand-{:03}", ctx.iteration),
+            status: status.to_string(),
+            title: "Verifier candidate".to_string(),
+            detail: format!(
+                "Decision {} with verify_passed={} and metric={:?}",
+                ctx.decision, ctx.verify_passed, ctx.metric_value
+            ),
+            evidence: vec![format!("objective_satisfied={}", ctx.objective_satisfied)],
+        });
+    }
+
+    fn export_artifacts(&self) -> Vec<WorkflowModeArtifact> {
+        vec![WorkflowModeArtifact {
+            name: "candidate-registry".to_string(),
+            description: "Candidate admission registry for verify mode.".to_string(),
+            entries: self.entries.clone(),
+        }]
+    }
+
+    fn finalize_report(
+        &self,
+        ctx: &ModeFinalizeContext,
+        iteration_notes: &[String],
+    ) -> WorkflowModeReport {
+        WorkflowModeReport {
+            mode: self.mode().to_string(),
+            protocol: self.protocol_name().to_string(),
+            config_notes: self.config_notes(),
+            iteration_notes: iteration_notes.to_vec(),
+            final_notes: vec![format!(
+                "Verify protocol finished after {} iterations with decision {:?}.",
                 ctx.iterations_completed, ctx.final_decision
             )],
         }
@@ -1271,6 +1384,7 @@ mod tests {
             security: None,
             debug: None,
             fix: None,
+            verifier: None,
             ship: None,
         }
     }

@@ -3,11 +3,13 @@ mod hephaestus;
 mod prometheus;
 mod runtime_enforcement;
 mod sisyphus;
+mod verifier;
 
 pub use atlas::*;
 pub use hephaestus::*;
 pub use prometheus::*;
 pub use sisyphus::*;
+pub use verifier::*;
 
 use super::super::tool_runner::ToolRunner;
 use super::profile_state::SchedulerPresetRuntimeState;
@@ -291,6 +293,7 @@ impl SchedulerPresetDefinition {
             SchedulerPresetKind::Prometheus => &PROMETHEUS_PRESET_BUNDLE,
             SchedulerPresetKind::Atlas => &ATLAS_PRESET_BUNDLE,
             SchedulerPresetKind::Hephaestus => &HEPHAESTUS_PRESET_BUNDLE,
+            SchedulerPresetKind::Verifier => &VERIFIER_PRESET_BUNDLE,
         }
     }
 
@@ -1136,6 +1139,7 @@ pub fn scheduler_preset_definition(kind: SchedulerPresetKind) -> SchedulerPreset
         SchedulerPresetKind::Prometheus => PROMETHEUS_PRESET_BUNDLE.definition,
         SchedulerPresetKind::Atlas => ATLAS_PRESET_BUNDLE.definition,
         SchedulerPresetKind::Hephaestus => HEPHAESTUS_PRESET_BUNDLE.definition,
+        SchedulerPresetKind::Verifier => VERIFIER_PRESET_BUNDLE.definition,
     }
 }
 
@@ -1340,11 +1344,12 @@ pub(super) fn shared_execution_and_synthesis_effect_protocol(
 mod tests {
     use super::*;
 
-    const ALL_PRESETS: [SchedulerPresetKind; 4] = [
+    const ALL_PRESETS: [SchedulerPresetKind; 5] = [
         SchedulerPresetKind::Sisyphus,
         SchedulerPresetKind::Prometheus,
         SchedulerPresetKind::Atlas,
         SchedulerPresetKind::Hephaestus,
+        SchedulerPresetKind::Verifier,
     ];
 
     #[test]

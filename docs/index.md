@@ -30,6 +30,7 @@ ROCode 由唯一的执行内核驱动所有 LLM 循环。调度器以 preset 形
 | `prometheus` | 规划优先、分步交付 | request-analysis, route, interview, plan, review, handoff |
 | `atlas` | 协调/委派/验证 | request-analysis, execution-orchestration, synthesis |
 | `hephaestus` | 自主深度执行 | request-analysis, execution-orchestration |
+| `verifier` | 多候选比较选优 | request-analysis, execution-orchestration |
 
 ### 四个正交维度
 

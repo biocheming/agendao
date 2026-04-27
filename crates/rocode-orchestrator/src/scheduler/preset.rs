@@ -6,7 +6,7 @@ use super::{
     SchedulerProfileConfig, SchedulerProfileOrchestrator, SchedulerProfilePlan, SchedulerStageKind,
     SchedulerStageObservability,
 };
-use crate::iterative_workflow::WorkflowBasePreset;
+use crate::iterative_workflow::{IterativeWorkflowMode, WorkflowBasePreset};
 use crate::skill_tree::SkillTreeRequestPlan;
 use crate::tool_runner::ToolRunner;
 
@@ -30,27 +30,31 @@ pub enum SchedulerPresetKind {
     Prometheus,
     Atlas,
     Hephaestus,
+    Verifier,
 }
 
-const ALL_SCHEDULER_PRESETS: [SchedulerPresetKind; 4] = [
+const ALL_SCHEDULER_PRESETS: [SchedulerPresetKind; 5] = [
     SchedulerPresetKind::Sisyphus,
     SchedulerPresetKind::Prometheus,
     SchedulerPresetKind::Atlas,
     SchedulerPresetKind::Hephaestus,
+    SchedulerPresetKind::Verifier,
 ];
 
-const PUBLIC_SCHEDULER_PRESETS: [SchedulerPresetKind; 4] = [
+const PUBLIC_SCHEDULER_PRESETS: [SchedulerPresetKind; 5] = [
     SchedulerPresetKind::Sisyphus,
     SchedulerPresetKind::Prometheus,
     SchedulerPresetKind::Atlas,
     SchedulerPresetKind::Hephaestus,
+    SchedulerPresetKind::Verifier,
 ];
 
-const ROUTER_RECOMMENDED_SCHEDULER_PRESETS: [SchedulerPresetKind; 4] = [
+const ROUTER_RECOMMENDED_SCHEDULER_PRESETS: [SchedulerPresetKind; 5] = [
     SchedulerPresetKind::Sisyphus,
     SchedulerPresetKind::Prometheus,
     SchedulerPresetKind::Atlas,
     SchedulerPresetKind::Hephaestus,
+    SchedulerPresetKind::Verifier,
 ];
 
 impl SchedulerPresetKind {
@@ -96,6 +100,7 @@ impl SchedulerPresetKind {
             Self::Prometheus => "prometheus",
             Self::Atlas => "atlas",
             Self::Hephaestus => "hephaestus",
+            Self::Verifier => "verifier",
         }
     }
 
@@ -107,6 +112,9 @@ impl SchedulerPresetKind {
         }
 
         if let Some(workflow) = profile.workflow() {
+            if workflow.workflow.mode == IterativeWorkflowMode::Verify {
+                return Ok(Self::Verifier);
+            }
             return Ok(match workflow.base_preset_hint() {
                 WorkflowBasePreset::Prometheus => Self::Prometheus,
                 WorkflowBasePreset::Atlas => Self::Atlas,
@@ -190,6 +198,7 @@ impl FromStr for SchedulerPresetKind {
             "prometheus" => Ok(Self::Prometheus),
             "atlas" => Ok(Self::Atlas),
             "hephaestus" => Ok(Self::Hephaestus),
+            "verifier" => Ok(Self::Verifier),
             other => Err(SchedulerConfigError::UnknownOrchestrator(other.to_string())),
         }
     }
@@ -469,20 +478,133 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_preset_infers_verifier_from_verify_workflow() {
+        let profile = SchedulerProfileConfig {
+            workflow: Some(crate::IterativeWorkflowSource::Inline(
+                crate::IterativeWorkflowConfig::load_from_str(
+                    r#"{
+                      "workflow": { "kind": "autoresearch", "mode": "verify" },
+                      "objective": {
+                        "goal": "Choose the better patch",
+                        "scope": { "include": ["src/**/*.rs"] },
+                        "direction": "higher-is-better",
+                        "metric": { "kind": "numeric-extract", "pattern": "([0-9]+)" },
+                        "verify": { "command": "cargo test" }
+                      },
+                      "decisionPolicy": {},
+                      "workspacePolicy": { "snapshotStrategy": "patch-file" },
+                      "verifier": {
+                        "model": { "providerId": "openai", "modelId": "gpt-5" },
+                        "criteria": [
+                          {
+                            "id": "spec",
+                            "name": "Spec",
+                            "description": "Prefer the candidate that best satisfies the request."
+                          }
+                        ]
+                      }
+                    }"#,
+                )
+                .unwrap(),
+            )),
+            ..Default::default()
+        };
+        let plan = scheduler_plan_from_profile(Some("verify".to_string()), &profile).unwrap();
+        assert_eq!(plan.orchestrator.as_deref(), Some("verifier"));
+        assert_eq!(
+            plan.stages,
+            vec![
+                SchedulerStageKind::RequestAnalysis,
+                SchedulerStageKind::ExecutionOrchestration,
+            ]
+        );
+    }
+
+    #[test]
+    fn scheduler_preset_infers_verifier_from_external_verify_workflow_path() {
+        let unique = format!(
+            "rocode_scheduler_verifier_workflow_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock error")
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&dir).expect("temp dir should exist");
+        let workflow_path = dir.join("workflow.jsonc");
+        fs::write(
+            &workflow_path,
+            r#"{
+              "workflow": { "kind": "autoresearch", "mode": "verify" },
+              "objective": {
+                "goal": "Pick the strongest implementation",
+                "scope": { "include": ["src/**/*.rs"] },
+                "direction": "higher-is-better",
+                "metric": { "kind": "numeric-extract", "pattern": "([0-9]+)" },
+                "verify": { "command": "cargo test" }
+              },
+              "decisionPolicy": {},
+              "workspacePolicy": { "snapshotStrategy": "patch-file" },
+              "verifier": {
+                "model": { "providerId": "openai", "modelId": "gpt-5" },
+                "criteria": [
+                  {
+                    "id": "spec",
+                    "name": "Spec",
+                    "description": "Prefer the candidate that best satisfies the request."
+                  }
+                ]
+              }
+            }"#,
+        )
+        .expect("workflow file should write");
+
+        let scheduler_path = dir.join("scheduler.jsonc");
+        fs::write(
+            &scheduler_path,
+            r#"{
+              "defaults": { "profile": "verify-path" },
+              "profiles": {
+                "verify-path": {
+                  "workflowPath": "./workflow.jsonc"
+                }
+              }
+            }"#,
+        )
+        .expect("scheduler file should write");
+
+        let plan = scheduler_plan_from_file(&scheduler_path).unwrap();
+        assert_eq!(plan.profile_name.as_deref(), Some("verify-path"));
+        assert_eq!(plan.orchestrator.as_deref(), Some("verifier"));
+        assert_eq!(
+            plan.stages,
+            vec![
+                SchedulerStageKind::RequestAnalysis,
+                SchedulerStageKind::ExecutionOrchestration,
+            ]
+        );
+
+        let _ = fs::remove_file(&scheduler_path);
+        let _ = fs::remove_file(&workflow_path);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn scheduler_public_presets_only_include_omo_presets() {
         assert_eq!(
             SchedulerPresetKind::public_presets()
                 .iter()
                 .map(|preset| preset.as_str())
                 .collect::<Vec<_>>(),
-            vec!["sisyphus", "prometheus", "atlas", "hephaestus"]
+            vec!["sisyphus", "prometheus", "atlas", "hephaestus", "verifier"]
         );
         assert_eq!(
             SchedulerPresetKind::router_recommended_presets()
                 .iter()
                 .map(|preset| preset.as_str())
                 .collect::<Vec<_>>(),
-            vec!["sisyphus", "prometheus", "atlas", "hephaestus"]
+            vec!["sisyphus", "prometheus", "atlas", "hephaestus", "verifier"]
         );
     }
 
@@ -587,6 +709,71 @@ mod tests {
             "hephaestus",
             crate::scheduler::hephaestus_default_stages(),
         );
+        assert_checked_in_public_scheduler_example(
+            "verifier.example.jsonc",
+            "verifier-default",
+            "verifier",
+            crate::scheduler::verifier_default_stages(),
+        );
+    }
+
+    #[test]
+    fn verifier_example_exposes_verify_workflow_defaults() {
+        let path = checked_in_scheduler_example_path("verifier.example.jsonc");
+        let config = SchedulerConfig::load_from_file(&path)
+            .unwrap_or_else(|err| panic!("verifier example should parse: {}", err));
+        let profile = config.default_profile().unwrap();
+        let workflow = profile
+            .workflow()
+            .expect("verifier example should include inline workflow config");
+        let verifier = workflow
+            .verifier
+            .as_ref()
+            .expect("verify mode should include verifier block");
+
+        assert_eq!(workflow.workflow.mode, IterativeWorkflowMode::Verify);
+        assert_eq!(verifier.repetitions, Some(3));
+        assert_eq!(verifier.use_logprobs, Some(true));
+        assert_eq!(verifier.granularity, Some(20));
+        assert_eq!(
+            verifier.selection,
+            Some(crate::iterative_workflow::VerifierSelectionStrategy::RoundRobin)
+        );
+        assert_eq!(
+            verifier.trace_format,
+            Some(crate::iterative_workflow::VerifierTraceFormat::Compact)
+        );
+        assert_eq!(verifier.criteria.len(), 2);
+        assert_eq!(verifier.criteria[0].weight, Some(1.0));
+        assert_eq!(
+            verifier.criteria[1].aggregation,
+            Some(crate::iterative_workflow::VerifierCriterionAggregation::WinnerVote)
+        );
+    }
+
+    #[test]
+    fn verifier_example_custom_profile_resolves_external_workflow() {
+        let path = checked_in_scheduler_example_path("verifier.example.jsonc");
+        let config = SchedulerConfig::load_from_file(&path)
+            .unwrap_or_else(|err| panic!("verifier example should parse: {}", err));
+        let profile = config.profile("verifier-custom").unwrap();
+        let workflow = profile
+            .workflow()
+            .expect("verifier custom profile should resolve workflowPath");
+        let verifier = workflow
+            .verifier
+            .as_ref()
+            .expect("verify workflow should include verifier block");
+
+        assert_eq!(workflow.workflow.mode, IterativeWorkflowMode::Verify);
+        assert_eq!(
+            verifier.selection,
+            Some(crate::iterative_workflow::VerifierSelectionStrategy::Tournament)
+        );
+        assert_eq!(verifier.max_candidates, Some(4));
+        assert_eq!(verifier.use_logprobs, Some(true));
+        assert_eq!(verifier.granularity, Some(20));
+        assert_eq!(verifier.criteria.len(), 3);
     }
 
     #[test]

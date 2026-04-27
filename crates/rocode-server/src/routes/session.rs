@@ -219,19 +219,21 @@ mod tests {
 
     #[test]
     fn builtin_preset_defaults_resolve_without_external_scheduler_file() {
-        let defaults = resolve_scheduler_request_defaults(&AppConfig::default(), Some("sisyphus"))
-            .expect("builtin preset should resolve without schedulerPath");
-
-        assert_eq!(defaults.profile_name.as_deref(), Some("sisyphus"));
+        for name in &["sisyphus", "verifier"] {
+            let defaults = resolve_scheduler_request_defaults(&AppConfig::default(), Some(name))
+                .expect("builtin preset should resolve without schedulerPath");
+            assert_eq!(defaults.profile_name.as_deref(), Some(*name));
+        }
     }
 
     #[test]
     fn builtin_presets_resolve_as_preset_modes() {
-        let defaults = resolve_scheduler_request_defaults(&AppConfig::default(), Some("sisyphus"))
-            .expect("builtin preset should resolve without schedulerPath");
-
-        assert_eq!(defaults.profile_name.as_deref(), Some("sisyphus"));
-        assert_eq!(scheduler_mode_kind("sisyphus"), "preset");
+        for name in &["sisyphus", "verifier"] {
+            let defaults = resolve_scheduler_request_defaults(&AppConfig::default(), Some(name))
+                .expect("builtin preset should resolve without schedulerPath");
+            assert_eq!(defaults.profile_name.as_deref(), Some(*name));
+            assert_eq!(scheduler_mode_kind(name), "preset");
+        }
     }
 
     #[test]
@@ -326,7 +328,7 @@ mod tests {
         // - known preset names resolve to a non-empty preview from the orchestrator
         // - the preview uses third-person "You are" framing (not "I'm")
         // Exact prompt wording is owned by rocode-orchestrator presets.
-        for name in &["atlas", "prometheus", "sisyphus", "hephaestus"] {
+        for name in &["atlas", "prometheus", "sisyphus", "hephaestus", "verifier"] {
             let profile = SchedulerProfileConfig {
                 orchestrator: Some(name.to_string()),
                 ..Default::default()

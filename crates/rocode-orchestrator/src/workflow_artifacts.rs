@@ -1,4 +1,5 @@
 use crate::iterative_workflow::{ArtifactFileDefinition, IterativeWorkflowConfig};
+use crate::verifier_engine::VerifierPersistentCache;
 use crate::{ExecutionContext, OrchestratorError};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
@@ -14,6 +15,7 @@ const DEFAULT_SUMMARY_FILENAME: &str = "summary.md";
 const DEFAULT_MANIFEST_FILENAME: &str = "run-manifest.json";
 const DEFAULT_LATEST_FILENAME: &str = "latest-run.json";
 const DEFAULT_MODE_ARTIFACTS_FILENAME: &str = "mode-artifacts.json";
+const DEFAULT_VERIFIER_CACHE_FILENAME: &str = "pairwise-cache.json";
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct WorkflowCommandArtifact {
@@ -96,11 +98,36 @@ pub(crate) struct WorkflowRunSummaryRecord {
     pub final_gate_status: Option<String>,
     pub final_summary: Option<String>,
     pub final_response: Option<String>,
+    pub verifier: Option<WorkflowVerifierSummary>,
     pub mode_report: Option<WorkflowModeReport>,
     pub mode_artifacts: Vec<WorkflowModeArtifact>,
     pub objective_satisfied: bool,
     pub cancelled: bool,
     pub exhausted_budget: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct WorkflowVerifierCriterionSummary {
+    pub criterion_id: String,
+    pub winner_candidate_id: Option<String>,
+    pub score_a: Option<String>,
+    pub score_b: Option<String>,
+    pub explanation: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct WorkflowVerifierSummary {
+    pub selected_candidate_id: Option<String>,
+    pub selected_iteration: Option<u32>,
+    pub candidates_considered: u32,
+    pub pairwise_comparisons: u32,
+    pub judge_calls: u32,
+    pub cache_hits: u32,
+    pub selection_strategy: String,
+    pub used_judge: bool,
+    pub used_logprobs: bool,
+    pub judge_rationale: Option<String>,
+    pub criterion_scores: Vec<WorkflowVerifierCriterionSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,6 +153,7 @@ pub(crate) struct WorkflowRunManifest {
     pub cancelled: bool,
     pub exhausted_budget: bool,
     pub final_summary: Option<String>,
+    pub verifier: Option<WorkflowVerifierSummary>,
     pub mode_report: Option<WorkflowModeReport>,
     pub mode_artifacts: Vec<WorkflowModeArtifact>,
     pub completed_at_unix_ms: u128,
@@ -270,6 +298,7 @@ impl WorkflowArtifactWriter {
             cancelled: summary.cancelled,
             exhausted_budget: summary.exhausted_budget,
             final_summary: summary.final_summary.clone(),
+            verifier: summary.verifier.clone(),
             mode_report: summary.mode_report.clone(),
             mode_artifacts: summary.mode_artifacts.clone(),
             completed_at_unix_ms: now_unix_ms(),
@@ -319,6 +348,40 @@ impl WorkflowArtifactWriter {
                     path.display()
                 ))
             })
+    }
+
+    pub(crate) fn read_verifier_cache(
+        &self,
+    ) -> Result<Option<VerifierPersistentCache>, OrchestratorError> {
+        let path = self.verifier_cache_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        let content = fs::read_to_string(&path).map_err(|err| {
+            OrchestratorError::Other(format!(
+                "failed to read verifier cache '{}': {err}",
+                path.display()
+            ))
+        })?;
+        serde_json::from_str::<VerifierPersistentCache>(&content)
+            .map(Some)
+            .map_err(|err| {
+                OrchestratorError::Other(format!(
+                    "failed to parse verifier cache '{}': {err}",
+                    path.display()
+                ))
+            })
+    }
+
+    pub(crate) fn write_verifier_cache(
+        &self,
+        cache: &VerifierPersistentCache,
+    ) -> Result<(), OrchestratorError> {
+        let path = self.verifier_cache_path();
+        let content = serde_json::to_string_pretty(cache).map_err(|err| {
+            OrchestratorError::Other(format!("failed to serialize verifier cache: {err}"))
+        })?;
+        write_string(&path, &content)
     }
 
     fn append_iteration_record(
@@ -444,6 +507,65 @@ impl WorkflowArtifactWriter {
                 lines.push(trimmed.to_string());
             }
         }
+        if let Some(verifier) = summary.verifier.as_ref() {
+            lines.push(String::new());
+            lines.push("## Verifier Summary".to_string());
+            lines.push(format!(
+                "- Selected candidate: {}",
+                verifier.selected_candidate_id.as_deref().unwrap_or("none")
+            ));
+            lines.push(format!(
+                "- Selected iteration: {}",
+                verifier
+                    .selected_iteration
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "n/a".to_string())
+            ));
+            lines.push(format!(
+                "- Candidates considered: {}",
+                verifier.candidates_considered
+            ));
+            lines.push(format!(
+                "- Pairwise comparisons: {}",
+                verifier.pairwise_comparisons
+            ));
+            lines.push(format!("- Judge calls: {}", verifier.judge_calls));
+            lines.push(format!("- Cache hits: {}", verifier.cache_hits));
+            lines.push(format!(
+                "- Selection strategy: {}",
+                verifier.selection_strategy
+            ));
+            lines.push(format!("- Used judge: {}", verifier.used_judge));
+            lines.push(format!("- Used logprobs: {}", verifier.used_logprobs));
+            if let Some(rationale) = verifier.judge_rationale.as_deref() {
+                let trimmed = rationale.trim();
+                if !trimmed.is_empty() {
+                    lines.push(format!("- Judge rationale: {trimmed}"));
+                }
+            }
+            if !verifier.criterion_scores.is_empty() {
+                lines.push("- Criterion scores:".to_string());
+                for score in &verifier.criterion_scores {
+                    let winner = score
+                        .winner_candidate_id
+                        .as_deref()
+                        .unwrap_or("unspecified");
+                    let score_pair = match (score.score_a.as_deref(), score.score_b.as_deref()) {
+                        (Some(score_a), Some(score_b)) => format!(" ({score_a}/{score_b})"),
+                        _ => String::new(),
+                    };
+                    let explanation = score
+                        .explanation
+                        .as_deref()
+                        .map(|text| format!(": {}", text.trim()))
+                        .unwrap_or_default();
+                    lines.push(format!(
+                        "  - {} -> {}{}{}",
+                        score.criterion_id, winner, score_pair, explanation
+                    ));
+                }
+            }
+        }
         if !summary.kept_commits.is_empty() {
             lines.push(String::new());
             lines.push("## Git Memory".to_string());
@@ -517,6 +639,14 @@ impl WorkflowArtifactWriter {
             .join("objectives")
             .join(&self.profile_component)
             .join(format!("{}.json", self.objective_fingerprint))
+    }
+
+    fn verifier_cache_path(&self) -> PathBuf {
+        self.base_dir
+            .join("verifier-cache")
+            .join(&self.profile_component)
+            .join(&self.objective_fingerprint)
+            .join(DEFAULT_VERIFIER_CACHE_FILENAME)
     }
 }
 
@@ -774,6 +904,7 @@ mod tests {
             security: None,
             debug: None,
             fix: None,
+            verifier: None,
             ship: None,
         }
     }
@@ -832,6 +963,7 @@ mod tests {
                 final_gate_status: Some("done".to_string()),
                 final_summary: Some("objective satisfied".to_string()),
                 final_response: None,
+                verifier: None,
                 mode_report: None,
                 mode_artifacts: Vec::new(),
                 objective_satisfied: true,

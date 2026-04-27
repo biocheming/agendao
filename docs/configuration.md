@@ -611,7 +611,7 @@ CLI：`rocode mcp add <name> --command <cmd>`、`rocode mcp add <name> --url <ur
 
 每个 profile 包含 `orchestrator`（preset 名）、`stages`（阶段列表）、`agentTree`（agent 树）和 `skillTree`（知识树）。stages 可以是字符串或带 override 的对象。`agentTree` 支持内联对象或外部文件路径。详见 [Scheduler 示例](examples/scheduler/README)。
 
-参见 [Scheduler 示例](examples/scheduler/README) 了解四个内置 preset 的详细说明和 per-stage override 配置。
+参见 [Scheduler 示例](examples/scheduler/README) 了解五个内置 preset 的详细说明和 per-stage override 配置。
 
 ---
 

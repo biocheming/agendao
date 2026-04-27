@@ -16,6 +16,8 @@ pub mod skill_tree;
 pub mod tool_runner;
 pub mod traits;
 pub mod types;
+mod verifier_engine;
+mod verifier_trace;
 mod workflow_artifacts;
 mod workflow_mode;
 mod workflow_workspace;

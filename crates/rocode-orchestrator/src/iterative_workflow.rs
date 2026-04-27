@@ -1,7 +1,13 @@
+use crate::types::ModelRef;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+
+const VERIFIER_MAX_CRITERIA: usize = 8;
+const VERIFIER_MAX_REPETITIONS: u32 = 10;
+const VERIFIER_MAX_CANDIDATES: u32 = 12;
+const VERIFIER_MAX_PAIRWISE_JUDGE_JOBS: u32 = 2_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -88,6 +94,8 @@ pub struct IterativeWorkflowConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fix: Option<FixConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verifier: Option<VerifierConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ship: Option<ShipConfig>,
 }
 
@@ -119,6 +127,7 @@ impl IterativeWorkflowConfig {
                 WorkflowBasePreset::Atlas
             }
             IterativeWorkflowMode::Run
+            | IterativeWorkflowMode::Verify
             | IterativeWorkflowMode::Debug
             | IterativeWorkflowMode::Fix => WorkflowBasePreset::Hephaestus,
         }
@@ -137,6 +146,9 @@ impl IterativeWorkflowConfig {
             policy.validate()?;
         }
         if let Some(config) = &self.fix {
+            config.validate()?;
+        }
+        if let Some(config) = &self.verifier {
             config.validate()?;
         }
 
@@ -160,6 +172,12 @@ impl IterativeWorkflowConfig {
                 ("objective", self.objective.is_some()),
                 ("decisionPolicy", self.decision_policy.is_some()),
                 ("workspacePolicy", self.workspace_policy.is_some()),
+            ]),
+            IterativeWorkflowMode::Verify => required_fields(&[
+                ("objective", self.objective.is_some()),
+                ("decisionPolicy", self.decision_policy.is_some()),
+                ("workspacePolicy", self.workspace_policy.is_some()),
+                ("verifier", self.verifier.is_some()),
             ]),
             IterativeWorkflowMode::Ship => required_fields(&[
                 ("ship", self.ship.is_some()),
@@ -207,6 +225,7 @@ pub enum IterativeWorkflowMode {
     Security,
     Debug,
     Fix,
+    Verify,
     Ship,
 }
 
@@ -218,6 +237,7 @@ impl IterativeWorkflowMode {
             Self::Security => "security",
             Self::Debug => "debug",
             Self::Fix => "fix",
+            Self::Verify => "verify",
             Self::Ship => "ship",
         }
     }
@@ -800,6 +820,137 @@ pub enum FixCategory {
     Runtime,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VerifierConfig {
+    pub model: ModelRef,
+    pub criteria: Vec<VerifierCriterionDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub granularity: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repetitions: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<VerifierSelectionStrategy>,
+    #[serde(
+        default,
+        alias = "maxCandidates",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_candidates: Option<u32>,
+    #[serde(
+        default,
+        alias = "useLogprobs",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub use_logprobs: Option<bool>,
+    #[serde(
+        default,
+        alias = "traceFormat",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub trace_format: Option<VerifierTraceFormat>,
+}
+
+impl VerifierConfig {
+    fn validate(&self) -> Result<(), IterativeWorkflowConfigError> {
+        if self.criteria.is_empty() {
+            return Err(IterativeWorkflowConfigError::Validation(
+                "verifier.criteria must contain at least one criterion".to_string(),
+            ));
+        }
+        if self.criteria.len() > VERIFIER_MAX_CRITERIA {
+            return Err(IterativeWorkflowConfigError::Validation(format!(
+                "verifier.criteria must contain at most {VERIFIER_MAX_CRITERIA} criteria"
+            )));
+        }
+        for criterion in &self.criteria {
+            criterion.validate()?;
+        }
+        if matches!(self.repetitions, Some(0)) {
+            return Err(IterativeWorkflowConfigError::Validation(
+                "verifier.repetitions must be at least 1".to_string(),
+            ));
+        }
+        if matches!(self.repetitions, Some(value) if value > VERIFIER_MAX_REPETITIONS) {
+            return Err(IterativeWorkflowConfigError::Validation(format!(
+                "verifier.repetitions must be at most {VERIFIER_MAX_REPETITIONS}"
+            )));
+        }
+        if matches!(self.max_candidates, Some(0 | 1)) {
+            return Err(IterativeWorkflowConfigError::Validation(
+                "verifier.maxCandidates must be at least 2".to_string(),
+            ));
+        }
+        if matches!(self.max_candidates, Some(value) if value > VERIFIER_MAX_CANDIDATES) {
+            return Err(IterativeWorkflowConfigError::Validation(format!(
+                "verifier.maxCandidates must be at most {VERIFIER_MAX_CANDIDATES}"
+            )));
+        }
+        if matches!(self.granularity, Some(0) | Some(21..)) {
+            return Err(IterativeWorkflowConfigError::Validation(
+                "verifier.granularity must be between 1 and 20".to_string(),
+            ));
+        }
+        let max_candidates = self.max_candidates.unwrap_or(3);
+        let repetitions = self.repetitions.unwrap_or(1);
+        let pair_count = max_candidates.saturating_mul(max_candidates.saturating_sub(1)) / 2;
+        let judge_jobs = pair_count
+            .saturating_mul(self.criteria.len() as u32)
+            .saturating_mul(repetitions);
+        if judge_jobs > VERIFIER_MAX_PAIRWISE_JUDGE_JOBS {
+            return Err(IterativeWorkflowConfigError::Validation(format!(
+                "verifier pairwise judge budget {judge_jobs} exceeds limit {VERIFIER_MAX_PAIRWISE_JUDGE_JOBS}; reduce maxCandidates, criteria, or repetitions"
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VerifierCriterionDefinition {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aggregation: Option<VerifierCriterionAggregation>,
+}
+
+impl VerifierCriterionDefinition {
+    fn validate(&self) -> Result<(), IterativeWorkflowConfigError> {
+        if matches!(self.weight, Some(weight) if weight <= 0.0) {
+            return Err(IterativeWorkflowConfigError::Validation(format!(
+                "verifier criterion '{}' must have weight > 0",
+                self.id
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum VerifierCriterionAggregation {
+    WinnerVote,
+    ScoreMargin,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum VerifierSelectionStrategy {
+    RoundRobin,
+    Tournament,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum VerifierTraceFormat {
+    Compact,
+    Full,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ShipConfig {
@@ -890,5 +1041,91 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("pattern"));
+    }
+
+    #[test]
+    fn iterative_workflow_verify_requires_verifier_block() {
+        let err = IterativeWorkflowConfig::load_from_str(
+            r#"{
+              "workflow": { "kind": "autoresearch", "mode": "verify" },
+              "objective": {
+                "goal": "Improve test coverage",
+                "scope": { "include": ["src/**/*.rs"] },
+                "direction": "higher-is-better",
+                "metric": { "kind": "numeric-extract", "pattern": "score=(\\d+)" },
+                "verify": { "command": "cargo test" }
+              },
+              "decisionPolicy": {},
+              "workspacePolicy": { "snapshotStrategy": "patch-file" }
+            }"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("verifier"));
+    }
+
+    #[test]
+    fn iterative_workflow_verify_loads_with_verifier_block() {
+        let config = IterativeWorkflowConfig::load_from_str(
+            r#"{
+              "workflow": { "kind": "autoresearch", "mode": "verify" },
+              "objective": {
+                "goal": "Choose the better patch",
+                "scope": { "include": ["src/**/*.rs"] },
+                "direction": "higher-is-better",
+                "metric": { "kind": "numeric-extract", "pattern": "score=(\\d+)" },
+                "verify": { "command": "cargo test" }
+              },
+              "decisionPolicy": {},
+              "workspacePolicy": { "snapshotStrategy": "patch-file" },
+              "verifier": {
+                "model": { "providerId": "openai", "modelId": "gpt-5" },
+                "criteria": [
+                  {
+                    "id": "spec",
+                    "name": "Spec",
+                    "description": "Choose the candidate that best satisfies the request."
+                  }
+                ],
+                "repetitions": 1,
+                "maxCandidates": 2,
+                "selection": "round-robin",
+                "traceFormat": "compact"
+              }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(config.workflow.mode, IterativeWorkflowMode::Verify);
+        assert_eq!(config.base_preset_hint(), WorkflowBasePreset::Hephaestus);
+        assert!(config.verifier.is_some());
+    }
+
+    #[test]
+    fn iterative_workflow_verify_enforces_cost_controls() {
+        let err = IterativeWorkflowConfig::load_from_str(
+            r#"{
+              "workflow": { "kind": "autoresearch", "mode": "verify" },
+              "objective": {
+                "goal": "Choose the better patch",
+                "scope": { "include": ["src/**/*.rs"] },
+                "direction": "higher-is-better",
+                "metric": { "kind": "numeric-extract", "pattern": "score=(\\d+)" },
+                "verify": { "command": "cargo test" }
+              },
+              "decisionPolicy": {},
+              "workspacePolicy": { "snapshotStrategy": "patch-file" },
+              "verifier": {
+                "model": { "providerId": "openai", "modelId": "gpt-5" },
+                "criteria": [
+                  { "id": "spec", "name": "Spec", "description": "Spec adherence" }
+                ],
+                "repetitions": 11,
+                "maxCandidates": 2
+              }
+            }"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("repetitions"));
     }
 }

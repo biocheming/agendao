@@ -109,6 +109,7 @@ fn autoresearch_run_workflow() -> IterativeWorkflowConfig {
         security: None,
         debug: None,
         fix: None,
+        verifier: None,
         ship: None,
     }
 }

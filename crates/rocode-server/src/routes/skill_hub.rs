@@ -57,8 +57,8 @@ async fn list_managed_skills(
 async fn list_source_indices(
     State(state): State<Arc<ServerState>>,
 ) -> Result<Json<SkillHubIndexResponse>> {
-    let snapshot = run_skill_hub_blocking(state, |authority| Ok(authority.governance_snapshot()))
-        .await?;
+    let snapshot =
+        run_skill_hub_blocking(state, |authority| Ok(authority.governance_snapshot())).await?;
     Ok(Json(SkillHubIndexResponse {
         source_indices: snapshot.source_indices,
     }))
@@ -67,8 +67,8 @@ async fn list_source_indices(
 async fn list_distributions(
     State(state): State<Arc<ServerState>>,
 ) -> Result<Json<SkillHubDistributionResponse>> {
-    let distributions = run_skill_hub_blocking(state, |authority| Ok(authority.distributions()))
-        .await?;
+    let distributions =
+        run_skill_hub_blocking(state, |authority| Ok(authority.distributions())).await?;
     Ok(Json(SkillHubDistributionResponse { distributions }))
 }
 
@@ -112,7 +112,8 @@ async fn refresh_source_index(
 async fn list_audit_events(
     State(state): State<Arc<ServerState>>,
 ) -> Result<Json<SkillHubAuditResponse>> {
-    let audit_events = run_skill_hub_blocking(state, |authority| Ok(authority.audit_tail())).await?;
+    let audit_events =
+        run_skill_hub_blocking(state, |authority| Ok(authority.audit_tail())).await?;
     Ok(Json(SkillHubAuditResponse { audit_events }))
 }
 
@@ -126,9 +127,7 @@ async fn list_governance_timeline(
         Ok(authority.governance_timeline(&query))
     })
     .await?;
-    Ok(Json(SkillHubTimelineResponse {
-        entries,
-    }))
+    Ok(Json(SkillHubTimelineResponse { entries }))
 }
 
 async fn plan_skill_sync(
@@ -154,18 +153,22 @@ async fn run_skill_guard(
 ) -> Result<Json<SkillHubGuardRunResponse>> {
     let target = (trimmed_option(req.skill_name), req.source);
     let reports = match target {
-        (Some(skill_name), None) => run_skill_hub_blocking(state, move |authority| {
-            authority
-                .run_guard_for_skill(&skill_name, "route:/skill/hub/guard/run")
-                .map_err(map_skill_error_to_api_error)
-        })
-        .await?,
-        (None, Some(source)) => run_skill_hub_blocking(state, move |authority| {
-            authority
-                .run_guard_for_source(&source, "route:/skill/hub/guard/run")
-                .map_err(map_skill_error_to_api_error)
-        })
-        .await?,
+        (Some(skill_name), None) => {
+            run_skill_hub_blocking(state, move |authority| {
+                authority
+                    .run_guard_for_skill(&skill_name, "route:/skill/hub/guard/run")
+                    .map_err(map_skill_error_to_api_error)
+            })
+            .await?
+        }
+        (None, Some(source)) => {
+            run_skill_hub_blocking(state, move |authority| {
+                authority
+                    .run_guard_for_source(&source, "route:/skill/hub/guard/run")
+                    .map_err(map_skill_error_to_api_error)
+            })
+            .await?
+        }
         (Some(_), Some(_)) => {
             return Err(ApiError::BadRequest(
                 "guard run accepts either `skill_name` or `source`, not both".to_string(),

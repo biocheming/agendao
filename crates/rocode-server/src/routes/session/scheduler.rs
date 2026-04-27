@@ -451,7 +451,7 @@ impl ModelResolver for SessionSchedulerModelResolver {
         model: Option<&OrchestratorModelRef>,
         messages: Vec<rocode_provider::Message>,
         tools: Vec<rocode_provider::ToolDefinition>,
-        _exec_ctx: &OrchestratorExecutionContext,
+        exec_ctx: &OrchestratorExecutionContext,
     ) -> std::result::Result<rocode_provider::StreamResult, OrchestratorError> {
         let (provider_id, model_id) = model
             .map(|model| (model.provider_id.clone(), model.model_id.clone()))
@@ -469,15 +469,52 @@ impl ModelResolver for SessionSchedulerModelResolver {
                 .map_err(|error| OrchestratorError::ModelError(error.to_string()))?
         };
 
-        let request = self
+        let mut request = self
             .fallback_request
             .with_model(model_id)
             .to_chat_request(messages, tools, true);
+        if exec_ctx
+            .metadata
+            .get("workflow_verifier_use_logprobs")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
+            request.provider_options = Some(merge_verifier_logprob_options(
+                request.provider_options.take(),
+                exec_ctx
+                    .metadata
+                    .get("workflow_verifier_top_logprobs")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|value| u8::try_from(value).ok())
+                    .unwrap_or(20),
+            ));
+        }
         provider
             .chat_stream(request)
             .await
             .map_err(|error| OrchestratorError::ModelError(error.to_string()))
     }
+}
+
+fn merge_verifier_logprob_options(
+    provider_options: Option<std::collections::HashMap<String, serde_json::Value>>,
+    top_logprobs: u8,
+) -> std::collections::HashMap<String, serde_json::Value> {
+    let mut options = provider_options.unwrap_or_default();
+    let top_logprobs = top_logprobs.clamp(1, 20);
+
+    options.insert("logprobs".to_string(), serde_json::json!(top_logprobs));
+    for key in ["openai", "responses"] {
+        let mut nested = options
+            .get(key)
+            .and_then(serde_json::Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        nested.insert("logprobs".to_string(), serde_json::json!(top_logprobs));
+        options.insert(key.to_string(), serde_json::Value::Object(nested));
+    }
+
+    options
 }
 
 #[derive(Clone)]
@@ -1639,6 +1676,26 @@ pub async fn abort_local_session_execution(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn verifier_logprob_options_merge_top_level_and_responses_options() {
+        let options = merge_verifier_logprob_options(
+            Some(HashMap::from([(
+                "responses".to_string(),
+                serde_json::json!({ "reasoningEffort": "low" }),
+            )])),
+            20,
+        );
+
+        assert_eq!(options["logprobs"].as_u64(), Some(20));
+        assert_eq!(options["responses"]["logprobs"].as_u64(), Some(20));
+        assert_eq!(
+            options["responses"]["reasoningEffort"].as_str(),
+            Some("low")
+        );
+        assert_eq!(options["openai"]["logprobs"].as_u64(), Some(20));
+    }
 
     #[tokio::test]
     async fn local_scheduler_prompt_parts_resolve_file_references() {
