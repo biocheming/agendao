@@ -4,6 +4,10 @@ This directory contains formal external scheduler profile examples for ROCode.
 
 > **Tutorial & User Guide**: See [`SCHEDULER_GUIDE.md`](SCHEDULER_GUIDE.md) for a
 > comprehensive guide covering all scheduler concepts, configuration, and usage patterns.
+>
+> **Verifier Guide**: See [`VERIFIER.md`](VERIFIER.md) for a detailed explanation of
+> the verifier preset, canonical score-job algorithm, trajectory evidence, artifacts,
+> and configuration advice.
 
 ## Files
 
@@ -11,8 +15,9 @@ This directory contains formal external scheduler profile examples for ROCode.
 
 - `scheduler-profile.schema.json`
   - Formal schema for the generic scheduler profile file
-  - Public orchestrator surface: `sisyphus`, `prometheus`, `atlas`, `hephaestus`
+  - Public orchestrator surface: `sisyphus`, `prometheus`, `atlas`, `hephaestus`, `verifier`
   - Supports per-stage policy overrides via the `stageOverride` schema
+  - Exposes inline iterative workflows through `workflow`, `workflowPath`, and `iterativeWorkflow`
 
 ### Public OMO examples
 
@@ -24,18 +29,13 @@ This directory contains formal external scheduler profile examples for ROCode.
   - Public OMO-aligned coordination example
 - `hephaestus.example.jsonc`
   - Public OMO-aligned autonomous execution example
-- `autoresearch.example.jsonc`
-  - Draft mapping of autoresearch workflows onto the current scheduler kernel
-- `autoresearch.runnable.example.jsonc`
-  - Checked-in template for a real autoresearch run profile; copy it into local config and pair it with a repo-local verifier script
-- `AUTORESEARCH_DESIGN.md`
-  - Full-parity design notes describing the schema and runtime work still needed
-- `workflow-autoresearch.schema.json`
-  - First-class workflow schema for objective, iteration, decision, workspace, artifacts, and mode-specific config
-- `AUTORESEARCH_STATE_MODEL.md`
-  - Runtime ownership and persistence contract for autoresearch run state
-- `AUTORESEARCH_RUNTIME.md`
-  - Runtime services, lifecycle, and scheduler integration contract for autoresearch
+- `verifier.example.jsonc`
+  - Public verifier example showing both inline `workflow` and external `workflowPath`
+- `verifier.workflow.jsonc`
+  - External verifier workflow file referenced by `verifier-custom`
+- `VERIFIER.md`
+  - Detailed verifier guide covering the problem, algorithm, ROCode implementation,
+    artifacts, fallback behavior, and tuning advice
 
 ### Agent tree files
 
@@ -51,6 +51,15 @@ This directory contains formal external scheduler profile examples for ROCode.
 - `pso.example.jsonc`
   - Particle Swarm Optimization topology using iterative multi-agent convergence
   - See [`PSO.md`](PSO.md) for detailed usage guide, applicable scenarios, and customization
+
+### Related workflow examples
+
+- [`../autoresearch_example/book-authoring.autoresearch.jsonc`](../autoresearch_example/book-authoring.autoresearch.jsonc)
+  - Runnable autoresearch workflow example outside this scheduler subdirectory
+- [`../autoresearch_example/book-authoring-jsonc-verify.sh`](../autoresearch_example/book-authoring-jsonc-verify.sh)
+  - Companion verify script used by the checked-in autoresearch example
+- [`../autoresearch_example/book-authoring-jsonc-guard.sh`](../autoresearch_example/book-authoring-jsonc-guard.sh)
+  - Companion guard script used by the checked-in autoresearch example
 
 Each example file contains two profiles:
 - A **`*-default`** profile using plain stage strings (preset defaults)
@@ -163,7 +172,9 @@ These examples reflect the current implementation scope:
   - `prometheus`
   - `atlas`
   - `hephaestus`
+  - `verifier`
 - named orchestrators are presets over the shared scheduler profile kernel, not separate execution engines
+- workflow-backed profiles can inline iterative workflow config via `workflow` or load it from `workflowPath`
 - `Sisyphus` currently defaults to stages:
   - `request-analysis`
   - `route`
@@ -182,6 +193,9 @@ These examples reflect the current implementation scope:
 - `Hephaestus` currently defaults to stages:
   - `request-analysis`
   - `execution-orchestration`
+- `Verifier` currently defaults to stages:
+  - `request-analysis`
+  - `execution-orchestration`
 
 ## Current Behavioral Notes
 
@@ -198,6 +212,11 @@ These public examples now assume the following runtime semantics:
 - `Hephaestus`
   - autonomous deep-worker preset
   - failure recovery follows a clearer `3-Level Escalation Protocol`
+- `Verifier`
+  - workflow-backed verifier preset over the autonomous execution kernel
+  - use when explicit multi-candidate comparison is worth the extra judge cost
+  - canonical mode keeps multiple candidates and selects the winner through score jobs over `(pair, criterion, repetition)`
+  - with `useLogprobs=true`, score jobs compute A-T score-token expected reward; artifacts expose score-job matrix, logprob status, pair means, and round-robin win counts
 - `Sisyphus`
   - execution-oriented single-loop preset
   - favors bounded execution with final delivery normalization rather than planner-style interview flow

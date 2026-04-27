@@ -1,0 +1,65 @@
+{
+  "workflow": {
+    "kind": "autoresearch",
+    "mode": "verify"
+  },
+  "objective": {
+    "goal": "Generate a larger pool of implementation candidates and let the verifier judge select the strongest result.",
+    "scope": {
+      "include": ["src/**", "tests/**"],
+      "exclude": ["target/**"]
+    },
+    "direction": "higher-is-better",
+    "metric": {
+      "kind": "numeric-extract",
+      "pattern": "score=([0-9]+)"
+    },
+    "verify": {
+      "command": "cargo test --workspace",
+      "timeoutMs": 120000
+    }
+  },
+  "decisionPolicy": {
+    "baselineStrategy": "capture-before-first-iteration",
+    "keepConditions": ["metric-improved", "verify-passed"],
+    "discardConditions": ["metric-regressed", "verify-failed"]
+  },
+  "workspacePolicy": {
+    "snapshotStrategy": "worktree-fork"
+  },
+  "verifier": {
+    "model": {
+      "providerId": "openai",
+      "modelId": "gpt-5"
+    },
+    "criteria": [
+      {
+        "id": "spec",
+        "name": "Spec adherence",
+        "description": "Choose the candidate that best satisfies the task.",
+        "weight": 1.0,
+        "aggregation": "score-margin"
+      },
+      {
+        "id": "maintainability",
+        "name": "Maintainability",
+        "description": "Prefer simpler changes when correctness is otherwise close.",
+        "weight": 0.8,
+        "aggregation": "score-margin"
+      },
+      {
+        "id": "safety",
+        "name": "Safety and regression control",
+        "description": "Prefer the candidate with the strongest safety posture.",
+        "weight": 1.5,
+        "aggregation": "winner-vote"
+      }
+    ],
+    "repetitions": 3,
+    "maxCandidates": 4,
+    "selection": "tournament",
+    "useLogprobs": true,
+    "granularity": 20,
+    "traceFormat": "full"
+  }
+}

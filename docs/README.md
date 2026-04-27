@@ -37,7 +37,7 @@ This directory contains product-facing examples and design references for ROCode
   - Includes `context-docs-registry` schema and example
   - Includes `context-docs-index` schema and example docs index
 - `examples/scheduler/`
-  - Formal external scheduler profile examples for the public OMO-aligned presets: `sisyphus`, `prometheus`, `atlas`, and `hephaestus`
+  - Formal external scheduler profile examples for the public OMO-aligned presets: `sisyphus`, `prometheus`, `atlas`, `hephaestus`, and `verifier`
   - Includes generic scheduler JSON Schema and current public example profiles
 - `plugins_example/`
   - Skill / TS plugin / Rust extension examples
@@ -51,6 +51,10 @@ This directory contains product-facing examples and design references for ROCode
   - 前端/后端解耦执行蓝图，定义 `rocode` 产品壳、`rocode-cli`/`rocode-tui`/`rocode-web` 前端层与 `rocode-server` 后端层的边界和迁移状态
 - `docs/plans/tui-session-graph-sidebar.md`
   - TUI session graph sidebar 的分轮目标与风险
+- `docs/plans/verifier-mode-preset-design.md`
+  - Verifier preset 的算法与架构设计，记录 canonical score-job 公式、trajectory evidence、observability 与 ROCode 宪法边界
+- `docs/plans/verifier-mode-implementation-checklist.md`
+  - Verifier mode 已完成项、剩余产品 polish，以及 score-job、cache、observability、trajectory evidence 的实现状态
 
 ## Context Docs Entry
 
@@ -86,6 +90,10 @@ The canonical scheduler example entry is:
 - `docs/examples/scheduler/prometheus.example.jsonc`
 - `docs/examples/scheduler/atlas.example.jsonc`
 - `docs/examples/scheduler/hephaestus.example.jsonc`
+- `docs/examples/scheduler/VERIFIER.md`
+  - Verifier preset 的完整上手指南：解决的问题、原算法、ROCode 实现路线、artifacts、fallback、cache 和调优建议
+- `docs/examples/scheduler/verifier.example.jsonc`
+- `docs/examples/scheduler/verifier.workflow.jsonc`
 
 The public scheduler presets are:
 
@@ -93,6 +101,7 @@ The public scheduler presets are:
 - `prometheus`
 - `atlas`
 - `hephaestus`
+- `verifier`
 
 The current schema IDs are:
 

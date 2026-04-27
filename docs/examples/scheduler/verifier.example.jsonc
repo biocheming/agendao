@@ -1,0 +1,140 @@
+{
+  "$schema": "https://rocode.dev/schemas/scheduler-profile.schema.json",
+  "version": "2026-04-27",
+
+  "defaults": {
+    "profile": "verifier-default"
+  },
+
+  "profiles": {
+    "verifier-default": {
+      "orchestrator": "verifier",
+      "description": "Workflow-backed verifier preset. Generate multiple executable candidates, preserve strong verification traces, and select the best candidate with repeated weighted all-pairs judging instead of assuming the last iteration wins.",
+      // Optional: override the scheduler's default model.
+      // The verifier block below separately selects the judge model.
+      "model": {
+        "providerId": "your-provider",
+        "modelId": "your-coding-model"
+      },
+      "skillList": [
+        "request-analysis",
+        "execution-orchestration"
+      ],
+      "stages": [
+        "request-analysis",
+        "execution-orchestration"
+      ],
+      "workflow": {
+        "workflow": {
+          "kind": "autoresearch",
+          "mode": "verify"
+        },
+        "objective": {
+          "goal": "Produce several concrete implementation candidates, verify each one, and keep the candidate that best satisfies the task with the strongest evidence.",
+          "scope": {
+            "include": [
+              "src/**",
+              "tests/**"
+            ],
+            "exclude": [
+              "target/**",
+              "dist/**",
+              "node_modules/**"
+            ]
+          },
+          "direction": "higher-is-better",
+          "metric": {
+            "kind": "numeric-extract",
+            "pattern": "score=([0-9]+)"
+          },
+          "verify": {
+            "command": "cargo test --workspace",
+            "timeoutMs": 120000
+          }
+        },
+        "decisionPolicy": {
+          "baselineStrategy": "capture-before-first-iteration",
+          "keepConditions": [
+            "metric-improved",
+            "verify-passed"
+          ],
+          "discardConditions": [
+            "metric-regressed",
+            "verify-failed"
+          ]
+        },
+        "workspacePolicy": {
+          "snapshotStrategy": "patch-file"
+        },
+        "verifier": {
+          "model": {
+            "providerId": "openai",
+            "modelId": "gpt-5"
+          },
+          "criteria": [
+            {
+              "id": "spec",
+              "name": "Spec adherence",
+              "description": "Prefer the candidate that most directly satisfies the request and acceptance criteria.",
+              "weight": 1.0,
+              "aggregation": "score-margin"
+            },
+            {
+              "id": "safety",
+              "name": "Safety and regression control",
+              "description": "Prefer the candidate with lower regression risk and stronger verification evidence when scores are otherwise close.",
+              "weight": 1.5,
+              "aggregation": "winner-vote"
+            }
+          ],
+          "repetitions": 3,
+          "maxCandidates": 3,
+          // Canonical LLM-as-a-Verifier mode: one score job per
+          // pair/criterion/repetition, using A-T score-token expected reward
+          // when the provider returns top-logprobs. Text score tags remain a
+          // visible fallback with logprob_status recorded in artifacts.
+          "useLogprobs": true,
+          "granularity": 20,
+          // round-robin compares all candidate pairs in the retained pool.
+          "selection": "round-robin",
+          "traceFormat": "compact"
+        }
+      },
+      "skillTree": {
+        "contextMarkdown": "Generate candidates that are easy to compare. Every iteration should leave behind explicit verification evidence, not just a confidence claim."
+      }
+    },
+
+    // Customized verifier variant demonstrating workflow-level tuning and
+    // stage overrides for deeper candidate generation.
+    "verifier-custom": {
+      "orchestrator": "verifier",
+      "description": "Verifier with tournament selection, a larger candidate pool, a dedicated candidate-generation tree, and an external workflow file.",
+      "stages": [
+        "request-analysis",
+        {
+          "kind": "execution-orchestration",
+          "loopBudget": "step-limit:18",
+          "childSession": true,
+          "agentTree": {
+            "agent": {
+              "name": "candidate-generator",
+              "maxSteps": 14
+            },
+            "children": [
+              {
+                "agent": { "name": "code-explorer" },
+                "prompt": "Map the implementation surface and preserve evidence needed for later verifier comparison."
+              },
+              {
+                "agent": { "name": "test-writer", "allowedTools": ["read", "glob", "grep", "bash"] },
+                "prompt": "Strengthen verification coverage before the candidate enters the verifier pool."
+              }
+            ]
+          }
+        }
+      ],
+      "workflowPath": "./verifier.workflow.jsonc"
+    }
+  }
+}

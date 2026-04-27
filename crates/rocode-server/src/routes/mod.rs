@@ -755,6 +755,9 @@ fn builtin_preset_mode_description(preset: SchedulerPresetKind) -> &'static str 
         SchedulerPresetKind::Prometheus => "OMO-aligned planning-first orchestration preset",
         SchedulerPresetKind::Atlas => "OMO-aligned graph-oriented orchestration preset",
         SchedulerPresetKind::Hephaestus => "OMO-aligned autonomous execution preset",
+        SchedulerPresetKind::Verifier => {
+            "Workflow-backed verifier preset for repeated candidate comparison and selection"
+        }
     }
 }
 
@@ -1044,7 +1047,7 @@ mod tests {
 
         assert_eq!(
             preset_names,
-            vec!["sisyphus", "prometheus", "atlas", "hephaestus",]
+            vec!["sisyphus", "prometheus", "atlas", "hephaestus", "verifier",]
         );
     }
 

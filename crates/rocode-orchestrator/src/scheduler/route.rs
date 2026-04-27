@@ -70,6 +70,9 @@ fn route_preset_description(kind: SchedulerPresetKind) -> &'static str {
         SchedulerPresetKind::Hephaestus => {
             "OMO-style autonomous deep worker with 5-phase internal loop (explore/plan/decide/execute/verify)"
         }
+        SchedulerPresetKind::Verifier => {
+            "costlier verifier workflow for explicit multi-candidate comparison using score-job evidence and selected-candidate finalization"
+        }
     }
 }
 
@@ -375,6 +378,8 @@ mod tests {
         assert!(prompt.contains("- prometheus:"));
         assert!(prompt.contains("- atlas:"));
         assert!(prompt.contains("- hephaestus:"));
+        assert!(prompt.contains("- verifier:"));
+        assert!(prompt.contains("explicit multi-candidate comparison"));
         assert!(!prompt.contains("Prefer jiangziya when"));
         assert!(!prompt.contains("Prefer guiguzi when"));
         assert!(!prompt.contains("Prefer pangu when"));

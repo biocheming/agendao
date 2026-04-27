@@ -252,6 +252,12 @@ impl<'a> SchedulerExecutionService<'a> {
             None => None,
         };
         if let Some(controller) = workflow_controller.as_mut() {
+            controller.bind_verifier_judge(
+                self.ctx.model_resolver.clone(),
+                self.ctx.lifecycle_hook.clone(),
+                self.ctx.cancel_token.clone(),
+                self.ctx.exec_ctx.clone(),
+            );
             controller.capture_baseline().await?;
         }
         let mut execution_input = self.orchestrator.compose_execution_orchestration_input(
@@ -467,6 +473,7 @@ impl<'a> SchedulerExecutionService<'a> {
                             round,
                             max_rounds,
                             controller,
+                            &execution_output,
                             structured_artifacts,
                         )
                         .await?;
@@ -613,6 +620,7 @@ impl<'a> SchedulerExecutionService<'a> {
                 final_gate_status,
                 final_summary,
                 final_response,
+                verifier: None,
                 mode_report: None,
                 mode_artifacts: Vec::new(),
                 objective_satisfied,
@@ -824,13 +832,14 @@ impl<'a> SchedulerExecutionService<'a> {
         round: usize,
         total_rounds: usize,
         controller: &mut WorkflowController,
+        execution_output: &OrchestratorOutput,
         structured_artifacts: Vec<crate::workflow_artifacts::WorkflowModeArtifact>,
     ) -> Result<crate::iterative_workflow_runtime::WorkflowGateResult, OrchestratorError> {
         let stage = self.plan.autonomous_gate_stage();
         let stage_name = stage.event_name;
         self.emit_internal_stage_start(stage_name, round).await;
         match controller
-            .evaluate_round(round as u32, structured_artifacts)
+            .evaluate_round(round as u32, execution_output, structured_artifacts)
             .await
         {
             Ok(result) => {
@@ -1084,6 +1093,7 @@ mod tests {
             security: None,
             debug: None,
             fix: None,
+            verifier: None,
             ship: None,
         }
     }

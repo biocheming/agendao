@@ -494,6 +494,7 @@ fn compile_profile(
         security: None,
         debug: None,
         fix: None,
+        verifier: None,
         ship: None,
     };
 
