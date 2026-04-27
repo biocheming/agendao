@@ -1,5 +1,5 @@
 <p>
-  <img src="icons/ROCODE.svg" alt="ROCode" width="280" />
+  <img src="icons/ROCODE_logo.svg" alt="ROCode" width="280" />
 </p>
 
 # RustingOpenCode (ROCode)
