@@ -5,6 +5,7 @@ import {
   type FormEvent,
   Suspense,
   lazy,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -30,6 +31,11 @@ import {
   currentContextTokensFromSources,
   isLiveStageStatus,
 } from "./lib/contextPressure";
+import {
+  buildWebSessionUrl,
+  readWebSessionRoute,
+  writeWebSessionRoute,
+} from "./lib/webSessionUrl";
 import {
   attachmentContainsWorkspacePath,
   attachmentLabel,
@@ -269,6 +275,7 @@ function toFeedMessage(block: OutputBlock): FeedMessage {
   return {
     ...block,
     feedId: nextFeedId(),
+    anchorId: block.id,
     text: normalizeBlockText(block),
   };
 }
@@ -333,12 +340,14 @@ function orderRelatedFeedMessages(messages: FeedMessage[]): FeedMessage[] {
 }
 
 function createOptimisticUserFeedMessage(text: string): FeedMessage {
+  const feedId = nextFeedId();
   return {
     kind: "message",
     phase: "full",
     role: "user",
     text,
-    feedId: nextFeedId(),
+    feedId,
+    anchorId: feedId,
   };
 }
 
@@ -396,6 +405,7 @@ function upsertFeedMessage(
     ...block,
     ...overrides,
     feedId: next[index].feedId,
+    anchorId: next[index].anchorId ?? block.id,
   };
   return next;
 }
@@ -433,6 +443,7 @@ function appendStreamingDelta(
         ...block,
         text: `${candidate.text}${incomingText}`,
         feedId: candidate.feedId,
+        anchorId: candidate.anchorId ?? block.id,
       };
       return next;
     }
@@ -741,6 +752,7 @@ function mergeLiveTextBlock(messages: FeedMessage[], block: OutputBlock, showThi
       ...block,
       text: blockText,
       feedId: candidate.feedId,
+      anchorId: candidate.anchorId ?? block.id,
     };
     return next;
   }
@@ -831,6 +843,7 @@ export default function App() {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<FeedMessage[]>([]);
   const [messageHistory, setMessageHistory] = useState<MessageRecord[]>([]);
+  const [selectedMessageIds, setSelectedMessageIds] = useState<Set<string>>(() => new Set());
   const [composer, setComposer] = useState("");
   const [attachments, setAttachments] = useState<PromptPart[]>([]);
   const [providers, setProviders] = useState<ProviderRecord[]>([]);
@@ -895,6 +908,8 @@ export default function App() {
   } | null>(null);
   const feedRef = useRef<HTMLDivElement | null>(null);
   const preferencesReadyRef = useRef(false);
+  const routeSyncSourceRef = useRef<"app" | "browser">("app");
+  const routeInitializedRef = useRef(false);
   const selectedSessionRef = useRef<string | null>(null);
   const autoPreviewSignatureRef = useRef<string>("");
   const liveBlocksRef = useRef<SessionLiveBlockCache>({});
@@ -992,6 +1007,10 @@ export default function App() {
     onError: setBanner,
     onInfo: setBanner,
   });
+  const routeHighlightIds = useMemo(() => {
+    const route = readWebSessionRoute();
+    return route.sessionId === selectedSessionId ? new Set(route.highlightIds) : new Set<string>();
+  }, [selectedSessionId, messages.length]);
   const sessionUsage = executionActivity.sessionUsage ?? currentSession?.telemetry?.usage ?? null;
   const composerContextTokens = useMemo(() => {
     const activeEstimate =
@@ -1025,6 +1044,12 @@ export default function App() {
     feedRef,
     onMiss: setBanner,
   });
+  useEffect(() => {
+    const route = readWebSessionRoute();
+    const messageId = route.messageId || route.highlightIds[0] || null;
+    if (!messageId || route.sessionId !== selectedSessionId) return;
+    conversationJump.jumpOrQueueConversationTarget({ messageId, label: messageId });
+  }, [conversationJump, messages.length, selectedSessionId]);
   const schedulerNavigation = useSchedulerNavigation({
     sessions,
     selectedSessionId,
@@ -1071,6 +1096,55 @@ export default function App() {
   const fetchSessions = async (): Promise<SessionRecord[]> => {
     const sessionData = await apiJson<SessionListResponseRecord>("/session?limit=500");
     return normalizeSessionRecords(sessionData?.items ?? []);
+  };
+
+  const copyMessageLink = async (message: FeedMessage) => {
+    if (!selectedSessionId || !message.anchorId) return;
+    const relative = buildWebSessionUrl({
+      sessionId: selectedSessionId,
+      messageId: message.anchorId,
+      highlightIds: [],
+    });
+    const url = new URL(relative, window.location.origin).toString();
+    await navigator.clipboard.writeText(url);
+    setBanner("Copied message link");
+  };
+
+  const toggleMessageSelected = (message: FeedMessage) => {
+    if (!message.anchorId) return;
+    setSelectedMessageIds((current) => {
+      const next = new Set(current);
+      if (next.has(message.anchorId!)) next.delete(message.anchorId!);
+      else next.add(message.anchorId!);
+      return next;
+    });
+  };
+
+  const copySelectedMessageLink = async () => {
+    if (!selectedSessionId || selectedMessageIds.size === 0) return;
+    const highlightIds = Array.from(selectedMessageIds);
+    const relative = buildWebSessionUrl({
+      sessionId: selectedSessionId,
+      messageId: highlightIds[0] ?? null,
+      highlightIds,
+    });
+    await navigator.clipboard.writeText(new URL(relative, window.location.origin).toString());
+    setBanner(`Copied link for ${highlightIds.length} selected message${highlightIds.length === 1 ? "" : "s"}`);
+  };
+
+  const copySelectedMessagesMarkdown = async () => {
+    const selected = messages.filter((message) => message.anchorId && selectedMessageIds.has(message.anchorId));
+    if (selected.length === 0) return;
+    const markdown = selected
+      .map((message) => {
+        const role = message.role === "user" ? "User" : message.role === "assistant" ? "Assistant" : message.kind;
+        const title = message.title?.trim() ? ` - ${message.title.trim()}` : "";
+        const text = message.text?.trim() || message.summary?.trim() || "[no text]";
+        return `### ${role}${title}\n\n${text}`;
+      })
+      .join("\n\n---\n\n");
+    await navigator.clipboard.writeText(markdown);
+    setBanner(`Copied ${selected.length} selected message${selected.length === 1 ? "" : "s"} as Markdown`);
   };
 
   const reloadCoreSettingsData = async () => {
@@ -1121,9 +1195,41 @@ export default function App() {
     selectedSessionRef.current = selectedSessionId;
   }, [selectedSessionId]);
 
+  const selectSession = useCallback((sessionId: string | null) => {
+    routeSyncSourceRef.current = "app";
+    setSelectedSessionId(sessionId);
+  }, []);
+
+  useEffect(() => {
+    if (!selectedSessionId) return;
+    if (routeSyncSourceRef.current === "browser") {
+      routeSyncSourceRef.current = "app";
+      routeInitializedRef.current = true;
+      return;
+    }
+    const route = readWebSessionRoute();
+    if (!routeInitializedRef.current && route.sessionId === selectedSessionId) {
+      routeInitializedRef.current = true;
+      return;
+    }
+    routeInitializedRef.current = true;
+    writeWebSessionRoute({ sessionId: selectedSessionId, messageId: null, highlightIds: [] });
+  }, [selectedSessionId]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const route = readWebSessionRoute();
+      routeSyncSourceRef.current = "browser";
+      setSelectedSessionId(route.sessionId);
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
   useEffect(() => {
     autoPreviewSignatureRef.current = "";
     setMessageHistory([]);
+    setSelectedMessageIds(new Set());
   }, [selectedSessionId]);
 
   useEffect(() => {
@@ -1228,7 +1334,11 @@ export default function App() {
         setSelectedModel(prefs.model);
         setShowThinking(prefs.showThinking);
         setConnectProtocol((current) => current || connectSchema.protocols?.[0]?.id || "");
-        setSelectedSessionId((current) => current ?? sessionData[0]?.id ?? null);
+        const routeSessionId = readWebSessionRoute().sessionId;
+        const routeSessionExists = Boolean(
+          routeSessionId && sessionData.some((session) => session.id === routeSessionId),
+        );
+        setSelectedSessionId((current) => current ?? (routeSessionExists ? routeSessionId : sessionData[0]?.id ?? null));
         preferencesReadyRef.current = true;
       } catch (error) {
         if (!cancelled) {
@@ -2281,7 +2391,7 @@ export default function App() {
                   void deleteSelectedSessions(sessionIds);
                 }}
                 onSelectWorkspace={selectWorkspace}
-                onSelectSession={(sessionId) => setSelectedSessionId(sessionId)}
+                onSelectSession={selectSession}
                 onHideSidebar={() => setLeftSidebarOpen(false)}
               />
             </div>
@@ -2355,15 +2465,52 @@ export default function App() {
             </div>
           ) : null}
 
+          {selectedMessageIds.size > 0 ? (
+            <div className="mx-auto w-full max-w-[88rem] px-4 pt-3 md:px-5">
+              <div className="roc-panel flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+                <span className="text-sm text-muted-foreground">
+                  {selectedMessageIds.size} message{selectedMessageIds.size === 1 ? "" : "s"} selected
+                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    className="roc-action roc-action-pill"
+                    onClick={() => void copySelectedMessageLink()}
+                  >
+                    Copy selected link
+                  </button>
+                  <button
+                    type="button"
+                    className="roc-action roc-action-pill"
+                    onClick={() => void copySelectedMessagesMarkdown()}
+                  >
+                    Copy Markdown
+                  </button>
+                  <button
+                    type="button"
+                    className="roc-action roc-action-pill"
+                    onClick={() => setSelectedMessageIds(new Set())}
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
           <ConversationFeedPanel
             sessionId={selectedSessionId}
             feedRef={feedRef}
             historyLoading={historyLoading}
             messages={messages}
             highlightedFeedId={conversationJump.highlightedFeedId}
+            highlightedMessageIds={routeHighlightIds}
             activeStageId={schedulerNavigation.previewStageId ?? schedulerNavigation.activeStageId}
             activeToolCallId={schedulerNavigation.activeToolCallId}
+            selectedMessageIds={selectedMessageIds}
             streaming={streaming}
+            onCopyMessageLink={copyMessageLink}
+            onToggleMessageSelected={toggleMessageSelected}
             onNavigateStage={schedulerNavigation.navigateToStage}
             onNavigateChildSession={schedulerNavigation.navigateToChildSession}
           />
