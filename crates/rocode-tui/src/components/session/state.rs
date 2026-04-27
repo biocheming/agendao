@@ -259,6 +259,7 @@ impl SessionRenderSnapshot {
                 Some(parts.join("  ·  "))
             });
             let footer_context_meter = last_assistant.and_then(|assistant_msg| {
+                let current_context_tokens = current_context_tokens?;
                 let total_tokens = context
                     .session_usage()
                     .as_ref()
@@ -272,7 +273,7 @@ impl SessionRenderSnapshot {
                 }
                 let model = context.resolve_model_info(assistant_msg.model.as_deref());
                 format_context_usage_meter(
-                    current_context_tokens.unwrap_or(total_tokens),
+                    current_context_tokens,
                     model.as_ref().map(|model| model.context_window),
                 )
             });

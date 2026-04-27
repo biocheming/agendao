@@ -728,6 +728,7 @@ mod tests {
             done_agent_count: 0,
             total_agent_count: 0,
             prompt_tokens: None,
+            context_tokens: None,
             completion_tokens: None,
             reasoning_tokens: None,
             cache_read_tokens: None,

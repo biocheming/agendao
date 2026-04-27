@@ -58,3 +58,49 @@ export function useResizableWidth(
 
   return { width, isDragging, handleMouseDown, handleClassName: `${hitArea} ${handleStyle}` };
 }
+
+/**
+ * Hook for a vertical resize handle that controls a panel height.
+ */
+export function useResizableHeight(
+  initialHeight: number,
+  minHeight = 180,
+  maxHeight = 640,
+) {
+  const [height, setHeight] = useState(initialHeight);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+  }, []);
+
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      setHeight((prev) => Math.max(minHeight, Math.min(maxHeight, prev - e.movementY)));
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isDragging, maxHeight, minHeight]);
+
+  const handleStyle = isDragging ? "bg-primary/30" : "bg-transparent hover:bg-primary/20";
+  const hitArea = "h-1.5 cursor-row-resize flex-shrink-0 transition-colors";
+
+  return { height, isDragging, handleMouseDown, handleClassName: `${hitArea} ${handleStyle}` };
+}

@@ -1137,6 +1137,40 @@ fn early_exit_does_not_break_on_tool_calls_finish() {
     );
 }
 
+#[test]
+fn current_context_estimate_ignores_completed_scheduler_stage_metadata() {
+    let mut assistant = SessionMessage::assistant("s1");
+    assistant.metadata.insert(
+        "scheduler_stage_status".to_string(),
+        serde_json::json!("done"),
+    );
+    assistant.metadata.insert(
+        "scheduler_stage_context_tokens".to_string(),
+        serde_json::json!(1_388_907_u64),
+    );
+    assistant.metadata.insert(
+        "scheduler_stage_prompt_tokens".to_string(),
+        serde_json::json!(1_388_907_u64),
+    );
+    assistant.parts.push(MessagePart {
+        id: "prt_text".to_string(),
+        part_type: PartType::Text {
+            text: "done".to_string(),
+            synthetic: None,
+            ignored: None,
+        },
+        created_at: chrono::Utc::now(),
+        message_id: None,
+    });
+
+    let estimated = estimate_current_context_tokens(&[assistant]).unwrap();
+
+    assert!(
+        estimated < 1_000,
+        "completed scheduler stage peak telemetry must not drive live context pressure: {estimated}"
+    );
+}
+
 /// Verify that the early-exit check DOES break when finish is terminal
 /// (e.g. "stop") and assistant is after the last user message.
 #[test]

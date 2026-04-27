@@ -462,14 +462,6 @@ fn cli_active_stage_summary<'a>(
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CliContextPressure {
-    Warning,
-    AutoCompactSoon,
-    Critical,
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
 fn cli_current_context_tokens(projection: &CliFrontendProjection) -> Option<u64> {
     let usage_context_tokens = (projection.token_stats.context_tokens > 0)
         .then_some(projection.token_stats.context_tokens);
@@ -477,41 +469,29 @@ fn cli_current_context_tokens(projection: &CliFrontendProjection) -> Option<u64>
         .session_runtime
         .as_ref()
         .and_then(|runtime| runtime.active_stage_id.as_deref());
-    if let Some(active_stage_id) = active_stage_id {
-        if let Some(tokens) = projection
+    let active_stage_context_tokens = active_stage_id.and_then(|active_stage_id| {
+        projection
             .stage_summaries
             .iter()
             .find(|stage| stage.stage_id == active_stage_id)
             .and_then(|stage| stage.estimated_context_tokens)
-            .filter(|tokens| *tokens > 0)
-        {
-            return Some(usage_context_tokens.map_or(tokens, |usage| usage.max(tokens)));
-        }
-    }
+    });
 
-    usage_context_tokens.or_else(|| {
-        (projection.last_turn_tokens.input_tokens > 0).then_some(projection.last_turn_tokens.input_tokens)
-    })
+    rocode_types::current_context_tokens_from_sources(
+        usage_context_tokens,
+        active_stage_context_tokens,
+    )
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-fn cli_context_pressure(percent: Option<u64>) -> Option<CliContextPressure> {
-    match percent {
-        Some(percent) if percent >= 95 => Some(CliContextPressure::Critical),
-        Some(percent) if percent >= 90 => Some(CliContextPressure::AutoCompactSoon),
-        Some(percent) if percent >= 80 => Some(CliContextPressure::Warning),
-        _ => None,
-    }
+fn cli_context_pressure(percent: Option<u64>) -> Option<rocode_types::ContextPressure> {
+    let pressure = rocode_types::context_pressure_for_percent(percent);
+    pressure.is_warning_or_higher().then_some(pressure)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
 fn cli_context_pressure_note(percent: Option<u64>) -> Option<&'static str> {
-    match cli_context_pressure(percent) {
-        Some(CliContextPressure::Critical) => Some("compact now"),
-        Some(CliContextPressure::AutoCompactSoon) => Some("auto-compact soon"),
-        Some(CliContextPressure::Warning) => Some("warning"),
-        None => None,
-    }
+    rocode_types::context_pressure_label(percent)
 }
 
 fn cli_runtime_snapshot_lines(
@@ -2768,10 +2748,7 @@ fn format_token_count(n: u64) -> String {
 
 #[cfg_attr(not(test), allow(dead_code))]
 fn cli_context_usage_percent(used: u64, limit: u64) -> Option<u64> {
-    if limit == 0 {
-        return None;
-    }
-    Some(((used as f64 / limit as f64) * 100.0).round() as u64)
+    rocode_types::context_usage_percent(used, limit)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -3082,9 +3059,9 @@ fn cli_render_retained_layout(
 #[cfg(test)]
 mod session_projection_tests {
     use super::{
-        cli_context_usage_bar, cli_default_events_query_input, cli_format_context_meter,
-        cli_parse_events_command_input, cli_parse_events_query_input, CliEventsCommandInput,
-        CliEventsQueryInput, CLI_EVENTS_DEFAULT_PAGE_SIZE,
+        cli_context_usage_bar, cli_current_context_tokens, cli_default_events_query_input,
+        cli_format_context_meter, cli_parse_events_command_input, cli_parse_events_query_input,
+        CliEventsCommandInput, CliEventsQueryInput, CliFrontendProjection, CLI_EVENTS_DEFAULT_PAGE_SIZE,
     };
 
     #[test]
@@ -3182,5 +3159,13 @@ mod session_projection_tests {
         assert_eq!(cli_context_usage_bar(Some(0), 5), "[░░░░░]");
         assert_eq!(cli_context_usage_bar(Some(50), 5), "[███░░]");
         assert_eq!(cli_context_usage_bar(Some(140), 5), "[█████]");
+    }
+
+    #[test]
+    fn current_context_does_not_fall_back_to_last_turn_input() {
+        let mut projection = CliFrontendProjection::default();
+        projection.last_turn_tokens.input_tokens = 1_388_907;
+
+        assert_eq!(cli_current_context_tokens(&projection), None);
     }
 }

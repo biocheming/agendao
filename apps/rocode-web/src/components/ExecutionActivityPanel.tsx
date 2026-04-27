@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 import type { ConversationJumpTarget } from "../hooks/useConversationJump";
 import type { useExecutionActivity } from "../hooks/useExecutionActivity";
+import {
+  currentContextTokensFromSources,
+  isLiveStageStatus,
+} from "../lib/contextPressure";
 import { humanizeStageEvent, humanizeStageWaitTarget } from "../lib/stageSignals";
 import { cn } from "@/lib/utils";
 import { memoryRecordIdValue } from "../lib/memory";
@@ -39,26 +43,20 @@ function formatDateTime(ts?: number | null) {
   return new Date(ts).toLocaleString();
 }
 
+function formatCompactTokenCount(value: number) {
+  if (!Number.isFinite(value)) return "0";
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+  if (abs >= 1_000) return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}K`;
+  return String(Math.round(value));
+}
+
 function currentContextEstimate(activity: ExecutionActivityState) {
-  if (typeof activity.sessionUsage?.context_tokens === "number" && activity.sessionUsage.context_tokens > 0) {
-    const activeEstimate = activity.activeStageSummary?.estimated_context_tokens;
-    return typeof activeEstimate === "number" && activeEstimate > 0
-      ? Math.max(activity.sessionUsage.context_tokens, activeEstimate)
-      : activity.sessionUsage.context_tokens;
-  }
-  if (typeof activity.activeStageSummary?.context_tokens === "number") {
-    return activity.activeStageSummary.context_tokens;
-  }
-  if (typeof activity.activeStageSummary?.estimated_context_tokens === "number") {
-    return activity.activeStageSummary.estimated_context_tokens;
-  }
-  for (let index = activity.stageSummaries.length - 1; index >= 0; index -= 1) {
-    const estimate = activity.stageSummaries[index]?.context_tokens ?? activity.stageSummaries[index]?.estimated_context_tokens;
-    if (typeof estimate === "number" && Number.isFinite(estimate) && estimate > 0) {
-      return estimate;
-    }
-  }
-  return null;
+  const activeStage = activity.activeStageSummary;
+  const activeStageContext = activeStage && isLiveStageStatus(activeStage.status)
+    ? activeStage.context_tokens ?? activeStage.estimated_context_tokens
+    : null;
+  return currentContextTokensFromSources(activity.sessionUsage?.context_tokens, activeStageContext);
 }
 
 function eventWindowLabel(page: number, count: number, pageSize: number) {
@@ -272,10 +270,14 @@ export function ExecutionActivityPanel({
   const formLabelClass = "roc-form-label";
   const formSelectClass = "roc-form-select";
   const formInputClass = "roc-form-control";
+  const sessionMemory = activity.sessionMemory;
+  const sessionMemoryRecentRuleHits = sessionMemory?.recent_rule_hits ?? [];
+  const insightRecentSessionRecords = activity.sessionInsights?.memory?.recent_session_records ?? [];
+  const executionRoots = activity.executionTopology?.roots ?? [];
   const recentSkillRecords =
-    activity.sessionInsights?.memory?.recent_session_records.filter(
+    insightRecentSessionRecords.filter(
       (item) => item.linked_skill_name || item.derived_skill_name,
-    ) ?? [];
+    );
 
   return (
     <div className="roc-panel roc-rail-panel p-5">
@@ -327,7 +329,7 @@ export function ExecutionActivityPanel({
                 </div>
                 {contextEstimate ? (
                   <p className="text-sm text-muted-foreground leading-relaxed">
-                    Current context estimate {contextEstimate}
+                    Current live context {formatCompactTokenCount(contextEstimate)}
                   </p>
                 ) : null}
                 <p className="text-sm text-muted-foreground leading-relaxed">Total cost {formatMoney(activity.sessionUsage.total_cost)}</p>
@@ -379,49 +381,49 @@ export function ExecutionActivityPanel({
               </div>
             </div>
           ) : null}
-          {activity.sessionMemory ? (
+          {sessionMemory ? (
             <div className={sideSectionClass}>
               <div className="roc-rail-section-header">
                 <div className="roc-rail-section-copy">
                   <p className="roc-section-label">Memory Runtime</p>
-                  <h4 className="roc-rail-section-title">{activity.sessionMemory.workspace_mode} workspace explain</h4>
+                  <h4 className="roc-rail-section-title">{sessionMemory.workspace_mode} workspace explain</h4>
                 </div>
                 <span className="roc-badge px-3 py-1.5 text-xs">
-                  snapshot {activity.sessionMemory.frozen_snapshot_items}
+                  snapshot {sessionMemory.frozen_snapshot_items}
                 </span>
               </div>
               <div className="roc-rail-meta-list">
-                <span className="roc-badge px-3 py-1.5 text-xs">prefetch {activity.sessionMemory.last_prefetch_items}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">rule hits {activity.sessionMemory.recent_rule_hits.length}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">session writes {activity.sessionMemory.candidate_count + activity.sessionMemory.validated_count + activity.sessionMemory.rejected_count}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">warnings {activity.sessionMemory.warning_count}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">methodology {activity.sessionMemory.methodology_candidate_count}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">skill targets {activity.sessionMemory.derived_skill_candidate_count}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">linked skills {activity.sessionMemory.linked_skill_count}</span>
-                {activity.sessionMemory.latest_consolidation_run ? (
+                <span className="roc-badge px-3 py-1.5 text-xs">prefetch {sessionMemory.last_prefetch_items}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">rule hits {sessionMemoryRecentRuleHits.length}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">session writes {sessionMemory.candidate_count + sessionMemory.validated_count + sessionMemory.rejected_count}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">warnings {sessionMemory.warning_count}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">methodology {sessionMemory.methodology_candidate_count}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">skill targets {sessionMemory.derived_skill_candidate_count}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">linked skills {sessionMemory.linked_skill_count}</span>
+                {sessionMemory.latest_consolidation_run ? (
                   <span className="roc-badge px-3 py-1.5 text-xs">
-                    consolidation {activity.sessionMemory.latest_consolidation_run.run_id}
+                    consolidation {sessionMemory.latest_consolidation_run.run_id}
                   </span>
                 ) : null}
               </div>
               <div className="grid gap-1 text-sm text-muted-foreground">
-                <p>Workspace key: {activity.sessionMemory.workspace_key}</p>
-                <p>Frozen snapshot generated: {formatDateTime(activity.sessionMemory.frozen_snapshot_generated_at ?? undefined)}</p>
-                <p>Last prefetch generated: {formatDateTime(activity.sessionMemory.last_prefetch_generated_at ?? undefined)}</p>
+                <p>Workspace key: {sessionMemory.workspace_key}</p>
+                <p>Frozen snapshot generated: {formatDateTime(sessionMemory.frozen_snapshot_generated_at ?? undefined)}</p>
+                <p>Last prefetch generated: {formatDateTime(sessionMemory.last_prefetch_generated_at ?? undefined)}</p>
                 <p>
-                  Last prefetch query: {activity.sessionMemory.last_prefetch_query?.trim() || "No query captured"}
+                  Last prefetch query: {sessionMemory.last_prefetch_query?.trim() || "No query captured"}
                 </p>
                 <p>
-                  Session memory records: candidate {activity.sessionMemory.candidate_count} · validated {activity.sessionMemory.validated_count} · rejected {activity.sessionMemory.rejected_count}
+                  Session memory records: candidate {sessionMemory.candidate_count} · validated {sessionMemory.validated_count} · rejected {sessionMemory.rejected_count}
                 </p>
                 <p>
-                  Validation pressure: warnings {activity.sessionMemory.warning_count} · methodology {activity.sessionMemory.methodology_candidate_count} · skill targets {activity.sessionMemory.derived_skill_candidate_count}
+                  Validation pressure: warnings {sessionMemory.warning_count} · methodology {sessionMemory.methodology_candidate_count} · skill targets {sessionMemory.derived_skill_candidate_count}
                 </p>
                 <p>
-                  Skill linkage: linked {activity.sessionMemory.linked_skill_count} · feedback lessons {activity.sessionMemory.skill_feedback_lesson_count}
+                  Skill linkage: linked {sessionMemory.linked_skill_count} · feedback lessons {sessionMemory.skill_feedback_lesson_count}
                 </p>
                 <p>
-                  Retrieval: runs {activity.sessionMemory.retrieval_run_count} · hits {activity.sessionMemory.retrieval_hit_count} · used {activity.sessionMemory.retrieval_use_count}
+                  Retrieval: runs {sessionMemory.retrieval_run_count} · hits {sessionMemory.retrieval_hit_count} · used {sessionMemory.retrieval_use_count}
                 </p>
               </div>
               {recentSkillRecords.length ? (
@@ -436,23 +438,23 @@ export function ExecutionActivityPanel({
                   </div>
                 </div>
               ) : null}
-              {activity.sessionMemory.latest_consolidation_run ? (
+              {sessionMemory.latest_consolidation_run ? (
                 <div className="grid gap-1 text-sm text-muted-foreground">
                   <p>
-                    Latest consolidation finished {formatDateTime(activity.sessionMemory.latest_consolidation_run.finished_at ?? activity.sessionMemory.latest_consolidation_run.started_at)}
+                    Latest consolidation finished {formatDateTime(sessionMemory.latest_consolidation_run.finished_at ?? sessionMemory.latest_consolidation_run.started_at)}
                   </p>
                   <p>
-                    Merged {activity.sessionMemory.latest_consolidation_run.merged_count} · promoted {activity.sessionMemory.latest_consolidation_run.promoted_count} · conflicts {activity.sessionMemory.latest_consolidation_run.conflict_count}
+                    Merged {sessionMemory.latest_consolidation_run.merged_count} · promoted {sessionMemory.latest_consolidation_run.promoted_count} · conflicts {sessionMemory.latest_consolidation_run.conflict_count}
                   </p>
                 </div>
               ) : (
                 <p className="text-sm text-muted-foreground leading-relaxed">No consolidation run has been recorded for this workspace yet.</p>
               )}
-              {activity.sessionMemory.recent_rule_hits.length ? (
+              {sessionMemoryRecentRuleHits.length ? (
                 <div className="grid gap-2">
                   <p className="roc-section-label">Recent Rule Hits</p>
                   <div className="grid gap-2 md:grid-cols-2">
-                    {activity.sessionMemory.recent_rule_hits.map((hit) => (
+                    {sessionMemoryRecentRuleHits.map((hit) => (
                       <div key={hit.id} className={sideItemCardClass}>
                         <div className="flex flex-wrap items-center gap-2">
                           <strong>{hit.hit_kind}</strong>
@@ -623,8 +625,8 @@ export function ExecutionActivityPanel({
       </div>
 
       <div className="max-h-64 overflow-auto flex flex-col gap-1">
-        {activity.executionTopology?.roots.length ? (
-          activity.executionTopology.roots.map((node) => (
+        {executionRoots.length ? (
+          executionRoots.map((node) => (
             <ExecutionNodeTree
               key={node.id}
               node={node}

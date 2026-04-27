@@ -2,7 +2,7 @@
 
 ROCode (RustingOpenCode) 是一个用 Rust 编写的高性能 AI 编码编排器。它将终端原生交互、多 Agent 协调、可扩展技能系统和多模型 Provider 整合为一个统一的开发工作流引擎。
 
-> **版本:** 2026.4.26 · **许可证:** MIT · **作者:** Biocheming
+> **版本:** 2026.4.27 · **许可证:** MIT · **作者:** Biocheming
 
 ---
 

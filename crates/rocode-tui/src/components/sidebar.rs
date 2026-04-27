@@ -699,23 +699,24 @@ impl Sidebar {
                 title: "Usage",
                 lines: {
                     let mut lines = Vec::new();
-                    let shown_context_tokens = current_context_tokens.unwrap_or(total_tokens);
                     let context_limit =
                         active_model_info.as_ref().map(|model| model.context_window);
-                    lines.push(sidebar_usage_line(
-                        &theme,
-                        "Current",
-                        shown_context_tokens,
-                        context_limit,
-                    ));
-                    if let Some(note) = context_limit
-                        .and_then(|limit| context_usage_percent(shown_context_tokens, limit))
-                        .and_then(|percent| context_pressure_note(Some(percent)))
-                    {
-                        lines.push(Line::from(vec![
-                            Span::styled("State  ", Style::default().fg(theme.text_muted)),
-                            Span::styled(note, Style::default().fg(theme.warning)),
-                        ]));
+                    if let Some(shown_context_tokens) = current_context_tokens {
+                        lines.push(sidebar_usage_line(
+                            &theme,
+                            "Current",
+                            shown_context_tokens,
+                            context_limit,
+                        ));
+                        if let Some(note) = context_limit
+                            .and_then(|limit| context_usage_percent(shown_context_tokens, limit))
+                            .and_then(|percent| context_pressure_note(Some(percent)))
+                        {
+                            lines.push(Line::from(vec![
+                                Span::styled("State  ", Style::default().fg(theme.text_muted)),
+                                Span::styled(note, Style::default().fg(theme.warning)),
+                            ]));
+                        }
                     }
                     if total_tokens > 0 {
                         lines.push(Line::from(vec![
@@ -2032,29 +2033,23 @@ fn format_compact_number(value: u64) -> String {
 }
 
 fn context_usage_percent(used: u64, limit: u64) -> Option<u64> {
-    if limit == 0 {
-        return None;
-    }
-    Some(((used as f64 / limit as f64) * 100.0).round() as u64)
+    rocode_types::context_usage_percent(used, limit)
 }
 
 fn context_usage_style(theme: &Theme, percent: Option<u64>) -> Style {
-    let color = match percent {
-        Some(pct) if pct >= 95 => theme.error,
-        Some(pct) if pct >= 80 => theme.warning,
-        Some(_) => theme.success,
-        None => theme.text_muted,
+    let color = match rocode_types::context_pressure_for_percent(percent) {
+        rocode_types::ContextPressure::Critical => theme.error,
+        rocode_types::ContextPressure::AutoCompactSoon | rocode_types::ContextPressure::Warning => {
+            theme.warning
+        }
+        rocode_types::ContextPressure::Normal if percent.is_some() => theme.success,
+        rocode_types::ContextPressure::Normal => theme.text_muted,
     };
     Style::default().fg(color)
 }
 
 fn context_pressure_note(percent: Option<u64>) -> Option<&'static str> {
-    match percent {
-        Some(pct) if pct >= 95 => Some("compact now"),
-        Some(pct) if pct >= 90 => Some("auto-compact soon"),
-        Some(pct) if pct >= 80 => Some("warning"),
-        _ => None,
-    }
+    rocode_types::context_pressure_label(percent)
 }
 
 fn sidebar_usage_line(theme: &Theme, label: &str, used: u64, limit: Option<u64>) -> Line<'static> {
@@ -2282,5 +2277,60 @@ mod tests {
             workspace_popup_text(area, &long),
             Some("very-long-directory-name/another-long-segment/file.rs".to_string())
         );
+    }
+
+    #[test]
+    fn usage_section_does_not_treat_cumulative_tokens_as_current_context() {
+        let context = Arc::new(AppContext::new());
+        let session_id = {
+            let mut session = context.session.write();
+            let session_id = session.create_session(Some("Token Session".to_string()));
+            session.session_usage = Some(rocode_session::SessionUsage {
+                input_tokens: 150_000,
+                output_tokens: 150_000,
+                reasoning_tokens: 0,
+                cache_write_tokens: 0,
+                cache_read_tokens: 0,
+                context_tokens: 0,
+                total_cost: 0.0,
+            });
+            session_id
+        };
+        context
+            .providers
+            .write()
+            .push(crate::context::ProviderInfo {
+                id: "openai".to_string(),
+                name: "OpenAI".to_string(),
+                models: vec![crate::context::ModelInfo {
+                    id: "openai/gpt-5".to_string(),
+                    name: "GPT-5".to_string(),
+                    context_window: 200_000,
+                    max_output_tokens: 16_000,
+                    supports_vision: false,
+                    supports_tools: true,
+                    cost_per_million_input: None,
+                    cost_per_million_output: None,
+                }],
+            });
+        let sidebar = Sidebar::new(context, session_id);
+        let mut state = SidebarRenderState::default();
+        let mut lifecycle = SidebarLifecycleState::default();
+        let area = Rect::new(0, 0, 64, 24);
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        let mut surface = crate::ui::BufferSurface::new(&mut buffer);
+
+        sidebar.render(&mut surface, area, &mut state, &mut lifecycle, false);
+
+        let rendered = buffer
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<Vec<_>>()
+            .join("");
+
+        assert!(!rendered.contains("Current"));
+        assert!(!rendered.contains("compact now"));
+        assert!(rendered.contains("300K cumulative"));
     }
 }

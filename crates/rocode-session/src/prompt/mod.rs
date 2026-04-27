@@ -285,12 +285,10 @@ fn latest_prompt_input_tokens(messages: &[SessionMessage]) -> Option<u64> {
         message
             .usage
             .as_ref()
-            .map(|usage| usage.context_tokens.max(usage.input_tokens))
+            .map(|usage| usage.context_tokens)
             .filter(|tokens| *tokens > 0)
-            .or_else(|| metadata_u64(message, "scheduler_stage_context_tokens"))
             .or_else(|| metadata_u64(message, "tokens_input"))
             .or_else(|| metadata_usage_u64(message, "prompt_tokens"))
-            .or_else(|| metadata_u64(message, "scheduler_stage_prompt_tokens"))
     })
 }
 

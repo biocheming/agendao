@@ -12,8 +12,8 @@ import {
 } from "react";
 import { ComposerSection } from "./components/ComposerSection";
 import { ConversationFeedPanel } from "./components/ConversationFeedPanel";
+import { DeferredTerminalPanel } from "./components/DeferredTerminalPanel";
 import { InteractionOverlays } from "./components/InteractionOverlays";
-import { SessionHeader } from "./components/SessionHeader";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { WorkspacePanel, type WorkspacePanelTab } from "./components/WorkspacePanel";
 import { loadWebPlugins } from "./web-plugin-loader";
@@ -24,8 +24,12 @@ import { useExecutionActivity } from "./hooks/useExecutionActivity";
 import { useMultimodalComposer } from "./hooks/useMultimodalComposer";
 import { useSchedulerNavigation } from "./hooks/useSchedulerNavigation";
 import { useTerminalSessions } from "./hooks/useTerminalSessions";
-import { useResizableWidth } from "./hooks/useResizableWidth";
+import { useResizableHeight, useResizableWidth } from "./hooks/useResizableWidth";
 import { prepareComposerAttachments } from "./lib/composerAttachments";
+import {
+  currentContextTokensFromSources,
+  isLiveStageStatus,
+} from "./lib/contextPressure";
 import {
   attachmentContainsWorkspacePath,
   attachmentLabel,
@@ -99,6 +103,7 @@ import {
   FolderTreeIcon,
   PanelLeftIcon,
   SettingsIcon,
+  TerminalSquareIcon,
   XIcon,
 } from "lucide-react";
 
@@ -144,71 +149,6 @@ const THEMES: Array<{ id: ThemeId; label: string }> = [
   { id: "sunset", label: "Sunset" },
   { id: "cobalt", label: "Cobalt" },
 ];
-
-function formatCompactTokenCount(value?: number | null) {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return "0";
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
-  return String(Math.round(value));
-}
-
-function formatCompactMoney(value?: number | null) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return "$0";
-  return `$${value.toFixed(2)}`;
-}
-
-function formatCompactPrice(value?: number | null) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return null;
-  return value.toFixed(2);
-}
-
-function formatModeDisplayLabel(
-  selectedMode: string,
-  session: SessionRecord | null,
-  modes: ExecutionMode[],
-) {
-  const explicit = selectedMode.trim();
-  if (explicit) {
-    const matched = modes.find((mode) => modeKey(mode) === explicit);
-    return matched?.name || explicit.split(":").pop() || explicit;
-  }
-
-  const hinted =
-    session?.hints?.resolved_scheduler_profile?.trim() ||
-    session?.hints?.scheduler_profile?.trim() ||
-    session?.hints?.agent?.trim() ||
-    "";
-  return hinted || "Auto";
-}
-
-function formatModelDisplayLabel(
-  activeProviderModel:
-    | {
-        id: string;
-        name?: string;
-        fullId: string;
-        providerId: string;
-      }
-    | null,
-  activeModelRef: string | null,
-) {
-  if (activeProviderModel?.name?.trim()) return activeProviderModel.name.trim();
-  if (activeProviderModel?.id?.trim()) return activeProviderModel.id.trim();
-  if (!activeModelRef) return "Auto";
-  const trimmed = activeModelRef.trim();
-  return trimmed.split("/").pop() || trimmed;
-}
-
-function compactWorkspaceLabel(path: string | null | undefined, basePath: string | null | undefined) {
-  const normalizedPath = path?.trim();
-  if (!normalizedPath) return "";
-  const normalizedBase = basePath?.trim();
-  if (!normalizedBase || normalizedBase === normalizedPath) return normalizedPath;
-  if (normalizedPath.startsWith(`${normalizedBase}/`)) {
-    return normalizedPath.slice(normalizedBase.length + 1);
-  }
-  return normalizedPath;
-}
 
 function resolveActiveModelRef(session: SessionRecord | null, selectedModel: string) {
   const explicit = selectedModel.trim();
@@ -697,13 +637,9 @@ function estimateContextTokensFromHistory(history: MessageRecord[]): number | nu
   for (let index = tail.length - 1; index >= 0; index -= 1) {
     const message = tail[index];
     if (message?.role !== "assistant") continue;
-    const inputTokens = message.tokens?.input;
-    if (typeof inputTokens === "number" && Number.isFinite(inputTokens) && inputTokens > 0) {
-      return inputTokens;
-    }
-    const schedulerPromptTokens = message.metadata?.scheduler_stage_prompt_tokens;
-    if (typeof schedulerPromptTokens === "number" && Number.isFinite(schedulerPromptTokens) && schedulerPromptTokens > 0) {
-      return schedulerPromptTokens;
+    const contextTokens = message.tokens?.context;
+    if (typeof contextTokens === "number" && Number.isFinite(contextTokens) && contextTokens > 0) {
+      return contextTokens;
     }
   }
 
@@ -909,7 +845,8 @@ export default function App() {
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
   const [rightSidebarOpen, setRightSidebarOpen] = useState(true);
   const leftResize = useResizableWidth(312, 220, 520, "left");
-  const rightResize = useResizableWidth(320, 220, 520, "right");
+  const rightResize = useResizableWidth(420, 320, 880, "right");
+  const terminalResize = useResizableHeight(320, 180, 640);
   const [connectProtocol, setConnectProtocol] = useState("");
   const [connectApiKey, setConnectApiKey] = useState("");
   const [connectBaseUrl, setConnectBaseUrl] = useState("");
@@ -933,7 +870,7 @@ export default function App() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [composerDragActive, setComposerDragActive] = useState(false);
   const [selectedAttachmentIndex, setSelectedAttachmentIndex] = useState<number | null>(null);
-  const [terminalExpanded, setTerminalExpanded] = useState(false);
+  const [terminalOpen, setTerminalOpen] = useState(false);
   const [fileTree, setFileTree] = useState<FileTreeNodeRecord | null>(null);
   const [serviceRootPath, setServiceRootPath] = useState("");
   const [currentWorkspacePath, setCurrentWorkspacePath] = useState<string | null>(null);
@@ -1057,63 +994,18 @@ export default function App() {
   });
   const sessionUsage = executionActivity.sessionUsage ?? currentSession?.telemetry?.usage ?? null;
   const composerContextTokens = useMemo(() => {
-    const usageContext = sessionUsage?.context_tokens;
-    const activeEstimate = executionActivity.activeStageSummary?.estimated_context_tokens;
-    if (typeof usageContext === "number" && Number.isFinite(usageContext) && usageContext > 0) {
-      return typeof activeEstimate === "number" && Number.isFinite(activeEstimate) && activeEstimate > 0
-        ? Math.max(usageContext, activeEstimate)
-        : usageContext;
-    }
-    if (typeof activeEstimate === "number" && Number.isFinite(activeEstimate) && activeEstimate > 0) {
-      return activeEstimate;
-    }
-    return estimateContextTokensFromHistory(messageHistory);
-  }, [executionActivity.activeStageSummary?.estimated_context_tokens, messageHistory, sessionUsage?.context_tokens]);
-  const sessionCumulativeTokens = useMemo(() => {
-    if (!sessionUsage) return 0;
-    return (
-      sessionUsage.input_tokens +
-      sessionUsage.output_tokens +
-      sessionUsage.reasoning_tokens +
-      sessionUsage.cache_read_tokens +
-      sessionUsage.cache_write_tokens
-    );
-  }, [sessionUsage]);
-  const headerUsageSummary = useMemo(() => {
-    const parts: string[] = [];
-    if (sessionCumulativeTokens > 0) {
-      parts.push(`session ${formatCompactTokenCount(sessionCumulativeTokens)} total`);
-    }
-    if (typeof sessionUsage?.total_cost === "number") {
-      parts.push(formatCompactMoney(sessionUsage.total_cost));
-    }
-    return parts.join(" · ");
-  }, [
-    sessionCumulativeTokens,
-    sessionUsage?.total_cost,
-  ]);
-  const headerUsageTitle = useMemo(() => {
-    const detail: string[] = [];
-    if (sessionCumulativeTokens > 0) {
-      detail.push(`Session cumulative tokens ${sessionCumulativeTokens}`);
-    }
-    if (typeof sessionUsage?.total_cost === "number") {
-      detail.push(`Total cost ${formatCompactMoney(sessionUsage.total_cost)}`);
-    }
-    if (
-      typeof activeProviderModel?.cost_per_million_input === "number" &&
-      typeof activeProviderModel?.cost_per_million_output === "number"
-    ) {
-      detail.push(
-        `Model price ${formatCompactMoney(activeProviderModel.cost_per_million_input)} input / ${formatCompactMoney(activeProviderModel.cost_per_million_output)} output per 1M tokens`,
-      );
-    }
-    return detail.join(" | ");
-  }, [
-    activeProviderModel,
-    sessionCumulativeTokens,
-    sessionUsage?.total_cost,
-  ]);
+    const activeEstimate =
+      executionActivity.activeStageSummary && isLiveStageStatus(executionActivity.activeStageSummary.status)
+        ? executionActivity.activeStageSummary.estimated_context_tokens
+        : undefined;
+    return currentContextTokensFromSources(sessionUsage?.context_tokens, activeEstimate)
+      ?? estimateContextTokensFromHistory(messageHistory);
+  }, [executionActivity.activeStageSummary, messageHistory, sessionUsage?.context_tokens]);
+  const effectiveRightPanelWidth = useMemo(() => {
+    if (workspacePanelTab === "preview") return Math.max(rightResize.width, 640);
+    if (workspacePanelTab === "insights") return Math.max(rightResize.width, 460);
+    return rightResize.width;
+  }, [rightResize.width, workspacePanelTab]);
   const lastAssistantTurnTokens = useMemo(() => {
     for (let index = messageHistory.length - 1; index >= 0; index -= 1) {
       const message = messageHistory[index];
@@ -1127,44 +1019,6 @@ export default function App() {
     }
     return null;
   }, [messageHistory]);
-  const modeDisplayLabel = useMemo(
-    () => formatModeDisplayLabel(selectedMode, currentSession, modes),
-    [currentSession, modes, selectedMode],
-  );
-  const modelDisplayLabel = useMemo(
-    () => formatModelDisplayLabel(activeProviderModel, activeModelRef),
-    [activeModelRef, activeProviderModel],
-  );
-  const workspacePathLabel = useMemo(
-    () =>
-      compactWorkspaceLabel(
-        currentSession?.directory || currentWorkspaceSummary?.path || null,
-        serviceRootPath || workspaceRootPath,
-      ),
-    [
-      currentSession?.directory,
-      currentWorkspaceSummary?.path,
-      serviceRootPath,
-      workspaceRootPath,
-    ],
-  );
-  const sessionSubtitle = useMemo(() => {
-    const parts: string[] = [];
-    if (currentSession?.pending_command_invocation?.title?.trim()) {
-      parts.push(currentSession.pending_command_invocation.title.trim());
-    } else if (currentSession?.pending_command_invocation?.command?.trim()) {
-      parts.push(currentSession.pending_command_invocation.command.trim());
-    }
-    if (currentSession?.telemetry?.last_run_status?.trim()) {
-      parts.push(currentSession.telemetry.last_run_status.trim());
-    }
-
-    return parts.join(" · ") || null;
-  }, [
-    currentSession?.pending_command_invocation?.command,
-    currentSession?.pending_command_invocation?.title,
-    currentSession?.telemetry?.last_run_status,
-  ]);
   const refreshExecutionActivity = executionActivity.refreshExecutionActivity;
   const conversationJump = useConversationJump({
     messages,
@@ -1189,7 +1043,7 @@ export default function App() {
     api,
     apiJson,
     setBanner,
-    enabled: terminalExpanded,
+    enabled: terminalOpen,
     defaultCwd: workspaceBasePath || currentSession?.directory || "",
   });
 
@@ -2402,46 +2256,6 @@ export default function App() {
 
   return (
     <div className="roc-app-shell flex h-dvh flex-col overflow-hidden bg-background text-foreground font-sans">
-      <header className="roc-appbar relative flex shrink-0 items-center justify-between px-4 py-1.5 md:px-5">
-        <div className="flex min-w-0 items-center gap-3">
-          <img
-            src="/web/brand/rocode-logo.svg"
-            alt="ROCode"
-            className="h-7 w-auto max-w-[9.5rem] shrink-0 object-contain md:h-8 md:max-w-[10.5rem]"
-          />
-          {!leftSidebarOpen && currentWorkspaceSummary?.label ? (
-            <span className="roc-badge max-w-[12rem] truncate md:max-w-[18rem]">
-              {currentWorkspaceSummary.label}
-            </span>
-          ) : null}
-        </div>
-        <div className="flex items-center gap-1.5">
-          {!rightSidebarOpen && selectedWorkspaceFilename ? (
-            <button
-              onClick={() => setRightSidebarOpen(true)}
-              className="hidden items-center gap-1.5 rounded-full border border-border/55 bg-background/72 px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground md:flex"
-              title="Show workspace"
-            >
-              <span className="truncate max-w-[10rem]">{selectedWorkspaceFilename}</span>
-            </button>
-          ) : null}
-          <button
-            onClick={() => setRightSidebarOpen((value) => !value)}
-            className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            title={rightSidebarOpen ? "Hide workspace" : "Show workspace"}
-          >
-            <FolderTreeIcon className={cn("size-4", rightSidebarOpen && "text-foreground")} />
-          </button>
-          <button
-            onClick={() => setSettingsOpen(true)}
-            className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            title="Settings"
-          >
-            <SettingsIcon className="size-4" />
-          </button>
-        </div>
-      </header>
-
       <div className="flex flex-1 overflow-hidden">
         {leftSidebarOpen && (
           <>
@@ -2487,6 +2301,38 @@ export default function App() {
               </button>
             </div>
           ) : null}
+          <div className="absolute right-4 top-3 z-20 flex items-center gap-1.5 md:right-5">
+            {!rightSidebarOpen && selectedWorkspaceFilename ? (
+              <button
+                onClick={() => setRightSidebarOpen(true)}
+                className="hidden items-center gap-1.5 rounded-full border border-border/55 bg-background/78 px-3 py-1.5 text-xs text-muted-foreground shadow-sm backdrop-blur transition-colors hover:bg-muted hover:text-foreground md:flex"
+                title="Show workspace"
+              >
+                <span className="truncate max-w-[10rem]">{selectedWorkspaceFilename}</span>
+              </button>
+            ) : null}
+            <button
+              onClick={() => setRightSidebarOpen((value) => !value)}
+              className="rounded-lg border border-border/50 bg-background/78 p-1.5 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:bg-muted hover:text-foreground"
+              title={rightSidebarOpen ? "Hide workspace" : "Show workspace"}
+            >
+              <FolderTreeIcon className={cn("size-4", rightSidebarOpen && "text-foreground")} />
+            </button>
+            <button
+              onClick={() => setTerminalOpen((value) => !value)}
+              className="rounded-lg border border-border/50 bg-background/78 p-1.5 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:bg-muted hover:text-foreground"
+              title={terminalOpen ? "Hide terminal" : "Show terminal"}
+            >
+              <TerminalSquareIcon className={cn("size-4", terminalOpen && "text-foreground")} />
+            </button>
+            <button
+              onClick={() => setSettingsOpen(true)}
+              className="rounded-lg border border-border/50 bg-background/78 p-1.5 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:bg-muted hover:text-foreground"
+              title="Settings"
+            >
+              <SettingsIcon className="size-4" />
+            </button>
+          </div>
           {banner ? (
             <div className="mx-auto w-full max-w-[88rem] px-4 pt-3 md:px-5">
               <div className="roc-banner flex items-start gap-3" data-tone="warning">
@@ -2508,28 +2354,6 @@ export default function App() {
               </div>
             </div>
           ) : null}
-
-          <div className="mx-auto w-full max-w-[88rem] px-4 pt-4 pb-1 md:px-5">
-            <SessionHeader
-              title={currentSession?.title || currentWorkspaceSummary?.label || "New Session"}
-              subtitle={sessionSubtitle}
-              pathLabel={workspacePathLabel || null}
-              workspaceLabel={currentWorkspaceSummary?.label || null}
-              usageSummary={headerUsageSummary || null}
-              usageTitle={headerUsageTitle || null}
-              modeLabel={modeDisplayLabel}
-              modelLabel={modelDisplayLabel}
-              activeStageId={schedulerNavigation.previewStageId ?? schedulerNavigation.activeStageId}
-              currentWorkspaceReference={selectedWorkspaceReference}
-              breadcrumbs={schedulerNavigation.sessionBreadcrumbs}
-              provenance={schedulerNavigation.currentBreadcrumbProvenance}
-              onNavigateStage={schedulerNavigation.navigateToStage}
-              onNavigateBreadcrumb={schedulerNavigation.navigateToBreadcrumb}
-              onNavigateProvenanceSession={schedulerNavigation.navigateToProvenanceSession}
-              onNavigateProvenanceStage={schedulerNavigation.navigateToProvenanceStage}
-              onNavigateProvenanceToolCall={schedulerNavigation.navigateToProvenanceToolCall}
-            />
-          </div>
 
           <ConversationFeedPanel
             sessionId={selectedSessionId}
@@ -2607,12 +2431,31 @@ export default function App() {
               onComposerChange={setComposer}
             />
           </div>
+
+          {terminalOpen ? (
+            <div className="shrink-0 px-4 pb-5 md:px-5">
+              <div className="w-full overflow-hidden rounded-2xl border border-border/35 bg-sidebar shadow-sm">
+                <div
+                  className={terminalResize.handleClassName}
+                  onMouseDown={terminalResize.handleMouseDown}
+                  title="Resize terminal"
+                />
+                <div className="min-h-0 overflow-hidden" style={{ height: terminalResize.height }}>
+                  <DeferredTerminalPanel
+                    expanded={terminalOpen}
+                    onExpand={() => setTerminalOpen(true)}
+                    terminal={terminalSessions}
+                  />
+                </div>
+              </div>
+            </div>
+          ) : null}
         </div>
 
         {rightSidebarOpen && (
           <>
             <div className={rightResize.handleClassName} onMouseDown={rightResize.handleMouseDown} />
-            <div className="shrink-0 overflow-hidden border-l border-border/50 bg-sidebar" style={{ width: rightResize.width }}>
+            <div className="shrink-0 overflow-hidden border-l border-border/50 bg-sidebar" style={{ width: effectiveRightPanelWidth }}>
             <WorkspacePanel
               apiJson={apiJson}
               activeTab={workspacePanelTab}
@@ -2639,9 +2482,6 @@ export default function App() {
               executionActivity={executionActivity}
               conversationJump={conversationJump}
               schedulerNavigation={schedulerNavigation}
-              terminalExpanded={terminalExpanded}
-              terminalSessions={terminalSessions}
-              onExpandTerminal={() => setTerminalExpanded(true)}
               onCreateWorkspaceFile={createWorkspaceFile}
               onCreateWorkspaceDirectory={createWorkspaceDirectory}
               onUploadWorkspaceFiles={uploadWorkspaceFiles}

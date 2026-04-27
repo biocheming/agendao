@@ -1629,10 +1629,7 @@ fn format_compact_number(value: u64) -> String {
 }
 
 fn context_usage_percent(used: u64, limit: u64) -> Option<u64> {
-    if limit == 0 {
-        return None;
-    }
-    Some(((used as f64 / limit as f64) * 100.0).round() as u64)
+    rocode_types::context_usage_percent(used, limit)
 }
 
 fn context_usage_bar(percent: Option<u64>, width: usize) -> String {
@@ -1649,12 +1646,7 @@ fn context_usage_bar(percent: Option<u64>, width: usize) -> String {
 }
 
 fn context_pressure_suffix(percent: Option<u64>) -> Option<&'static str> {
-    match percent {
-        Some(pct) if pct >= 95 => Some("compact now"),
-        Some(pct) if pct >= 90 => Some("auto-compact soon"),
-        Some(pct) if pct >= 80 => Some("warning"),
-        _ => None,
-    }
+    rocode_types::context_pressure_label(percent)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -1700,22 +1692,4 @@ fn total_session_tokens(usage: &rocode_session::SessionUsage) -> u64 {
         + usage.reasoning_tokens
         + usage.cache_read_tokens
         + usage.cache_write_tokens
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-fn format_price_pair(input: f64, output: f64) -> String {
-    format!("${}/{} /1M", format_price(input), format_price(output))
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-fn format_price(value: f64) -> String {
-    if value >= 10.0 {
-        format!("{value:.0}")
-    } else if value >= 1.0 {
-        format!("{value:.2}")
-    } else if value >= 0.1 {
-        format!("{value:.3}")
-    } else {
-        format!("{value:.4}")
-    }
 }

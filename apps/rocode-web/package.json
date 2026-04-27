@@ -1,11 +1,14 @@
 {
   "name": "rocode-web",
   "private": true,
-  "version": "2026.4.26",
+  "version": "2026.4.27",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "generate:context-pressure": "node scripts/generate-context-pressure.mjs",
+    "check:generated": "node scripts/generate-context-pressure.mjs --check",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "npm run check:generated && npm run typecheck && vite build",
     "preview": "vite preview",
     "smoke:phase4": "node scripts/phase4-smoke.mjs"
   },

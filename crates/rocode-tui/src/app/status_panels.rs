@@ -2284,19 +2284,11 @@ fn tui_total_session_tokens(usage: &rocode_session::SessionUsage) -> u64 {
 }
 
 fn tui_context_usage_percent(used: u64, limit: u64) -> Option<u64> {
-    if limit == 0 {
-        return None;
-    }
-    Some(((used as f64 / limit as f64) * 100.0).round() as u64)
+    rocode_types::context_usage_percent(used, limit)
 }
 
 fn tui_context_pressure_note(percent: Option<u64>) -> Option<&'static str> {
-    match percent {
-        Some(pct) if pct >= 95 => Some("compact now"),
-        Some(pct) if pct >= 90 => Some("auto-compact soon"),
-        Some(pct) if pct >= 80 => Some("warning"),
-        _ => None,
-    }
+    rocode_types::context_pressure_label(percent)
 }
 
 fn tui_format_context_usage_label(used: u64, limit: Option<u64>) -> String {

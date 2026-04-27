@@ -10,6 +10,7 @@ import {
 import { AttachmentDetailsPanel } from "./AttachmentDetailsPanel";
 import { ComposerContextStrip } from "./ComposerContextStrip";
 import type { ComposerAttachmentRecord } from "../lib/composerContext";
+import { contextPressureLabel, contextPressureTone } from "../lib/contextPressure";
 import type {
   ProviderModelCapabilitiesRecord,
   ProviderModelRecord,
@@ -73,21 +74,6 @@ function compactOptionLabel(label: string) {
 
 function formatCompactCapacity(value?: number | null) {
   return formatCompactTokenCount(value).replace(".0k", "k").replace(".0M", "M");
-}
-
-function contextPressureLabel(percent?: number | null) {
-  if (percent == null) return null;
-  if (percent >= 95) return "compact now";
-  if (percent >= 90) return "auto-compact soon";
-  if (percent >= 80) return "warning";
-  return null;
-}
-
-function contextPressureTone(percent?: number | null) {
-  if (percent == null) return "normal";
-  if (percent >= 95) return "critical";
-  if (percent >= 80) return "warning";
-  return "normal";
 }
 
 function findProviderModel(
@@ -280,6 +266,7 @@ export function ComposerPanel({
   const [voiceListening, setVoiceListening] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [detailsExpanded, setDetailsExpanded] = useState(false);
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -436,6 +423,8 @@ export function ComposerPanel({
     (lastTurnInputTokens > 0 || lastTurnOutputTokens > 0)
       ? `Turn ↑${formatCompactTokenCount(lastTurnInputTokens)} ↓${formatCompactTokenCount(lastTurnOutputTokens)}`
       : null;
+  const contextBadgeLabel =
+    contextCount > 0 ? `${references.length} refs · ${attachments.length} files` : null;
   const contextSummary = hasContextEstimate
     ? hasContextLimit
       ? `${formatCompactTokenCount(contextTokensUsed)} / ${formatCompactTokenCount(contextTokensLimit)}`
@@ -462,30 +451,34 @@ export function ComposerPanel({
 
   return (
     <div className="flex flex-col gap-2" data-testid="composer-form">
-      <ComposerContextStrip
-        references={references}
-        attachments={attachments}
-        selectedAttachmentIndex={selectedAttachmentIndex}
-        selectedWorkspacePath={selectedWorkspacePath}
-        workspaceRootPath={workspaceRootPath}
-        activeStageId={activeStageId}
-        provenance={provenance}
-        onPreviewStage={onPreviewStage}
-        onRemoveReference={onRemoveReference}
-        onRemoveAttachment={onRemoveAttachment}
-        onSelectAttachment={onSelectAttachment}
-      />
-      <AttachmentDetailsPanel
-        attachment={selectedAttachment}
-        workspaceRootPath={workspaceRootPath}
-        activeStageId={activeStageId}
-        provenance={provenance}
-        onLocateAttachment={onLocateAttachment}
-        onNavigateStage={onNavigateStage}
-        onNavigateProvenanceSession={onNavigateProvenanceSession}
-        onNavigateProvenanceStage={onNavigateProvenanceStage}
-        onNavigateProvenanceToolCall={onNavigateProvenanceToolCall}
-      />
+      {detailsExpanded ? (
+        <>
+          <ComposerContextStrip
+            references={references}
+            attachments={attachments}
+            selectedAttachmentIndex={selectedAttachmentIndex}
+            selectedWorkspacePath={selectedWorkspacePath}
+            workspaceRootPath={workspaceRootPath}
+            activeStageId={activeStageId}
+            provenance={provenance}
+            onPreviewStage={onPreviewStage}
+            onRemoveReference={onRemoveReference}
+            onRemoveAttachment={onRemoveAttachment}
+            onSelectAttachment={onSelectAttachment}
+          />
+          <AttachmentDetailsPanel
+            attachment={selectedAttachment}
+            workspaceRootPath={workspaceRootPath}
+            activeStageId={activeStageId}
+            provenance={provenance}
+            onLocateAttachment={onLocateAttachment}
+            onNavigateStage={onNavigateStage}
+            onNavigateProvenanceSession={onNavigateProvenanceSession}
+            onNavigateProvenanceStage={onNavigateProvenanceStage}
+            onNavigateProvenanceToolCall={onNavigateProvenanceToolCall}
+          />
+        </>
+      ) : null}
 
       <div className="roc-composer-shell" data-drag-active={composerDragActive ? "true" : "false"}>
         <form className="w-full" onSubmit={onSubmit} data-testid="composer-dropzone">
@@ -496,38 +489,132 @@ export function ComposerPanel({
             onDragLeave={onDragLeave}
             onDrop={onDrop}
           >
+            <input
+              ref={fileInputRef}
+              data-testid="composer-file-input"
+              type="file"
+              multiple
+              className="hidden"
+              onChange={onFileChange}
+            />
+            <input
+              ref={imageInputRef}
+              data-testid="composer-image-input"
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={onFileChange}
+            />
             <div className="px-4 pt-4 pb-3 md:px-5">
-              <textarea
-                ref={textareaRef}
-                name="message"
-                rows={1}
-                placeholder="Ask ROCode"
-                value={composer}
-                onChange={(e) => onComposerChange(e.target.value)}
-                onPaste={onPaste}
-                disabled={streaming}
-                className="h-auto min-h-0 w-full resize-none border-0 bg-transparent py-0.5 text-[15px] leading-[1.65] text-foreground outline-none placeholder:text-muted-foreground/50"
-              />
+              <div className="flex items-end gap-2">
+                <textarea
+                  ref={textareaRef}
+                  name="message"
+                  rows={1}
+                  placeholder="Ask ROCode"
+                  value={composer}
+                  onChange={(e) => onComposerChange(e.target.value)}
+                  onPaste={onPaste}
+                  disabled={streaming}
+                  className="h-auto min-h-0 flex-1 resize-none border-0 bg-transparent py-0.5 text-[15px] leading-[1.65] text-foreground outline-none placeholder:text-muted-foreground/50"
+                />
+                <div className="flex shrink-0 items-center gap-1.5 pb-0.5">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="roc-action h-9 w-9 rounded-full"
+                        title="Add voice, file, or image"
+                      >
+                        <PlusIcon className="size-4" />
+                        {contextCount > 0 ? (
+                          <span className="absolute -right-0.5 -top-0.5 min-w-4 rounded-full bg-primary px-1 text-[9px] leading-4 text-primary-foreground">
+                            {contextCount}
+                          </span>
+                        ) : null}
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="min-w-[8rem]">
+                      <DropdownMenuItem
+                        disabled={!allowAudioInput || !voiceSupported}
+                        onClick={startVoiceRecognition}
+                        className="gap-2 text-xs"
+                      >
+                        <MicIcon className="size-3.5" />
+                        Voice
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        disabled={!allowFileInput}
+                        onClick={() => fileInputRef.current?.click()}
+                        className="gap-2 text-xs"
+                      >
+                        <PaperclipIcon className="size-3.5" />
+                        File
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        disabled={!allowImageInput}
+                        onClick={() => imageInputRef.current?.click()}
+                        className="gap-2 text-xs"
+                      >
+                        <ImageIcon className="size-3.5" />
+                        Image
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  {streaming ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      className="h-9 w-9 rounded-full border-destructive/50 text-destructive hover:bg-destructive/10"
+                      title="Stop current response"
+                      onClick={() => {
+                        window.dispatchEvent(new CustomEvent("rocode:stop-streaming"));
+                      }}
+                    >
+                      <SquareIcon className="size-3.5 fill-current" />
+                    </Button>
+                  ) : null}
+                  <Button
+                    type="submit"
+                    variant="ghost"
+                    size="icon"
+                    disabled={!composer.trim() && attachments.length === 0}
+                    className="roc-primary-action h-9 w-9 rounded-full"
+                    title="Send"
+                  >
+                    <SendIcon className="size-4" />
+                  </Button>
+                </div>
+              </div>
             </div>
 
-            <div className="border-t border-border/55 px-4 py-2.5 md:px-5">
-                <input
-                  ref={fileInputRef}
-                  data-testid="composer-file-input"
-                  type="file"
-                  multiple
-                  className="hidden"
-                  onChange={onFileChange}
-                />
-                <input
-                  ref={imageInputRef}
-                  data-testid="composer-image-input"
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  className="hidden"
-                  onChange={onFileChange}
-                />
+            <button
+              type="button"
+              className="roc-composer-meter group relative h-3 w-full overflow-hidden border-t border-border/55 bg-muted/35 text-left"
+              title="Show mode, model, token usage, and context detail"
+              aria-expanded={detailsExpanded}
+              onClick={() => setDetailsExpanded((value) => !value)}
+            >
+              <span
+                className={cn(
+                  "absolute inset-y-0 left-0 transition-[width,background-color] duration-200 ease-out",
+                  contextRatio === null
+                    ? "bg-muted-foreground/20"
+                    : contextRatio >= 0.8
+                      ? "bg-amber-500/70"
+                      : "bg-primary/65",
+                )}
+                style={{ width: contextRatio !== null ? `${Math.max(3, Math.round(contextRatio * 100))}%` : "0%" }}
+              />
+              <span className="absolute inset-0 opacity-0 transition-opacity group-hover:opacity-100" />
+            </button>
+
+            {detailsExpanded ? (
+              <div className="border-t border-border/55 px-4 py-2.5 md:px-5">
               <div className="flex flex-col gap-2">
                 <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
                   <div className="flex min-w-0 flex-wrap items-center gap-1.5">
@@ -713,77 +800,9 @@ export function ComposerPanel({
                   </div>
 
                   <div className="flex shrink-0 items-center gap-1.5 lg:pb-0.5">
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="roc-action h-8.5 rounded-full px-3 text-[11px]"
-                          title="Add attachment"
-                        >
-                          <PlusIcon className="mr-1.5 size-3.5" />
-                          Add
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="min-w-[8rem]">
-                        <DropdownMenuItem
-                          disabled={!allowAudioInput || !voiceSupported}
-                          onClick={startVoiceRecognition}
-                          className="gap-2 text-xs"
-                        >
-                          <MicIcon className="size-3.5" />
-                          Voice
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          disabled={!allowFileInput}
-                          onClick={() => fileInputRef.current?.click()}
-                          className="gap-2 text-xs"
-                        >
-                          <PaperclipIcon className="size-3.5" />
-                          File
-                          {attachments.length > 0 ? (
-                            <span className="ml-auto rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-foreground">
-                              {attachments.length}
-                            </span>
-                          ) : null}
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          disabled={!allowImageInput}
-                          onClick={() => imageInputRef.current?.click()}
-                          className="gap-2 text-xs"
-                        >
-                          <ImageIcon className="size-3.5" />
-                          Image
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-
-                    {streaming ? (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="h-8.5 gap-1.5 rounded-full border-destructive/50 px-3 text-[11px] text-destructive hover:bg-destructive/10"
-                        onClick={() => {
-                          window.dispatchEvent(new CustomEvent("rocode:stop-streaming"));
-                        }}
-                      >
-                        <span className="size-2 rounded-sm bg-current" />
-                        Stop
-                      </Button>
+                    {contextBadgeLabel ? (
+                      <span className="roc-badge px-3 py-1.5 text-[11px]">{contextBadgeLabel}</span>
                     ) : null}
-
-                      <Button
-                        type="submit"
-                        variant="ghost"
-                        size="sm"
-                        disabled={!composer.trim() && attachments.length === 0}
-                        className="roc-primary-action h-9.5 rounded-full px-4"
-                      >
-                        <span className="mr-1 text-[11px] font-medium">Send</span>
-                        <SendIcon className="size-3.25" />
-                      </Button>
                   </div>
                 </div>
 
@@ -830,23 +849,11 @@ export function ComposerPanel({
                         </span>
                       ) : null}
                     </div>
-                    <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-muted/60">
-                      <div
-                        className={cn(
-                          "h-full rounded-full transition-[width,background-color] duration-200 ease-out",
-                          contextRatio === null
-                            ? "bg-muted-foreground/35"
-                            : contextRatio >= 0.8
-                              ? "bg-amber-500/85"
-                              : "bg-primary/75",
-                        )}
-                        style={{ width: contextRatio !== null ? `${Math.max(6, Math.round(contextRatio * 100))}%` : "0%" }}
-                      />
-                    </div>
                   </div>
                 </div>
               </div>
             </div>
+            ) : null}
           </div>
         </form>
       </div>

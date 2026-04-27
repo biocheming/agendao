@@ -5,6 +5,7 @@ import type {
   SessionInsightsRecord,
   SessionTelemetrySnapshotRecord,
 } from "../lib/sessionActivity";
+import { isLiveStageStatus } from "../lib/contextPressure";
 
 export interface ActivityFilters {
   stageId: string;
@@ -150,9 +151,10 @@ export function useExecutionActivity({
         if (sessionRef.current !== sessionId) return;
         setTelemetry(telemetry);
         setInsights(insights);
-        setActivityEvents(events);
+        const safeEvents = Array.isArray(events) ? events : [];
+        setActivityEvents(safeEvents);
         setKnownEventTypes((current) =>
-          uniqStrings([...current, ...events.map((event) => event.event_type)]).sort(),
+          uniqStrings([...current, ...safeEvents.map((event) => event.event_type)]).sort(),
         );
       } catch (error) {
         if (sessionRef.current === sessionId) {
@@ -175,7 +177,13 @@ export function useExecutionActivity({
     void refreshExecutionActivity(selectedSessionId, activityFilters, activityPage);
   }, [activityFilters, activityPage, refreshExecutionActivity, resetExecutionActivity, selectedSessionId]);
 
-  const executionTopology = telemetry?.topology ?? null;
+  const telemetryStages = Array.isArray(telemetry?.stages) ? telemetry.stages : [];
+  const executionTopology = telemetry?.topology
+    ? {
+        ...telemetry.topology,
+        roots: Array.isArray(telemetry.topology.roots) ? telemetry.topology.roots : [],
+      }
+    : null;
 
   const executionNodes = useMemo(
     () => flattenExecutionNodes(executionTopology?.roots ?? []),
@@ -196,14 +204,10 @@ export function useExecutionActivity({
     if (!telemetry) return null;
     const activeStageId = telemetry.runtime.active_stage_id;
     if (activeStageId) {
-      return telemetry.stages.find((stage) => stage.stage_id === activeStageId) ?? null;
+      return telemetryStages.find((stage) => stage.stage_id === activeStageId) ?? null;
     }
-    return (
-      telemetry.stages.find((stage) =>
-        ["running", "waiting", "retrying", "blocked", "cancelling"].includes(stage.status),
-      ) ?? null
-    );
-  }, [telemetry]);
+    return telemetryStages.find((stage) => isLiveStageStatus(stage.status)) ?? null;
+  }, [telemetry, telemetryStages]);
 
   const stageOptions = useMemo(
     () =>
@@ -298,7 +302,7 @@ export function useExecutionActivity({
     sessionRuntime: telemetry?.runtime ?? null,
     sessionUsage: telemetry?.usage ?? null,
     sessionMemory: telemetry?.memory ?? null,
-    stageSummaries: telemetry?.stages ?? [],
+    stageSummaries: telemetryStages,
     activeStageSummary,
     executionTopology,
     activityEvents,

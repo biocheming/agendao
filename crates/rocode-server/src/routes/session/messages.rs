@@ -89,6 +89,7 @@ pub(super) struct MessageInfo {
 #[derive(Debug, Serialize, Default)]
 pub(super) struct MessageTokensInfo {
     pub input: u64,
+    pub context: u64,
     pub output: u64,
     pub reasoning: u64,
     pub cache_read: u64,
@@ -513,6 +514,7 @@ fn message_to_info(
         cost,
         tokens: MessageTokensInfo {
             input: usage.input_tokens,
+            context: usage.context_tokens,
             output: usage.output_tokens,
             reasoning: usage.reasoning_tokens,
             cache_read: usage.cache_read_tokens,

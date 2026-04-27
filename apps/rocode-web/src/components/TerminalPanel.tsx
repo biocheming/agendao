@@ -21,6 +21,11 @@ export function TerminalPanel({ terminal }: TerminalPanelProps) {
   }, [terminal.activeSession]);
 
   useEffect(() => {
+    if (!terminal.enabled || terminal.loading || terminal.creating || terminal.sessions.length > 0) return;
+    void terminal.createSession();
+  }, [terminal]);
+
+  useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
 
@@ -131,92 +136,13 @@ export function TerminalPanel({ terminal }: TerminalPanelProps) {
   }, [terminal.activeBuffer, terminal.activeSession, terminal.resizeSession]);
 
   return (
-    <div className="roc-panel roc-rail-panel p-5" data-testid="terminal-panel">
-      <div className="roc-rail-header">
-        <div className="roc-rail-headline">
-          <p className="roc-section-label">Terminal</p>
-          <h3 className="roc-rail-title">PTY Sessions</h3>
-          <p className="roc-rail-description">Keep shell access in-context instead of jumping back to a legacy view.</p>
-        </div>
-        <div className="roc-rail-toolbar">
-          <button
-            className="roc-action roc-action-pill"
-            type="button"
-            data-testid="terminal-refresh"
-            onClick={terminal.refresh}
-            disabled={terminal.loading}
-          >
-            {terminal.loading ? "Refreshing..." : "Refresh"}
-          </button>
-          <button
-            className="roc-action roc-action-pill"
-            type="button"
-            data-testid="terminal-create"
-            onClick={() => void terminal.createSession()}
-            disabled={terminal.creating}
-          >
-            {terminal.creating ? "Creating..." : "+ New"}
-          </button>
-          <button
-            className="roc-action roc-action-pill"
-            type="button"
-            data-testid="terminal-delete"
-            onClick={() => void terminal.deleteSession(terminal.activeSession!.id)}
-            disabled={!terminal.activeSession}
-          >
-            Delete
-          </button>
-        </div>
-      </div>
-
-      {terminal.sessions.length ? (
-        <>
-          <div className="roc-rail-tab-list">
-            {terminal.sessions.map((session) => (
-              <button
-                key={session.id}
-                data-testid="terminal-tab"
-                data-session-id={session.id}
-                data-active={terminal.activeId === session.id ? "true" : "false"}
-                className="roc-terminal-tab"
-                type="button"
-                onClick={() => terminal.setActiveId(session.id)}
-              >
-                {session.command || "shell"}
-              </button>
-            ))}
-          </div>
-
-          {terminal.activeSession ? (
-            <>
-              <div className="roc-rail-meta-list">
-                <span className="roc-badge px-3 py-1.5 text-xs">{terminal.activeSession.status}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">{terminal.activeSession.cwd || "cwd unknown"}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">{terminal.activeSession.id}</span>
-              </div>
-              <div className="roc-rail-section">
-                <div
-                  ref={viewportRef}
-                  data-testid="terminal-viewport"
-                  className="terminal-viewport roc-terminal-viewport"
-                  onClick={() => xtermRef.current?.focus()}
-                />
-                <p className="roc-rail-section-note">
-                  Connected to PTY WebSocket. Keyboard input is sent directly to the shell.
-                </p>
-              </div>
-            </>
-          ) : null}
-        </>
-      ) : (
-        <div className="roc-rail-empty">
-          <div className="roc-section-label">Terminal</div>
-          <h3 className="text-sm font-semibold tracking-tight text-foreground">No terminal sessions</h3>
-          <p className="text-sm leading-6 text-muted-foreground">
-            Create a PTY session here instead of switching back to the legacy frontend.
-          </p>
-        </div>
-      )}
+    <div className="h-full min-h-0 bg-transparent p-2" data-testid="terminal-panel">
+      <div
+        ref={viewportRef}
+        data-testid="terminal-viewport"
+        className="terminal-viewport roc-terminal-viewport"
+        onClick={() => xtermRef.current?.focus()}
+      />
     </div>
   );
 }
