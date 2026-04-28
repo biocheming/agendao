@@ -13,7 +13,10 @@ use rocode_memory::{
     load_persisted_memory_snapshot, render_frozen_snapshot_block, render_prefetch_packet_block,
     PersistedMemorySnapshot, MEMORY_LAST_PREFETCH_METADATA_KEY,
 };
-use rocode_types::{MemoryRetrievalPacket, MemoryRetrievalQuery};
+use rocode_types::{
+    MemoryRetrievalPacket, MemoryRetrievalQuery, MessageRole, PartType as SessionPartType,
+    SessionMessage,
+};
 use serde::Deserialize;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -324,6 +327,97 @@ pub(super) async fn resolve_prompt_memory_context(
     (frozen_block, prefetch_packet, prefetch_block)
 }
 
+const SCHEDULER_RECENT_TAIL_MESSAGES: usize = 6;
+const SCHEDULER_CONTEXT_TEXT_LIMIT: usize = 4_000;
+const SCHEDULER_CONTEXT_TURN_LIMIT: usize = 1_200;
+pub(super) const SCHEDULER_SESSION_CONTEXT_METADATA_KEY: &str = "scheduler_session_context";
+
+#[derive(Debug, Clone)]
+pub(super) struct SchedulerSessionContextPacket {
+    exact_recent_tail: Vec<SchedulerSessionContextTurn>,
+    working_ledger: Vec<String>,
+    latest_compaction_summary: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct SchedulerSessionContextTurn {
+    message_id: String,
+    role: MessageRole,
+    text: String,
+}
+
+impl SchedulerSessionContextPacket {
+    pub(super) fn from_session(session: &rocode_session::Session) -> Option<Self> {
+        let exact_recent_tail = collect_scheduler_recent_tail(session);
+        let latest_compaction_summary = latest_compaction_summary(session);
+        let working_ledger = build_scheduler_working_ledger(session, &exact_recent_tail);
+
+        if exact_recent_tail.is_empty()
+            && working_ledger.is_empty()
+            && latest_compaction_summary.is_none()
+        {
+            return None;
+        }
+
+        Some(Self {
+            exact_recent_tail,
+            working_ledger,
+            latest_compaction_summary,
+        })
+    }
+
+    pub(super) fn render(&self) -> String {
+        let mut sections = vec!["## Session Continuity Context\n\
+This is same-session continuity context for resolving follow-up references such as \
+`previous`, `above`, `继续`, `前面`, `刚才`, or `把结果写入`. Treat it as task context, \
+not as a replacement for checking live files or rerunning verification when exact state matters."
+            .to_string()];
+
+        if !self.working_ledger.is_empty() {
+            sections.push(format!(
+                "## Working Ledger\n{}",
+                self.working_ledger
+                    .iter()
+                    .map(|item| format!("- {item}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+
+        if let Some(summary) = self.latest_compaction_summary.as_deref() {
+            sections.push(format!(
+                "## Latest Compaction Summary\n{}",
+                truncate_chars(summary, SCHEDULER_CONTEXT_TURN_LIMIT)
+            ));
+        }
+
+        if !self.exact_recent_tail.is_empty() {
+            let turns = self
+                .exact_recent_tail
+                .iter()
+                .map(|turn| {
+                    format!(
+                        "- {} `{}`:\n{}",
+                        role_label(&turn.role),
+                        turn.message_id,
+                        indent_block(&truncate_chars(&turn.text, SCHEDULER_CONTEXT_TURN_LIMIT))
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            sections.push(format!("## Exact Recent Tail\n{turns}"));
+        }
+
+        truncate_chars(&sections.join("\n\n"), SCHEDULER_CONTEXT_TEXT_LIMIT)
+    }
+}
+
+pub(super) fn build_scheduler_session_context_block(
+    session: &rocode_session::Session,
+) -> Option<String> {
+    SchedulerSessionContextPacket::from_session(session).map(|packet| packet.render())
+}
+
 pub(super) fn merge_system_prompt_with_memory_snapshot(
     base: Option<String>,
     frozen_snapshot_block: Option<&str>,
@@ -346,6 +440,7 @@ pub(super) fn merge_scheduler_prompt_with_memory(
     prompt_text: &str,
     frozen_snapshot_block: Option<&str>,
     prefetch_block: Option<&str>,
+    session_context_block: Option<&str>,
 ) -> String {
     let mut sections = Vec::new();
     if let Some(snapshot) = frozen_snapshot_block
@@ -360,8 +455,151 @@ pub(super) fn merge_scheduler_prompt_with_memory(
     {
         sections.push(prefetch.to_string());
     }
+    if let Some(context) = session_context_block
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        sections.push(context.to_string());
+    }
     sections.push(prompt_text.to_string());
     sections.join("\n\n")
+}
+
+fn collect_scheduler_recent_tail(
+    session: &rocode_session::Session,
+) -> Vec<SchedulerSessionContextTurn> {
+    let mut turns = session
+        .messages
+        .iter()
+        .rev()
+        .filter(|message| is_scheduler_context_message(message))
+        .filter_map(|message| {
+            let text = message.get_text();
+            let text = text.trim();
+            (!text.is_empty()).then(|| SchedulerSessionContextTurn {
+                message_id: message.id.clone(),
+                role: message.role.clone(),
+                text: text.to_string(),
+            })
+        })
+        .take(SCHEDULER_RECENT_TAIL_MESSAGES)
+        .collect::<Vec<_>>();
+    turns.reverse();
+    turns
+}
+
+fn is_scheduler_context_message(message: &SessionMessage) -> bool {
+    if message.metadata.contains_key("scheduler_stage") {
+        return false;
+    }
+    matches!(message.role, MessageRole::User | MessageRole::Assistant)
+}
+
+fn latest_compaction_summary(session: &rocode_session::Session) -> Option<String> {
+    session.messages.iter().rev().find_map(|message| {
+        if !matches!(message.role, MessageRole::Assistant) {
+            return None;
+        }
+        for part in message.parts.iter().rev() {
+            if let SessionPartType::Compaction { summary } = &part.part_type {
+                let trimmed = summary.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+        let is_summary = message
+            .metadata
+            .get("summary")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        if is_summary {
+            let text = message.get_text();
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+        None
+    })
+}
+
+fn build_scheduler_working_ledger(
+    session: &rocode_session::Session,
+    recent_tail: &[SchedulerSessionContextTurn],
+) -> Vec<String> {
+    let mut ledger = Vec::new();
+    let title = session.title.trim();
+    if !title.is_empty() && !session.is_default_title() {
+        ledger.push(format!("session_title: {}", truncate_chars(title, 160)));
+    }
+    if let Some(summary) = session.summary.as_ref() {
+        ledger.push(format!(
+            "session_diff: files={} additions={} deletions={}",
+            summary.files, summary.additions, summary.deletions
+        ));
+    }
+    if let Some(turn) = recent_tail
+        .iter()
+        .rev()
+        .find(|turn| turn.role == MessageRole::User)
+    {
+        ledger.push(format!(
+            "latest_user_turn `{}`: {}",
+            turn.message_id,
+            single_line(&truncate_chars(&turn.text, 240))
+        ));
+    }
+    if let Some(turn) = recent_tail
+        .iter()
+        .rev()
+        .find(|turn| turn.role == MessageRole::Assistant)
+    {
+        ledger.push(format!(
+            "latest_assistant_outcome `{}`: {}",
+            turn.message_id,
+            single_line(&truncate_chars(&turn.text, 360))
+        ));
+    }
+    if !ledger.is_empty() {
+        ledger.push(
+            "source_policy: use Exact Recent Tail for prior conversation outputs; use tools for current file state, diagnostics, and verification evidence."
+                .to_string(),
+        );
+    }
+    ledger
+}
+
+fn role_label(role: &MessageRole) -> &'static str {
+    match role {
+        MessageRole::User => "user",
+        MessageRole::Assistant => "assistant",
+        MessageRole::System => "system",
+        MessageRole::Tool => "tool",
+    }
+}
+
+fn indent_block(text: &str) -> String {
+    text.lines()
+        .map(|line| format!("  {line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn single_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate_chars(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        return value.to_string();
+    }
+    let mut truncated = value
+        .chars()
+        .take(limit.saturating_sub(24))
+        .collect::<String>();
+    truncated.push_str("\n...[truncated]...");
+    truncated
 }
 
 fn normalize_command_field_key(key: &str) -> String {
@@ -1284,6 +1522,7 @@ pub(super) async fn session_prompt(
 
         let (memory_frozen_snapshot_block, memory_prefetch_packet, memory_prefetch_block) =
             resolve_prompt_memory_context(&task_state, &mut session, &prompt_text).await;
+        let scheduler_session_context_block = build_scheduler_session_context_block(&session);
         let task_system_prompt = merge_system_prompt_with_memory_snapshot(
             task_system_prompt.clone(),
             memory_frozen_snapshot_block.as_deref(),
@@ -1292,6 +1531,7 @@ pub(super) async fn session_prompt(
             &prompt_text,
             memory_frozen_snapshot_block.as_deref(),
             memory_prefetch_block.as_deref(),
+            scheduler_session_context_block.as_deref(),
         );
 
         if let (Some(profile_name), Some(profile_config)) = (
@@ -1455,6 +1695,12 @@ pub(super) async fn session_prompt(
                     serde_json::json!(profile_name.clone()),
                 ),
             ]);
+            if let Some(session_context) = scheduler_session_context_block.as_deref() {
+                exec_metadata.insert(
+                    SCHEDULER_SESSION_CONTEXT_METADATA_KEY.to_string(),
+                    serde_json::json!(session_context),
+                );
+            }
             apply_skill_tree_telemetry_metadata(
                 &mut exec_metadata,
                 task_request_skill_tree_plan.as_ref(),
@@ -1994,6 +2240,47 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn scheduler_session_context_carries_recent_non_stage_turns() {
+        let mut session = Session::new("project", "/tmp");
+        session.set_title("Martini3 antibody formulation research");
+        session.add_user_message("检索近年来 martini3 在抗体制剂开发中的研究");
+        {
+            let assistant = session.add_assistant_message();
+            assistant.add_text("Found papers A, B, and C with notes about antibody formulation.");
+        }
+        {
+            let stage = session.add_assistant_message();
+            stage
+                .metadata
+                .insert("scheduler_stage".to_string(), serde_json::json!("route"));
+            stage.add_text("internal route decision");
+        }
+
+        let block = build_scheduler_session_context_block(&session)
+            .expect("same-session scheduler context should render");
+
+        assert!(block.contains("## Session Continuity Context"));
+        assert!(block.contains("Martini3 antibody formulation research"));
+        assert!(block.contains("Found papers A, B, and C"));
+        assert!(!block.contains("internal route decision"));
+    }
+
+    #[test]
+    fn scheduler_prompt_merge_places_session_context_before_current_prompt() {
+        let merged = merge_scheduler_prompt_with_memory(
+            "把你前面检索的结果写到 markdown 文档中",
+            Some("Frozen Memory Snapshot:\n- preference"),
+            Some("Turn Memory Recall:\n- related method"),
+            Some("## Session Continuity Context\nprevious result list"),
+        );
+
+        assert!(merged.contains("Frozen Memory Snapshot"));
+        assert!(merged.contains("Turn Memory Recall"));
+        assert!(merged.contains("## Session Continuity Context"));
+        assert!(merged.ends_with("把你前面检索的结果写到 markdown 文档中"));
     }
 
     #[test]
