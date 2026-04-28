@@ -675,7 +675,7 @@ fn meta_bool(meta: &HashMap<String, serde_json::Value>, key: &str) -> bool {
 }
 
 pub fn output_block_to_web(block: &OutputBlock) -> serde_json::Value {
-    match block {
+    let mut web = match block {
         OutputBlock::Status(StatusBlock { tone, text }) => json!({
             "kind": "status",
             "tone": tone_to_web(tone),
@@ -821,7 +821,45 @@ pub fn output_block_to_web(block: &OutputBlock) -> serde_json::Value {
                 "stage_id": e.stage_id,
             })).collect::<Vec<_>>(),
         }),
-    }
+    };
+    attach_presentation_metadata(block, &mut web);
+    web
+}
+
+fn attach_presentation_metadata(block: &OutputBlock, web: &mut serde_json::Value) {
+    let serde_json::Value::Object(map) = web else {
+        return;
+    };
+
+    let (group, slot, rank, sequence) = match block {
+        OutputBlock::Message(message) => match message.role {
+            MessageRole::User => ("prompt", "user", 0, None),
+            MessageRole::System => ("system", "system", 0, None),
+            MessageRole::Assistant => ("answer", "final_answer", 90, None),
+        },
+        OutputBlock::Reasoning(_) => ("reasoning", "reasoning", 10, None),
+        OutputBlock::Tool(tool) => ("tool", tool.name.as_str(), 20, None),
+        OutputBlock::SessionEvent(event) => ("event", event.event.as_str(), 25, None),
+        OutputBlock::SchedulerStage(stage) => (
+            "scheduler",
+            stage.stage_id.as_deref().unwrap_or(stage.stage.as_str()),
+            30,
+            stage.stage_index,
+        ),
+        OutputBlock::Inspect(_) => ("inspect", "inspect", 40, None),
+        OutputBlock::Status(_) => ("status", "status", 5, None),
+        OutputBlock::QueueItem(_) => ("queue", "queue", 0, None),
+    };
+
+    map.insert(
+        "presentation".to_string(),
+        json!({
+            "group": group,
+            "slot": slot,
+            "rank": rank,
+            "sequence": sequence,
+        }),
+    );
 }
 
 pub fn output_blocks_to_web(blocks: &[OutputBlock]) -> Vec<serde_json::Value> {
@@ -1026,6 +1064,14 @@ mod tests {
         assert_eq!(web.get("kind").and_then(|v| v.as_str()), Some("message"));
         assert_eq!(web.get("phase").and_then(|v| v.as_str()), Some("delta"));
         assert_eq!(web.get("role").and_then(|v| v.as_str()), Some("assistant"));
+        assert_eq!(
+            web.pointer("/presentation/group").and_then(|v| v.as_str()),
+            Some("answer")
+        );
+        assert_eq!(
+            web.pointer("/presentation/rank").and_then(|v| v.as_i64()),
+            Some(90)
+        );
     }
 
     #[test]

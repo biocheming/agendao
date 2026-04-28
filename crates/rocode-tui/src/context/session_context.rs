@@ -427,6 +427,7 @@ impl SessionContext {
             _ => return,
         }
 
+        self.order_current_turn_for_presentation(session_id);
         if let Some(session) = self.sessions.get_mut(session_id) {
             session.updated_at = Utc::now();
         }
@@ -703,6 +704,68 @@ impl SessionContext {
         messages.push(Self::streaming_placeholder_message(&generated_id, role));
         index.insert(generated_id, pos);
         pos
+    }
+
+    fn order_current_turn_for_presentation(&mut self, session_id: &str) {
+        let Some(messages) = self.messages.get_mut(session_id) else {
+            return;
+        };
+        let start = messages
+            .iter()
+            .rposition(|message| message.role == MessageRole::User)
+            .unwrap_or(0);
+        messages[start..].sort_by_key(|message| {
+            (
+                Self::message_presentation_rank(message),
+                Self::message_presentation_sequence(message),
+            )
+        });
+
+        let mut index = HashMap::with_capacity(messages.len());
+        for (pos, message) in messages.iter().enumerate() {
+            index.insert(message.id.clone(), pos);
+        }
+        self.message_index.insert(session_id.to_string(), index);
+    }
+
+    fn message_presentation_rank(message: &Message) -> u8 {
+        if message.role == MessageRole::User {
+            return 0;
+        }
+        if message
+            .metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.contains_key("scheduler_stage"))
+        {
+            return 30;
+        }
+        match message.role {
+            MessageRole::System => 0,
+            MessageRole::Tool => 20,
+            MessageRole::Assistant
+                if message
+                    .parts
+                    .iter()
+                    .any(|part| matches!(part, MessagePart::Reasoning { .. }))
+                    && !message
+                        .parts
+                        .iter()
+                        .any(|part| matches!(part, MessagePart::Text { .. })) =>
+            {
+                10
+            }
+            MessageRole::Assistant => 90,
+            MessageRole::User => 0,
+        }
+    }
+
+    fn message_presentation_sequence(message: &Message) -> u64 {
+        message
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("scheduler_stage_index"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
     }
 
     fn ensure_streaming_session(
@@ -1013,6 +1076,82 @@ mod tests {
         let child = ctx.sessions.get("child-1").expect("child session created");
         assert_eq!(child.parent_id.as_deref(), Some("parent"));
         assert_eq!(child.title, "Stage: Execution Orchestration");
+    }
+
+    #[test]
+    fn live_scheduler_stage_stays_before_final_answer_message() {
+        let mut ctx = SessionContext::new();
+        ctx.upsert_session(Session {
+            id: "session-1".to_string(),
+            title: "Session".to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        ctx.add_message(
+            "session-1",
+            Message {
+                id: "user-1".to_string(),
+                role: MessageRole::User,
+                content: "go".to_string(),
+                created_at: Utc::now(),
+                agent: None,
+                model: None,
+                mode: None,
+                finish: None,
+                error: None,
+                completed_at: None,
+                cost: 0.0,
+                tokens: TokenUsage::default(),
+                metadata: None,
+                multimodal: None,
+                parts: vec![MessagePart::Text {
+                    text: "go".to_string(),
+                }],
+            },
+        );
+
+        ctx.apply_output_block_incremental(
+            "session-1",
+            Some("final-answer"),
+            &json!({
+                "kind": "message",
+                "phase": "full",
+                "role": "assistant",
+                "text": "final"
+            }),
+        );
+        ctx.apply_output_block_incremental(
+            "session-1",
+            Some("stage-message"),
+            &json!({
+                "kind": "scheduler_stage",
+                "stage_id": "stage-1",
+                "profile": "atlas",
+                "stage": "review",
+                "title": "Review",
+                "text": "stage",
+                "stage_index": 1,
+                "stage_total": 1,
+                "status": "done",
+                "active_agents": [],
+                "active_skills": [],
+                "active_categories": [],
+                "done_agent_count": 0,
+                "total_agent_count": 0
+            }),
+        );
+
+        let ids = ctx
+            .messages
+            .get("session-1")
+            .expect("messages")
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["user-1", "stage-message", "final-answer"]);
     }
 
     #[test]
