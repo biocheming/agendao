@@ -280,6 +280,16 @@ function toFeedMessage(block: OutputBlock): FeedMessage {
   };
 }
 
+function presentationRank(block: OutputBlock): number {
+  return typeof block.presentation?.rank === "number"
+    ? block.presentation.rank
+    : outputBlockSemanticRank(block);
+}
+
+function presentationSequence(block: OutputBlock): number {
+  return typeof block.presentation?.sequence === "number" ? block.presentation.sequence : 0;
+}
+
 function outputBlockSemanticRank(block: OutputBlock): number {
   switch (block.kind) {
     case "scheduler_stage":
@@ -316,6 +326,48 @@ function messagePartSemanticRank(part: MessagePartRecord): number {
   }
 }
 
+function lastTurnStartIndex(messages: FeedMessage[]): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.kind === "message" && message.role === "user") {
+      return index;
+    }
+  }
+  return 0;
+}
+
+function insertFeedMessageByPresentation(
+  messages: FeedMessage[],
+  incoming: FeedMessage,
+): FeedMessage[] {
+  const rank = presentationRank(incoming);
+  const sequence = presentationSequence(incoming);
+  const start = lastTurnStartIndex(messages);
+  let insertIndex = messages.length;
+
+  for (let index = messages.length - 1; index >= start; index -= 1) {
+    const candidate = messages[index];
+    const candidateRank = presentationRank(candidate);
+    const candidateSequence = presentationSequence(candidate);
+    if (
+      candidateRank > rank
+      || (candidateRank === rank && candidateSequence > sequence)
+    ) {
+      insertIndex = index;
+      continue;
+    }
+    break;
+  }
+
+  if (insertIndex >= messages.length) {
+    return [...messages, incoming];
+  }
+
+  const next = [...messages];
+  next.splice(insertIndex, 0, incoming);
+  return next;
+}
+
 function orderedMessageParts(parts: MessagePartRecord[] = []): MessagePartRecord[] {
   return parts
     .map((part, index) => ({ part, index }))
@@ -333,7 +385,7 @@ function orderRelatedFeedMessages(messages: FeedMessage[]): FeedMessage[] {
       if (!left.message.id || left.message.id !== right.message.id) {
         return left.index - right.index;
       }
-      const rankDelta = outputBlockSemanticRank(left.message) - outputBlockSemanticRank(right.message);
+      const rankDelta = presentationRank(left.message) - presentationRank(right.message);
       return rankDelta || left.index - right.index;
     })
     .map(({ message }) => message);
@@ -389,14 +441,20 @@ function upsertFeedMessage(
   overrides: Partial<FeedMessage> = {},
 ): FeedMessage[] {
   if (!block.id) {
-    return [...messages, { ...toFeedMessage(block), ...overrides }];
+    return insertFeedMessageByPresentation(messages, {
+      ...toFeedMessage(block),
+      ...overrides,
+    });
   }
 
   const index = messages.findIndex(
     (message) => message.kind === block.kind && message.id === block.id,
   );
   if (index < 0) {
-    return [...messages, { ...toFeedMessage(block), ...overrides }];
+    return insertFeedMessageByPresentation(messages, {
+      ...toFeedMessage(block),
+      ...overrides,
+    });
   }
 
   const next = [...messages];
@@ -448,13 +506,10 @@ function appendStreamingDelta(
       return next;
     }
 
-    return [
-      ...messages,
-      {
-        ...toFeedMessage({ ...block, text: incomingText }),
-        text: incomingText,
-      },
-    ];
+    return insertFeedMessageByPresentation(messages, {
+      ...toFeedMessage({ ...block, text: incomingText }),
+      text: incomingText,
+    });
   }
 
   return updateLastMatchingMessage(messages, predicate, incomingText);
@@ -486,7 +541,7 @@ function applyOutputBlock(
     if (block.phase === "end") {
       return messages;
     }
-    return [...messages, toFeedMessage(block)];
+    return insertFeedMessageByPresentation(messages, toFeedMessage(block));
   }
 
   if (block.kind === "reasoning") {
@@ -503,7 +558,7 @@ function applyOutputBlock(
     if (block.phase === "end") {
       return messages;
     }
-    return [...messages, toFeedMessage(block)];
+    return insertFeedMessageByPresentation(messages, toFeedMessage(block));
   }
 
   if (block.id) {
@@ -512,7 +567,7 @@ function applyOutputBlock(
     });
   }
 
-  return [...messages, toFeedMessage(block)];
+  return insertFeedMessageByPresentation(messages, toFeedMessage(block));
 }
 
 function buildFeedFromHistory(history: MessageRecord[], showThinking: boolean): FeedMessage[] {
@@ -757,7 +812,10 @@ function mergeLiveTextBlock(messages: FeedMessage[], block: OutputBlock, showThi
     return next;
   }
 
-  return [...messages, { ...toFeedMessage(block), text: blockText }];
+  return insertFeedMessageByPresentation(messages, {
+    ...toFeedMessage(block),
+    text: blockText,
+  });
 }
 
 function mergeHistoryWithLiveBlocks(

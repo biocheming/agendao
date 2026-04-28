@@ -19,6 +19,13 @@ export interface OutputDisplay {
   preview?: OutputPreview | null;
 }
 
+export interface OutputPresentation {
+  group?: string;
+  slot?: string;
+  rank?: number;
+  sequence?: number | null;
+}
+
 export interface OutputBlock {
   kind: string;
   phase?: string;
@@ -64,6 +71,7 @@ export interface OutputBlock {
   detail?: string;
   display?: OutputDisplay | null;
   structured?: unknown;
+  presentation?: OutputPresentation;
 }
 
 export interface MessagePartRecord {
