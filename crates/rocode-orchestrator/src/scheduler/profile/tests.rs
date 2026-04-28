@@ -1052,9 +1052,38 @@ fn request_analysis_input_includes_skills_guidance_when_skills_are_available() {
     let input = orchestrator.compose_request_analysis_input("Debug the container startup issue");
 
     assert!(input.contains("## Skills"));
-    assert!(input.contains("<available_skills>"));
+    assert!(input.contains("<available_skills compact=\"true\">"));
     assert!(input.contains("After completing a complex task (5+ tool calls)"));
     assert!(input.contains("patch it immediately with `skill_manage`"));
+}
+
+#[test]
+fn review_input_uses_compact_skill_catalog_without_full_descriptions() {
+    let mut plan = planner_only_plan();
+    plan.stage_skill_lists.insert(
+        SchedulerStageKind::Review,
+        vec![SchedulerSkillRef {
+            name: "deep-review".to_string(),
+            description: "Short review hint. Full private review workflow with long step-by-step details should stay behind skill_view.".to_string(),
+            category: Some("review".to_string()),
+        }],
+    );
+    let orchestrator =
+        SchedulerProfileOrchestrator::new(plan, ToolRunner::new(Arc::new(NoopToolExecutor)));
+    let state = SchedulerProfileState {
+        route: SchedulerRouteState {
+            request_brief: "Review the implementation".to_string(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let input = orchestrator.compose_review_input("Review this patch", &state, &orchestrator.plan);
+
+    assert!(input.contains("<available_skills compact=\"true\">"));
+    assert!(input.contains("deep-review: Short review hint"));
+    assert!(!input.contains("Full private review workflow"));
+    assert!(input.contains("Use `skill_view(name)`"));
 }
 
 #[test]

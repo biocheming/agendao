@@ -1,5 +1,4 @@
 use super::super::prompt_support::{build_capabilities_summary, render_compact_skill_catalog};
-use super::super::SchedulerSkillRef;
 use super::super::{SchedulerLoopBudget, SchedulerSessionProjection};
 use super::{SchedulerProfilePlan, SchedulerStageKind};
 use crate::skill_tree::SkillTreeRequestPlan;
@@ -30,12 +29,8 @@ pub(in crate::scheduler) fn render_plan_snapshot(plan: &SchedulerProfilePlan) ->
     lines.push(format!("stages: {}", render_stage_sequence(&plan.stages)));
     if !plan.skill_list.is_empty() {
         lines.push(format!(
-            "skills: {}",
-            plan.skill_list
-                .iter()
-                .map(SchedulerSkillRef::display_text)
-                .collect::<Vec<_>>()
-                .join(", ")
+            "skills: {} available; see System Capabilities compact catalog",
+            plan.skill_list.len()
         ));
     }
     if let Some(agent_tree) = &plan.agent_tree {
@@ -193,8 +188,36 @@ pub(super) fn parse_session_projection(s: &str) -> SchedulerSessionProjection {
 #[cfg(test)]
 mod tests {
     use super::render_plan_snapshot;
-    use crate::scheduler::{SchedulerProfilePlan, SchedulerStageKind};
+    use crate::scheduler::{SchedulerProfilePlan, SchedulerSkillRef, SchedulerStageKind};
     use crate::skill_tree::{SkillTreeRequestPlan, SkillTreeTruncationStrategy};
+
+    #[test]
+    fn render_plan_snapshot_summarizes_skills_without_catalog_details() {
+        let mut plan = SchedulerProfilePlan::new(vec![
+            SchedulerStageKind::RequestAnalysis,
+            SchedulerStageKind::Route,
+        ]);
+        plan.skill_list = vec![
+            SchedulerSkillRef {
+                name: "expensive-debug-skill".to_string(),
+                description: "Very long debugging workflow that should only appear in the compact capability catalog or after skill_view.".to_string(),
+                category: Some("debug".to_string()),
+            },
+            SchedulerSkillRef {
+                name: "special-review-skill".to_string(),
+                description: "Detailed review instructions that must not leak through the current plan snapshot.".to_string(),
+                category: Some("review".to_string()),
+            },
+        ];
+
+        let snapshot = render_plan_snapshot(&plan);
+
+        assert!(snapshot.contains("skills: 2 available; see System Capabilities compact catalog"));
+        assert!(!snapshot.contains("expensive-debug-skill"));
+        assert!(!snapshot.contains("special-review-skill"));
+        assert!(!snapshot.contains("Very long debugging workflow"));
+        assert!(!snapshot.contains("Detailed review instructions"));
+    }
 
     #[test]
     fn render_plan_snapshot_exposes_skill_tree_budget_observability() {

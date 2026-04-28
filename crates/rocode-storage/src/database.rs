@@ -146,12 +146,44 @@ impl Database {
                     ELSE metadata
                 END,
                 model_id = NULL,
-                tokens_input = 0,
-                tokens_context = 0,
-                tokens_output = 0,
-                tokens_reasoning = 0,
-                tokens_cache_read = 0,
-                tokens_cache_write = 0,
+                finish = CASE
+                    WHEN finish IS NULL
+                         AND provider_id IS NOT NULL
+                         AND trim(CAST(provider_id AS TEXT)) <> ''
+                    THEN CAST(provider_id AS TEXT)
+                    ELSE finish
+                END,
+                provider_id = NULL,
+                tokens_input = CASE
+                    WHEN typeof(model_id) = 'text' AND json_valid(CAST(model_id AS TEXT))
+                    THEN CAST(COALESCE(json_extract(CAST(model_id AS TEXT), '$.scheduler_stage_prompt_tokens'), 0) AS INTEGER)
+                    ELSE 0
+                END,
+                tokens_context = CASE
+                    WHEN typeof(model_id) = 'text' AND json_valid(CAST(model_id AS TEXT))
+                    THEN CAST(COALESCE(json_extract(CAST(model_id AS TEXT), '$.scheduler_stage_context_tokens'), 0) AS INTEGER)
+                    ELSE 0
+                END,
+                tokens_output = CASE
+                    WHEN typeof(model_id) = 'text' AND json_valid(CAST(model_id AS TEXT))
+                    THEN CAST(COALESCE(json_extract(CAST(model_id AS TEXT), '$.scheduler_stage_completion_tokens'), 0) AS INTEGER)
+                    ELSE 0
+                END,
+                tokens_reasoning = CASE
+                    WHEN typeof(model_id) = 'text' AND json_valid(CAST(model_id AS TEXT))
+                    THEN CAST(COALESCE(json_extract(CAST(model_id AS TEXT), '$.scheduler_stage_reasoning_tokens'), 0) AS INTEGER)
+                    ELSE 0
+                END,
+                tokens_cache_read = CASE
+                    WHEN typeof(model_id) = 'text' AND json_valid(CAST(model_id AS TEXT))
+                    THEN CAST(COALESCE(json_extract(CAST(model_id AS TEXT), '$.scheduler_stage_cache_read_tokens'), 0) AS INTEGER)
+                    ELSE 0
+                END,
+                tokens_cache_write = CASE
+                    WHEN typeof(model_id) = 'text' AND json_valid(CAST(model_id AS TEXT))
+                    THEN CAST(COALESCE(json_extract(CAST(model_id AS TEXT), '$.scheduler_stage_cache_write_tokens'), 0) AS INTEGER)
+                    ELSE 0
+                END,
                 cost = 0.0
             WHERE (data IS NULL OR data = '')
               AND typeof(tokens_input) = 'text'
