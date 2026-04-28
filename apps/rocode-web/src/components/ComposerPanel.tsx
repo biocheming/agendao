@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ClipboardEvent, DragEvent } from "react";
 import type { BreadcrumbProvenance } from "../hooks/useSchedulerNavigation";
 import {
@@ -16,6 +16,7 @@ import type {
   ProviderModelRecord,
   ProviderRecord,
 } from "../lib/provider";
+import type { RecentModelRecord } from "../lib/workspace";
 import { cn } from "@/lib/utils";
 import {
   AudioLinesIcon,
@@ -176,6 +177,7 @@ interface ComposerPanelProps {
   selectedMode: string;
   onModeChange: (value: string) => void;
   providers: ProviderRecord[];
+  recentModels: RecentModelRecord[];
   selectedModel: string;
   onModelChange: (value: string) => void;
   references: string[];
@@ -223,6 +225,7 @@ export function ComposerPanel({
   selectedMode,
   onModeChange,
   providers,
+  recentModels,
   selectedModel,
   onModelChange,
   references,
@@ -448,6 +451,80 @@ export function ComposerPanel({
       ? "Selected explicitly"
       : "Use session or workspace default";
   const modelSearchValue = modelValue || AUTO_MODEL_VALUE;
+  const recentProviderModels = useMemo(() => {
+    const entries: Array<{ provider: ProviderRecord; model: ProviderModelRecord; key: string }> = [];
+    const used = new Set<string>();
+    for (const recent of recentModels) {
+      const provider = providers.find((item) => item.id === recent.provider);
+      const model = provider?.models?.find((item) => item.id === recent.model);
+      if (!provider || !model) continue;
+      const key = `${provider.id}/${model.id}`;
+      if (used.has(key)) continue;
+      used.add(key);
+      entries.push({ provider, model, key });
+    }
+    return entries;
+  }, [providers, recentModels]);
+  const recentModelKeys = useMemo(
+    () => new Set(recentProviderModels.map((entry) => entry.key)),
+    [recentProviderModels],
+  );
+  const renderModelOption = (
+    provider: ProviderRecord,
+    model: ProviderModelRecord,
+    optionKey: string,
+  ) => {
+    const badges = capabilityBadges(model.capabilities);
+    return (
+      <CommandItem
+        key={optionKey}
+        value={optionKey}
+        keywords={[
+          provider.name,
+          provider.id,
+          model.id,
+          model.name ?? "",
+          ...badges.map((badge) => badge.label),
+        ]}
+        className="items-start rounded-xl px-3 py-2.5"
+        onSelect={() => {
+          onModelChange(optionKey);
+          setModelPickerOpen(false);
+        }}
+      >
+        <div className="flex min-w-0 flex-1 items-start gap-3">
+          <div className="pt-0.5">
+            <CheckIcon
+              className={cn(
+                "size-4 text-foreground transition-opacity",
+                modelSearchValue === optionKey ? "opacity-100" : "opacity-0",
+              )}
+            />
+          </div>
+          <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="truncate text-sm font-medium text-foreground">
+                {model.name?.trim() || model.id}
+              </span>
+              {model.name?.trim() && model.name !== model.id ? (
+                <span className="truncate text-[11px] text-muted-foreground">
+                  {model.id}
+                </span>
+              ) : null}
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {model.context_window ? (
+                <span className="rounded-full border border-border/45 bg-background/72 px-2 py-0.75 text-[10px] font-medium text-muted-foreground">
+                  {formatCompactCapacity(model.context_window)} ctx
+                </span>
+              ) : null}
+              {badges.map(renderModelBadge)}
+            </div>
+          </div>
+        </div>
+      </CommandItem>
+    );
+  };
 
   return (
     <div className="flex flex-col gap-2" data-testid="composer-form">
@@ -719,63 +796,24 @@ export function ComposerPanel({
                                     </div>
                                   </CommandItem>
                                 </CommandGroup>
+                                {recentProviderModels.length > 0 ? (
+                                  <CommandGroup heading="Recent">
+                                    {recentProviderModels.map(({ provider, model, key }) =>
+                                      renderModelOption(provider, model, key),
+                                    )}
+                                  </CommandGroup>
+                                ) : null}
                                 {providers.map((provider) => (
                                   <CommandGroup key={provider.id} heading={provider.name}>
-                                    {(provider.models ?? []).map((model) => {
-                                      const optionKey = `${provider.id}/${model.id}`;
-                                      const badges = capabilityBadges(model.capabilities);
-                                      return (
-                                        <CommandItem
-                                          key={optionKey}
-                                          value={optionKey}
-                                          keywords={[
-                                            provider.name,
-                                            provider.id,
-                                            model.id,
-                                            model.name ?? "",
-                                            ...badges.map((badge) => badge.label),
-                                          ]}
-                                          className="items-start rounded-xl px-3 py-2.5"
-                                          onSelect={() => {
-                                            onModelChange(optionKey);
-                                            setModelPickerOpen(false);
-                                          }}
-                                        >
-                                          <div className="flex min-w-0 flex-1 items-start gap-3">
-                                            <div className="pt-0.5">
-                                              <CheckIcon
-                                                className={cn(
-                                                  "size-4 text-foreground transition-opacity",
-                                                  modelSearchValue === optionKey
-                                                    ? "opacity-100"
-                                                    : "opacity-0",
-                                                )}
-                                              />
-                                            </div>
-                                            <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-                                              <div className="flex min-w-0 items-center gap-2">
-                                                <span className="truncate text-sm font-medium text-foreground">
-                                                  {model.name?.trim() || model.id}
-                                                </span>
-                                                {model.name?.trim() && model.name !== model.id ? (
-                                                  <span className="truncate text-[11px] text-muted-foreground">
-                                                    {model.id}
-                                                  </span>
-                                                ) : null}
-                                              </div>
-                                              <div className="flex flex-wrap items-center gap-1.5">
-                                                {model.context_window ? (
-                                                  <span className="rounded-full border border-border/45 bg-background/72 px-2 py-0.75 text-[10px] font-medium text-muted-foreground">
-                                                    {formatCompactCapacity(model.context_window)} ctx
-                                                  </span>
-                                                ) : null}
-                                                {badges.map(renderModelBadge)}
-                                              </div>
-                                            </div>
-                                          </div>
-                                        </CommandItem>
-                                      );
-                                    })}
+                                    {(provider.models ?? [])
+                                      .filter(
+                                        (model) =>
+                                          !recentModelKeys.has(`${provider.id}/${model.id}`),
+                                      )
+                                      .map((model) => {
+                                        const optionKey = `${provider.id}/${model.id}`;
+                                        return renderModelOption(provider, model, optionKey);
+                                      })}
                                   </CommandGroup>
                                 ))}
                               </CommandList>

@@ -99,6 +99,8 @@ import {
   type FileContentResponseRecord,
   type FileTreeNodeRecord,
   type PathsResponseRecord,
+  type RecentModelRecord,
+  type RecentModelsPayloadRecord,
   type UploadFilesResponseRecord,
   type WorkspaceContextRecord,
   workspaceModeFromContext,
@@ -165,6 +167,41 @@ function resolveActiveModelRef(session: SessionRecord | null, selectedModel: str
   const model = session?.hints?.model_id?.trim();
   if (provider && model) return `${provider}/${model}`;
   return model || null;
+}
+
+const RECENT_MODEL_LIMIT = 5;
+
+function workspaceRecentModelScope(context: WorkspaceContextRecord | null): string | null {
+  if (!context) return null;
+  return `${context.mode}:${context.identity.workspace_key}`;
+}
+
+function splitRecentModelRef(modelRef: string): RecentModelRecord | null {
+  const trimmed = modelRef.trim();
+  const separator = trimmed.indexOf("/");
+  if (separator <= 0 || separator >= trimmed.length - 1) return null;
+  const provider = trimmed.slice(0, separator).trim();
+  const model = trimmed.slice(separator + 1).trim();
+  if (!provider || !model) return null;
+  return { provider, model };
+}
+
+function pushRecentModel(
+  recentModels: RecentModelRecord[],
+  modelRef: string,
+): RecentModelRecord[] {
+  const next = splitRecentModelRef(modelRef);
+  if (!next) return recentModels;
+  return [
+    next,
+    ...recentModels.filter(
+      (entry) =>
+        !(
+          entry.provider.toLowerCase() === next.provider.toLowerCase() &&
+          entry.model.toLowerCase() === next.model.toLowerCase()
+        ),
+    ),
+  ].slice(0, RECENT_MODEL_LIMIT);
 }
 
 const SettingsDrawer = lazy(async () => {
@@ -1144,9 +1181,26 @@ export default function App() {
   const liveBlocksRef = useRef<SessionLiveBlockCache>({});
   const optimisticMessagesRef = useRef<SessionOptimisticFeedCache>({});
   const connectResolveRequestRef = useRef(0);
+  const recentModelScopeRef = useRef<string | null>(null);
+  const recentModelAutoSuppressedRef = useRef(false);
   const [messageReloadToken, setMessageReloadToken] = useState(0);
 
-  const modelOptions = useMemo(() => flattenProviderModels(providers), [providers]);
+  const recentModels = useMemo(
+    () => workspaceContext?.recent_models ?? [],
+    [workspaceContext?.recent_models],
+  );
+  const modelOptions = useMemo(() => {
+    const options = flattenProviderModels(providers);
+    if (recentModels.length === 0) return options;
+    const recentKeys = recentModels.map((entry) => `${entry.provider}/${entry.model}`);
+    const recentSet = new Set(recentKeys);
+    return [
+      ...recentKeys
+        .map((key) => options.find((option) => option.key === key))
+        .filter((option): option is (typeof options)[number] => Boolean(option)),
+      ...options.filter((option) => !recentSet.has(option.key)),
+    ];
+  }, [providers, recentModels]);
   const settingsModeOptions = useMemo(
     () =>
       modes.map((mode) => ({
@@ -1183,6 +1237,54 @@ export default function App() {
     }
     return null;
   }, [activeModelRef, providers]);
+  const persistRecentModel = useCallback(
+    async (modelRef: string) => {
+      const nextRecentModels = pushRecentModel(recentModels, modelRef);
+      if (nextRecentModels === recentModels) return;
+      setWorkspaceContext((current) =>
+        current ? { ...current, recent_models: nextRecentModels } : current,
+      );
+      try {
+        const response = await apiJson<RecentModelsPayloadRecord>("/workspace/recent-models", {
+          method: "PUT",
+          body: JSON.stringify({ recent_models: nextRecentModels }),
+        });
+        setWorkspaceContext((current) =>
+          current ? { ...current, recent_models: response.recent_models ?? [] } : current,
+        );
+      } catch (error) {
+        setBanner(`Failed to save recent model: ${formatError(error)}`);
+      }
+    },
+    [recentModels],
+  );
+  const handleModelChange = useCallback(
+    (value: string) => {
+      recentModelAutoSuppressedRef.current = value.trim().length === 0;
+      setSelectedModel(value);
+      if (value.trim()) {
+        void persistRecentModel(value);
+      }
+    },
+    [persistRecentModel],
+  );
+  useEffect(() => {
+    const scope = workspaceRecentModelScope(workspaceContext);
+    if (!scope) return;
+    if (recentModelScopeRef.current !== scope) {
+      recentModelScopeRef.current = scope;
+      recentModelAutoSuppressedRef.current = false;
+    }
+    if (selectedModel.trim() || recentModelAutoSuppressedRef.current) return;
+
+    const available = new Set(flattenProviderModels(providers).map((option) => option.key));
+    const nextModel = recentModels
+      .map((entry) => `${entry.provider}/${entry.model}`)
+      .find((modelRef) => available.has(modelRef));
+    if (nextModel) {
+      setSelectedModel(nextModel);
+    }
+  }, [providers, recentModels, selectedModel, workspaceContext]);
   const workspaceSummaries = useMemo(
     () => buildWorkspaceSummaries(sessions, serviceRootPath),
     [serviceRootPath, sessions],
@@ -2774,8 +2876,9 @@ export default function App() {
               selectedMode={selectedMode}
               onModeChange={setSelectedMode}
               providers={providers}
+              recentModels={recentModels}
               selectedModel={selectedModel}
-              onModelChange={setSelectedModel}
+              onModelChange={handleModelChange}
               references={composerReferences}
               attachments={attachments}
               selectedAttachmentIndex={selectedAttachmentIndex}
@@ -2919,7 +3022,7 @@ export default function App() {
             onModeChange={setSelectedMode}
             modelOptions={modelOptions}
             selectedModel={selectedModel}
-            onModelChange={setSelectedModel}
+            onModelChange={handleModelChange}
             showThinking={showThinking}
             onShowThinkingChange={setShowThinking}
             providers={providers}

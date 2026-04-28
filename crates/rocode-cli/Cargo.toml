@@ -24,6 +24,7 @@ rocode-runtime-context = { path = "../rocode-runtime-context" }
 rocode-session = { path = "../rocode-session" }
 rocode-skill = { path = "../rocode-skill" }
 rocode-storage = { path = "../rocode-storage" }
+rocode-state = { path = "../rocode-state" }
 rocode-tool = { path = "../rocode-tool" }
 rocode-types = { path = "../rocode-types" }
 rocode-command = { path = "../rocode-command" }

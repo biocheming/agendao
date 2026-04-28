@@ -96,6 +96,33 @@ fn cli_resolve_show_thinking(explicit_flag: bool, config: Option<&Config>, fallb
         .and_then(|ui| ui.show_thinking)
         .unwrap_or(fallback)
 }
+
+async fn cli_save_recent_model_ref(api_client: &CliApiClient, model_ref: &str) {
+    let Some((provider, model)) = model_ref.split_once('/') else {
+        return;
+    };
+    let provider = provider.trim();
+    let model = model.trim();
+    if provider.is_empty() || model.is_empty() {
+        return;
+    }
+    let mut recent = api_client.get_recent_models().await.unwrap_or_default();
+    recent.retain(|entry| {
+        !(entry.provider.eq_ignore_ascii_case(provider) && entry.model.eq_ignore_ascii_case(model))
+    });
+    recent.insert(
+        0,
+        rocode_state::RecentModelEntry {
+            provider: provider.to_string(),
+            model: model.to_string(),
+        },
+    );
+    recent.truncate(rocode_state::MAX_RECENT_MODELS);
+    if let Err(error) = api_client.put_recent_models(&recent).await {
+        tracing::warn!(%error, "failed to persist CLI recent model");
+    }
+}
+
 pub(crate) async fn run_non_interactive(
     options: RunNonInteractiveOptions,
     runtime_context: &FrontendRuntimeContext,
@@ -163,6 +190,15 @@ pub(crate) async fn run_non_interactive(
         remote_context.as_ref().map(|context| &context.config),
         false,
     );
+    let model = model.or_else(|| {
+        remote_context
+            .as_ref()
+            .and_then(|context| context.recent_models.first())
+            .map(|entry| format!("{}/{}", entry.provider, entry.model))
+    });
+    if let Some(model_ref) = model.as_deref() {
+        cli_save_recent_model_ref(&api_client, model_ref).await;
+    }
 
     run_non_interactive_attach(RemoteAttachOptions {
         base_url,

@@ -928,6 +928,7 @@ async fn cli_execute_ui_action(
                         if let Ok(mut projection) = runtime.frontend_projection.lock() {
                             projection.current_model_label = Some(normalized_model_ref.clone());
                         }
+                        cli_save_recent_model_ref(&api_client, &normalized_model_ref).await;
                         let _ = print_block(
                             Some(runtime),
                             OutputBlock::Status(StatusBlock::title(format!(
@@ -1045,6 +1046,23 @@ async fn cli_execute_ui_action(
             };
             lines.sort();
             lines.dedup();
+            let recent = api_client.get_recent_models().await.unwrap_or_default();
+            if !recent.is_empty() {
+                let recent_lines = recent
+                    .iter()
+                    .map(|entry| format!("{}/{}", entry.provider, entry.model))
+                    .filter(|model_ref| lines.iter().any(|line| line == model_ref))
+                    .collect::<Vec<_>>();
+                if !recent_lines.is_empty() {
+                    lines.retain(|line| !recent_lines.iter().any(|recent| recent == line));
+                    let mut ordered = Vec::with_capacity(lines.len() + recent_lines.len() + 2);
+                    ordered.push("Recent:".to_string());
+                    ordered.extend(recent_lines);
+                    ordered.push(String::new());
+                    ordered.extend(lines);
+                    lines = ordered;
+                }
+            }
             if let Some(config) = current_config.as_ref() {
                 let configured = config
                     .provider

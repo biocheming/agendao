@@ -458,7 +458,7 @@ impl App {
             title
         ));
         lines.push(format!(
-            "  {}{ANSI_BOLD}rocode -s {}{ANSI_RESET}",
+            "  {}{ANSI_BOLD}rocode tui -s {}{ANSI_RESET}",
             pad_label("Continue"),
             session.id
         ));
@@ -1932,6 +1932,31 @@ mod tests {
         assert!(consumed);
         assert!(app.model_select.is_open());
         assert!(!app.event_caused_change);
+    }
+
+    #[test]
+    fn exit_summary_uses_current_cli_session_command() {
+        let app = App::new().expect("app should initialize");
+        let now = Utc::now();
+        let session_id = "ses_continue_test";
+        {
+            let mut session_ctx = app.context.session.write();
+            session_ctx.upsert_session(Session {
+                id: session_id.to_string(),
+                title: "Continue Test".to_string(),
+                created_at: now,
+                updated_at: now,
+                parent_id: None,
+                share: None,
+                metadata: None,
+            });
+        }
+        app.context.navigate_session(session_id);
+
+        let summary = app.exit_summary().expect("exit summary");
+        assert!(summary.contains("rocode tui -s ses_continue_test"));
+        assert!(!summary.contains("rocode -s ses_continue_test"));
+        assert!(!summary.contains("rocode run -s ses_continue_test"));
     }
 
     #[test]

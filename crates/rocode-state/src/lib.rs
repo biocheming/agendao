@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
 
+pub const MAX_RECENT_MODELS: usize = 5;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RecentModelEntry {
     pub provider: String,
@@ -101,32 +103,35 @@ impl UserStateAuthority {
         &self,
         legacy_recent: &[RecentModelEntry],
     ) -> Result<Vec<RecentModelEntry>> {
-        match self.mode {
+        let recent = match self.mode {
             WorkspaceMode::Isolated => {
                 let state = self.read_workspace_state().await?;
                 if !state.recent_models.is_empty() {
-                    Ok(state.recent_models)
+                    state.recent_models
                 } else {
-                    Ok(legacy_recent.to_vec())
+                    legacy_recent.to_vec()
                 }
             }
             WorkspaceMode::Shared => {
                 let state = self.read_global_state().await?;
                 if let Some(workspace) = state.workspaces.get(&self.identity.workspace_key) {
                     if !workspace.recent_models.is_empty() {
-                        return Ok(workspace.recent_models.clone());
+                        return Ok(normalize_recent_models(&workspace.recent_models));
                     }
                 }
                 if !state.recent_models.is_empty() {
-                    return Ok(state.recent_models);
+                    state.recent_models
+                } else {
+                    legacy_recent.to_vec()
                 }
-                Ok(legacy_recent.to_vec())
             }
-        }
+        };
+        Ok(normalize_recent_models(&recent))
     }
 
     pub async fn save_recent_models(&self, recent: &[RecentModelEntry]) -> Result<()> {
         let _guard = self.write_lock.lock().await;
+        let recent = normalize_recent_models(recent);
         match self.mode {
             WorkspaceMode::Isolated => {
                 let Some(workspace_path) = self.workspace_path.as_ref() else {
@@ -135,18 +140,18 @@ impl UserStateAuthority {
                 let file_lock = state_file_lock(workspace_path);
                 let _file_guard = file_lock.lock().await;
                 let mut state = self.read_workspace_state().await?;
-                state.recent_models = recent.to_vec();
+                state.recent_models = recent.clone();
                 self.write_workspace_state(&state).await?;
             }
             WorkspaceMode::Shared => {
                 let file_lock = state_file_lock(&self.global_path);
                 let _file_guard = file_lock.lock().await;
                 let mut state = self.read_global_state().await?;
-                state.recent_models = recent.to_vec();
+                state.recent_models = recent.clone();
                 state.workspaces.insert(
                     self.identity.workspace_key.clone(),
                     WorkspaceUserState {
-                        recent_models: recent.to_vec(),
+                        recent_models: recent.clone(),
                     },
                 );
                 self.write_global_state(&state).await?;
@@ -176,6 +181,31 @@ impl UserStateAuthority {
         };
         write_json_file(path, state).await
     }
+}
+
+fn normalize_recent_models(recent: &[RecentModelEntry]) -> Vec<RecentModelEntry> {
+    let mut normalized = Vec::new();
+    for entry in recent {
+        let provider = entry.provider.trim();
+        let model = entry.model.trim();
+        if provider.is_empty() || model.is_empty() {
+            continue;
+        }
+        if normalized.iter().any(|existing: &RecentModelEntry| {
+            existing.provider.eq_ignore_ascii_case(provider)
+                && existing.model.eq_ignore_ascii_case(model)
+        }) {
+            continue;
+        }
+        normalized.push(RecentModelEntry {
+            provider: provider.to_string(),
+            model: model.to_string(),
+        });
+        if normalized.len() >= MAX_RECENT_MODELS {
+            break;
+        }
+    }
+    normalized
 }
 
 fn default_global_state_path() -> PathBuf {
@@ -406,6 +436,79 @@ mod tests {
                 .recent_models,
             recent_b
         );
+    }
+
+    #[tokio::test]
+    async fn recent_models_are_trimmed_deduped_and_capped() {
+        let temp = TestDir::new("rocode_state_recent_models_normalized");
+        let workspace_root = temp.path.join("workspace");
+        fs::create_dir_all(&workspace_root).expect("failed to create workspace root");
+        let global_path = temp.path.join("global/global-state.json");
+        let authority = make_authority(
+            make_identity(&workspace_root, false),
+            WorkspaceMode::Shared,
+            global_path.clone(),
+        );
+        let requested = vec![
+            RecentModelEntry {
+                provider: " openai ".to_string(),
+                model: " gpt-5.4 ".to_string(),
+            },
+            RecentModelEntry {
+                provider: "OPENAI".to_string(),
+                model: "gpt-5.4".to_string(),
+            },
+            RecentModelEntry {
+                provider: "".to_string(),
+                model: "ignored".to_string(),
+            },
+            RecentModelEntry {
+                provider: "anthropic".to_string(),
+                model: "claude-sonnet-4".to_string(),
+            },
+            RecentModelEntry {
+                provider: "google".to_string(),
+                model: "gemini-2.5-pro".to_string(),
+            },
+            RecentModelEntry {
+                provider: "deepseek".to_string(),
+                model: "deepseek-v4".to_string(),
+            },
+            RecentModelEntry {
+                provider: "xai".to_string(),
+                model: "grok-4".to_string(),
+            },
+            RecentModelEntry {
+                provider: "mistral".to_string(),
+                model: "large".to_string(),
+            },
+        ];
+
+        authority
+            .save_recent_models(&requested)
+            .await
+            .expect("save recent models");
+        let resolved = authority
+            .resolved_recent_models(&[])
+            .await
+            .expect("resolve recent models");
+
+        assert_eq!(resolved.len(), MAX_RECENT_MODELS);
+        assert_eq!(
+            resolved[0],
+            RecentModelEntry {
+                provider: "openai".to_string(),
+                model: "gpt-5.4".to_string(),
+            }
+        );
+        assert_eq!(
+            resolved[1],
+            RecentModelEntry {
+                provider: "anthropic".to_string(),
+                model: "claude-sonnet-4".to_string(),
+            }
+        );
+        assert!(!resolved.iter().any(|entry| entry.provider == "mistral"));
     }
 
     #[test]
