@@ -885,6 +885,35 @@ pub(super) async fn create_scheduler_user_message(
     Ok(user_message.id.clone())
 }
 
+pub(super) fn move_scheduler_final_answer_after_stage_messages(
+    session: &mut rocode_session::Session,
+    assistant_message_id: &str,
+) {
+    let Some(assistant_index) = session
+        .messages
+        .iter()
+        .position(|message| message.id == assistant_message_id)
+    else {
+        return;
+    };
+
+    let Some(last_stage_index) = session
+        .messages
+        .iter()
+        .enumerate()
+        .skip(assistant_index + 1)
+        .filter(|(_, message)| message.metadata.contains_key("scheduler_stage"))
+        .map(|(index, _)| index)
+        .last()
+    else {
+        return;
+    };
+
+    let message = session.messages_mut().remove(assistant_index);
+    session.messages_mut().insert(last_stage_index, message);
+    session.touch();
+}
+
 fn annotate_last_user_message_multimodal_metadata(
     session: &mut rocode_session::Session,
     explain: &RuntimeMultimodalExplain,
@@ -1612,6 +1641,7 @@ pub(super) async fn session_prompt(
                     }
                 }
             }
+            move_scheduler_final_answer_after_stage_messages(&mut session, &assistant_message_id);
             ensure_default_session_title(&mut session, task_provider_client.clone(), &task_model)
                 .await;
             // Propagate handoff metadata to session (outside message borrow).
@@ -1964,6 +1994,77 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn scheduler_final_answer_moves_after_stage_messages() {
+        let mut session = Session::new("project", "/tmp");
+        let user_id = session.add_user_message("Run sisyphus").id.clone();
+        let final_id = session.add_assistant_message().id.clone();
+        let route_id = {
+            let message = session.add_assistant_message();
+            message
+                .metadata
+                .insert("scheduler_stage".to_string(), serde_json::json!("route"));
+            message.id.clone()
+        };
+        let execution_id = {
+            let message = session.add_assistant_message();
+            message.metadata.insert(
+                "scheduler_stage".to_string(),
+                serde_json::json!("execution-orchestration"),
+            );
+            message.id.clone()
+        };
+
+        move_scheduler_final_answer_after_stage_messages(&mut session, &final_id);
+
+        let ids = session
+            .messages
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![
+                user_id.as_str(),
+                route_id.as_str(),
+                execution_id.as_str(),
+                final_id.as_str()
+            ]
+        );
+    }
+
+    #[test]
+    fn scheduler_final_answer_does_not_cross_later_non_stage_messages() {
+        let mut session = Session::new("project", "/tmp");
+        let user_id = session.add_user_message("Run sisyphus").id.clone();
+        let final_id = session.add_assistant_message().id.clone();
+        let route_id = {
+            let message = session.add_assistant_message();
+            message
+                .metadata
+                .insert("scheduler_stage".to_string(), serde_json::json!("route"));
+            message.id.clone()
+        };
+        let other_id = session.add_assistant_message().id.clone();
+
+        move_scheduler_final_answer_after_stage_messages(&mut session, &final_id);
+
+        let ids = session
+            .messages
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![
+                user_id.as_str(),
+                route_id.as_str(),
+                final_id.as_str(),
+                other_id.as_str()
+            ]
+        );
     }
 
     #[tokio::test]

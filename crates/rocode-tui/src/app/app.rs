@@ -1912,4 +1912,25 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn dialog_left_click_is_consumed_without_closing_dialog() {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+        let mut app = App::new().expect("app should initialize");
+        app.open_model_select_dialog();
+
+        let consumed = app
+            .handle_dialog_mouse(&MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 10,
+                row: 10,
+                modifiers: KeyModifiers::empty(),
+            })
+            .expect("mouse event should be handled");
+
+        assert!(consumed);
+        assert!(app.model_select.is_open());
+        assert!(!app.event_caused_change);
+    }
 }
