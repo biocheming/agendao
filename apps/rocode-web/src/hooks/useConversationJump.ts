@@ -66,6 +66,10 @@ function findConversationTarget(messages: FeedJumpMessage[], target: Conversatio
   return null;
 }
 
+function cssAttributeValue(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\A ");
+}
+
 export function useConversationJump({ messages, feedRef, onMiss }: UseConversationJumpOptions) {
   const [highlightedFeedId, setHighlightedFeedId] = useState<string | null>(null);
   const [pendingTarget, setPendingTarget] = useState<ConversationJumpTarget | null>(null);
@@ -91,7 +95,7 @@ export function useConversationJump({ messages, feedRef, onMiss }: UseConversati
       }
 
       const element = feedRef.current?.querySelector<HTMLElement>(
-        `[data-feed-id="${CSS.escape(message.feedId)}"]`,
+        `[data-feed-id="${cssAttributeValue(message.feedId)}"]`,
       );
       if (!element) {
         if (!options?.suppressMiss) {
