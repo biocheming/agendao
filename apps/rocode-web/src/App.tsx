@@ -1278,7 +1278,7 @@ export default function App() {
     const messageId = route.messageId || route.highlightIds[0] || null;
     if (!messageId || route.sessionId !== selectedSessionId) return;
     conversationJump.jumpOrQueueConversationTarget({ messageId, label: messageId });
-  }, [conversationJump, messages.length, selectedSessionId]);
+  }, [conversationJump.jumpOrQueueConversationTarget, messages.length, selectedSessionId]);
   const schedulerNavigation = useSchedulerNavigation({
     sessions,
     selectedSessionId,
