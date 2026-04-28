@@ -7,6 +7,7 @@ use crate::runtime::policy::{LoopPolicy, ToolDedupScope, ToolErrorStrategy};
 use crate::runtime::traits::{LoopSink, ModelCaller, ToolDispatcher};
 use futures::StreamExt;
 use std::collections::HashSet;
+use tracing::Instrument;
 
 // ---------------------------------------------------------------------------
 // Internal conversation state – uses only rocode_provider types.
@@ -92,8 +93,7 @@ pub async fn run_loop<S: LoopSink>(
         .unwrap_or(true)
     {
         step += 1;
-        let span = tracing::info_span!("runtime_loop_step", step = step);
-        let _enter = span.enter();
+        tracing::debug!(step, "runtime loop step started");
 
         // ── Cancellation checkpoint 1: before model call ──────────────
         if cancel.is_cancelled() {
@@ -288,10 +288,7 @@ pub async fn run_loop<S: LoopSink>(
                 tool_call_id = %call.id,
                 tool_name = %call.name,
             );
-            let result = {
-                let _enter = tool_span.enter();
-                tools.execute(call).await
-            };
+            let result = tools.execute(call).instrument(tool_span).await;
 
             // ── Handle tool error per policy ─────────────────────────
             if result.is_error {
