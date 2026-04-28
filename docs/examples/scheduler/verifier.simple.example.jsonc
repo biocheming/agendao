@@ -1,0 +1,69 @@
+{
+  "$schema": "https://rocode.dev/schemas/scheduler-profile.schema.json",
+  "version": "2026-04-27",
+
+  "defaults": {
+    "profile": "verifier-simple"
+  },
+
+  "profiles": {
+    "verifier-simple": {
+      "orchestrator": "verifier",
+      "description": "Minimal verifier preset: keep candidates that pass tests, then compare them and return the best one.",
+      "stages": ["request-analysis", "execution-orchestration"],
+
+      "workflow": {
+        "workflow": {
+          "kind": "autoresearch",
+          "mode": "verify"
+        },
+
+        "objective": {
+          "goal": "Generate multiple working candidates and select the best verified result.",
+          "scope": {
+            "include": ["src/**", "tests/**"],
+            "exclude": ["target/**", "node_modules/**", "dist/**"]
+          },
+          "direction": "higher-is-better",
+          "metric": {
+            "kind": "exit-code"
+          },
+          "verify": {
+            "command": "cargo test --workspace",
+            "timeoutMs": 120000
+          }
+        },
+
+        "decisionPolicy": {
+          "baselineStrategy": "capture-before-first-iteration",
+          "keepConditions": ["verify-passed"],
+          "discardConditions": ["verify-failed"]
+        },
+
+        "workspacePolicy": {
+          "snapshotStrategy": "patch-file"
+        },
+
+        "verifier": {
+          "model": {
+            "providerId": "openai",
+            "modelId": "gpt-5"
+          },
+          "criteria": [
+            {
+              "id": "spec",
+              "name": "Spec adherence",
+              "description": "Choose the candidate that best satisfies the user request and passes verification.",
+              "weight": 1.0,
+              "aggregation": "score-margin"
+            }
+          ],
+          "maxCandidates": 3,
+          "repetitions": 1,
+          "selection": "round-robin",
+          "traceFormat": "compact"
+        }
+      }
+    }
+  }
+}

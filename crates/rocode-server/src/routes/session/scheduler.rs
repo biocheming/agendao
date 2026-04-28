@@ -48,7 +48,8 @@ use super::cancel::is_scheduler_cancellation_error;
 use super::messages::resolve_provider_and_model;
 use super::prompt::{
     create_scheduler_user_message, merge_scheduler_prompt_with_memory,
-    resolve_prompt_memory_context, SchedulerUserMessageContext,
+    move_scheduler_final_answer_after_stage_messages, resolve_prompt_memory_context,
+    SchedulerUserMessageContext,
 };
 use super::session_crud::{resolved_session_directory, set_session_run_status};
 use super::telemetry::persist_session_telemetry_metadata;
@@ -1603,6 +1604,7 @@ pub async fn run_local_scheduler_prompt(
         }
     }
 
+    move_scheduler_final_answer_after_stage_messages(&mut session, &assistant_message_id);
     ensure_default_session_title(&mut session, provider.clone(), &model_id).await;
     let assistant_text = session
         .get_message(&assistant_message_id)

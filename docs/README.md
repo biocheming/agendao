@@ -92,6 +92,8 @@ The canonical scheduler example entry is:
 - `docs/examples/scheduler/hephaestus.example.jsonc`
 - `docs/examples/scheduler/VERIFIER.md`
   - Verifier preset 的完整上手指南：解决的问题、原算法、ROCode 实现路线、artifacts、fallback、cache 和调优建议
+- `docs/examples/scheduler/verifier.simple.example.jsonc`
+  - Verifier preset 的最小上手配置：保留通过验证的候选，并用一个 criterion 选优
 - `docs/examples/scheduler/verifier.example.jsonc`
 - `docs/examples/scheduler/verifier.workflow.jsonc`
 

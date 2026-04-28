@@ -264,62 +264,6 @@ impl App {
             .sync_dialog_open(DialogSlot::Tag, self.tag_dialog.is_open());
     }
 
-    fn close_dialog_slot(&mut self, slot: DialogSlot) -> bool {
-        match slot {
-            DialogSlot::Alert if self.alert_dialog.is_open() => self.close_alert_dialog(),
-            DialogSlot::Help if self.help_dialog.is_open() => self.close_help_dialog(),
-            DialogSlot::RecoveryAction if self.recovery_action_dialog.is_open() => {
-                self.close_recovery_action_dialog_modal()
-            }
-            DialogSlot::Status if self.status_dialog.is_open() => self.close_status_dialog_modal(),
-            DialogSlot::SessionRename if self.session_rename_dialog.is_open() => {
-                self.close_session_rename_dialog_modal()
-            }
-            DialogSlot::SessionExport if self.session_export_dialog.is_open() => {
-                self.close_session_export_dialog_modal()
-            }
-            DialogSlot::PromptStash if self.prompt_stash_dialog.is_open() => {
-                self.close_prompt_stash_dialog_modal()
-            }
-            DialogSlot::SkillList if self.skill_list_dialog.is_open() => {
-                self.close_skill_list_dialog_modal()
-            }
-            DialogSlot::SlashPopup if self.slash_popup.is_open() => self.close_slash_popup_dialog(),
-            DialogSlot::CommandPalette if self.command_palette.is_open() => {
-                self.close_command_palette_dialog()
-            }
-            DialogSlot::ModelSelect if self.model_select.is_open() => {
-                self.close_model_select_dialog()
-            }
-            DialogSlot::AgentSelect if self.agent_select.is_open() => {
-                self.close_agent_select_dialog()
-            }
-            DialogSlot::SessionList if self.session_list_dialog.is_open() => {
-                self.close_session_list_dialog_modal()
-            }
-            DialogSlot::ThemeList if self.theme_list_dialog.is_open() => {
-                self.close_theme_list_dialog_modal();
-            }
-            DialogSlot::Mcp if self.mcp_dialog.is_open() => self.close_mcp_dialog_modal(),
-            DialogSlot::Timeline if self.timeline_dialog.is_open() => {
-                self.close_timeline_dialog_modal()
-            }
-            DialogSlot::Fork if self.fork_dialog.is_open() => self.close_fork_dialog_modal(),
-            DialogSlot::Provider if self.provider_dialog.is_open() => {
-                self.close_provider_dialog_modal()
-            }
-            DialogSlot::Subagent if self.subagent_dialog.is_open() => {
-                self.close_subagent_dialog_modal()
-            }
-            DialogSlot::ToolCallCancel if self.tool_call_cancel_dialog.is_open() => {
-                self.close_tool_call_cancel_dialog_modal()
-            }
-            DialogSlot::Tag if self.tag_dialog.is_open() => self.close_tag_dialog_modal(),
-            _ => return false,
-        }
-        true
-    }
-
     pub(super) fn has_reactive_home_dialog_layer(&self) -> bool {
         self.sync_dialog_lifecycle();
         self.context.has_open_dialogs()
@@ -331,13 +275,6 @@ impl App {
 
     pub(super) fn has_open_dialog_layer(&self) -> bool {
         self.has_reactive_home_dialog_layer() || self.has_non_reactive_dialog_layer()
-    }
-
-    pub(super) fn close_top_dialog(&mut self) -> bool {
-        self.sync_dialog_lifecycle();
-        self.context
-            .top_close_dialog()
-            .is_some_and(|slot| self.close_dialog_slot(slot))
     }
 
     pub(super) fn scroll_active_dialog(&mut self, up: bool) {
@@ -483,7 +420,7 @@ impl App {
                 Ok(true)
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                self.event_caused_change = self.close_top_dialog();
+                self.event_caused_change = false;
                 Ok(true)
             }
             MouseEventKind::Moved

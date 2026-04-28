@@ -29,6 +29,8 @@ This directory contains formal external scheduler profile examples for ROCode.
   - Public OMO-aligned coordination example
 - `hephaestus.example.jsonc`
   - Public OMO-aligned autonomous execution example
+- `verifier.simple.example.jsonc`
+  - Minimal verifier example for users who only want to keep passing candidates and pick the best one
 - `verifier.example.jsonc`
   - Public verifier example showing both inline `workflow` and external `workflowPath`
 - `verifier.workflow.jsonc`

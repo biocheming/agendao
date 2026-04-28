@@ -710,6 +710,12 @@ mod tests {
             crate::scheduler::hephaestus_default_stages(),
         );
         assert_checked_in_public_scheduler_example(
+            "verifier.simple.example.jsonc",
+            "verifier-simple",
+            "verifier",
+            crate::scheduler::verifier_default_stages(),
+        );
+        assert_checked_in_public_scheduler_example(
             "verifier.example.jsonc",
             "verifier-default",
             "verifier",
@@ -749,6 +755,29 @@ mod tests {
             verifier.criteria[1].aggregation,
             Some(crate::iterative_workflow::VerifierCriterionAggregation::WinnerVote)
         );
+    }
+
+    #[test]
+    fn verifier_simple_example_keeps_user_facing_defaults_minimal() {
+        let path = checked_in_scheduler_example_path("verifier.simple.example.jsonc");
+        let config = SchedulerConfig::load_from_file(&path)
+            .unwrap_or_else(|err| panic!("verifier simple example should parse: {}", err));
+        let profile = config.default_profile().unwrap();
+        let workflow = profile
+            .workflow()
+            .expect("verifier simple example should include inline workflow config");
+        let verifier = workflow
+            .verifier
+            .as_ref()
+            .expect("verify mode should include verifier block");
+
+        assert_eq!(config.default_profile_key(), Some("verifier-simple"));
+        assert_eq!(workflow.workflow.mode, IterativeWorkflowMode::Verify);
+        assert_eq!(verifier.criteria.len(), 1);
+        assert_eq!(verifier.repetitions, Some(1));
+        assert_eq!(verifier.max_candidates, Some(3));
+        assert_eq!(verifier.use_logprobs, None);
+        assert_eq!(verifier.granularity, None);
     }
 
     #[test]
