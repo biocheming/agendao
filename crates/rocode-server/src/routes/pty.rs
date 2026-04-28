@@ -1,7 +1,7 @@
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Path, Query,
+        Path, Query, State,
     },
     response::IntoResponse,
     routing::get,
@@ -10,10 +10,12 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::pty::{PtyManager, PtySession as PtySessionStruct, PtySubscription};
+use crate::routes::permission::request_permission;
 use crate::{ApiError, Result, ServerState};
 
 pub(crate) fn pty_routes() -> Router<Arc<ServerState>> {
@@ -64,12 +66,88 @@ pub struct CreatePtyRequest {
     pub command: String,
     pub cwd: Option<String>,
     pub env: Option<HashMap<String, String>>,
+    pub session_id: Option<String>,
 }
 
-async fn create_pty(Json(req): Json<CreatePtyRequest>) -> Result<Json<PtyInfo>> {
+fn resolve_pty_cwd(state: &ServerState, cwd: Option<&str>) -> Result<String> {
+    let root = state
+        .project_root()
+        .canonicalize()
+        .map_err(|e| ApiError::BadRequest(format!("Failed to resolve project root: {}", e)))?;
+    let requested = cwd
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.clone());
+    let candidate = if requested.is_absolute() {
+        requested
+    } else {
+        root.join(requested)
+    };
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|e| ApiError::BadRequest(format!("Failed to resolve PTY cwd: {}", e)))?;
+    if !canonical.starts_with(&root) {
+        return Err(ApiError::BadRequest(
+            "PTY cwd must stay inside the project directory".to_string(),
+        ));
+    }
+    if !canonical.is_dir() {
+        return Err(ApiError::BadRequest(
+            "PTY cwd must be an existing directory".to_string(),
+        ));
+    }
+    Ok(canonical.to_string_lossy().to_string())
+}
+
+fn required_session_id(value: Option<String>) -> Result<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::BadRequest("PTY creation requires a session_id".to_string()))
+}
+
+fn build_pty_permission_request(command: &str, cwd: &str) -> rocode_tool::PermissionRequest {
+    rocode_tool::PermissionRequest::new("pty")
+        .with_pattern(command.to_string())
+        .with_metadata(
+            "description",
+            serde_json::json!(format!("Start terminal command `{command}` in {cwd}")),
+        )
+        .with_metadata("command", serde_json::json!(command))
+        .with_metadata("cwd", serde_json::json!(cwd))
+}
+
+fn map_tool_error_to_api_error(error: rocode_tool::ToolError) -> ApiError {
+    match error {
+        rocode_tool::ToolError::PermissionDenied(message) => ApiError::PermissionDenied(message),
+        rocode_tool::ToolError::InvalidArguments(message)
+        | rocode_tool::ToolError::ValidationError(message) => ApiError::BadRequest(message),
+        rocode_tool::ToolError::FileNotFound(message) => ApiError::NotFound(message),
+        rocode_tool::ToolError::ExecutionError(message)
+        | rocode_tool::ToolError::Timeout(message)
+        | rocode_tool::ToolError::BinaryFile(message)
+        | rocode_tool::ToolError::QuestionRejected(message) => ApiError::InternalError(message),
+        rocode_tool::ToolError::Cancelled => ApiError::InternalError("Cancelled".to_string()),
+    }
+}
+
+async fn create_pty(
+    State(state): State<Arc<ServerState>>,
+    Json(req): Json<CreatePtyRequest>,
+) -> Result<Json<PtyInfo>> {
     let manager = get_pty_manager();
+    let cwd = resolve_pty_cwd(state.as_ref(), req.cwd.as_deref())?;
+    let session_id = required_session_id(req.session_id)?;
+    request_permission(
+        state,
+        session_id,
+        build_pty_permission_request(&req.command, &cwd),
+    )
+    .await
+    .map_err(map_tool_error_to_api_error)?;
     let session = manager
-        .create_session(&req.command, req.cwd.as_deref(), req.env)
+        .create_session(&req.command, Some(&cwd), req.env)
         .await
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
     Ok(Json(PtyInfo::from(session)))
@@ -97,12 +175,17 @@ pub struct ResizePtyRequest {
 }
 
 async fn update_pty(
+    State(state): State<Arc<ServerState>>,
     Path(id): Path<String>,
     Json(req): Json<UpdatePtyRequest>,
 ) -> Result<Json<PtyInfo>> {
     let manager = get_pty_manager();
+    let cwd = match req.cwd.as_deref() {
+        Some(_) => Some(resolve_pty_cwd(state.as_ref(), req.cwd.as_deref())?),
+        None => None,
+    };
     let session = manager
-        .update_session(&id, req.command.as_deref(), req.cwd.as_deref())
+        .update_session(&id, req.command.as_deref(), cwd.as_deref())
         .await
         .map_err(|e| ApiError::NotFound(e.to_string()))?;
     Ok(Json(PtyInfo::from(session)))
@@ -275,4 +358,38 @@ async fn handle_pty_websocket(mut socket: WebSocket, sub: PtySubscription, curso
     }
 
     forward_task.abort();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_pty_permission_request, required_session_id};
+
+    #[test]
+    fn required_session_id_rejects_missing_or_empty_values() {
+        assert!(required_session_id(None).is_err());
+        assert!(required_session_id(Some("   ".to_string())).is_err());
+        assert_eq!(
+            required_session_id(Some(" session-1 ".to_string())).expect("session id"),
+            "session-1"
+        );
+    }
+
+    #[test]
+    fn pty_permission_request_includes_command_and_cwd_metadata() {
+        let request = build_pty_permission_request("/bin/bash", "/workspace");
+
+        assert_eq!(request.permission, "pty");
+        assert_eq!(request.patterns, vec!["/bin/bash".to_string()]);
+        assert_eq!(
+            request
+                .metadata
+                .get("command")
+                .and_then(|value| value.as_str()),
+            Some("/bin/bash")
+        );
+        assert_eq!(
+            request.metadata.get("cwd").and_then(|value| value.as_str()),
+            Some("/workspace")
+        );
+    }
 }

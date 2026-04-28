@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 use reqwest::blocking::{Client, Response};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use rocode_command::stage_protocol::StageEvent;
 use rocode_config::{Config as AppConfig, ModelConfig};
 use rocode_runtime_context::ResolvedWorkspaceContext;
@@ -49,8 +50,24 @@ pub struct BlockingApiClient {
 
 impl BlockingApiClient {
     pub fn new(base_url: String) -> Self {
+        Self::new_with_password(base_url, None)
+    }
+
+    pub fn new_with_password(base_url: String, server_password: Option<String>) -> Self {
+        let mut headers = HeaderMap::new();
+        if let Some(password) = server_password
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if let Ok(value) = HeaderValue::from_str(&format!("Bearer {password}")) {
+                headers.insert(AUTHORIZATION, value);
+            }
+        }
+
         let client = Client::builder()
             .timeout(HTTP_TIMEOUT)
+            .default_headers(headers)
             .build()
             .expect("Failed to create HTTP client");
 

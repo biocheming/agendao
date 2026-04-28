@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::time::Duration;
 
 pub(crate) const SKILL_GOVERNANCE_DIR: &str = ".rocode/state/skill";
 const HUB_LOCK_FILENAME: &str = "hub-lock.json";
@@ -488,8 +489,9 @@ pub(crate) fn governance_dir(base_dir: &Path) -> PathBuf {
 pub(crate) fn refresh_remote_source_index(
     base_dir: &Path,
     source: &SkillSourceRef,
+    fetch_timeout_ms: u64,
 ) -> Result<RefreshedRemoteSourceIndex, SkillError> {
-    let payload = load_remote_index_payload(base_dir, source)?;
+    let payload = load_remote_index_payload(base_dir, source, fetch_timeout_ms)?;
     let parsed = serde_json::from_str::<RemoteSkillIndexDocument>(&payload).map_err(|error| {
         SkillError::ReadFailed {
             path: remote_index_virtual_path(base_dir, source),
@@ -505,22 +507,47 @@ pub(crate) fn refresh_remote_source_index(
 fn load_remote_index_payload(
     base_dir: &Path,
     source: &SkillSourceRef,
+    fetch_timeout_ms: u64,
 ) -> Result<String, SkillError> {
     if is_http_locator(&source.locator) {
-        let response =
-            reqwest::blocking::get(&source.locator).map_err(|error| SkillError::ReadFailed {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_millis(fetch_timeout_ms))
+            .build()
+            .map_err(|error| SkillError::ReadFailed {
                 path: remote_index_virtual_path(base_dir, source),
-                message: format!("failed to fetch remote skill index: {error}"),
+                message: format!("failed to build remote skill index client: {error}"),
             })?;
+        let response = client.get(&source.locator).send().map_err(|error| {
+            if error.is_timeout() {
+                SkillError::ArtifactFetchTimeout {
+                    locator: source.locator.clone(),
+                    timeout_ms: fetch_timeout_ms,
+                }
+            } else {
+                SkillError::ReadFailed {
+                    path: remote_index_virtual_path(base_dir, source),
+                    message: format!("failed to fetch remote skill index: {error}"),
+                }
+            }
+        })?;
         let response = response
             .error_for_status()
             .map_err(|error| SkillError::ReadFailed {
                 path: remote_index_virtual_path(base_dir, source),
                 message: format!("remote skill index request failed: {error}"),
             })?;
-        response.text().map_err(|error| SkillError::ReadFailed {
-            path: remote_index_virtual_path(base_dir, source),
-            message: format!("failed to read remote skill index body: {error}"),
+        response.text().map_err(|error| {
+            if error.is_timeout() {
+                SkillError::ArtifactFetchTimeout {
+                    locator: source.locator.clone(),
+                    timeout_ms: fetch_timeout_ms,
+                }
+            } else {
+                SkillError::ReadFailed {
+                    path: remote_index_virtual_path(base_dir, source),
+                    message: format!("failed to read remote skill index body: {error}"),
+                }
+            }
         })
     } else {
         let path = resolve_index_locator_path(base_dir, &source.locator);

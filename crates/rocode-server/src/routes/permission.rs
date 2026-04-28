@@ -113,11 +113,6 @@ pub(crate) async fn request_permission(
 
     {
         let mut engine = PERMISSION_ENGINE.lock().await;
-        if !request.always.is_empty() {
-            engine.grant_patterns(&session_id, &request.permission, &request.patterns);
-            return Ok(());
-        }
-
         match engine.ask(info.clone()).await {
             Ok(AskOutcome::Granted) => return Ok(()),
             Ok(AskOutcome::Pending) => {}
@@ -365,6 +360,57 @@ mod tests {
         .expect("repeat request should be auto-approved");
 
         assert!(PERMISSION_ENGINE.lock().await.list().is_empty());
+        PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
+    }
+
+    #[tokio::test]
+    async fn request_permission_always_hint_does_not_auto_approve() {
+        let _guard = TEST_PERMISSION_LOCK.lock().await;
+        const SESSION_ID: &str = "session-always-hint";
+        PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
+
+        let state = Arc::new(ServerState::new());
+        let state_for_request = state.clone();
+        let request_task = tokio::spawn(async move {
+            request_permission(
+                state_for_request,
+                SESSION_ID.to_string(),
+                rocode_tool::PermissionRequest::new("bash")
+                    .with_pattern("cargo test")
+                    .with_always("cargo *"),
+            )
+            .await
+        });
+
+        let permission_id = loop {
+            let engine = PERMISSION_ENGINE.lock().await;
+            if let Some(id) = engine.list().first().map(|info| info.id.clone()) {
+                break id;
+            }
+            drop(engine);
+            tokio::task::yield_now().await;
+        };
+
+        assert!(
+            !request_task.is_finished(),
+            "always hints must wait for an explicit permission reply"
+        );
+
+        let _ = reply_permission(
+            State(state.clone()),
+            Path(permission_id),
+            Json(ReplyPermissionRequest {
+                reply: "once".to_string(),
+                message: None,
+            }),
+        )
+        .await
+        .expect("reply should succeed");
+
+        request_task
+            .await
+            .expect("request task join")
+            .expect("permission allowed");
         PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
     }
 }

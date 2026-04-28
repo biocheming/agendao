@@ -484,12 +484,6 @@ fn cli_current_context_tokens(projection: &CliFrontendProjection) -> Option<u64>
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-fn cli_context_pressure(percent: Option<u64>) -> Option<rocode_types::ContextPressure> {
-    let pressure = rocode_types::context_pressure_for_percent(percent);
-    pressure.is_warning_or_higher().then_some(pressure)
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
 fn cli_context_pressure_note(percent: Option<u64>) -> Option<&'static str> {
     rocode_types::context_pressure_label(percent)
 }

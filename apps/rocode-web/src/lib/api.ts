@@ -1,5 +1,7 @@
 const API_BASE_QUERY_PARAM = "api_base_url";
 const API_BASE_STORAGE_KEY = "rocode.api-base-url";
+const SERVER_PASSWORD_QUERY_PARAM = "server_password";
+const SERVER_PASSWORD_STORAGE_KEY = "rocode.server-password";
 
 function hasWindow(): boolean {
   return typeof window !== "undefined" && typeof window.location !== "undefined";
@@ -51,6 +53,59 @@ function persistApiBaseUrl(value: string | null): void {
   }
 }
 
+function normalizeServerPassword(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function readQueryServerPassword(): string | null {
+  if (!hasWindow()) return null;
+  const search = new URLSearchParams(window.location.search);
+  return normalizeServerPassword(search.get(SERVER_PASSWORD_QUERY_PARAM));
+}
+
+function readEnvServerPassword(): string | null {
+  return normalizeServerPassword(import.meta.env.VITE_ROCODE_SERVER_PASSWORD);
+}
+
+function readStoredServerPassword(): string | null {
+  if (!hasWindow()) return null;
+  try {
+    return normalizeServerPassword(window.localStorage.getItem(SERVER_PASSWORD_STORAGE_KEY));
+  } catch {
+    return null;
+  }
+}
+
+function persistServerPassword(value: string | null): void {
+  if (!hasWindow()) return;
+  try {
+    if (value) {
+      window.localStorage.setItem(SERVER_PASSWORD_STORAGE_KEY, value);
+    } else {
+      window.localStorage.removeItem(SERVER_PASSWORD_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore localStorage failures; callers can still pass the password in the URL.
+  }
+}
+
+export function currentServerPassword(): string | null {
+  const queryValue = readQueryServerPassword();
+  if (queryValue) {
+    persistServerPassword(queryValue);
+    return queryValue;
+  }
+
+  const envValue = readEnvServerPassword();
+  if (envValue) return envValue;
+
+  const storedValue = readStoredServerPassword();
+  if (storedValue) return storedValue;
+
+  return null;
+}
+
 export function currentApiBaseUrl(): string | null {
   const queryValue = readQueryApiBaseUrl();
   if (queryValue) {
@@ -68,16 +123,29 @@ export function currentApiBaseUrl(): string | null {
 }
 
 export function apiUrl(path: string): string {
+  const serverPassword = currentServerPassword();
   if (/^[a-z]+:\/\//i.test(path)) {
-    return path;
+    if (!serverPassword) return path;
+    const url = new URL(path);
+    if (!url.searchParams.has(SERVER_PASSWORD_QUERY_PARAM)) {
+      url.searchParams.set(SERVER_PASSWORD_QUERY_PARAM, serverPassword);
+    }
+    return url.toString();
   }
 
   const baseUrl = currentApiBaseUrl();
   if (!baseUrl) {
-    return path;
+    if (!serverPassword) return path;
+    const url = new URL(path, hasWindow() ? window.location.origin : "http://127.0.0.1");
+    url.searchParams.set(SERVER_PASSWORD_QUERY_PARAM, serverPassword);
+    return `${url.pathname}${url.search}${url.hash}`;
   }
 
-  return new URL(path, `${baseUrl}/`).toString();
+  const url = new URL(path, `${baseUrl}/`);
+  if (serverPassword && !url.searchParams.has(SERVER_PASSWORD_QUERY_PARAM)) {
+    url.searchParams.set(SERVER_PASSWORD_QUERY_PARAM, serverPassword);
+  }
+  return url.toString();
 }
 
 export function webSocketUrl(path: string): string {
@@ -93,6 +161,10 @@ export async function api(path: string, options: RequestInit = {}): Promise<Resp
   const headers = new Headers(options.headers);
   if (!headers.has("Content-Type") && options.body) {
     headers.set("Content-Type", "application/json");
+  }
+  const serverPassword = currentServerPassword();
+  if (serverPassword && !headers.has("Authorization") && !headers.has("X-ROCODE-Server-Password")) {
+    headers.set("Authorization", `Bearer ${serverPassword}`);
   }
   const response = await fetch(apiUrl(path), { ...options, headers });
   if (!response.ok) {
