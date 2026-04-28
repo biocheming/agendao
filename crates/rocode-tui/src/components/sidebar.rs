@@ -613,6 +613,16 @@ impl Sidebar {
             let title = session
                 .map(|s| s.title.clone())
                 .unwrap_or_else(|| "New Session".to_string());
+            let graph_root_session = session
+                .and_then(|session| session.parent_id.as_ref())
+                .and_then(|parent_id| session_ctx.sessions.get(parent_id))
+                .or(session);
+            let graph_root_id = graph_root_session
+                .map(|session| session.id.as_str())
+                .unwrap_or(self.session_id.as_str());
+            let graph_root_title = graph_root_session
+                .map(|session| session.title.as_str())
+                .unwrap_or(title.as_str());
             let mut session_lines = vec![Line::from(Span::styled(
                 truncate_text(&title, area.width as usize),
                 Style::default().fg(theme.text).bold(),
@@ -1080,15 +1090,20 @@ impl Sidebar {
             let child_list = self.context.child_sessions();
             clamp_sidebar_child_session_selection(lifecycle, child_list.len());
             if !child_list.is_empty() {
-                let selected_child = child_list.get(
-                    lifecycle
-                        .child_session_selected
-                        .min(child_list.len().saturating_sub(1)),
-                );
+                let current_child_index = child_list
+                    .iter()
+                    .position(|child| child.session_id == self.session_id);
+                let selected_child_index = if lifecycle.child_session_focus {
+                    Some(lifecycle.child_session_selected.min(child_list.len() - 1))
+                } else {
+                    current_child_index
+                };
+                let selected_child = selected_child_index.and_then(|index| child_list.get(index));
                 let (cs_lines, child_session_hit_rows) = build_session_graph_lines(
                     theme,
                     area.width,
-                    &title,
+                    graph_root_title,
+                    graph_root_id,
                     &self.session_id,
                     &child_list,
                     &session_ctx.sessions,
@@ -1781,6 +1796,7 @@ fn build_session_graph_lines(
     width: u16,
     current_title: &str,
     current_session_id: &str,
+    active_session_id: &str,
     child_list: &[crate::context::ChildSessionInfo],
     sessions: &std::collections::HashMap<String, crate::context::Session>,
     session_diff: &std::collections::HashMap<String, Vec<crate::context::DiffEntry>>,
@@ -1809,7 +1825,8 @@ fn build_session_graph_lines(
     hit_rows.push(None);
 
     for (idx, child) in child_list.iter().enumerate() {
-        let selected = lifecycle.child_session_focus && idx == lifecycle.child_session_selected;
+        let selected = (lifecycle.child_session_focus && idx == lifecycle.child_session_selected)
+            || child.session_id == active_session_id;
         let branch = if idx + 1 == child_list.len() {
             "╰"
         } else {
@@ -2179,6 +2196,7 @@ mod tests {
             42,
             "Root Session",
             "root-session",
+            "child-session-1",
             &[child.clone()],
             &sessions,
             &diffs,

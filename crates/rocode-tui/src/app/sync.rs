@@ -126,7 +126,12 @@ impl App {
             None => return,
         };
         let session_ctx = self.context.session.read();
-        let children = match session_ctx.messages.get(&session_id) {
+        let graph_root_id = session_ctx
+            .sessions
+            .get(&session_id)
+            .and_then(|session| session.parent_id.clone())
+            .unwrap_or(session_id);
+        let children = match session_ctx.messages.get(&graph_root_id) {
             Some(msgs) => collect_child_sessions(msgs),
             None => return,
         };
