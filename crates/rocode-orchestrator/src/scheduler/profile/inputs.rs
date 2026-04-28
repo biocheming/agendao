@@ -1,7 +1,5 @@
 use super::*;
-use crate::scheduler::prompt_support::{
-    render_compact_skill_catalog, render_skill_catalog, SKILLS_GUIDANCE,
-};
+use crate::scheduler::prompt_support::{render_compact_skill_catalog, SKILLS_GUIDANCE};
 
 pub(in crate::scheduler) struct RetryComposeRequest<'a> {
     pub(in crate::scheduler) original_input: &'a str,
@@ -11,6 +9,17 @@ pub(in crate::scheduler) struct RetryComposeRequest<'a> {
     pub(in crate::scheduler) decision: &'a SchedulerExecutionGateDecision,
     pub(in crate::scheduler) previous_output: &'a OrchestratorOutput,
     pub(in crate::scheduler) review_output: Option<&'a OrchestratorOutput>,
+}
+
+fn render_progressive_skills_index(skill_list: &[SchedulerSkillRef]) -> String {
+    format!(
+        "{}
+
+Use `skill_view(name)` to inspect a relevant skill before relying on it.
+
+{SKILLS_GUIDANCE}",
+        render_compact_skill_catalog(skill_list)
+    )
 }
 
 impl SchedulerProfileOrchestrator {
@@ -335,8 +344,8 @@ Produce a concrete execution plan only. No file edits, no claims that work is al
         plan: &SchedulerProfilePlan,
     ) -> String {
         let review_skill_list = plan.effective_skill_list(Some(SchedulerStageKind::Review));
-        let skills_index_markdown =
-            (!review_skill_list.is_empty()).then(|| render_skill_catalog(review_skill_list));
+        let skills_index_markdown = (!review_skill_list.is_empty())
+            .then(|| render_progressive_skills_index(review_skill_list));
         if let Some(composed) = plan.compose_review_stage_input(SchedulerReviewStageInput {
             original_request: original_input,
             request_brief: &state.route.request_brief,
@@ -391,7 +400,7 @@ review"
 Use `skill_view(name)` to inspect a relevant skill before relying on it.
 
 {SKILLS_GUIDANCE}",
-                render_skill_catalog(review_skill_list),
+                render_compact_skill_catalog(review_skill_list),
             ));
         }
         if let Some(delegated) = &state.execution.delegated {

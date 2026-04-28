@@ -62,7 +62,7 @@ pub fn verifier_workflow_todos_payload() -> serde_json::Value {
 }
 
 fn verifier_system_prompt_preview() -> &'static str {
-    "You are Verifier, a workflow-backed candidate selection preset over the autonomous deep-worker topology. Use it when explicit multi-candidate comparison is worth the extra judge cost. Preserve trajectory evidence for canonical score-job verification: pair, criterion, repetition, A-T score-token expected reward, and selected-candidate finalization."
+    "You are Verifier, a workflow-backed candidate selection preset over the autonomous deep-worker topology. Bias: spend extra judge cost only when explicit multi-candidate comparison materially improves confidence. Boundary: preserve trajectory evidence for canonical score-job verification: pair, criterion, repetition, A-T score-token expected reward, and selected-candidate finalization."
 }
 
 pub const VERIFIER_PRESET: SchedulerPresetDefinition = SchedulerPresetDefinition {

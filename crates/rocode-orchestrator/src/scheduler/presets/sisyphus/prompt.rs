@@ -419,9 +419,8 @@ mod tests {
             SchedulerSkillRef::from("review-pr"),
         ];
         let prompt = build_sisyphus_dynamic_prompt(&[], &[], &skills);
-        assert!(prompt.contains("<available_skills>"));
-        assert!(prompt.contains("- commit"));
-        assert!(prompt.contains("- review-pr"));
+        assert!(prompt.contains("<available_skills compact=\"true\">"));
+        assert!(prompt.contains("general: commit, review-pr"));
     }
 
     #[test]

@@ -14,16 +14,6 @@ pub struct SchedulerSkillRef {
     pub category: Option<String>,
 }
 
-impl SchedulerSkillRef {
-    pub fn display_text(&self) -> String {
-        if self.description.trim().is_empty() {
-            self.name.clone()
-        } else {
-            format!("{}: {}", self.name, self.description)
-        }
-    }
-}
-
 impl From<&str> for SchedulerSkillRef {
     fn from(value: &str) -> Self {
         Self {

@@ -364,38 +364,6 @@ pub(crate) fn build_capabilities_summary(
     sections.join("\n")
 }
 
-pub(crate) fn render_skill_catalog(skill_list: &[SchedulerSkillRef]) -> String {
-    if skill_list.is_empty() {
-        return "<available_skills />".to_string();
-    }
-
-    let mut grouped = BTreeMap::<String, Vec<&SchedulerSkillRef>>::new();
-    for skill in skill_list {
-        let category = skill
-            .category
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("general")
-            .to_string();
-        grouped.entry(category).or_default().push(skill);
-    }
-
-    let mut output = String::from("<available_skills>\n");
-    for (category, skills) in grouped {
-        output.push_str(&format!("  {}:\n", category));
-        for skill in skills {
-            if skill.description.trim().is_empty() {
-                output.push_str(&format!("    - {}\n", skill.name));
-            } else {
-                output.push_str(&format!("    - {}: {}\n", skill.name, skill.description));
-            }
-        }
-    }
-    output.push_str("</available_skills>");
-    output
-}
-
 pub(crate) fn render_compact_skill_catalog(skill_list: &[SchedulerSkillRef]) -> String {
     if skill_list.is_empty() {
         return "<available_skills compact=\"true\" />".to_string();

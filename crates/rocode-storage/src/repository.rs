@@ -1466,11 +1466,21 @@ impl SessionRepository {
                 .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
             let metadata_json = serde_json::to_string(&msg.metadata)
                 .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
+            let usage = msg.usage.as_ref();
             sqlx::query(MESSAGE_UPSERT_SQL)
                 .bind(&msg.id)
                 .bind(&msg.session_id)
                 .bind(role_to_str(&msg.role))
                 .bind(msg.created_at.timestamp_millis())
+                .bind(message_model_provider_id(msg))
+                .bind(message_model_id(msg))
+                .bind(usage.map(|u| u.input_tokens as i64).unwrap_or(0))
+                .bind(usage.map(|u| u.context_tokens as i64).unwrap_or(0))
+                .bind(usage.map(|u| u.output_tokens as i64).unwrap_or(0))
+                .bind(usage.map(|u| u.reasoning_tokens as i64).unwrap_or(0))
+                .bind(usage.map(|u| u.cache_read_tokens as i64).unwrap_or(0))
+                .bind(usage.map(|u| u.cache_write_tokens as i64).unwrap_or(0))
+                .bind(usage.map(|u| u.total_cost).unwrap_or(0.0))
                 .bind(&msg.finish)
                 .bind(&metadata_json)
                 .bind(&data_json)
@@ -2339,7 +2349,9 @@ mod tests {
     use super::*;
     use crate::Database;
     use chrono::Utc;
-    use rocode_types::{MessageRole, Session, SessionMessage, SessionStatus, SessionTime};
+    use rocode_types::{
+        MessageRole, PartType, Session, SessionMessage, SessionStatus, SessionTime,
+    };
     use std::collections::HashMap;
 
     fn make_session(id: &str) -> Session {
@@ -2567,6 +2579,73 @@ mod tests {
         assert_eq!(loaded_msgs.len(), 2);
         assert_eq!(loaded_msgs[0].id, "m1");
         assert_eq!(loaded_msgs[1].id, "m2");
+    }
+
+    #[tokio::test]
+    async fn flush_with_messages_roundtrips_message_payload_and_usage() {
+        let db = Database::in_memory().await.unwrap();
+        let session_repo = SessionRepository::new(db.pool().clone());
+        let message_repo = MessageRepository::new(db.pool().clone());
+
+        let session = make_session("s_flush_usage");
+        let mut message = make_message("m_flush_usage", "s_flush_usage", MessageRole::Assistant);
+        message.parts.push(MessagePart {
+            id: "prt_flush_usage".to_string(),
+            part_type: PartType::Text {
+                text: "answer".to_string(),
+                synthetic: None,
+                ignored: None,
+            },
+            created_at: Utc::now(),
+            message_id: None,
+        });
+        message
+            .metadata
+            .insert("model_provider".to_string(), serde_json::json!("deepseek"));
+        message.metadata.insert(
+            "model_id".to_string(),
+            serde_json::json!("deepseek-v4-flash"),
+        );
+        message.metadata.insert(
+            "scheduler_profile".to_string(),
+            serde_json::json!("sisyphus"),
+        );
+        message.finish = Some("stop".to_string());
+        message.usage = Some(rocode_types::MessageUsage {
+            input_tokens: 19_199,
+            context_tokens: 19_199,
+            output_tokens: 121,
+            reasoning_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            total_cost: 0.00272174,
+        });
+
+        session_repo
+            .flush_with_messages(&session, &[message])
+            .await
+            .unwrap();
+
+        let loaded = message_repo
+            .get("m_flush_usage")
+            .await
+            .unwrap()
+            .expect("message should persist");
+        assert_eq!(loaded.finish.as_deref(), Some("stop"));
+        assert_eq!(
+            loaded.metadata.get("scheduler_profile"),
+            Some(&serde_json::json!("sisyphus"))
+        );
+        assert_eq!(loaded.parts.len(), 1);
+        match &loaded.parts[0].part_type {
+            PartType::Text { text, .. } => assert_eq!(text, "answer"),
+            other => panic!("expected text part, got {other:?}"),
+        }
+        let usage = loaded.usage.expect("usage should persist");
+        assert_eq!(usage.input_tokens, 19_199);
+        assert_eq!(usage.context_tokens, 19_199);
+        assert_eq!(usage.output_tokens, 121);
+        assert!((usage.total_cost - 0.00272174).abs() < f64::EPSILON);
     }
 
     #[tokio::test]

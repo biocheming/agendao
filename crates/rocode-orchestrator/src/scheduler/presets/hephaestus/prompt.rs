@@ -273,8 +273,8 @@ mod tests {
         assert!(prompt.contains("Level 3: Escalate"));
         assert!(prompt.contains("CONSULT"));
         assert!(prompt.contains("`explore` agent — **CHEAP**"));
-        assert!(prompt.contains("<available_skills>"));
-        assert!(prompt.contains("- debug"));
+        assert!(prompt.contains("<available_skills compact=\"true\">"));
+        assert!(prompt.contains("general: debug"));
         assert!(prompt.contains("use `skill_view(name)` before EVERY delegation"));
     }
 

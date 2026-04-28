@@ -301,8 +301,7 @@ async fn sisyphus_runs_single_execution_orchestration_without_review_or_synthesi
     assert!(inputs[1].contains("Explore Agent = Contextual Grep"));
     assert!(inputs[1].contains("Oracle_Usage"));
     assert!(inputs[1].contains("`rust` — Rust implementation and debugging tasks"));
-    assert!(inputs[1].contains("- `review-pr`"));
-    assert!(inputs[1].contains("- `simplify`"));
+    assert!(inputs[1].contains("general: review-pr, simplify"));
     assert!(!inputs[1].contains("## Stage\nreview"));
     assert!(!inputs[1].contains("## Stage\nsynthesis"));
     assert!(!inputs[1].contains("## Stage\ndelegation"));
