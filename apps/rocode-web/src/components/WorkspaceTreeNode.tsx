@@ -8,7 +8,7 @@ import {
   FileJsonIcon,
   FileImageIcon,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type { FileTreeNodeRecord } from "@/lib/workspace";
 
 interface WorkspaceTreeNodeProps {
@@ -60,6 +60,8 @@ export function WorkspaceTreeNode({
   const linked = nodeLinked(node, linkedPath);
   const children = node.children ?? [];
   const hasChildren = children.length > 0;
+  const isRoot = depth === 0;
+  const [isExpanded, setIsExpanded] = useState(isRoot);
 
   // Build the prefix with ASCII tree lines
   const prefix = parentLines.map((showLine) => (showLine ? "│" : " ")).join(" ");
@@ -79,7 +81,13 @@ export function WorkspaceTreeNode({
             linked && "bg-amber-500/5",
           )}
           style={{ paddingLeft: `${depth > 0 ? 4 : 0}px` }}
-          onClick={() => onSelectNode(node)}
+          aria-expanded={hasChildren ? isExpanded : undefined}
+          onClick={() => {
+            onSelectNode(node);
+            if (hasChildren && !isRoot) {
+              setIsExpanded((value) => !value);
+            }
+          }}
           onMouseEnter={() => linked && linkedStageId ? onPreviewStage?.(linkedStageId) : undefined}
           onMouseLeave={() => linked ? onPreviewStage?.(null) : undefined}
           title={node.path}
@@ -92,7 +100,11 @@ export function WorkspaceTreeNode({
           )}
 
           {/* Folder icon */}
-          <FolderOpenIcon className="size-3.5 text-primary/70" />
+          {isExpanded ? (
+            <FolderOpenIcon className="size-3.5 text-primary/70" />
+          ) : (
+            <FolderIcon className="size-3.5 text-primary/70" />
+          )}
 
           {/* Directory name */}
           <span className="truncate">{node.name}</span>
@@ -107,7 +119,7 @@ export function WorkspaceTreeNode({
         </button>
 
         {/* Children */}
-        {hasChildren && (
+        {hasChildren && isExpanded && (
           <div className="grid">
             {children.map((child, idx) => (
               <WorkspaceTreeNode

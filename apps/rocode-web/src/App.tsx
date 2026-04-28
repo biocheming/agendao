@@ -292,20 +292,24 @@ function presentationSequence(block: OutputBlock): number {
 
 function outputBlockSemanticRank(block: OutputBlock): number {
   switch (block.kind) {
-    case "scheduler_stage":
-      return 0;
-    case "reasoning":
-      return 1;
-    case "tool":
-    case "session_event":
     case "queue_item":
-      return 2;
-    case "message":
-      return block.role === "assistant" ? 4 : 3;
+      return 0;
     case "status":
       return 5;
+    case "reasoning":
+      return 10;
+    case "tool":
+      return 20;
+    case "session_event":
+      return 25;
+    case "scheduler_stage":
+      return 30;
+    case "inspect":
+      return 40;
+    case "message":
+      return block.role === "assistant" ? 90 : 0;
     default:
-      return 3;
+      return 50;
   }
 }
 
@@ -326,6 +330,163 @@ function messagePartSemanticRank(part: MessagePartRecord): number {
   }
 }
 
+function metadataString(
+  metadata: Record<string, unknown> | null | undefined,
+  key: string,
+): string | undefined {
+  const value = metadata?.[key];
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function metadataNumber(
+  metadata: Record<string, unknown> | null | undefined,
+  key: string,
+): number | undefined {
+  const value = metadata?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function metadataBoolean(
+  metadata: Record<string, unknown> | null | undefined,
+  key: string,
+): boolean | undefined {
+  const value = metadata?.[key];
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function metadataStringArray(
+  metadata: Record<string, unknown> | null | undefined,
+  key: string,
+): string[] {
+  const value = metadata?.[key];
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function schedulerStageTitleFromText(text: string): { title: string; body: string } {
+  const trimmed = text.trim();
+  const heading = trimmed.match(/^##\s+([^\n]+)(?:\n([\s\S]*))?$/);
+  if (!heading) return { title: "", body: text };
+  return {
+    title: heading[1]?.trim() ?? "",
+    body: heading[2]?.trimStart() ?? "",
+  };
+}
+
+function prettifySchedulerToken(value: string): string {
+  return value
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
+
+function schedulerDecisionFromMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+): OutputBlock["decision"] | null {
+  const kind = metadataString(metadata, "scheduler_decision_kind");
+  if (!kind) return null;
+
+  const rawFields = metadata?.scheduler_decision_fields;
+  const rawSections = metadata?.scheduler_decision_sections;
+  const fields = Array.isArray(rawFields)
+    ? rawFields.flatMap((field) => {
+        if (!field || typeof field !== "object") return [];
+        const item = field as Record<string, unknown>;
+        const label = typeof item.label === "string" ? item.label : undefined;
+        const value = typeof item.value === "string" ? item.value : undefined;
+        if (!label || value === undefined) return [];
+        return [{
+          label,
+          value,
+          tone: typeof item.tone === "string" ? item.tone : undefined,
+        }];
+      })
+    : [];
+  const sections = Array.isArray(rawSections)
+    ? rawSections.flatMap((section) => {
+        if (!section || typeof section !== "object") return [];
+        const item = section as Record<string, unknown>;
+        const title = typeof item.title === "string" ? item.title : undefined;
+        const body = typeof item.body === "string" ? item.body : undefined;
+        if (!title || body === undefined) return [];
+        return [{ title, body }];
+      })
+    : [];
+
+  return {
+    title: metadataString(metadata, "scheduler_decision_title") ?? "Decision",
+    fields,
+    sections,
+  };
+}
+
+function schedulerStageBlockFromHistoryMessage(message: MessageRecord): OutputBlock | null {
+  const metadata = message.metadata;
+  const stage = metadataString(metadata, "scheduler_stage");
+  if (!stage) return null;
+
+  const text = (message.parts ?? [])
+    .filter((part) => part.type === "text" && !part.ignored)
+    .map((part) => part.text ?? "")
+    .join("");
+  const { title, body } = schedulerStageTitleFromText(text);
+  const profile =
+    metadataString(metadata, "resolved_scheduler_profile") ??
+    metadataString(metadata, "scheduler_profile");
+  const fallbackTitle = profile
+    ? `${profile} · ${prettifySchedulerToken(stage)}`
+    : prettifySchedulerToken(stage);
+
+  return {
+    id: message.id,
+    kind: "scheduler_stage",
+    role: "assistant",
+    stage_id: metadataString(metadata, "scheduler_stage_id"),
+    profile,
+    stage,
+    title: title || fallbackTitle,
+    text: body,
+    stage_index: metadataNumber(metadata, "scheduler_stage_index"),
+    stage_total: metadataNumber(metadata, "scheduler_stage_total"),
+    step: metadataNumber(metadata, "scheduler_stage_step"),
+    status: metadataString(metadata, "scheduler_stage_status"),
+    focus: metadataString(metadata, "scheduler_stage_focus"),
+    last_event: metadataString(metadata, "scheduler_stage_last_event"),
+    waiting_on: metadataString(metadata, "scheduler_stage_waiting_on"),
+    activity: metadataString(metadata, "scheduler_stage_activity"),
+    child_session_id: metadataString(metadata, "scheduler_stage_child_session_id"),
+    active_skills: metadataStringArray(metadata, "scheduler_stage_active_skills"),
+    active_agents: metadataStringArray(metadata, "scheduler_stage_active_agents"),
+    active_categories: metadataStringArray(metadata, "scheduler_stage_active_categories"),
+    prompt_tokens: metadataNumber(metadata, "scheduler_stage_prompt_tokens"),
+    completion_tokens: metadataNumber(metadata, "scheduler_stage_completion_tokens"),
+    reasoning_tokens: metadataNumber(metadata, "scheduler_stage_reasoning_tokens"),
+    cache_read_tokens: metadataNumber(metadata, "scheduler_stage_cache_read_tokens"),
+    cache_write_tokens: metadataNumber(metadata, "scheduler_stage_cache_write_tokens"),
+    decision: schedulerDecisionFromMetadata(metadata),
+    presentation: {
+      group: "scheduler",
+      slot: metadataString(metadata, "scheduler_stage_id") ?? stage,
+      rank: 30,
+      sequence: metadataNumber(metadata, "scheduler_stage_index"),
+    },
+    structured: {
+      loop_budget: metadataString(metadata, "scheduler_stage_loop_budget"),
+      available_skill_count: metadataNumber(metadata, "scheduler_stage_available_skill_count"),
+      available_agent_count: metadataNumber(metadata, "scheduler_stage_available_agent_count"),
+      available_category_count: metadataNumber(metadata, "scheduler_stage_available_category_count"),
+      done_agent_count: metadataNumber(metadata, "scheduler_stage_done_agent_count"),
+      total_agent_count: metadataNumber(metadata, "scheduler_stage_total_agent_count"),
+      estimated_context_tokens: metadataNumber(metadata, "scheduler_stage_estimated_context_tokens"),
+      skill_tree_budget: metadataNumber(metadata, "scheduler_stage_skill_tree_budget"),
+      skill_tree_truncated: metadataBoolean(metadata, "scheduler_stage_skill_tree_truncated"),
+      skill_tree_truncation_strategy: metadataString(metadata, "scheduler_stage_skill_tree_truncation_strategy"),
+      retry_attempt: metadataNumber(metadata, "scheduler_stage_retry_attempt"),
+    },
+  };
+}
+
 function lastTurnStartIndex(messages: FeedMessage[]): number {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
@@ -340,6 +501,10 @@ function insertFeedMessageByPresentation(
   messages: FeedMessage[],
   incoming: FeedMessage,
 ): FeedMessage[] {
+  if (incoming.kind === "message" && incoming.role === "user") {
+    return [...messages, incoming];
+  }
+
   const rank = presentationRank(incoming);
   const sequence = presentationSequence(incoming);
   const start = lastTurnStartIndex(messages);
@@ -575,6 +740,12 @@ function buildFeedFromHistory(history: MessageRecord[], showThinking: boolean): 
   let messages: FeedMessage[] = [];
 
   for (const message of history || []) {
+    const schedulerStageBlock = schedulerStageBlockFromHistoryMessage(message);
+    if (schedulerStageBlock) {
+      messages = applyOutputBlock(messages, schedulerStageBlock, showThinking);
+      continue;
+    }
+
     let startedReasoning = false;
     let startedText = false;
 
