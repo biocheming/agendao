@@ -22,14 +22,14 @@ struct RuntimeApiClient {
 }
 
 impl RuntimeApiClient {
-    fn new(base_url: String) -> Self {
+    fn new_with_password(base_url: String, server_password: Option<String>) -> Self {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("failed to start TUI API gateway runtime");
         Self {
             runtime,
-            client: rocode_client::AsyncApiClient::new(base_url),
+            client: rocode_client::AsyncApiClient::new_with_password(base_url, server_password),
         }
     }
 
@@ -180,12 +180,18 @@ pub struct ApiClient {
 
 impl ApiClient {
     pub fn new(base_url: String) -> Self {
+        Self::new_with_password(base_url, None)
+    }
+
+    pub fn new_with_password(base_url: String, server_password: Option<String>) -> Self {
         let (jobs, receiver) = mpsc::channel::<ApiJob>();
         let thread_base_url = base_url.clone();
+        let thread_server_password = server_password.clone();
         thread::Builder::new()
             .name("rocode-tui-api-gateway".to_string())
             .spawn(move || {
-                let client = RuntimeApiClient::new(thread_base_url);
+                let client =
+                    RuntimeApiClient::new_with_password(thread_base_url, thread_server_password);
                 while let Ok(job) = receiver.recv() {
                     job(&client);
                 }

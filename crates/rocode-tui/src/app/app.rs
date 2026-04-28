@@ -163,6 +163,7 @@ pub struct App {
     consumed_handoffs: HashSet<String>,
     /// Base URL for the server event stream.
     server_event_base_url: String,
+    server_password: Option<String>,
     /// Shared session filter for the SSE listener task.
     /// Updated when navigating to a different session so the listener
     /// reconnects with `?session={id}`.
@@ -274,6 +275,7 @@ enum SessionSyncMode {
 #[derive(Clone, Debug, Default)]
 pub struct AppLaunchConfig {
     pub base_url: Option<String>,
+    pub server_password: Option<String>,
     pub agent_name: Option<String>,
     pub model: Option<String>,
     pub session_id: Option<String>,
@@ -300,7 +302,10 @@ impl App {
         }
 
         let base_url = resolve_tui_base_url(config.base_url.as_deref());
-        let api_client = Arc::new(ApiClient::new(base_url.clone()));
+        let api_client = Arc::new(ApiClient::new_with_password(
+            base_url.clone(),
+            config.server_password.clone(),
+        ));
         context.set_api_client(api_client);
         let sse_session_filter: SessionFilter = Arc::new(std::sync::Mutex::new(None));
 
@@ -411,6 +416,7 @@ impl App {
             event_caused_change: true,
             consumed_handoffs: HashSet::new(),
             server_event_base_url: base_url,
+            server_password: config.server_password,
             sse_session_filter,
         };
 
@@ -490,6 +496,7 @@ impl App {
         spawn_server_event_listener_task(
             self.context.ui_bridge.clone(),
             self.server_event_base_url.clone(),
+            self.server_password.clone(),
             self.sse_session_filter.clone(),
         )
     }

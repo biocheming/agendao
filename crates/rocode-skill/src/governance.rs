@@ -175,11 +175,13 @@ impl SkillGovernanceAuthority {
             }
             rocode_types::SkillSourceKind::Git
             | rocode_types::SkillSourceKind::Archive
-            | rocode_types::SkillSourceKind::Registry => {
-                self.hub_store.upsert_remote_source_index(
-                    crate::hub::refresh_remote_source_index(self.hub_store.base_dir(), source)?,
-                )?
-            }
+            | rocode_types::SkillSourceKind::Registry => self
+                .hub_store
+                .upsert_remote_source_index(crate::hub::refresh_remote_source_index(
+                    self.hub_store.base_dir(),
+                    source,
+                    self.artifact_policy().fetch_timeout_ms,
+                )?)?,
         };
         if !matches!(
             source.source_kind,
@@ -333,6 +335,7 @@ impl SkillGovernanceAuthority {
             source,
             &source_index,
             skill_name,
+            self.artifact_policy().fetch_timeout_ms,
         ) {
             Ok(resolved) => {
                 let record = resolved.record.clone();

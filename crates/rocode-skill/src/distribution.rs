@@ -8,6 +8,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Default)]
@@ -54,6 +55,7 @@ impl SkillDistributionResolver {
         source: &SkillSourceRef,
         source_index: &SkillSourceIndexSnapshot,
         skill_name: &str,
+        fetch_timeout_ms: u64,
     ) -> Result<ResolvedSkillDistribution, SkillError> {
         let (resolver_kind, artifact_kind) = match source.source_kind {
             SkillSourceKind::Registry => (
@@ -85,6 +87,7 @@ impl SkillDistributionResolver {
             skill_name,
             resolver_kind,
             artifact_kind,
+            fetch_timeout_ms,
         )
     }
 
@@ -96,6 +99,7 @@ impl SkillDistributionResolver {
         skill_name: &str,
         resolver_kind: SkillDistributionResolverKind,
         artifact_kind: SkillArtifactKind,
+        fetch_timeout_ms: u64,
     ) -> Result<ResolvedSkillDistribution, SkillError> {
         let entry = source_index
             .entries
@@ -109,7 +113,7 @@ impl SkillDistributionResolver {
             })?;
 
         let manifest_locator = remote_manifest_locator(base_dir, source, entry);
-        let manifest = load_install_manifest(base_dir, &manifest_locator)?;
+        let manifest = load_install_manifest(base_dir, &manifest_locator, fetch_timeout_ms)?;
         let now = now_unix_timestamp();
         let normalized_skill_name = manifest.skill_name.trim().to_string();
         if normalized_skill_name.is_empty() {
@@ -176,11 +180,28 @@ impl SkillDistributionResolver {
 fn load_install_manifest(
     base_dir: &Path,
     locator: &str,
+    fetch_timeout_ms: u64,
 ) -> Result<SkillInstallManifest, SkillError> {
     let payload = if is_http_locator(locator) {
-        let response = reqwest::blocking::get(locator).map_err(|error| SkillError::ReadFailed {
-            path: PathBuf::from(locator),
-            message: format!("failed to fetch install manifest: {error}"),
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_millis(fetch_timeout_ms))
+            .build()
+            .map_err(|error| SkillError::ReadFailed {
+                path: PathBuf::from(locator),
+                message: format!("failed to build install manifest client: {error}"),
+            })?;
+        let response = client.get(locator).send().map_err(|error| {
+            if error.is_timeout() {
+                SkillError::ArtifactFetchTimeout {
+                    locator: locator.to_string(),
+                    timeout_ms: fetch_timeout_ms,
+                }
+            } else {
+                SkillError::ReadFailed {
+                    path: PathBuf::from(locator),
+                    message: format!("failed to fetch install manifest: {error}"),
+                }
+            }
         })?;
         let response = response
             .error_for_status()
@@ -188,9 +209,18 @@ fn load_install_manifest(
                 path: PathBuf::from(locator),
                 message: format!("install manifest request failed: {error}"),
             })?;
-        response.text().map_err(|error| SkillError::ReadFailed {
-            path: PathBuf::from(locator),
-            message: format!("failed to read install manifest body: {error}"),
+        response.text().map_err(|error| {
+            if error.is_timeout() {
+                SkillError::ArtifactFetchTimeout {
+                    locator: locator.to_string(),
+                    timeout_ms: fetch_timeout_ms,
+                }
+            } else {
+                SkillError::ReadFailed {
+                    path: PathBuf::from(locator),
+                    message: format!("failed to read install manifest body: {error}"),
+                }
+            }
         })?
     } else {
         let path = resolve_locator_path(base_dir, locator);

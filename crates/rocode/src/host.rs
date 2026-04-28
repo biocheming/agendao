@@ -113,8 +113,10 @@ pub async fn run_web_command(request: WebCommandRequest) -> anyhow::Result<()> {
     } else {
         backend_url.clone()
     };
+    let launch_url = append_server_password_query(launch_url, current_server_password().as_deref());
+    let display_launch_url = redact_server_password_query(&launch_url);
     println!("Backend API: {}", backend_url);
-    println!("Web interface: {}", launch_url);
+    println!("Web interface: {}", display_launch_url);
 
     let server_task = tokio::spawn(rocode_server::run_server_runtime(ServerRuntimeOptions {
         port: bind_port,
@@ -147,7 +149,7 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
         mdns_domain,
         cors,
         attach_url,
-        password: _password,
+        password,
     } = request;
 
     if fork && !continue_last && session.is_none() {
@@ -155,6 +157,7 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
     }
 
     let working_dir = project.clone();
+    let server_password = password.or_else(current_server_password);
     let mut server_task = None;
     let base_url = if let Some(url) = attach_url {
         url
@@ -183,14 +186,21 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
         server_url
     };
 
-    let selected_session =
-        resolve_requested_session(&base_url, continue_last, session, fork).await?;
+    let selected_session = resolve_requested_session(
+        &base_url,
+        server_password.clone(),
+        continue_last,
+        session,
+        fork,
+    )
+    .await?;
     // rocode-tui creates and drives its own Tokio runtime internally.
     // Run it on a blocking thread so we do not try to nest runtimes inside
     // the product shell's async runtime.
     let run_result = tokio::task::spawn_blocking(move || {
         rocode_tui::run_tui_with_config(AppLaunchConfig {
             base_url: Some(base_url),
+            server_password,
             model,
             initial_prompt: prompt,
             agent_name: agent,
@@ -211,11 +221,13 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
 
 async fn resolve_requested_session(
     base_url: &str,
+    server_password: Option<String>,
     continue_last: bool,
     session: Option<String>,
     fork: bool,
 ) -> anyhow::Result<Option<String>> {
-    let api_client = rocode_client::AsyncApiClient::new(base_url.to_string());
+    let api_client =
+        rocode_client::AsyncApiClient::new_with_password(base_url.to_string(), server_password);
     let selected = if let Some(session_id) = session {
         Some(session_id)
     } else if continue_last {
@@ -242,6 +254,54 @@ async fn resolve_requested_session(
     let forked = api_client.fork_session(&session_id, None).await?;
     eprintln!("Forked session {} -> {}", session_id, forked.id);
     Ok(Some(forked.id))
+}
+
+fn current_server_password() -> Option<String> {
+    std::env::var("ROCODE_SERVER_PASSWORD")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn append_server_password_query(launch_url: String, server_password: Option<&str>) -> String {
+    let Some(server_password) = server_password
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return launch_url;
+    };
+    let Ok(mut url) = reqwest::Url::parse(&launch_url) else {
+        return launch_url;
+    };
+    if !url.query_pairs().any(|(key, _)| key == "server_password") {
+        url.query_pairs_mut()
+            .append_pair("server_password", server_password);
+    }
+    url.to_string()
+}
+
+fn redact_server_password_query(launch_url: &str) -> String {
+    let Ok(mut url) = reqwest::Url::parse(launch_url) else {
+        return launch_url.to_string();
+    };
+    let retained_pairs: Vec<(String, String)> = url
+        .query_pairs()
+        .map(|(key, value)| {
+            if key == "server_password" {
+                (key.into_owned(), "<redacted>".to_string())
+            } else {
+                (key.into_owned(), value.into_owned())
+            }
+        })
+        .collect();
+    {
+        let mut pairs = url.query_pairs_mut();
+        pairs.clear();
+        for (key, value) in retained_pairs {
+            pairs.append_pair(&key, &value);
+        }
+    }
+    url.to_string()
 }
 
 pub async fn run_acp_command(request: AcpCommandRequest) -> anyhow::Result<()> {
@@ -305,6 +365,34 @@ fn build_acp_network_args(
     }
 
     args
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{append_server_password_query, redact_server_password_query};
+
+    #[test]
+    fn append_server_password_query_adds_password_without_overwriting_existing_value() {
+        assert_eq!(
+            append_server_password_query("http://localhost:3000".to_string(), Some("secret")),
+            "http://localhost:3000/?server_password=secret"
+        );
+        assert_eq!(
+            append_server_password_query(
+                "http://localhost:3000/?server_password=existing".to_string(),
+                Some("secret"),
+            ),
+            "http://localhost:3000/?server_password=existing"
+        );
+    }
+
+    #[test]
+    fn redact_server_password_query_hides_password_for_display() {
+        assert_eq!(
+            redact_server_password_query("http://localhost:3000/?server_password=secret&x=1"),
+            "http://localhost:3000/?server_password=%3Credacted%3E&x=1"
+        );
+    }
 }
 
 fn find_local_ts_opencode_package_dir() -> Option<PathBuf> {

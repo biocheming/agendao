@@ -1,6 +1,7 @@
 use super::*;
 use crate::bridge::UiBridge;
 use futures::StreamExt;
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::Url;
 use reqwest_eventsource::{Event as SseEvent, EventSource};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
@@ -80,11 +81,24 @@ pub(super) type SessionFilter = Arc<StdMutex<Option<String>>>;
 pub(super) fn spawn_server_event_listener_task(
     ui_bridge: UiBridge,
     base_url: String,
+    server_password: Option<String>,
     session_filter: SessionFilter,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
+        let mut headers = HeaderMap::new();
+        if let Some(password) = server_password
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if let Ok(value) = HeaderValue::from_str(&format!("Bearer {password}")) {
+                headers.insert(AUTHORIZATION, value);
+            }
+        }
+
         let client = match reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(2))
+            .default_headers(headers)
             .build()
         {
             Ok(client) => client,

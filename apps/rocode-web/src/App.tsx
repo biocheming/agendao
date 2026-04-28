@@ -1401,6 +1401,7 @@ export default function App() {
     setBanner,
     enabled: terminalOpen,
     defaultCwd: workspaceBasePath || currentSession?.directory || "",
+    sessionId: currentSession?.id ?? selectedSessionId ?? null,
   });
 
   const loadPendingQuestion = async (requestId: string, sessionId?: string | null) => {

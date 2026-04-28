@@ -14,6 +14,7 @@ interface UseTerminalSessionsOptions {
   setBanner: (message: string) => void;
   enabled?: boolean;
   defaultCwd?: string;
+  sessionId?: string | null;
 }
 
 const MAX_BUFFER_SIZE = 200 * 1024;
@@ -28,6 +29,7 @@ export function useTerminalSessions({
   setBanner,
   enabled = false,
   defaultCwd = "",
+  sessionId = null,
 }: UseTerminalSessionsOptions) {
   const [sessions, setSessions] = useState<PtySession[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -146,6 +148,7 @@ export function useTerminalSessions({
         body: JSON.stringify({
           command: "/bin/bash",
           cwd: defaultCwd.trim() || undefined,
+          session_id: sessionId ?? undefined,
         }),
       });
       setSessions((current) => [...current, session]);
@@ -157,7 +160,7 @@ export function useTerminalSessions({
     } finally {
       setCreating(false);
     }
-  }, [apiJson, connectSocket, defaultCwd, setBanner]);
+  }, [apiJson, connectSocket, defaultCwd, sessionId, setBanner]);
 
   const deleteSession = useCallback(
     async (sessionId: string) => {

@@ -1,10 +1,13 @@
 use async_trait::async_trait;
-use axum::http::{header::HeaderValue, request::Parts};
+use axum::body::Body;
+use axum::http::{header, header::HeaderValue, request::Parts, Method, Request, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use futures::StreamExt;
 use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::sync::atomic::AtomicU64;
@@ -870,8 +873,103 @@ fn cors_layer() -> CorsLayer {
         .allow_headers(Any)
 }
 
+fn server_password() -> Option<String> {
+    std::env::var("ROCODE_SERVER_PASSWORD")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn is_public_server_path(method: &Method, path: &str) -> bool {
+    *method == Method::OPTIONS
+        || path == "/"
+        || path == "/health"
+        || path == "/favicon.ico"
+        || path == "/apple-touch-icon.png"
+        || path == "/web"
+        || path == "/web/"
+        || path.starts_with("/web/")
+}
+
+fn bearer_token(value: &HeaderValue) -> Option<&str> {
+    value
+        .to_str()
+        .ok()
+        .and_then(|raw| raw.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|raw| !raw.is_empty())
+}
+
+fn request_server_password(req: &Request<Body>) -> Option<String> {
+    if let Some(value) = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(bearer_token)
+    {
+        return Some(value.to_string());
+    }
+
+    if let Some(value) = req
+        .headers()
+        .get("x-rocode-server-password")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(value.to_string());
+    }
+
+    req.uri().query().and_then(|query| {
+        url::form_urlencoded::parse(query.as_bytes()).find_map(|(key, value)| {
+            matches!(
+                key.as_ref(),
+                "server_password" | "rocode_server_password" | "api_server_password"
+            )
+            .then(|| value.into_owned())
+        })
+    })
+}
+
+async fn server_auth_middleware(req: Request<Body>, next: Next) -> Response {
+    let Some(expected) = server_password() else {
+        return next.run(req).await;
+    };
+
+    if is_public_server_path(req.method(), req.uri().path()) {
+        return next.run(req).await;
+    }
+
+    if request_server_password(&req).as_deref() == Some(expected.as_str()) {
+        return next.run(req).await;
+    }
+
+    (
+        StatusCode::UNAUTHORIZED,
+        "ROCODE_SERVER_PASSWORD is required for this request",
+    )
+        .into_response()
+}
+
 fn is_loopback_host(host: &str) -> bool {
-    matches!(host, "127.0.0.1" | "localhost" | "::1")
+    let host = host.trim().trim_matches(['[', ']']);
+    matches!(host, "localhost")
+        || host
+            .parse::<IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
+}
+
+fn requires_server_password(bind_host: &str, mdns_enabled: bool) -> bool {
+    mdns_enabled || !is_loopback_host(bind_host)
+}
+
+fn ensure_server_password_policy(bind_host: &str, mdns_enabled: bool) -> anyhow::Result<()> {
+    if requires_server_password(bind_host, mdns_enabled) && server_password().is_none() {
+        anyhow::bail!(
+            "ROCODE_SERVER_PASSWORD must be set when binding to a non-loopback host or enabling mDNS"
+        );
+    }
+    Ok(())
 }
 
 fn service_name_from_mdns_domain(domain: &str, port: u16) -> String {
@@ -1001,15 +1099,15 @@ pub async fn run_server_runtime(options: ServerRuntimeOptions) -> anyhow::Result
     let workspace_root =
         normalize_workspace_root(options.cwd.clone().unwrap_or_else(default_workspace_root));
 
-    if std::env::var("ROCODE_SERVER_PASSWORD").is_err() {
-        eprintln!("Warning: ROCODE_SERVER_PASSWORD is not set; server is unsecured.");
-    }
-
     let bind_host = if options.mdns && options.hostname == "127.0.0.1" {
         "0.0.0.0".to_string()
     } else {
         options.hostname
     };
+    ensure_server_password_policy(&bind_host, options.mdns)?;
+    if server_password().is_none() {
+        eprintln!("Warning: ROCODE_SERVER_PASSWORD is not set; loopback server is unsecured.");
+    }
     let bind_port = if options.port == 0 {
         3000
     } else {
@@ -1039,6 +1137,7 @@ pub async fn run_server(addr: SocketAddr, workspace_root: PathBuf) -> anyhow::Re
     );
 
     let app = routes::router()
+        .layer(middleware::from_fn(server_auth_middleware))
         .layer(cors_layer())
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -1057,6 +1156,7 @@ pub async fn run_server_with_state(
     state: Arc<ServerState>,
 ) -> anyhow::Result<()> {
     let app = routes::router()
+        .layer(middleware::from_fn(server_auth_middleware))
         .layer(cors_layer())
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -1074,6 +1174,46 @@ pub async fn run_server_with_state(
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    #[test]
+    fn auth_public_path_only_allows_static_and_health_routes() {
+        assert!(is_public_server_path(&Method::GET, "/health"));
+        assert!(is_public_server_path(&Method::GET, "/web/app.js"));
+        assert!(!is_public_server_path(&Method::GET, "/file/content"));
+        assert!(!is_public_server_path(&Method::POST, "/provider/connect"));
+    }
+
+    #[test]
+    fn request_server_password_accepts_header_and_query() {
+        let header_req = Request::builder()
+            .uri("/provider/connect")
+            .header(header::AUTHORIZATION, "Bearer secret")
+            .body(Body::empty())
+            .expect("request should build");
+        assert_eq!(
+            request_server_password(&header_req).as_deref(),
+            Some("secret")
+        );
+
+        let query_req = Request::builder()
+            .uri("/event?server_password=query-secret")
+            .body(Body::empty())
+            .expect("request should build");
+        assert_eq!(
+            request_server_password(&query_req).as_deref(),
+            Some("query-secret")
+        );
+    }
+
+    #[test]
+    fn remote_bind_and_mdns_require_server_password() {
+        assert!(!requires_server_password("127.0.0.1", false));
+        assert!(!requires_server_password("localhost", false));
+        assert!(!requires_server_password("::1", false));
+        assert!(requires_server_password("0.0.0.0", false));
+        assert!(requires_server_password("192.168.1.10", false));
+        assert!(requires_server_password("127.0.0.1", true));
+    }
 
     fn state_with_repos(
         session_repo: SessionRepository,

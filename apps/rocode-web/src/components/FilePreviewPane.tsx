@@ -77,7 +77,7 @@ function IframePreview({ filePath }: { filePath: string }) {
       src={apiUrl(`/file/download?path=${encodeURIComponent(filePath)}`)}
       title={filePath}
       className="w-full h-full border-0"
-      sandbox="allow-scripts allow-same-origin"
+      sandbox=""
     />
   );
 }

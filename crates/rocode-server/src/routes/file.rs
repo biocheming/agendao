@@ -167,6 +167,7 @@ fn canonical_root(root: &FsPath) -> Result<PathBuf> {
         .map_err(|e| ApiError::BadRequest(format!("Failed to resolve project root: {}", e)))
 }
 
+#[cfg(test)]
 fn nearest_existing_ancestor(path: &FsPath) -> Option<PathBuf> {
     let mut current = Some(path);
     while let Some(candidate) = current {
@@ -184,25 +185,7 @@ fn effective_root_for_input(input: &str, default_root: &FsPath) -> Result<PathBu
         return canonical_root(default_root);
     }
 
-    let raw = PathBuf::from(trimmed);
-    if !raw.is_absolute() {
-        return canonical_root(default_root);
-    }
-
-    let resolved = resolve_user_path(trimmed, default_root);
-    let ancestor = nearest_existing_ancestor(&resolved).ok_or_else(|| {
-        ApiError::BadRequest("Failed to resolve an existing ancestor for path".to_string())
-    })?;
-    let root = if ancestor.is_dir() {
-        ancestor
-    } else {
-        ancestor
-            .parent()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| ancestor.clone())
-    };
-
-    canonical_root(&root)
+    canonical_root(default_root)
 }
 
 fn canonicalize_within_root(path: &FsPath, root: &FsPath) -> Result<PathBuf> {
@@ -736,7 +719,6 @@ async fn find_text(
 #[cfg(test)]
 mod tests {
     use super::{effective_root_for_input, nearest_existing_ancestor};
-    use std::path::PathBuf;
 
     #[test]
     fn nearest_existing_ancestor_walks_up_for_missing_path() {
@@ -762,7 +744,7 @@ mod tests {
     }
 
     #[test]
-    fn effective_root_uses_absolute_workspace_directory() {
+    fn effective_root_keeps_absolute_directory_bound_to_default_root() {
         let temp = tempfile::tempdir().expect("tempdir");
         let default_root = temp.path().join("server-root");
         let workspace = temp.path().join("external-workspace");
@@ -772,11 +754,11 @@ mod tests {
         let resolved =
             effective_root_for_input(workspace.to_string_lossy().as_ref(), &default_root)
                 .expect("root");
-        assert_eq!(resolved, workspace.canonicalize().expect("canonical"));
+        assert_eq!(resolved, default_root.canonicalize().expect("canonical"));
     }
 
     #[test]
-    fn effective_root_uses_parent_for_absolute_file() {
+    fn effective_root_keeps_absolute_file_bound_to_default_root() {
         let temp = tempfile::tempdir().expect("tempdir");
         let default_root = temp.path().join("server-root");
         let workspace = temp.path().join("external-workspace");
@@ -787,14 +769,7 @@ mod tests {
 
         let resolved =
             effective_root_for_input(file.to_string_lossy().as_ref(), &default_root).expect("root");
-        assert_eq!(
-            resolved,
-            file.parent()
-                .map(PathBuf::from)
-                .expect("parent")
-                .canonicalize()
-                .expect("canonical")
-        );
+        assert_eq!(resolved, default_root.canonicalize().expect("canonical"));
     }
 }
 

@@ -4,7 +4,21 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn rocode_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_rocode"))
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_rocode") {
+        return PathBuf::from(path);
+    }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let binary_name = if cfg!(windows) {
+        "rocode.exe"
+    } else {
+        "rocode"
+    };
+    manifest_dir
+        .join("../..")
+        .join("target")
+        .join("debug")
+        .join(binary_name)
 }
 
 fn repo_root() -> PathBuf {
