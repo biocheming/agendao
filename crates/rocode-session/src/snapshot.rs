@@ -12,6 +12,9 @@ pub struct SnapshotPatch {
 
 pub struct Snapshot;
 
+const SNAPSHOT_STATE_DIR: &str = ".rocode";
+const SNAPSHOT_REPO_DIR: &str = "snapshot";
+
 impl Snapshot {
     pub fn new() -> Self {
         Self
@@ -201,7 +204,7 @@ impl Default for Snapshot {
 }
 
 fn snapshot_git_dir(directory: &Path) -> PathBuf {
-    directory.join(".opencode").join("snapshot")
+    directory.join(SNAPSHOT_STATE_DIR).join(SNAPSHOT_REPO_DIR)
 }
 
 fn ensure_snapshot_repo(directory: &Path) -> Result<PathBuf> {
@@ -259,9 +262,9 @@ fn git_output(directory: &Path, git_dir: &Path, args: &[&str]) -> Result<Output>
 fn git_add_all(directory: &Path, git_dir: &Path) -> Result<()> {
     // Exclude the snapshot repo itself when it lives under worktree.
     for args in [
-        vec!["add", "-A", "--", ".", ":(exclude).opencode/snapshot"],
-        vec!["add", "-A", "--", ".", ":!/.opencode/snapshot"],
-        vec!["add", "-A", "--", ".", ":!.opencode/snapshot"],
+        vec!["add", "-A", "--", ".", ":(exclude).rocode/snapshot"],
+        vec!["add", "-A", "--", ".", ":!/.rocode/snapshot"],
+        vec!["add", "-A", "--", ".", ":!.rocode/snapshot"],
     ] {
         if git_output(directory, git_dir, &args).is_ok() {
             return Ok(());
@@ -302,6 +305,8 @@ mod tests {
         fs::write(&file, "test\n").expect("write initial file");
         let snapshot = Snapshot::track(root).expect("track snapshot");
         assert!(is_hex_40(&snapshot), "expected tree hash, got: {snapshot}");
+        assert!(root.join(".rocode/snapshot/HEAD").exists());
+        assert!(!root.join(".opencode").exists());
 
         fs::write(&file, "modified\n").expect("modify file");
         let diffs = Snapshot::diff(root, &snapshot).expect("diff from snapshot");
