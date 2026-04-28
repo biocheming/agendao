@@ -1933,4 +1933,79 @@ mod tests {
         assert!(app.model_select.is_open());
         assert!(!app.event_caused_change);
     }
+
+    #[test]
+    fn refresh_child_sessions_uses_parent_graph_for_child_route() {
+        let app = App::new().expect("app should initialize");
+        let now = Utc::now();
+        let parent_id = "parent-session";
+        let child_id = "child-session";
+
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "scheduler_stage_child_session_id".to_string(),
+            serde_json::json!(child_id),
+        );
+        metadata.insert("scheduler_stage".to_string(), serde_json::json!("review"));
+        metadata.insert(
+            "scheduler_stage_title".to_string(),
+            serde_json::json!("Review"),
+        );
+        metadata.insert(
+            "scheduler_stage_status".to_string(),
+            serde_json::json!("running"),
+        );
+
+        {
+            let mut session_ctx = app.context.session.write();
+            session_ctx.upsert_session(Session {
+                id: parent_id.to_string(),
+                title: "Parent".to_string(),
+                created_at: now,
+                updated_at: now,
+                parent_id: None,
+                share: None,
+                metadata: None,
+            });
+            session_ctx.upsert_session(Session {
+                id: child_id.to_string(),
+                title: "Child".to_string(),
+                created_at: now,
+                updated_at: now,
+                parent_id: Some(parent_id.to_string()),
+                share: None,
+                metadata: None,
+            });
+            session_ctx.set_messages(
+                parent_id,
+                vec![Message {
+                    id: "stage-message".to_string(),
+                    role: MessageRole::Assistant,
+                    content: String::new(),
+                    created_at: now,
+                    agent: None,
+                    model: None,
+                    mode: None,
+                    finish: None,
+                    error: None,
+                    completed_at: None,
+                    cost: 0.0,
+                    tokens: TokenUsage::default(),
+                    metadata: Some(metadata),
+                    multimodal: None,
+                    parts: vec![ContextMessagePart::Text {
+                        text: String::new(),
+                    }],
+                }],
+            );
+            session_ctx.set_messages(child_id, Vec::new());
+        }
+
+        app.context.navigate_session(child_id);
+        app.refresh_child_sessions();
+
+        let children = app.context.child_sessions();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].session_id, child_id);
+    }
 }
