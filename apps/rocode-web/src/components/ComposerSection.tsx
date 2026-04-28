@@ -3,6 +3,7 @@ import { ComposerPanel } from "./ComposerPanel";
 import type { BreadcrumbProvenance } from "../hooks/useSchedulerNavigation";
 import type { ComposerAttachmentRecord } from "../lib/composerContext";
 import type { ProviderRecord } from "../lib/provider";
+import type { RecentModelRecord } from "../lib/workspace";
 
 interface ComposerSectionProps {
   composer: string;
@@ -16,6 +17,7 @@ interface ComposerSectionProps {
   selectedMode: string;
   onModeChange: (value: string) => void;
   providers: ProviderRecord[];
+  recentModels: RecentModelRecord[];
   selectedModel: string;
   onModelChange: (value: string) => void;
   references: string[];

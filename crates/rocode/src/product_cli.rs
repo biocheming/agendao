@@ -158,6 +158,24 @@ enum InstallMethod {
     Unknown,
 }
 
+fn normalize_tui_shorthand_args(args: Vec<OsString>) -> Vec<OsString> {
+    let Some(first_arg) = args.get(1).and_then(|value| value.to_str()) else {
+        return args;
+    };
+    if !matches!(first_arg, "-s" | "--session" | "-c" | "--continue") {
+        return args;
+    }
+
+    let mut normalized = Vec::with_capacity(args.len() + 1);
+    let mut iter = args.into_iter();
+    if let Some(bin) = iter.next() {
+        normalized.push(bin);
+    }
+    normalized.push(OsString::from("tui"));
+    normalized.extend(iter);
+    normalized
+}
+
 impl InstallMethod {
     fn parse(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
@@ -195,6 +213,7 @@ struct RemovalTarget {
 }
 
 pub async fn dispatch_if_product_command(args: Vec<OsString>) -> anyhow::Result<bool> {
+    let args = normalize_tui_shorthand_args(args);
     let Some(command) = args.get(1).and_then(|value| value.to_str()) else {
         run_tui(default_tui_request()).await?;
         return Ok(true);
@@ -315,6 +334,42 @@ pub async fn dispatch_if_product_command(args: Vec<OsString>) -> anyhow::Result<
     }
 
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn strings(args: Vec<&str>) -> Vec<OsString> {
+        args.into_iter().map(OsString::from).collect()
+    }
+
+    fn display_args(args: Vec<OsString>) -> Vec<String> {
+        args.into_iter()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn normalize_tui_shorthand_routes_session_to_tui() {
+        let normalized = normalize_tui_shorthand_args(strings(vec!["rocode", "-s", "ses_123"]));
+
+        assert_eq!(
+            display_args(normalized),
+            vec!["rocode", "tui", "-s", "ses_123"]
+        );
+    }
+
+    #[test]
+    fn normalize_tui_shorthand_leaves_cli_run_untouched() {
+        let normalized =
+            normalize_tui_shorthand_args(strings(vec!["rocode", "run", "-s", "ses_123"]));
+
+        assert_eq!(
+            display_args(normalized),
+            vec!["rocode", "run", "-s", "ses_123"]
+        );
+    }
 }
 
 fn default_tui_request() -> TuiCommandRequest {

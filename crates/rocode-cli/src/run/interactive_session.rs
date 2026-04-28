@@ -48,6 +48,16 @@ pub(super) async fn run_chat_session(
     let api_client = Arc::new(CliApiClient::new(server_url.clone()));
     let server_context = api_client.get_workspace_context().await.ok();
     let recent_session_info = cli_load_recent_session_info(&api_client, &working_dir).await;
+    let explicit_model_requested = model.is_some();
+    let (recent_model, recent_provider) = if explicit_model_requested {
+        (None, None)
+    } else {
+        server_context
+            .as_ref()
+            .and_then(|context| context.recent_models.first())
+            .map(|entry| (Some(entry.model.clone()), Some(entry.provider.clone())))
+            .unwrap_or((None, None))
+    };
 
     let (carry_model, carry_provider) = recent_session_info
         .as_ref()
@@ -70,8 +80,8 @@ pub(super) async fn run_chat_session(
         });
 
     let selection = CliRunSelection {
-        model: model.or(carry_model),
-        provider: provider.or(carry_provider),
+        model: model.or(recent_model).or(carry_model),
+        provider: provider.or(recent_provider).or(carry_provider),
         requested_agent,
         requested_scheduler_profile: requested_scheduler_profile.or(carry_preset),
         show_thinking: cli_resolve_show_thinking(
@@ -87,6 +97,7 @@ pub(super) async fn run_chat_session(
         selection: &selection,
     })
     .await?;
+    cli_save_recent_model_ref(&api_client, &runtime.resolved_model_label).await;
     let repl_style = CliStyle::detect();
 
     let session_info = api_client

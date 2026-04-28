@@ -28,11 +28,20 @@ export interface WorkspaceIdentityRecord {
   workspace_key: string;
 }
 
+export interface RecentModelRecord {
+  provider: string;
+  model: string;
+}
+
 export interface WorkspaceContextRecord {
   identity: WorkspaceIdentityRecord;
   mode: "shared" | "isolated";
   config: Record<string, unknown>;
-  recent_models?: Array<{ provider: string; model: string }>;
+  recent_models?: RecentModelRecord[];
+}
+
+export interface RecentModelsPayloadRecord {
+  recent_models: RecentModelRecord[];
 }
 
 export interface UploadedFileRecord {
