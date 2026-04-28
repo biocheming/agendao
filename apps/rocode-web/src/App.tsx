@@ -1441,6 +1441,13 @@ export default function App() {
       routeInitializedRef.current = true;
       return;
     }
+    if (
+      route.sessionId === selectedSessionId &&
+      (route.messageId || route.highlightIds.length > 0)
+    ) {
+      routeInitializedRef.current = true;
+      return;
+    }
     routeInitializedRef.current = true;
     writeWebSessionRoute({ sessionId: selectedSessionId, messageId: null, highlightIds: [] });
   }, [selectedSessionId]);
