@@ -277,6 +277,8 @@ pub struct Usage {
     #[serde(default)]
     pub cache_read_input_tokens: Option<u64>,
     #[serde(default)]
+    pub cache_miss_input_tokens: Option<u64>,
+    #[serde(default)]
     pub cache_creation_input_tokens: Option<u64>,
 }
 

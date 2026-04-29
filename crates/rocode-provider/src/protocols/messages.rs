@@ -425,6 +425,7 @@ fn convert_response(response: MessagesResponse) -> ChatResponse {
             completion_tokens: response.usage.output_tokens,
             total_tokens: response.usage.input_tokens + response.usage.output_tokens,
             cache_read_input_tokens: None,
+            cache_miss_input_tokens: None,
             cache_creation_input_tokens: None,
         }),
     }

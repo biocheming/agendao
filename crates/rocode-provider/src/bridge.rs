@@ -101,6 +101,7 @@ pub fn streaming_event_to_stream_events(event: StreamingEvent) -> Vec<StreamEven
                     completion_tokens: su.completion_tokens,
                     context_tokens: su.context_tokens.max(su.prompt_tokens),
                     cache_read_tokens: su.cache_read_tokens,
+                    cache_miss_tokens: su.cache_miss_tokens,
                     cache_write_tokens: su.cache_write_tokens,
                 });
             }
@@ -204,6 +205,9 @@ pub fn driver_response_to_chat_response(resp: DriverResponse) -> ChatResponse {
         cache_read_input_tokens: raw_usage
             .as_ref()
             .and_then(|usage| (usage.cache_read_tokens > 0).then_some(usage.cache_read_tokens)),
+        cache_miss_input_tokens: raw_usage
+            .as_ref()
+            .and_then(|usage| (usage.cache_miss_tokens > 0).then_some(usage.cache_miss_tokens)),
         cache_creation_input_tokens: raw_usage
             .as_ref()
             .and_then(|usage| (usage.cache_write_tokens > 0).then_some(usage.cache_write_tokens)),
@@ -616,13 +620,22 @@ fn extract_usage(value: &serde_json::Value) -> StreamUsage {
         .or_else(|| value.get("cache_write_tokens"))
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
+    let cache_miss = value
+        .get("cache_miss_input_tokens")
+        .or_else(|| value.get("cache_miss_tokens"))
+        .or_else(|| value.get("prompt_cache_miss_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
 
     StreamUsage {
         prompt_tokens: prompt,
         completion_tokens: completion,
-        context_tokens: prompt.max(cache_read.saturating_add(cache_write)),
+        context_tokens: prompt
+            .max(cache_read.saturating_add(cache_miss))
+            .max(cache_read.saturating_add(cache_write)),
         reasoning_tokens: reasoning,
         cache_read_tokens: cache_read,
+        cache_miss_tokens: cache_miss,
         cache_write_tokens: cache_write,
     }
 }
@@ -890,6 +903,7 @@ mod tests {
         assert_eq!(usage.prompt_tokens, 500);
         assert_eq!(usage.completion_tokens, 100);
         assert_eq!(usage.cache_read_tokens, 400);
+        assert_eq!(usage.cache_miss_tokens, 0);
         assert_eq!(usage.cache_write_tokens, 50);
     }
 
@@ -905,6 +919,7 @@ mod tests {
         assert_eq!(usage.prompt_tokens, 1000);
         assert_eq!(usage.completion_tokens, 100);
         assert_eq!(usage.cache_read_tokens, 850);
+        assert_eq!(usage.cache_miss_tokens, 150);
         assert_eq!(usage.cache_write_tokens, 0);
     }
 
@@ -967,6 +982,7 @@ mod tests {
         let chat_resp = driver_response_to_chat_response(resp);
         let usage = chat_resp.usage.expect("usage should be present");
         assert_eq!(usage.cache_read_input_tokens, Some(900));
+        assert_eq!(usage.cache_miss_input_tokens, Some(100));
         assert_eq!(usage.cache_creation_input_tokens, None);
     }
 

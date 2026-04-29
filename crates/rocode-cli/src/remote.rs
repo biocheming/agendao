@@ -331,6 +331,7 @@ pub(crate) fn parse_output_block(payload: &serde_json::Value) -> Option<OutputBl
             completion_tokens: payload.get("completion_tokens").and_then(|v| v.as_u64()),
             reasoning_tokens: payload.get("reasoning_tokens").and_then(|v| v.as_u64()),
             cache_read_tokens: payload.get("cache_read_tokens").and_then(|v| v.as_u64()),
+            cache_miss_tokens: payload.get("cache_miss_tokens").and_then(|v| v.as_u64()),
             cache_write_tokens: payload.get("cache_write_tokens").and_then(|v| v.as_u64()),
             decision: parse_scheduler_decision(payload.get("decision")),
             child_session_id: payload

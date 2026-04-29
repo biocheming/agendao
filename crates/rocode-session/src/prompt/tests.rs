@@ -36,6 +36,8 @@ impl StaticModelProvider {
                 supports_tools: false,
                 cost_per_million_input: 0.0,
                 cost_per_million_output: 0.0,
+                cost_per_million_cache_read: None,
+                cost_per_million_cache_write: None,
             }),
         }
     }
@@ -318,6 +320,8 @@ async fn prompt_with_update_hook_emits_incremental_snapshots() {
             supports_tools: false,
             cost_per_million_input: 0.0,
             cost_per_million_output: 0.0,
+            cost_per_million_cache_read: None,
+            cost_per_million_cache_write: None,
         },
         events: vec![
             StreamEvent::Start,
@@ -430,6 +434,8 @@ async fn prompt_continues_after_tool_calls_without_finish_step_reason() {
             supports_tools: true,
             cost_per_million_input: 0.0,
             cost_per_million_output: 0.0,
+            cost_per_million_cache_read: None,
+            cost_per_million_cache_write: None,
         },
         vec![
             vec![

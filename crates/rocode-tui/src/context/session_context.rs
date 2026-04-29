@@ -56,6 +56,8 @@ pub struct TokenUsage {
     pub output: u64,
     pub reasoning: u64,
     pub cache_read: u64,
+    #[serde(default)]
+    pub cache_miss: u64,
     pub cache_write: u64,
 }
 
@@ -995,6 +997,12 @@ impl SessionContext {
         if let Some(value) = block.cache_read_tokens {
             metadata.insert(
                 "scheduler_stage_cache_read_tokens".to_string(),
+                serde_json::json!(value),
+            );
+        }
+        if let Some(value) = block.cache_miss_tokens {
+            metadata.insert(
+                "scheduler_stage_cache_miss_tokens".to_string(),
                 serde_json::json!(value),
             );
         }

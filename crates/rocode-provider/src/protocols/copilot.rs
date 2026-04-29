@@ -293,6 +293,7 @@ impl CopilotProtocol {
                 .input_tokens_details
                 .as_ref()
                 .and_then(|d| d.cached_tokens),
+            cache_miss_input_tokens: None,
             cache_creation_input_tokens: None,
         };
 
@@ -653,6 +654,7 @@ fn convert_copilot_response(response: CopilotResponse) -> ChatResponse {
         completion_tokens: u.completion_tokens,
         total_tokens: u.total_tokens,
         cache_read_input_tokens: None,
+        cache_miss_input_tokens: None,
         cache_creation_input_tokens: None,
     });
 

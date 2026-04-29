@@ -714,6 +714,8 @@ fn state_model_to_runtime(provider_id: &str, model: &ProviderModel) -> RuntimeMo
         supports_tools: model.capabilities.toolcall,
         cost_per_million_input: model.cost.input,
         cost_per_million_output: model.cost.output,
+        cost_per_million_cache_read: Some(model.cost.cache.read),
+        cost_per_million_cache_write: Some(model.cost.cache.write),
     }
 }
 

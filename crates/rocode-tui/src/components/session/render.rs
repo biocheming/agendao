@@ -1691,5 +1691,6 @@ fn total_session_tokens(usage: &rocode_session::SessionUsage) -> u64 {
         + usage.output_tokens
         + usage.reasoning_tokens
         + usage.cache_read_tokens
+        + usage.cache_miss_tokens
         + usage.cache_write_tokens
 }

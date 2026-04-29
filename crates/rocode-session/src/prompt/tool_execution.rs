@@ -845,6 +845,8 @@ mod tests {
                     supports_tools: false,
                     cost_per_million_input: 0.0,
                     cost_per_million_output: 0.0,
+                    cost_per_million_cache_read: None,
+                    cost_per_million_cache_write: None,
                 }),
             }
         }

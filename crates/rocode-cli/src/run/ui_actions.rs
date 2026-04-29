@@ -808,6 +808,12 @@ async fn cli_execute_ui_action(
                         format_token_count(token_stats.cache_read_tokens)
                     ));
                 }
+                if token_stats.cache_miss_tokens > 0 {
+                    lines.push(format!(
+                        "  Cache M:   {}",
+                        format_token_count(token_stats.cache_miss_tokens)
+                    ));
+                }
                 if token_stats.cache_write_tokens > 0 {
                     lines.push(format!(
                         "  Cache W:   {}",

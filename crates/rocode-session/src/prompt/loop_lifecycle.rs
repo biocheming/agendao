@@ -583,6 +583,7 @@ impl SessionPrompt {
                     "completion_tokens": step_output.completion_tokens,
                     "reasoning_tokens": step_output.reasoning_tokens,
                     "cache_read_tokens": step_output.cache_read_tokens,
+                    "cache_miss_tokens": step_output.cache_miss_tokens,
                     "cache_write_tokens": step_output.cache_write_tokens,
                 }),
             );
@@ -603,6 +604,10 @@ impl SessionPrompt {
                 serde_json::json!(step_output.cache_read_tokens),
             );
             assistant_msg.metadata.insert(
+                "tokens_cache_miss".to_string(),
+                serde_json::json!(step_output.cache_miss_tokens),
+            );
+            assistant_msg.metadata.insert(
                 "tokens_cache_write".to_string(),
                 serde_json::json!(step_output.cache_write_tokens),
             );
@@ -611,6 +616,7 @@ impl SessionPrompt {
                 output_tokens: step_output.completion_tokens,
                 reasoning_tokens: step_output.reasoning_tokens,
                 cache_read_tokens: step_output.cache_read_tokens,
+                cache_miss_tokens: step_output.cache_miss_tokens,
                 cache_write_tokens: step_output.cache_write_tokens,
                 context_tokens: step_output.prompt_tokens,
                 ..Default::default()

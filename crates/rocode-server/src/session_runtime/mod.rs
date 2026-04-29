@@ -92,21 +92,25 @@ impl ModelPricing {
         Self::new(
             info.cost_per_million_input,
             info.cost_per_million_output,
-            None, // cache_read  — no dedicated field on ModelInfo yet
-            None, // cache_write — no dedicated field on ModelInfo yet
+            info.cost_per_million_cache_read,
+            info.cost_per_million_cache_write,
         )
     }
 
-    /// Compute cost in dollars, identical semantics to the original
-    /// `ModelCost::compute` from `rocode_provider::models`.
     pub(crate) fn compute(
         &self,
         input_tokens: u64,
         output_tokens: u64,
         cache_read_tokens: u64,
+        cache_miss_tokens: u64,
         cache_write_tokens: u64,
     ) -> f64 {
-        let input_cost = self.input_per_million * (input_tokens as f64) / 1_000_000.0;
+        let uncached_input_tokens = if cache_miss_tokens > 0 {
+            cache_miss_tokens
+        } else {
+            input_tokens
+        };
+        let input_cost = self.input_per_million * (uncached_input_tokens as f64) / 1_000_000.0;
         let output_cost = self.output_per_million * (output_tokens as f64) / 1_000_000.0;
         let cache_read_cost =
             self.cache_read_per_million * (cache_read_tokens as f64) / 1_000_000.0;
@@ -467,6 +471,7 @@ fn write_stage_usage_totals(
         .max(prompt_tokens);
     let reasoning_tokens = committed_usage.reasoning_tokens + live_usage.reasoning_tokens;
     let cache_read_tokens = committed_usage.cache_read_tokens + live_usage.cache_read_tokens;
+    let cache_miss_tokens = committed_usage.cache_miss_tokens + live_usage.cache_miss_tokens;
     let cache_write_tokens = committed_usage.cache_write_tokens + live_usage.cache_write_tokens;
 
     let mut has_any_visible_usage = false;
@@ -476,6 +481,7 @@ fn write_stage_usage_totals(
         ("scheduler_stage_completion_tokens", completion_tokens),
         ("scheduler_stage_reasoning_tokens", reasoning_tokens),
         ("scheduler_stage_cache_read_tokens", cache_read_tokens),
+        ("scheduler_stage_cache_miss_tokens", cache_miss_tokens),
         ("scheduler_stage_cache_write_tokens", cache_write_tokens),
     ] {
         if value > 0 || allow_zero_fields {
@@ -495,6 +501,7 @@ fn write_stage_usage_totals(
                     prompt_tokens,
                     completion_tokens,
                     cache_read_tokens,
+                    cache_miss_tokens,
                     cache_write_tokens,
                 )
             })
@@ -506,6 +513,7 @@ fn write_stage_usage_totals(
             reasoning_tokens,
             cache_write_tokens,
             cache_read_tokens,
+            cache_miss_tokens,
             context_tokens,
             total_cost,
         });
@@ -1715,6 +1723,7 @@ fn scheduler_stage_runtime_metadata(message: &SessionMessage) -> serde_json::Val
         "scheduler_stage_completion_tokens",
         "scheduler_stage_reasoning_tokens",
         "scheduler_stage_cache_read_tokens",
+        "scheduler_stage_cache_miss_tokens",
         "scheduler_stage_cache_write_tokens",
     ] {
         if let Some(value) = message.metadata.get(key).cloned() {
@@ -3648,6 +3657,7 @@ mod tests {
                 context_tokens: 0,
                 reasoning_tokens: 40,
                 cache_read_tokens: 2,
+                cache_miss_tokens: 0,
                 cache_write_tokens: 1,
             },
             false,
@@ -3663,6 +3673,7 @@ mod tests {
                 context_tokens: 0,
                 reasoning_tokens: 0,
                 cache_read_tokens: 2,
+                cache_miss_tokens: 0,
                 cache_write_tokens: 1,
             },
             true,
@@ -3735,6 +3746,7 @@ mod tests {
                 context_tokens: 0,
                 reasoning_tokens: 0,
                 cache_read_tokens: 500_000,
+                cache_miss_tokens: 0,
                 cache_write_tokens: 200_000,
             },
             true,
@@ -3792,6 +3804,7 @@ mod tests {
                 context_tokens: 0,
                 reasoning_tokens: 0,
                 cache_read_tokens: 0,
+                cache_miss_tokens: 0,
                 cache_write_tokens: 0,
             },
             false,
@@ -3807,6 +3820,7 @@ mod tests {
                 context_tokens: 0,
                 reasoning_tokens: 40,
                 cache_read_tokens: 2,
+                cache_miss_tokens: 0,
                 cache_write_tokens: 1,
             },
             true,

@@ -62,6 +62,7 @@ export interface OutputBlock {
   completion_tokens?: number;
   reasoning_tokens?: number;
   cache_read_tokens?: number;
+  cache_miss_tokens?: number;
   cache_write_tokens?: number;
   decision?: {
     title?: string;
@@ -97,6 +98,7 @@ export interface MessageRecord {
     output: number;
     reasoning: number;
     cache_read: number;
+    cache_miss: number;
     cache_write: number;
   };
   parts?: MessagePartRecord[];

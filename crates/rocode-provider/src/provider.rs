@@ -22,6 +22,10 @@ pub struct ModelInfo {
     pub supports_tools: bool,
     pub cost_per_million_input: f64,
     pub cost_per_million_output: f64,
+    #[serde(default)]
+    pub cost_per_million_cache_read: Option<f64>,
+    #[serde(default)]
+    pub cost_per_million_cache_write: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -543,6 +543,8 @@ pub struct MessageTokensInfo {
     pub reasoning: u64,
     #[serde(default, alias = "cacheRead")]
     pub cache_read: u64,
+    #[serde(default, alias = "cacheMiss")]
+    pub cache_miss: u64,
     #[serde(default, alias = "cacheWrite")]
     pub cache_write: u64,
 }

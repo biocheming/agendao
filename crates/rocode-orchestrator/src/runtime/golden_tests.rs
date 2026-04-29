@@ -987,6 +987,7 @@ mod tests {
                     context_tokens: 100,
                     reasoning_tokens: 20,
                     cache_read_tokens: 10,
+                    cache_miss_tokens: 5,
                     cache_write_tokens: 5,
                 },
                 provider_metadata: None,

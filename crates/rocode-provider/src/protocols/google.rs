@@ -306,6 +306,7 @@ fn convert_google_response(response: GoogleResponse) -> ChatResponse {
         completion_tokens: u.candidates_token_count,
         total_tokens: u.total_token_count,
         cache_read_input_tokens: None,
+        cache_miss_input_tokens: None,
         cache_creation_input_tokens: None,
     });
 

@@ -95,6 +95,7 @@ pub(crate) async fn handle_stats_command(
     let mut total_output = 0u64;
     let mut total_reasoning = 0u64;
     let mut total_cache_read = 0u64;
+    let mut total_cache_miss = 0u64;
     let mut total_cache_write = 0u64;
     let mut persisted_telemetry_sessions = 0usize;
     let mut persisted_stage_summaries = 0usize;
@@ -109,6 +110,7 @@ pub(crate) async fn handle_stats_command(
         total_output += usage_summary.usage.output_tokens;
         total_reasoning += usage_summary.usage.reasoning_tokens;
         total_cache_read += usage_summary.usage.cache_read_tokens;
+        total_cache_miss += usage_summary.usage.cache_miss_tokens;
         total_cache_write += usage_summary.usage.cache_write_tokens;
         if usage_summary.used_persisted_snapshot {
             persisted_telemetry_sessions += 1;
@@ -144,8 +146,13 @@ pub(crate) async fn handle_stats_command(
     println!("Messages: {}", total_messages);
     println!("Total Cost: ${:.4}", total_cost);
     println!(
-        "Tokens: input={} output={} reasoning={} cache_read={} cache_write={}",
-        total_input, total_output, total_reasoning, total_cache_read, total_cache_write
+        "Tokens: input={} output={} reasoning={} cache_read={} cache_miss={} cache_write={}",
+        total_input,
+        total_output,
+        total_reasoning,
+        total_cache_read,
+        total_cache_miss,
+        total_cache_write
     );
     println!(
         "Persisted telemetry: sessions={} stage_summaries={}",
@@ -264,6 +271,7 @@ mod tests {
             reasoning_tokens: 3,
             cache_write_tokens: 4,
             cache_read_tokens: 5,
+            cache_miss_tokens: 0,
             context_tokens: 0,
             total_cost: 0.1,
         });
@@ -277,6 +285,7 @@ mod tests {
                     reasoning_tokens: 30,
                     cache_write_tokens: 40,
                     cache_read_tokens: 50,
+                    cache_miss_tokens: 0,
                     context_tokens: 0,
                     total_cost: 1.5,
                 },
@@ -330,6 +339,7 @@ mod tests {
             reasoning_tokens: 3,
             cache_write_tokens: 4,
             cache_read_tokens: 5,
+            cache_miss_tokens: 0,
             context_tokens: 0,
             total_cost: 0.25,
         });

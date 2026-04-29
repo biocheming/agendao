@@ -100,6 +100,7 @@ pub fn normalize(event: StreamEvent) -> Vec<LoopEvent> {
                 context_tokens: usage.context_tokens.max(usage.prompt_tokens),
                 reasoning_tokens: usage.reasoning_tokens,
                 cache_read_tokens: usage.cache_read_tokens,
+                cache_miss_tokens: usage.cache_miss_tokens,
                 cache_write_tokens: usage.cache_write_tokens,
             };
             vec![LoopEvent::StepDone {
@@ -113,6 +114,7 @@ pub fn normalize(event: StreamEvent) -> Vec<LoopEvent> {
             completion_tokens,
             context_tokens,
             cache_read_tokens,
+            cache_miss_tokens,
             cache_write_tokens,
         } => {
             // Standalone usage event (e.g. ethnopic message_start).
@@ -125,6 +127,7 @@ pub fn normalize(event: StreamEvent) -> Vec<LoopEvent> {
                     completion_tokens,
                     context_tokens: context_tokens.max(prompt_tokens),
                     cache_read_tokens,
+                    cache_miss_tokens,
                     cache_write_tokens,
                     ..Default::default()
                 }),

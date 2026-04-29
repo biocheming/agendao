@@ -33,6 +33,8 @@ pub struct OutputUsage {
     #[serde(default)]
     pub cache_read_tokens: u64,
     #[serde(default)]
+    pub cache_miss_tokens: u64,
+    #[serde(default)]
     pub cache_write_tokens: u64,
 }
 
@@ -43,6 +45,7 @@ impl OutputUsage {
             && self.context_tokens == 0
             && self.reasoning_tokens == 0
             && self.cache_read_tokens == 0
+            && self.cache_miss_tokens == 0
             && self.cache_write_tokens == 0
     }
 
@@ -54,6 +57,7 @@ impl OutputUsage {
             .max(other.context_tokens.max(other.prompt_tokens));
         self.reasoning_tokens += other.reasoning_tokens;
         self.cache_read_tokens += other.cache_read_tokens;
+        self.cache_miss_tokens += other.cache_miss_tokens;
         self.cache_write_tokens += other.cache_write_tokens;
     }
 }
@@ -66,6 +70,7 @@ impl From<StepUsage> for OutputUsage {
             context_tokens: value.context_tokens.max(value.prompt_tokens),
             reasoning_tokens: value.reasoning_tokens,
             cache_read_tokens: value.cache_read_tokens,
+            cache_miss_tokens: value.cache_miss_tokens,
             cache_write_tokens: value.cache_write_tokens,
         }
     }
@@ -79,6 +84,7 @@ impl From<&StepUsage> for OutputUsage {
             context_tokens: value.context_tokens.max(value.prompt_tokens),
             reasoning_tokens: value.reasoning_tokens,
             cache_read_tokens: value.cache_read_tokens,
+            cache_miss_tokens: value.cache_miss_tokens,
             cache_write_tokens: value.cache_write_tokens,
         }
     }
@@ -245,6 +251,7 @@ mod tests {
                 context_tokens: 10,
                 reasoning_tokens: 2,
                 cache_read_tokens: 1,
+                cache_miss_tokens: 0,
                 cache_write_tokens: 0,
             },
         );
@@ -258,6 +265,7 @@ mod tests {
                 context_tokens: 7,
                 reasoning_tokens: 1,
                 cache_read_tokens: 0,
+                cache_miss_tokens: 2,
                 cache_write_tokens: 5,
             },
         );
@@ -272,6 +280,7 @@ mod tests {
                 context_tokens: 10,
                 reasoning_tokens: 3,
                 cache_read_tokens: 1,
+                cache_miss_tokens: 2,
                 cache_write_tokens: 5,
             }
         );

@@ -19,6 +19,8 @@ fn create_test_registry() -> ProviderRegistry {
             supports_tools: true,
             cost_per_million_input: 3.0,
             cost_per_million_output: 15.0,
+            cost_per_million_cache_read: None,
+            cost_per_million_cache_write: None,
         },
         ModelInfo {
             id: "test-model-v2".to_string(),
@@ -31,6 +33,8 @@ fn create_test_registry() -> ProviderRegistry {
             supports_tools: true,
             cost_per_million_input: 3.0,
             cost_per_million_output: 15.0,
+            cost_per_million_cache_read: None,
+            cost_per_million_cache_write: None,
         },
     ]
     .into_iter()
@@ -57,6 +61,8 @@ fn create_test_registry() -> ProviderRegistry {
         supports_tools: true,
         cost_per_million_input: 2.5,
         cost_per_million_output: 10.0,
+        cost_per_million_cache_read: None,
+        cost_per_million_cache_write: None,
     }]
     .into_iter()
     .map(|m| (m.id.clone(), m))
@@ -82,6 +88,8 @@ fn create_test_registry() -> ProviderRegistry {
         supports_tools: true,
         cost_per_million_input: 0.1,
         cost_per_million_output: 0.4,
+        cost_per_million_cache_read: None,
+        cost_per_million_cache_write: None,
     }]
     .into_iter()
     .map(|m| (m.id.clone(), m))
@@ -199,6 +207,8 @@ fn test_model_info_clone() {
         supports_tools: true,
         cost_per_million_input: 1.0,
         cost_per_million_output: 2.0,
+        cost_per_million_cache_read: None,
+        cost_per_million_cache_write: None,
     };
 
     let cloned = model.clone();

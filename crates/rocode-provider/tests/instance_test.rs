@@ -14,6 +14,8 @@ fn create_test_model(id: &str, provider: &str) -> ModelInfo {
         supports_tools: true,
         cost_per_million_input: 1.0,
         cost_per_million_output: 2.0,
+        cost_per_million_cache_read: None,
+        cost_per_million_cache_write: None,
     }
 }
 

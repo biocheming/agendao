@@ -412,6 +412,9 @@ fn cli_stage_usage_line(stage: &rocode_command::stage_protocol::StageSummary) ->
     if let Some(cache_read_tokens) = stage.cache_read_tokens.filter(|value| *value > 0) {
         parts.push(format!("cache-r {}", format_token_count(cache_read_tokens)));
     }
+    if let Some(cache_miss_tokens) = stage.cache_miss_tokens.filter(|value| *value > 0) {
+        parts.push(format!("cache-m {}", format_token_count(cache_miss_tokens)));
+    }
     if let Some(cache_write_tokens) = stage.cache_write_tokens.filter(|value| *value > 0) {
         parts.push(format!(
             "cache-w {}",
@@ -711,6 +714,7 @@ fn cli_usage_snapshot_lines(
                 + usage.output_tokens
                 + usage.reasoning_tokens
                 + usage.cache_read_tokens
+                + usage.cache_miss_tokens
                 + usage.cache_write_tokens
         )
     ));
@@ -729,6 +733,10 @@ fn cli_usage_snapshot_lines(
     lines.push(format!(
         "  Cache read: {}",
         format_token_count(usage.cache_read_tokens)
+    ));
+    lines.push(format!(
+        "  Cache miss: {}",
+        format_token_count(usage.cache_miss_tokens)
     ));
     lines.push(format!(
         "  Cache write: {}",
@@ -777,6 +785,7 @@ fn cli_session_insights_lines(
                     + telemetry.usage.output_tokens
                     + telemetry.usage.reasoning_tokens
                     + telemetry.usage.cache_read_tokens
+                    + telemetry.usage.cache_miss_tokens
                     + telemetry.usage.cache_write_tokens
             ),
             format_token_count(telemetry.usage.input_tokens),
@@ -784,8 +793,9 @@ fn cli_session_insights_lines(
             format_token_count(telemetry.usage.reasoning_tokens),
         ));
         lines.push(format!(
-            "  Cache read {} · cache write {} · cost ${:.4}",
+            "  Cache read {} · cache miss {} · cache write {} · cost ${:.4}",
             format_token_count(telemetry.usage.cache_read_tokens),
+            format_token_count(telemetry.usage.cache_miss_tokens),
             format_token_count(telemetry.usage.cache_write_tokens),
             telemetry.usage.total_cost
         ));
@@ -2657,10 +2667,11 @@ fn cli_sidebar_lines(
                 format_token_count(ts.reasoning_tokens)
             ));
         }
-        if ts.cache_read_tokens > 0 || ts.cache_write_tokens > 0 {
+        if ts.cache_read_tokens > 0 || ts.cache_miss_tokens > 0 || ts.cache_write_tokens > 0 {
             lines.push(format!(
-                "Cache:   read {} · write {}",
+                "Cache:   read {} · miss {} · write {}",
                 format_token_count(ts.cache_read_tokens),
+                format_token_count(ts.cache_miss_tokens),
                 format_token_count(ts.cache_write_tokens)
             ));
         }

@@ -297,6 +297,7 @@ fn convert_gitlab_response(response: GitLabResponse) -> ChatResponse {
         completion_tokens: u.completion_tokens,
         total_tokens: u.total_tokens,
         cache_read_input_tokens: None,
+        cache_miss_input_tokens: None,
         cache_creation_input_tokens: None,
     });
 

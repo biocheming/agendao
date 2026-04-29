@@ -179,6 +179,11 @@ impl Database {
                     THEN CAST(COALESCE(json_extract(CAST(model_id AS TEXT), '$.scheduler_stage_cache_read_tokens'), 0) AS INTEGER)
                     ELSE 0
                 END,
+                tokens_cache_miss = CASE
+                    WHEN typeof(model_id) = 'text' AND json_valid(CAST(model_id AS TEXT))
+                    THEN CAST(COALESCE(json_extract(CAST(model_id AS TEXT), '$.scheduler_stage_cache_miss_tokens'), 0) AS INTEGER)
+                    ELSE 0
+                END,
                 tokens_cache_write = CASE
                     WHEN typeof(model_id) = 'text' AND json_valid(CAST(model_id AS TEXT))
                     THEN CAST(COALESCE(json_extract(CAST(model_id AS TEXT), '$.scheduler_stage_cache_write_tokens'), 0) AS INTEGER)

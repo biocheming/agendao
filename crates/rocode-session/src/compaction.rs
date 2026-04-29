@@ -115,6 +115,7 @@ pub struct TokenUsage {
     pub input: u64,
     pub output: u64,
     pub cache_read: u64,
+    pub cache_miss: u64,
     pub cache_write: u64,
     pub total: u64,
 }
@@ -125,6 +126,7 @@ impl TokenUsage {
             input,
             output,
             cache_read: 0,
+            cache_miss: 0,
             cache_write: 0,
             total: input + output,
         }
@@ -133,7 +135,7 @@ impl TokenUsage {
     pub fn with_cache(mut self, read: u64, write: u64) -> Self {
         self.cache_read = read;
         self.cache_write = write;
-        self.total = self.input + self.output + read + write;
+        self.total = self.input + self.output + self.cache_miss + read + write;
         self
     }
 }
@@ -260,7 +262,7 @@ impl CompactionEngine {
         let count = if usage.total > 0 {
             usage.total
         } else {
-            usage.input + usage.output + usage.cache_read + usage.cache_write
+            usage.input + usage.output + usage.cache_read + usage.cache_miss + usage.cache_write
         };
 
         let reserved = self
@@ -1177,6 +1179,8 @@ mod tests {
                     supports_tools: false,
                     cost_per_million_input: 0.0,
                     cost_per_million_output: 0.0,
+                    cost_per_million_cache_read: None,
+                    cost_per_million_cache_write: None,
                 },
                 stream_events: vec![
                     StreamEvent::Start,
@@ -1468,11 +1472,12 @@ mod tests {
     #[test]
     fn test_is_overflow_total_fallback() {
         let engine = CompactionEngine::default();
-        // total is 0, so fallback to input + output + cache_read + cache_write
+        // total is 0, so fallback to input + output + cache_read + cache_miss + cache_write
         let usage = TokenUsage {
             input: 100_000,
             output: 5_000,
             cache_read: 10_000,
+            cache_miss: 0,
             cache_write: 10_000,
             total: 0,
         };
