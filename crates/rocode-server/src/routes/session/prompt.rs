@@ -10,8 +10,8 @@ use axum::{
 };
 use rocode_config::Config as AppConfig;
 use rocode_memory::{
-    load_persisted_memory_snapshot, render_frozen_snapshot_block, render_prefetch_packet_block,
-    PersistedMemorySnapshot, MEMORY_LAST_PREFETCH_METADATA_KEY,
+    load_last_prefetch_packet, load_persisted_memory_snapshot, render_frozen_snapshot_block,
+    render_prefetch_packet_block, PersistedMemorySnapshot, MEMORY_LAST_PREFETCH_METADATA_KEY,
 };
 use rocode_types::{
     MemoryRetrievalPacket, MemoryRetrievalQuery, MessageRole, PartType as SessionPartType,
@@ -337,6 +337,7 @@ pub(super) const SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY: &str =
 #[derive(Debug, Clone)]
 pub(super) struct SchedulerSessionContextPacket {
     exact_recent_tail: Vec<SchedulerSessionContextTurn>,
+    memory_anchors: Vec<SchedulerMemoryContextAnchor>,
     eligible_message_count: usize,
     working_ledger: Vec<String>,
     latest_compaction_summary: Option<SchedulerCompactionContext>,
@@ -355,14 +356,25 @@ struct SchedulerCompactionContext {
     summary: String,
 }
 
+#[derive(Debug, Clone)]
+struct SchedulerMemoryContextAnchor {
+    record_id: String,
+    title: String,
+    kind: String,
+    status: String,
+    why_recalled: String,
+}
+
 impl SchedulerSessionContextPacket {
     pub(super) fn from_session(session: &rocode_session::Session) -> Option<Self> {
         let exact_recent_tail = collect_scheduler_recent_tail(session);
+        let memory_anchors = collect_scheduler_memory_anchors(session);
         let eligible_message_count = count_scheduler_context_messages(session);
         let latest_compaction_summary = latest_compaction_summary(session);
         let working_ledger = build_scheduler_working_ledger(session, &exact_recent_tail);
 
         if exact_recent_tail.is_empty()
+            && memory_anchors.is_empty()
             && working_ledger.is_empty()
             && latest_compaction_summary.is_none()
         {
@@ -371,6 +383,7 @@ impl SchedulerSessionContextPacket {
 
         Some(Self {
             exact_recent_tail,
+            memory_anchors,
             eligible_message_count,
             working_ledger,
             latest_compaction_summary,
@@ -389,6 +402,10 @@ not as a replacement for checking live files or rerunning verification when exac
         let source_anchors = self.render_source_anchors();
         if !source_anchors.is_empty() {
             sections.push(format!("## Source Anchors\n{source_anchors}"));
+        }
+        let memory_anchors = self.render_memory_anchors();
+        if !memory_anchors.is_empty() {
+            sections.push(format!("## Memory Anchors\n{memory_anchors}"));
         }
 
         sections.push(self.render_hydration_guidance());
@@ -448,12 +465,25 @@ not as a replacement for checking live files or rerunning verification when exac
                 "message_id": compaction.message_id,
             })
         });
+        let memory_anchors = self
+            .memory_anchors
+            .iter()
+            .map(|anchor| {
+                serde_json::json!({
+                    "record_id": anchor.record_id,
+                    "title": anchor.title,
+                    "kind": anchor.kind,
+                    "status": anchor.status,
+                })
+            })
+            .collect::<Vec<_>>();
         serde_json::json!({
             "version": 1,
             "eligible_message_count": self.eligible_message_count,
             "exact_recent_tail_count": self.exact_recent_tail.len(),
             "omitted_older_turns": self.eligible_message_count.saturating_sub(self.exact_recent_tail.len()),
             "exact_recent_tail": exact_recent_tail,
+            "memory_anchors": memory_anchors,
             "latest_compaction_summary": latest_compaction_summary,
             "limits": {
                 "recent_tail_messages": SCHEDULER_RECENT_TAIL_MESSAGES,
@@ -482,6 +512,10 @@ not as a replacement for checking live files or rerunning verification when exac
         } else {
             rows.push("- latest_compaction_summary: none".to_string());
         }
+        rows.push(format!(
+            "- memory_anchors: {} recalled records",
+            self.memory_anchors.len()
+        ));
         rows.push(
             "- recall_policy: use exact tail for recent follow-up references; treat ledger and compaction as lossy summaries; use `scheduler_context_hydrate` for authorized Source Anchors when prior exact text is needed; use memory, artifacts, or other tools for facts outside the anchors."
                 .to_string(),
@@ -497,6 +531,7 @@ not as a replacement for checking live files or rerunning verification when exac
             "- Use `scheduler_context_hydrate({\"message_ids\":[...]})` only with ids listed in Source Anchors when the current task needs exact prior text that is truncated, ambiguous, or summarized.".to_string(),
             "- Do not invent message ids. The runtime rejects ids that are not authorized by the scheduler continuity packet.".to_string(),
             "- Prefer the visible Exact Recent Tail when it already contains the needed prior output.".to_string(),
+            "- Use Memory Anchors as authorized recalled memory records; verify them through the memory system or supporting evidence when exact details matter.".to_string(),
         ];
         if omitted_count > 0 {
             rows.push(format!(
@@ -525,6 +560,19 @@ not as a replacement for checking live files or rerunning verification when exac
             ));
         }
         anchors.join("\n")
+    }
+
+    fn render_memory_anchors(&self) -> String {
+        self.memory_anchors
+            .iter()
+            .map(|anchor| {
+                format!(
+                    "- memory `{}` [{} / {}]: {}\n  why: {}",
+                    anchor.record_id, anchor.kind, anchor.status, anchor.title, anchor.why_recalled
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -601,6 +649,26 @@ fn collect_scheduler_recent_tail(
         .collect::<Vec<_>>();
     turns.reverse();
     turns
+}
+
+fn collect_scheduler_memory_anchors(
+    session: &rocode_session::Session,
+) -> Vec<SchedulerMemoryContextAnchor> {
+    load_last_prefetch_packet(session)
+        .map(|packet| {
+            packet
+                .items
+                .into_iter()
+                .map(|item| SchedulerMemoryContextAnchor {
+                    record_id: item.card.id.0,
+                    title: single_line(&truncate_chars(&item.card.title, 160)),
+                    kind: format!("{:?}", item.card.kind),
+                    status: format!("{:?}", item.card.status),
+                    why_recalled: single_line(&truncate_chars(&item.why_recalled, 240)),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn count_scheduler_context_messages(session: &rocode_session::Session) -> usize {
@@ -2464,6 +2532,51 @@ mod tests {
             .as_str()
             .expect("recall policy should be present")
             .contains("use_scheduler_context_hydrate"));
+    }
+
+    #[test]
+    fn scheduler_session_context_carries_memory_anchors_from_last_prefetch() {
+        let mut session = Session::new("project", "/tmp");
+        session.insert_metadata(
+            MEMORY_LAST_PREFETCH_METADATA_KEY.to_string(),
+            serde_json::to_value(MemoryRetrievalPacket {
+                generated_at: 42,
+                snapshot: false,
+                query: Some("follow up".to_string()),
+                scopes: vec![rocode_types::MemoryScope::SessionEphemeral],
+                items: vec![rocode_types::MemoryRecallView {
+                    card: rocode_types::MemoryCardView {
+                        id: rocode_types::MemoryRecordId("mem_123".to_string()),
+                        kind: rocode_types::MemoryKind::Lesson,
+                        scope: rocode_types::MemoryScope::SessionEphemeral,
+                        status: rocode_types::MemoryStatus::Validated,
+                        title: "Prior Martini3 bibliography decision".to_string(),
+                        summary: "Use the saved paper shortlist.".to_string(),
+                        derived_skill_name: None,
+                        linked_skill_name: None,
+                        confidence: Some(0.9),
+                        validation_status: rocode_types::MemoryValidationStatus::Passed,
+                        last_validated_at: None,
+                    },
+                    why_recalled: "query matched Martini3 follow-up".to_string(),
+                    evidence_summary: None,
+                }],
+                note: None,
+                budget_limit: Some(6),
+            })
+            .expect("memory packet should serialize"),
+        );
+
+        let packet = build_scheduler_session_context_packet(&session)
+            .expect("memory anchors alone should render scheduler context");
+        let block = packet.render();
+        let metadata = packet.metadata_value();
+
+        assert!(block.contains("## Memory Anchors"));
+        assert!(block.contains("mem_123"));
+        assert!(block.contains("Prior Martini3 bibliography decision"));
+        assert_eq!(metadata["memory_anchors"][0]["record_id"], "mem_123");
+        assert_eq!(metadata["memory_anchors"][0]["status"], "Validated");
     }
 
     #[test]
