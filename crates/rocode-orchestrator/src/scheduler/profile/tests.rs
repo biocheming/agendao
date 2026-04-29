@@ -199,6 +199,7 @@ fn finalize_output_prefers_handoff_over_review_and_plan() {
             total_tool_calls: 2,
             ..Default::default()
         },
+        session_context: None,
         is_cancelled: false,
     };
 
@@ -1036,6 +1037,23 @@ fn request_analysis_input_includes_prometheus_workflow_constraint() {
     assert!(input.contains("## Workflow Constraint"));
     assert!(input.contains("planner-only behavior"));
     assert!(input.contains("Do NOT convert this request into a direct reply"));
+}
+
+#[test]
+fn request_analysis_input_can_include_session_continuity_context() {
+    let orchestrator = SchedulerProfileOrchestrator::new(
+        planner_only_plan(),
+        ToolRunner::new(Arc::new(NoopToolExecutor)),
+    );
+
+    let input = orchestrator.compose_request_analysis_input_with_context(
+        "把你前面检索的结果写到 markdown 文档中",
+        Some("## Session Continuity Context\nprevious assistant result"),
+    );
+
+    assert!(input.contains("## Session Continuity Context"));
+    assert!(input.contains("previous assistant result"));
+    assert!(input.contains("把你前面检索的结果写到 markdown 文档中"));
 }
 
 #[test]

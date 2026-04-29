@@ -440,7 +440,6 @@ pub(super) fn merge_scheduler_prompt_with_memory(
     prompt_text: &str,
     frozen_snapshot_block: Option<&str>,
     prefetch_block: Option<&str>,
-    session_context_block: Option<&str>,
 ) -> String {
     let mut sections = Vec::new();
     if let Some(snapshot) = frozen_snapshot_block
@@ -454,12 +453,6 @@ pub(super) fn merge_scheduler_prompt_with_memory(
         .filter(|value| !value.is_empty())
     {
         sections.push(prefetch.to_string());
-    }
-    if let Some(context) = session_context_block
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        sections.push(context.to_string());
     }
     sections.push(prompt_text.to_string());
     sections.join("\n\n")
@@ -1531,7 +1524,6 @@ pub(super) async fn session_prompt(
             &prompt_text,
             memory_frozen_snapshot_block.as_deref(),
             memory_prefetch_block.as_deref(),
-            scheduler_session_context_block.as_deref(),
         );
 
         if let (Some(profile_name), Some(profile_config)) = (
@@ -2269,17 +2261,15 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_prompt_merge_places_session_context_before_current_prompt() {
+    fn scheduler_prompt_merge_keeps_memory_before_current_prompt() {
         let merged = merge_scheduler_prompt_with_memory(
             "把你前面检索的结果写到 markdown 文档中",
             Some("Frozen Memory Snapshot:\n- preference"),
             Some("Turn Memory Recall:\n- related method"),
-            Some("## Session Continuity Context\nprevious result list"),
         );
 
         assert!(merged.contains("Frozen Memory Snapshot"));
         assert!(merged.contains("Turn Memory Recall"));
-        assert!(merged.contains("## Session Continuity Context"));
         assert!(merged.ends_with("把你前面检索的结果写到 markdown 文档中"));
     }
 

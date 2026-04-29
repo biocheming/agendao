@@ -18,6 +18,11 @@ pub fn compose_sisyphus_execution_orchestration_input(
 execution-orchestration"
             .to_string(),
     );
+    push_optional_section(
+        &mut sections,
+        "Session Continuity Context",
+        input.session_context,
+    );
     sections.push(format!(
         "## Original Request
 {}",

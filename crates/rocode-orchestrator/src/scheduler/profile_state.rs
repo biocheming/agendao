@@ -54,6 +54,7 @@ pub(super) struct SchedulerProfileState {
     pub(super) execution: SchedulerExecutionState,
     pub(super) preset_runtime: SchedulerPresetRuntimeState,
     pub(super) metrics: SchedulerMetricsState,
+    pub(super) session_context: Option<String>,
     pub(super) is_cancelled: bool,
 }
 

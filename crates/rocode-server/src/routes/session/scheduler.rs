@@ -1333,7 +1333,6 @@ pub async fn run_local_scheduler_prompt(
         &req.prompt_text,
         memory_frozen_snapshot_block.as_deref(),
         memory_prefetch_block.as_deref(),
-        scheduler_session_context_block.as_deref(),
     );
 
     let mode_kind = scheduler_mode_kind(&profile_name);

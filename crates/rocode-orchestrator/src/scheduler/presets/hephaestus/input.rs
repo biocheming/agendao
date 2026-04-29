@@ -24,6 +24,11 @@ pub fn compose_hephaestus_execution_orchestration_input(
 execution-orchestration"
             .to_string(),
     );
+    push_optional_section(
+        &mut sections,
+        "Session Continuity Context",
+        input.session_context,
+    );
     sections.push(format!(
         "## Original Request
 {}",
@@ -82,6 +87,11 @@ autonomous-finish-gate"
 {}",
         input.round
     ));
+    push_optional_section(
+        &mut sections,
+        "Session Continuity Context",
+        input.session_context,
+    );
     sections.push(format!(
         "## Original Request
 {}",
@@ -130,6 +140,11 @@ autonomous-verification"
 {}",
         input.round
     ));
+    push_optional_section(
+        &mut sections,
+        "Session Continuity Context",
+        input.session_context,
+    );
     sections.push(format!(
         "## Original Request
 {}",
@@ -163,6 +178,11 @@ pub fn compose_hephaestus_retry_input(input: SchedulerRetryStageInput<'_>) -> St
     let mut sections = Vec::new();
     sections.push("## Stage\nautonomous-retry".to_string());
     sections.push(format!("## Round\n{}", input.round));
+    push_optional_section(
+        &mut sections,
+        "Session Continuity Context",
+        input.session_context,
+    );
     sections.push(format!("## Original Request\n{}", input.original_request));
     sections.push(format!("## Request Brief\n{}", input.request_brief));
     sections.push(format!("## Current Plan\n{}", input.current_plan));
@@ -192,6 +212,7 @@ mod tests {
     fn hephaestus_execution_input_carries_autonomous_loop_semantics() {
         let input = SchedulerExecutionOrchestrationStageInput {
             original_request: "fix the failing lsp diagnostics path",
+            session_context: Some("## Session Continuity Context\nprevious diagnostics result"),
             request_brief: "Autonomously diagnose and fix the diagnostics path",
             route_summary: Some("autonomous deep-worker execution"),
             planning_output: None,
@@ -211,6 +232,7 @@ mod tests {
         };
 
         let composed = compose_hephaestus_execution_orchestration_input(input);
+        assert!(composed.contains("previous diagnostics result"));
         assert!(composed.contains("Hephaestus autonomous deep-worker execution"));
         assert!(composed.contains("Start acting in the same turn"));
         assert!(composed.contains("EXPLORE -> PLAN -> DECIDE -> EXECUTE -> VERIFY"));
@@ -227,6 +249,7 @@ mod tests {
         let composed = compose_hephaestus_autonomous_verification_input(
             SchedulerAutonomousVerificationStageInput {
                 original_request: "fix the failing lsp diagnostics path",
+                session_context: None,
                 request_brief: "Autonomously diagnose and fix the diagnostics path",
                 current_plan: "request-analysis -> execution-orchestration",
                 round: 1,
@@ -243,6 +266,7 @@ mod tests {
         let composed =
             compose_hephaestus_autonomous_gate_input(SchedulerAutonomousGateStageInput {
                 original_request: "fix the failing lsp diagnostics path",
+                session_context: None,
                 request_brief: "Autonomously diagnose and fix the diagnostics path",
                 current_plan: "request-analysis -> execution-orchestration",
                 round: 1,
@@ -260,6 +284,7 @@ mod tests {
     fn hephaestus_retry_input_carries_bounded_recovery_contract() {
         let composed = compose_hephaestus_retry_input(SchedulerRetryStageInput {
             original_request: "fix the failing lsp diagnostics path",
+            session_context: None,
             request_brief: "Autonomously diagnose and fix the diagnostics path",
             current_plan: "request-analysis -> execution-orchestration",
             round: 2,

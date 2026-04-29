@@ -25,6 +25,7 @@ pub struct SchedulerPlanningArtifactInput<'a> {
 
 pub struct SchedulerInterviewStageInput<'a> {
     pub original_request: &'a str,
+    pub session_context: Option<&'a str>,
     pub request_brief: &'a str,
     pub route_decision_json: Option<&'a str>,
     pub draft_artifact_path: Option<&'a str>,
@@ -35,6 +36,7 @@ pub struct SchedulerInterviewStageInput<'a> {
 
 pub struct SchedulerPlanStageInput<'a> {
     pub original_request: &'a str,
+    pub session_context: Option<&'a str>,
     pub request_brief: &'a str,
     pub route_decision_json: Option<&'a str>,
     pub route_output: Option<&'a str>,
@@ -53,6 +55,7 @@ pub struct SchedulerPlanStageInput<'a> {
 
 pub struct SchedulerExecutionOrchestrationStageInput<'a> {
     pub original_request: &'a str,
+    pub session_context: Option<&'a str>,
     pub request_brief: &'a str,
     pub route_summary: Option<&'a str>,
     pub planning_output: Option<&'a str>,
@@ -65,6 +68,7 @@ pub struct SchedulerExecutionOrchestrationStageInput<'a> {
 
 pub struct SchedulerSynthesisStageInput<'a> {
     pub original_request: &'a str,
+    pub session_context: Option<&'a str>,
     pub request_brief: &'a str,
     pub current_plan: &'a str,
     pub route_decision_json: Option<&'a str>,
@@ -76,6 +80,7 @@ pub struct SchedulerSynthesisStageInput<'a> {
 
 pub struct SchedulerCoordinationVerificationStageInput<'a> {
     pub original_request: &'a str,
+    pub session_context: Option<&'a str>,
     pub request_brief: &'a str,
     pub round: usize,
     pub execution_output: &'a str,
@@ -86,6 +91,7 @@ pub struct SchedulerCoordinationVerificationStageInput<'a> {
 
 pub struct SchedulerAutonomousVerificationStageInput<'a> {
     pub original_request: &'a str,
+    pub session_context: Option<&'a str>,
     pub request_brief: &'a str,
     pub current_plan: &'a str,
     pub round: usize,
@@ -94,6 +100,7 @@ pub struct SchedulerAutonomousVerificationStageInput<'a> {
 
 pub struct SchedulerCoordinationGateStageInput<'a> {
     pub original_request: &'a str,
+    pub session_context: Option<&'a str>,
     pub request_brief: &'a str,
     pub current_plan: &'a str,
     pub round: usize,
@@ -104,6 +111,7 @@ pub struct SchedulerCoordinationGateStageInput<'a> {
 
 pub struct SchedulerAutonomousGateStageInput<'a> {
     pub original_request: &'a str,
+    pub session_context: Option<&'a str>,
     pub request_brief: &'a str,
     pub current_plan: &'a str,
     pub round: usize,
@@ -113,6 +121,7 @@ pub struct SchedulerAutonomousGateStageInput<'a> {
 
 pub struct SchedulerRetryStageInput<'a> {
     pub original_request: &'a str,
+    pub session_context: Option<&'a str>,
     pub request_brief: &'a str,
     pub current_plan: &'a str,
     pub round: usize,
@@ -128,6 +137,7 @@ pub struct SchedulerRetryStageInput<'a> {
 
 pub struct SchedulerReviewStageInput<'a> {
     pub original_request: &'a str,
+    pub session_context: Option<&'a str>,
     pub request_brief: &'a str,
     pub route_summary: Option<&'a str>,
     pub draft_context: Option<&'a str>,
@@ -142,6 +152,7 @@ pub struct SchedulerReviewStageInput<'a> {
 
 pub struct SchedulerHandoffStageInput<'a> {
     pub original_request: &'a str,
+    pub session_context: Option<&'a str>,
     pub request_brief: &'a str,
     pub current_plan: &'a str,
     pub draft_context: Option<&'a str>,

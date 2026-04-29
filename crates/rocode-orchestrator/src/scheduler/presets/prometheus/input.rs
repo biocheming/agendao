@@ -22,6 +22,11 @@ pub fn compose_prometheus_interview_input(input: SchedulerInterviewStageInput<'_
 interview"
             .to_string(),
     );
+    push_optional_section(
+        &mut sections,
+        "Session Continuity Context",
+        input.session_context,
+    );
     sections.push(format!(
         "## Original Request
 {}",
@@ -76,6 +81,11 @@ pub fn compose_prometheus_plan_input(input: SchedulerPlanStageInput<'_>) -> Stri
         "## Stage
 plan"
             .to_string(),
+    );
+    push_optional_section(
+        &mut sections,
+        "Session Continuity Context",
+        input.session_context,
     );
     sections.push(format!(
         "## Original Request
@@ -157,6 +167,11 @@ pub fn compose_prometheus_review_input(input: SchedulerReviewStageInput<'_>) -> 
 review"
             .to_string(),
     );
+    push_optional_section(
+        &mut sections,
+        "Session Continuity Context",
+        input.session_context,
+    );
     sections.push(format!(
         "## Original Request
 {}",
@@ -204,6 +219,11 @@ pub fn compose_prometheus_handoff_input(input: SchedulerHandoffStageInput<'_>) -
         "## Stage
 handoff"
             .to_string(),
+    );
+    push_optional_section(
+        &mut sections,
+        "Session Continuity Context",
+        input.session_context,
     );
     sections.push(format!(
         "## Original Request
