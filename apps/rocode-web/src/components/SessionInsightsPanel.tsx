@@ -50,6 +50,7 @@ function totalUsageTokens(usage?: {
   output_tokens?: number;
   reasoning_tokens?: number;
   cache_read_tokens?: number;
+  cache_miss_tokens?: number;
   cache_write_tokens?: number;
 } | null) {
   if (!usage) return 0;
@@ -58,6 +59,7 @@ function totalUsageTokens(usage?: {
     (usage.output_tokens ?? 0) +
     (usage.reasoning_tokens ?? 0) +
     (usage.cache_read_tokens ?? 0) +
+    (usage.cache_miss_tokens ?? 0) +
     (usage.cache_write_tokens ?? 0)
   );
 }
@@ -204,7 +206,7 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
                 Session cumulative {formatCompactTokenCount(totalUsageTokens(telemetryUsage))} total · input {formatCompactTokenCount(telemetryUsage?.input_tokens ?? 0)} · output {formatCompactTokenCount(telemetryUsage?.output_tokens ?? 0)} · reasoning {formatCompactTokenCount(telemetryUsage?.reasoning_tokens ?? 0)}
               </p>
               <p className="text-sm text-muted-foreground leading-relaxed">
-                Cache read {formatCompactTokenCount(telemetryUsage?.cache_read_tokens ?? 0)} · cache write {formatCompactTokenCount(telemetryUsage?.cache_write_tokens ?? 0)} · cost {formatMoney(telemetryUsage?.total_cost)}
+                Cache read {formatCompactTokenCount(telemetryUsage?.cache_read_tokens ?? 0)} · cache miss {formatCompactTokenCount(telemetryUsage?.cache_miss_tokens ?? 0)} · cache write {formatCompactTokenCount(telemetryUsage?.cache_write_tokens ?? 0)} · cost {formatMoney(telemetryUsage?.total_cost)}
               </p>
               <p className="text-sm text-muted-foreground leading-relaxed">
                 Updated {formatDateTime(telemetry.updated_at)}

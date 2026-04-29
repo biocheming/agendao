@@ -74,6 +74,7 @@ mod tests {
             completion_tokens: None,
             reasoning_tokens: None,
             cache_read_tokens: None,
+            cache_miss_tokens: None,
             cache_write_tokens: None,
             focus: None,
             last_event: None,

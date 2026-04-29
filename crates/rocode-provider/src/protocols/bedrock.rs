@@ -458,6 +458,7 @@ fn convert_bedrock_response(response: BedrockConverseResponse) -> ChatResponse {
                 .total_tokens
                 .unwrap_or_else(|| response.usage.input_tokens + response.usage.output_tokens),
             cache_read_input_tokens: None,
+            cache_miss_input_tokens: None,
             cache_creation_input_tokens: None,
         }),
     }

@@ -244,6 +244,7 @@ pub(super) struct SessionStepRuntimeOutput {
     pub(super) completion_tokens: u64,
     pub(super) reasoning_tokens: u64,
     pub(super) cache_read_tokens: u64,
+    pub(super) cache_miss_tokens: u64,
     pub(super) cache_write_tokens: u64,
     pub(super) executed_local_tools_this_step: bool,
 }
@@ -262,6 +263,7 @@ pub(super) struct SessionStepSink<'a> {
     pub(super) completion_tokens: u64,
     pub(super) reasoning_tokens: u64,
     pub(super) cache_read_tokens: u64,
+    pub(super) cache_miss_tokens: u64,
     pub(super) cache_write_tokens: u64,
     pub(super) executed_local_tools_this_step: bool,
     pub(super) step_complete: Arc<AtomicBool>,
@@ -292,6 +294,7 @@ impl<'a> SessionStepSink<'a> {
             completion_tokens: 0,
             reasoning_tokens: 0,
             cache_read_tokens: 0,
+            cache_miss_tokens: 0,
             cache_write_tokens: 0,
             executed_local_tools_this_step: false,
             step_complete,
@@ -308,6 +311,7 @@ impl<'a> SessionStepSink<'a> {
             completion_tokens: self.completion_tokens,
             reasoning_tokens: self.reasoning_tokens,
             cache_read_tokens: self.cache_read_tokens,
+            cache_miss_tokens: self.cache_miss_tokens,
             cache_write_tokens: self.cache_write_tokens,
             executed_local_tools_this_step: self.executed_local_tools_this_step,
         }
@@ -702,6 +706,7 @@ impl<'a> LoopSink for SessionStepSink<'a> {
                     self.completion_tokens = self.completion_tokens.max(usage.completion_tokens);
                     self.reasoning_tokens = self.reasoning_tokens.max(usage.reasoning_tokens);
                     self.cache_read_tokens = self.cache_read_tokens.max(usage.cache_read_tokens);
+                    self.cache_miss_tokens = self.cache_miss_tokens.max(usage.cache_miss_tokens);
                     self.cache_write_tokens = self.cache_write_tokens.max(usage.cache_write_tokens);
                 }
                 self.finish_output_blocks().await;

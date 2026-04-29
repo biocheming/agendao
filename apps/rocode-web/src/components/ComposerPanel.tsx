@@ -191,6 +191,7 @@ interface ComposerPanelProps {
   lastTurnInputTokens?: number | null;
   lastTurnOutputTokens?: number | null;
   cacheReadTokens?: number | null;
+  cacheMissTokens?: number | null;
   cacheWriteTokens?: number | null;
   inputPricePerMillion?: number | null;
   outputPricePerMillion?: number | null;
@@ -241,6 +242,7 @@ export function ComposerPanel({
   lastTurnInputTokens = null,
   lastTurnOutputTokens = null,
   cacheReadTokens = null,
+  cacheMissTokens = null,
   cacheWriteTokens = null,
   inputPricePerMillion = null,
   outputPricePerMillion = null,
@@ -431,8 +433,10 @@ export function ComposerPanel({
       ? `Turn ↑${formatCompactTokenCount(lastTurnInputTokens)} ↓${formatCompactTokenCount(lastTurnOutputTokens)}`
       : null;
   const cacheUsageLabel =
-    ((cacheReadTokens ?? 0) > 0 || (cacheWriteTokens ?? 0) > 0)
-      ? `Cache R/W ${formatCompactTokenCount(cacheReadTokens)} / ${formatCompactTokenCount(cacheWriteTokens)}`
+    ((cacheReadTokens ?? 0) > 0 || (cacheMissTokens ?? 0) > 0 || (cacheWriteTokens ?? 0) > 0)
+      ? (cacheMissTokens ?? 0) > 0
+        ? `Cache H/M ${formatCompactTokenCount(cacheReadTokens)} / ${formatCompactTokenCount(cacheMissTokens)}`
+        : `Cache R/W ${formatCompactTokenCount(cacheReadTokens)} / ${formatCompactTokenCount(cacheWriteTokens)}`
       : null;
   const contextBadgeLabel =
     contextCount > 0 ? `${references.length} refs · ${attachments.length} files` : null;

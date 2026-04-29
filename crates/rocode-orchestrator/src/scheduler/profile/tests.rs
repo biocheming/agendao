@@ -226,6 +226,7 @@ fn finalize_output_does_not_double_count_recorded_stage_usage() {
         context_tokens: 100,
         reasoning_tokens: 7,
         cache_read_tokens: 3,
+        cache_miss_tokens: 0,
         cache_write_tokens: 5,
     };
     append_output_usage(&mut stage_metadata, &stage_usage);

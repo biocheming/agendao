@@ -112,6 +112,8 @@ pub struct StepUsage {
     #[serde(default)]
     pub cache_read_tokens: u64,
     #[serde(default)]
+    pub cache_miss_tokens: u64,
+    #[serde(default)]
     pub cache_write_tokens: u64,
 }
 
@@ -122,6 +124,7 @@ impl StepUsage {
         self.context_tokens = self.context_tokens.max(snapshot.context_tokens);
         self.reasoning_tokens = self.reasoning_tokens.max(snapshot.reasoning_tokens);
         self.cache_read_tokens = self.cache_read_tokens.max(snapshot.cache_read_tokens);
+        self.cache_miss_tokens = self.cache_miss_tokens.max(snapshot.cache_miss_tokens);
         self.cache_write_tokens = self.cache_write_tokens.max(snapshot.cache_write_tokens);
     }
 
@@ -133,6 +136,7 @@ impl StepUsage {
             .max(delta.context_tokens.max(delta.prompt_tokens));
         self.reasoning_tokens += delta.reasoning_tokens;
         self.cache_read_tokens += delta.cache_read_tokens;
+        self.cache_miss_tokens += delta.cache_miss_tokens;
         self.cache_write_tokens += delta.cache_write_tokens;
     }
 }

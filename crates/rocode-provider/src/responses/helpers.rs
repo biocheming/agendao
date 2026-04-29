@@ -764,6 +764,7 @@ pub(super) fn usage_to_stream_usage(usage: &ResponsesUsage) -> StreamUsage {
             .as_ref()
             .and_then(|d| d.cached_tokens)
             .unwrap_or(0),
+        cache_miss_tokens: 0,
         cache_write_tokens: 0,
     }
 }

@@ -325,6 +325,7 @@ export function ExecutionActivityPanel({
                   <span className="roc-badge px-3 py-1.5 text-xs">output {formatCompactTokenCount(activity.sessionUsage.output_tokens)}</span>
                   <span className="roc-badge px-3 py-1.5 text-xs">reasoning {formatCompactTokenCount(activity.sessionUsage.reasoning_tokens)}</span>
                   <span className="roc-badge px-3 py-1.5 text-xs">cache read {formatCompactTokenCount(activity.sessionUsage.cache_read_tokens)}</span>
+                  <span className="roc-badge px-3 py-1.5 text-xs">cache miss {formatCompactTokenCount(activity.sessionUsage.cache_miss_tokens)}</span>
                   <span className="roc-badge px-3 py-1.5 text-xs">cache write {formatCompactTokenCount(activity.sessionUsage.cache_write_tokens)}</span>
                 </div>
                 {contextEstimate ? (
@@ -558,6 +559,7 @@ export function ExecutionActivityPanel({
                     {typeof stage.completion_tokens === "number" ? <span>out {formatCompactTokenCount(stage.completion_tokens)}</span> : null}
                     {typeof stage.reasoning_tokens === "number" ? <span>reasoning {formatCompactTokenCount(stage.reasoning_tokens)}</span> : null}
                     {typeof stage.cache_read_tokens === "number" ? <span>cache read {formatCompactTokenCount(stage.cache_read_tokens)}</span> : null}
+                    {typeof stage.cache_miss_tokens === "number" ? <span>cache miss {formatCompactTokenCount(stage.cache_miss_tokens)}</span> : null}
                     {typeof stage.cache_write_tokens === "number" ? <span>cache write {formatCompactTokenCount(stage.cache_write_tokens)}</span> : null}
                   </div>
                   {stage.last_event || stage.focus ? (

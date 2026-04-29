@@ -250,6 +250,7 @@ impl SessionPrompt {
             input: 0,
             output: 0,
             cache_read: 0,
+            cache_miss: 0,
             cache_write: 0,
             total: 0,
         };
@@ -260,6 +261,7 @@ impl SessionPrompt {
                 usage.input += msg_usage.input_tokens;
                 usage.output += msg_usage.output_tokens;
                 usage.cache_read += msg_usage.cache_read_tokens;
+                usage.cache_miss += msg_usage.cache_miss_tokens;
                 usage.cache_write += msg_usage.cache_write_tokens;
                 continue;
             }
@@ -281,9 +283,11 @@ impl SessionPrompt {
             usage.input += read_metadata_u64("tokens_input", "prompt_tokens");
             usage.output += read_metadata_u64("tokens_output", "completion_tokens");
             usage.cache_read += read_metadata_u64("tokens_cache_read", "cache_read_tokens");
+            usage.cache_miss += read_metadata_u64("tokens_cache_miss", "cache_miss_tokens");
             usage.cache_write += read_metadata_u64("tokens_cache_write", "cache_write_tokens");
         }
-        usage.total = usage.input + usage.output + usage.cache_read + usage.cache_write;
+        usage.total =
+            usage.input + usage.output + usage.cache_read + usage.cache_miss + usage.cache_write;
         usage
     }
 
@@ -388,7 +392,7 @@ impl SessionPrompt {
         let usage_count = if usage.total > 0 {
             usage.total
         } else {
-            usage.input + usage.output + usage.cache_read + usage.cache_write
+            usage.input + usage.output + usage.cache_read + usage.cache_miss + usage.cache_write
         };
         let live_context_tokens = live_context_tokens.filter(|tokens| *tokens > 0);
         if let Some(live_context_tokens) = live_context_tokens {
@@ -396,6 +400,7 @@ impl SessionPrompt {
                 input: live_context_tokens,
                 output: 0,
                 cache_read: 0,
+                cache_miss: 0,
                 cache_write: 0,
                 total: live_context_tokens,
             };
@@ -443,6 +448,7 @@ impl SessionPrompt {
             input: estimated_input_tokens,
             output: 0,
             cache_read: 0,
+            cache_miss: 0,
             cache_write: 0,
             total: estimated_input_tokens,
         };
@@ -1090,6 +1096,8 @@ mod tests {
                     supports_tools: false,
                     cost_per_million_input: 0.0,
                     cost_per_million_output: 0.0,
+                    cost_per_million_cache_read: None,
+                    cost_per_million_cache_write: None,
                 }),
             }
         }
@@ -1332,6 +1340,8 @@ mod tests {
                 supports_tools: false,
                 cost_per_million_input: 0.0,
                 cost_per_million_output: 0.0,
+                cost_per_million_cache_read: None,
+                cost_per_million_cache_write: None,
             }),
         };
         let mut msg = SessionMessage::user("ses_test", "hello");
@@ -1581,6 +1591,7 @@ mod tests {
             output_tokens: 200,
             reasoning_tokens: 50,
             cache_read_tokens: 30,
+            cache_miss_tokens: 0,
             cache_write_tokens: 20,
             context_tokens: 100,
             total_cost: 0.0,

@@ -1134,6 +1134,7 @@ mod tests {
                 completion_tokens: Some(320),
                 reasoning_tokens: Some(40),
                 cache_read_tokens: Some(0),
+                cache_miss_tokens: Some(0),
                 cache_write_tokens: Some(0),
                 decision: Some(crate::output_blocks::SchedulerDecisionBlock {
                     kind: "gate".to_string(),

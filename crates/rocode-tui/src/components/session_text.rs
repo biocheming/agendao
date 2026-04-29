@@ -514,6 +514,7 @@ fn render_stage_runtime_lines(block: &SchedulerStageBlock, theme: &Theme) -> Vec
     let completion_tokens = block.completion_tokens;
     let reasoning_tokens = block.reasoning_tokens;
     let cache_read_tokens = block.cache_read_tokens;
+    let cache_miss_tokens = block.cache_miss_tokens;
     let cache_write_tokens = block.cache_write_tokens;
 
     let mut status_row = vec![
@@ -554,6 +555,12 @@ fn render_stage_runtime_lines(block: &SchedulerStageBlock, theme: &Theme) -> Vec
         usage_parts.push(format!(
             "cache read {}",
             format_compact_number(cache_read_tokens)
+        ));
+    }
+    if let Some(cache_miss_tokens) = cache_miss_tokens {
+        usage_parts.push(format!(
+            "cache miss {}",
+            format_compact_number(cache_miss_tokens)
         ));
     }
     if let Some(cache_write_tokens) = cache_write_tokens {
@@ -1375,6 +1382,10 @@ mod tests {
             json!(2_u64),
         );
         metadata.insert(
+            "scheduler_stage_cache_miss_tokens".to_string(),
+            json!(3_u64),
+        );
+        metadata.insert(
             "scheduler_stage_cache_write_tokens".to_string(),
             json!(1_u64),
         );
@@ -1383,6 +1394,7 @@ mod tests {
             output: 320,
             reasoning: 40,
             cache_read: 0,
+            cache_miss: 0,
             cache_write: 0,
         };
         message

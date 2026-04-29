@@ -93,6 +93,7 @@ pub(super) struct MessageTokensInfo {
     pub output: u64,
     pub reasoning: u64,
     pub cache_read: u64,
+    pub cache_miss: u64,
     pub cache_write: u64,
 }
 
@@ -518,6 +519,7 @@ fn message_to_info(
             output: usage.output_tokens,
             reasoning: usage.reasoning_tokens,
             cache_read: usage.cache_read_tokens,
+            cache_miss: usage.cache_miss_tokens,
             cache_write: usage.cache_write_tokens,
         },
         metadata: (!metadata.is_empty()).then_some(metadata),

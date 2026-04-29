@@ -81,6 +81,7 @@ pub(super) fn map_api_message(message: &MessageInfo) -> Message {
             output: message.tokens.output,
             reasoning: message.tokens.reasoning,
             cache_read: message.tokens.cache_read,
+            cache_miss: message.tokens.cache_miss,
             cache_write: message.tokens.cache_write,
         },
         metadata: message.metadata.clone(),

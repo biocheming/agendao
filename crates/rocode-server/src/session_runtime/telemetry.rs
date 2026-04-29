@@ -526,6 +526,7 @@ impl RuntimeTelemetryAuthority {
                 "completion_tokens": usage.output_tokens,
                 "reasoning_tokens": usage.reasoning_tokens,
                 "cache_read_tokens": usage.cache_read_tokens,
+                "cache_miss_tokens": usage.cache_miss_tokens,
                 "cache_write_tokens": usage.cache_write_tokens,
                 "context_tokens": usage.context_tokens,
                 "total_cost": usage.total_cost,
@@ -678,6 +679,7 @@ impl RuntimeTelemetryAuthority {
             && usage.reasoning_tokens == 0
             && usage.cache_write_tokens == 0
             && usage.cache_read_tokens == 0
+            && usage.cache_miss_tokens == 0
             && usage.total_cost == 0.0;
         if !has_runtime && stage_summaries.is_empty() && usage_is_empty {
             return None;

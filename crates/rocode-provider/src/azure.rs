@@ -45,6 +45,8 @@ impl AzureProvider {
                 supports_tools: true,
                 cost_per_million_input: 2.5,
                 cost_per_million_output: 10.0,
+                cost_per_million_cache_read: None,
+                cost_per_million_cache_write: None,
             },
             ModelInfo {
                 id: "gpt-4o-mini".to_string(),
@@ -57,6 +59,8 @@ impl AzureProvider {
                 supports_tools: true,
                 cost_per_million_input: 0.15,
                 cost_per_million_output: 0.6,
+                cost_per_million_cache_read: None,
+                cost_per_million_cache_write: None,
             },
             ModelInfo {
                 id: "gpt-4-turbo".to_string(),
@@ -69,6 +73,8 @@ impl AzureProvider {
                 supports_tools: true,
                 cost_per_million_input: 10.0,
                 cost_per_million_output: 30.0,
+                cost_per_million_cache_read: None,
+                cost_per_million_cache_write: None,
             },
             ModelInfo {
                 id: "gpt-35-turbo".to_string(),
@@ -81,6 +87,8 @@ impl AzureProvider {
                 supports_tools: true,
                 cost_per_million_input: 0.5,
                 cost_per_million_output: 1.5,
+                cost_per_million_cache_read: None,
+                cost_per_million_cache_write: None,
             },
         ];
 

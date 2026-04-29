@@ -142,6 +142,8 @@ struct RawUsage {
     cache_creation_input_tokens: Option<u64>,
     #[serde(default)]
     prompt_cache_hit_tokens: Option<u64>,
+    #[serde(default)]
+    prompt_cache_miss_tokens: Option<u64>,
 }
 
 impl RawChatResponse {
@@ -240,6 +242,7 @@ impl RawChatResponse {
             completion_tokens: u.completion_tokens.unwrap_or(0),
             total_tokens: u.total_tokens.unwrap_or(0),
             cache_read_input_tokens: u.cache_read_input_tokens.or(u.prompt_cache_hit_tokens),
+            cache_miss_input_tokens: u.prompt_cache_miss_tokens,
             cache_creation_input_tokens: u.cache_creation_input_tokens,
         });
 
@@ -892,6 +895,7 @@ fn responses_chat_response(
             .input_tokens_details
             .as_ref()
             .and_then(|d| d.cached_tokens),
+        cache_miss_input_tokens: None,
         cache_creation_input_tokens: None,
     };
 
@@ -1696,6 +1700,7 @@ mod tests {
         assert_eq!(usage.prompt_tokens, 1000);
         assert_eq!(usage.completion_tokens, 50);
         assert_eq!(usage.cache_read_input_tokens, Some(900));
+        assert_eq!(usage.cache_miss_input_tokens, Some(100));
         assert_eq!(usage.cache_creation_input_tokens, None);
     }
 

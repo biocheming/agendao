@@ -622,6 +622,7 @@ impl Session {
                     usage.reasoning_tokens += msg_usage.reasoning_tokens;
                     usage.cache_write_tokens += msg_usage.cache_write_tokens;
                     usage.cache_read_tokens += msg_usage.cache_read_tokens;
+                    usage.cache_miss_tokens += msg_usage.cache_miss_tokens;
                     usage.context_tokens = msg_usage.context_tokens.max(msg_usage.input_tokens);
                     usage.total_cost += msg_usage.total_cost;
                 }
@@ -1608,6 +1609,7 @@ mod tests {
             reasoning_tokens: 10,
             cache_write_tokens: 20,
             cache_read_tokens: 30,
+            cache_miss_tokens: 0,
             context_tokens: 100,
             total_cost: 0.005,
         });
@@ -1620,6 +1622,7 @@ mod tests {
             reasoning_tokens: 20,
             cache_write_tokens: 40,
             cache_read_tokens: 60,
+            cache_miss_tokens: 0,
             context_tokens: 200,
             total_cost: 0.010,
         });
@@ -1632,6 +1635,7 @@ mod tests {
             reasoning_tokens: 999,
             cache_write_tokens: 999,
             cache_read_tokens: 999,
+            cache_miss_tokens: 999,
             context_tokens: 999,
             total_cost: 999.0,
         });

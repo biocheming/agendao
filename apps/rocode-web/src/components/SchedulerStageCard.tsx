@@ -29,6 +29,7 @@ function tokenSummary(message: FeedMessage) {
     message.completion_tokens ? `output ${formatCompactTokenCount(message.completion_tokens)}` : null,
     message.reasoning_tokens ? `reasoning ${formatCompactTokenCount(message.reasoning_tokens)}` : null,
     message.cache_read_tokens ? `cache read ${formatCompactTokenCount(message.cache_read_tokens)}` : null,
+    message.cache_miss_tokens ? `cache miss ${formatCompactTokenCount(message.cache_miss_tokens)}` : null,
     message.cache_write_tokens ? `cache write ${formatCompactTokenCount(message.cache_write_tokens)}` : null,
   ].filter(Boolean);
 }

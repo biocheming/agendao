@@ -834,12 +834,13 @@ impl App {
                 )));
             }
             blocks.push(StatusBlock::normal(format!(
-                "Session cumulative: {} total · input {} · output {} · reasoning {} · cache {}/{} · cost ${:.4}",
+                "Session cumulative: {} total · input {} · output {} · reasoning {} · cache H/M/W {}/{}/{} · cost ${:.4}",
                 tui_format_token_count(tui_total_session_tokens(usage)),
                 tui_format_token_count(usage.input_tokens),
                 tui_format_token_count(usage.output_tokens),
                 tui_format_token_count(usage.reasoning_tokens),
                 tui_format_token_count(usage.cache_read_tokens),
+                tui_format_token_count(usage.cache_miss_tokens),
                 tui_format_token_count(usage.cache_write_tokens),
                 usage.total_cost
             )));
@@ -1813,8 +1814,9 @@ fn tui_usage_status_lines(
         tui_format_token_count(usage.reasoning_tokens)
     )));
     lines.push(StatusLine::normal(format!(
-        "Cache read {} · Cache write {}",
+        "Cache read {} · Cache miss {} · Cache write {}",
         tui_format_token_count(usage.cache_read_tokens),
+        tui_format_token_count(usage.cache_miss_tokens),
         tui_format_token_count(usage.cache_write_tokens)
     )));
 
@@ -1862,8 +1864,9 @@ fn tui_session_insights_lines(
             tui_format_token_count(telemetry.usage.reasoning_tokens)
         )));
         lines.push(StatusLine::muted(format!(
-            "Cache read {} · Cache write {} · Cost ${:.4}",
+            "Cache read {} · Cache miss {} · Cache write {} · Cost ${:.4}",
             tui_format_token_count(telemetry.usage.cache_read_tokens),
+            tui_format_token_count(telemetry.usage.cache_miss_tokens),
             tui_format_token_count(telemetry.usage.cache_write_tokens),
             telemetry.usage.total_cost
         )));
@@ -2261,6 +2264,12 @@ fn format_stage_usage_summary_line(stage: &rocode_command::stage_protocol::Stage
             tui_format_token_count(cache_read_tokens)
         ));
     }
+    if let Some(cache_miss_tokens) = stage.cache_miss_tokens.filter(|value| *value > 0) {
+        parts.push(format!(
+            "cache-m {}",
+            tui_format_token_count(cache_miss_tokens)
+        ));
+    }
     if let Some(cache_write_tokens) = stage.cache_write_tokens.filter(|value| *value > 0) {
         parts.push(format!(
             "cache-w {}",
@@ -2292,6 +2301,7 @@ fn tui_total_session_tokens(usage: &rocode_session::SessionUsage) -> u64 {
         + usage.output_tokens
         + usage.reasoning_tokens
         + usage.cache_read_tokens
+        + usage.cache_miss_tokens
         + usage.cache_write_tokens
 }
 

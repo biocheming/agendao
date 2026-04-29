@@ -51,6 +51,8 @@ pub struct StageSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_miss_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus: Option<String>,

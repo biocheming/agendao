@@ -619,6 +619,7 @@ mod tests {
                     completion_tokens: 3,
                     total_tokens: 13,
                     cache_read_input_tokens: None,
+                    cache_miss_input_tokens: None,
                     cache_creation_input_tokens: None,
                 }),
             })
@@ -807,6 +808,8 @@ mod tests {
                 supports_tools: false,
                 cost_per_million_input: 0.0,
                 cost_per_million_output: 0.0,
+                cost_per_million_cache_read: None,
+                cost_per_million_cache_write: None,
             },
             title: "Summary Pipeline".to_string(),
         };
@@ -852,6 +855,8 @@ mod tests {
                 supports_tools: false,
                 cost_per_million_input: 0.0,
                 cost_per_million_output: 0.0,
+                cost_per_million_cache_read: None,
+                cost_per_million_cache_write: None,
             },
             title: "函数调用恢复链路稳定性验证".repeat(20),
         };

@@ -31,6 +31,7 @@ interface ComposerSectionProps {
   lastTurnInputTokens?: number | null;
   lastTurnOutputTokens?: number | null;
   cacheReadTokens?: number | null;
+  cacheMissTokens?: number | null;
   cacheWriteTokens?: number | null;
   inputPricePerMillion?: number | null;
   outputPricePerMillion?: number | null;

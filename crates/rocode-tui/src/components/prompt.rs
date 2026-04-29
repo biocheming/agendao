@@ -1164,12 +1164,18 @@ impl Prompt {
     }
 
     fn render_token_line(&self, theme: &Theme) -> Line<'static> {
-        let Some((input, output, reasoning, cache_read, cache_write)) =
+        let Some((input, output, reasoning, cache_read, cache_miss, cache_write)) =
             self.current_session_token_io()
         else {
             return Line::from("");
         };
-        if input == 0 && output == 0 && reasoning == 0 && cache_read == 0 && cache_write == 0 {
+        if input == 0
+            && output == 0
+            && reasoning == 0
+            && cache_read == 0
+            && cache_miss == 0
+            && cache_write == 0
+        {
             return Line::from("");
         }
 
@@ -1195,14 +1201,21 @@ impl Prompt {
                 Style::default().fg(theme.text),
             ));
         }
-        if cache_read > 0 || cache_write > 0 {
+        if cache_read > 0 || cache_miss > 0 || cache_write > 0 {
             spans.push(Span::raw("  "));
-            spans.push(Span::styled("C", Style::default().fg(theme.text_muted)));
+            spans.push(Span::styled(
+                if cache_miss > 0 { "C H/M" } else { "C R/W" },
+                Style::default().fg(theme.text_muted),
+            ));
             spans.push(Span::styled(
                 format!(
                     "{}/{}",
                     format_compact_number(cache_read),
-                    format_compact_number(cache_write)
+                    format_compact_number(if cache_miss > 0 {
+                        cache_miss
+                    } else {
+                        cache_write
+                    })
                 ),
                 Style::default().fg(theme.text),
             ));
@@ -1210,7 +1223,7 @@ impl Prompt {
         Line::from(spans)
     }
 
-    fn current_session_token_io(&self) -> Option<(u64, u64, u64, u64, u64)> {
+    fn current_session_token_io(&self) -> Option<(u64, u64, u64, u64, u64, u64)> {
         let session_id = match self.context.current_route() {
             crate::router::Route::Session { session_id } => session_id,
             _ => return None,
@@ -1226,6 +1239,7 @@ impl Prompt {
             last_assistant.tokens.output,
             last_assistant.tokens.reasoning,
             last_assistant.tokens.cache_read,
+            last_assistant.tokens.cache_miss,
             last_assistant.tokens.cache_write,
         ))
     }

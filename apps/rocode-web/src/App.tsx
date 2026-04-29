@@ -500,6 +500,7 @@ function schedulerStageBlockFromHistoryMessage(message: MessageRecord): OutputBl
     completion_tokens: metadataNumber(metadata, "scheduler_stage_completion_tokens"),
     reasoning_tokens: metadataNumber(metadata, "scheduler_stage_reasoning_tokens"),
     cache_read_tokens: metadataNumber(metadata, "scheduler_stage_cache_read_tokens"),
+    cache_miss_tokens: metadataNumber(metadata, "scheduler_stage_cache_miss_tokens"),
     cache_write_tokens: metadataNumber(metadata, "scheduler_stage_cache_write_tokens"),
     decision: schedulerDecisionFromMetadata(metadata),
     presentation: {
@@ -1368,6 +1369,7 @@ export default function App() {
         input: tokens.input ?? 0,
         output: tokens.output ?? 0,
         cacheRead: tokens.cache_read ?? 0,
+        cacheMiss: tokens.cache_miss ?? 0,
         cacheWrite: tokens.cache_write ?? 0,
       };
     }
@@ -2902,6 +2904,7 @@ export default function App() {
               lastTurnInputTokens={lastAssistantTurnTokens?.input ?? null}
               lastTurnOutputTokens={lastAssistantTurnTokens?.output ?? null}
               cacheReadTokens={sessionUsage?.cache_read_tokens ?? lastAssistantTurnTokens?.cacheRead ?? null}
+              cacheMissTokens={sessionUsage?.cache_miss_tokens ?? lastAssistantTurnTokens?.cacheMiss ?? null}
               cacheWriteTokens={sessionUsage?.cache_write_tokens ?? lastAssistantTurnTokens?.cacheWrite ?? null}
               inputPricePerMillion={activeProviderModel?.cost_per_million_input ?? null}
               outputPricePerMillion={activeProviderModel?.cost_per_million_output ?? null}

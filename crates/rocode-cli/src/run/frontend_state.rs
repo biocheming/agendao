@@ -767,6 +767,7 @@ struct CliSessionTokenStats {
     output_tokens: u64,
     reasoning_tokens: u64,
     cache_read_tokens: u64,
+    cache_miss_tokens: u64,
     cache_write_tokens: u64,
     context_tokens: u64,
     total_cost: f64,
@@ -779,6 +780,7 @@ impl CliSessionTokenStats {
         output_tokens: u64,
         reasoning_tokens: u64,
         cache_read_tokens: u64,
+        cache_miss_tokens: u64,
         cache_write_tokens: u64,
         context_tokens: u64,
         total_cost: f64,
@@ -787,12 +789,14 @@ impl CliSessionTokenStats {
         self.output_tokens = output_tokens;
         self.reasoning_tokens = reasoning_tokens;
         self.cache_read_tokens = cache_read_tokens;
+        self.cache_miss_tokens = cache_miss_tokens;
         self.cache_write_tokens = cache_write_tokens;
         self.context_tokens = context_tokens;
         self.total_tokens = input_tokens
             + output_tokens
             + reasoning_tokens
             + cache_read_tokens
+            + cache_miss_tokens
             + cache_write_tokens;
         self.total_cost = total_cost;
     }
@@ -963,11 +967,23 @@ impl CliFrontendProjection {
         } else if self.token_stats.total_tokens > 0 {
             parts.push(format!("total {}", format_token_count(self.token_stats.total_tokens)));
         }
-        if self.token_stats.cache_read_tokens > 0 || self.token_stats.cache_write_tokens > 0 {
+        if self.token_stats.cache_read_tokens > 0
+            || self.token_stats.cache_miss_tokens > 0
+            || self.token_stats.cache_write_tokens > 0
+        {
             parts.push(format!(
-                "cache R/W {}/{}",
+                "{} {}/{}",
+                if self.token_stats.cache_miss_tokens > 0 {
+                    "cache H/M"
+                } else {
+                    "cache R/W"
+                },
                 format_token_count(self.token_stats.cache_read_tokens),
-                format_token_count(self.token_stats.cache_write_tokens)
+                format_token_count(if self.token_stats.cache_miss_tokens > 0 {
+                    self.token_stats.cache_miss_tokens
+                } else {
+                    self.token_stats.cache_write_tokens
+                })
             ));
         }
         if let Some(browser) = self.events_browser.as_ref() {

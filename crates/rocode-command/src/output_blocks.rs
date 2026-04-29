@@ -475,7 +475,7 @@ fn render_session_event_rich(event: &SessionEventBlock, style: &CliStyle) -> Str
     };
     let mut out = format!(
         "{} {} {}\n",
-        style.bold_cyan(style.bullet()),
+        style.bold_cyan(style.tree_end()),
         heading,
         style.dim(&format!("[{}]", event.event))
     );
@@ -1386,6 +1386,7 @@ mod tests {
                 completion_tokens: Some(320),
                 reasoning_tokens: Some(0),
                 cache_read_tokens: Some(0),
+                cache_miss_tokens: Some(0),
                 cache_write_tokens: Some(0),
                 decision: None,
                 child_session_id: None,
@@ -1641,6 +1642,7 @@ mod tests {
                 completion_tokens: Some(221),
                 reasoning_tokens: Some(0),
                 cache_read_tokens: Some(0),
+                cache_miss_tokens: Some(0),
                 cache_write_tokens: Some(0),
                 decision: Some(SchedulerDecisionBlock {
                     kind: "gate".to_string(),
@@ -1719,6 +1721,7 @@ mod tests {
                 completion_tokens: None,
                 reasoning_tokens: None,
                 cache_read_tokens: None,
+                cache_miss_tokens: None,
                 cache_write_tokens: None,
                 decision: None,
                 child_session_id: None,
@@ -1795,6 +1798,7 @@ mod tests {
             completion_tokens: None,
             reasoning_tokens: None,
             cache_read_tokens: None,
+            cache_miss_tokens: None,
             cache_write_tokens: None,
             decision: None,
             child_session_id: Some("child-abc-123".to_string()),
@@ -1842,6 +1846,7 @@ mod tests {
             completion_tokens: None,
             reasoning_tokens: None,
             cache_read_tokens: None,
+            cache_miss_tokens: None,
             cache_write_tokens: None,
             decision: None,
             child_session_id: Some("child-xyz-789".to_string()),
@@ -1888,6 +1893,7 @@ mod tests {
             completion_tokens: Some(50),
             reasoning_tokens: Some(25),
             cache_read_tokens: None,
+            cache_miss_tokens: None,
             cache_write_tokens: None,
             decision: None,
             child_session_id: Some("child_001".to_string()),
@@ -1952,6 +1958,7 @@ mod tests {
             completion_tokens: None,
             reasoning_tokens: None,
             cache_read_tokens: None,
+            cache_miss_tokens: None,
             cache_write_tokens: None,
             decision: None,
             child_session_id: None,

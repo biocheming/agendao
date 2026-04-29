@@ -355,6 +355,7 @@ pub struct SchedulerStageBlock {
     pub completion_tokens: Option<u64>,
     pub reasoning_tokens: Option<u64>,
     pub cache_read_tokens: Option<u64>,
+    pub cache_miss_tokens: Option<u64>,
     pub cache_write_tokens: Option<u64>,
     pub decision: Option<SchedulerDecisionBlock>,
     pub child_session_id: Option<String>,
@@ -443,6 +444,9 @@ impl SchedulerStageBlock {
         let cache_read_tokens = metadata
             .get("scheduler_stage_cache_read_tokens")
             .and_then(|v| v.as_u64());
+        let cache_miss_tokens = metadata
+            .get("scheduler_stage_cache_miss_tokens")
+            .and_then(|v| v.as_u64());
         let cache_write_tokens = metadata
             .get("scheduler_stage_cache_write_tokens")
             .and_then(|v| v.as_u64());
@@ -528,6 +532,7 @@ impl SchedulerStageBlock {
             completion_tokens,
             reasoning_tokens,
             cache_read_tokens,
+            cache_miss_tokens,
             cache_write_tokens,
             decision: None,
             child_session_id,
@@ -548,6 +553,7 @@ impl SchedulerStageBlock {
             completion_tokens: self.completion_tokens,
             reasoning_tokens: self.reasoning_tokens,
             cache_read_tokens: self.cache_read_tokens,
+            cache_miss_tokens: self.cache_miss_tokens,
             cache_write_tokens: self.cache_write_tokens,
             focus: self.focus.clone(),
             last_event: self.last_event.clone(),

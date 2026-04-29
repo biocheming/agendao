@@ -2051,6 +2051,7 @@ pub(super) async fn session_prompt(
                                         usage.prompt_tokens,
                                         usage.completion_tokens,
                                         usage.cache_read_tokens,
+                                        usage.cache_miss_tokens,
                                         usage.cache_write_tokens,
                                     )
                                 })
@@ -2060,6 +2061,7 @@ pub(super) async fn session_prompt(
                                 output_tokens: usage.completion_tokens,
                                 reasoning_tokens: usage.reasoning_tokens,
                                 cache_read_tokens: usage.cache_read_tokens,
+                                cache_miss_tokens: usage.cache_miss_tokens,
                                 cache_write_tokens: usage.cache_write_tokens,
                                 context_tokens: usage.context_tokens.max(usage.prompt_tokens),
                                 total_cost: cost,

@@ -780,6 +780,7 @@ mod tests {
             completion_tokens: None,
             reasoning_tokens: None,
             cache_read_tokens: None,
+            cache_miss_tokens: None,
             cache_write_tokens: None,
             decision: None,
             child_session_id: None,

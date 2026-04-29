@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     usage_reasoning_tokens INTEGER DEFAULT 0,
     usage_cache_write_tokens INTEGER DEFAULT 0,
     usage_cache_read_tokens INTEGER DEFAULT 0,
+    usage_cache_miss_tokens INTEGER DEFAULT 0,
     usage_total_cost REAL DEFAULT 0.0,
     
     -- Status
@@ -68,6 +69,7 @@ CREATE TABLE IF NOT EXISTS messages (
     tokens_output INTEGER DEFAULT 0,
     tokens_reasoning INTEGER DEFAULT 0,
     tokens_cache_read INTEGER DEFAULT 0,
+    tokens_cache_miss INTEGER DEFAULT 0,
     tokens_cache_write INTEGER DEFAULT 0,
     cost REAL DEFAULT 0.0,
 
@@ -326,6 +328,10 @@ pub const ADD_SESSIONS_USAGE_CONTEXT_COLUMN: &str =
     "ALTER TABLE sessions ADD COLUMN usage_context_tokens INTEGER DEFAULT 0";
 pub const ADD_MESSAGES_TOKENS_CONTEXT_COLUMN: &str =
     "ALTER TABLE messages ADD COLUMN tokens_context INTEGER DEFAULT 0";
+pub const ADD_SESSIONS_USAGE_CACHE_MISS_COLUMN: &str =
+    "ALTER TABLE sessions ADD COLUMN usage_cache_miss_tokens INTEGER DEFAULT 0";
+pub const ADD_MESSAGES_TOKENS_CACHE_MISS_COLUMN: &str =
+    "ALTER TABLE messages ADD COLUMN tokens_cache_miss INTEGER DEFAULT 0";
 
 /// All migration statements to run
 pub const ALL_MIGRATIONS: &[&str] = &[
@@ -349,4 +355,6 @@ pub const ALL_MIGRATIONS: &[&str] = &[
     ADD_MESSAGES_METADATA_COLUMN,
     ADD_SESSIONS_USAGE_CONTEXT_COLUMN,
     ADD_MESSAGES_TOKENS_CONTEXT_COLUMN,
+    ADD_SESSIONS_USAGE_CACHE_MISS_COLUMN,
+    ADD_MESSAGES_TOKENS_CACHE_MISS_COLUMN,
 ];

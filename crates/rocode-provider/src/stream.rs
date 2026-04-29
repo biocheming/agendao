@@ -87,6 +87,8 @@ pub enum StreamEvent {
         #[serde(default)]
         cache_read_tokens: u64,
         #[serde(default)]
+        cache_miss_tokens: u64,
+        #[serde(default)]
         cache_write_tokens: u64,
     },
     /// Stream finished (maps to "finish" in TS).
@@ -131,6 +133,8 @@ pub struct StreamUsage {
     pub reasoning_tokens: u64,
     #[serde(default)]
     pub cache_read_tokens: u64,
+    #[serde(default)]
+    pub cache_miss_tokens: u64,
     #[serde(default)]
     pub cache_write_tokens: u64,
 }
@@ -200,6 +204,8 @@ pub(crate) struct OpenAIUsage {
     pub cache_creation_input_tokens: u64,
     #[serde(default)]
     pub prompt_cache_hit_tokens: u64,
+    #[serde(default)]
+    pub prompt_cache_miss_tokens: u64,
 }
 
 impl OpenAIUsage {
@@ -214,8 +220,10 @@ impl OpenAIUsage {
             completion_tokens: self.completion_tokens,
             context_tokens: self
                 .prompt_tokens
+                .max(cache_read_tokens.saturating_add(self.prompt_cache_miss_tokens))
                 .max(cache_read_tokens.saturating_add(cache_write_tokens)),
             cache_read_tokens,
+            cache_miss_tokens: self.prompt_cache_miss_tokens,
             cache_write_tokens,
             ..Default::default()
         }
@@ -680,6 +688,7 @@ pub fn parse_ethnopic_value_stateful(
                         completion_tokens: usage.output_tokens,
                         context_tokens: usage.input_tokens,
                         cache_read_tokens: 0,
+                        cache_miss_tokens: 0,
                         cache_write_tokens: 0,
                     });
                 }
@@ -779,6 +788,7 @@ pub fn parse_openai_value(value: serde_json::Value) -> Vec<StreamEvent> {
             completion_tokens: usage.completion_tokens,
             context_tokens: usage.context_tokens.max(usage.prompt_tokens),
             cache_read_tokens: usage.cache_read_tokens,
+            cache_miss_tokens: usage.cache_miss_tokens,
             cache_write_tokens: usage.cache_write_tokens,
         });
     }
@@ -836,6 +846,7 @@ mod tests {
         assert_eq!(finish_usage.prompt_tokens, 1000);
         assert_eq!(finish_usage.completion_tokens, 80);
         assert_eq!(finish_usage.cache_read_tokens, 700);
+        assert_eq!(finish_usage.cache_miss_tokens, 300);
         assert_eq!(finish_usage.cache_write_tokens, 0);
 
         let standalone_usage = events
@@ -843,13 +854,14 @@ mod tests {
             .find_map(|event| match event {
                 StreamEvent::Usage {
                     cache_read_tokens,
+                    cache_miss_tokens,
                     cache_write_tokens,
                     ..
-                } => Some((*cache_read_tokens, *cache_write_tokens)),
+                } => Some((*cache_read_tokens, *cache_miss_tokens, *cache_write_tokens)),
                 _ => None,
             })
             .expect("standalone usage should be present");
-        assert_eq!(standalone_usage, (700, 0));
+        assert_eq!(standalone_usage, (700, 300, 0));
     }
 
     #[test]
