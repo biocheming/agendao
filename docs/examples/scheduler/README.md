@@ -223,6 +223,15 @@ These public examples now assume the following runtime semantics:
   - execution-oriented single-loop preset
   - favors bounded execution with final delivery normalization rather than planner-style interview flow
 
+## Session Continuity
+
+All public scheduler presets receive the same continuity contract. The server builds a `SchedulerSessionContextPacket` for each turn, renders a markdown `Session Continuity Context` for the model, and passes a structured `scheduler_session_context_packet` for runtime enforcement.
+
+- Source Anchors authorize `scheduler_context_hydrate` to recover exact same-session messages or compaction summaries.
+- Memory Anchors authorize `scheduler_memory_hydrate` to recover exact memory record details from the runtime memory authority.
+- Both tools are read-only stage tools and reject ids outside the current packet anchors.
+- Hydration outcomes are persisted on the scheduler stage message as audit metadata.
+
 ## Stage Capability Observability
 
 Scheduler stage runtime metadata distinguishes between capability pool and

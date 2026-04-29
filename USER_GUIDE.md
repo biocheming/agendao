@@ -330,7 +330,7 @@ rocode tui
 适合：
 
 - 边看代码边交互修改
-- 需要 session continuity
+- 需要 session continuity：scheduler 会注入 coverage / anchors / hydration guidance，并可按授权回查同会话消息或 memory records
 - 需要 question / timeline / runtime telemetry
 
 ### 8.2 脚本与自动化

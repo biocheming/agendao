@@ -7,6 +7,7 @@
 - [概述](#概述)
 - [核心概念：四个正交维度](#核心概念四个正交维度)
 - [五个内置 Preset](#五个内置-preset)
+- [Session Continuity 与 Hydration](#session-continuity-与-hydration)
 - [JSON 配置基础](#json-配置基础)
 - [Per-Stage 策略覆盖](#per-stage-策略覆盖)
 - [Stage 自由组合](#stage-自由组合)
@@ -170,6 +171,26 @@ reward，并通过 `score-job-matrix`、`pairwise-score-matrix`、
 | 验证 gate | 无 | 无 | 协调验证 | 自治验证 | 候选比较验证 |
 | 子 agent 模式 | Sequential | Parallel | Parallel | Sequential | Sequential |
 | 典型用途 | 执行 | 规划 | 协调 | 深度自治 | 多候选选优 |
+
+---
+
+## Session Continuity 与 Hydration
+
+Scheduler stage 的输入由 stage composer 构建，不是把原始 `messages[]` 直通给模型。为了让 follow-up prompt 能可靠引用同一 session 的上一轮工作，ROCode 会构建 `SchedulerSessionContextPacket`：
+
+- markdown projection：`Session Continuity Context`，包含 coverage、anchors、guidance、ledger、compaction summary 和 exact recent tail
+- structured contract：`scheduler_session_context_packet`，包含 `version`、message anchors、memory anchors、limits 和 recall policy
+
+当前 recall 面分成两类：
+
+| Anchor | Tool | 说明 |
+|--------|------|------|
+| Source Anchors | `scheduler_context_hydrate({"message_ids":[...]})` | 只允许回查 packet 授权的同会话 message id / compaction summary |
+| Memory Anchors | `scheduler_memory_hydrate({"record_ids":[...]})` | 只允许回查 auto-memory prefetch 授权的 memory record id，可选 `include_evidence` |
+
+两个 hydration 工具都是只读工具，并且对只读 stage 可用。运行时会拒绝未出现在 anchors 中的 id；调用结果会沉淀到 stage metadata，记录 hydrated / rejected / missing ids，便于审计。
+
+这套机制是所有公开 scheduler preset 的共享上下文契约。
 
 ---
 

@@ -2,7 +2,7 @@
 
 ROCode (RustingOpenCode) 是一个用 Rust 编写的高性能 AI 编码编排器。它将终端原生交互、多 Agent 协调、可扩展技能系统和多模型 Provider 整合为一个统一的开发工作流引擎。
 
-> **版本:** 2026.4.27 · **许可证:** MIT · **作者:** Biocheming
+> **版本:** 2026.4.29 · **许可证:** MIT · **作者:** Biocheming
 
 ---
 
@@ -31,6 +31,13 @@ ROCode 由唯一的执行内核驱动所有 LLM 循环。调度器以 preset 形
 | `atlas` | 协调/委派/验证 | request-analysis, execution-orchestration, synthesis |
 | `hephaestus` | 自主深度执行 | request-analysis, execution-orchestration |
 | `verifier` | 多候选比较选优 | request-analysis, execution-orchestration |
+
+Scheduler continuity 是调度器的一等输入，而不是简单把历史消息拼回 prompt。当前运行时会为每个 scheduler turn 构建 `Session Continuity Context`：
+
+- `Context Coverage` 说明 exact recent tail、omitted turns、memory anchors 和 recall policy
+- `Source Anchors` 授权 `scheduler_context_hydrate` 回查同会话消息与 compaction summary
+- `Memory Anchors` 授权 `scheduler_memory_hydrate` 回查持久化 memory detail
+- 每次 hydration 都会写入 stage metadata，记录 hydrated / rejected / missing ids，供前端和 telemetry 审计
 
 ### 四个正交维度
 
