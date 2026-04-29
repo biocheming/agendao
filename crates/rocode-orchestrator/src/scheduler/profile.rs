@@ -1448,12 +1448,7 @@ impl Orchestrator for SchedulerProfileOrchestrator {
 
         let mut resolved_plan = self.plan.clone();
         let mut state = SchedulerProfileState::default();
-        state.session_context = ctx
-            .exec_ctx
-            .metadata
-            .get("scheduler_session_context")
-            .and_then(|value| value.as_str())
-            .map(str::to_string);
+        state.apply_session_context_metadata(&ctx.exec_ctx.metadata);
         if Self::resolve_artifact_relative_path(
             &resolved_plan,
             SchedulerArtifactKind::Draft,
