@@ -228,21 +228,10 @@ fn sisyphus_uses_shared_effect_dispatch_framework() {
 
 #[tokio::test]
 async fn sisyphus_runs_single_execution_orchestration_without_review_or_synthesis() {
-    let streams = vec![
-            stream_from(vec![
-                rocode_provider::StreamEvent::TextDelta(
-                    "sisyphus shipped the change".to_string(),
-                ),
-                rocode_provider::StreamEvent::Done,
-            ]),
-            stream_from(vec![
-                rocode_provider::StreamEvent::TextDelta(
-                    r#"{"mode":"orchestrate","preset":"sisyphus","rationale_summary":"needs single-loop execution"}"#
-                        .to_string(),
-                ),
-                rocode_provider::StreamEvent::Done,
-            ]),
-        ];
+    let streams = vec![stream_from(vec![
+        rocode_provider::StreamEvent::TextDelta("sisyphus shipped the change".to_string()),
+        rocode_provider::StreamEvent::Done,
+    ])];
     let (context, runner, captured_inputs) = test_context(streams);
 
     let mut plan = sisyphus_plan().with_description(Some(
@@ -278,30 +267,32 @@ async fn sisyphus_runs_single_execution_orchestration_without_review_or_synthesi
     assert!(output.content.contains("**Execution Outcome**"));
     assert!(output.content.contains("**Verification**"));
     assert!(output.content.contains("sisyphus shipped the change"));
-    assert_eq!(output.steps, 2);
+    assert_eq!(output.steps, 1);
 
     let inputs = captured_inputs.lock().await.clone();
-    assert_eq!(inputs.len(), 2);
-    assert!(inputs[0].contains("## Stage\nroute"));
-    assert!(inputs[1].contains("## Stage\nexecution-orchestration"));
-    assert!(inputs[1].contains("fix the flaky migration test"));
-    assert!(inputs[1].contains("## Execution Frame"));
-    assert!(inputs[1].contains("single-loop execution orchestration"));
-    assert!(inputs[1].contains("not an interview-first planning workflow"));
-    assert!(inputs[1].contains("do not become the sole implementer for non-trivial work"));
-    assert!(inputs[1].contains("make the triviality judgment obvious from the result"));
-    assert!(inputs[1].contains("## Execution Priorities"));
-    assert!(inputs[1].contains("explore/librarian research in parallel"));
-    assert!(inputs[1].contains("evidence-backed verification"));
-    assert!(inputs[1].contains("Phase 0 - Intent Gate"));
-    assert!(inputs[1].contains("Phase 3 - Completion"));
-    assert!(inputs[1].contains("`explore` agent — **CHEAP**"));
-    assert!(inputs[1].contains("`oracle` agent — **EXPENSIVE**"));
-    assert!(inputs[1].contains("Explore Agent = Contextual Grep"));
-    assert!(inputs[1].contains("Oracle_Usage"));
-    assert!(inputs[1].contains("`rust` — Rust implementation and debugging tasks"));
-    assert!(inputs[1].contains("general: review-pr, simplify"));
-    assert!(!inputs[1].contains("## Stage\nreview"));
-    assert!(!inputs[1].contains("## Stage\nsynthesis"));
-    assert!(!inputs[1].contains("## Stage\ndelegation"));
+    assert_eq!(inputs.len(), 1);
+    assert!(inputs[0].contains("## Stage\nexecution-orchestration"));
+    assert!(inputs[0].contains("fix the flaky migration test"));
+    assert!(inputs[0].contains("## Execution Frame"));
+    assert!(inputs[0].contains("single-loop execution orchestration"));
+    assert!(inputs[0].contains("not an interview-first planning workflow"));
+    assert!(inputs[0].contains("do not become the sole implementer for non-trivial work"));
+    assert!(inputs[0].contains("make the triviality judgment obvious from the result"));
+    assert!(inputs[0].contains("## Execution Priorities"));
+    assert!(inputs[0].contains("explore/librarian research in parallel"));
+    assert!(inputs[0].contains("evidence-backed verification"));
+    assert!(inputs[0].contains("## Delivery Contract"));
+    assert!(!inputs[0].contains("## Stage\nroute"));
+    assert!(!inputs[0].contains("Phase 0 - Intent Gate"));
+    assert!(!inputs[0].contains("Phase 3 - Completion"));
+    assert!(!inputs[0].contains("<available_skills compact=\"true\">"));
+    assert!(!inputs[0].contains("`explore` agent — **CHEAP**"));
+    assert!(!inputs[0].contains("`oracle` agent — **EXPENSIVE**"));
+    assert!(!inputs[0].contains("Explore Agent = Contextual Grep"));
+    assert!(!inputs[0].contains("Oracle_Usage"));
+    assert!(!inputs[0].contains("`rust` — Rust implementation and debugging tasks"));
+    assert!(!inputs[0].contains("general: review-pr, simplify"));
+    assert!(!inputs[0].contains("## Stage\nreview"));
+    assert!(!inputs[0].contains("## Stage\nsynthesis"));
+    assert!(!inputs[0].contains("## Stage\ndelegation"));
 }

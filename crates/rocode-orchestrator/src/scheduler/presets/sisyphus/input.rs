@@ -1,8 +1,6 @@
 use crate::scheduler::execution_contracts::SHARED_EXECUTION_EVIDENCE_CONTRACT;
 use crate::scheduler::SchedulerExecutionOrchestrationStageInput;
 
-use super::build_sisyphus_dynamic_prompt;
-
 fn push_optional_section(sections: &mut Vec<String>, title: &str, value: Option<&str>) {
     if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
         sections.push(format!("## {title}\n{value}"));
@@ -59,11 +57,9 @@ execution-orchestration"
 - Finish only with evidence-backed verification and concrete outcomes."
             .to_string(),
     );
-    sections.push(build_sisyphus_dynamic_prompt(
-        input.available_agents,
-        input.available_categories,
-        input.skill_list,
-    ));
+    // Sisyphus single-pass execution already receives the dynamic capability
+    // prompt as the stage system prompt. Keep the user input turn-specific so
+    // the same large capability catalog is not sent twice.
     sections.push(
         "## Delivery Contract
 Return a concrete execution delivery, not a plan. Keep the top-level result anchored in `## Delivery Summary`, `**Delegation Path**`, `**Execution Outcome**`, `**Verification**`, `**Open Risks or Follow-ups**`."

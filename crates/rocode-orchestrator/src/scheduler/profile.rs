@@ -60,6 +60,15 @@ use super::{
     SchedulerTransitionTarget, SchedulerTransitionTrigger, StageToolPolicy,
 };
 
+fn request_brief_from_input(input: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        "<empty request>".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -1312,11 +1321,10 @@ impl SchedulerProfileOrchestrator {
     fn analyze_request_stage(
         &self,
         input: &str,
-        session_context: Option<&str>,
+        _session_context: Option<&str>,
         plan: &SchedulerProfilePlan,
     ) -> RequestAnalysis {
-        let request_brief =
-            self.compose_request_analysis_input_with_context(input, session_context);
+        let request_brief = request_brief_from_input(input);
         let mut analysis = RequestAnalysis::new(RequestType::Explicit, request_brief);
 
         // Preset-level route constraints, such as Prometheus planner-only mode,
