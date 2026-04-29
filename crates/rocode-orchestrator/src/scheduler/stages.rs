@@ -12,7 +12,14 @@ use std::sync::Arc;
 
 use super::presets::prometheus_planning_stage_tool_policy;
 
-pub const READ_ONLY_STAGE_TOOLS: &[&str] = &["read", "glob", "grep", "ls", "ast_grep_search"];
+pub const READ_ONLY_STAGE_TOOLS: &[&str] = &[
+    "read",
+    "glob",
+    "grep",
+    "ls",
+    "ast_grep_search",
+    "scheduler_context_hydrate",
+];
 
 pub type StageToolArgumentValidator =
     fn(&str, &serde_json::Value, &crate::ExecutionContext) -> Result<(), ToolExecError>;
