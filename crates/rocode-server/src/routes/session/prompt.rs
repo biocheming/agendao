@@ -335,8 +335,9 @@ pub(super) const SCHEDULER_SESSION_CONTEXT_METADATA_KEY: &str = "scheduler_sessi
 #[derive(Debug, Clone)]
 pub(super) struct SchedulerSessionContextPacket {
     exact_recent_tail: Vec<SchedulerSessionContextTurn>,
+    eligible_message_count: usize,
     working_ledger: Vec<String>,
-    latest_compaction_summary: Option<String>,
+    latest_compaction_summary: Option<SchedulerCompactionContext>,
 }
 
 #[derive(Debug, Clone)]
@@ -346,9 +347,16 @@ struct SchedulerSessionContextTurn {
     text: String,
 }
 
+#[derive(Debug, Clone)]
+struct SchedulerCompactionContext {
+    message_id: String,
+    summary: String,
+}
+
 impl SchedulerSessionContextPacket {
     pub(super) fn from_session(session: &rocode_session::Session) -> Option<Self> {
         let exact_recent_tail = collect_scheduler_recent_tail(session);
+        let eligible_message_count = count_scheduler_context_messages(session);
         let latest_compaction_summary = latest_compaction_summary(session);
         let working_ledger = build_scheduler_working_ledger(session, &exact_recent_tail);
 
@@ -361,6 +369,7 @@ impl SchedulerSessionContextPacket {
 
         Some(Self {
             exact_recent_tail,
+            eligible_message_count,
             working_ledger,
             latest_compaction_summary,
         })
@@ -373,6 +382,13 @@ This is same-session continuity context for resolving follow-up references such 
 not as a replacement for checking live files or rerunning verification when exact state matters."
             .to_string()];
 
+        sections.push(self.render_context_coverage());
+
+        let source_anchors = self.render_source_anchors();
+        if !source_anchors.is_empty() {
+            sections.push(format!("## Source Anchors\n{source_anchors}"));
+        }
+
         if !self.working_ledger.is_empty() {
             sections.push(format!(
                 "## Working Ledger\n{}",
@@ -384,10 +400,11 @@ not as a replacement for checking live files or rerunning verification when exac
             ));
         }
 
-        if let Some(summary) = self.latest_compaction_summary.as_deref() {
+        if let Some(compaction) = self.latest_compaction_summary.as_ref() {
             sections.push(format!(
-                "## Latest Compaction Summary\n{}",
-                truncate_chars(summary, SCHEDULER_CONTEXT_TURN_LIMIT)
+                "## Latest Compaction Summary\nsource: assistant `{}`\n{}",
+                compaction.message_id,
+                truncate_chars(&compaction.summary, SCHEDULER_CONTEXT_TURN_LIMIT)
             ));
         }
 
@@ -409,6 +426,52 @@ not as a replacement for checking live files or rerunning verification when exac
         }
 
         truncate_chars(&sections.join("\n\n"), SCHEDULER_CONTEXT_TEXT_LIMIT)
+    }
+
+    fn render_context_coverage(&self) -> String {
+        let exact_count = self.exact_recent_tail.len();
+        let omitted_count = self.eligible_message_count.saturating_sub(exact_count);
+        let mut rows = vec![
+            format!(
+                "- exact_recent_tail: last {exact_count} of {} eligible user/assistant messages",
+                self.eligible_message_count
+            ),
+            format!("- omitted_older_turns: {omitted_count}"),
+        ];
+        if let Some(compaction) = self.latest_compaction_summary.as_ref() {
+            rows.push(format!(
+                "- latest_compaction_summary: assistant `{}`",
+                compaction.message_id
+            ));
+        } else {
+            rows.push("- latest_compaction_summary: none".to_string());
+        }
+        rows.push(
+            "- recall_policy: use exact tail for recent follow-up references; treat ledger and compaction as lossy summaries; if the requested prior fact is not present, recover it from memory, artifacts, or tools before acting."
+                .to_string(),
+        );
+        format!("## Context Coverage\n{}", rows.join("\n"))
+    }
+
+    fn render_source_anchors(&self) -> String {
+        let mut anchors = Vec::new();
+        if !self.exact_recent_tail.is_empty() {
+            anchors.push(format!(
+                "- exact_tail_message_ids: {}",
+                self.exact_recent_tail
+                    .iter()
+                    .map(|turn| format!("`{}`", turn.message_id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if let Some(compaction) = self.latest_compaction_summary.as_ref() {
+            anchors.push(format!(
+                "- compaction_summary_message_id: `{}`",
+                compaction.message_id
+            ));
+        }
+        anchors.join("\n")
     }
 }
 
@@ -481,6 +544,15 @@ fn collect_scheduler_recent_tail(
     turns
 }
 
+fn count_scheduler_context_messages(session: &rocode_session::Session) -> usize {
+    session
+        .messages
+        .iter()
+        .filter(|message| is_scheduler_context_message(message))
+        .filter(|message| !message.get_text().trim().is_empty())
+        .count()
+}
+
 fn is_scheduler_context_message(message: &SessionMessage) -> bool {
     if message.metadata.contains_key("scheduler_stage") {
         return false;
@@ -488,7 +560,9 @@ fn is_scheduler_context_message(message: &SessionMessage) -> bool {
     matches!(message.role, MessageRole::User | MessageRole::Assistant)
 }
 
-fn latest_compaction_summary(session: &rocode_session::Session) -> Option<String> {
+fn latest_compaction_summary(
+    session: &rocode_session::Session,
+) -> Option<SchedulerCompactionContext> {
     session.messages.iter().rev().find_map(|message| {
         if !matches!(message.role, MessageRole::Assistant) {
             return None;
@@ -497,7 +571,10 @@ fn latest_compaction_summary(session: &rocode_session::Session) -> Option<String
             if let SessionPartType::Compaction { summary } = &part.part_type {
                 let trimmed = summary.trim();
                 if !trimmed.is_empty() {
-                    return Some(trimmed.to_string());
+                    return Some(SchedulerCompactionContext {
+                        message_id: message.id.clone(),
+                        summary: trimmed.to_string(),
+                    });
                 }
             }
         }
@@ -510,7 +587,10 @@ fn latest_compaction_summary(session: &rocode_session::Session) -> Option<String
             let text = message.get_text();
             let trimmed = text.trim();
             if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
+                return Some(SchedulerCompactionContext {
+                    message_id: message.id.clone(),
+                    summary: trimmed.to_string(),
+                });
             }
         }
         None
@@ -2255,9 +2335,67 @@ mod tests {
             .expect("same-session scheduler context should render");
 
         assert!(block.contains("## Session Continuity Context"));
+        assert!(block.contains("## Context Coverage"));
         assert!(block.contains("Martini3 antibody formulation research"));
         assert!(block.contains("Found papers A, B, and C"));
+        assert!(block.contains("exact_tail_message_ids"));
         assert!(!block.contains("internal route decision"));
+    }
+
+    #[test]
+    fn scheduler_session_context_reports_recent_tail_coverage() {
+        let mut session = Session::new("project", "/tmp");
+        for index in 0..8 {
+            session.add_user_message(format!("turn {index}"));
+        }
+
+        let block = build_scheduler_session_context_block(&session)
+            .expect("same-session scheduler context should render");
+
+        assert!(block.contains("exact_recent_tail: last 6 of 8 eligible"));
+        assert!(block.contains("omitted_older_turns: 2"));
+        assert!(!block.contains("turn 0"));
+        assert!(!block.contains("turn 1"));
+        assert!(block.contains("turn 7"));
+    }
+
+    #[test]
+    fn scheduler_session_context_anchors_compaction_summary() {
+        let mut session = Session::new("project", "/tmp");
+        session.add_user_message("earlier research request");
+        let compaction_id = {
+            let summary = session.add_assistant_message();
+            summary
+                .metadata
+                .insert("summary".to_string(), serde_json::json!(true));
+            summary.add_text("Compacted research findings about Martini3 antibodies.");
+            summary.id.clone()
+        };
+
+        let block = build_scheduler_session_context_block(&session)
+            .expect("same-session scheduler context should render");
+
+        assert!(block.contains("## Latest Compaction Summary"));
+        assert!(block.contains(&format!("source: assistant `{compaction_id}`")));
+        assert!(block.contains(&format!("compaction_summary_message_id: `{compaction_id}`")));
+    }
+
+    #[test]
+    fn scheduler_session_context_keeps_source_anchors_when_truncated() {
+        let mut session = Session::new("project", "/tmp");
+        let mut latest_message_id = String::new();
+        for index in 0..6 {
+            let message = session.add_user_message(format!("turn {index} {}", "x".repeat(2_000)));
+            latest_message_id = message.id.clone();
+        }
+
+        let block = build_scheduler_session_context_block(&session)
+            .expect("same-session scheduler context should render");
+
+        assert!(block.contains("## Source Anchors"));
+        assert!(block.contains(&format!("`{latest_message_id}`")));
+        assert!(block.contains("...[truncated]..."));
+        assert!(block.chars().count() <= SCHEDULER_CONTEXT_TEXT_LIMIT);
     }
 
     #[test]
