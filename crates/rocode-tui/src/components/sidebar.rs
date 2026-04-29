@@ -693,6 +693,22 @@ impl Sidebar {
                         })
                         .sum::<u64>()
                 });
+            let (session_cache_read_tokens, session_cache_write_tokens) = self
+                .context
+                .session_usage()
+                .as_ref()
+                .map(|usage| (usage.cache_read_tokens, usage.cache_write_tokens))
+                .unwrap_or_else(|| {
+                    messages
+                        .iter()
+                        .filter(|m| matches!(m.role, MessageRole::Assistant))
+                        .fold((0u64, 0u64), |(read, write), message| {
+                            (
+                                read.saturating_add(message.tokens.cache_read),
+                                write.saturating_add(message.tokens.cache_write),
+                            )
+                        })
+                });
             let active_model = messages
                 .iter()
                 .rev()
@@ -733,6 +749,19 @@ impl Sidebar {
                             Span::styled("Session ", Style::default().fg(theme.text_muted)),
                             Span::styled(
                                 format!("{} cumulative", format_compact_number(total_tokens)),
+                                Style::default().fg(theme.text),
+                            ),
+                        ]));
+                    }
+                    if session_cache_read_tokens > 0 || session_cache_write_tokens > 0 {
+                        lines.push(Line::from(vec![
+                            Span::styled("Cache  ", Style::default().fg(theme.text_muted)),
+                            Span::styled(
+                                format!(
+                                    "R/W {} / {}",
+                                    format_compact_number(session_cache_read_tokens),
+                                    format_compact_number(session_cache_write_tokens)
+                                ),
                                 Style::default().fg(theme.text),
                             ),
                         ]));

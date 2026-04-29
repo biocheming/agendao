@@ -30,6 +30,8 @@ interface ComposerSectionProps {
   contextTokensLimit?: number | null;
   lastTurnInputTokens?: number | null;
   lastTurnOutputTokens?: number | null;
+  cacheReadTokens?: number | null;
+  cacheWriteTokens?: number | null;
   inputPricePerMillion?: number | null;
   outputPricePerMillion?: number | null;
   activeStageId: string | null;

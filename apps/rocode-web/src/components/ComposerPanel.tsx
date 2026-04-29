@@ -190,6 +190,8 @@ interface ComposerPanelProps {
   contextTokensLimit?: number | null;
   lastTurnInputTokens?: number | null;
   lastTurnOutputTokens?: number | null;
+  cacheReadTokens?: number | null;
+  cacheWriteTokens?: number | null;
   inputPricePerMillion?: number | null;
   outputPricePerMillion?: number | null;
   activeStageId: string | null;
@@ -238,6 +240,8 @@ export function ComposerPanel({
   contextTokensLimit = null,
   lastTurnInputTokens = null,
   lastTurnOutputTokens = null,
+  cacheReadTokens = null,
+  cacheWriteTokens = null,
   inputPricePerMillion = null,
   outputPricePerMillion = null,
   activeStageId,
@@ -425,6 +429,10 @@ export function ComposerPanel({
     typeof lastTurnOutputTokens === "number" &&
     (lastTurnInputTokens > 0 || lastTurnOutputTokens > 0)
       ? `Turn ↑${formatCompactTokenCount(lastTurnInputTokens)} ↓${formatCompactTokenCount(lastTurnOutputTokens)}`
+      : null;
+  const cacheUsageLabel =
+    ((cacheReadTokens ?? 0) > 0 || (cacheWriteTokens ?? 0) > 0)
+      ? `Cache R/W ${formatCompactTokenCount(cacheReadTokens)} / ${formatCompactTokenCount(cacheWriteTokens)}`
       : null;
   const contextBadgeLabel =
     contextCount > 0 ? `${references.length} refs · ${attachments.length} files` : null;
@@ -858,6 +866,9 @@ export function ComposerPanel({
                       )}
                       {turnUsageLabel ? (
                         <span className="text-muted-foreground">{turnUsageLabel}</span>
+                      ) : null}
+                      {cacheUsageLabel ? (
+                        <span className="text-muted-foreground">{cacheUsageLabel}</span>
                       ) : null}
                       {contextCount > 0 ? (
                         <span className="roc-badge">

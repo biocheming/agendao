@@ -100,6 +100,8 @@ pub fn streaming_event_to_stream_events(event: StreamingEvent) -> Vec<StreamEven
                     prompt_tokens: su.prompt_tokens,
                     completion_tokens: su.completion_tokens,
                     context_tokens: su.context_tokens.max(su.prompt_tokens),
+                    cache_read_tokens: su.cache_read_tokens,
+                    cache_write_tokens: su.cache_write_tokens,
                 });
             }
 
@@ -194,12 +196,17 @@ pub fn driver_response_to_chat_response(resp: DriverResponse) -> ChatResponse {
 
     let content = resp.content.unwrap_or_default();
 
+    let raw_usage = resp.raw.get("usage").map(extract_usage);
     let usage = resp.usage.map(|u| Usage {
         prompt_tokens: u.prompt_tokens,
         completion_tokens: u.completion_tokens,
         total_tokens: u.total_tokens,
-        cache_read_input_tokens: None,
-        cache_creation_input_tokens: None,
+        cache_read_input_tokens: raw_usage
+            .as_ref()
+            .and_then(|usage| (usage.cache_read_tokens > 0).then_some(usage.cache_read_tokens)),
+        cache_creation_input_tokens: raw_usage
+            .as_ref()
+            .and_then(|usage| (usage.cache_write_tokens > 0).then_some(usage.cache_write_tokens)),
     });
 
     ChatResponse {
@@ -600,6 +607,7 @@ fn extract_usage(value: &serde_json::Value) -> StreamUsage {
     let cache_read = value
         .get("cache_read_input_tokens")
         .or_else(|| value.get("cache_read_tokens"))
+        .or_else(|| value.get("prompt_cache_hit_tokens"))
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
 
@@ -732,6 +740,7 @@ mod tests {
                 prompt_tokens,
                 completion_tokens,
                 context_tokens,
+                ..
             } => {
                 assert_eq!(*prompt_tokens, 100);
                 assert_eq!(*completion_tokens, 50);
@@ -758,6 +767,7 @@ mod tests {
                 prompt_tokens,
                 completion_tokens,
                 context_tokens,
+                ..
             } => {
                 assert_eq!(*prompt_tokens, 200);
                 assert_eq!(*completion_tokens, 80);
@@ -883,6 +893,21 @@ mod tests {
         assert_eq!(usage.cache_write_tokens, 50);
     }
 
+    #[test]
+    fn extract_usage_maps_deepseek_prompt_cache_hit_tokens() {
+        let val = json!({
+            "prompt_tokens": 1000,
+            "completion_tokens": 100,
+            "prompt_cache_hit_tokens": 850,
+            "prompt_cache_miss_tokens": 150
+        });
+        let usage = extract_usage(&val);
+        assert_eq!(usage.prompt_tokens, 1000);
+        assert_eq!(usage.completion_tokens, 100);
+        assert_eq!(usage.cache_read_tokens, 850);
+        assert_eq!(usage.cache_write_tokens, 0);
+    }
+
     // ---- Phase 2: DriverResponse → ChatResponse tests ----
 
     #[test]
@@ -913,6 +938,36 @@ mod tests {
         assert_eq!(usage.prompt_tokens, 10);
         assert_eq!(usage.completion_tokens, 5);
         assert_eq!(usage.total_tokens, 15);
+    }
+
+    #[test]
+    fn driver_response_to_chat_response_preserves_deepseek_cache_usage() {
+        let resp = DriverResponse {
+            content: Some("cached".to_string()),
+            finish_reason: Some("stop".to_string()),
+            usage: Some(UsageInfo {
+                prompt_tokens: 1000,
+                completion_tokens: 25,
+                total_tokens: 1025,
+            }),
+            tool_calls: vec![],
+            raw: json!({
+                "id": "chatcmpl-cache",
+                "model": "deepseek-v4-flash",
+                "usage": {
+                    "prompt_tokens": 1000,
+                    "completion_tokens": 25,
+                    "total_tokens": 1025,
+                    "prompt_cache_hit_tokens": 900,
+                    "prompt_cache_miss_tokens": 100
+                }
+            }),
+        };
+
+        let chat_resp = driver_response_to_chat_response(resp);
+        let usage = chat_resp.usage.expect("usage should be present");
+        assert_eq!(usage.cache_read_input_tokens, Some(900));
+        assert_eq!(usage.cache_creation_input_tokens, None);
     }
 
     #[test]

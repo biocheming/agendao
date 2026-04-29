@@ -963,6 +963,13 @@ impl CliFrontendProjection {
         } else if self.token_stats.total_tokens > 0 {
             parts.push(format!("total {}", format_token_count(self.token_stats.total_tokens)));
         }
+        if self.token_stats.cache_read_tokens > 0 || self.token_stats.cache_write_tokens > 0 {
+            parts.push(format!(
+                "cache R/W {}/{}",
+                format_token_count(self.token_stats.cache_read_tokens),
+                format_token_count(self.token_stats.cache_write_tokens)
+            ));
+        }
         if let Some(browser) = self.events_browser.as_ref() {
             let page = (browser.offset / browser.filter.limit.unwrap_or(24).max(1)) + 1;
             parts.push(format!("events p{}", page));

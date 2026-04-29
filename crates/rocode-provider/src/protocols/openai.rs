@@ -140,6 +140,8 @@ struct RawUsage {
     cache_read_input_tokens: Option<u64>,
     #[serde(default)]
     cache_creation_input_tokens: Option<u64>,
+    #[serde(default)]
+    prompt_cache_hit_tokens: Option<u64>,
 }
 
 impl RawChatResponse {
@@ -237,7 +239,7 @@ impl RawChatResponse {
             prompt_tokens: u.prompt_tokens.unwrap_or(0),
             completion_tokens: u.completion_tokens.unwrap_or(0),
             total_tokens: u.total_tokens.unwrap_or(0),
-            cache_read_input_tokens: u.cache_read_input_tokens,
+            cache_read_input_tokens: u.cache_read_input_tokens.or(u.prompt_cache_hit_tokens),
             cache_creation_input_tokens: u.cache_creation_input_tokens,
         });
 
@@ -1664,6 +1666,37 @@ mod tests {
             .clone();
         assert!(input.is_object(), "valid JSON args should remain an object");
         assert_eq!(input["file_path"], "t2.html");
+    }
+
+    #[test]
+    fn raw_chat_response_maps_deepseek_prompt_cache_hits() {
+        let raw: RawChatResponse = serde_json::from_value(serde_json::json!({
+            "id": "resp_cache",
+            "model": "deepseek-v4-flash",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "ok"
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 1000,
+                "completion_tokens": 50,
+                "total_tokens": 1050,
+                "prompt_cache_hit_tokens": 900,
+                "prompt_cache_miss_tokens": 100
+            }
+        }))
+        .expect("raw chat response should deserialize");
+
+        let chat = raw.into_chat_response();
+        let usage = chat.usage.expect("usage should be present");
+        assert_eq!(usage.prompt_tokens, 1000);
+        assert_eq!(usage.completion_tokens, 50);
+        assert_eq!(usage.cache_read_input_tokens, Some(900));
+        assert_eq!(usage.cache_creation_input_tokens, None);
     }
 
     #[test]
