@@ -35,6 +35,7 @@ use crate::session_runtime::{
     visible_assistant_text_from_orchestrator_output, ModelPricing, SessionSchedulerLifecycleHook,
 };
 use crate::{ApiError, Result, ServerState};
+use rocode_provider::transform::{apply_caching, ProviderType};
 use rocode_session::prompt::{
     auto_compact_session_with_focus_if_needed, OutputBlockEvent, OutputBlockHook,
 };
@@ -498,6 +499,10 @@ impl ModelResolver for SessionSchedulerModelResolver {
             .fallback_request
             .with_model(model_id)
             .to_chat_request(messages, tools, true);
+        apply_caching(
+            &mut request.messages,
+            ProviderType::from_provider_id(&provider_id),
+        );
         if exec_ctx
             .metadata
             .get("workflow_verifier_use_logprobs")

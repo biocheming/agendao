@@ -1367,6 +1367,8 @@ export default function App() {
       return {
         input: tokens.input ?? 0,
         output: tokens.output ?? 0,
+        cacheRead: tokens.cache_read ?? 0,
+        cacheWrite: tokens.cache_write ?? 0,
       };
     }
     return null;
@@ -2899,6 +2901,8 @@ export default function App() {
               contextTokensLimit={activeProviderModel?.context_window ?? null}
               lastTurnInputTokens={lastAssistantTurnTokens?.input ?? null}
               lastTurnOutputTokens={lastAssistantTurnTokens?.output ?? null}
+              cacheReadTokens={sessionUsage?.cache_read_tokens ?? lastAssistantTurnTokens?.cacheRead ?? null}
+              cacheWriteTokens={sessionUsage?.cache_write_tokens ?? lastAssistantTurnTokens?.cacheWrite ?? null}
               inputPricePerMillion={activeProviderModel?.cost_per_million_input ?? null}
               outputPricePerMillion={activeProviderModel?.cost_per_million_output ?? null}
               activeStageId={schedulerNavigation.activeStageId}

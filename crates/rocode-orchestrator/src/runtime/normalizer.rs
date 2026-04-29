@@ -112,6 +112,8 @@ pub fn normalize(event: StreamEvent) -> Vec<LoopEvent> {
             prompt_tokens,
             completion_tokens,
             context_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
         } => {
             // Standalone usage event (e.g. ethnopic message_start).
             // Emit as StepDone-like usage update without changing finish reason.
@@ -122,6 +124,8 @@ pub fn normalize(event: StreamEvent) -> Vec<LoopEvent> {
                     prompt_tokens,
                     completion_tokens,
                     context_tokens: context_tokens.max(prompt_tokens),
+                    cache_read_tokens,
+                    cache_write_tokens,
                     ..Default::default()
                 }),
             }]

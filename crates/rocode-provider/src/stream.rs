@@ -84,6 +84,10 @@ pub enum StreamEvent {
         prompt_tokens: u64,
         completion_tokens: u64,
         context_tokens: u64,
+        #[serde(default)]
+        cache_read_tokens: u64,
+        #[serde(default)]
+        cache_write_tokens: u64,
     },
     /// Stream finished (maps to "finish" in TS).
     Finish,
@@ -190,6 +194,32 @@ pub(crate) struct OpenAIUsage {
     pub prompt_tokens: u64,
     #[serde(default)]
     pub completion_tokens: u64,
+    #[serde(default)]
+    pub cache_read_input_tokens: u64,
+    #[serde(default)]
+    pub cache_creation_input_tokens: u64,
+    #[serde(default)]
+    pub prompt_cache_hit_tokens: u64,
+}
+
+impl OpenAIUsage {
+    fn stream_usage(&self) -> StreamUsage {
+        let cache_read_tokens = self
+            .cache_read_input_tokens
+            .max(self.prompt_cache_hit_tokens);
+        let cache_write_tokens = self.cache_creation_input_tokens;
+
+        StreamUsage {
+            prompt_tokens: self.prompt_tokens,
+            completion_tokens: self.completion_tokens,
+            context_tokens: self
+                .prompt_tokens
+                .max(cache_read_tokens.saturating_add(cache_write_tokens)),
+            cache_read_tokens,
+            cache_write_tokens,
+            ..Default::default()
+        }
+    }
 }
 
 fn openai_tool_call_id(tc: &OpenAIToolCall) -> String {
@@ -649,6 +679,8 @@ pub fn parse_ethnopic_value_stateful(
                         prompt_tokens: usage.input_tokens,
                         completion_tokens: usage.output_tokens,
                         context_tokens: usage.input_tokens,
+                        cache_read_tokens: 0,
+                        cache_write_tokens: 0,
                     });
                 }
             }
@@ -670,12 +702,7 @@ pub fn parse_openai_value(value: serde_json::Value) -> Vec<StreamEvent> {
     };
 
     let mut events = Vec::new();
-    let usage = event.usage.as_ref().map(|u| StreamUsage {
-        prompt_tokens: u.prompt_tokens,
-        completion_tokens: u.completion_tokens,
-        context_tokens: u.prompt_tokens,
-        ..Default::default()
-    });
+    let usage = event.usage.as_ref().map(OpenAIUsage::stream_usage);
 
     for choice in event.choices {
         if let Some(delta) = &choice.delta {
@@ -746,10 +773,13 @@ pub fn parse_openai_value(value: serde_json::Value) -> Vec<StreamEvent> {
     }
 
     if let Some(usage) = event.usage {
+        let usage = usage.stream_usage();
         events.push(StreamEvent::Usage {
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,
-            context_tokens: usage.prompt_tokens,
+            context_tokens: usage.context_tokens.max(usage.prompt_tokens),
+            cache_read_tokens: usage.cache_read_tokens,
+            cache_write_tokens: usage.cache_write_tokens,
         });
     }
 
@@ -779,6 +809,47 @@ mod tests {
         assert!(is_parsable_json(r#"{"key":"value"}"#));
         assert!(!is_parsable_json(r#"{"key":"#));
         assert!(!is_parsable_json(""));
+    }
+
+    #[test]
+    fn openai_stream_usage_maps_deepseek_prompt_cache_hits() {
+        let events = parse_openai_value(serde_json::json!({
+            "choices": [{
+                "delta": {},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 1000,
+                "completion_tokens": 80,
+                "prompt_cache_hit_tokens": 700,
+                "prompt_cache_miss_tokens": 300
+            }
+        }));
+
+        let finish_usage = events
+            .iter()
+            .find_map(|event| match event {
+                StreamEvent::FinishStep { usage, .. } => Some(usage),
+                _ => None,
+            })
+            .expect("finish step usage should be present");
+        assert_eq!(finish_usage.prompt_tokens, 1000);
+        assert_eq!(finish_usage.completion_tokens, 80);
+        assert_eq!(finish_usage.cache_read_tokens, 700);
+        assert_eq!(finish_usage.cache_write_tokens, 0);
+
+        let standalone_usage = events
+            .iter()
+            .find_map(|event| match event {
+                StreamEvent::Usage {
+                    cache_read_tokens,
+                    cache_write_tokens,
+                    ..
+                } => Some((*cache_read_tokens, *cache_write_tokens)),
+                _ => None,
+            })
+            .expect("standalone usage should be present");
+        assert_eq!(standalone_usage, (700, 0));
     }
 
     #[test]
