@@ -19,6 +19,7 @@ pub const READ_ONLY_STAGE_TOOLS: &[&str] = &[
     "ls",
     "ast_grep_search",
     "scheduler_context_hydrate",
+    "scheduler_memory_hydrate",
 ];
 
 pub type StageToolArgumentValidator =
