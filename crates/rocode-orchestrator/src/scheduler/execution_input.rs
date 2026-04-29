@@ -184,7 +184,8 @@ pub(super) fn compose_coordination_gate_input(
             .unwrap_or_else(|| {
                 r#"## Coordination Decision Contract
 Return JSON only: {"status":"done|continue|blocked","summary":"short summary","next_input":"optional next round task","final_response":"optional final coordinator response"}.
-Use continue only when there is concrete unfinished work for another worker round."#
+Use continue only when there is concrete unfinished work for another worker round.
+If execution output already contains a complete structured user-facing delivery, omit final_response or reproduce the complete delivery; never replace concrete results with a generic completion sentence."#
                     .to_string()
             }),
     );
@@ -280,7 +281,8 @@ pub(super) fn compose_autonomous_gate_input(
                 r#"## Finish Gate Contract
 Return JSON only: {"status":"done|continue|blocked","summary":"short summary","next_input":"optional retry brief","final_response":"optional final response"}.
 Prefer done when the output already satisfies the request.
-Use continue only when a bounded retry should materially improve the result."#
+Use continue only when a bounded retry should materially improve the result.
+If executor output already contains a complete structured user-facing delivery, omit final_response or reproduce the complete delivery; never replace concrete results with a generic completion sentence."#
                     .to_string()
             }),
     );

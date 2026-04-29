@@ -189,7 +189,7 @@ coordination-gate"
     ));
     sections.push(
         "## Coordination Decision Contract
-Judge completion by task boundary. Return JSON only. Use `done` only when every required task item is complete with evidence. Use `continue` only when you can name the exact unfinished or weakly-verified task items for the next worker round. Use `blocked` only for a concrete blocker. If `final_response` is present, format it as `## Delivery Summary`, `**Task Status**`, `**Verification**`, `**Gate Decision**`, `**Blockers or Risks**`, `**Next Actions**`."
+Judge completion by task boundary. Return JSON only. Use `done` only when every required task item is complete with evidence. Use `continue` only when you can name the exact unfinished or weakly-verified task items for the next worker round. Use `blocked` only for a concrete blocker. If execution output already contains a complete structured user-facing delivery, omit `final_response` or reproduce the complete delivery; never replace concrete results with a generic completion sentence. If `final_response` is present, format it as `## Delivery Summary`, `**Task Status**`, `**Verification**`, `**Gate Decision**`, `**Blockers or Risks**`, `**Next Actions**`."
             .to_string(),
     );
     sections.push(SHARED_GATE_DECISION_CONTRACT.to_string());

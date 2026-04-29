@@ -420,6 +420,68 @@ fn sisyphus_final_output_preserves_structured_execution_over_generic_gate_respon
 }
 
 #[test]
+fn gate_terminal_output_preserves_structured_execution_for_atlas_generic_gate_response() {
+    let plan = runtime_execution_plan("atlas");
+    let execution = OrchestratorOutput {
+        content: "## Delivery Summary\nResearch complete.\n\n**Task Status**\n- AlphaFold3 method survey finished.\n\n**Verification**\n- Evidence-backed search results collected.".to_string(),
+        steps: 1,
+        tool_calls_count: 2,
+        metadata: HashMap::new(),
+        finish_reason: FinishReason::EndTurn,
+    };
+    let decision = SchedulerExecutionGateDecision {
+        status: SchedulerExecutionGateStatus::Done,
+        summary: "verified".to_string(),
+        next_input: None,
+        final_response: Some("所有任务已完成。".to_string()),
+    };
+
+    let output = SchedulerProfileOrchestrator::gate_terminal_output(
+        &plan,
+        SchedulerExecutionGateStatus::Done,
+        &decision,
+        &execution,
+        None,
+    )
+    .expect("done gate should produce terminal output");
+
+    assert!(output.content.contains("AlphaFold3 method survey finished"));
+    assert!(!output.content.contains("所有任务已完成。"));
+}
+
+#[test]
+fn gate_terminal_output_uses_default_preservation_for_custom_scheduler() {
+    let plan = runtime_execution_plan("custom-research-scheduler");
+    let execution = OrchestratorOutput {
+        content: "## Delivery Summary\nResearch complete.\n\n**Execution Outcome**\n- Found concrete AlphaFold3 methodology papers.\n\n**Verification**\n- Checked returned paper metadata.".to_string(),
+        steps: 1,
+        tool_calls_count: 2,
+        metadata: HashMap::new(),
+        finish_reason: FinishReason::EndTurn,
+    };
+    let decision = SchedulerExecutionGateDecision {
+        status: SchedulerExecutionGateStatus::Done,
+        summary: "verified".to_string(),
+        next_input: None,
+        final_response: Some("Done.".to_string()),
+    };
+
+    let output = SchedulerProfileOrchestrator::gate_terminal_output(
+        &plan,
+        SchedulerExecutionGateStatus::Done,
+        &decision,
+        &execution,
+        None,
+    )
+    .expect("custom scheduler should use default terminal gate behavior");
+
+    assert!(output
+        .content
+        .contains("Found concrete AlphaFold3 methodology papers"));
+    assert!(!output.content.contains("Done."));
+}
+
+#[test]
 fn finalize_output_normalizes_atlas_delivery_shape() {
     let orchestrator = SchedulerProfileOrchestrator::new(
         SchedulerProfilePlan::new(vec![SchedulerStageKind::Synthesis]).with_orchestrator("atlas"),

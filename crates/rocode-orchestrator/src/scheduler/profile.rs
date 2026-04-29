@@ -831,17 +831,18 @@ impl SchedulerProfileOrchestrator {
         fallback_output: &OrchestratorOutput,
         supplemental_output: Option<&OrchestratorOutput>,
     ) -> Option<OrchestratorOutput> {
-        plan.resolve_gate_terminal_content(status, decision, &fallback_output.content)
-            .map(|content| {
-                let mut output = fallback_output.clone();
-                output.content = content;
-                if let Some(supplemental_output) = supplemental_output {
-                    merge_output_metadata(&mut output.metadata, &supplemental_output.metadata);
-                    output.steps += supplemental_output.steps;
-                    output.tool_calls_count += supplemental_output.tool_calls_count;
-                }
-                output
-            })
+        let content =
+            plan.resolve_gate_terminal_content(status, decision, &fallback_output.content)?;
+        let content =
+            preserve_structured_execution_output(status, &content, &fallback_output.content);
+        let mut output = fallback_output.clone();
+        output.content = content;
+        if let Some(supplemental_output) = supplemental_output {
+            merge_output_metadata(&mut output.metadata, &supplemental_output.metadata);
+            output.steps += supplemental_output.steps;
+            output.tool_calls_count += supplemental_output.tool_calls_count;
+        }
+        Some(output)
     }
 
     pub(super) fn record_output(state: &mut SchedulerProfileState, output: &OrchestratorOutput) {
@@ -2109,6 +2110,46 @@ impl Orchestrator for SchedulerProfileOrchestrator {
 
         Ok(self.finalize_output(state))
     }
+}
+
+fn preserve_structured_execution_output(
+    status: SchedulerExecutionGateStatus,
+    gate_content: &str,
+    fallback_content: &str,
+) -> String {
+    if !matches!(status, SchedulerExecutionGateStatus::Done) {
+        return gate_content.to_string();
+    }
+
+    let fallback = fallback_content.trim();
+    let gate = gate_content.trim();
+    if is_structured_delivery(fallback) && !is_structured_delivery(gate) {
+        return fallback.to_string();
+    }
+
+    gate.to_string()
+}
+
+fn is_structured_delivery(content: &str) -> bool {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let has_delivery_summary = trimmed.contains("## Delivery Summary");
+    let has_execution_shape = trimmed.contains("**Execution Outcome**")
+        || trimmed.contains("**Task Status**")
+        || trimmed.contains("**What Changed**")
+        || trimmed.contains("**Implementation**")
+        || trimmed.contains("**Results**");
+    let has_evidence_shape = trimmed.contains("**Verification**")
+        || trimmed.contains("**Gate Decision**")
+        || trimmed.contains("**Evidence**")
+        || trimmed.contains("**Blockers or Risks**")
+        || trimmed.contains("**Open Risks")
+        || trimmed.contains("**Remaining Risks");
+
+    has_delivery_summary && has_execution_shape && has_evidence_shape
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
