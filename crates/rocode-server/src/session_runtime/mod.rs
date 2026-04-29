@@ -28,10 +28,15 @@ use rocode_session::snapshot::Snapshot;
 use rocode_session::{MessageRole, MessageUsage, PartType, Session, SessionMessage};
 
 const SCHEDULER_CONTEXT_HYDRATE_TOOL: &str = "scheduler_context_hydrate";
+const SCHEDULER_MEMORY_HYDRATE_TOOL: &str = "scheduler_memory_hydrate";
 const SCHEDULER_STAGE_CONTEXT_HYDRATION_IDS_METADATA_KEY: &str =
     "scheduler_stage_context_hydrated_message_ids";
 const SCHEDULER_STAGE_CONTEXT_HYDRATION_EVENTS_METADATA_KEY: &str =
     "scheduler_stage_context_hydration_events";
+const SCHEDULER_STAGE_MEMORY_HYDRATION_IDS_METADATA_KEY: &str =
+    "scheduler_stage_memory_hydrated_record_ids";
+const SCHEDULER_STAGE_MEMORY_HYDRATION_EVENTS_METADATA_KEY: &str =
+    "scheduler_stage_memory_hydration_events";
 
 #[derive(Clone)]
 struct ActiveStageMessage {
@@ -771,6 +776,13 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
                 }
                 if tool_name.eq_ignore_ascii_case(SCHEDULER_CONTEXT_HYDRATE_TOOL) {
                     persist_scheduler_context_hydration_event(
+                        message,
+                        tool_call_id,
+                        tool_output.metadata.as_ref(),
+                    );
+                }
+                if tool_name.eq_ignore_ascii_case(SCHEDULER_MEMORY_HYDRATE_TOOL) {
+                    persist_scheduler_memory_hydration_event(
                         message,
                         tool_call_id,
                         tool_output.metadata.as_ref(),
@@ -1574,6 +1586,50 @@ fn persist_scheduler_context_hydration_event(
     );
 }
 
+fn persist_scheduler_memory_hydration_event(
+    message: &mut SessionMessage,
+    tool_call_id: &str,
+    metadata: Option<&serde_json::Value>,
+) {
+    let Some(metadata) = metadata else {
+        return;
+    };
+    let hydrated_ids = metadata_array_strings(metadata, "hydrated_memory_record_ids");
+    let rejected_ids = metadata_array_strings(metadata, "rejected_memory_record_ids");
+    let missing_ids = metadata_array_strings(metadata, "missing_memory_record_ids");
+    if hydrated_ids.is_empty() && rejected_ids.is_empty() && missing_ids.is_empty() {
+        return;
+    }
+
+    merge_unique_metadata_strings(
+        &mut message.metadata,
+        SCHEDULER_STAGE_MEMORY_HYDRATION_IDS_METADATA_KEY,
+        &hydrated_ids,
+    );
+
+    let mut events = message
+        .metadata
+        .get(SCHEDULER_STAGE_MEMORY_HYDRATION_EVENTS_METADATA_KEY)
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    events.push(serde_json::json!({
+        "tool_call_id": tool_call_id,
+        "hydrated_memory_record_ids": hydrated_ids,
+        "rejected_memory_record_ids": rejected_ids,
+        "missing_memory_record_ids": missing_ids,
+        "hydrated_count": metadata.get("hydrated_count").and_then(|value| value.as_u64()).unwrap_or(0),
+        "rejected_count": metadata.get("rejected_count").and_then(|value| value.as_u64()).unwrap_or(0),
+        "missing_count": metadata.get("missing_count").and_then(|value| value.as_u64()).unwrap_or(0),
+        "max_chars_per_record": metadata.get("max_chars_per_record").and_then(|value| value.as_u64()),
+        "include_evidence": metadata.get("include_evidence").and_then(|value| value.as_bool()).unwrap_or(false),
+    }));
+    message.metadata.insert(
+        SCHEDULER_STAGE_MEMORY_HYDRATION_EVENTS_METADATA_KEY.to_string(),
+        serde_json::Value::Array(events),
+    );
+}
+
 fn metadata_array_strings(metadata: &serde_json::Value, key: &str) -> Vec<String> {
     metadata
         .get(key)
@@ -1653,6 +1709,8 @@ fn scheduler_stage_runtime_metadata(message: &SessionMessage) -> serde_json::Val
         "scheduler_stage_active_categories",
         SCHEDULER_STAGE_CONTEXT_HYDRATION_IDS_METADATA_KEY,
         SCHEDULER_STAGE_CONTEXT_HYDRATION_EVENTS_METADATA_KEY,
+        SCHEDULER_STAGE_MEMORY_HYDRATION_IDS_METADATA_KEY,
+        SCHEDULER_STAGE_MEMORY_HYDRATION_EVENTS_METADATA_KEY,
         "scheduler_stage_prompt_tokens",
         "scheduler_stage_completion_tokens",
         "scheduler_stage_reasoning_tokens",
@@ -3150,6 +3208,56 @@ mod tests {
             events[0]["missing_message_ids"],
             serde_json::json!(["msg_y"])
         );
+    }
+
+    #[test]
+    fn scheduler_memory_hydration_event_persists_stage_metadata() {
+        let mut message = SessionMessage::assistant("session");
+        persist_scheduler_memory_hydration_event(
+            &mut message,
+            "tool_call_1",
+            Some(&serde_json::json!({
+                "hydrated_count": 2,
+                "rejected_count": 1,
+                "missing_count": 1,
+                "hydrated_memory_record_ids": ["mem_a", "mem_b"],
+                "rejected_memory_record_ids": ["mem_x"],
+                "missing_memory_record_ids": ["mem_y"],
+                "max_chars_per_record": 4000,
+                "include_evidence": true
+            })),
+        );
+        persist_scheduler_memory_hydration_event(
+            &mut message,
+            "tool_call_2",
+            Some(&serde_json::json!({
+                "hydrated_count": 1,
+                "hydrated_memory_record_ids": ["mem_b"]
+            })),
+        );
+
+        assert_eq!(
+            message
+                .metadata
+                .get(SCHEDULER_STAGE_MEMORY_HYDRATION_IDS_METADATA_KEY),
+            Some(&serde_json::json!(["mem_a", "mem_b"]))
+        );
+        let events = message
+            .metadata
+            .get(SCHEDULER_STAGE_MEMORY_HYDRATION_EVENTS_METADATA_KEY)
+            .and_then(|value| value.as_array())
+            .expect("memory hydration events should be recorded");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["tool_call_id"], "tool_call_1");
+        assert_eq!(
+            events[0]["rejected_memory_record_ids"],
+            serde_json::json!(["mem_x"])
+        );
+        assert_eq!(
+            events[0]["missing_memory_record_ids"],
+            serde_json::json!(["mem_y"])
+        );
+        assert_eq!(events[0]["include_evidence"], true);
     }
 
     #[async_trait]

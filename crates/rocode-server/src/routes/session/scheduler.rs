@@ -38,6 +38,7 @@ use rocode_session::prompt::{
     auto_compact_session_with_focus_if_needed, OutputBlockEvent, OutputBlockHook,
 };
 use rocode_session::{MessageRole, PartType as SessionPartType, SessionMessage};
+use rocode_types::{MemoryDetailView, MemoryEvidenceRef, MemoryRecordId};
 
 use super::super::permission::request_permission;
 use super::super::tui::request_question_answers;
@@ -61,10 +62,14 @@ use super::cancel::abort_session_execution;
 const BUILTIN_AUTORESEARCH_SCHEDULER_JSONC: &str =
     include_str!("../../../assets/autoresearch.scheduler.jsonc");
 const SCHEDULER_CONTEXT_HYDRATE_TOOL: &str = "scheduler_context_hydrate";
+const SCHEDULER_MEMORY_HYDRATE_TOOL: &str = "scheduler_memory_hydrate";
 const SCHEDULER_CONTEXT_PACKET_VERSION: u64 = 1;
 const SCHEDULER_CONTEXT_HYDRATE_DEFAULT_MESSAGE_LIMIT: usize = 2_000;
 const SCHEDULER_CONTEXT_HYDRATE_MAX_MESSAGE_LIMIT: usize = 8_000;
 const SCHEDULER_CONTEXT_HYDRATE_MAX_MESSAGES: usize = 12;
+const SCHEDULER_MEMORY_HYDRATE_DEFAULT_RECORD_LIMIT: usize = 4_000;
+const SCHEDULER_MEMORY_HYDRATE_MAX_RECORD_LIMIT: usize = 12_000;
+const SCHEDULER_MEMORY_HYDRATE_MAX_RECORDS: usize = 8;
 
 fn to_orchestrator_skill_tree(node: &SkillTreeNodeConfig) -> SkillTreeNode {
     SkillTreeNode {
@@ -810,6 +815,97 @@ impl SessionSchedulerToolExecutor {
             })),
         })
     }
+
+    async fn hydrate_scheduler_memory(
+        &self,
+        arguments: serde_json::Value,
+        exec_ctx: &OrchestratorExecutionContext,
+    ) -> std::result::Result<OrchestratorToolOutput, OrchestratorToolExecError> {
+        let requested_ids = scheduler_memory_hydrate_record_ids(&arguments)?;
+        let allowed_ids = scheduler_memory_allowed_record_ids(exec_ctx);
+        if allowed_ids.is_empty() {
+            return Err(OrchestratorToolExecError::InvalidArguments(
+                "scheduler continuity packet is unavailable; no memory anchors are authorized"
+                    .to_string(),
+            ));
+        }
+        let per_record_limit = scheduler_memory_hydrate_record_limit(&arguments);
+        let include_evidence = scheduler_memory_hydrate_include_evidence(&arguments);
+
+        let mut hydrated = Vec::new();
+        let mut hydrated_ids = Vec::new();
+        let mut rejected = Vec::new();
+        let mut missing = Vec::new();
+        for record_id in requested_ids {
+            if !allowed_ids.contains(&record_id) {
+                rejected.push(record_id);
+                continue;
+            }
+            let detail = self
+                .state
+                .runtime_memory
+                .get_memory_detail(&MemoryRecordId(record_id.clone()))
+                .await
+                .map_err(|error| OrchestratorToolExecError::ExecutionError(error.to_string()))?;
+            let Some(detail) = detail else {
+                missing.push(record_id);
+                continue;
+            };
+            hydrated.push(render_scheduler_memory_hydrated_record(
+                &detail,
+                include_evidence,
+                per_record_limit,
+            ));
+            hydrated_ids.push(record_id);
+        }
+
+        let mut sections = vec![
+            "## Scheduler Memory Hydration\nHydrated memory records authorized by the scheduler continuity packet."
+                .to_string(),
+        ];
+        if !hydrated.is_empty() {
+            sections.push(format!(
+                "## Hydrated Memory Records\n{}",
+                hydrated.join("\n")
+            ));
+        }
+        if !rejected.is_empty() {
+            sections.push(format!(
+                "## Rejected Memory Record IDs\n{}",
+                rejected
+                    .iter()
+                    .map(|id| format!("- `{id}`: not present in scheduler memory anchors"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+        if !missing.is_empty() {
+            sections.push(format!(
+                "## Missing Memory Record IDs\n{}",
+                missing
+                    .iter()
+                    .map(|id| format!("- `{id}`: not found or not visible in memory scope"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+
+        Ok(OrchestratorToolOutput {
+            output: sections.join("\n\n"),
+            is_error: false,
+            title: Some("Scheduler memory hydrated".to_string()),
+            metadata: Some(serde_json::json!({
+                "hydrated_count": hydrated.len(),
+                "rejected_count": rejected.len(),
+                "missing_count": missing.len(),
+                "hydrated_memory_record_ids": hydrated_ids,
+                "rejected_memory_record_ids": rejected,
+                "missing_memory_record_ids": missing,
+                "max_chars_per_record": per_record_limit,
+                "include_evidence": include_evidence,
+            })),
+        })
+    }
 }
 
 fn scheduler_context_hydrate_message_ids(
@@ -888,6 +984,82 @@ fn scheduler_context_allowed_message_ids(exec_ctx: &OrchestratorExecutionContext
     ids
 }
 
+fn scheduler_memory_hydrate_record_ids(
+    arguments: &serde_json::Value,
+) -> std::result::Result<Vec<String>, OrchestratorToolExecError> {
+    let Some(values) = arguments
+        .get("record_ids")
+        .and_then(|value| value.as_array())
+    else {
+        return Err(OrchestratorToolExecError::InvalidArguments(
+            "record_ids must be an array of scheduler memory anchor ids".to_string(),
+        ));
+    };
+    if values.is_empty() {
+        return Err(OrchestratorToolExecError::InvalidArguments(
+            "record_ids must not be empty".to_string(),
+        ));
+    }
+    if values.len() > SCHEDULER_MEMORY_HYDRATE_MAX_RECORDS {
+        return Err(OrchestratorToolExecError::InvalidArguments(format!(
+            "record_ids must contain at most {SCHEDULER_MEMORY_HYDRATE_MAX_RECORDS} ids"
+        )));
+    }
+    let mut ids = Vec::new();
+    for value in values {
+        let Some(id) = value.as_str().map(str::trim).filter(|id| !id.is_empty()) else {
+            return Err(OrchestratorToolExecError::InvalidArguments(
+                "record_ids must only contain non-empty strings".to_string(),
+            ));
+        };
+        if !ids.iter().any(|existing| existing == id) {
+            ids.push(id.to_string());
+        }
+    }
+    Ok(ids)
+}
+
+fn scheduler_memory_hydrate_record_limit(arguments: &serde_json::Value) -> usize {
+    arguments
+        .get("max_chars_per_record")
+        .and_then(|value| value.as_u64())
+        .map(|value| value as usize)
+        .unwrap_or(SCHEDULER_MEMORY_HYDRATE_DEFAULT_RECORD_LIMIT)
+        .clamp(1, SCHEDULER_MEMORY_HYDRATE_MAX_RECORD_LIMIT)
+}
+
+fn scheduler_memory_hydrate_include_evidence(arguments: &serde_json::Value) -> bool {
+    arguments
+        .get("include_evidence")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+}
+
+fn scheduler_memory_allowed_record_ids(exec_ctx: &OrchestratorExecutionContext) -> Vec<String> {
+    let Some(packet) = exec_ctx
+        .metadata
+        .get(SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY)
+    else {
+        return Vec::new();
+    };
+    if packet.get("version").and_then(|value| value.as_u64())
+        != Some(SCHEDULER_CONTEXT_PACKET_VERSION)
+    {
+        return Vec::new();
+    }
+    let mut ids = packet
+        .get("memory_anchors")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|anchor| anchor.get("record_id").and_then(|value| value.as_str()))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
 fn render_scheduler_context_hydrated_message(
     message: &SessionMessage,
     per_message_limit: usize,
@@ -948,6 +1120,101 @@ fn truncate_scheduler_context_hydration(value: &str, limit: usize) -> String {
     truncated
 }
 
+fn render_scheduler_memory_hydrated_record(
+    detail: &MemoryDetailView,
+    include_evidence: bool,
+    per_record_limit: usize,
+) -> String {
+    let record = &detail.record;
+    let mut lines = vec![
+        format!(
+            "- memory `{}` [{} / {} / {} / validation:{}]: {}",
+            record.id.0,
+            scheduler_memory_label(&record.kind),
+            scheduler_memory_label(&record.scope),
+            scheduler_memory_label(&record.status),
+            scheduler_memory_label(&record.validation_status),
+            record.title.trim()
+        ),
+        format!("  summary: {}", record.summary.trim()),
+    ];
+    if let Some(confidence) = record.confidence {
+        lines.push(format!("  confidence: {confidence:.2}"));
+    }
+    if let Some(source_session_id) = record.source_session_id.as_deref() {
+        lines.push(format!("  source_session_id: `{source_session_id}`"));
+    }
+    if let Some(workspace_identity) = record.workspace_identity.as_deref() {
+        lines.push(format!("  workspace_identity: `{workspace_identity}`"));
+    }
+    if !record.trigger_conditions.is_empty() {
+        lines.push("  trigger_conditions:".to_string());
+        lines.extend(render_scheduler_memory_list(&record.trigger_conditions));
+    }
+    if !record.normalized_facts.is_empty() {
+        lines.push("  normalized_facts:".to_string());
+        lines.extend(render_scheduler_memory_list(&record.normalized_facts));
+    }
+    if !record.boundaries.is_empty() {
+        lines.push("  boundaries:".to_string());
+        lines.extend(render_scheduler_memory_list(&record.boundaries));
+    }
+    if include_evidence && !record.evidence_refs.is_empty() {
+        lines.push("  evidence_refs:".to_string());
+        lines.extend(
+            record
+                .evidence_refs
+                .iter()
+                .map(render_scheduler_memory_evidence_ref),
+        );
+    }
+    if let Some(derived_skill_name) = record.derived_skill_name.as_deref() {
+        lines.push(format!("  derived_skill_name: `{derived_skill_name}`"));
+    }
+    if let Some(linked_skill_name) = record.linked_skill_name.as_deref() {
+        lines.push(format!("  linked_skill_name: `{linked_skill_name}`"));
+    }
+    truncate_scheduler_context_hydration(&lines.join("\n"), per_record_limit)
+}
+
+fn scheduler_memory_label<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn render_scheduler_memory_list(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .map(|value| format!("    - {}", value.trim()))
+        .collect()
+}
+
+fn render_scheduler_memory_evidence_ref(evidence: &MemoryEvidenceRef) -> String {
+    let mut parts = Vec::new();
+    if let Some(session_id) = evidence.session_id.as_deref() {
+        parts.push(format!("session_id=`{session_id}`"));
+    }
+    if let Some(message_id) = evidence.message_id.as_deref() {
+        parts.push(format!("message_id=`{message_id}`"));
+    }
+    if let Some(tool_call_id) = evidence.tool_call_id.as_deref() {
+        parts.push(format!("tool_call_id=`{tool_call_id}`"));
+    }
+    if let Some(stage_id) = evidence.stage_id.as_deref() {
+        parts.push(format!("stage_id=`{stage_id}`"));
+    }
+    if let Some(note) = evidence.note.as_deref() {
+        parts.push(format!("note={}", note.trim()));
+    }
+    if parts.is_empty() {
+        "    - evidence reference with no details".to_string()
+    } else {
+        format!("    - {}", parts.join("; "))
+    }
+}
+
 fn scheduler_context_hydrate_tool_definition() -> rocode_provider::ToolDefinition {
     rocode_provider::ToolDefinition {
         name: SCHEDULER_CONTEXT_HYDRATE_TOOL.to_string(),
@@ -971,6 +1238,40 @@ fn scheduler_context_hydrate_tool_definition() -> rocode_provider::ToolDefinitio
                     "minimum": 1,
                     "maximum": SCHEDULER_CONTEXT_HYDRATE_MAX_MESSAGE_LIMIT,
                     "description": "Maximum characters to return per hydrated message."
+                }
+            },
+            "additionalProperties": false
+        }),
+    }
+}
+
+fn scheduler_memory_hydrate_tool_definition() -> rocode_provider::ToolDefinition {
+    rocode_provider::ToolDefinition {
+        name: SCHEDULER_MEMORY_HYDRATE_TOOL.to_string(),
+        description: Some(
+            "Hydrate memory records identified by Scheduler Continuity Memory Anchors. Use only for exact cross-session memory details authorized by the current continuity packet."
+                .to_string(),
+        ),
+        parameters: serde_json::json!({
+            "type": "object",
+            "required": ["record_ids"],
+            "properties": {
+                "record_ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": SCHEDULER_MEMORY_HYDRATE_MAX_RECORDS,
+                    "items": {"type": "string"},
+                    "description": "Memory record ids from the Scheduler Continuity Memory Anchors."
+                },
+                "include_evidence": {
+                    "type": "boolean",
+                    "description": "Whether to include provenance evidence refs for each hydrated memory record."
+                },
+                "max_chars_per_record": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": SCHEDULER_MEMORY_HYDRATE_MAX_RECORD_LIMIT,
+                    "description": "Maximum characters to return per hydrated memory record."
                 }
             },
             "additionalProperties": false
@@ -1026,6 +1327,9 @@ impl OrchestratorToolExecutor for SessionSchedulerToolExecutor {
         if tool_name == SCHEDULER_CONTEXT_HYDRATE_TOOL {
             return self.hydrate_scheduler_context(arguments, exec_ctx).await;
         }
+        if tool_name == SCHEDULER_MEMORY_HYDRATE_TOOL {
+            return self.hydrate_scheduler_memory(arguments, exec_ctx).await;
+        }
         let ctx = self.build_tool_context(exec_ctx).await;
         let result = self
             .state
@@ -1065,6 +1369,9 @@ impl OrchestratorToolExecutor for SessionSchedulerToolExecutor {
         if !ids.iter().any(|id| id == SCHEDULER_CONTEXT_HYDRATE_TOOL) {
             ids.push(SCHEDULER_CONTEXT_HYDRATE_TOOL.to_string());
         }
+        if !ids.iter().any(|id| id == SCHEDULER_MEMORY_HYDRATE_TOOL) {
+            ids.push(SCHEDULER_MEMORY_HYDRATE_TOOL.to_string());
+        }
         ids
     }
 
@@ -1085,6 +1392,7 @@ impl OrchestratorToolExecutor for SessionSchedulerToolExecutor {
             })
             .collect();
         tools.push(scheduler_context_hydrate_tool_definition());
+        tools.push(scheduler_memory_hydrate_tool_definition());
         rocode_session::prioritize_tool_definitions(&mut tools);
         tools
     }
@@ -2077,6 +2385,118 @@ mod tests {
         assert!(rendered.contains("visible text"));
         assert!(rendered.contains("[compaction summary]"));
         assert!(rendered.contains("older findings"));
+    }
+
+    #[test]
+    fn scheduler_memory_hydrate_only_allows_packet_anchors() {
+        let exec_ctx = OrchestratorExecutionContext {
+            session_id: "session".to_string(),
+            workdir: "/tmp".to_string(),
+            agent_name: "sisyphus".to_string(),
+            metadata: HashMap::from([(
+                SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY.to_string(),
+                serde_json::json!({
+                    "version": 1,
+                    "memory_anchors": [
+                        {"record_id": "mem_b", "title": "B", "kind": "Pattern", "status": "Validated"},
+                        {"record_id": "mem_a", "title": "A", "kind": "Lesson", "status": "Consolidated"}
+                    ]
+                }),
+            )]),
+        };
+
+        let allowed = scheduler_memory_allowed_record_ids(&exec_ctx);
+
+        assert_eq!(allowed, vec!["mem_a".to_string(), "mem_b".to_string()]);
+    }
+
+    #[test]
+    fn scheduler_memory_hydrate_rejects_unknown_packet_version() {
+        let exec_ctx = OrchestratorExecutionContext {
+            session_id: "session".to_string(),
+            workdir: "/tmp".to_string(),
+            agent_name: "sisyphus".to_string(),
+            metadata: HashMap::from([(
+                SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY.to_string(),
+                serde_json::json!({
+                    "version": 99,
+                    "memory_anchors": [
+                        {"record_id": "mem_a", "title": "A", "kind": "Lesson", "status": "Validated"}
+                    ]
+                }),
+            )]),
+        };
+
+        assert!(scheduler_memory_allowed_record_ids(&exec_ctx).is_empty());
+    }
+
+    #[test]
+    fn scheduler_memory_hydrate_arguments_validate_and_dedupe_ids() {
+        let ids = scheduler_memory_hydrate_record_ids(&serde_json::json!({
+            "record_ids": ["mem_1", "mem_1", "mem_2"]
+        }))
+        .expect("valid record ids should parse");
+
+        assert_eq!(ids, vec!["mem_1".to_string(), "mem_2".to_string()]);
+        assert!(scheduler_memory_hydrate_record_ids(&serde_json::json!({
+            "record_ids": []
+        }))
+        .is_err());
+        assert_eq!(
+            scheduler_memory_hydrate_record_limit(&serde_json::json!({
+                "max_chars_per_record": 99_999
+            })),
+            SCHEDULER_MEMORY_HYDRATE_MAX_RECORD_LIMIT
+        );
+        assert!(scheduler_memory_hydrate_include_evidence(
+            &serde_json::json!({
+                "include_evidence": true
+            })
+        ));
+    }
+
+    #[test]
+    fn scheduler_memory_hydrate_renders_detail_and_optional_evidence() {
+        let detail = MemoryDetailView {
+            record: rocode_types::MemoryRecord {
+                id: MemoryRecordId("mem_123".to_string()),
+                kind: rocode_types::MemoryKind::Lesson,
+                scope: rocode_types::MemoryScope::WorkspaceShared,
+                status: rocode_types::MemoryStatus::Validated,
+                title: "Audit hydration boundary".to_string(),
+                summary: "Use anchor-gated hydration for scheduler memory recall.".to_string(),
+                trigger_conditions: vec!["scheduler continuity".to_string()],
+                normalized_facts: vec!["hydration_scope=memory_anchor".to_string()],
+                boundaries: vec!["Do not hydrate ids outside packet anchors.".to_string()],
+                confidence: Some(0.9),
+                evidence_refs: vec![MemoryEvidenceRef {
+                    session_id: Some("session".to_string()),
+                    message_id: Some("msg_a".to_string()),
+                    tool_call_id: Some("tool_a".to_string()),
+                    stage_id: Some("stage_a".to_string()),
+                    note: Some("test evidence".to_string()),
+                }],
+                source_session_id: Some("session".to_string()),
+                workspace_identity: Some("workspace:test".to_string()),
+                created_at: 1,
+                updated_at: 2,
+                last_validated_at: None,
+                expires_at: None,
+                derived_skill_name: None,
+                linked_skill_name: None,
+                validation_status: rocode_types::MemoryValidationStatus::Passed,
+            },
+        };
+
+        let without_evidence = render_scheduler_memory_hydrated_record(&detail, false, 4_000);
+        assert!(without_evidence.contains("memory `mem_123`"));
+        assert!(without_evidence.contains("lesson / workspace_shared / validated"));
+        assert!(without_evidence.contains("hydration_scope=memory_anchor"));
+        assert!(!without_evidence.contains("evidence_refs"));
+
+        let with_evidence = render_scheduler_memory_hydrated_record(&detail, true, 4_000);
+        assert!(with_evidence.contains("evidence_refs"));
+        assert!(with_evidence.contains("message_id=`msg_a`"));
     }
 
     #[tokio::test]

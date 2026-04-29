@@ -490,7 +490,7 @@ not as a replacement for checking live files or rerunning verification when exac
                 "context_text_chars": SCHEDULER_CONTEXT_TEXT_LIMIT,
                 "turn_text_chars": SCHEDULER_CONTEXT_TURN_LIMIT,
             },
-            "recall_policy": "exact_tail_for_recent_followups; ledger_and_compaction_are_lossy; use_scheduler_context_hydrate_for_authorized_source_anchors_when_prior_exact_text_is_needed; use_memory_artifacts_or_tools_for_facts_outside_anchors",
+            "recall_policy": "exact_tail_for_recent_followups; ledger_and_compaction_are_lossy; use_scheduler_context_hydrate_for_authorized_source_anchors_when_prior_exact_text_is_needed; use_scheduler_memory_hydrate_for_authorized_memory_anchors_when_exact_memory_detail_is_needed; use_memory_artifacts_or_tools_for_facts_outside_anchors",
         })
     }
 
@@ -517,7 +517,7 @@ not as a replacement for checking live files or rerunning verification when exac
             self.memory_anchors.len()
         ));
         rows.push(
-            "- recall_policy: use exact tail for recent follow-up references; treat ledger and compaction as lossy summaries; use `scheduler_context_hydrate` for authorized Source Anchors when prior exact text is needed; use memory, artifacts, or other tools for facts outside the anchors."
+            "- recall_policy: use exact tail for recent follow-up references; treat ledger and compaction as lossy summaries; use `scheduler_context_hydrate` for authorized Source Anchors when prior exact text is needed; use `scheduler_memory_hydrate` for authorized Memory Anchors when exact memory detail is needed; use memory, artifacts, or other tools for facts outside the anchors."
                 .to_string(),
         );
         format!("## Context Coverage\n{}", rows.join("\n"))
@@ -531,7 +531,7 @@ not as a replacement for checking live files or rerunning verification when exac
             "- Use `scheduler_context_hydrate({\"message_ids\":[...]})` only with ids listed in Source Anchors when the current task needs exact prior text that is truncated, ambiguous, or summarized.".to_string(),
             "- Do not invent message ids. The runtime rejects ids that are not authorized by the scheduler continuity packet.".to_string(),
             "- Prefer the visible Exact Recent Tail when it already contains the needed prior output.".to_string(),
-            "- Use Memory Anchors as authorized recalled memory records; verify them through the memory system or supporting evidence when exact details matter.".to_string(),
+            "- Use `scheduler_memory_hydrate({\"record_ids\":[...]})` only with ids listed in Memory Anchors when exact recalled memory details matter.".to_string(),
         ];
         if omitted_count > 0 {
             rows.push(format!(
