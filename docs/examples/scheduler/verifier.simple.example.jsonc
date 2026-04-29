@@ -1,6 +1,6 @@
 {
   "$schema": "https://rocode.dev/schemas/scheduler-profile.schema.json",
-  "version": "2026-04-27",
+  "version": "2026-04-29",
 
   "defaults": {
     "profile": "verifier-simple"

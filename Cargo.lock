@@ -3253,7 +3253,7 @@ dependencies = [
 
 [[package]]
 name = "rocode"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3275,7 +3275,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-agent"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3299,7 +3299,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-api"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "rocode-command",
  "rocode-multimodal",
@@ -3312,7 +3312,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-cli"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3358,7 +3358,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-client"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -3374,7 +3374,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-command"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3397,7 +3397,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-config"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3416,7 +3416,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-content"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "chrono",
  "serde",
@@ -3426,7 +3426,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-core"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "chrono",
  "hex",
@@ -3444,7 +3444,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-execution-types"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "rocode-core",
  "rocode-provider",
@@ -3454,7 +3454,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-grep"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "anyhow",
  "regex",
@@ -3467,7 +3467,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-launcher"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "anyhow",
  "dirs",
@@ -3481,7 +3481,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-lsp"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "async-trait",
  "futures",
@@ -3498,7 +3498,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-mcp"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3526,7 +3526,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-memory"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3544,7 +3544,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-multimodal"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "chrono",
  "rocode-config",
@@ -3556,7 +3556,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-orchestrator"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "async-trait",
  "futures",
@@ -3578,7 +3578,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-permission"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "anyhow",
  "dirs",
@@ -3594,7 +3594,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-plugin"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3613,7 +3613,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-provider"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3643,7 +3643,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-runtime-context"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "anyhow",
  "rocode-config",
@@ -3654,7 +3654,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-server"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3704,7 +3704,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-session"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3743,7 +3743,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-skill"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "dirs",
  "flate2",
@@ -3763,7 +3763,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-state"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "anyhow",
  "dirs",
@@ -3776,7 +3776,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-storage"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3796,7 +3796,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-tool"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "anyhow",
  "ast-grep-config",
@@ -3845,7 +3845,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-tui"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3895,7 +3895,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-types"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3908,7 +3908,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-util"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3928,7 +3928,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-voice"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "anyhow",
  "base64",
@@ -3940,7 +3940,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-watcher"
-version = "2026.4.27"
+version = "2026.4.29"
 dependencies = [
  "dashmap",
  "glob",

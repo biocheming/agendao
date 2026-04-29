@@ -1,6 +1,6 @@
 # ROCode Docs
 
-文档基线：`v2026.4.27`（更新日期：`2026-04-27`）
+文档基线：`v2026.4.29`（更新日期：`2026-04-29`）
 
 This directory contains product-facing examples and design references for ROCode features.
 
@@ -96,7 +96,6 @@ The canonical scheduler example entry is:
   - Verifier preset 的最小上手配置：保留通过验证的候选，并用一个 criterion 选优
 - `docs/examples/scheduler/verifier.example.jsonc`
 - `docs/examples/scheduler/verifier.workflow.jsonc`
-
 The public scheduler presets are:
 
 - `sisyphus`

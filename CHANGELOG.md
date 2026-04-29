@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026.4.29
+
+- 同步工作区版本到 `v2026.4.29`，更新 ROCode 自有包元数据、Web 根包版本与相关 lock 文件中的 ROCode 自身条目。
+- Scheduler session continuity 完成闭环治理：server 产出 markdown projection 与 JSON packet，orchestrator 通过 typed metadata 与 version gate 原子装载。
+- 新增受控 hydration 能力：`scheduler_context_hydrate` 按 Source Anchors 回查同会话消息，`scheduler_memory_hydrate` 按 Memory Anchors 回查持久化记忆详情。
+- Hydration 调用结果沉淀到 scheduler stage metadata，记录 hydrated / rejected / missing ids、截断参数与 evidence 开关，供前端和 telemetry 审计。
+- 刷新文档入口与 scheduler 指南，明确 scheduler continuity 在上下文治理、授权召回和跨会话记忆上的当前行为。
+
 ## 2026.4.26
 
 - 同步工作区版本到 `v2026.4.26`，更新 ROCode 自有包元数据、Web 根包版本与相关 lock 文件中的 ROCode 自身条目。

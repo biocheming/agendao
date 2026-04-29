@@ -582,6 +582,7 @@ pub(super) fn build_scheduler_session_context_packet(
     SchedulerSessionContextPacket::from_session(session)
 }
 
+#[cfg(test)]
 pub(super) fn build_scheduler_session_context_block(
     session: &rocode_session::Session,
 ) -> Option<String> {
