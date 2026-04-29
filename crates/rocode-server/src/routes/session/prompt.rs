@@ -331,6 +331,8 @@ const SCHEDULER_RECENT_TAIL_MESSAGES: usize = 6;
 const SCHEDULER_CONTEXT_TEXT_LIMIT: usize = 4_000;
 const SCHEDULER_CONTEXT_TURN_LIMIT: usize = 1_200;
 pub(super) const SCHEDULER_SESSION_CONTEXT_METADATA_KEY: &str = "scheduler_session_context";
+pub(super) const SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY: &str =
+    "scheduler_session_context_packet";
 
 #[derive(Debug, Clone)]
 pub(super) struct SchedulerSessionContextPacket {
@@ -428,6 +430,38 @@ not as a replacement for checking live files or rerunning verification when exac
         truncate_chars(&sections.join("\n\n"), SCHEDULER_CONTEXT_TEXT_LIMIT)
     }
 
+    pub(super) fn metadata_value(&self) -> serde_json::Value {
+        let exact_recent_tail = self
+            .exact_recent_tail
+            .iter()
+            .map(|turn| {
+                serde_json::json!({
+                    "message_id": turn.message_id,
+                    "role": role_label(&turn.role),
+                })
+            })
+            .collect::<Vec<_>>();
+        let latest_compaction_summary = self.latest_compaction_summary.as_ref().map(|compaction| {
+            serde_json::json!({
+                "message_id": compaction.message_id,
+            })
+        });
+        serde_json::json!({
+            "version": 1,
+            "eligible_message_count": self.eligible_message_count,
+            "exact_recent_tail_count": self.exact_recent_tail.len(),
+            "omitted_older_turns": self.eligible_message_count.saturating_sub(self.exact_recent_tail.len()),
+            "exact_recent_tail": exact_recent_tail,
+            "latest_compaction_summary": latest_compaction_summary,
+            "limits": {
+                "recent_tail_messages": SCHEDULER_RECENT_TAIL_MESSAGES,
+                "context_text_chars": SCHEDULER_CONTEXT_TEXT_LIMIT,
+                "turn_text_chars": SCHEDULER_CONTEXT_TURN_LIMIT,
+            },
+            "recall_policy": "exact_tail_for_recent_followups; ledger_and_compaction_are_lossy; hydrate_missing_prior_facts_from_memory_artifacts_or_tools",
+        })
+    }
+
     fn render_context_coverage(&self) -> String {
         let exact_count = self.exact_recent_tail.len();
         let omitted_count = self.eligible_message_count.saturating_sub(exact_count);
@@ -475,10 +509,16 @@ not as a replacement for checking live files or rerunning verification when exac
     }
 }
 
+pub(super) fn build_scheduler_session_context_packet(
+    session: &rocode_session::Session,
+) -> Option<SchedulerSessionContextPacket> {
+    SchedulerSessionContextPacket::from_session(session)
+}
+
 pub(super) fn build_scheduler_session_context_block(
     session: &rocode_session::Session,
 ) -> Option<String> {
-    SchedulerSessionContextPacket::from_session(session).map(|packet| packet.render())
+    build_scheduler_session_context_packet(session).map(|packet| packet.render())
 }
 
 pub(super) fn merge_system_prompt_with_memory_snapshot(
@@ -1595,7 +1635,10 @@ pub(super) async fn session_prompt(
 
         let (memory_frozen_snapshot_block, memory_prefetch_packet, memory_prefetch_block) =
             resolve_prompt_memory_context(&task_state, &mut session, &prompt_text).await;
-        let scheduler_session_context_block = build_scheduler_session_context_block(&session);
+        let scheduler_session_context_packet = build_scheduler_session_context_packet(&session);
+        let scheduler_session_context_block = scheduler_session_context_packet
+            .as_ref()
+            .map(SchedulerSessionContextPacket::render);
         let task_system_prompt = merge_system_prompt_with_memory_snapshot(
             task_system_prompt.clone(),
             memory_frozen_snapshot_block.as_deref(),
@@ -1771,6 +1814,12 @@ pub(super) async fn session_prompt(
                 exec_metadata.insert(
                     SCHEDULER_SESSION_CONTEXT_METADATA_KEY.to_string(),
                     serde_json::json!(session_context),
+                );
+            }
+            if let Some(session_context_packet) = scheduler_session_context_packet.as_ref() {
+                exec_metadata.insert(
+                    SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY.to_string(),
+                    session_context_packet.metadata_value(),
                 );
             }
             apply_skill_tree_telemetry_metadata(
@@ -2378,6 +2427,30 @@ mod tests {
         assert!(block.contains("## Latest Compaction Summary"));
         assert!(block.contains(&format!("source: assistant `{compaction_id}`")));
         assert!(block.contains(&format!("compaction_summary_message_id: `{compaction_id}`")));
+    }
+
+    #[test]
+    fn scheduler_session_context_packet_metadata_is_structured_anchor_map() {
+        let mut session = Session::new("project", "/tmp");
+        let first_id = session.add_user_message("first request").id.clone();
+        let second_id = {
+            let message = session.add_assistant_message();
+            message.add_text("first answer body that should not be duplicated in metadata");
+            message.id.clone()
+        };
+
+        let packet = build_scheduler_session_context_packet(&session)
+            .expect("same-session scheduler context packet should render");
+        let metadata = packet.metadata_value();
+
+        assert_eq!(metadata["version"], serde_json::json!(1));
+        assert_eq!(metadata["eligible_message_count"], serde_json::json!(2));
+        assert_eq!(metadata["omitted_older_turns"], serde_json::json!(0));
+        assert_eq!(metadata["exact_recent_tail"][0]["message_id"], first_id);
+        assert_eq!(metadata["exact_recent_tail"][0]["role"], "user");
+        assert_eq!(metadata["exact_recent_tail"][1]["message_id"], second_id);
+        assert_eq!(metadata["exact_recent_tail"][1]["role"], "assistant");
+        assert!(!metadata.to_string().contains("first answer body"));
     }
 
     #[test]
