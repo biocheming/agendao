@@ -74,7 +74,7 @@ function compactOptionLabel(label: string) {
 }
 
 function formatCompactCapacity(value?: number | null) {
-  return formatCompactTokenCount(value).replace(".0k", "k").replace(".0M", "M");
+  return formatCompactTokenCount(value).replace(".0K", "K").replace(".0M", "M");
 }
 
 function findProviderModel(
@@ -151,7 +151,7 @@ function renderModelBadge({
 function formatCompactTokenCount(value?: number | null) {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return "0";
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
   return String(Math.round(value));
 }
 

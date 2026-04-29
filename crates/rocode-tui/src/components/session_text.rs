@@ -532,10 +532,10 @@ fn render_stage_runtime_lines(block: &SchedulerStageBlock, theme: &Theme) -> Vec
         format!(
             "{}/{}",
             prompt_tokens
-                .map(|value| value.to_string())
+                .map(format_compact_number)
                 .unwrap_or_else(|| "—".to_string()),
             completion_tokens
-                .map(|value| value.to_string())
+                .map(format_compact_number)
                 .unwrap_or_else(|| "—".to_string())
         ),
         value_style,
@@ -545,13 +545,22 @@ fn render_stage_runtime_lines(block: &SchedulerStageBlock, theme: &Theme) -> Vec
 
     let mut usage_parts = Vec::new();
     if let Some(reasoning_tokens) = reasoning_tokens {
-        usage_parts.push(format!("reasoning {reasoning_tokens}"));
+        usage_parts.push(format!(
+            "reasoning {}",
+            format_compact_number(reasoning_tokens)
+        ));
     }
     if let Some(cache_read_tokens) = cache_read_tokens {
-        usage_parts.push(format!("cache read {cache_read_tokens}"));
+        usage_parts.push(format!(
+            "cache read {}",
+            format_compact_number(cache_read_tokens)
+        ));
     }
     if let Some(cache_write_tokens) = cache_write_tokens {
-        usage_parts.push(format!("cache write {cache_write_tokens}"));
+        usage_parts.push(format!(
+            "cache write {}",
+            format_compact_number(cache_write_tokens)
+        ));
     }
     if !usage_parts.is_empty() {
         lines.push(Line::from(vec![
@@ -1197,6 +1206,26 @@ fn prettify_token(raw: &str) -> String {
         .join(" ")
 }
 
+fn format_compact_number(value: u64) -> String {
+    if value >= 1_000_000 {
+        let compact = value as f64 / 1_000_000.0;
+        return if compact.fract() == 0.0 {
+            format!("{compact:.0}M")
+        } else {
+            format!("{compact:.1}M")
+        };
+    }
+    if value >= 1_000 {
+        let compact = value as f64 / 1_000.0;
+        return if compact.fract() == 0.0 {
+            format!("{compact:.0}K")
+        } else {
+            format!("{compact:.1}K")
+        };
+    }
+    value.to_string()
+}
+
 fn route_outcome_label_from_value(decision: &Value) -> String {
     match route_string_field(decision, "mode") {
         Some("direct") => match route_string_field(decision, "direct_kind") {
@@ -1637,7 +1666,7 @@ mod tests {
         assert!(all_text.contains("Status @ Running"));
         assert!(all_text.contains("Step 2/6"));
         assert!(all_text.contains("Waiting Model"));
-        assert!(all_text.contains("Tokens 1200/320"));
+        assert!(all_text.contains("Tokens 1.2K/320"));
         assert!(all_text.contains("Usage reasoning 40 · cache read 2 · cache write 1"));
         assert!(all_text.contains("Focus Draft the executable plan and its guardrails."));
         assert!(all_text.contains("Last Tool finished: Read"));
@@ -1762,7 +1791,7 @@ mod tests {
         assert!(all_text.contains("Status ? Waiting"));
         assert!(all_text.contains("Step 4"));
         assert!(all_text.contains("Waiting User"));
-        assert!(all_text.contains("Tokens 1200/320"));
+        assert!(all_text.contains("Tokens 1.2K/320"));
         assert!(all_text.contains("Active Agents oracle"));
         assert!(all_text.contains("Active Skills debug, qa"));
         assert!(all_text.contains("Decision pending on the unresolved task ledger."));

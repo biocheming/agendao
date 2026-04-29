@@ -113,9 +113,9 @@ function stageSummaryMeta(stage: ExecutionActivityState["stageSummaries"][number
     );
   }
   if (typeof stage.context_tokens === "number") {
-    parts.push(`ctx ${stage.context_tokens}`);
+    parts.push(`ctx ${formatCompactTokenCount(stage.context_tokens)}`);
   } else if (typeof stage.estimated_context_tokens === "number") {
-    parts.push(`ctx ${stage.estimated_context_tokens}`);
+    parts.push(`ctx ${formatCompactTokenCount(stage.estimated_context_tokens)}`);
   }
   return parts;
 }
@@ -321,11 +321,11 @@ export function ExecutionActivityPanel({
               <div className={sideSectionClass}>
                 <p className="roc-section-label">Session Cumulative</p>
                 <div className="roc-rail-meta-list">
-                  <span className="roc-badge px-3 py-1.5 text-xs">input {activity.sessionUsage.input_tokens}</span>
-                  <span className="roc-badge px-3 py-1.5 text-xs">output {activity.sessionUsage.output_tokens}</span>
-                  <span className="roc-badge px-3 py-1.5 text-xs">reasoning {activity.sessionUsage.reasoning_tokens}</span>
-                  <span className="roc-badge px-3 py-1.5 text-xs">cache read {activity.sessionUsage.cache_read_tokens}</span>
-                  <span className="roc-badge px-3 py-1.5 text-xs">cache write {activity.sessionUsage.cache_write_tokens}</span>
+                  <span className="roc-badge px-3 py-1.5 text-xs">input {formatCompactTokenCount(activity.sessionUsage.input_tokens)}</span>
+                  <span className="roc-badge px-3 py-1.5 text-xs">output {formatCompactTokenCount(activity.sessionUsage.output_tokens)}</span>
+                  <span className="roc-badge px-3 py-1.5 text-xs">reasoning {formatCompactTokenCount(activity.sessionUsage.reasoning_tokens)}</span>
+                  <span className="roc-badge px-3 py-1.5 text-xs">cache read {formatCompactTokenCount(activity.sessionUsage.cache_read_tokens)}</span>
+                  <span className="roc-badge px-3 py-1.5 text-xs">cache write {formatCompactTokenCount(activity.sessionUsage.cache_write_tokens)}</span>
                 </div>
                 {contextEstimate ? (
                   <p className="text-sm text-muted-foreground leading-relaxed">
@@ -347,13 +347,13 @@ export function ExecutionActivityPanel({
                     </div>
                     <div className="roc-rail-meta-list">
                       {typeof activity.activeStageSummary.prompt_tokens === "number" ? (
-                        <span className="roc-badge px-3 py-1 text-xs">in {activity.activeStageSummary.prompt_tokens}</span>
+                        <span className="roc-badge px-3 py-1 text-xs">in {formatCompactTokenCount(activity.activeStageSummary.prompt_tokens)}</span>
                       ) : null}
                       {typeof activity.activeStageSummary.completion_tokens === "number" ? (
-                        <span className="roc-badge px-3 py-1 text-xs">out {activity.activeStageSummary.completion_tokens}</span>
+                        <span className="roc-badge px-3 py-1 text-xs">out {formatCompactTokenCount(activity.activeStageSummary.completion_tokens)}</span>
                       ) : null}
                       {typeof activity.activeStageSummary.reasoning_tokens === "number" ? (
-                        <span className="roc-badge px-3 py-1 text-xs">reasoning {activity.activeStageSummary.reasoning_tokens}</span>
+                        <span className="roc-badge px-3 py-1 text-xs">reasoning {formatCompactTokenCount(activity.activeStageSummary.reasoning_tokens)}</span>
                       ) : null}
                       {typeof activity.activeStageSummary.skill_tree_budget === "number" ? (
                         <span className="roc-badge px-3 py-1 text-xs">budget {activity.activeStageSummary.skill_tree_budget}</span>
@@ -554,11 +554,11 @@ export function ExecutionActivityPanel({
                     </div>
                   ) : null}
                   <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-                    {typeof stage.prompt_tokens === "number" ? <span>in {stage.prompt_tokens}</span> : null}
-                    {typeof stage.completion_tokens === "number" ? <span>out {stage.completion_tokens}</span> : null}
-                    {typeof stage.reasoning_tokens === "number" ? <span>reasoning {stage.reasoning_tokens}</span> : null}
-                    {typeof stage.cache_read_tokens === "number" ? <span>cache read {stage.cache_read_tokens}</span> : null}
-                    {typeof stage.cache_write_tokens === "number" ? <span>cache write {stage.cache_write_tokens}</span> : null}
+                    {typeof stage.prompt_tokens === "number" ? <span>in {formatCompactTokenCount(stage.prompt_tokens)}</span> : null}
+                    {typeof stage.completion_tokens === "number" ? <span>out {formatCompactTokenCount(stage.completion_tokens)}</span> : null}
+                    {typeof stage.reasoning_tokens === "number" ? <span>reasoning {formatCompactTokenCount(stage.reasoning_tokens)}</span> : null}
+                    {typeof stage.cache_read_tokens === "number" ? <span>cache read {formatCompactTokenCount(stage.cache_read_tokens)}</span> : null}
+                    {typeof stage.cache_write_tokens === "number" ? <span>cache write {formatCompactTokenCount(stage.cache_write_tokens)}</span> : null}
                   </div>
                   {stage.last_event || stage.focus ? (
                     <div className="grid gap-1 text-xs text-muted-foreground">

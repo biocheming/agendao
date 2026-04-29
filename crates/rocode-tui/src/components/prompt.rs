@@ -1176,16 +1176,22 @@ impl Prompt {
         let mut spans = vec![
             Span::styled("Turn ", Style::default().fg(theme.text_muted)),
             Span::styled("↑", Style::default().fg(theme.text_muted)),
-            Span::styled(format_number(input), Style::default().fg(theme.text)),
+            Span::styled(
+                format_compact_number(input),
+                Style::default().fg(theme.text),
+            ),
             Span::raw("  "),
             Span::styled("↓", Style::default().fg(theme.text_muted)),
-            Span::styled(format_number(output), Style::default().fg(theme.text)),
+            Span::styled(
+                format_compact_number(output),
+                Style::default().fg(theme.text),
+            ),
         ];
         if reasoning > 0 {
             spans.push(Span::raw("  "));
             spans.push(Span::styled("R", Style::default().fg(theme.text_muted)));
             spans.push(Span::styled(
-                format_number(reasoning),
+                format_compact_number(reasoning),
                 Style::default().fg(theme.text),
             ));
         }
@@ -1195,8 +1201,8 @@ impl Prompt {
             spans.push(Span::styled(
                 format!(
                     "{}/{}",
-                    format_number(cache_read),
-                    format_number(cache_write)
+                    format_compact_number(cache_read),
+                    format_compact_number(cache_write)
                 ),
                 Style::default().fg(theme.text),
             ));
@@ -1342,16 +1348,24 @@ fn truncate_for_status(input: &str, max_chars: usize) -> String {
     out
 }
 
-fn format_number(value: u64) -> String {
-    let digits = value.to_string();
-    let mut out = String::with_capacity(digits.len() + (digits.len() / 3));
-    for (idx, ch) in digits.chars().rev().enumerate() {
-        if idx > 0 && idx % 3 == 0 {
-            out.push(',');
-        }
-        out.push(ch);
+fn format_compact_number(value: u64) -> String {
+    if value >= 1_000_000 {
+        let compact = value as f64 / 1_000_000.0;
+        return if compact.fract() == 0.0 {
+            format!("{compact:.0}M")
+        } else {
+            format!("{compact:.1}M")
+        };
     }
-    out.chars().rev().collect()
+    if value >= 1_000 {
+        let compact = value as f64 / 1_000.0;
+        return if compact.fract() == 0.0 {
+            format!("{compact:.0}K")
+        } else {
+            format!("{compact:.1}K")
+        };
+    }
+    value.to_string()
 }
 
 fn visual_line_count(text: &str, width: usize) -> usize {

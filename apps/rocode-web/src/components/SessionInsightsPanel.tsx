@@ -201,10 +201,10 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
                 </p>
               ) : null}
               <p className="text-sm text-muted-foreground leading-relaxed">
-                Session cumulative {totalUsageTokens(telemetryUsage)} total · input {telemetryUsage?.input_tokens ?? 0} · output {telemetryUsage?.output_tokens ?? 0} · reasoning {telemetryUsage?.reasoning_tokens ?? 0}
+                Session cumulative {formatCompactTokenCount(totalUsageTokens(telemetryUsage))} total · input {formatCompactTokenCount(telemetryUsage?.input_tokens ?? 0)} · output {formatCompactTokenCount(telemetryUsage?.output_tokens ?? 0)} · reasoning {formatCompactTokenCount(telemetryUsage?.reasoning_tokens ?? 0)}
               </p>
               <p className="text-sm text-muted-foreground leading-relaxed">
-                Cache read {telemetryUsage?.cache_read_tokens ?? 0} · cache write {telemetryUsage?.cache_write_tokens ?? 0} · cost {formatMoney(telemetryUsage?.total_cost)}
+                Cache read {formatCompactTokenCount(telemetryUsage?.cache_read_tokens ?? 0)} · cache write {formatCompactTokenCount(telemetryUsage?.cache_write_tokens ?? 0)} · cost {formatMoney(telemetryUsage?.total_cost)}
               </p>
               <p className="text-sm text-muted-foreground leading-relaxed">
                 Updated {formatDateTime(telemetry.updated_at)}

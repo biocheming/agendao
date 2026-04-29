@@ -25,12 +25,20 @@ interface SchedulerStageCardProps {
 
 function tokenSummary(message: FeedMessage) {
   return [
-    message.prompt_tokens ? `input ${message.prompt_tokens}` : null,
-    message.completion_tokens ? `output ${message.completion_tokens}` : null,
-    message.reasoning_tokens ? `reasoning ${message.reasoning_tokens}` : null,
-    message.cache_read_tokens ? `cache read ${message.cache_read_tokens}` : null,
-    message.cache_write_tokens ? `cache write ${message.cache_write_tokens}` : null,
+    message.prompt_tokens ? `input ${formatCompactTokenCount(message.prompt_tokens)}` : null,
+    message.completion_tokens ? `output ${formatCompactTokenCount(message.completion_tokens)}` : null,
+    message.reasoning_tokens ? `reasoning ${formatCompactTokenCount(message.reasoning_tokens)}` : null,
+    message.cache_read_tokens ? `cache read ${formatCompactTokenCount(message.cache_read_tokens)}` : null,
+    message.cache_write_tokens ? `cache write ${formatCompactTokenCount(message.cache_write_tokens)}` : null,
   ].filter(Boolean);
+}
+
+function formatCompactTokenCount(value: number) {
+  if (!Number.isFinite(value)) return "0";
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+  if (abs >= 1_000) return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}K`;
+  return String(Math.round(value));
 }
 
 function compactText(value: unknown) {
