@@ -27,6 +27,12 @@ use rocode_session::prompt::{OutputBlockEvent, OutputBlockHook};
 use rocode_session::snapshot::Snapshot;
 use rocode_session::{MessageRole, MessageUsage, PartType, Session, SessionMessage};
 
+const SCHEDULER_CONTEXT_HYDRATE_TOOL: &str = "scheduler_context_hydrate";
+const SCHEDULER_STAGE_CONTEXT_HYDRATION_IDS_METADATA_KEY: &str =
+    "scheduler_stage_context_hydrated_message_ids";
+const SCHEDULER_STAGE_CONTEXT_HYDRATION_EVENTS_METADATA_KEY: &str =
+    "scheduler_stage_context_hydration_events";
+
 #[derive(Clone)]
 struct ActiveStageMessage {
     message_id: String,
@@ -761,6 +767,13 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
                     message.metadata.insert(
                         "scheduler_stage_activity".to_string(),
                         serde_json::json!(activity),
+                    );
+                }
+                if tool_name.eq_ignore_ascii_case(SCHEDULER_CONTEXT_HYDRATE_TOOL) {
+                    persist_scheduler_context_hydration_event(
+                        message,
+                        tool_call_id,
+                        tool_output.metadata.as_ref(),
                     );
                 }
                 message.metadata.insert(
@@ -1518,6 +1531,83 @@ fn runtime_execution_status_from_stage_status(value: &str) -> Option<ExecutionSt
     }
 }
 
+fn persist_scheduler_context_hydration_event(
+    message: &mut SessionMessage,
+    tool_call_id: &str,
+    metadata: Option<&serde_json::Value>,
+) {
+    let Some(metadata) = metadata else {
+        return;
+    };
+    let hydrated_ids = metadata_array_strings(metadata, "hydrated_message_ids");
+    let rejected_ids = metadata_array_strings(metadata, "rejected_message_ids");
+    let missing_ids = metadata_array_strings(metadata, "missing_message_ids");
+    if hydrated_ids.is_empty() && rejected_ids.is_empty() && missing_ids.is_empty() {
+        return;
+    }
+
+    merge_unique_metadata_strings(
+        &mut message.metadata,
+        SCHEDULER_STAGE_CONTEXT_HYDRATION_IDS_METADATA_KEY,
+        &hydrated_ids,
+    );
+
+    let mut events = message
+        .metadata
+        .get(SCHEDULER_STAGE_CONTEXT_HYDRATION_EVENTS_METADATA_KEY)
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    events.push(serde_json::json!({
+        "tool_call_id": tool_call_id,
+        "hydrated_message_ids": hydrated_ids,
+        "rejected_message_ids": rejected_ids,
+        "missing_message_ids": missing_ids,
+        "hydrated_count": metadata.get("hydrated_count").and_then(|value| value.as_u64()).unwrap_or(0),
+        "rejected_count": metadata.get("rejected_count").and_then(|value| value.as_u64()).unwrap_or(0),
+        "missing_count": metadata.get("missing_count").and_then(|value| value.as_u64()).unwrap_or(0),
+        "max_chars_per_message": metadata.get("max_chars_per_message").and_then(|value| value.as_u64()),
+    }));
+    message.metadata.insert(
+        SCHEDULER_STAGE_CONTEXT_HYDRATION_EVENTS_METADATA_KEY.to_string(),
+        serde_json::Value::Array(events),
+    );
+}
+
+fn metadata_array_strings(metadata: &serde_json::Value, key: &str) -> Vec<String> {
+    metadata
+        .get(key)
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn merge_unique_metadata_strings(
+    metadata: &mut std::collections::HashMap<String, serde_json::Value>,
+    key: &str,
+    values: &[String],
+) {
+    let mut merged = metadata
+        .get(key)
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    for value in values {
+        if !merged.iter().any(|existing| existing == value) {
+            merged.push(value.clone());
+        }
+    }
+    metadata.insert(key.to_string(), serde_json::json!(merged));
+}
+
 fn apply_exec_ctx_stage_telemetry_metadata(
     message: &mut SessionMessage,
     exec_ctx: &OrchestratorExecutionContext,
@@ -1561,6 +1651,8 @@ fn scheduler_stage_runtime_metadata(message: &SessionMessage) -> serde_json::Val
         "scheduler_stage_active_skills",
         "scheduler_stage_active_agents",
         "scheduler_stage_active_categories",
+        SCHEDULER_STAGE_CONTEXT_HYDRATION_IDS_METADATA_KEY,
+        SCHEDULER_STAGE_CONTEXT_HYDRATION_EVENTS_METADATA_KEY,
         "scheduler_stage_prompt_tokens",
         "scheduler_stage_completion_tokens",
         "scheduler_stage_reasoning_tokens",
@@ -3010,6 +3102,54 @@ mod tests {
     #[derive(Debug)]
     struct MockProvider {
         title: String,
+    }
+
+    #[test]
+    fn scheduler_context_hydration_event_persists_stage_metadata() {
+        let mut message = SessionMessage::assistant("session");
+        persist_scheduler_context_hydration_event(
+            &mut message,
+            "tool_call_1",
+            Some(&serde_json::json!({
+                "hydrated_count": 2,
+                "rejected_count": 1,
+                "missing_count": 1,
+                "hydrated_message_ids": ["msg_a", "msg_b"],
+                "rejected_message_ids": ["msg_x"],
+                "missing_message_ids": ["msg_y"],
+                "max_chars_per_message": 2000
+            })),
+        );
+        persist_scheduler_context_hydration_event(
+            &mut message,
+            "tool_call_2",
+            Some(&serde_json::json!({
+                "hydrated_count": 1,
+                "hydrated_message_ids": ["msg_b"]
+            })),
+        );
+
+        assert_eq!(
+            message
+                .metadata
+                .get(SCHEDULER_STAGE_CONTEXT_HYDRATION_IDS_METADATA_KEY),
+            Some(&serde_json::json!(["msg_a", "msg_b"]))
+        );
+        let events = message
+            .metadata
+            .get(SCHEDULER_STAGE_CONTEXT_HYDRATION_EVENTS_METADATA_KEY)
+            .and_then(|value| value.as_array())
+            .expect("hydration events should be recorded");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["tool_call_id"], "tool_call_1");
+        assert_eq!(
+            events[0]["rejected_message_ids"],
+            serde_json::json!(["msg_x"])
+        );
+        assert_eq!(
+            events[0]["missing_message_ids"],
+            serde_json::json!(["msg_y"])
+        );
     }
 
     #[async_trait]

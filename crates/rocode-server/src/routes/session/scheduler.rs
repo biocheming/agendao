@@ -745,6 +745,7 @@ impl SessionSchedulerToolExecutor {
         })?;
 
         let mut hydrated = Vec::new();
+        let mut hydrated_ids = Vec::new();
         let mut rejected = Vec::new();
         let mut missing = Vec::new();
         for message_id in requested_ids {
@@ -760,6 +761,7 @@ impl SessionSchedulerToolExecutor {
                 render_scheduler_context_hydrated_message(message, per_message_limit)
             {
                 hydrated.push(rendered);
+                hydrated_ids.push(message_id);
             } else {
                 missing.push(message_id);
             }
@@ -801,6 +803,10 @@ impl SessionSchedulerToolExecutor {
                 "hydrated_count": hydrated.len(),
                 "rejected_count": rejected.len(),
                 "missing_count": missing.len(),
+                "hydrated_message_ids": hydrated_ids,
+                "rejected_message_ids": rejected,
+                "missing_message_ids": missing,
+                "max_chars_per_message": per_message_limit,
             })),
         })
     }
