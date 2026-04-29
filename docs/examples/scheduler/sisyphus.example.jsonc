@@ -9,7 +9,7 @@
   "profiles": {
     "sisyphus-default": {
       "orchestrator": "sisyphus",
-      "description": "OMO-aligned delegation-first scheduler profile. Classify the request, route to the best execution posture, then drive execution to completion in one orchestrated loop.",
+      "description": "OMO-aligned delegation-first scheduler profile. Trust the explicitly selected Sisyphus workflow, classify intent inside the execution prompt, then drive execution to completion in one orchestrated loop.",
       // Optional: override the model used by the scheduler for this profile.
       // Per-agent model (agentTree agent.model) takes precedence over this.
       // If omitted, the session's current model is used as fallback.
@@ -19,16 +19,14 @@
       },
       "skillList": [
         "request-analysis",
-        "route",
         "execution-orchestration"
       ],
       "stages": [
         "request-analysis",
-        "route",
         "execution-orchestration"
       ],
       "skillTree": {
-        "contextMarkdown": "Route once, preserve request intent, and let the shared execution kernel own the loop until completion."
+        "contextMarkdown": "Preserve request intent and let the shared Sisyphus execution kernel own the loop until completion."
       },
       "agentTree": {
         "agent": {

@@ -1043,6 +1043,8 @@ function modeKey(mode: ExecutionMode): string {
   return `${mode.kind}:${mode.id}`;
 }
 
+const DEFAULT_WEB_MODE = "preset:auto";
+
 function applyPreferences(config: Record<string, unknown>) {
   const ui = (config.uiPreferences ?? config.ui_preferences ?? {}) as Record<string, unknown>;
   return {
@@ -1118,7 +1120,7 @@ export default function App() {
   const [modes, setModes] = useState<ExecutionMode[]>([]);
   const [workspaceContext, setWorkspaceContext] = useState<WorkspaceContextRecord | null>(null);
   const [selectedModel, setSelectedModel] = useState("");
-  const [selectedMode, setSelectedMode] = useState("");
+  const [selectedMode, setSelectedMode] = useState(DEFAULT_WEB_MODE);
   const [connectQuery, setConnectQuery] = useState("");
   const [connectProviderId, setConnectProviderId] = useState("");
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
@@ -1496,7 +1498,7 @@ export default function App() {
       setWorkspaceContext(context);
       setServiceRootPath((current) => workspaceRootFromContext(context) || current);
       setTheme(THEMES.some((item) => item.id === prefs.theme) ? prefs.theme : "daylight");
-      setSelectedMode(prefs.mode);
+      setSelectedMode(prefs.mode || DEFAULT_WEB_MODE);
       setSelectedModel(prefs.model);
       setShowThinking(prefs.showThinking);
       setModes(
@@ -1669,7 +1671,7 @@ export default function App() {
         setWorkspaceContext(context);
         setModes(nextModes);
         setTheme(THEMES.some((item) => item.id === prefs.theme) ? prefs.theme : "daylight");
-        setSelectedMode(prefs.mode);
+        setSelectedMode(prefs.mode || DEFAULT_WEB_MODE);
         setSelectedModel(prefs.model);
         setShowThinking(prefs.showThinking);
         setConnectProtocol((current) => current || connectSchema.protocols?.[0]?.id || "");

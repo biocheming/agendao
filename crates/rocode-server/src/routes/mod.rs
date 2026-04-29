@@ -68,7 +68,7 @@ use crate::{ApiError, Result, ServerState};
 use rocode_agent::{AgentMode, AgentRegistry};
 use rocode_command::{CommandRegistry, ResolvedUiCommand};
 use rocode_config::Config as AppConfig;
-use rocode_orchestrator::{SchedulerConfig, SchedulerPresetKind};
+use rocode_orchestrator::{SchedulerConfig, SchedulerPresetKind, AUTO_SCHEDULER_PROFILE_NAME};
 use rocode_permission::PermissionRuleset;
 use rocode_plugin::subprocess::{PluginLoader, PluginSubprocessError};
 use rocode_provider::AuthInfo;
@@ -762,20 +762,32 @@ fn builtin_preset_mode_description(preset: SchedulerPresetKind) -> &'static str 
 }
 
 fn build_builtin_preset_mode_list() -> Vec<ExecutionModeInfo> {
-    SchedulerPresetKind::public_presets()
-        .iter()
-        .copied()
-        .map(|preset| ExecutionModeInfo {
-            id: preset.as_str().to_string(),
-            name: preset.as_str().to_string(),
-            kind: "preset".to_string(),
-            description: Some(builtin_preset_mode_description(preset).to_string()),
-            mode: None,
-            hidden: None,
-            color: None,
-            orchestrator: Some(preset.as_str().to_string()),
-        })
-        .collect()
+    let mut items = vec![ExecutionModeInfo {
+        id: AUTO_SCHEDULER_PROFILE_NAME.to_string(),
+        name: AUTO_SCHEDULER_PROFILE_NAME.to_string(),
+        kind: "preset".to_string(),
+        description: Some("Automatic routing preset: choose the workflow per request".to_string()),
+        mode: None,
+        hidden: None,
+        color: None,
+        orchestrator: Some("sisyphus".to_string()),
+    }];
+    items.extend(
+        SchedulerPresetKind::public_presets()
+            .iter()
+            .copied()
+            .map(|preset| ExecutionModeInfo {
+                id: preset.as_str().to_string(),
+                name: preset.as_str().to_string(),
+                kind: "preset".to_string(),
+                description: Some(builtin_preset_mode_description(preset).to_string()),
+                mode: None,
+                hidden: None,
+                color: None,
+                orchestrator: Some(preset.as_str().to_string()),
+            }),
+    );
+    items
 }
 
 fn build_external_scheduler_profile_mode_list(
@@ -1047,7 +1059,14 @@ mod tests {
 
         assert_eq!(
             preset_names,
-            vec!["sisyphus", "prometheus", "atlas", "hephaestus", "verifier",]
+            vec![
+                "auto",
+                "sisyphus",
+                "prometheus",
+                "atlas",
+                "hephaestus",
+                "verifier",
+            ]
         );
     }
 

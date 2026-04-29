@@ -114,7 +114,7 @@ Ask only when ambiguity has multiple materially different interpretations or mis
 
         sections.push(
             "## Orchestrator Intent
-Freeze the request context once, then route the request into the right workflow and preserve the same semantic goal across planning, execution, review, or handoff stages. If the active preset is Prometheus, preserve planner-only behavior and keep the session on the reviewed-plan path rather than execution."
+Freeze the request context once, then preserve the same semantic goal across the selected workflow's planning, execution, review, or handoff stages. If this profile includes a Route stage, it may choose a request-scoped workflow; otherwise trust the explicitly selected preset. If the active preset is Prometheus, preserve planner-only behavior and keep the session on the reviewed-plan path rather than execution."
                 .to_string(),
         );
 

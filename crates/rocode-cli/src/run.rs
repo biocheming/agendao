@@ -33,8 +33,9 @@ use rocode_config::loader::load_config;
 use rocode_config::Config;
 use rocode_core::agent_task_registry::{global_task_registry, AgentTaskStatus};
 use rocode_orchestrator::{
-    scheduler_plan_from_profile, scheduler_request_defaults_from_plan, SchedulerConfig,
-    SchedulerPresetKind, SchedulerProfileConfig, SchedulerRequestDefaults,
+    scheduler_auto_profile_config, scheduler_plan_from_profile,
+    scheduler_request_defaults_from_plan, SchedulerConfig, SchedulerPresetKind,
+    SchedulerProfileConfig, SchedulerRequestDefaults, AUTO_SCHEDULER_PROFILE_NAME,
 };
 use rocode_provider::ProviderRegistry;
 use rocode_util::util::color::strip_ansi;
