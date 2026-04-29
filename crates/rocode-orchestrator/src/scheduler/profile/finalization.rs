@@ -39,10 +39,6 @@ impl SchedulerProfileOrchestrator {
         self.plan
             .extend_final_output_metadata(&state, artifact_path.as_deref(), &mut metadata);
 
-        if !state.metrics.usage.is_zero() {
-            append_output_usage(&mut metadata, &state.metrics.usage);
-        }
-
         OrchestratorOutput {
             content,
             steps: state.metrics.total_steps,

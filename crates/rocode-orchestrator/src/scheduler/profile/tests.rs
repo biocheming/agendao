@@ -4,6 +4,7 @@ use super::super::profile_state::{
     SchedulerRouteState,
 };
 use super::*;
+use crate::output_metadata::{append_output_usage, output_usage, OutputUsage};
 use crate::runtime::events::FinishReason;
 use crate::traits::{AgentResolver, ModelResolver, NoopLifecycleHook, ToolExecutor};
 use crate::workflow_mode::{mode_artifacts_from_metadata, WORKFLOW_MODE_ARTIFACTS_METADATA_KEY};
@@ -210,6 +211,58 @@ fn finalize_output_prefers_handoff_over_review_and_plan() {
     assert!(output.content.contains("- handoff"));
     assert_eq!(output.steps, 3);
     assert_eq!(output.tool_calls_count, 2);
+}
+
+#[test]
+fn finalize_output_does_not_double_count_recorded_stage_usage() {
+    let orchestrator = SchedulerProfileOrchestrator::new(
+        runtime_execution_plan("sisyphus"),
+        ToolRunner::new(Arc::new(NoopToolExecutor)),
+    );
+    let mut stage_metadata = HashMap::new();
+    let stage_usage = OutputUsage {
+        prompt_tokens: 100,
+        completion_tokens: 25,
+        context_tokens: 100,
+        reasoning_tokens: 7,
+        cache_read_tokens: 3,
+        cache_write_tokens: 5,
+    };
+    append_output_usage(&mut stage_metadata, &stage_usage);
+    let stage_output = OrchestratorOutput {
+        content: "stage output".to_string(),
+        steps: 1,
+        tool_calls_count: 0,
+        metadata: stage_metadata,
+        finish_reason: FinishReason::EndTurn,
+    };
+    let mut state = SchedulerProfileState {
+        route: SchedulerRouteState {
+            request_brief: "brief".to_string(),
+            ..Default::default()
+        },
+        execution: SchedulerExecutionState {
+            delegated: Some(stage_output.clone()),
+            ..Default::default()
+        },
+        metrics: SchedulerMetricsState {
+            total_steps: 1,
+            total_tool_calls: 0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    SchedulerProfileOrchestrator::record_output(&mut state, &stage_output);
+
+    let output = orchestrator.finalize_output(state);
+    let usage = output_usage(&output.metadata).expect("final output should preserve stage usage");
+
+    assert_eq!(usage.prompt_tokens, 100);
+    assert_eq!(usage.completion_tokens, 25);
+    assert_eq!(usage.context_tokens, 100);
+    assert_eq!(usage.reasoning_tokens, 7);
+    assert_eq!(usage.cache_read_tokens, 3);
+    assert_eq!(usage.cache_write_tokens, 5);
 }
 
 #[test]
