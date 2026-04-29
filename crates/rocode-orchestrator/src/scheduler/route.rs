@@ -2,6 +2,25 @@ use super::{SchedulerPresetKind, SchedulerProfilePlan, SchedulerStageKind};
 use crate::skill_tree::SkillTreeRequestPlan;
 use serde::{Deserialize, Serialize};
 
+/// Prompt-level request classes used by the request-analysis stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RequestType {
+    Trivial,
+    Explicit,
+    Exploratory,
+    OpenEnded,
+    Ambiguous,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestAnalysis {
+    pub request_type: RequestType,
+    pub request_brief: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_decision: Option<RouteDecision>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ReviewMode {
@@ -56,6 +75,104 @@ pub struct RouteDecision {
     pub rationale_summary: String,
 }
 
+impl RequestAnalysis {
+    pub fn new(request_type: RequestType, request_brief: impl Into<String>) -> Self {
+        Self {
+            request_type,
+            request_brief: request_brief.into(),
+            direct_decision: None,
+        }
+    }
+
+    pub fn with_direct_decision(mut self, decision: RouteDecision) -> Self {
+        self.direct_decision = Some(decision);
+        self
+    }
+}
+
+pub fn obvious_social_direct_route_decision(input: &str) -> Option<RouteDecision> {
+    let normalized = normalize_trivial_input(input)?;
+    let chinese = contains_cjk(input);
+
+    let response = if matches!(
+        normalized.as_str(),
+        "hi" | "hello" | "hey" | "yo" | "你好" | "您好" | "嗨" | "哈喽"
+    ) {
+        if chinese {
+            "你好，有什么要我处理的？"
+        } else {
+            "Hi! What would you like me to work on?"
+        }
+    } else if matches!(
+        normalized.as_str(),
+        "thanks" | "thank you" | "thx" | "谢谢" | "多谢" | "感谢"
+    ) {
+        if chinese {
+            "不客气。"
+        } else {
+            "You're welcome."
+        }
+    } else {
+        return None;
+    };
+
+    Some(RouteDecision {
+        mode: RouteMode::Direct,
+        direct_kind: Some(DirectKind::Reply),
+        direct_response: Some(response.to_string()),
+        preset: None,
+        insert_plan_stage: None,
+        review_mode: None,
+        context_append: None,
+        rationale_summary: "request-analysis obvious social direct response".to_string(),
+    })
+}
+
+pub fn empty_request_clarify_decision(input: &str) -> Option<RouteDecision> {
+    if !input.trim().is_empty() {
+        return None;
+    }
+
+    Some(RouteDecision {
+        mode: RouteMode::Direct,
+        direct_kind: Some(DirectKind::Clarify),
+        direct_response: Some("请告诉我你想让我处理什么。".to_string()),
+        preset: None,
+        insert_plan_stage: None,
+        review_mode: None,
+        context_append: None,
+        rationale_summary: "request-analysis empty request clarification".to_string(),
+    })
+}
+
+fn normalize_trivial_input(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > 16 {
+        return None;
+    }
+
+    let normalized = trimmed
+        .trim_matches(|ch: char| {
+            matches!(
+                ch,
+                '.' | ',' | '!' | '?' | ';' | ':' | '。' | '，' | '！' | '？' | '；' | '：'
+            )
+        })
+        .trim()
+        .to_lowercase();
+
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+fn contains_cjk(input: &str) -> bool {
+    input.chars().any(|ch| {
+        matches!(
+            ch as u32,
+            0x4E00..=0x9FFF | 0x3400..=0x4DBF | 0x20000..=0x2A6DF
+        )
+    })
+}
+
 fn route_preset_description(kind: SchedulerPresetKind) -> &'static str {
     match kind {
         SchedulerPresetKind::Sisyphus => {
@@ -107,6 +224,8 @@ pub fn route_system_prompt() -> String {
 
 Your job: classify the incoming request once and return a bounded routing decision.
 You make TWO decisions in order. Never skip the first.
+
+RequestAnalysis already handles empty input and obvious social trivialities before this stage.
 
 ## Decision 1: Should this request enter multi-stage orchestration?
 
@@ -459,6 +578,41 @@ analysis
         assert_eq!(decision.mode, RouteMode::Direct);
         assert_eq!(decision.direct_kind, Some(DirectKind::Reply));
         assert!(decision.direct_response.as_ref().unwrap().contains("你好"));
+    }
+
+    #[test]
+    fn request_analysis_detects_obvious_social_greetings() {
+        let decision = obvious_social_direct_route_decision("Hi!").expect("hi should direct reply");
+
+        assert_eq!(decision.mode, RouteMode::Direct);
+        assert_eq!(decision.direct_kind, Some(DirectKind::Reply));
+        assert!(decision
+            .direct_response
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Hi"));
+        assert!(decision.preset.is_none());
+    }
+
+    #[test]
+    fn request_analysis_does_not_treat_long_requests_as_obvious_social() {
+        assert!(obvious_social_direct_route_decision(
+            "hi, please inspect the scheduler route stage"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn request_analysis_clarifies_empty_requests() {
+        let decision = empty_request_clarify_decision("   ").expect("empty input should clarify");
+
+        assert_eq!(decision.mode, RouteMode::Direct);
+        assert_eq!(decision.direct_kind, Some(DirectKind::Clarify));
+        assert!(decision
+            .direct_response
+            .as_deref()
+            .unwrap_or_default()
+            .contains("请告诉我"));
     }
 
     #[test]
