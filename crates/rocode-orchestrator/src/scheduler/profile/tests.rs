@@ -200,6 +200,7 @@ fn finalize_output_prefers_handoff_over_review_and_plan() {
             ..Default::default()
         },
         session_context: None,
+        session_context_packet: None,
         is_cancelled: false,
     };
 
