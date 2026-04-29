@@ -37,6 +37,7 @@ use crate::{ApiError, Result, ServerState};
 use rocode_session::prompt::{
     auto_compact_session_with_focus_if_needed, OutputBlockEvent, OutputBlockHook,
 };
+use rocode_session::{MessageRole, PartType as SessionPartType, SessionMessage};
 
 use super::super::permission::request_permission;
 use super::super::tui::request_question_answers;
@@ -59,6 +60,11 @@ use super::cancel::abort_session_execution;
 
 const BUILTIN_AUTORESEARCH_SCHEDULER_JSONC: &str =
     include_str!("../../../assets/autoresearch.scheduler.jsonc");
+const SCHEDULER_CONTEXT_HYDRATE_TOOL: &str = "scheduler_context_hydrate";
+const SCHEDULER_CONTEXT_PACKET_VERSION: u64 = 1;
+const SCHEDULER_CONTEXT_HYDRATE_DEFAULT_MESSAGE_LIMIT: usize = 2_000;
+const SCHEDULER_CONTEXT_HYDRATE_MAX_MESSAGE_LIMIT: usize = 8_000;
+const SCHEDULER_CONTEXT_HYDRATE_MAX_MESSAGES: usize = 12;
 
 fn to_orchestrator_skill_tree(node: &SkillTreeNodeConfig) -> SkillTreeNode {
     SkillTreeNode {
@@ -715,6 +721,255 @@ impl SessionSchedulerToolExecutor {
             }
         })
     }
+
+    async fn hydrate_scheduler_context(
+        &self,
+        arguments: serde_json::Value,
+        exec_ctx: &OrchestratorExecutionContext,
+    ) -> std::result::Result<OrchestratorToolOutput, OrchestratorToolExecError> {
+        let requested_ids = scheduler_context_hydrate_message_ids(&arguments)?;
+        let allowed_ids = scheduler_context_allowed_message_ids(exec_ctx);
+        if allowed_ids.is_empty() {
+            return Err(OrchestratorToolExecError::InvalidArguments(
+                "scheduler continuity packet is unavailable; no hydration anchors are authorized"
+                    .to_string(),
+            ));
+        }
+        let per_message_limit = scheduler_context_hydrate_message_limit(&arguments);
+        let session = {
+            let sessions = self.state.sessions.lock().await;
+            sessions.get(&self.session_id).cloned()
+        }
+        .ok_or_else(|| {
+            OrchestratorToolExecError::ExecutionError("session is no longer available".to_string())
+        })?;
+
+        let mut hydrated = Vec::new();
+        let mut rejected = Vec::new();
+        let mut missing = Vec::new();
+        for message_id in requested_ids {
+            if !allowed_ids.contains(&message_id) {
+                rejected.push(message_id);
+                continue;
+            }
+            let Some(message) = session.get_message(&message_id) else {
+                missing.push(message_id);
+                continue;
+            };
+            if let Some(rendered) =
+                render_scheduler_context_hydrated_message(message, per_message_limit)
+            {
+                hydrated.push(rendered);
+            } else {
+                missing.push(message_id);
+            }
+        }
+
+        let mut sections = vec![
+            "## Scheduler Context Hydration\nHydrated exact same-session sources authorized by the scheduler continuity packet."
+                .to_string(),
+        ];
+        if !hydrated.is_empty() {
+            sections.push(format!("## Hydrated Messages\n{}", hydrated.join("\n")));
+        }
+        if !rejected.is_empty() {
+            sections.push(format!(
+                "## Rejected Message IDs\n{}",
+                rejected
+                    .iter()
+                    .map(|id| format!("- `{id}`: not present in scheduler continuity anchors"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+        if !missing.is_empty() {
+            sections.push(format!(
+                "## Missing Message IDs\n{}",
+                missing
+                    .iter()
+                    .map(|id| format!("- `{id}`: not found or no hydratable text"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+
+        Ok(OrchestratorToolOutput {
+            output: sections.join("\n\n"),
+            is_error: false,
+            title: Some("Scheduler context hydrated".to_string()),
+            metadata: Some(serde_json::json!({
+                "hydrated_count": hydrated.len(),
+                "rejected_count": rejected.len(),
+                "missing_count": missing.len(),
+            })),
+        })
+    }
+}
+
+fn scheduler_context_hydrate_message_ids(
+    arguments: &serde_json::Value,
+) -> std::result::Result<Vec<String>, OrchestratorToolExecError> {
+    let Some(values) = arguments
+        .get("message_ids")
+        .and_then(|value| value.as_array())
+    else {
+        return Err(OrchestratorToolExecError::InvalidArguments(
+            "message_ids must be an array of scheduler continuity message ids".to_string(),
+        ));
+    };
+    if values.is_empty() {
+        return Err(OrchestratorToolExecError::InvalidArguments(
+            "message_ids must not be empty".to_string(),
+        ));
+    }
+    if values.len() > SCHEDULER_CONTEXT_HYDRATE_MAX_MESSAGES {
+        return Err(OrchestratorToolExecError::InvalidArguments(format!(
+            "message_ids must contain at most {SCHEDULER_CONTEXT_HYDRATE_MAX_MESSAGES} ids"
+        )));
+    }
+    let mut ids = Vec::new();
+    for value in values {
+        let Some(id) = value.as_str().map(str::trim).filter(|id| !id.is_empty()) else {
+            return Err(OrchestratorToolExecError::InvalidArguments(
+                "message_ids must only contain non-empty strings".to_string(),
+            ));
+        };
+        if !ids.iter().any(|existing| existing == id) {
+            ids.push(id.to_string());
+        }
+    }
+    Ok(ids)
+}
+
+fn scheduler_context_hydrate_message_limit(arguments: &serde_json::Value) -> usize {
+    arguments
+        .get("max_chars_per_message")
+        .and_then(|value| value.as_u64())
+        .map(|value| value as usize)
+        .unwrap_or(SCHEDULER_CONTEXT_HYDRATE_DEFAULT_MESSAGE_LIMIT)
+        .clamp(1, SCHEDULER_CONTEXT_HYDRATE_MAX_MESSAGE_LIMIT)
+}
+
+fn scheduler_context_allowed_message_ids(exec_ctx: &OrchestratorExecutionContext) -> Vec<String> {
+    let Some(packet) = exec_ctx
+        .metadata
+        .get(SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY)
+    else {
+        return Vec::new();
+    };
+    if packet.get("version").and_then(|value| value.as_u64())
+        != Some(SCHEDULER_CONTEXT_PACKET_VERSION)
+    {
+        return Vec::new();
+    }
+    let mut ids = packet
+        .get("exact_recent_tail")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|anchor| anchor.get("message_id").and_then(|value| value.as_str()))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if let Some(id) = packet
+        .get("latest_compaction_summary")
+        .and_then(|value| value.get("message_id"))
+        .and_then(|value| value.as_str())
+    {
+        ids.push(id.to_string());
+    }
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+fn render_scheduler_context_hydrated_message(
+    message: &SessionMessage,
+    per_message_limit: usize,
+) -> Option<String> {
+    let text = scheduler_context_hydratable_text(message)?;
+    let text = truncate_scheduler_context_hydration(&text, per_message_limit);
+    Some(format!(
+        "- {} `{}`:\n{}",
+        scheduler_context_role_label(&message.role),
+        message.id,
+        indent_scheduler_context_hydration(&text)
+    ))
+}
+
+fn scheduler_context_hydratable_text(message: &SessionMessage) -> Option<String> {
+    let mut parts = Vec::new();
+    let text = message.get_text();
+    let text = text.trim();
+    if !text.is_empty() {
+        parts.push(text.to_string());
+    }
+    for part in &message.parts {
+        if let SessionPartType::Compaction { summary } = &part.part_type {
+            let summary = summary.trim();
+            if !summary.is_empty() {
+                parts.push(format!("[compaction summary]\n{summary}"));
+            }
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("\n\n"))
+}
+
+fn scheduler_context_role_label(role: &MessageRole) -> &'static str {
+    match role {
+        MessageRole::User => "user",
+        MessageRole::Assistant => "assistant",
+        MessageRole::System => "system",
+        MessageRole::Tool => "tool",
+    }
+}
+
+fn indent_scheduler_context_hydration(text: &str) -> String {
+    text.lines()
+        .map(|line| format!("  {line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn truncate_scheduler_context_hydration(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        return value.to_string();
+    }
+    let mut truncated = value
+        .chars()
+        .take(limit.saturating_sub(24))
+        .collect::<String>();
+    truncated.push_str("\n...[truncated]...");
+    truncated
+}
+
+fn scheduler_context_hydrate_tool_definition() -> rocode_provider::ToolDefinition {
+    rocode_provider::ToolDefinition {
+        name: SCHEDULER_CONTEXT_HYDRATE_TOOL.to_string(),
+        description: Some(
+            "Hydrate exact same-session messages identified by Scheduler Continuity Source Anchors. Use only when the current task needs prior context that is truncated, summarized, or ambiguous."
+                .to_string(),
+        ),
+        parameters: serde_json::json!({
+            "type": "object",
+            "required": ["message_ids"],
+            "properties": {
+                "message_ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": SCHEDULER_CONTEXT_HYDRATE_MAX_MESSAGES,
+                    "items": {"type": "string"},
+                    "description": "Message ids from the Scheduler Continuity Source Anchors."
+                },
+                "max_chars_per_message": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": SCHEDULER_CONTEXT_HYDRATE_MAX_MESSAGE_LIMIT,
+                    "description": "Maximum characters to return per hydrated message."
+                }
+            },
+            "additionalProperties": false
+        }),
+    }
 }
 
 /// Update `scheduler_stage_done_agent_count` and `scheduler_stage_total_agent_count`
@@ -762,6 +1017,9 @@ impl OrchestratorToolExecutor for SessionSchedulerToolExecutor {
         arguments: serde_json::Value,
         exec_ctx: &OrchestratorExecutionContext,
     ) -> std::result::Result<OrchestratorToolOutput, OrchestratorToolExecError> {
+        if tool_name == SCHEDULER_CONTEXT_HYDRATE_TOOL {
+            return self.hydrate_scheduler_context(arguments, exec_ctx).await;
+        }
         let ctx = self.build_tool_context(exec_ctx).await;
         let result = self
             .state
@@ -797,7 +1055,11 @@ impl OrchestratorToolExecutor for SessionSchedulerToolExecutor {
     }
 
     async fn list_ids(&self) -> Vec<String> {
-        self.state.tool_registry.list_ids().await
+        let mut ids = self.state.tool_registry.list_ids().await;
+        if !ids.iter().any(|id| id == SCHEDULER_CONTEXT_HYDRATE_TOOL) {
+            ids.push(SCHEDULER_CONTEXT_HYDRATE_TOOL.to_string());
+        }
+        ids
     }
 
     async fn list_definitions(
@@ -816,6 +1078,7 @@ impl OrchestratorToolExecutor for SessionSchedulerToolExecutor {
                 parameters: schema.parameters,
             })
             .collect();
+        tools.push(scheduler_context_hydrate_tool_definition());
         rocode_session::prioritize_tool_definitions(&mut tools);
         tools
     }
@@ -1714,6 +1977,100 @@ mod tests {
             Some("low")
         );
         assert_eq!(options["openai"]["logprobs"].as_u64(), Some(20));
+    }
+
+    #[test]
+    fn scheduler_context_hydrate_only_allows_packet_anchors() {
+        let exec_ctx = OrchestratorExecutionContext {
+            session_id: "session".to_string(),
+            workdir: "/tmp".to_string(),
+            agent_name: "sisyphus".to_string(),
+            metadata: HashMap::from([(
+                SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY.to_string(),
+                serde_json::json!({
+                    "version": 1,
+                    "exact_recent_tail": [
+                        {"message_id": "msg_user", "role": "user"},
+                        {"message_id": "msg_assistant", "role": "assistant"}
+                    ],
+                    "latest_compaction_summary": {"message_id": "msg_compaction"}
+                }),
+            )]),
+        };
+
+        let allowed = scheduler_context_allowed_message_ids(&exec_ctx);
+
+        assert_eq!(
+            allowed,
+            vec![
+                "msg_assistant".to_string(),
+                "msg_compaction".to_string(),
+                "msg_user".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn scheduler_context_hydrate_rejects_unknown_packet_version() {
+        let exec_ctx = OrchestratorExecutionContext {
+            session_id: "session".to_string(),
+            workdir: "/tmp".to_string(),
+            agent_name: "sisyphus".to_string(),
+            metadata: HashMap::from([(
+                SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY.to_string(),
+                serde_json::json!({
+                    "version": 99,
+                    "exact_recent_tail": [
+                        {"message_id": "msg_user", "role": "user"}
+                    ]
+                }),
+            )]),
+        };
+
+        assert!(scheduler_context_allowed_message_ids(&exec_ctx).is_empty());
+    }
+
+    #[test]
+    fn scheduler_context_hydrate_arguments_validate_and_dedupe_ids() {
+        let ids = scheduler_context_hydrate_message_ids(&serde_json::json!({
+            "message_ids": ["msg_1", "msg_1", "msg_2"]
+        }))
+        .expect("valid message ids should parse");
+
+        assert_eq!(ids, vec!["msg_1".to_string(), "msg_2".to_string()]);
+        assert!(scheduler_context_hydrate_message_ids(&serde_json::json!({
+            "message_ids": []
+        }))
+        .is_err());
+        assert_eq!(
+            scheduler_context_hydrate_message_limit(&serde_json::json!({
+                "max_chars_per_message": 99_999
+            })),
+            SCHEDULER_CONTEXT_HYDRATE_MAX_MESSAGE_LIMIT
+        );
+    }
+
+    #[test]
+    fn scheduler_context_hydrate_renders_text_and_compaction_parts() {
+        let mut message = SessionMessage::assistant("session");
+        message.id = "msg_compaction".to_string();
+        message.add_text("visible text");
+        message.parts.push(rocode_session::MessagePart {
+            id: "part_compaction".to_string(),
+            part_type: SessionPartType::Compaction {
+                summary: "older findings".to_string(),
+            },
+            created_at: chrono::Utc::now(),
+            message_id: Some(message.id.clone()),
+        });
+
+        let rendered = render_scheduler_context_hydrated_message(&message, 4_000)
+            .expect("message should hydrate");
+
+        assert!(rendered.contains("assistant `msg_compaction`"));
+        assert!(rendered.contains("visible text"));
+        assert!(rendered.contains("[compaction summary]"));
+        assert!(rendered.contains("older findings"));
     }
 
     #[tokio::test]
