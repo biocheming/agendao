@@ -835,12 +835,12 @@ impl App {
             }
             blocks.push(StatusBlock::normal(format!(
                 "Session cumulative: {} total · input {} · output {} · reasoning {} · cache {}/{} · cost ${:.4}",
-                tui_total_session_tokens(usage),
-                usage.input_tokens,
-                usage.output_tokens,
-                usage.reasoning_tokens,
-                usage.cache_read_tokens,
-                usage.cache_write_tokens,
+                tui_format_token_count(tui_total_session_tokens(usage)),
+                tui_format_token_count(usage.input_tokens),
+                tui_format_token_count(usage.output_tokens),
+                tui_format_token_count(usage.reasoning_tokens),
+                tui_format_token_count(usage.cache_read_tokens),
+                tui_format_token_count(usage.cache_write_tokens),
                 usage.total_cost
             )));
         }
@@ -1803,16 +1803,19 @@ fn tui_usage_status_lines(
     lines.push(StatusLine::title("Session Cumulative"));
     lines.push(StatusLine::normal(format!(
         "Total {} · Cost ${:.4}",
-        tui_total_session_tokens(usage),
+        tui_format_token_count(tui_total_session_tokens(usage)),
         usage.total_cost
     )));
     lines.push(StatusLine::normal(format!(
         "Input {} · Output {} · Reasoning {}",
-        usage.input_tokens, usage.output_tokens, usage.reasoning_tokens
+        tui_format_token_count(usage.input_tokens),
+        tui_format_token_count(usage.output_tokens),
+        tui_format_token_count(usage.reasoning_tokens)
     )));
     lines.push(StatusLine::normal(format!(
         "Cache read {} · Cache write {}",
-        usage.cache_read_tokens, usage.cache_write_tokens
+        tui_format_token_count(usage.cache_read_tokens),
+        tui_format_token_count(usage.cache_write_tokens)
     )));
 
     if !telemetry.stages.is_empty() {
@@ -1853,15 +1856,15 @@ fn tui_session_insights_lines(
         )));
         lines.push(StatusLine::normal(format!(
             "Session cumulative: total {} · input {} · output {} · reasoning {}",
-            tui_total_session_tokens(&telemetry.usage),
-            telemetry.usage.input_tokens,
-            telemetry.usage.output_tokens,
-            telemetry.usage.reasoning_tokens
+            tui_format_token_count(tui_total_session_tokens(&telemetry.usage)),
+            tui_format_token_count(telemetry.usage.input_tokens),
+            tui_format_token_count(telemetry.usage.output_tokens),
+            tui_format_token_count(telemetry.usage.reasoning_tokens)
         )));
         lines.push(StatusLine::muted(format!(
             "Cache read {} · Cache write {} · Cost ${:.4}",
-            telemetry.usage.cache_read_tokens,
-            telemetry.usage.cache_write_tokens,
+            tui_format_token_count(telemetry.usage.cache_read_tokens),
+            tui_format_token_count(telemetry.usage.cache_write_tokens),
             telemetry.usage.total_cost
         )));
         lines.push(StatusLine::muted(format!(
@@ -2229,7 +2232,7 @@ fn format_stage_runtime_line(stage: &rocode_command::stage_protocol::StageSummar
         ));
     }
     if let Some(tokens) = stage.context_tokens.or(stage.estimated_context_tokens) {
-        parts.push(format!("ctx {}", tokens));
+        parts.push(format!("ctx {}", tui_format_token_count(tokens)));
     }
     parts.join(" · ")
 }
@@ -2241,19 +2244,28 @@ fn format_stage_usage_summary_line(stage: &rocode_command::stage_protocol::Stage
         format_stage_status(stage.status.clone())
     )];
     if let Some(prompt_tokens) = stage.prompt_tokens {
-        parts.push(format!("in {}", prompt_tokens));
+        parts.push(format!("in {}", tui_format_token_count(prompt_tokens)));
     }
     if let Some(completion_tokens) = stage.completion_tokens {
-        parts.push(format!("out {}", completion_tokens));
+        parts.push(format!("out {}", tui_format_token_count(completion_tokens)));
     }
     if let Some(reasoning_tokens) = stage.reasoning_tokens.filter(|value| *value > 0) {
-        parts.push(format!("reason {}", reasoning_tokens));
+        parts.push(format!(
+            "reason {}",
+            tui_format_token_count(reasoning_tokens)
+        ));
     }
     if let Some(cache_read_tokens) = stage.cache_read_tokens.filter(|value| *value > 0) {
-        parts.push(format!("cache-r {}", cache_read_tokens));
+        parts.push(format!(
+            "cache-r {}",
+            tui_format_token_count(cache_read_tokens)
+        ));
     }
     if let Some(cache_write_tokens) = stage.cache_write_tokens.filter(|value| *value > 0) {
-        parts.push(format!("cache-w {}", cache_write_tokens));
+        parts.push(format!(
+            "cache-w {}",
+            tui_format_token_count(cache_write_tokens)
+        ));
     }
     if let Some(budget) = stage.skill_tree_budget {
         parts.push(format!(
@@ -2293,11 +2305,16 @@ fn tui_context_pressure_note(percent: Option<u64>) -> Option<&'static str> {
 
 fn tui_format_context_usage_label(used: u64, limit: Option<u64>) -> String {
     let Some(limit) = limit.filter(|limit| *limit > 0) else {
-        return used.to_string();
+        return tui_format_token_count(used);
     };
 
     let percent = tui_context_usage_percent(used, limit).unwrap_or(0);
-    format!("{}/{} ({}%)", used, limit, percent)
+    format!(
+        "{}/{} ({}%)",
+        tui_format_token_count(used),
+        tui_format_token_count(limit),
+        percent
+    )
 }
 
 fn tui_has_turn_usage(tokens: &crate::context::TokenUsage) -> bool {
@@ -2310,19 +2327,43 @@ fn tui_has_turn_usage(tokens: &crate::context::TokenUsage) -> bool {
 
 fn tui_format_last_turn_usage(tokens: &crate::context::TokenUsage) -> String {
     let mut parts = vec![
-        format!("Input {}", tokens.input),
-        format!("Output {}", tokens.output),
+        format!("Input {}", tui_format_token_count(tokens.input)),
+        format!("Output {}", tui_format_token_count(tokens.output)),
     ];
     if tokens.reasoning > 0 {
-        parts.push(format!("Reasoning {}", tokens.reasoning));
+        parts.push(format!(
+            "Reasoning {}",
+            tui_format_token_count(tokens.reasoning)
+        ));
     }
     if tokens.cache_read > 0 || tokens.cache_write > 0 {
         parts.push(format!(
             "Cache {}/{}",
-            tokens.cache_read, tokens.cache_write
+            tui_format_token_count(tokens.cache_read),
+            tui_format_token_count(tokens.cache_write)
         ));
     }
     parts.join(" · ")
+}
+
+fn tui_format_token_count(value: u64) -> String {
+    if value >= 1_000_000 {
+        let compact = value as f64 / 1_000_000.0;
+        return if compact.fract() == 0.0 {
+            format!("{compact:.0}M")
+        } else {
+            format!("{compact:.1}M")
+        };
+    }
+    if value >= 1_000 {
+        let compact = value as f64 / 1_000.0;
+        return if compact.fract() == 0.0 {
+            format!("{compact:.0}K")
+        } else {
+            format!("{compact:.1}K")
+        };
+    }
+    value.to_string()
 }
 
 fn active_stage_status_blocks(
@@ -2356,14 +2397,17 @@ fn active_stage_status_blocks(
         )));
     }
     if let Some(tokens) = stage.context_tokens.or(stage.estimated_context_tokens) {
-        blocks.push(StatusBlock::muted(format!("Context tokens: {}", tokens)));
+        blocks.push(StatusBlock::muted(format!(
+            "Context tokens: {}",
+            tui_format_token_count(tokens)
+        )));
     }
     if let Some(prompt_tokens) = stage.prompt_tokens {
         blocks.push(StatusBlock::normal(format!(
             "Stage usage: in {} out {} reasoning {}",
-            prompt_tokens,
-            stage.completion_tokens.unwrap_or(0),
-            stage.reasoning_tokens.unwrap_or(0)
+            tui_format_token_count(prompt_tokens),
+            tui_format_token_count(stage.completion_tokens.unwrap_or(0)),
+            tui_format_token_count(stage.reasoning_tokens.unwrap_or(0))
         )));
     }
     blocks
