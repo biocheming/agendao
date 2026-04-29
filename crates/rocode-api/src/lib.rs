@@ -571,6 +571,9 @@ pub struct ExecuteShellRequest {
 pub struct CreateSessionRequest {
     pub parent_id: Option<String>,
     pub scheduler_profile: Option<String>,
+    pub directory: Option<String>,
+    pub project_id: Option<String>,
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

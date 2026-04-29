@@ -157,10 +157,13 @@ impl App {
                 self.prompt.set_spinner_active(true);
                 self.event_caused_change = true;
                 let context = self.context.clone();
+                let session_directory = self.context.directory.read().clone();
                 thread::spawn(move || {
-                    let (created_session, response, error) = match client
-                        .create_session(None, selected_mode.scheduler_profile.clone())
-                    {
+                    let (created_session, response, error) = match client.create_session(
+                        None,
+                        selected_mode.scheduler_profile.clone(),
+                        Some(session_directory),
+                    ) {
                         Ok(session) => match client.send_prompt(
                             &session.id,
                             input,
@@ -369,18 +372,22 @@ impl App {
                 self.ensure_session_view(&optimistic_session_id);
                 self.event_caused_change = true;
 
-                let session =
-                    match client.create_session(None, selected_mode.scheduler_profile.clone()) {
-                        Ok(session) => session,
-                        Err(err) => {
-                            self.remove_optimistic_session(&optimistic_session_id);
-                            self.context.navigate_home();
-                            self.alert_dialog
-                                .set_message(&format!("Failed to create session:\n{}", err));
-                            self.open_alert_dialog();
-                            return Ok(());
-                        }
-                    };
+                let session_directory = self.context.directory.read().clone();
+                let session = match client.create_session(
+                    None,
+                    selected_mode.scheduler_profile.clone(),
+                    Some(session_directory),
+                ) {
+                    Ok(session) => session,
+                    Err(err) => {
+                        self.remove_optimistic_session(&optimistic_session_id);
+                        self.context.navigate_home();
+                        self.alert_dialog
+                            .set_message(&format!("Failed to create session:\n{}", err));
+                        self.open_alert_dialog();
+                        return Ok(());
+                    }
+                };
                 self.promote_optimistic_session(&optimistic_session_id, &session);
                 self.context.navigate(Route::Session {
                     session_id: session.id.clone(),
