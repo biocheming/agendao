@@ -1278,6 +1278,10 @@ fn resolve_scheduler_profile_config(
         .filter(|value| !value.is_empty());
 
     if let Some(name) = requested {
+        if name == AUTO_SCHEDULER_PROFILE_NAME {
+            return Ok(Some((name.to_string(), scheduler_auto_profile_config())));
+        }
+
         if let Ok(preset) = SchedulerPresetKind::from_str(name) {
             return Ok(Some((
                 name.to_string(),
@@ -1474,6 +1478,7 @@ async fn build_cli_execution_runtime(
 
 fn cli_available_presets(config: &Config) -> Vec<String> {
     let mut names = BTreeSet::new();
+    names.insert(AUTO_SCHEDULER_PROFILE_NAME.to_string());
     for preset in SchedulerPresetKind::public_presets() {
         names.insert(preset.as_str().to_string());
     }
@@ -1715,5 +1720,17 @@ mod frontend_state_tests {
 
         assert!(resolution.defaults.is_none());
         assert!(resolution.profile_model.is_none());
+    }
+
+    #[test]
+    fn explicit_auto_scheduler_profile_resolves_to_router_defaults() {
+        let resolution = resolve_scheduler_runtime(&Config::default(), Some("auto"))
+            .expect("built-in auto scheduler profile should resolve");
+        let defaults = resolution
+            .defaults
+            .expect("auto should apply scheduler defaults");
+
+        assert_eq!(defaults.profile_name.as_deref(), Some("auto"));
+        assert!(defaults.root_agent_name.is_none());
     }
 }

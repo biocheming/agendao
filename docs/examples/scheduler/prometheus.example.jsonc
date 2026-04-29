@@ -18,7 +18,6 @@
       },
       "skillList": [
         "request-analysis",
-        "route",
         "interview",
         "plan",
         "review",
@@ -26,7 +25,6 @@
       ],
       "stages": [
         "request-analysis",
-        "route",
         "interview",
         "plan",
         "review",
@@ -73,7 +71,6 @@
       "description": "Prometheus with per-stage overrides: allow tools during planning, bounded interview, and a specialized review agent.",
       "stages": [
         "request-analysis",
-        "route",
         // Cap interview rounds to avoid infinite clarification loops.
         {
           "kind": "interview",

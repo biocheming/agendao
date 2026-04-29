@@ -10,15 +10,16 @@ use rocode_config::{Config as AppConfig, SkillTreeNodeConfig};
 use rocode_execution_types::{CompiledExecutionRequest, ExecutionRequestContext};
 use rocode_orchestrator::output_metadata::output_usage;
 use rocode_orchestrator::{
-    resolve_skill_markdown_repo, scheduler_orchestrator_from_plan, scheduler_plan_from_profile,
-    scheduler_request_defaults_from_file, scheduler_request_defaults_from_plan,
-    stage_policy_available_tools, stage_policy_from_label, AgentResolver, AvailableAgentMeta,
-    AvailableCategoryMeta, ExecutionContext as OrchestratorExecutionContext,
-    ModelRef as OrchestratorModelRef, ModelResolver, Orchestrator, OrchestratorContext,
-    OrchestratorError, SchedulerConfig, SchedulerPresetKind, SchedulerProfileConfig,
-    SchedulerRequestDefaults, SkillTreeNode, SkillTreeRequestPlan, SkillTreeTruncationStrategy,
-    ToolExecError as OrchestratorToolExecError, ToolExecutor as OrchestratorToolExecutor,
-    ToolOutput as OrchestratorToolOutput, ToolRunner,
+    resolve_skill_markdown_repo, scheduler_auto_profile_config, scheduler_orchestrator_from_plan,
+    scheduler_plan_from_profile, scheduler_request_defaults_from_file,
+    scheduler_request_defaults_from_plan, stage_policy_available_tools, stage_policy_from_label,
+    AgentResolver, AvailableAgentMeta, AvailableCategoryMeta,
+    ExecutionContext as OrchestratorExecutionContext, ModelRef as OrchestratorModelRef,
+    ModelResolver, Orchestrator, OrchestratorContext, OrchestratorError, SchedulerConfig,
+    SchedulerPresetKind, SchedulerProfileConfig, SchedulerRequestDefaults, SkillTreeNode,
+    SkillTreeRequestPlan, SkillTreeTruncationStrategy, ToolExecError as OrchestratorToolExecError,
+    ToolExecutor as OrchestratorToolExecutor, ToolOutput as OrchestratorToolOutput, ToolRunner,
+    AUTO_SCHEDULER_PROFILE_NAME,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -140,6 +141,11 @@ fn resolve_builtin_scheduler_request_defaults(
     let profile_name = requested_profile
         .map(str::trim)
         .filter(|value| !value.is_empty())?;
+    if profile_name == AUTO_SCHEDULER_PROFILE_NAME {
+        let profile = scheduler_auto_profile_config();
+        let plan = scheduler_plan_from_profile(Some(profile_name.to_string()), &profile).ok()?;
+        return Some(scheduler_request_defaults_from_plan(&plan));
+    }
     let preset = SchedulerPresetKind::from_str(profile_name).ok()?;
     let profile = SchedulerProfileConfig {
         orchestrator: Some(preset.as_str().to_string()),
@@ -303,7 +309,9 @@ Boundary: preserve the profile's execution constraints and role semantics."
 }
 
 pub(super) fn scheduler_mode_kind(profile_name: &str) -> &'static str {
-    if SchedulerPresetKind::from_str(profile_name).is_ok() {
+    if profile_name == AUTO_SCHEDULER_PROFILE_NAME
+        || SchedulerPresetKind::from_str(profile_name).is_ok()
+    {
         "preset"
     } else {
         "profile"
@@ -357,6 +365,10 @@ pub(super) fn resolve_scheduler_profile_config(
     let profile_name = requested_profile
         .map(str::trim)
         .filter(|value| !value.is_empty())?;
+
+    if profile_name == AUTO_SCHEDULER_PROFILE_NAME {
+        return Some((profile_name.to_string(), scheduler_auto_profile_config()));
+    }
 
     if let Ok(preset) = SchedulerPresetKind::from_str(profile_name) {
         return Some((

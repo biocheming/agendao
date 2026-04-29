@@ -172,7 +172,6 @@ fn sisyphus_uses_execution_orchestration_stages() {
         sisyphus_default_stages(),
         vec![
             SchedulerStageKind::RequestAnalysis,
-            SchedulerStageKind::Route,
             SchedulerStageKind::ExecutionOrchestration,
         ]
     );

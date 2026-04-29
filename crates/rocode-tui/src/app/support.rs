@@ -287,7 +287,11 @@ pub(super) fn selected_execution_mode(context: &Arc<AppContext>) -> SelectedExec
 
     let agent = context.current_agent();
     if agent.trim().is_empty() {
-        return SelectedExecutionMode::default();
+        return SelectedExecutionMode {
+            agent: None,
+            scheduler_profile: Some("auto".to_string()),
+            display_mode: Some("auto".to_string()),
+        };
     }
 
     SelectedExecutionMode {

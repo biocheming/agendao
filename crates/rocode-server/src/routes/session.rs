@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn builtin_preset_defaults_resolve_without_external_scheduler_file() {
-        for name in &["sisyphus", "verifier"] {
+        for name in &["auto", "sisyphus", "verifier"] {
             let defaults = resolve_scheduler_request_defaults(&AppConfig::default(), Some(name))
                 .expect("builtin preset should resolve without schedulerPath");
             assert_eq!(defaults.profile_name.as_deref(), Some(*name));
@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn builtin_presets_resolve_as_preset_modes() {
-        for name in &["sisyphus", "verifier"] {
+        for name in &["auto", "sisyphus", "verifier"] {
             let defaults = resolve_scheduler_request_defaults(&AppConfig::default(), Some(name))
                 .expect("builtin preset should resolve without schedulerPath");
             assert_eq!(defaults.profile_name.as_deref(), Some(*name));
@@ -254,6 +254,19 @@ mod tests {
 
         assert_eq!(profile_name, "autoresearch-run");
         assert_eq!(profile.orchestrator.as_deref(), Some("hephaestus"));
+    }
+
+    #[test]
+    fn builtin_auto_profile_config_resolves_without_external_scheduler_file() {
+        let (profile_name, profile) =
+            resolve_scheduler_profile_config(&AppConfig::default(), Some("auto"))
+                .expect("built-in auto profile config should resolve");
+
+        assert_eq!(profile_name, "auto");
+        assert_eq!(profile.orchestrator.as_deref(), Some("sisyphus"));
+        assert!(profile
+            .stage_kinds()
+            .contains(&rocode_orchestrator::SchedulerStageKind::Route));
     }
 
     #[test]

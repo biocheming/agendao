@@ -16,7 +16,6 @@ fn prometheus_uses_planning_first_stages() {
         prometheus_default_stages(),
         vec![
             SchedulerStageKind::RequestAnalysis,
-            SchedulerStageKind::Route,
             SchedulerStageKind::Interview,
             SchedulerStageKind::Plan,
             SchedulerStageKind::Review,

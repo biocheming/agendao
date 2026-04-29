@@ -3,7 +3,6 @@ use super::super::SchedulerPresetDefinition;
 
 const PROMETHEUS_DEFAULT_STAGES: &[SchedulerStageKind] = &[
     SchedulerStageKind::RequestAnalysis,
-    SchedulerStageKind::Route,
     SchedulerStageKind::Interview,
     SchedulerStageKind::Plan,
     SchedulerStageKind::Review,

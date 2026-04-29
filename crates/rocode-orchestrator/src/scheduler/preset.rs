@@ -4,7 +4,7 @@ use std::str::FromStr;
 use super::{
     scheduler_preset_definition, SchedulerConfig, SchedulerConfigError, SchedulerPresetDefinition,
     SchedulerProfileConfig, SchedulerProfileOrchestrator, SchedulerProfilePlan, SchedulerStageKind,
-    SchedulerStageObservability,
+    SchedulerStageObservability, StageEntry,
 };
 use crate::iterative_workflow::{IterativeWorkflowMode, WorkflowBasePreset};
 use crate::skill_tree::SkillTreeRequestPlan;
@@ -16,6 +16,8 @@ pub struct SchedulerRequestDefaults {
     pub root_agent_name: Option<String>,
     pub skill_tree_plan: Option<SkillTreeRequestPlan>,
 }
+
+pub const AUTO_SCHEDULER_PROFILE_NAME: &str = "auto";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SchedulerPresetMetadata {
@@ -160,9 +162,28 @@ pub fn scheduler_stage_observability(
     scheduler_profile: &str,
     stage_name: &str,
 ) -> Option<SchedulerStageObservability> {
-    let preset = scheduler_profile.parse::<SchedulerPresetKind>().ok()?;
+    let preset = if scheduler_profile == AUTO_SCHEDULER_PROFILE_NAME {
+        SchedulerPresetKind::Sisyphus
+    } else {
+        scheduler_profile.parse::<SchedulerPresetKind>().ok()?
+    };
     let stage = SchedulerStageKind::from_event_name(stage_name)?;
     Some(preset.stage_observability(stage))
+}
+
+pub fn scheduler_auto_profile_config() -> SchedulerProfileConfig {
+    SchedulerProfileConfig {
+        orchestrator: Some(SchedulerPresetKind::Sisyphus.as_str().to_string()),
+        description: Some(
+            "Automatic scheduler routing: analyze the request, run Route for preset selection, then execute the selected workflow.".to_string(),
+        ),
+        stages: vec![
+            StageEntry::Plain(SchedulerStageKind::RequestAnalysis),
+            StageEntry::Plain(SchedulerStageKind::Route),
+            StageEntry::Plain(SchedulerStageKind::ExecutionOrchestration),
+        ],
+        ..Default::default()
+    }
 }
 
 pub fn scheduler_plan_from_profile(
@@ -327,10 +348,39 @@ mod tests {
             plan.stages,
             vec![
                 SchedulerStageKind::RequestAnalysis,
+                SchedulerStageKind::ExecutionOrchestration,
+            ]
+        );
+    }
+
+    #[test]
+    fn scheduler_auto_profile_uses_route_for_preset_selection() {
+        let profile = scheduler_auto_profile_config();
+        let plan =
+            scheduler_plan_from_profile(Some(AUTO_SCHEDULER_PROFILE_NAME.to_string()), &profile)
+                .unwrap();
+        assert_eq!(
+            plan.profile_name.as_deref(),
+            Some(AUTO_SCHEDULER_PROFILE_NAME)
+        );
+        assert_eq!(plan.orchestrator.as_deref(), Some("sisyphus"));
+        assert_eq!(
+            plan.stages,
+            vec![
+                SchedulerStageKind::RequestAnalysis,
                 SchedulerStageKind::Route,
                 SchedulerStageKind::ExecutionOrchestration,
             ]
         );
+    }
+
+    #[test]
+    fn scheduler_auto_profile_reuses_sisyphus_stage_observability() {
+        let route = scheduler_stage_observability(AUTO_SCHEDULER_PROFILE_NAME, "route")
+            .expect("auto route stage should expose observability");
+        let sisyphus = SchedulerPresetKind::Sisyphus.stage_observability(SchedulerStageKind::Route);
+
+        assert_eq!(route, sisyphus);
     }
 
     #[test]
@@ -345,7 +395,6 @@ mod tests {
             plan.stages,
             vec![
                 SchedulerStageKind::RequestAnalysis,
-                SchedulerStageKind::Route,
                 SchedulerStageKind::Interview,
                 SchedulerStageKind::Plan,
                 SchedulerStageKind::Review,
@@ -371,7 +420,6 @@ mod tests {
             plan.stages,
             vec![
                 SchedulerStageKind::RequestAnalysis,
-                SchedulerStageKind::Route,
                 SchedulerStageKind::Interview,
                 SchedulerStageKind::Plan,
                 SchedulerStageKind::Review,
@@ -434,7 +482,6 @@ mod tests {
             plan.stages,
             vec![
                 SchedulerStageKind::RequestAnalysis,
-                SchedulerStageKind::Route,
                 SchedulerStageKind::Interview,
                 SchedulerStageKind::Plan,
                 SchedulerStageKind::Review,
@@ -643,7 +690,6 @@ mod tests {
             plan.stages,
             vec![
                 SchedulerStageKind::RequestAnalysis,
-                SchedulerStageKind::Route,
                 SchedulerStageKind::Interview,
                 SchedulerStageKind::Plan,
                 SchedulerStageKind::Review,
