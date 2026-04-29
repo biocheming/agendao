@@ -836,6 +836,9 @@ mod tests {
         IterativeWorkflowMode, WorkflowDescriptor,
     };
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn workflow_config_with_artifacts() -> IterativeWorkflowConfig {
         IterativeWorkflowConfig {
@@ -910,8 +913,12 @@ mod tests {
     }
 
     fn temp_exec_ctx() -> ExecutionContext {
-        let root =
-            std::env::temp_dir().join(format!("rocode-workflow-artifacts-{}", now_unix_ms()));
+        let suffix = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "rocode-workflow-artifacts-{}-{}-{suffix}",
+            std::process::id(),
+            now_unix_ms()
+        ));
         fs::create_dir_all(&root).expect("temp root should create");
         ExecutionContext {
             session_id: "artifact-session".to_string(),
