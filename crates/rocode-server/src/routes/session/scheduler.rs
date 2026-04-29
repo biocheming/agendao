@@ -47,10 +47,10 @@ use super::autoresearch_target::{
 use super::cancel::is_scheduler_cancellation_error;
 use super::messages::resolve_provider_and_model;
 use super::prompt::{
-    build_scheduler_session_context_block, create_scheduler_user_message,
+    build_scheduler_session_context_packet, create_scheduler_user_message,
     merge_scheduler_prompt_with_memory, move_scheduler_final_answer_after_stage_messages,
     resolve_prompt_memory_context, SchedulerUserMessageContext,
-    SCHEDULER_SESSION_CONTEXT_METADATA_KEY,
+    SCHEDULER_SESSION_CONTEXT_METADATA_KEY, SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY,
 };
 use super::session_crud::{resolved_session_directory, set_session_run_status};
 use super::telemetry::persist_session_telemetry_metadata;
@@ -1328,7 +1328,10 @@ pub async fn run_local_scheduler_prompt(
 
     let (memory_frozen_snapshot_block, _memory_prefetch_packet, memory_prefetch_block) =
         resolve_prompt_memory_context(&state, &mut session, &req.prompt_text).await;
-    let scheduler_session_context_block = build_scheduler_session_context_block(&session);
+    let scheduler_session_context_packet = build_scheduler_session_context_packet(&session);
+    let scheduler_session_context_block = scheduler_session_context_packet
+        .as_ref()
+        .map(|packet| packet.render());
     let scheduler_execution_prompt = merge_scheduler_prompt_with_memory(
         &req.prompt_text,
         memory_frozen_snapshot_block.as_deref(),
@@ -1461,6 +1464,12 @@ pub async fn run_local_scheduler_prompt(
         exec_metadata.insert(
             SCHEDULER_SESSION_CONTEXT_METADATA_KEY.to_string(),
             serde_json::json!(session_context),
+        );
+    }
+    if let Some(session_context_packet) = scheduler_session_context_packet.as_ref() {
+        exec_metadata.insert(
+            SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY.to_string(),
+            session_context_packet.metadata_value(),
         );
     }
     apply_skill_tree_telemetry_metadata(&mut exec_metadata, request_skill_tree_plan.as_ref());
