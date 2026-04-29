@@ -1077,6 +1077,65 @@ fn request_analysis_input_includes_skills_guidance_when_skills_are_available() {
 }
 
 #[test]
+fn request_analysis_input_includes_omo_phase_zero_taxonomy() {
+    let orchestrator = SchedulerProfileOrchestrator::new(
+        SchedulerProfilePlan::new(vec![SchedulerStageKind::RequestAnalysis])
+            .with_orchestrator("sisyphus"),
+        ToolRunner::new(Arc::new(NoopToolExecutor)),
+    );
+
+    let input = orchestrator.compose_request_analysis_input("what do you think about tool search?");
+
+    assert!(input.contains("## Intent Gate Reference"));
+    assert!(input.contains("Use the same Phase 0 taxonomy as oh-my-opencode"));
+    assert!(input.contains("Research/understanding"));
+    assert!(input.contains("Implementation"));
+    assert!(input.contains("Investigation"));
+    assert!(input.contains("Evaluation"));
+    assert!(input.contains("Fix"));
+    assert!(input.contains("Open-ended change"));
+    assert!(input.contains("Trivial, Explicit, Exploratory, Open-ended, Ambiguous"));
+}
+
+#[tokio::test]
+async fn request_analysis_short_circuits_obvious_social_before_route() {
+    let workdir = new_temp_workdir();
+    let context = test_context(&workdir, "direct-social-session", Vec::new());
+    let runner = ToolRunner::new(Arc::new(NoopToolExecutor));
+    let mut orchestrator = SchedulerProfileOrchestrator::new(
+        SchedulerProfilePlan::new(vec![
+            SchedulerStageKind::RequestAnalysis,
+            SchedulerStageKind::Route,
+            SchedulerStageKind::ExecutionOrchestration,
+        ])
+        .with_orchestrator("sisyphus"),
+        runner,
+    );
+
+    let output = orchestrator
+        .execute("Hi", &context)
+        .await
+        .expect("obvious social input should not require a route model stream");
+
+    assert!(output.content.contains("Hi"));
+    assert_eq!(output.steps, 0);
+    std::fs::remove_dir_all(&workdir).expect("temp workdir should clean up");
+}
+
+#[test]
+fn request_analysis_respects_route_constraints() {
+    let orchestrator = SchedulerProfileOrchestrator::new(
+        planner_only_plan(),
+        ToolRunner::new(Arc::new(NoopToolExecutor)),
+    );
+
+    let analysis = orchestrator.analyze_request_stage("Hi", None, &orchestrator.plan);
+
+    assert!(analysis.direct_decision.is_none());
+    assert_eq!(analysis.request_type, RequestType::Explicit);
+}
+
+#[test]
 fn review_input_uses_compact_skill_catalog_without_full_descriptions() {
     let mut plan = planner_only_plan();
     plan.stage_skill_lists.insert(

@@ -97,6 +97,22 @@ Use `skill_view(name)` to inspect a relevant skill before relying on it.
         }
 
         sections.push(
+            "## Intent Gate Reference
+Use the same Phase 0 taxonomy as oh-my-opencode:
+- Step 0: map the surface form to the true intent before choosing a workflow.
+- Research/understanding (`explain X`, `how does Y work`) -> explore or inspect, then answer.
+- Implementation (`implement X`, `add Y`, `create Z`) -> plan, then delegate or execute.
+- Investigation (`look into X`, `check Y`, `investigate`) -> explore, then report findings.
+- Evaluation (`what do you think about X?`) -> evaluate and propose; wait for confirmation before changing code.
+- Fix (`I'm seeing error X`, `Y is broken`) -> diagnose, then fix minimally.
+- Open-ended change (`refactor`, `improve`, `clean up`) -> assess the codebase before proposing an approach.
+
+Classify the request type as one of: Trivial, Explicit, Exploratory, Open-ended, Ambiguous.
+Ask only when ambiguity has multiple materially different interpretations or missing critical information."
+                .to_string(),
+        );
+
+        sections.push(
             "## Orchestrator Intent
 Freeze the request context once, then route the request into the right workflow and preserve the same semantic goal across planning, execution, review, or handoff stages. If the active preset is Prometheus, preserve planner-only behavior and keep the session on the reviewed-plan path rather than execution."
                 .to_string(),

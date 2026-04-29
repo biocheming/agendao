@@ -47,8 +47,8 @@ use super::{
     apply_route_decision, execute_scheduler_effect_dispatch,
     execute_scheduler_execution_stage_dispatch, execute_stage_agent, parse_route_decision,
     route_system_prompt, stage_agent, stage_agent_unbounded, validate_route_decision,
-    AvailableAgentMeta, AvailableCategoryMeta, RouteDecision, RouteMode,
-    SchedulerAdvisoryReviewInput, SchedulerEffectContext, SchedulerEffectDispatch,
+    AvailableAgentMeta, AvailableCategoryMeta, RequestAnalysis, RequestType, RouteDecision,
+    RouteMode, SchedulerAdvisoryReviewInput, SchedulerEffectContext, SchedulerEffectDispatch,
     SchedulerEffectKind, SchedulerEffectMoment, SchedulerEffectProtocol,
     SchedulerExecutionGateDecision, SchedulerExecutionGateStatus, SchedulerExecutionStageDispatch,
     SchedulerExecutionWorkflowKind, SchedulerExecutionWorkflowPolicy, SchedulerFlowDefinition,
@@ -1309,6 +1309,52 @@ impl SchedulerProfileOrchestrator {
         Ok((output, decision))
     }
 
+    fn analyze_request_stage(
+        &self,
+        input: &str,
+        session_context: Option<&str>,
+        plan: &SchedulerProfilePlan,
+    ) -> RequestAnalysis {
+        let request_brief =
+            self.compose_request_analysis_input_with_context(input, session_context);
+        let mut analysis = RequestAnalysis::new(RequestType::Explicit, request_brief);
+
+        // Preset-level route constraints, such as Prometheus planner-only mode,
+        // remain authoritative. They intentionally keep even trivial requests on
+        // the configured workflow path.
+        if plan.route_constraint_note().is_some() {
+            return analysis;
+        }
+
+        if let Some(decision) = super::empty_request_clarify_decision(input) {
+            return RequestAnalysis::new(RequestType::Ambiguous, analysis.request_brief)
+                .with_direct_decision(decision);
+        }
+
+        if let Some(decision) = super::obvious_social_direct_route_decision(input) {
+            analysis.request_type = RequestType::Trivial;
+            analysis.direct_decision = Some(decision);
+        }
+
+        analysis
+    }
+
+    fn direct_route_output(state: &SchedulerProfileState, reply: String) -> OrchestratorOutput {
+        OrchestratorOutput {
+            content: reply,
+            steps: state.metrics.total_steps,
+            tool_calls_count: state.metrics.total_tool_calls,
+            metadata: {
+                let mut metadata = HashMap::new();
+                if !state.metrics.usage.is_zero() {
+                    append_output_usage(&mut metadata, &state.metrics.usage);
+                }
+                metadata
+            },
+            finish_reason: crate::runtime::events::FinishReason::EndTurn,
+        }
+    }
+
     async fn execute_interview_stage(
         &self,
         original_input: &str,
@@ -1479,11 +1525,27 @@ impl Orchestrator for SchedulerProfileOrchestrator {
             match stage {
                 SchedulerStageKind::RequestAnalysis => {
                     if state.route.request_brief.is_empty() {
-                        state.route.request_brief = self
-                            .compose_request_analysis_input_with_context(
-                                input,
-                                state.session_context.as_deref(),
-                            );
+                        let analysis = self.analyze_request_stage(
+                            input,
+                            state.session_context.as_deref(),
+                            &resolved_plan,
+                        );
+                        state.route.request_brief = analysis.request_brief;
+                        if let Some(decision) = analysis.direct_decision {
+                            let reply =
+                                decision.direct_response.clone().unwrap_or_else(String::new);
+                            state.route.route_decision = Some(decision);
+                            state.route.direct_response = Some(reply.clone());
+                            Self::emit_stage_end(
+                                &resolved_plan,
+                                stage,
+                                stage_ordinal,
+                                &OrchestratorOutput::empty(),
+                                ctx,
+                            )
+                            .await;
+                            return Ok(Self::direct_route_output(&state, reply));
+                        }
                     }
                     Self::emit_stage_end(
                         &resolved_plan,
@@ -1548,23 +1610,7 @@ impl Orchestrator for SchedulerProfileOrchestrator {
                                     state.route.route_decision = Some(decision);
                                     state.route.direct_response = Some(reply.clone());
 
-                                    return Ok(OrchestratorOutput {
-                                        content: reply,
-                                        steps: state.metrics.total_steps,
-                                        tool_calls_count: state.metrics.total_tool_calls,
-                                        metadata: {
-                                            let mut metadata = HashMap::new();
-                                            if !state.metrics.usage.is_zero() {
-                                                append_output_usage(
-                                                    &mut metadata,
-                                                    &state.metrics.usage,
-                                                );
-                                            }
-                                            metadata
-                                        },
-                                        finish_reason:
-                                            crate::runtime::events::FinishReason::EndTurn,
-                                    });
+                                    return Ok(Self::direct_route_output(&state, reply));
                                 }
                                 RouteMode::Orchestrate => {
                                     apply_route_decision(&mut resolved_plan, stage_idx, &decision);
