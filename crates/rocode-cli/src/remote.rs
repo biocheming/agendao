@@ -21,6 +21,8 @@ struct RemoteSessionInfo {
     id: String,
     #[serde(default)]
     parent_id: Option<String>,
+    #[serde(default)]
+    directory: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,6 +44,7 @@ pub(crate) struct RemoteAttachOptions {
     pub variant: Option<String>,
     pub format: RunOutputFormat,
     pub title: Option<String>,
+    pub directory: Option<String>,
     pub show_thinking: bool,
 }
 
@@ -404,6 +407,7 @@ pub(crate) async fn resolve_remote_session(
     session: Option<String>,
     fork: bool,
     title: Option<String>,
+    directory: Option<String>,
 ) -> anyhow::Result<String> {
     let base_id = if let Some(session_id) = session {
         Some(session_id)
@@ -411,9 +415,18 @@ pub(crate) async fn resolve_remote_session(
         let list_endpoint = server_url(base_url, "/session?roots=true&limit=100");
         let sessions: Vec<RemoteSessionInfo> =
             parse_http_json(client.get(list_endpoint).send().await?).await?;
+        let directory = directory
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
         sessions
             .into_iter()
-            .find(|s| s.parent_id.is_none())
+            .find(|s| {
+                s.parent_id.is_none()
+                    && directory
+                        .map(|dir| s.directory.as_deref() == Some(dir))
+                        .unwrap_or(true)
+            })
             .map(|s| s.id)
     } else {
         None
@@ -440,7 +453,8 @@ pub(crate) async fn resolve_remote_session(
         client
             .post(create_endpoint)
             .json(&serde_json::json!({
-                "title": title
+                "title": title,
+                "directory": directory
             }))
             .send()
             .await?,
@@ -638,12 +652,21 @@ pub(crate) async fn run_non_interactive_attach(options: RemoteAttachOptions) -> 
         variant,
         format,
         title,
+        directory,
         show_thinking,
     } = options;
     let client = reqwest::Client::new();
     let show_thinking = Arc::new(AtomicBool::new(show_thinking));
-    let session_id =
-        resolve_remote_session(&client, &base_url, continue_last, session, fork, title).await?;
+    let session_id = resolve_remote_session(
+        &client,
+        &base_url,
+        continue_last,
+        session,
+        fork,
+        title,
+        directory,
+    )
+    .await?;
     maybe_share_remote_session(&client, &base_url, &session_id, share).await?;
 
     let content = if let Some(command_name) = command {

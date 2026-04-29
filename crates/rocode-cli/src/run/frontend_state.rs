@@ -1381,6 +1381,7 @@ async fn build_cli_execution_runtime(
         config,
         agent_registry,
         selection,
+        working_dir,
     } = input;
     let observed_topology = Arc::new(Mutex::new(CliObservedExecutionTopology::default()));
     let frontend_projection = Arc::new(Mutex::new(CliFrontendProjection::default()));
@@ -1444,6 +1445,7 @@ async fn build_cli_execution_runtime(
         resolved_agent_name: agent_name,
         resolved_scheduler_profile_name: scheduler_profile_name,
         resolved_model_label,
+        working_dir,
         observed_topology,
         frontend_projection,
         scheduler_stage_snapshots,

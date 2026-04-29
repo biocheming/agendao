@@ -151,6 +151,7 @@ pub(crate) async fn run_non_interactive(
         Some(dir) => dir,
         None => std::env::current_dir()?,
     };
+    let working_dir = working_dir.canonicalize().unwrap_or(working_dir);
 
     if fork && !continue_last && session.is_none() {
         anyhow::bail!("--fork requires --continue or --session");
@@ -179,7 +180,7 @@ pub(crate) async fn run_non_interactive(
         runtime_context
             .discover_or_start_server_with_request(crate::ServerDiscoveryRequest {
                 port_override: port,
-                cwd: Some(working_dir),
+                cwd: Some(working_dir.clone()),
             })
             .await?
     };
@@ -214,6 +215,7 @@ pub(crate) async fn run_non_interactive(
         variant,
         format,
         title,
+        directory: Some(cli_session_directory(&working_dir)),
         show_thinking,
     })
     .await
@@ -253,6 +255,7 @@ struct CliExecutionRuntime {
     resolved_agent_name: String,
     resolved_scheduler_profile_name: Option<String>,
     resolved_model_label: String,
+    working_dir: PathBuf,
     observed_topology: Arc<Mutex<CliObservedExecutionTopology>>,
     frontend_projection: Arc<Mutex<CliFrontendProjection>>,
     scheduler_stage_snapshots: Arc<Mutex<HashMap<String, String>>>,
@@ -289,10 +292,18 @@ struct CliExecutionRuntime {
     show_thinking: Arc<AtomicBool>,
 }
 
+fn cli_session_directory(path: &Path) -> String {
+    path.canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .to_string()
+}
+
 struct CliRuntimeBuildInput<'a> {
     config: &'a Config,
     agent_registry: Arc<AgentRegistry>,
     selection: &'a CliRunSelection,
+    working_dir: PathBuf,
 }
 
 #[derive(Clone)]
@@ -785,6 +796,7 @@ mod tests {
             resolved_agent_name: "build".to_string(),
             resolved_scheduler_profile_name: None,
             resolved_model_label: "openai/gpt-4.1".to_string(),
+            working_dir: std::path::PathBuf::from("/tmp/project"),
             observed_topology: Arc::new(Mutex::new(CliObservedExecutionTopology::default())),
             frontend_projection: Arc::new(Mutex::new(CliFrontendProjection {
                 transcript: root_transcript.clone(),

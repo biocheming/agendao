@@ -11,6 +11,7 @@ pub(super) async fn run_chat_session(
     working_dir: PathBuf,
     runtime_context: &FrontendRuntimeContext,
 ) -> anyhow::Result<()> {
+    let working_dir = working_dir.canonicalize().unwrap_or(working_dir);
     let config = load_config(&working_dir)?;
     let command_registry = CommandRegistry::new();
     let provider_registry = Arc::new(setup_providers_for_dir(&config, &working_dir).await?);
@@ -95,13 +96,18 @@ pub(super) async fn run_chat_session(
         config: &config,
         agent_registry: agent_registry_arc.clone(),
         selection: &selection,
+        working_dir: working_dir.clone(),
     })
     .await?;
     cli_save_recent_model_ref(&api_client, &runtime.resolved_model_label).await;
     let repl_style = CliStyle::detect();
 
     let session_info = api_client
-        .create_session(None, selection.requested_scheduler_profile.clone())
+        .create_session(
+            None,
+            selection.requested_scheduler_profile.clone(),
+            Some(cli_session_directory(&working_dir)),
+        )
         .await?;
     let server_session_id = session_info.id.clone();
     runtime.api_client = Some(api_client.clone());

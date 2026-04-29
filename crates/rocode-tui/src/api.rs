@@ -44,8 +44,12 @@ impl RuntimeApiClient {
         &self,
         parent_id: Option<String>,
         scheduler_profile: Option<String>,
+        directory: Option<String>,
     ) -> anyhow::Result<SessionInfo> {
-        self.block_on(self.client.create_session(parent_id, scheduler_profile))
+        self.block_on(
+            self.client
+                .create_session(parent_id, scheduler_profile, directory),
+        )
     }
 
     fn get_session(&self, session_id: &str) -> anyhow::Result<SessionInfo> {
@@ -229,9 +233,10 @@ impl ApiClient {
         &self,
         parent_id: Option<String>,
         scheduler_profile: Option<String>,
+        directory: Option<String>,
     ) -> anyhow::Result<SessionInfo> {
         self.call("create session", move |client| {
-            client.create_session(parent_id, scheduler_profile)
+            client.create_session(parent_id, scheduler_profile, directory)
         })
     }
 

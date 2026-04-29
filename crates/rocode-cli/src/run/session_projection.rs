@@ -2191,7 +2191,11 @@ async fn cli_execute_new_session_action(
     repl_style: &CliStyle,
 ) {
     match api_client
-        .create_session(None, runtime.resolved_scheduler_profile_name.clone())
+        .create_session(
+            None,
+            runtime.resolved_scheduler_profile_name.clone(),
+            Some(cli_session_directory(&runtime.working_dir)),
+        )
         .await
     {
         Ok(new_session) => {

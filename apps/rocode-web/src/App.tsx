@@ -2057,10 +2057,17 @@ export default function App() {
     title?: string;
     projectId?: string;
   }) => {
+    const requestedDirectory =
+      options?.directory?.trim() ||
+      currentWorkspaceSummary?.path ||
+      currentWorkspacePath ||
+      workspaceRootFromContext(workspaceContext) ||
+      serviceRootPath ||
+      undefined;
     const created = await apiJson<SessionRecord>("/session", {
       method: "POST",
       body: JSON.stringify({
-        directory: options?.directory,
+        directory: requestedDirectory,
         title: options?.title,
         project_id: options?.projectId,
       }),
@@ -2069,7 +2076,7 @@ export default function App() {
     setSessions((current) =>
       normalizeSessionRecords([normalized, ...current.filter((item) => item.id !== normalized.id)]),
     );
-    setCurrentWorkspacePath(normalized.directory?.trim() || options?.directory || null);
+    setCurrentWorkspacePath(normalized.directory?.trim() || requestedDirectory || null);
     selectedSessionRef.current = normalized.id;
     setSelectedSessionId(normalized.id);
     return normalized.id;

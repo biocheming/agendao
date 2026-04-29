@@ -82,10 +82,14 @@ impl BlockingApiClient {
         &self,
         parent_id: Option<String>,
         scheduler_profile: Option<String>,
+        directory: Option<String>,
     ) -> anyhow::Result<SessionInfo> {
         let request = CreateSessionRequest {
             parent_id,
             scheduler_profile,
+            directory,
+            project_id: None,
+            title: None,
         };
         self.post_json("/session", "create session", &request)
     }

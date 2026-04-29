@@ -78,11 +78,15 @@ impl AsyncApiClient {
         &self,
         parent_id: Option<String>,
         scheduler_profile: Option<String>,
+        directory: Option<String>,
     ) -> anyhow::Result<SessionInfo> {
         let url = server_url(&self.base_url, "/session");
         let req = CreateSessionRequest {
             parent_id,
             scheduler_profile,
+            directory,
+            project_id: None,
+            title: None,
         };
         let resp = self.client.post(&url).json(&req).send().await?;
         Self::json_ok(resp, "create session").await
