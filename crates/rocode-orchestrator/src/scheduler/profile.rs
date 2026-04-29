@@ -1279,9 +1279,10 @@ impl SchedulerProfileOrchestrator {
         request_brief: &str,
         plan: &SchedulerProfilePlan,
         ctx: &OrchestratorContext,
+        session_context: Option<&str>,
         stage_context: Option<(String, u32)>,
     ) -> Result<(OrchestratorOutput, RouteDecision), OrchestratorError> {
-        let input = self.compose_route_input(original_input, request_brief, plan);
+        let input = self.compose_route_input(original_input, request_brief, plan, session_context);
         let stage_policy = plan.stage_policy(SchedulerStageKind::Route);
         let output = execute_stage_agent(
             &input,
@@ -1447,6 +1448,12 @@ impl Orchestrator for SchedulerProfileOrchestrator {
 
         let mut resolved_plan = self.plan.clone();
         let mut state = SchedulerProfileState::default();
+        state.session_context = ctx
+            .exec_ctx
+            .metadata
+            .get("scheduler_session_context")
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
         if Self::resolve_artifact_relative_path(
             &resolved_plan,
             SchedulerArtifactKind::Draft,
@@ -1477,7 +1484,11 @@ impl Orchestrator for SchedulerProfileOrchestrator {
             match stage {
                 SchedulerStageKind::RequestAnalysis => {
                     if state.route.request_brief.is_empty() {
-                        state.route.request_brief = self.compose_request_analysis_input(input);
+                        state.route.request_brief = self
+                            .compose_request_analysis_input_with_context(
+                                input,
+                                state.session_context.as_deref(),
+                            );
                     }
                     Self::emit_stage_end(
                         &resolved_plan,
@@ -1490,7 +1501,11 @@ impl Orchestrator for SchedulerProfileOrchestrator {
                 }
                 SchedulerStageKind::Route => {
                     if state.route.request_brief.is_empty() {
-                        state.route.request_brief = self.compose_request_analysis_input(input);
+                        state.route.request_brief = self
+                            .compose_request_analysis_input_with_context(
+                                input,
+                                state.session_context.as_deref(),
+                            );
                     }
                     match self
                         .execute_route_stage(
@@ -1498,6 +1513,7 @@ impl Orchestrator for SchedulerProfileOrchestrator {
                             &state.route.request_brief,
                             &resolved_plan,
                             ctx,
+                            state.session_context.as_deref(),
                             Some((
                                 SchedulerStageKind::Route.as_event_name().to_string(),
                                 stage_ordinal,
@@ -1576,7 +1592,11 @@ impl Orchestrator for SchedulerProfileOrchestrator {
                 }
                 SchedulerStageKind::Interview => {
                     if state.route.request_brief.is_empty() {
-                        state.route.request_brief = self.compose_request_analysis_input(input);
+                        state.route.request_brief = self
+                            .compose_request_analysis_input_with_context(
+                                input,
+                                state.session_context.as_deref(),
+                            );
                     }
                     let mut interview_output: Option<OrchestratorOutput> = None;
                     let interview_result: Result<(), _> = async {
@@ -1632,7 +1652,11 @@ impl Orchestrator for SchedulerProfileOrchestrator {
                 }
                 SchedulerStageKind::Plan => {
                     if state.route.request_brief.is_empty() {
-                        state.route.request_brief = self.compose_request_analysis_input(input);
+                        state.route.request_brief = self
+                            .compose_request_analysis_input_with_context(
+                                input,
+                                state.session_context.as_deref(),
+                            );
                     }
                     let mut plan_output: Option<OrchestratorOutput> = None;
                     let plan_result: Result<(), _> = async {
@@ -1693,7 +1717,11 @@ impl Orchestrator for SchedulerProfileOrchestrator {
                 }
                 SchedulerStageKind::Delegation => {
                     if state.route.request_brief.is_empty() {
-                        state.route.request_brief = self.compose_request_analysis_input(input);
+                        state.route.request_brief = self
+                            .compose_request_analysis_input_with_context(
+                                input,
+                                state.session_context.as_deref(),
+                            );
                     }
                     let delegation_input =
                         self.compose_delegation_input(input, &state, &resolved_plan);
@@ -1744,7 +1772,11 @@ impl Orchestrator for SchedulerProfileOrchestrator {
                 }
                 SchedulerStageKind::ExecutionOrchestration => {
                     if state.route.request_brief.is_empty() {
-                        state.route.request_brief = self.compose_request_analysis_input(input);
+                        state.route.request_brief = self
+                            .compose_request_analysis_input_with_context(
+                                input,
+                                state.session_context.as_deref(),
+                            );
                     }
 
                     match self
@@ -1779,7 +1811,11 @@ impl Orchestrator for SchedulerProfileOrchestrator {
                 }
                 SchedulerStageKind::Review => {
                     if state.route.request_brief.is_empty() {
-                        state.route.request_brief = self.compose_request_analysis_input(input);
+                        state.route.request_brief = self
+                            .compose_request_analysis_input_with_context(
+                                input,
+                                state.session_context.as_deref(),
+                            );
                     }
                     let review_input = self.compose_review_input(input, &state, &resolved_plan);
                     let review_result: Result<Option<OrchestratorOutput>, _> =
@@ -1889,7 +1925,11 @@ impl Orchestrator for SchedulerProfileOrchestrator {
                 }
                 SchedulerStageKind::Synthesis => {
                     if state.route.request_brief.is_empty() {
-                        state.route.request_brief = self.compose_request_analysis_input(input);
+                        state.route.request_brief = self
+                            .compose_request_analysis_input_with_context(
+                                input,
+                                state.session_context.as_deref(),
+                            );
                     }
                     match self
                         .execute_synthesis_stage(
@@ -1931,7 +1971,11 @@ impl Orchestrator for SchedulerProfileOrchestrator {
                 }
                 SchedulerStageKind::Handoff => {
                     if state.route.request_brief.is_empty() {
-                        state.route.request_brief = self.compose_request_analysis_input(input);
+                        state.route.request_brief = self
+                            .compose_request_analysis_input_with_context(
+                                input,
+                                state.session_context.as_deref(),
+                            );
                     }
                     let handoff_result: Result<(), _> = async {
                         self.run_stage_effects(StageEffectsRequest {

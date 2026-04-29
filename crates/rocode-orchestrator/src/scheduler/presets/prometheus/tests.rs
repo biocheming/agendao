@@ -55,6 +55,7 @@ fn prometheus_momus_round_limit_is_effectively_unbounded() {
 fn prometheus_plan_input_carries_omo_planning_contract() {
     let input = compose_prometheus_plan_input(SchedulerPlanStageInput {
         original_request: "Fix the TUI scroll behavior.",
+        session_context: Some("## Session Continuity Context\nprior user preference"),
         request_brief: "Need a planning artifact before execution.",
         route_decision_json: Some(r#"{"preset":"prometheus"}"#),
         route_output: Some("Prometheus planner route selected."),
@@ -71,6 +72,7 @@ fn prometheus_plan_input_carries_omo_planning_contract() {
         skill_list: &[],
     });
 
+    assert!(input.contains("prior user preference"));
     assert!(input.contains("Generate exactly one work plan under `.sisyphus/plans/{name}.md`"));
     assert!(input.contains("[DECISION NEEDED: ...]"));
     assert!(input.contains("Agent-Executed QA Scenarios"));
@@ -106,6 +108,7 @@ fn prometheus_metis_input_matches_omo_review_shape() {
 fn prometheus_review_input_enforces_review_shape() {
     let input = compose_prometheus_review_input(SchedulerReviewStageInput {
         original_request: "Plan the scheduler cleanup.",
+        session_context: None,
         request_brief: "Prometheus should only review planning output.",
         route_summary: Some("Keep Prometheus planner-only."),
         draft_context: Some("draft notes"),
@@ -129,6 +132,7 @@ fn prometheus_review_input_enforces_review_shape() {
 fn prometheus_handoff_input_guides_start_work_with_plan_name() {
     let input = compose_prometheus_handoff_input(SchedulerHandoffStageInput {
         original_request: "Prepare the plan and hand it off.",
+        session_context: None,
         request_brief: "Planner-only workflow.",
         current_plan: "plan snapshot",
         draft_context: Some("draft notes"),
@@ -243,6 +247,7 @@ fn prometheus_final_output_preserves_structured_handoff_delivery() {
 fn prometheus_interview_input_mentions_draft_memory_and_clearance() {
     let input = compose_prometheus_interview_input(SchedulerInterviewStageInput {
         original_request: "Help me plan a refactor.",
+        session_context: None,
         request_brief: "Need a Prometheus interview first.",
         route_decision_json: Some(r#"{"preset":"prometheus"}"#),
         draft_artifact_path: Some(".sisyphus/drafts/refactor.md"),

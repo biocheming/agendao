@@ -25,6 +25,11 @@ pub fn compose_atlas_execution_orchestration_input(
 execution-orchestration"
             .to_string(),
     );
+    push_optional_section(
+        &mut sections,
+        "Session Continuity Context",
+        input.session_context,
+    );
     sections.push(format!(
         "## Original Request
 {}",
@@ -96,6 +101,11 @@ pub fn compose_atlas_synthesis_input(input: SchedulerSynthesisStageInput<'_>) ->
 synthesis"
             .to_string(),
     );
+    push_optional_section(
+        &mut sections,
+        "Session Continuity Context",
+        input.session_context,
+    );
     sections.push(format!(
         "## Original Request
 {}",
@@ -142,6 +152,11 @@ coordination-gate"
 {}",
         input.round
     ));
+    push_optional_section(
+        &mut sections,
+        "Session Continuity Context",
+        input.session_context,
+    );
     sections.push(format!(
         "## Original Request
 {}",
@@ -200,6 +215,11 @@ coordination-verification"
 {}",
         input.round
     ));
+    push_optional_section(
+        &mut sections,
+        "Session Continuity Context",
+        input.session_context,
+    );
     sections.push(format!(
         "## Original Request
 {}",
@@ -247,6 +267,11 @@ coordination-retry"
 {}",
         input.round
     ));
+    push_optional_section(
+        &mut sections,
+        "Session Continuity Context",
+        input.session_context,
+    );
     sections.push(format!(
         "## Original Request
 {}",
@@ -330,6 +355,7 @@ mod tests {
     fn atlas_execution_input_carries_coordination_loop_semantics() {
         let input = SchedulerExecutionOrchestrationStageInput {
             original_request: "ship the migration cleanup plan",
+            session_context: Some("## Session Continuity Context\nprior task ledger"),
             request_brief: "Coordinate the remaining migration tasks",
             route_summary: Some("coordination-heavy task list"),
             planning_output: Some("1. update schema\n2. verify migration"),
@@ -351,6 +377,7 @@ mod tests {
         };
 
         let composed = compose_atlas_execution_orchestration_input(input);
+        assert!(composed.contains("prior task ledger"));
         assert!(composed.contains("Atlas coordination-loop orchestration"));
         assert!(composed.contains("decompose it into bounded work items"));
         assert!(composed.contains("parallelization map"));
@@ -373,6 +400,7 @@ mod tests {
     fn atlas_synthesis_input_carries_structured_delivery_contract() {
         let composed = compose_atlas_synthesis_input(SchedulerSynthesisStageInput {
             original_request: "ship the migration cleanup plan",
+            session_context: None,
             request_brief: "Coordinate remaining migration tasks",
             current_plan: "request-analysis -> execution-orchestration -> synthesis",
             route_decision_json: Some("{\"preset\":\"atlas\"}"),
@@ -393,6 +421,7 @@ mod tests {
         let composed = compose_atlas_coordination_verification_input(
             SchedulerCoordinationVerificationStageInput {
                 original_request: "ship the migration cleanup plan",
+                session_context: None,
                 request_brief: "Coordinate remaining migration tasks",
                 round: 2,
                 execution_output: "worker round output",
@@ -414,6 +443,7 @@ mod tests {
     fn atlas_coordination_gate_input_carries_task_ledger_contract() {
         let composed = compose_atlas_coordination_gate_input(SchedulerCoordinationGateStageInput {
             original_request: "ship the migration cleanup plan",
+            session_context: None,
             request_brief: "Coordinate remaining migration tasks",
             current_plan: "request-analysis -> execution-orchestration -> synthesis",
             round: 2,
@@ -434,6 +464,7 @@ mod tests {
     fn atlas_retry_input_carries_continuation_authority() {
         let composed = compose_atlas_retry_input(SchedulerRetryStageInput {
             original_request: "ship the migration cleanup plan",
+            session_context: None,
             request_brief: "Coordinate remaining migration tasks",
             current_plan: "request-analysis -> execution-orchestration -> synthesis",
             round: 2,

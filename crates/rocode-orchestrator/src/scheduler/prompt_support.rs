@@ -60,6 +60,18 @@ pub(crate) const SKILLS_GUIDANCE: &str = r#"After completing a complex task (5+ 
 
 When using a skill and finding it outdated, incomplete, or wrong, patch it immediately with `skill_manage` instead of waiting to be asked."#;
 
+pub(crate) fn push_session_context_section(
+    sections: &mut Vec<String>,
+    session_context: Option<&str>,
+) {
+    if let Some(context) = session_context
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        sections.push(context.to_string());
+    }
+}
+
 // ===========================================================================
 // Dynamic section builders (mirrors OMO dynamic-agent-prompt-builder.ts)
 // ===========================================================================

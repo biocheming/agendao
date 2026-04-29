@@ -6,6 +6,7 @@ use super::execution_contracts::{
     SHARED_RETRY_RECOVERY_CONTRACT, SHARED_VERIFICATION_EVIDENCE_CONTRACT,
 };
 use super::profile_state::SchedulerProfileState;
+use super::prompt_support::push_session_context_section;
 use super::{
     render_plan_snapshot, skill_tree_context, SchedulerAutonomousGateStageInput,
     SchedulerAutonomousVerificationStageInput, SchedulerCoordinationGateStageInput,
@@ -23,6 +24,7 @@ pub(super) fn compose_execution_orchestration_input(
     if let Some(composed) = plan.compose_execution_orchestration_stage_input(
         SchedulerExecutionOrchestrationStageInput {
             original_request: original_input,
+            session_context: state.session_context.as_deref(),
             request_brief: &state.route.request_brief,
             route_summary: state
                 .route
@@ -43,6 +45,7 @@ pub(super) fn compose_execution_orchestration_input(
 
     let mut sections = Vec::new();
     sections.push("## Stage\nexecution-orchestration".to_string());
+    push_session_context_section(&mut sections, state.session_context.as_deref());
     sections.push(format!("## Original Request\n{original_input}"));
     sections.push(format!("## Request Brief\n{}", state.route.request_brief));
     if let Some(route_decision) = &state.route.route_decision {
@@ -91,6 +94,7 @@ pub(super) fn compose_coordination_verification_input(
     if let Some(composed) = plan.compose_coordination_verification_stage_input(
         SchedulerCoordinationVerificationStageInput {
             original_request: original_input,
+            session_context: state.session_context.as_deref(),
             request_brief: &state.route.request_brief,
             round,
             execution_output: execution_output.content.as_str(),
@@ -105,6 +109,7 @@ pub(super) fn compose_coordination_verification_input(
     let mut sections = Vec::new();
     sections.push("## Stage\ncoordination-verification".to_string());
     sections.push(format!("## Round\n{round}"));
+    push_session_context_section(&mut sections, state.session_context.as_deref());
     sections.push(format!("## Original Request\n{original_input}"));
     sections.push(format!("## Request Brief\n{}", state.route.request_brief));
     sections.push(format!("## Execution Output\n{}", execution_output.content));
@@ -147,6 +152,7 @@ pub(super) fn compose_coordination_gate_input(
     if let Some(composed) =
         plan.compose_coordination_gate_stage_input(SchedulerCoordinationGateStageInput {
             original_request: original_input,
+            session_context: state.session_context.as_deref(),
             request_brief: &state.route.request_brief,
             current_plan: &current_plan,
             round,
@@ -161,6 +167,7 @@ pub(super) fn compose_coordination_gate_input(
     let mut sections = Vec::new();
     sections.push("## Stage\ncoordination-gate".to_string());
     sections.push(format!("## Round\n{round}"));
+    push_session_context_section(&mut sections, state.session_context.as_deref());
     sections.push(format!("## Original Request\n{original_input}"));
     sections.push(format!("## Request Brief\n{}", state.route.request_brief));
     sections.push(format!("## Execution Output\n{}", execution_output.content));
@@ -196,6 +203,7 @@ pub(super) fn compose_autonomous_verification_input(
     if let Some(composed) = plan.compose_autonomous_verification_stage_input(
         SchedulerAutonomousVerificationStageInput {
             original_request: original_input,
+            session_context: state.session_context.as_deref(),
             request_brief: &state.route.request_brief,
             current_plan: &current_plan,
             round,
@@ -208,6 +216,7 @@ pub(super) fn compose_autonomous_verification_input(
     let mut sections = Vec::new();
     sections.push("## Stage\nautonomous-verification".to_string());
     sections.push(format!("## Round\n{round}"));
+    push_session_context_section(&mut sections, state.session_context.as_deref());
     sections.push(format!("## Original Request\n{original_input}"));
     sections.push(format!("## Request Brief\n{}", state.route.request_brief));
     sections.push(format!("## Executor Output\n{}", execution_output.content));
@@ -242,6 +251,7 @@ pub(super) fn compose_autonomous_gate_input(
     if let Some(composed) =
         plan.compose_autonomous_gate_stage_input(SchedulerAutonomousGateStageInput {
             original_request: original_input,
+            session_context: state.session_context.as_deref(),
             request_brief: &state.route.request_brief,
             current_plan: &current_plan,
             round,
@@ -255,6 +265,7 @@ pub(super) fn compose_autonomous_gate_input(
     let mut sections = Vec::new();
     sections.push("## Stage\nautonomous-finish-gate".to_string());
     sections.push(format!("## Round\n{round}"));
+    push_session_context_section(&mut sections, state.session_context.as_deref());
     sections.push(format!("## Original Request\n{original_input}"));
     sections.push(format!("## Request Brief\n{}", state.route.request_brief));
     sections.push(format!("## Executor Output\n{}", execution_output.content));
@@ -294,6 +305,7 @@ pub(super) fn compose_retry_input(
         SchedulerProfileOrchestrator::render_retry_continuation_candidates(&continuation_targets);
     if let Some(composed) = plan.compose_retry_stage_input(SchedulerRetryStageInput {
         original_request: original_input,
+        session_context: state.session_context.as_deref(),
         request_brief: &state.route.request_brief,
         current_plan: &current_plan,
         round,
@@ -313,6 +325,7 @@ pub(super) fn compose_retry_input(
 
     let mut sections = Vec::new();
     sections.push("## Retry Request".to_string());
+    push_session_context_section(&mut sections, state.session_context.as_deref());
     sections.push(format!("## Original Request\n{original_input}"));
     sections.push(format!("## Request Brief\n{}", state.route.request_brief));
     sections.push(format!("## Current Plan\n{current_plan}"));

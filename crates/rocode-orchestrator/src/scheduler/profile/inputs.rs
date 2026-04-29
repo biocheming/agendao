@@ -1,5 +1,7 @@
 use super::*;
-use crate::scheduler::prompt_support::{render_compact_skill_catalog, SKILLS_GUIDANCE};
+use crate::scheduler::prompt_support::{
+    push_session_context_section, render_compact_skill_catalog, SKILLS_GUIDANCE,
+};
 
 pub(in crate::scheduler) struct RetryComposeRequest<'a> {
     pub(in crate::scheduler) original_input: &'a str,
@@ -23,13 +25,23 @@ Use `skill_view(name)` to inspect a relevant skill before relying on it.
 }
 
 impl SchedulerProfileOrchestrator {
+    #[cfg(test)]
     pub(super) fn compose_request_analysis_input(&self, input: &str) -> String {
+        self.compose_request_analysis_input_with_context(input, None)
+    }
+
+    pub(super) fn compose_request_analysis_input_with_context(
+        &self,
+        input: &str,
+        session_context: Option<&str>,
+    ) -> String {
         let mut sections = Vec::new();
         sections.push(
             "## Stage
 request-analysis"
                 .to_string(),
         );
+        push_session_context_section(&mut sections, session_context);
         sections.push(format!(
             "## User Request
 {input}"
@@ -102,9 +114,11 @@ Freeze the request context once, then route the request into the right workflow 
         original_input: &str,
         request_brief: &str,
         plan: &SchedulerProfilePlan,
+        session_context: Option<&str>,
     ) -> String {
         let mut sections = Vec::new();
         sections.push("## Stage\nroute".to_string());
+        push_session_context_section(&mut sections, session_context);
         sections.push(format!("## Original Request\n{original_input}"));
         sections.push(format!("## Request Brief\n{request_brief}"));
         sections.push(format!("## Current Plan\n{}", render_plan_snapshot(plan)));
@@ -142,6 +156,7 @@ Choose the best request-scoped orchestration path across ROCode presets, then re
         });
         if let Some(composed) = plan.compose_interview_stage_input(SchedulerInterviewStageInput {
             original_request: original_input,
+            session_context: state.session_context.as_deref(),
             request_brief: &state.route.request_brief,
             route_decision_json: route_decision_json.as_deref(),
             draft_artifact_path: state.preset_runtime.draft_artifact_path.as_deref(),
@@ -158,6 +173,7 @@ Choose the best request-scoped orchestration path across ROCode presets, then re
 interview"
                 .to_string(),
         );
+        push_session_context_section(&mut sections, state.session_context.as_deref());
         sections.push(format!(
             "## Original Request
 {original_input}"
@@ -210,6 +226,7 @@ Resolve discoverable unknowns with read-only inspection first. Ask only when a r
         });
         if let Some(composed) = plan.compose_plan_stage_input(SchedulerPlanStageInput {
             original_request: original_input,
+            session_context: state.session_context.as_deref(),
             request_brief: &state.route.request_brief,
             route_decision_json: route_decision_json.as_deref(),
             route_output: state.route.routed.as_deref(),
@@ -234,6 +251,7 @@ Resolve discoverable unknowns with read-only inspection first. Ask only when a r
 plan"
                 .to_string(),
         );
+        push_session_context_section(&mut sections, state.session_context.as_deref());
         sections.push(format!(
             "## Original Request
 {original_input}"
@@ -299,6 +317,7 @@ Produce a concrete execution plan only. No file edits, no claims that work is al
     ) -> String {
         let mut sections = Vec::new();
         sections.push("## Stage\ndelegation".to_string());
+        push_session_context_section(&mut sections, state.session_context.as_deref());
         sections.push(format!("## Original Request\n{original_input}"));
         sections.push(format!("## Request Brief\n{}", state.route.request_brief));
         if let Some(route_decision) = &state.route.route_decision {
@@ -348,6 +367,7 @@ Produce a concrete execution plan only. No file edits, no claims that work is al
             .then(|| render_progressive_skills_index(review_skill_list));
         if let Some(composed) = plan.compose_review_stage_input(SchedulerReviewStageInput {
             original_request: original_input,
+            session_context: state.session_context.as_deref(),
             request_brief: &state.route.request_brief,
             route_summary: state
                 .route
@@ -376,6 +396,7 @@ Produce a concrete execution plan only. No file edits, no claims that work is al
 review"
                 .to_string(),
         );
+        push_session_context_section(&mut sections, state.session_context.as_deref());
         sections.push(format!(
             "## Original Request
 {original_input}"
@@ -430,6 +451,7 @@ Review the delegated result against the original task. Tighten the result withou
     ) -> String {
         if let Some(composed) = plan.compose_handoff_stage_input(SchedulerHandoffStageInput {
             original_request: original_input,
+            session_context: state.session_context.as_deref(),
             request_brief: &state.route.request_brief,
             current_plan: &render_plan_snapshot(plan),
             draft_context: state.preset_runtime.draft_snapshot.as_deref(),
@@ -453,6 +475,7 @@ Review the delegated result against the original task. Tighten the result withou
 handoff"
                 .to_string(),
         );
+        push_session_context_section(&mut sections, state.session_context.as_deref());
         sections.push(format!(
             "## Original Request
 {original_input}"
@@ -492,6 +515,7 @@ End this workflow with a reviewed planning handoff. Do not claim code execution 
         });
         if let Some(composed) = plan.compose_synthesis_stage_input(SchedulerSynthesisStageInput {
             original_request: original_input,
+            session_context: state.session_context.as_deref(),
             request_brief: &state.route.request_brief,
             current_plan: &current_plan,
             route_decision_json: route_decision_json.as_deref(),
@@ -517,6 +541,7 @@ End this workflow with a reviewed planning handoff. Do not claim code execution 
 synthesis"
                 .to_string(),
         );
+        push_session_context_section(&mut sections, state.session_context.as_deref());
         sections.push(format!(
             "## Original Request
 {original_input}"
