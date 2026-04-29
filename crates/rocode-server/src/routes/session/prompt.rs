@@ -391,6 +391,8 @@ not as a replacement for checking live files or rerunning verification when exac
             sections.push(format!("## Source Anchors\n{source_anchors}"));
         }
 
+        sections.push(self.render_hydration_guidance());
+
         if !self.working_ledger.is_empty() {
             sections.push(format!(
                 "## Working Ledger\n{}",
@@ -458,7 +460,7 @@ not as a replacement for checking live files or rerunning verification when exac
                 "context_text_chars": SCHEDULER_CONTEXT_TEXT_LIMIT,
                 "turn_text_chars": SCHEDULER_CONTEXT_TURN_LIMIT,
             },
-            "recall_policy": "exact_tail_for_recent_followups; ledger_and_compaction_are_lossy; hydrate_missing_prior_facts_from_memory_artifacts_or_tools",
+            "recall_policy": "exact_tail_for_recent_followups; ledger_and_compaction_are_lossy; use_scheduler_context_hydrate_for_authorized_source_anchors_when_prior_exact_text_is_needed; use_memory_artifacts_or_tools_for_facts_outside_anchors",
         })
     }
 
@@ -481,10 +483,27 @@ not as a replacement for checking live files or rerunning verification when exac
             rows.push("- latest_compaction_summary: none".to_string());
         }
         rows.push(
-            "- recall_policy: use exact tail for recent follow-up references; treat ledger and compaction as lossy summaries; if the requested prior fact is not present, recover it from memory, artifacts, or tools before acting."
+            "- recall_policy: use exact tail for recent follow-up references; treat ledger and compaction as lossy summaries; use `scheduler_context_hydrate` for authorized Source Anchors when prior exact text is needed; use memory, artifacts, or other tools for facts outside the anchors."
                 .to_string(),
         );
         format!("## Context Coverage\n{}", rows.join("\n"))
+    }
+
+    fn render_hydration_guidance(&self) -> String {
+        let omitted_count = self
+            .eligible_message_count
+            .saturating_sub(self.exact_recent_tail.len());
+        let mut rows = vec![
+            "- Use `scheduler_context_hydrate({\"message_ids\":[...]})` only with ids listed in Source Anchors when the current task needs exact prior text that is truncated, ambiguous, or summarized.".to_string(),
+            "- Do not invent message ids. The runtime rejects ids that are not authorized by the scheduler continuity packet.".to_string(),
+            "- Prefer the visible Exact Recent Tail when it already contains the needed prior output.".to_string(),
+        ];
+        if omitted_count > 0 {
+            rows.push(format!(
+                "- omitted_older_turns is {omitted_count}; if the user refers to older context outside Source Anchors, recover it through memory, artifacts, or other tools before acting."
+            ));
+        }
+        format!("## Hydration Guidance\n{}", rows.join("\n"))
     }
 
     fn render_source_anchors(&self) -> String {
@@ -2385,6 +2404,8 @@ mod tests {
 
         assert!(block.contains("## Session Continuity Context"));
         assert!(block.contains("## Context Coverage"));
+        assert!(block.contains("## Hydration Guidance"));
+        assert!(block.contains("scheduler_context_hydrate"));
         assert!(block.contains("Martini3 antibody formulation research"));
         assert!(block.contains("Found papers A, B, and C"));
         assert!(block.contains("exact_tail_message_ids"));
@@ -2430,6 +2451,22 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_session_context_packet_metadata_names_hydration_policy() {
+        let mut session = Session::new("project", "/tmp");
+        session.add_user_message("first request");
+
+        let packet = build_scheduler_session_context_packet(&session)
+            .expect("same-session scheduler context packet should render");
+        let metadata = packet.metadata_value();
+
+        assert_eq!(metadata["version"], serde_json::json!(1));
+        assert!(metadata["recall_policy"]
+            .as_str()
+            .expect("recall policy should be present")
+            .contains("use_scheduler_context_hydrate"));
+    }
+
+    #[test]
     fn scheduler_session_context_packet_metadata_is_structured_anchor_map() {
         let mut session = Session::new("project", "/tmp");
         let first_id = session.add_user_message("first request").id.clone();
@@ -2466,7 +2503,9 @@ mod tests {
             .expect("same-session scheduler context should render");
 
         assert!(block.contains("## Source Anchors"));
+        assert!(block.contains("## Hydration Guidance"));
         assert!(block.contains(&format!("`{latest_message_id}`")));
+        assert!(block.contains("scheduler_context_hydrate"));
         assert!(block.contains("...[truncated]..."));
         assert!(block.chars().count() <= SCHEDULER_CONTEXT_TEXT_LIMIT);
     }
