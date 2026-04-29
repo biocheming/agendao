@@ -368,6 +368,58 @@ fn finalize_output_normalizes_sisyphus_delivery_shape() {
 }
 
 #[test]
+fn sisyphus_final_output_preserves_structured_execution_over_generic_gate_response() {
+    let orchestrator = SchedulerProfileOrchestrator::new(
+        SchedulerProfilePlan::new(vec![SchedulerStageKind::ExecutionOrchestration])
+            .with_orchestrator("sisyphus"),
+        ToolRunner::new(Arc::new(NoopToolExecutor)),
+    );
+    let execution = OrchestratorOutput {
+        content: "## Delivery Summary\nResearch complete.\n\n**Execution Outcome**\n# AlphaFold3 methodology survey\n\n- Protenix\n- Boltz-2\n\n**Verification**\n- Evidence-backed search results collected.".to_string(),
+        steps: 1,
+        tool_calls_count: 2,
+        metadata: HashMap::new(),
+        finish_reason: FinishReason::EndTurn,
+    };
+    let decision = SchedulerExecutionGateDecision {
+        status: SchedulerExecutionGateStatus::Done,
+        summary: "verified".to_string(),
+        next_input: None,
+        final_response: Some(
+            "所有任务已完成。如需深入了解其中任何一个方向的细节，请告诉我。".to_string(),
+        ),
+    };
+    let terminal_output = SchedulerProfileOrchestrator::gate_terminal_output(
+        &orchestrator.plan,
+        SchedulerExecutionGateStatus::Done,
+        &decision,
+        &execution,
+        None,
+    )
+    .expect("done gate should produce terminal output");
+    let state = SchedulerProfileState {
+        execution: SchedulerExecutionState {
+            delegated: Some(terminal_output),
+            ..Default::default()
+        },
+        metrics: SchedulerMetricsState {
+            total_steps: 1,
+            total_tool_calls: 2,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let output = orchestrator.finalize_output(state);
+    assert!(output.content.contains("AlphaFold3 methodology survey"));
+    assert!(output.content.contains("Protenix"));
+    assert!(output.content.contains("Boltz-2"));
+    assert!(!output.content.contains(
+        "所有任务已完成。如需深入了解其中任何一个方向的细节，请告诉我。\n\n**Delegation Path**"
+    ));
+}
+
+#[test]
 fn finalize_output_normalizes_atlas_delivery_shape() {
     let orchestrator = SchedulerProfileOrchestrator::new(
         SchedulerProfilePlan::new(vec![SchedulerStageKind::Synthesis]).with_orchestrator("atlas"),
