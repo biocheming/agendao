@@ -26,6 +26,8 @@ pub(super) struct SchedulerSessionContextPacketMetadata {
     #[serde(default)]
     exact_recent_tail: Vec<SchedulerSessionContextMessageAnchor>,
     #[serde(default)]
+    memory_anchors: Vec<SchedulerSessionContextMemoryAnchor>,
+    #[serde(default)]
     latest_compaction_summary: Option<SchedulerSessionContextCompactionAnchor>,
     #[serde(default)]
     limits: Option<SchedulerSessionContextLimits>,
@@ -42,6 +44,14 @@ pub(super) struct SchedulerSessionContextMessageAnchor {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub(super) struct SchedulerSessionContextCompactionAnchor {
     message_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub(super) struct SchedulerSessionContextMemoryAnchor {
+    record_id: String,
+    title: String,
+    kind: String,
+    status: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -246,6 +256,14 @@ mod tests {
                     {"message_id": "msg_user", "role": "user"},
                     {"message_id": "msg_assistant", "role": "assistant"}
                 ],
+                "memory_anchors": [
+                    {
+                        "record_id": "mem_123",
+                        "title": "Prior Martini3 decision",
+                        "kind": "Lesson",
+                        "status": "Validated"
+                    }
+                ],
                 "latest_compaction_summary": {"message_id": "msg_compaction"},
                 "limits": {
                     "recent_tail_messages": 6,
@@ -270,6 +288,8 @@ mod tests {
             Some("msg_compaction")
         );
         assert_eq!(packet.exact_recent_tail_count, 6);
+        assert_eq!(packet.memory_anchors[0].record_id, "mem_123");
+        assert_eq!(packet.memory_anchors[0].status, "Validated");
     }
 
     #[test]
