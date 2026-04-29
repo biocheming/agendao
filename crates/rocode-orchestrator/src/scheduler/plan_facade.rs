@@ -6,10 +6,10 @@ use super::{
     SchedulerExecutionOrchestrationStageInput, SchedulerExecutionPlacement,
     SchedulerFinalOutputSource, SchedulerHandoffDecoration, SchedulerHandoffStageInput,
     SchedulerInternalStageSpec, SchedulerInterviewStageInput, SchedulerPlanStageInput,
-    SchedulerPlanningArtifactInput, SchedulerPresetRuntimeFields, SchedulerPresetRuntimeUpdate,
-    SchedulerRetryStageInput, SchedulerReviewStageInput, SchedulerSynthesisStageInput,
-    SchedulerTransitionSpec, SchedulerTransitionTarget, SchedulerVerificationFailurePolicy,
-    SchedulerVerificationFallback,
+    SchedulerPlanningArtifactInput, SchedulerPresetKind, SchedulerPresetRuntimeFields,
+    SchedulerPresetRuntimeUpdate, SchedulerRetryStageInput, SchedulerReviewStageInput,
+    SchedulerSynthesisStageInput, SchedulerTransitionSpec, SchedulerTransitionTarget,
+    SchedulerVerificationFailurePolicy, SchedulerVerificationFallback,
 };
 use crate::scheduler::profile::SchedulerProfilePlan;
 use crate::scheduler::profile_state::SchedulerPresetRuntimeState;
@@ -477,9 +477,9 @@ impl SchedulerProfilePlan {
         decision: &SchedulerExecutionGateDecision,
         fallback_content: &str,
     ) -> Option<String> {
-        self.preset_definition().and_then(|definition| {
-            definition.resolve_gate_terminal_content(status, decision, fallback_content)
-        })
+        self.preset_definition()
+            .unwrap_or(SchedulerPresetKind::Sisyphus.definition())
+            .resolve_gate_terminal_content(status, decision, fallback_content)
     }
 
     pub(super) fn effect_dispatch_is_authoritative(&self) -> bool {

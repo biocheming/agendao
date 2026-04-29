@@ -119,7 +119,7 @@ autonomous-finish-gate"
     ));
     sections.push(
         "## Finish Gate Contract
-Judge whether the autonomous loop actually proved completion. Return JSON only. Use `done` only when the result is substantively complete and verification confirms it. Use `continue` only when one more bounded retry can close a concrete critical gap. Use `blocked` only for an actual external blocker. If `final_response` is present, format it as `## Delivery Summary`, `**Completion Status**`, `**What Changed**`, `**Verification**`, `**Risks or Follow-ups**`."
+Judge whether the autonomous loop actually proved completion. Return JSON only. Use `done` only when the result is substantively complete and verification confirms it. Use `continue` only when one more bounded retry can close a concrete critical gap. Use `blocked` only for an actual external blocker. If executor output already contains a complete structured user-facing delivery, omit `final_response` or reproduce the complete delivery; never replace concrete results with a generic completion sentence. If `final_response` is present, format it as `## Delivery Summary`, `**Completion Status**`, `**What Changed**`, `**Verification**`, `**Risks or Follow-ups**`."
             .to_string(),
     );
     sections.push(SHARED_GATE_DECISION_CONTRACT.to_string());
