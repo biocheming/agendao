@@ -7,6 +7,7 @@ use crate::{Message, ToolDefinition, Usage};
 
 pub const CACHE_REQUEST_FINGERPRINT_METADATA_KEY: &str = "cache_request_fingerprint";
 pub const CACHE_BUST_INSPECTION_METADATA_KEY: &str = "cache_bust_inspection";
+pub const CACHE_BUST_SUMMARY_METADATA_KEY: &str = "cache_bust_summary";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CacheProtocolFamily {
@@ -88,6 +89,41 @@ impl CacheBreakpointPlan {
             .iter()
             .map(|candidate| candidate.message_index)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EthnopicCacheTtl {
+    FiveMinutes,
+    OneHour,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EthnopicCacheCompatibility {
+    ExplicitBlocks,
+    ProviderOptions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EthnopicCachePolicy {
+    pub enabled: bool,
+    pub ttl: EthnopicCacheTtl,
+    pub global_scope: bool,
+    pub compatibility: EthnopicCacheCompatibility,
+}
+
+impl Default for EthnopicCachePolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            ttl: EthnopicCacheTtl::FiveMinutes,
+            global_scope: false,
+            compatibility: EthnopicCacheCompatibility::ProviderOptions,
+        }
+    }
+}
+
+pub fn ethnopic_cache_policy_hash(policy: &EthnopicCachePolicy) -> String {
+    serializable_fingerprint(policy)
 }
 
 pub fn plan_ethnopic_message_breakpoints(messages: &[Message]) -> CacheBreakpointPlan {
@@ -455,6 +491,25 @@ pub struct CacheBustInspection {
     pub severity: CacheBustSeverity,
     pub primary_cause: Option<String>,
     pub changes: Vec<CacheFingerprintDiff>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheBustSummary {
+    pub status: String,
+    pub severity: CacheBustSeverity,
+    pub primary_cause: Option<String>,
+    pub change_count: usize,
+}
+
+impl From<&CacheBustInspection> for CacheBustSummary {
+    fn from(value: &CacheBustInspection) -> Self {
+        Self {
+            status: value.status.clone(),
+            severity: value.severity,
+            primary_cause: value.primary_cause.clone(),
+            change_count: value.changes.len(),
+        }
+    }
 }
 
 impl PromptSurfaceFingerprint {
@@ -1229,6 +1284,39 @@ mod tests {
 
         assert_eq!(inspection.status, "cold_start");
         assert_eq!(inspection.severity, CacheBustSeverity::SoftDegradation);
+    }
+
+    #[test]
+    fn cache_bust_summary_is_ui_friendly_projection() {
+        let previous = test_cache_request_fingerprint("tools-a", "messages-a");
+        let mut current = previous.clone();
+        current.surface.tools_hash = "tools-b".to_string();
+        current.surface.message_prefix_hash = "messages-b".to_string();
+
+        let inspection = inspect_cache_fingerprint_change(Some(&previous), &current);
+        let summary = CacheBustSummary::from(&inspection);
+
+        assert_eq!(summary.status, "degraded");
+        assert_eq!(summary.severity, CacheBustSeverity::HardBust);
+        assert_eq!(summary.change_count, 2);
+        assert!(summary
+            .primary_cause
+            .as_deref()
+            .is_some_and(|cause| cause.contains("toolsHash")));
+    }
+
+    #[test]
+    fn ethnopic_cache_policy_hash_tracks_policy_shape() {
+        let default = EthnopicCachePolicy::default();
+        let one_hour = EthnopicCachePolicy {
+            ttl: EthnopicCacheTtl::OneHour,
+            ..Default::default()
+        };
+
+        assert_ne!(
+            ethnopic_cache_policy_hash(&default),
+            ethnopic_cache_policy_hash(&one_hour)
+        );
     }
 
     fn test_cache_request_fingerprint(

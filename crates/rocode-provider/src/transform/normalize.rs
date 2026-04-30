@@ -5,7 +5,7 @@ use crate::{CacheControl, Content, ContentPart, Message};
 use serde::{Deserialize, Serialize};
 
 use super::model_config::remap_provider_options;
-use crate::cache::plan_ethnopic_message_breakpoints;
+use crate::cache::{plan_ethnopic_message_breakpoints, EthnopicCachePolicy, EthnopicCacheTtl};
 
 #[derive(Debug, Clone, Copy)]
 pub enum ProviderType {
@@ -118,18 +118,34 @@ pub fn apply_caching(messages: &mut [Message], provider_type: ProviderType) {
         return;
     }
 
+    apply_caching_with_policy(messages, provider_type, &EthnopicCachePolicy::default());
+}
+
+pub fn apply_caching_with_policy(
+    messages: &mut [Message],
+    provider_type: ProviderType,
+    policy: &EthnopicCachePolicy,
+) {
+    if !provider_type.supports_caching() || !policy.enabled {
+        return;
+    }
+
     let plan = plan_ethnopic_message_breakpoints(messages);
     for idx in plan.message_indices() {
         if let Some(msg) = messages.get_mut(idx) {
-            apply_cache_to_message(msg, provider_type);
+            apply_cache_to_message(msg, provider_type, policy);
         }
     }
 }
 
-fn apply_cache_to_message(message: &mut Message, provider_type: ProviderType) {
+fn apply_cache_to_message(
+    message: &mut Message,
+    provider_type: ProviderType,
+    policy: &EthnopicCachePolicy,
+) {
     // TS applyCaching uses providerOptions with multiple provider keys merged via mergeDeep.
     // We replicate that by setting provider_options on the message or its last content part.
-    let provider_opts = build_cache_provider_options();
+    let provider_opts = build_cache_provider_options(policy);
 
     let provider_id_str = match provider_type {
         ProviderType::Ethnopic => "ethnopic",
@@ -153,16 +169,19 @@ fn apply_cache_to_message(message: &mut Message, provider_type: ProviderType) {
     merge_deep_into(existing, &provider_opts);
 }
 
-fn build_cache_provider_options() -> HashMap<String, serde_json::Value> {
+fn build_cache_provider_options(
+    policy: &EthnopicCachePolicy,
+) -> HashMap<String, serde_json::Value> {
     use serde_json::json;
     let mut opts = HashMap::new();
+    let cache_control = cache_control_provider_value(policy);
     opts.insert(
         "ethnopic".to_string(),
-        json!({"cacheControl": {"type": "ephemeral"}}),
+        json!({"cacheControl": cache_control.clone()}),
     );
     opts.insert(
         "openrouter".to_string(),
-        json!({"cacheControl": {"type": "ephemeral"}}),
+        json!({"cacheControl": cache_control.clone()}),
     );
     opts.insert(
         "bedrock".to_string(),
@@ -170,13 +189,26 @@ fn build_cache_provider_options() -> HashMap<String, serde_json::Value> {
     );
     opts.insert(
         "openaiCompatible".to_string(),
-        json!({"cache_control": {"type": "ephemeral"}}),
+        json!({"cache_control": cache_control.clone()}),
     );
     opts.insert(
         "copilot".to_string(),
-        json!({"copilot_cache_control": {"type": "ephemeral"}}),
+        json!({"copilot_cache_control": cache_control}),
     );
     opts
+}
+
+fn cache_control_provider_value(policy: &EthnopicCachePolicy) -> serde_json::Value {
+    use serde_json::{json, Map, Value};
+    let mut cache_control = Map::new();
+    cache_control.insert("type".to_string(), json!("ephemeral"));
+    if policy.ttl == EthnopicCacheTtl::OneHour {
+        cache_control.insert("ttl".to_string(), json!("1h"));
+    }
+    if policy.global_scope {
+        cache_control.insert("scope".to_string(), json!("global"));
+    }
+    Value::Object(cache_control)
 }
 
 /// Deep-merge `source` into `target`. For nested JSON objects, recurse; otherwise overwrite.

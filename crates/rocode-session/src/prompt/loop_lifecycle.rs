@@ -16,9 +16,10 @@ use rocode_orchestrator::runtime::run_loop;
 use rocode_orchestrator::runtime::{SimpleModelCaller, SimpleModelCallerConfig};
 use rocode_plugin::{HookContext, HookEvent};
 use rocode_provider::cache::{
-    inspect_cache_fingerprint_change, CacheProtocolFamily, CacheRequestFingerprint,
-    CloseAiCacheFingerprint, EthnopicCacheFingerprint, PromptSurfaceFingerprint,
-    CACHE_BUST_INSPECTION_METADATA_KEY, CACHE_REQUEST_FINGERPRINT_METADATA_KEY,
+    inspect_cache_fingerprint_change, CacheBustSummary, CacheProtocolFamily,
+    CacheRequestFingerprint, CloseAiCacheFingerprint, EthnopicCacheFingerprint,
+    EthnopicCachePolicy, PromptSurfaceFingerprint, CACHE_BUST_INSPECTION_METADATA_KEY,
+    CACHE_BUST_SUMMARY_METADATA_KEY, CACHE_REQUEST_FINGERPRINT_METADATA_KEY,
 };
 use rocode_provider::transform::{apply_caching, ProviderType};
 use rocode_provider::{Provider, ToolDefinition};
@@ -65,6 +66,7 @@ mod cache_fingerprint_tests {
         };
 
         let fingerprint = SessionPrompt::cache_request_fingerprint(
+            "ses_test",
             "openai",
             "gpt-test",
             Some("system"),
@@ -83,6 +85,38 @@ mod cache_fingerprint_tests {
             Some("rocode:key")
         );
         assert!(fingerprint.ethnopic.is_none());
+    }
+
+    #[test]
+    fn cache_request_fingerprint_records_generated_closeai_cache_key() {
+        let messages = vec![Message::system("system"), Message::user("hello")];
+        let compiled = CompiledExecutionRequest {
+            model_id: "gpt-test".to_string(),
+            provider_options: Some(HashMap::from([(
+                "cacheStage".to_string(),
+                serde_json::json!("chat"),
+            )])),
+            ..Default::default()
+        };
+
+        let fingerprint = SessionPrompt::cache_request_fingerprint(
+            "ses_generated_key",
+            "openai",
+            "gpt-test",
+            Some("system"),
+            &messages,
+            &[],
+            &compiled,
+            ProviderType::OpenAI,
+        );
+
+        let prompt_cache_key = fingerprint
+            .closeai
+            .as_ref()
+            .and_then(|value| value.prompt_cache_key.as_deref())
+            .expect("generated prompt cache key should be recorded");
+        assert!(prompt_cache_key.starts_with("rocode:"));
+        assert!(!prompt_cache_key.contains("ses_generated_key"));
     }
 
     #[test]
@@ -643,6 +677,7 @@ impl SessionPrompt {
     }
 
     fn cache_request_fingerprint(
+        session_id: &str,
         provider_id: &str,
         model_id: &str,
         system_prompt: Option<&str>,
@@ -663,27 +698,21 @@ impl SessionPrompt {
         let surface =
             PromptSurfaceFingerprint::new(model_id, system_prompt, tools, messages, &api_params);
         let closeai = (family == CacheProtocolFamily::CloseAiCompatible).then(|| {
-            let prompt_cache_key = compiled_request
-                .provider_options
-                .as_ref()
-                .and_then(|options| {
-                    options
-                        .get("promptCacheKey")
-                        .or_else(|| options.get("prompt_cache_key"))
-                        .and_then(|value| value.as_str())
-                        .map(ToOwned::to_owned)
-                });
+            let provider_options = compiled_request.provider_options.as_ref();
+            let prompt_cache_key = Self::closeai_prompt_cache_key_for_fingerprint(
+                session_id,
+                provider_id,
+                provider_options,
+            );
             CloseAiCacheFingerprint {
                 prompt_cache_key,
-                prompt_cache_retention: compiled_request.provider_options.as_ref().and_then(
-                    |options| {
-                        options
-                            .get("prompt_cache_retention")
-                            .or_else(|| options.get("promptCacheRetention"))
-                            .and_then(|value| value.as_str())
-                            .map(ToOwned::to_owned)
-                    },
-                ),
+                prompt_cache_retention: provider_options.and_then(|options| {
+                    options
+                        .get("prompt_cache_retention")
+                        .or_else(|| options.get("promptCacheRetention"))
+                        .and_then(|value| value.as_str())
+                        .map(ToOwned::to_owned)
+                }),
                 previous_response_id_used: false,
                 incremental_input_used: false,
                 cached_tokens_observed: 0,
@@ -692,10 +721,12 @@ impl SessionPrompt {
         let ethnopic = (family == CacheProtocolFamily::EthnopicCompatible).then(|| {
             let breakpoint_plan =
                 rocode_provider::cache::plan_ethnopic_message_breakpoints(messages);
+            let cache_policy = EthnopicCachePolicy::default();
             EthnopicCacheFingerprint {
-                cache_control_hash: rocode_provider::cache::json_fingerprint(
-                    &serde_json::to_value(&breakpoint_plan).unwrap_or(serde_json::Value::Null),
-                ),
+                cache_control_hash: rocode_provider::cache::json_fingerprint(&serde_json::json!({
+                    "policy": cache_policy,
+                    "breakpoints": breakpoint_plan,
+                })),
                 breakpoint_placement: breakpoint_plan.message_indices().collect(),
                 ttl: None,
                 scope: None,
@@ -710,6 +741,48 @@ impl SessionPrompt {
             closeai,
             ethnopic,
         }
+    }
+
+    fn closeai_prompt_cache_key_for_fingerprint(
+        session_id: &str,
+        provider_id: &str,
+        provider_options: Option<&HashMap<String, serde_json::Value>>,
+    ) -> Option<String> {
+        let options = provider_options.cloned().unwrap_or_default();
+        if let Some(existing) = options
+            .get("promptCacheKey")
+            .or_else(|| options.get("prompt_cache_key"))
+            .and_then(|value| value.as_str())
+        {
+            return Some(existing.to_string());
+        }
+
+        let provider_options_object = options
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<serde_json::Map<_, _>>();
+        rocode_provider::cache::closeai_prompt_cache_key_field(
+            provider_id,
+            "",
+            &provider_options_object,
+        )
+        .map(|_| {
+            rocode_provider::cache::build_prompt_cache_key(
+                rocode_provider::cache::PromptCacheKeyContext {
+                    session_id,
+                    stage: options
+                        .get("cacheStage")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("chat"),
+                    preset_hash: options
+                        .get("cachePresetHash")
+                        .and_then(|value| value.as_str()),
+                    repo_hash: options
+                        .get("cacheRepoHash")
+                        .and_then(|value| value.as_str()),
+                },
+            )
+        })
     }
 
     fn cache_protocol_family(provider_type: ProviderType) -> CacheProtocolFamily {
@@ -931,6 +1004,7 @@ impl SessionPrompt {
                 Self::mcp_tools_from_session(session),
             );
             let cache_fingerprint = Self::cache_request_fingerprint(
+                &session_id,
                 &prompt_ctx.provider_id,
                 &prompt_ctx.model_id,
                 prompt_ctx.system_prompt.as_deref(),
@@ -969,6 +1043,10 @@ impl SessionPrompt {
             }
             if let Ok(value) = serde_json::to_value(&cache_bust_inspection) {
                 assistant_metadata.insert(CACHE_BUST_INSPECTION_METADATA_KEY.to_string(), value);
+            }
+            if let Ok(value) = serde_json::to_value(CacheBustSummary::from(&cache_bust_inspection))
+            {
+                assistant_metadata.insert(CACHE_BUST_SUMMARY_METADATA_KEY.to_string(), value);
             }
             session.messages_mut().push(SessionMessage {
                 id: assistant_message_id,

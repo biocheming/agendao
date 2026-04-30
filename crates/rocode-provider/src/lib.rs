@@ -51,12 +51,13 @@ pub use retry::{with_retry, with_retry_and_hook, IsRetryable, RetryConfig};
 pub use stream::*;
 pub use tools::*;
 pub use transform::{
-    apply_caching, apply_caching_per_part, dedup_messages, ensure_noop_tool_if_needed,
-    extract_reasoning_from_response, max_output_tokens, mime_to_modality,
-    normalize_interleaved_thinking, normalize_messages, normalize_messages_for_caching,
-    normalize_messages_with_interleaved_field, options, provider_options_map, schema, sdk_key,
-    small_options, temperature_for_model, top_k_for_model, top_p_for_model, transform_messages,
-    unsupported_parts, variants, Modality, ProviderType, OUTPUT_TOKEN_MAX,
+    apply_caching, apply_caching_per_part, apply_caching_with_policy, dedup_messages,
+    ensure_noop_tool_if_needed, extract_reasoning_from_response, max_output_tokens,
+    mime_to_modality, normalize_interleaved_thinking, normalize_messages,
+    normalize_messages_for_caching, normalize_messages_with_interleaved_field, options,
+    provider_options_map, schema, sdk_key, small_options, temperature_for_model, top_k_for_model,
+    top_p_for_model, transform_messages, unsupported_parts, variants, Modality, ProviderType,
+    OUTPUT_TOKEN_MAX,
 };
 
 pub use models::{

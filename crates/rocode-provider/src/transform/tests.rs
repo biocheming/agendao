@@ -74,6 +74,58 @@ fn test_apply_caching_uses_stable_boundary_before_current_user() {
 }
 
 #[test]
+fn test_apply_caching_with_policy_can_disable_markers() {
+    let mut messages = vec![
+        Message::system("System prompt"),
+        Message::assistant("Hi there"),
+    ];
+    let policy = crate::cache::EthnopicCachePolicy {
+        enabled: false,
+        ..Default::default()
+    };
+
+    apply_caching_with_policy(&mut messages, ProviderType::Ethnopic, &policy);
+
+    assert!(messages
+        .iter()
+        .all(|message| message.provider_options.is_none()));
+}
+
+#[test]
+fn test_apply_caching_with_policy_preserves_ttl_and_scope_shape() {
+    let mut messages = vec![
+        Message::system("System prompt"),
+        Message::assistant("Hi there"),
+    ];
+    let policy = crate::cache::EthnopicCachePolicy {
+        ttl: crate::cache::EthnopicCacheTtl::OneHour,
+        global_scope: true,
+        ..Default::default()
+    };
+
+    apply_caching_with_policy(&mut messages, ProviderType::Ethnopic, &policy);
+
+    let cache_control = messages[0]
+        .provider_options
+        .as_ref()
+        .and_then(|options| options.get("ethnopic"))
+        .and_then(|value| value.get("cacheControl"))
+        .expect("cache control should be present");
+    assert_eq!(
+        cache_control.get("type").and_then(|value| value.as_str()),
+        Some("ephemeral")
+    );
+    assert_eq!(
+        cache_control.get("ttl").and_then(|value| value.as_str()),
+        Some("1h")
+    );
+    assert_eq!(
+        cache_control.get("scope").and_then(|value| value.as_str()),
+        Some("global")
+    );
+}
+
+#[test]
 fn test_extract_reasoning() {
     let content = "Hello <thinking>let me think</thinking> World";
     let (reasoning, rest) = extract_reasoning_from_response(content);
