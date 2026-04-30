@@ -185,6 +185,7 @@ struct QueuedPrompt {
     display_mode: Option<String>,
     model: Option<String>,
     variant: Option<String>,
+    idempotency_key: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]

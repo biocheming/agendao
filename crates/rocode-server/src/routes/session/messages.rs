@@ -24,6 +24,10 @@ pub(crate) struct SendMessageRequest {
     pub content: String,
     #[serde(default)]
     pub parts: Option<Vec<rocode_session::prompt::PartInput>>,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+    #[serde(default)]
+    pub ingress_source: Option<String>,
     pub model: Option<String>,
     pub agent: Option<String>,
     pub scheduler_profile: Option<String>,

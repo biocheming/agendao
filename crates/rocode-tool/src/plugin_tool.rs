@@ -12,7 +12,7 @@ use serde_json::Value;
 use rocode_plugin::subprocess::client::PluginToolDef;
 use rocode_plugin::subprocess::loader::PluginLoader;
 
-use crate::tool::{Metadata, Tool, ToolContext, ToolError, ToolResult};
+use crate::tool::{Metadata, Tool, ToolContext, ToolError, ToolResult, ToolSchemaSourceKind};
 use crate::truncation;
 
 pub struct PluginTool {
@@ -52,6 +52,10 @@ impl Tool for PluginTool {
 
     fn parameters(&self) -> Value {
         self.parameters.clone()
+    }
+
+    fn source_kind(&self) -> ToolSchemaSourceKind {
+        ToolSchemaSourceKind::Plugin
     }
 
     async fn execute(&self, args: Value, ctx: ToolContext) -> Result<ToolResult, ToolError> {

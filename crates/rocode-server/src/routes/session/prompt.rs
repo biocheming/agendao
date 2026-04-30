@@ -1255,6 +1255,10 @@ pub(super) struct SessionPromptRequest {
     pub message: Option<String>,
     #[serde(default)]
     pub parts: Option<Vec<rocode_session::prompt::PartInput>>,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+    #[serde(default)]
+    pub ingress_source: Option<String>,
     pub model: Option<String>,
     pub variant: Option<String>,
     pub agent: Option<String>,
@@ -1263,6 +1267,48 @@ pub(super) struct SessionPromptRequest {
     pub arguments: Option<String>,
     #[serde(default)]
     pub(super) recovery: Option<RecoveryExecutionContext>,
+}
+
+fn build_ingress_envelope(
+    session_id: &str,
+    source: rocode_session::prompt::IngressSource,
+    text: &str,
+    idempotency_key: Option<String>,
+    context_key: Option<String>,
+    scheduler_stage_id: Option<String>,
+) -> rocode_session::prompt::IngressTurnEnvelope {
+    let now = chrono::Utc::now().timestamp_millis();
+    let turn_id = idempotency_key
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| format!("ingress_{}", value.trim()))
+        .unwrap_or_else(|| format!("ingress_{}", uuid::Uuid::new_v4().simple()));
+    let mut envelope = rocode_session::prompt::IngressTurnEnvelope::new_text(
+        session_id.to_string(),
+        source,
+        turn_id,
+        now,
+        text.to_string(),
+    );
+    envelope.context_key = context_key;
+    envelope.scheduler_stage_id = scheduler_stage_id;
+    envelope.idempotency_key = idempotency_key.filter(|value| !value.trim().is_empty());
+    envelope.stabilization.policy = "entry_metadata_only".to_string();
+    envelope
+}
+
+fn ingress_source_from_request(value: Option<&str>) -> rocode_session::prompt::IngressSource {
+    match value.unwrap_or("api").trim().to_ascii_lowercase().as_str() {
+        "cli" => rocode_session::prompt::IngressSource::Cli,
+        "tui" => rocode_session::prompt::IngressSource::Tui,
+        "web" => rocode_session::prompt::IngressSource::Web,
+        "api" => rocode_session::prompt::IngressSource::Api,
+        "scheduler" => rocode_session::prompt::IngressSource::Scheduler,
+        other if !other.is_empty() => {
+            rocode_session::prompt::IngressSource::Other(other.to_string())
+        }
+        _ => rocode_session::prompt::IngressSource::Api,
+    }
 }
 
 pub(super) struct SchedulerUserMessageContext<'a> {
@@ -1663,6 +1709,14 @@ pub(super) async fn session_prompt(
     let task_recovery = req.recovery.clone();
     let task_prompt_parts = prompt_parts.clone();
     let task_multimodal_explain = multimodal_explain.clone();
+    let task_ingress = build_ingress_envelope(
+        &session_id,
+        ingress_source_from_request(req.ingress_source.as_deref()),
+        &display_prompt_text,
+        req.idempotency_key.clone(),
+        Some("session_prompt".to_string()),
+        None,
+    );
     let task_scheduler_profile_config = request_config.scheduler_profile_config.clone();
     let task_autoresearch_override_record =
         resolved_prompt.autoresearch_profile_override_record.clone();
@@ -1799,6 +1853,7 @@ pub(super) async fn session_prompt(
                 variant: task_variant.clone(),
                 parts: task_prompt_parts.clone(),
                 tools: None,
+                ingress: Some(task_ingress.clone()),
             };
             let user_message_id = match create_scheduler_user_message(
                 task_state.prompt_runner.as_ref(),
@@ -2260,7 +2315,9 @@ pub(super) async fn session_prompt(
         });
 
         let prompt_runner = task_state.prompt_runner.clone();
-        let tool_defs = rocode_session::resolve_tools(task_state.tool_registry.as_ref()).await;
+        let resolved_tool_surface =
+            rocode_session::resolve_tool_surface(task_state.tool_registry.as_ref()).await;
+        let tool_defs = resolved_tool_surface.tools;
         let input = rocode_session::PromptInput {
             session_id: session_id.clone(),
             message_id: None,
@@ -2274,6 +2331,7 @@ pub(super) async fn session_prompt(
             variant: task_variant.clone(),
             parts: task_prompt_parts.clone(),
             tools: None,
+            ingress: Some(task_ingress.clone()),
         };
 
         let agent_registry = AgentRegistry::from_config(&config);
@@ -2370,6 +2428,7 @@ pub(super) async fn session_prompt(
                     system_prompt: task_system_prompt.clone(),
                     memory_prefetch: memory_prefetch_packet.clone(),
                     tools: tool_defs,
+                    tool_source_digests: resolved_tool_surface.source_digests,
                     compiled_request: task_compiled_request.clone(),
                     hooks: rocode_session::prompt::PromptHooks {
                         update_hook: Some(update_hook),
@@ -2500,6 +2559,25 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn session_prompt_ingress_source_defaults_to_api_and_preserves_known_sources() {
+        use rocode_session::prompt::IngressSource;
+
+        assert_eq!(ingress_source_from_request(None), IngressSource::Api);
+        assert_eq!(ingress_source_from_request(Some("")), IngressSource::Api);
+        assert_eq!(ingress_source_from_request(Some("cli")), IngressSource::Cli);
+        assert_eq!(ingress_source_from_request(Some("TUI")), IngressSource::Tui);
+        assert_eq!(ingress_source_from_request(Some("web")), IngressSource::Web);
+        assert_eq!(
+            ingress_source_from_request(Some("scheduler")),
+            IngressSource::Scheduler
+        );
+        assert_eq!(
+            ingress_source_from_request(Some("feishu")),
+            IngressSource::Other("feishu".to_string())
+        );
     }
 
     #[test]
@@ -2817,6 +2895,7 @@ mod tests {
                 mime: Some("text/plain".to_string()),
             }],
             tools: None,
+            ingress: None,
         };
 
         let message_id = create_scheduler_user_message(
@@ -2878,6 +2957,7 @@ mod tests {
                 },
             ],
             tools: None,
+            ingress: None,
         };
 
         let message_id = create_scheduler_user_message(

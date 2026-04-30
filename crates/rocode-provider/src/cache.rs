@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 
 use crate::{Message, ToolDefinition, Usage};
@@ -848,6 +849,23 @@ struct CanonicalToolDefinition {
     parameters: Value,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolSurfaceSourceKind {
+    Base,
+    BuiltIn,
+    Mcp,
+    Plugin,
+    Dynamic,
+    Extra,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolSurfaceSourceDigest {
+    pub source: ToolSurfaceSourceKind,
+    pub tool_count: usize,
+    pub tools_hash: String,
+}
+
 pub fn canonical_tool_surface_json(tools: &[ToolDefinition]) -> String {
     let mut canonical = tools
         .iter()
@@ -857,13 +875,17 @@ pub fn canonical_tool_surface_json(tools: &[ToolDefinition]) -> String {
             parameters: stable_json_value(&tool.parameters),
         })
         .collect::<Vec<_>>();
-    canonical.sort_by(|a, b| cache_tool_order_key(&a.name).cmp(&cache_tool_order_key(&b.name)));
+    canonical.sort_by(|a, b| stable_tool_name_cmp(&a.name, &b.name));
     serde_json::to_string(&canonical).unwrap_or_else(|_| "[]".to_string())
 }
 
 pub fn tool_surface_fingerprint(tools: &[ToolDefinition]) -> String {
     let canonical = canonical_tool_surface_json(tools);
     sha256_hex(canonical.as_bytes())
+}
+
+pub fn tool_source_surface_fingerprint(groups: &[ToolSurfaceSourceDigest]) -> String {
+    serializable_fingerprint(groups)
 }
 
 pub fn message_prefix_fingerprint(messages: &[Message]) -> String {
@@ -908,16 +930,22 @@ fn stable_key_segment(value: &str) -> Option<&str> {
         .then_some(trimmed)
 }
 
-fn cache_tool_order_key(name: &str) -> (u8, &str) {
+pub fn stable_tool_name_cmp(left: &str, right: &str) -> Ordering {
+    cache_tool_order_rank(left)
+        .cmp(&cache_tool_order_rank(right))
+        .then_with(|| left.cmp(right))
+}
+
+fn cache_tool_order_rank(name: &str) -> u8 {
     match name {
-        "task_flow" => (0, name),
-        "task" => (1, name),
-        "skills_categories" => (2, name),
-        "skills_list" => (3, name),
-        "skill_view" => (4, name),
-        "skill" => (5, name),
-        "skill_manage" => (6, name),
-        _ => (7, name),
+        "task_flow" => 0,
+        "task" => 1,
+        "skills_categories" => 2,
+        "skills_list" => 3,
+        "skill_view" => 4,
+        "skill" => 5,
+        "skill_manage" => 6,
+        _ => 7,
     }
 }
 
@@ -1210,6 +1238,36 @@ mod tests {
         assert_eq!(
             tool_surface_fingerprint(&first),
             tool_surface_fingerprint(&second)
+        );
+    }
+
+    #[test]
+    fn tool_source_surface_fingerprint_tracks_source_groups() {
+        let base = ToolSurfaceSourceDigest {
+            source: ToolSurfaceSourceKind::Base,
+            tool_count: 2,
+            tools_hash: "base-tools".to_string(),
+        };
+        let mcp = ToolSurfaceSourceDigest {
+            source: ToolSurfaceSourceKind::Mcp,
+            tool_count: 1,
+            tools_hash: "mcp-tools".to_string(),
+        };
+        let first = vec![base.clone(), mcp.clone()];
+        let second = vec![base, mcp];
+        let changed = vec![ToolSurfaceSourceDigest {
+            source: ToolSurfaceSourceKind::Mcp,
+            tool_count: 3,
+            tools_hash: "mcp-tools-changed".to_string(),
+        }];
+
+        assert_eq!(
+            tool_source_surface_fingerprint(&first),
+            tool_source_surface_fingerprint(&second)
+        );
+        assert_ne!(
+            tool_source_surface_fingerprint(&first),
+            tool_source_surface_fingerprint(&changed)
         );
     }
 

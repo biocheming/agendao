@@ -611,6 +611,20 @@ function createOptimisticUserFeedMessage(text: string): FeedMessage {
   };
 }
 
+function ingressStabilizationLabel(value: Record<string, unknown> | null | undefined) {
+  if (!value) return null;
+  const sourceValue = value.source;
+  const source =
+    typeof sourceValue === "string"
+      ? sourceValue
+      : sourceValue && typeof sourceValue === "object" && "source" in sourceValue && typeof sourceValue.source === "string"
+        ? sourceValue.source
+        : "unknown";
+  const policy = typeof value.policy === "string" ? value.policy : "metadata_only";
+  const batchCount = typeof value.batch_count === "number" ? value.batch_count : 1;
+  return batchCount > 1 ? `${source} · ${policy} · batch ${batchCount}` : `${source} · ${policy}`;
+}
+
 function isEquivalentUserMessage(message: FeedMessage, optimistic: FeedMessage): boolean {
   return (
     message.kind === "message" &&
@@ -1399,6 +1413,10 @@ export default function App() {
     }
     return null;
   }, [executionActivity.telemetry?.cache_bust_summary, messageHistory]);
+  const latestIngressDiagnostic = useMemo(
+    () => ingressStabilizationLabel(executionActivity.telemetry?.ingress_stabilization ?? null),
+    [executionActivity.telemetry?.ingress_stabilization],
+  );
   const refreshExecutionActivity = executionActivity.refreshExecutionActivity;
   const conversationJump = useConversationJump({
     messages,
@@ -2233,6 +2251,8 @@ export default function App() {
 
     const preview = promptPreviewText(content, promptParts);
     const optimisticMessage = createOptimisticUserFeedMessage(preview);
+    const ingressIdempotencyKey =
+      optimisticMessage.feedId || `web-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     optimisticMessagesRef.current = {
       ...optimisticMessagesRef.current,
       [sessionId]: [
@@ -2249,6 +2269,8 @@ export default function App() {
     try {
       const payload: Record<string, unknown> = {
         message: content || undefined,
+        idempotency_key: ingressIdempotencyKey,
+        ingress_source: "web",
       };
       if (selectedModel) payload.model = selectedModel;
       if (promptParts.length > 0) payload.parts = promptParts;
@@ -2370,6 +2392,8 @@ export default function App() {
             command: pending.command,
             arguments: argumentsText || undefined,
             model: selectedModel || undefined,
+            ingress_source: "web",
+            idempotency_key: `web-command-${Date.now()}-${Math.random().toString(36).slice(2)}`,
           });
           if (response.status === "awaiting_user") {
             setStreaming(false);
@@ -2931,6 +2955,7 @@ export default function App() {
               cacheMissTokens={sessionUsage?.cache_miss_tokens ?? lastAssistantTurnTokens?.cacheMiss ?? null}
               cacheWriteTokens={sessionUsage?.cache_write_tokens ?? lastAssistantTurnTokens?.cacheWrite ?? null}
               cacheDiagnosticLabel={latestCacheDiagnostic}
+              ingressDiagnosticLabel={latestIngressDiagnostic}
               inputPricePerMillion={activeProviderModel?.cost_per_million_input ?? null}
               outputPricePerMillion={activeProviderModel?.cost_per_million_output ?? null}
               activeStageId={schedulerNavigation.activeStageId}

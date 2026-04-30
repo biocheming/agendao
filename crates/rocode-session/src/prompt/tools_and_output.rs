@@ -1,7 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use rocode_orchestrator::session_title_request;
+use rocode_provider::cache::{ToolSurfaceSourceDigest, ToolSurfaceSourceKind};
 use rocode_provider::{Content, Message, Provider, Role, ToolDefinition};
 
 use crate::{sanitize_display_text, MessageRole, PartType, Session, SessionMessage};
@@ -145,34 +146,39 @@ pub struct ResolvedTool {
     pub parameters: serde_json::Value,
 }
 
-fn preferred_tool_order_key(name: &str) -> (u8, &str) {
-    match name {
-        "task_flow" => (0, name),
-        "task" => (1, name),
-        "skills_categories" => (2, name),
-        "skills_list" => (3, name),
-        "skill_view" => (4, name),
-        "skill" => (5, name),
-        "skill_manage" => (6, name),
-        _ => (7, name),
-    }
+pub struct ResolvedToolSurface {
+    pub tools: Vec<ToolDefinition>,
+    pub source_digests: Vec<ToolSurfaceSourceDigest>,
 }
 
 pub fn prioritize_tool_definitions(tools: &mut [ToolDefinition]) {
-    tools.sort_by(|a, b| preferred_tool_order_key(&a.name).cmp(&preferred_tool_order_key(&b.name)));
+    tools.sort_by(|a, b| rocode_provider::cache::stable_tool_name_cmp(&a.name, &b.name));
 }
 
 pub fn merge_tool_definitions(
     base: Vec<ToolDefinition>,
     extra: Vec<ToolDefinition>,
 ) -> Vec<ToolDefinition> {
-    let mut merged: HashMap<String, ToolDefinition> = HashMap::new();
-    for tool in base.into_iter().chain(extra) {
-        merged.insert(tool.name.clone(), tool);
+    let mut merged_base: HashMap<String, ToolDefinition> = HashMap::new();
+    for tool in base {
+        merged_base.insert(tool.name.clone(), tool);
+    }
+    let base_names = merged_base.keys().cloned().collect::<HashSet<_>>();
+
+    let mut merged_extra: HashMap<String, ToolDefinition> = HashMap::new();
+    for tool in extra {
+        if !base_names.contains(&tool.name) {
+            merged_extra.insert(tool.name.clone(), tool);
+        }
     }
 
-    let mut tools: Vec<ToolDefinition> = merged.into_values().collect();
-    prioritize_tool_definitions(&mut tools);
+    let mut base_tools: Vec<ToolDefinition> = merged_base.into_values().collect();
+    let mut extra_tools: Vec<ToolDefinition> = merged_extra.into_values().collect();
+    prioritize_tool_definitions(&mut base_tools);
+    prioritize_tool_definitions(&mut extra_tools);
+
+    let mut tools = base_tools;
+    tools.extend(extra_tools);
     tools
 }
 
@@ -180,18 +186,90 @@ pub async fn resolve_tools_with_mcp(
     tool_registry: &rocode_tool::ToolRegistry,
     mcp_tools: Vec<ToolDefinition>,
 ) -> Vec<ToolDefinition> {
-    let base = tool_registry
-        .list_schemas()
+    resolve_tool_surface_with_mcp(tool_registry, mcp_tools)
         .await
-        .into_iter()
-        .map(|s| ToolDefinition {
-            name: s.name,
-            description: Some(s.description),
-            parameters: s.parameters,
-        })
-        .collect();
+        .tools
+}
 
-    merge_tool_definitions(base, mcp_tools)
+pub async fn resolve_tool_surface(
+    tool_registry: &rocode_tool::ToolRegistry,
+) -> ResolvedToolSurface {
+    resolve_tool_surface_with_mcp(tool_registry, Vec::new()).await
+}
+
+pub async fn resolve_tool_surface_with_mcp(
+    tool_registry: &rocode_tool::ToolRegistry,
+    mcp_tools: Vec<ToolDefinition>,
+) -> ResolvedToolSurface {
+    let schemas = tool_registry.list_schemas().await;
+    let mut built_in = Vec::new();
+    let mut mcp = Vec::new();
+    let mut plugin = Vec::new();
+    let mut dynamic = Vec::new();
+
+    for schema in schemas {
+        let tool = ToolDefinition {
+            name: schema.name,
+            description: Some(schema.description),
+            parameters: schema.parameters,
+        };
+        match schema.source_kind {
+            rocode_tool::ToolSchemaSourceKind::BuiltIn => built_in.push(tool),
+            rocode_tool::ToolSchemaSourceKind::Mcp => mcp.push(tool),
+            rocode_tool::ToolSchemaSourceKind::Plugin => plugin.push(tool),
+            rocode_tool::ToolSchemaSourceKind::Dynamic => dynamic.push(tool),
+        }
+    }
+    mcp.extend(mcp_tools);
+
+    let mut source_digests = Vec::new();
+    push_tool_source_digest(
+        &mut source_digests,
+        ToolSurfaceSourceKind::BuiltIn,
+        &built_in,
+    );
+    push_tool_source_digest(&mut source_digests, ToolSurfaceSourceKind::Mcp, &mcp);
+    push_tool_source_digest(&mut source_digests, ToolSurfaceSourceKind::Plugin, &plugin);
+    push_tool_source_digest(
+        &mut source_digests,
+        ToolSurfaceSourceKind::Dynamic,
+        &dynamic,
+    );
+
+    let tools = merge_tool_groups(vec![built_in, mcp, plugin, dynamic]);
+    ResolvedToolSurface {
+        tools,
+        source_digests,
+    }
+}
+
+fn push_tool_source_digest(
+    target: &mut Vec<ToolSurfaceSourceDigest>,
+    source: ToolSurfaceSourceKind,
+    tools: &[ToolDefinition],
+) {
+    if tools.is_empty() {
+        return;
+    }
+    target.push(ToolSurfaceSourceDigest {
+        source,
+        tool_count: tools.len(),
+        tools_hash: rocode_provider::cache::tool_surface_fingerprint(tools),
+    });
+}
+
+fn merge_tool_groups(groups: Vec<Vec<ToolDefinition>>) -> Vec<ToolDefinition> {
+    let mut seen = HashSet::new();
+    let mut merged = Vec::new();
+    for mut group in groups {
+        prioritize_tool_definitions(&mut group);
+        for tool in group {
+            if seen.insert(tool.name.clone()) {
+                merged.push(tool);
+            }
+        }
+    }
+    merged
 }
 
 pub async fn resolve_tools_with_mcp_registry(
@@ -213,16 +291,51 @@ pub async fn resolve_tools_with_mcp_registry(
         Vec::new()
     };
 
-    resolve_tools_with_mcp(tool_registry, dynamic_mcp_tools).await
+    resolve_tool_surface_with_mcp(tool_registry, dynamic_mcp_tools)
+        .await
+        .tools
 }
 
 pub async fn resolve_tools(tool_registry: &rocode_tool::ToolRegistry) -> Vec<ToolDefinition> {
-    resolve_tools_with_mcp_registry(tool_registry, None).await
+    resolve_tool_surface(tool_registry).await.tools
 }
 
 #[cfg(test)]
 mod title_tests {
     use super::*;
+    use async_trait::async_trait;
+
+    struct SourceKindTool {
+        id: &'static str,
+        source_kind: rocode_tool::ToolSchemaSourceKind,
+    }
+
+    #[async_trait]
+    impl rocode_tool::Tool for SourceKindTool {
+        fn id(&self) -> &str {
+            self.id
+        }
+
+        fn description(&self) -> &str {
+            "test tool"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        fn source_kind(&self) -> rocode_tool::ToolSchemaSourceKind {
+            self.source_kind
+        }
+
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: rocode_tool::ToolContext,
+        ) -> Result<rocode_tool::ToolResult, rocode_tool::ToolError> {
+            Ok(rocode_tool::ToolResult::simple("ok", "ok"))
+        }
+    }
 
     #[test]
     fn prioritize_tool_definitions_prefers_task_flow_over_task() {
@@ -297,6 +410,135 @@ mod title_tests {
                 "websearch"
             ]
         );
+    }
+
+    #[test]
+    fn merge_tool_definitions_keeps_base_tool_on_name_conflict() {
+        let base = vec![ToolDefinition {
+            name: "read".to_string(),
+            description: Some("built-in read".to_string()),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string"}
+                }
+            }),
+        }];
+        let extra = vec![ToolDefinition {
+            name: "read".to_string(),
+            description: Some("external read".to_string()),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"}
+                }
+            }),
+        }];
+
+        let merged = merge_tool_definitions(base, extra);
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].name, "read");
+        assert_eq!(merged[0].description.as_deref(), Some("built-in read"));
+        assert!(merged[0].parameters["properties"]
+            .get("file_path")
+            .is_some());
+    }
+
+    #[test]
+    fn merge_tool_definitions_is_stable_across_extra_tool_order() {
+        let base = vec![ToolDefinition {
+            name: "task".to_string(),
+            description: None,
+            parameters: serde_json::json!({}),
+        }];
+        let extra_a = vec![
+            ToolDefinition {
+                name: "github_search".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: "repo_scan".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+        ];
+        let mut extra_b = extra_a.clone();
+        extra_b.reverse();
+
+        let names_a = merge_tool_definitions(base.clone(), extra_a)
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<Vec<_>>();
+        let names_b = merge_tool_definitions(base, extra_b)
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(names_a, names_b);
+        assert_eq!(names_a, vec!["task", "github_search", "repo_scan"]);
+    }
+
+    #[test]
+    fn merge_tool_definitions_keeps_base_group_before_extra_group() {
+        let base = vec![ToolDefinition {
+            name: "z_builtin".to_string(),
+            description: None,
+            parameters: serde_json::json!({}),
+        }];
+        let extra = vec![ToolDefinition {
+            name: "a_mcp".to_string(),
+            description: None,
+            parameters: serde_json::json!({}),
+        }];
+
+        let names = merge_tool_definitions(base, extra)
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["z_builtin", "a_mcp"]);
+    }
+
+    #[tokio::test]
+    async fn resolve_tool_surface_records_non_wire_source_digests() {
+        let registry = rocode_tool::ToolRegistry::new();
+        registry
+            .register(SourceKindTool {
+                id: "read",
+                source_kind: rocode_tool::ToolSchemaSourceKind::BuiltIn,
+            })
+            .await;
+        registry
+            .register(SourceKindTool {
+                id: "plugin_lookup",
+                source_kind: rocode_tool::ToolSchemaSourceKind::Plugin,
+            })
+            .await;
+        registry
+            .register(SourceKindTool {
+                id: "dynamic_plan",
+                source_kind: rocode_tool::ToolSchemaSourceKind::Dynamic,
+            })
+            .await;
+
+        let surface = resolve_tool_surface(&registry).await;
+        let sources = surface
+            .source_digests
+            .iter()
+            .map(|digest| digest.source)
+            .collect::<Vec<_>>();
+        let names = surface
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(sources.contains(&ToolSurfaceSourceKind::BuiltIn));
+        assert!(sources.contains(&ToolSurfaceSourceKind::Plugin));
+        assert!(sources.contains(&ToolSurfaceSourceKind::Dynamic));
+        assert_eq!(names, vec!["read", "plugin_lookup", "dynamic_plan"]);
     }
 }
 

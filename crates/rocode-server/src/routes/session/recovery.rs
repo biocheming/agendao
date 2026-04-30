@@ -187,6 +187,8 @@ pub(super) async fn execute_session_recovery(
         Json(SessionPromptRequest {
             message: Some(composed_message),
             parts: None,
+            idempotency_key: None,
+            ingress_source: Some("api".to_string()),
             model: session_model_override(&session),
             variant: session_variant_override(&session),
             agent: session_agent_override(&session),

@@ -1951,6 +1951,20 @@ pub async fn run_local_scheduler_prompt(
         variant: req.variant.clone(),
         parts: prompt_parts,
         tools: None,
+        ingress: Some({
+            let now = chrono::Utc::now().timestamp_millis();
+            let mut envelope = rocode_session::prompt::IngressTurnEnvelope::new_text(
+                session_id.clone(),
+                rocode_session::prompt::IngressSource::Scheduler,
+                format!("ingress_{}", uuid::Uuid::new_v4().simple()),
+                now,
+                req.display_prompt_text.clone(),
+            );
+            envelope.context_key = Some("local_scheduler".to_string());
+            envelope.scheduler_stage_id = Some(profile_name.clone());
+            envelope.stabilization.policy = "scheduler_metadata_only".to_string();
+            envelope
+        }),
     };
     let user_message_id = create_scheduler_user_message(
         state.prompt_runner.as_ref(),

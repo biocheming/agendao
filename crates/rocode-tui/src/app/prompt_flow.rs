@@ -10,6 +10,7 @@ pub(super) struct PromptDispatchRequest<'a> {
     pub display_mode: Option<String>,
     pub model: Option<String>,
     pub variant: Option<String>,
+    pub idempotency_key: Option<String>,
 }
 
 impl App {
@@ -172,6 +173,7 @@ impl App {
                             selected_mode.scheduler_profile,
                             model,
                             variant,
+                            Some(format!("tui_{}", opt_id)),
                         ) {
                             Ok(response) => (Some(session), Some(response), None),
                             Err(err) => (Some(session), None, Some(err.to_string())),
@@ -200,6 +202,7 @@ impl App {
                             display_mode: selected_mode.display_mode,
                             model,
                             variant,
+                            idempotency_key: Some(format!("tui_{}", uuid::Uuid::new_v4().simple())),
                         },
                     );
                     self.event_caused_change = true;
@@ -215,6 +218,7 @@ impl App {
                     display_mode: selected_mode.display_mode,
                     model,
                     variant,
+                    idempotency_key: None,
                 });
             }
             _ => {}
@@ -257,6 +261,7 @@ impl App {
             display_mode,
             model,
             variant,
+            idempotency_key,
         } = request;
 
         let Some(client) = self.context.get_api_client() else {
@@ -289,6 +294,7 @@ impl App {
                 scheduler_profile,
                 model,
                 variant,
+                idempotency_key.or_else(|| Some(format!("tui_{}", opt_id))),
             ) {
                 Ok(response) => (Some(response), None),
                 Err(err) => (None, Some(err.to_string())),
@@ -333,6 +339,7 @@ impl App {
                 display_mode: queued.display_mode,
                 model: queued.model,
                 variant: queued.variant,
+                idempotency_key: queued.idempotency_key,
             });
             return true;
         }

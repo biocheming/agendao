@@ -364,6 +364,7 @@ async fn prompt_with_update_hook_emits_incremental_snapshots() {
             text: "Say hello".to_string(),
         }],
         tools: None,
+        ingress: None,
     };
 
     prompt
@@ -375,6 +376,7 @@ async fn prompt_with_update_hook_emits_incremental_snapshots() {
                 system_prompt: None,
                 memory_prefetch: None,
                 tools: Vec::new(),
+                tool_source_digests: Vec::new(),
                 compiled_request: CompiledExecutionRequest::default(),
                 hooks: PromptHooks {
                     update_hook: Some(hook),
@@ -409,6 +411,101 @@ async fn prompt_with_update_hook_emits_incremental_snapshots() {
         .map(SessionMessage::get_text)
         .unwrap_or_default();
     assert_eq!(final_text, "Hello");
+}
+
+#[tokio::test]
+async fn prompt_ignores_duplicate_ingress_idempotency_key() {
+    let prompt = SessionPrompt::default();
+    let mut session = Session::new("proj", ".");
+    let scripted = MultiTurnScriptedProvider::new(
+        ModelInfo {
+            id: "test-model".to_string(),
+            name: "Test Model".to_string(),
+            provider: "mock".to_string(),
+            context_window: 8192,
+            max_input_tokens: None,
+            max_output_tokens: 1024,
+            supports_vision: false,
+            supports_tools: false,
+            cost_per_million_input: 0.0,
+            cost_per_million_output: 0.0,
+            cost_per_million_cache_read: None,
+            cost_per_million_cache_write: None,
+        },
+        vec![
+            vec![
+                StreamEvent::Start,
+                StreamEvent::TextDelta("ok".to_string()),
+                StreamEvent::FinishStep {
+                    finish_reason: Some("stop".to_string()),
+                    usage: StreamUsage::default(),
+                    provider_metadata: None,
+                },
+                StreamEvent::Done,
+            ],
+            vec![StreamEvent::Start, StreamEvent::Done],
+        ],
+    );
+    let request_count = scripted.request_count.clone();
+    let provider: Arc<dyn Provider> = Arc::new(scripted);
+    let mut ingress = IngressTurnEnvelope::new_text(
+        session.id.clone(),
+        IngressSource::Web,
+        "turn_1",
+        100,
+        "Say hello",
+    );
+    ingress.idempotency_key = Some("idem_1".to_string());
+
+    let input = PromptInput {
+        session_id: session.id.clone(),
+        message_id: None,
+        model: Some(ModelRef {
+            provider_id: "mock".to_string(),
+            model_id: "test-model".to_string(),
+        }),
+        agent: None,
+        no_reply: false,
+        system: None,
+        variant: None,
+        parts: vec![PartInput::Text {
+            text: "Say hello".to_string(),
+        }],
+        tools: None,
+        ingress: Some(ingress),
+    };
+
+    for _ in 0..2 {
+        prompt
+            .prompt_with_update_hook(
+                input.clone(),
+                &mut session,
+                PromptRequestContext {
+                    provider: provider.clone(),
+                    system_prompt: None,
+                    memory_prefetch: None,
+                    tools: Vec::new(),
+                    tool_source_digests: Vec::new(),
+                    compiled_request: CompiledExecutionRequest::default(),
+                    hooks: PromptHooks::default(),
+                },
+            )
+            .await
+            .expect("duplicate ingress should be accepted as a no-op");
+    }
+
+    let request_count = *request_count
+        .lock()
+        .expect("request_count lock should not poison");
+    assert_eq!(request_count, 1);
+    assert_eq!(
+        session
+            .messages
+            .iter()
+            .filter(|message| matches!(message.role, MessageRole::User))
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -481,6 +578,7 @@ async fn prompt_continues_after_tool_calls_without_finish_step_reason() {
             text: "Read the file and summarize".to_string(),
         }],
         tools: None,
+        ingress: None,
     };
 
     prompt
@@ -492,6 +590,7 @@ async fn prompt_continues_after_tool_calls_without_finish_step_reason() {
                 system_prompt: None,
                 memory_prefetch: None,
                 tools: Vec::new(),
+                tool_source_digests: Vec::new(),
                 compiled_request: CompiledExecutionRequest::default(),
                 hooks: PromptHooks::default(),
             },
@@ -527,6 +626,7 @@ async fn create_user_message_persists_pending_subtask_payload() {
         system: None,
         variant: None,
         tools: None,
+        ingress: None,
         parts: vec![PartInput::Subtask {
             prompt: "Inspect codegen path".to_string(),
             description: Some("Inspect codegen".to_string()),

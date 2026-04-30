@@ -9,6 +9,15 @@ use tokio_util::sync::CancellationToken;
 
 use crate::ToolRegistry;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolSchemaSourceKind {
+    BuiltIn,
+    Mcp,
+    Plugin,
+    Dynamic,
+}
+
 #[cfg(feature = "lsp")]
 use rocode_lsp::LspClientRegistry;
 
@@ -937,6 +946,9 @@ pub trait Tool: Send + Sync {
     fn id(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters(&self) -> serde_json::Value;
+    fn source_kind(&self) -> ToolSchemaSourceKind {
+        ToolSchemaSourceKind::BuiltIn
+    }
 
     async fn execute(
         &self,

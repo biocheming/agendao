@@ -500,6 +500,7 @@ mod tests {
             system: None,
             variant: None,
             tools: None,
+            ingress: None,
             parts: vec![PartInput::File {
                 url: "data:text/plain;base64,SGVsbG8=".to_string(),
                 filename: Some("inline.txt".to_string()),
@@ -553,6 +554,7 @@ mod tests {
             system: None,
             variant: None,
             tools: None,
+            ingress: None,
             parts: vec![PartInput::File {
                 url: url.to_string(),
                 filename: Some("sample.rs".to_string()),
@@ -614,6 +616,7 @@ mod tests {
             system: None,
             variant: None,
             tools: None,
+            ingress: None,
             parts: vec![PartInput::File {
                 url: file_url,
                 filename: Some("sample.rs".to_string()),
@@ -675,6 +678,7 @@ mod tests {
             system: None,
             variant: None,
             tools: None,
+            ingress: None,
             parts: vec![
                 PartInput::File {
                     url: url::Url::from_file_path(&file_a)
@@ -747,6 +751,7 @@ mod tests {
             system: None,
             variant: None,
             tools: None,
+            ingress: None,
             parts: vec![PartInput::File {
                 url: file_url,
                 filename: Some("sample.rs".to_string()),

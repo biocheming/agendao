@@ -719,6 +719,10 @@ impl Sidebar {
                 .iter()
                 .rev()
                 .find(|m| matches!(m.role, MessageRole::Assistant));
+            let last_user = messages
+                .iter()
+                .rev()
+                .find(|m| matches!(m.role, MessageRole::User));
             let current_context_tokens = self.context.current_context_tokens();
             let active_model_info = self.context.resolve_model_info(active_model);
             sections.push(SidebarSection {
@@ -839,6 +843,20 @@ impl Sidebar {
                             Span::styled(
                                 truncate_text(&cache_diagnostic, area.width as usize),
                                 Style::default().fg(theme.warning),
+                            ),
+                        ]));
+                    }
+                    if let Some(ingress_diagnostic) =
+                        last_user.and_then(|message| ingress_diagnostic_label(&message.metadata))
+                    {
+                        lines.push(Line::from(vec![
+                            Span::styled("Ingress", Style::default().fg(theme.text_muted)),
+                            Span::styled(
+                                format!(
+                                    " {}",
+                                    truncate_text(&ingress_diagnostic, area.width as usize)
+                                ),
+                                Style::default().fg(theme.text_muted),
                             ),
                         ]));
                     }
@@ -1812,6 +1830,32 @@ fn cache_diagnostic_label(metadata: &Option<HashMap<String, serde_json::Value>>)
         .as_ref()
         .and_then(rocode_provider::cache::cache_bust_summary_from_metadata)
         .and_then(|summary| rocode_provider::cache::cache_bust_summary_label(&summary))
+}
+
+fn ingress_diagnostic_label(
+    metadata: &Option<HashMap<String, serde_json::Value>>,
+) -> Option<String> {
+    let metadata = metadata.as_ref()?;
+    let source = metadata
+        .get("ingress_source")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    let stabilization = metadata
+        .get("ingress_stabilization")
+        .and_then(|value| value.as_object())?;
+    let policy = stabilization
+        .get("policy")
+        .and_then(|value| value.as_str())
+        .unwrap_or("metadata_only");
+    let batch_count = stabilization
+        .get("batch_count")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(1);
+    if batch_count > 1 {
+        Some(format!("{source} · {policy} · batch {batch_count}"))
+    } else {
+        Some(format!("{source} · {policy}"))
+    }
 }
 
 pub(crate) fn sidebar_model_summary(
