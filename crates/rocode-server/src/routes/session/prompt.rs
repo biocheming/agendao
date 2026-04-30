@@ -43,6 +43,10 @@ use rocode_command::{
 };
 use rocode_multimodal::{MultimodalAuthority, RuntimeMultimodalExplain, SessionPartAdapter};
 use rocode_orchestrator::output_metadata::output_usage;
+use rocode_orchestrator::output_projection::{
+    SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY, SCHEDULER_OUTPUT_ARTIFACTS_METADATA_KEY,
+    SCHEDULER_OUTPUT_PROJECTION_POLICY_METADATA_KEY,
+};
 use rocode_orchestrator::{
     scheduler_orchestrator_from_plan, scheduler_plan_from_profile, AvailableAgentMeta,
     AvailableCategoryMeta, CommandDefinition as WorkflowCommandDefinition, DebugConfig,
@@ -348,6 +352,7 @@ struct SchedulerSessionContextTurn {
     message_id: String,
     role: MessageRole,
     text: String,
+    projected: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -434,8 +439,9 @@ not as a replacement for checking live files or rerunning verification when exac
                 .exact_recent_tail
                 .iter()
                 .map(|turn| {
+                    let source_kind = if turn.projected { "projected" } else { "exact" };
                     format!(
-                        "- {} `{}`:\n{}",
+                        "- {} `{}` ({source_kind}):\n{}",
                         role_label(&turn.role),
                         turn.message_id,
                         indent_block(&truncate_chars(&turn.text, SCHEDULER_CONTEXT_TURN_LIMIT))
@@ -457,6 +463,7 @@ not as a replacement for checking live files or rerunning verification when exac
                 serde_json::json!({
                     "message_id": turn.message_id,
                     "role": role_label(&turn.role),
+                    "projected": turn.projected,
                 })
             })
             .collect::<Vec<_>>();
@@ -589,6 +596,21 @@ pub(super) fn build_scheduler_session_context_block(
     build_scheduler_session_context_packet(session).map(|packet| packet.render())
 }
 
+pub(super) fn propagate_output_projection_metadata(
+    target: &mut std::collections::HashMap<String, serde_json::Value>,
+    source: &std::collections::HashMap<String, serde_json::Value>,
+) {
+    for key in [
+        SCHEDULER_OUTPUT_PROJECTION_POLICY_METADATA_KEY,
+        SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY,
+        SCHEDULER_OUTPUT_ARTIFACTS_METADATA_KEY,
+    ] {
+        if let Some(value) = source.get(key) {
+            target.insert(key.to_string(), value.clone());
+        }
+    }
+}
+
 pub(super) fn merge_system_prompt_with_memory_snapshot(
     base: Option<String>,
     frozen_snapshot_block: Option<&str>,
@@ -638,12 +660,13 @@ fn collect_scheduler_recent_tail(
         .rev()
         .filter(|message| is_scheduler_context_message(message))
         .filter_map(|message| {
-            let text = message.get_text();
+            let (text, projected) = scheduler_context_text_for_message(message);
             let text = text.trim();
             (!text.is_empty()).then(|| SchedulerSessionContextTurn {
                 message_id: message.id.clone(),
                 role: message.role.clone(),
                 text: text.to_string(),
+                projected,
             })
         })
         .take(SCHEDULER_RECENT_TAIL_MESSAGES)
@@ -679,6 +702,28 @@ fn count_scheduler_context_messages(session: &rocode_session::Session) -> usize 
         .filter(|message| is_scheduler_context_message(message))
         .filter(|message| !message.get_text().trim().is_empty())
         .count()
+}
+
+fn scheduler_context_text_for_message(message: &SessionMessage) -> (String, bool) {
+    if matches!(message.role, MessageRole::Assistant) {
+        if let Some(summary) = message
+            .metadata
+            .get(SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY)
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return (
+                format!(
+                    "Projected assistant output for model context. The visible assistant message is preserved in session history; use `scheduler_context_hydrate` with message id `{}` if exact text is required.\n\n{}",
+                    message.id, summary
+                ),
+                true,
+            );
+        }
+    }
+
+    (message.get_text(), false)
 }
 
 fn is_scheduler_context_message(message: &SessionMessage) -> bool {
@@ -764,7 +809,7 @@ fn build_scheduler_working_ledger(
     }
     if !ledger.is_empty() {
         ledger.push(
-            "source_policy: use Exact Recent Tail for prior conversation outputs; use tools for current file state, diagnostics, and verification evidence."
+            "source_policy: use Exact Recent Tail for prior conversation outputs; projected assistant turns are summaries and require scheduler_context_hydrate when exact prior text matters; use tools for current file state, diagnostics, and verification evidence."
                 .to_string(),
         );
     }
@@ -2044,6 +2089,10 @@ pub(super) async fn session_prompt(
                             "scheduler_tool_calls".to_string(),
                             serde_json::json!(output.tool_calls_count),
                         );
+                        propagate_output_projection_metadata(
+                            &mut assistant.metadata,
+                            &output.metadata,
+                        );
                         if let Some(usage) = output_usage(&output.metadata) {
                             let cost = task_model_pricing
                                 .map(|p| {
@@ -2481,6 +2530,46 @@ mod tests {
         assert!(block.contains("Found papers A, B, and C"));
         assert!(block.contains("exact_tail_message_ids"));
         assert!(!block.contains("internal route decision"));
+    }
+
+    #[test]
+    fn scheduler_session_context_uses_projection_summary_for_projected_assistant_output() {
+        let mut session = Session::new("project", "/tmp");
+        session.add_user_message("检索 AlphaFold3 方法学研究");
+        let assistant_id = {
+            let assistant = session.add_assistant_message();
+            assistant.add_text("full report body that should not be placed in scheduler context");
+            assistant.metadata.insert(
+                SCHEDULER_OUTPUT_PROJECTION_POLICY_METADATA_KEY.to_string(),
+                serde_json::json!("OnDemandArtifact"),
+            );
+            assistant.metadata.insert(
+                SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY.to_string(),
+                serde_json::json!(
+                    "Large assistant output stored as artifact `art_assistant_test`. Summary:\nAlphaFold3 methodology survey summary"
+                ),
+            );
+            assistant.metadata.insert(
+                SCHEDULER_OUTPUT_ARTIFACTS_METADATA_KEY.to_string(),
+                serde_json::json!([{"id": "art_assistant_test"}]),
+            );
+            assistant.id.clone()
+        };
+
+        let block = build_scheduler_session_context_block(&session)
+            .expect("same-session scheduler context should render");
+        let packet = build_scheduler_session_context_packet(&session)
+            .expect("same-session scheduler context packet should render");
+        let metadata = packet.metadata_value();
+
+        assert!(block.contains("Projected assistant output for model context"));
+        assert!(block.contains("AlphaFold3 methodology survey summary"));
+        assert!(block.contains(&assistant_id));
+        assert!(!block.contains("full report body that should not be placed"));
+        assert_eq!(
+            metadata["exact_recent_tail"][1]["projected"],
+            serde_json::json!(true)
+        );
     }
 
     #[test]

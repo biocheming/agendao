@@ -53,8 +53,9 @@ use super::messages::resolve_provider_and_model;
 use super::prompt::{
     build_scheduler_session_context_packet, create_scheduler_user_message,
     merge_scheduler_prompt_with_memory, move_scheduler_final_answer_after_stage_messages,
-    resolve_prompt_memory_context, SchedulerUserMessageContext,
-    SCHEDULER_SESSION_CONTEXT_METADATA_KEY, SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY,
+    propagate_output_projection_metadata, resolve_prompt_memory_context,
+    SchedulerUserMessageContext, SCHEDULER_SESSION_CONTEXT_METADATA_KEY,
+    SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY,
 };
 use super::session_crud::{resolved_session_directory, set_session_run_status};
 use super::telemetry::persist_session_telemetry_metadata;
@@ -2167,6 +2168,7 @@ pub async fn run_local_scheduler_prompt(
                     "scheduler_tool_calls".to_string(),
                     serde_json::json!(output.tool_calls_count),
                 );
+                propagate_output_projection_metadata(&mut assistant.metadata, &output.metadata);
                 if let Some(usage) = output_usage(&output.metadata) {
                     prompt_tokens = usage.prompt_tokens;
                     context_tokens = usage.context_tokens.max(usage.prompt_tokens);

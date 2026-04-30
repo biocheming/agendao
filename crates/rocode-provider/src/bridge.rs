@@ -197,7 +197,10 @@ pub fn driver_response_to_chat_response(resp: DriverResponse) -> ChatResponse {
 
     let content = resp.content.unwrap_or_default();
 
-    let raw_usage = resp.raw.get("usage").map(extract_usage);
+    let raw_usage = resp
+        .raw
+        .get("usage")
+        .map(crate::cache::TokenUsageMetrics::from_value);
     let usage = resp.usage.map(|u| Usage {
         prompt_tokens: u.prompt_tokens,
         completion_tokens: u.completion_tokens,
@@ -587,56 +590,17 @@ fn decode_data_url(url: &str) -> Option<(String, String)> {
 }
 
 /// Extract usage information from a raw JSON value.
-///
-/// Handles both OpenAI format (`prompt_tokens`/`completion_tokens`)
-/// and Anthropic format (`input_tokens`/`output_tokens`).
 fn extract_usage(value: &serde_json::Value) -> StreamUsage {
-    let prompt = value
-        .get("prompt_tokens")
-        .or_else(|| value.get("input_tokens"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-
-    let completion = value
-        .get("completion_tokens")
-        .or_else(|| value.get("output_tokens"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-
-    let reasoning = value
-        .get("reasoning_tokens")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-
-    let cache_read = value
-        .get("cache_read_input_tokens")
-        .or_else(|| value.get("cache_read_tokens"))
-        .or_else(|| value.get("prompt_cache_hit_tokens"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-
-    let cache_write = value
-        .get("cache_creation_input_tokens")
-        .or_else(|| value.get("cache_write_tokens"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let cache_miss = value
-        .get("cache_miss_input_tokens")
-        .or_else(|| value.get("cache_miss_tokens"))
-        .or_else(|| value.get("prompt_cache_miss_tokens"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
+    let usage = crate::cache::TokenUsageMetrics::from_value(value);
 
     StreamUsage {
-        prompt_tokens: prompt,
-        completion_tokens: completion,
-        context_tokens: prompt
-            .max(cache_read.saturating_add(cache_miss))
-            .max(cache_read.saturating_add(cache_write)),
-        reasoning_tokens: reasoning,
-        cache_read_tokens: cache_read,
-        cache_miss_tokens: cache_miss,
-        cache_write_tokens: cache_write,
+        prompt_tokens: usage.input_tokens,
+        completion_tokens: usage.output_tokens,
+        context_tokens: usage.context_tokens,
+        reasoning_tokens: usage.reasoning_tokens,
+        cache_read_tokens: usage.cache_read_tokens,
+        cache_miss_tokens: usage.cache_miss_tokens,
+        cache_write_tokens: usage.cache_write_tokens,
     }
 }
 

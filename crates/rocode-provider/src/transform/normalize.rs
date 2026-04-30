@@ -125,11 +125,11 @@ pub fn apply_caching(messages: &mut [Message], provider_type: ProviderType) {
         .take(2)
         .collect();
 
-    let total = messages.len();
-    let final_indices: Vec<usize> = (total.saturating_sub(2)..total).collect();
-
     let mut indices_to_cache: Vec<usize> = Vec::new();
-    for idx in system_indices.into_iter().chain(final_indices.into_iter()) {
+    for idx in system_indices
+        .into_iter()
+        .chain(stable_conversation_cache_boundary_index(messages))
+    {
         if !indices_to_cache.contains(&idx) {
             indices_to_cache.push(idx);
         }
@@ -140,6 +140,16 @@ pub fn apply_caching(messages: &mut [Message], provider_type: ProviderType) {
             apply_cache_to_message(msg, provider_type);
         }
     }
+}
+
+fn stable_conversation_cache_boundary_index(messages: &[Message]) -> Option<usize> {
+    let last_index = messages.len().checked_sub(1)?;
+    let boundary = if matches!(messages[last_index].role, crate::Role::User) {
+        last_index.checked_sub(1)?
+    } else {
+        last_index
+    };
+    (!matches!(messages[boundary].role, crate::Role::System)).then_some(boundary)
 }
 
 fn apply_cache_to_message(message: &mut Message, provider_type: ProviderType) {

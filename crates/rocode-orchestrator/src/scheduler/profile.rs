@@ -12,6 +12,9 @@ use crate::output_metadata::{
     append_output_usage, continuation_targets, merge_output_metadata, output_usage,
     ContinuationTarget,
 };
+use crate::output_projection::{
+    append_assistant_output_projection, AssistantOutputProjectionOptions,
+};
 use crate::skill_graph::{SkillGraphDefinition, SkillGraphOrchestrator};
 use crate::skill_tree::SkillTreeRequestPlan;
 use crate::tool_runner::ToolRunner;
@@ -842,6 +845,11 @@ impl SchedulerProfileOrchestrator {
             output.steps += supplemental_output.steps;
             output.tool_calls_count += supplemental_output.tool_calls_count;
         }
+        append_assistant_output_projection(
+            &mut output.metadata,
+            &output.content,
+            &AssistantOutputProjectionOptions::default(),
+        );
         Some(output)
     }
 

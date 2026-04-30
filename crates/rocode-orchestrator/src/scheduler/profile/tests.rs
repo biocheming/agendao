@@ -369,6 +369,52 @@ fn finalize_output_normalizes_sisyphus_delivery_shape() {
 }
 
 #[test]
+fn finalize_output_projects_long_content_without_changing_visible_text() {
+    let orchestrator = SchedulerProfileOrchestrator::new(
+        runtime_execution_plan("custom-research-scheduler"),
+        ToolRunner::new(Arc::new(NoopToolExecutor)),
+    );
+    let long_report = format!(
+        "## Delivery Summary\nResearch complete.\n\n**Execution Outcome**\n{}",
+        "evidence-backed finding\n".repeat(500)
+    );
+    let state = SchedulerProfileState {
+        execution: SchedulerExecutionState {
+            delegated: Some(OrchestratorOutput {
+                content: long_report.clone(),
+                steps: 1,
+                tool_calls_count: 2,
+                metadata: HashMap::new(),
+                finish_reason: FinishReason::EndTurn,
+            }),
+            ..Default::default()
+        },
+        metrics: SchedulerMetricsState {
+            total_steps: 1,
+            total_tool_calls: 2,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let output = orchestrator.finalize_output(state);
+
+    assert_eq!(output.content, long_report);
+    assert_eq!(
+        output
+            .metadata
+            .get(crate::output_projection::SCHEDULER_OUTPUT_PROJECTION_POLICY_METADATA_KEY)
+            .and_then(|value| value.as_str()),
+        Some("OnDemandArtifact")
+    );
+    assert!(output
+        .metadata
+        .get(crate::output_projection::SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY)
+        .and_then(|value| value.as_str())
+        .is_some_and(|summary| summary.contains("Large assistant output stored as artifact")));
+}
+
+#[test]
 fn sisyphus_final_output_preserves_structured_execution_over_generic_gate_response() {
     let orchestrator = SchedulerProfileOrchestrator::new(
         SchedulerProfilePlan::new(vec![SchedulerStageKind::ExecutionOrchestration])
@@ -480,6 +526,59 @@ fn gate_terminal_output_uses_default_preservation_for_custom_scheduler() {
         .content
         .contains("Found concrete AlphaFold3 methodology papers"));
     assert!(!output.content.contains("Done."));
+}
+
+#[test]
+fn gate_terminal_output_projects_long_content_without_changing_visible_text() {
+    let plan = runtime_execution_plan("atlas");
+    let long_report = format!(
+        "## Delivery Summary\nResearch complete.\n\n**Task Status**\n{}\n\n**Verification**\n- Evidence-backed search results collected.",
+        "evidence-backed finding\n".repeat(500)
+    );
+    let execution = OrchestratorOutput {
+        content: long_report.clone(),
+        steps: 1,
+        tool_calls_count: 2,
+        metadata: HashMap::new(),
+        finish_reason: FinishReason::EndTurn,
+    };
+    let decision = SchedulerExecutionGateDecision {
+        status: SchedulerExecutionGateStatus::Done,
+        summary: "verified".to_string(),
+        next_input: None,
+        final_response: Some("Done.".to_string()),
+    };
+
+    let output = SchedulerProfileOrchestrator::gate_terminal_output(
+        &plan,
+        SchedulerExecutionGateStatus::Done,
+        &decision,
+        &execution,
+        None,
+    )
+    .expect("atlas gate should produce terminal output");
+
+    assert_eq!(output.content, long_report);
+    assert_eq!(
+        output
+            .metadata
+            .get(crate::output_projection::SCHEDULER_OUTPUT_PROJECTION_POLICY_METADATA_KEY)
+            .and_then(|value| value.as_str()),
+        Some("OnDemandArtifact")
+    );
+    assert!(output
+        .metadata
+        .get(crate::output_projection::SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY)
+        .and_then(|value| value.as_str())
+        .is_some_and(|summary| summary.contains("Large assistant output stored as artifact")));
+    assert_eq!(
+        output
+            .metadata
+            .get(crate::output_projection::SCHEDULER_OUTPUT_ARTIFACTS_METADATA_KEY)
+            .and_then(|value| value.as_array())
+            .map(Vec::len),
+        Some(1)
+    );
 }
 
 #[test]
