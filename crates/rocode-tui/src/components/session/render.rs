@@ -1687,10 +1687,5 @@ fn format_context_usage_meter(used: u64, limit: Option<u64>) -> Option<(String, 
 }
 
 fn total_session_tokens(usage: &rocode_session::SessionUsage) -> u64 {
-    usage.input_tokens
-        + usage.output_tokens
-        + usage.reasoning_tokens
-        + usage.cache_read_tokens
-        + usage.cache_miss_tokens
-        + usage.cache_write_tokens
+    usage.input_tokens + usage.output_tokens + usage.reasoning_tokens
 }
