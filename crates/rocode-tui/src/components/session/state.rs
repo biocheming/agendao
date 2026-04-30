@@ -247,7 +247,7 @@ impl SessionRenderSnapshot {
                     .map(total_session_tokens)
                     .unwrap_or_else(|| {
                         let t = &assistant_msg.tokens;
-                        t.input + t.output + t.reasoning + t.cache_read + t.cache_write
+                        t.input + t.output + t.reasoning
                     });
                 if total_tokens == 0 {
                     return None;
@@ -266,7 +266,7 @@ impl SessionRenderSnapshot {
                     .map(total_session_tokens)
                     .unwrap_or_else(|| {
                         let t = &assistant_msg.tokens;
-                        t.input + t.output + t.reasoning + t.cache_read + t.cache_write
+                        t.input + t.output + t.reasoning
                     });
                 if total_tokens == 0 {
                     return None;

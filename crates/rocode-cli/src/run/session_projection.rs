@@ -709,14 +709,7 @@ fn cli_usage_snapshot_lines(
     lines.push("Session cumulative".to_string());
     lines.push(format!(
         "  Total: {}",
-        format_token_count(
-            usage.input_tokens
-                + usage.output_tokens
-                + usage.reasoning_tokens
-                + usage.cache_read_tokens
-                + usage.cache_miss_tokens
-                + usage.cache_write_tokens
-        )
+        format_token_count(usage.input_tokens + usage.output_tokens + usage.reasoning_tokens)
     ));
     lines.push(format!(
         "  Input: {}",
@@ -784,9 +777,6 @@ fn cli_session_insights_lines(
                 telemetry.usage.input_tokens
                     + telemetry.usage.output_tokens
                     + telemetry.usage.reasoning_tokens
-                    + telemetry.usage.cache_read_tokens
-                    + telemetry.usage.cache_miss_tokens
-                    + telemetry.usage.cache_write_tokens
             ),
             format_token_count(telemetry.usage.input_tokens),
             format_token_count(telemetry.usage.output_tokens),

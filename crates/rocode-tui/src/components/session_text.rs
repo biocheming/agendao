@@ -1679,7 +1679,9 @@ mod tests {
         assert!(all_text.contains("Step 2/6"));
         assert!(all_text.contains("Waiting Model"));
         assert!(all_text.contains("Tokens 1.2K/320"));
-        assert!(all_text.contains("Usage reasoning 40 · cache read 2 · cache write 1"));
+        assert!(
+            all_text.contains("Usage reasoning 40 · cache read 2 · cache miss 3 · cache write 1")
+        );
         assert!(all_text.contains("Focus Draft the executable plan and its guardrails."));
         assert!(all_text.contains("Last Tool finished: Read"));
         assert!(all_text.contains("Activity Task → build"));

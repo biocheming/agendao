@@ -684,14 +684,7 @@ impl Sidebar {
                     messages
                         .iter()
                         .filter(|m| matches!(m.role, MessageRole::Assistant))
-                        .map(|m| {
-                            m.tokens.input
-                                + m.tokens.output
-                                + m.tokens.reasoning
-                                + m.tokens.cache_read
-                                + m.tokens.cache_miss
-                                + m.tokens.cache_write
-                        })
+                        .map(|m| m.tokens.input + m.tokens.output + m.tokens.reasoning)
                         .sum::<u64>()
                 });
             let (session_cache_read_tokens, session_cache_miss_tokens, session_cache_write_tokens) =
@@ -790,6 +783,7 @@ impl Sidebar {
                             || message.tokens.output > 0
                             || message.tokens.reasoning > 0
                             || message.tokens.cache_read > 0
+                            || message.tokens.cache_miss > 0
                             || message.tokens.cache_write > 0
                     }) {
                         lines.push(Line::from(vec![
@@ -812,15 +806,26 @@ impl Sidebar {
                                 ),
                             ]));
                         }
-                        if turn.tokens.cache_read > 0 || turn.tokens.cache_write > 0 {
+                        if turn.tokens.cache_read > 0
+                            || turn.tokens.cache_miss > 0
+                            || turn.tokens.cache_write > 0
+                        {
                             lines.push(Line::from(vec![
                                 Span::styled("Cache  ", Style::default().fg(theme.text_muted)),
                                 Span::styled(
-                                    format!(
-                                        "read {} · write {}",
-                                        format_compact_number(turn.tokens.cache_read),
-                                        format_compact_number(turn.tokens.cache_write)
-                                    ),
+                                    if turn.tokens.cache_miss > 0 {
+                                        format!(
+                                            "H/M {} / {}",
+                                            format_compact_number(turn.tokens.cache_read),
+                                            format_compact_number(turn.tokens.cache_miss)
+                                        )
+                                    } else {
+                                        format!(
+                                            "R/W {} / {}",
+                                            format_compact_number(turn.tokens.cache_read),
+                                            format_compact_number(turn.tokens.cache_write)
+                                        )
+                                    },
                                     Style::default().fg(theme.text),
                                 ),
                             ]));
@@ -2163,12 +2168,7 @@ fn sidebar_usage_line(theme: &Theme, label: &str, used: u64, limit: Option<u64>)
 }
 
 fn total_session_tokens(usage: &rocode_session::SessionUsage) -> u64 {
-    usage.input_tokens
-        + usage.output_tokens
-        + usage.reasoning_tokens
-        + usage.cache_read_tokens
-        + usage.cache_miss_tokens
-        + usage.cache_write_tokens
+    usage.input_tokens + usage.output_tokens + usage.reasoning_tokens
 }
 
 fn format_price_pair(input: f64, output: f64) -> String {
@@ -2375,8 +2375,8 @@ mod tests {
                 output_tokens: 150_000,
                 reasoning_tokens: 0,
                 cache_write_tokens: 0,
-                cache_read_tokens: 0,
-                cache_miss_tokens: 0,
+                cache_read_tokens: 100_000,
+                cache_miss_tokens: 50_000,
                 context_tokens: 0,
                 total_cost: 0.0,
             });
@@ -2418,6 +2418,8 @@ mod tests {
         assert!(!rendered.contains("Current"));
         assert!(!rendered.contains("compact now"));
         assert!(rendered.contains("300K cumulative"));
+        assert!(!rendered.contains("450K cumulative"));
+        assert!(rendered.contains("H/M 100K / 50K"));
     }
 
     #[test]

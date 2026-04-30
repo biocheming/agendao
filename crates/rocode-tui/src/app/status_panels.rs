@@ -2297,12 +2297,7 @@ fn format_stage_usage_summary_line(stage: &rocode_command::stage_protocol::Stage
 }
 
 fn tui_total_session_tokens(usage: &rocode_session::SessionUsage) -> u64 {
-    usage.input_tokens
-        + usage.output_tokens
-        + usage.reasoning_tokens
-        + usage.cache_read_tokens
-        + usage.cache_miss_tokens
-        + usage.cache_write_tokens
+    usage.input_tokens + usage.output_tokens + usage.reasoning_tokens
 }
 
 fn tui_context_usage_percent(used: u64, limit: u64) -> Option<u64> {
@@ -2332,6 +2327,7 @@ fn tui_has_turn_usage(tokens: &crate::context::TokenUsage) -> bool {
         || tokens.output > 0
         || tokens.reasoning > 0
         || tokens.cache_read > 0
+        || tokens.cache_miss > 0
         || tokens.cache_write > 0
 }
 
@@ -2346,12 +2342,20 @@ fn tui_format_last_turn_usage(tokens: &crate::context::TokenUsage) -> String {
             tui_format_token_count(tokens.reasoning)
         ));
     }
-    if tokens.cache_read > 0 || tokens.cache_write > 0 {
-        parts.push(format!(
-            "Cache {}/{}",
-            tui_format_token_count(tokens.cache_read),
-            tui_format_token_count(tokens.cache_write)
-        ));
+    if tokens.cache_read > 0 || tokens.cache_miss > 0 || tokens.cache_write > 0 {
+        if tokens.cache_miss > 0 {
+            parts.push(format!(
+                "Cache H/M {}/{}",
+                tui_format_token_count(tokens.cache_read),
+                tui_format_token_count(tokens.cache_miss)
+            ));
+        } else {
+            parts.push(format!(
+                "Cache R/W {}/{}",
+                tui_format_token_count(tokens.cache_read),
+                tui_format_token_count(tokens.cache_write)
+            ));
+        }
     }
     parts.join(" · ")
 }
