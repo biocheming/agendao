@@ -5,6 +5,7 @@ use crate::{CacheControl, Content, ContentPart, Message};
 use serde::{Deserialize, Serialize};
 
 use super::model_config::remap_provider_options;
+use crate::cache::plan_ethnopic_message_breakpoints;
 
 #[derive(Debug, Clone, Copy)]
 pub enum ProviderType {
@@ -117,39 +118,12 @@ pub fn apply_caching(messages: &mut [Message], provider_type: ProviderType) {
         return;
     }
 
-    let system_indices: Vec<usize> = messages
-        .iter()
-        .enumerate()
-        .filter(|(_, m)| matches!(m.role, crate::Role::System))
-        .map(|(i, _)| i)
-        .take(2)
-        .collect();
-
-    let mut indices_to_cache: Vec<usize> = Vec::new();
-    for idx in system_indices
-        .into_iter()
-        .chain(stable_conversation_cache_boundary_index(messages))
-    {
-        if !indices_to_cache.contains(&idx) {
-            indices_to_cache.push(idx);
-        }
-    }
-
-    for idx in indices_to_cache {
+    let plan = plan_ethnopic_message_breakpoints(messages);
+    for idx in plan.message_indices() {
         if let Some(msg) = messages.get_mut(idx) {
             apply_cache_to_message(msg, provider_type);
         }
     }
-}
-
-fn stable_conversation_cache_boundary_index(messages: &[Message]) -> Option<usize> {
-    let last_index = messages.len().checked_sub(1)?;
-    let boundary = if matches!(messages[last_index].role, crate::Role::User) {
-        last_index.checked_sub(1)?
-    } else {
-        last_index
-    };
-    (!matches!(messages[boundary].role, crate::Role::System)).then_some(boundary)
 }
 
 fn apply_cache_to_message(message: &mut Message, provider_type: ProviderType) {
