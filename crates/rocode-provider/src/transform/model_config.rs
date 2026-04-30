@@ -96,17 +96,14 @@ pub fn normalize_interleaved_thinking(
 /// Apply cache control markers at the part level.
 pub fn apply_caching_per_part(messages: &mut [Message], provider_type: &ProviderType) {
     if let ProviderType::Ethnopic = provider_type {
-        if let Some(last_user) = messages
-            .iter_mut()
-            .rev()
-            .find(|m| matches!(m.role, crate::Role::User))
-        {
-            if let Content::Parts(ref mut parts) = last_user.content {
+        if let Some(boundary_index) = stable_conversation_cache_boundary_index(messages) {
+            let boundary = &mut messages[boundary_index];
+            if let Content::Parts(ref mut parts) = boundary.content {
                 if let Some(last_part) = parts.last_mut() {
                     last_part.cache_control = Some(CacheControl::ephemeral());
                 }
             }
-            last_user.cache_control = Some(CacheControl::ephemeral());
+            boundary.cache_control = Some(CacheControl::ephemeral());
         }
 
         for msg in messages.iter_mut() {
@@ -120,6 +117,16 @@ pub fn apply_caching_per_part(messages: &mut [Message], provider_type: &Provider
             }
         }
     }
+}
+
+fn stable_conversation_cache_boundary_index(messages: &[Message]) -> Option<usize> {
+    let last_index = messages.len().checked_sub(1)?;
+    let boundary = if matches!(messages[last_index].role, crate::Role::User) {
+        last_index.checked_sub(1)?
+    } else {
+        last_index
+    };
+    (!matches!(messages[boundary].role, crate::Role::System)).then_some(boundary)
 }
 
 // ---------------------------------------------------------------------------

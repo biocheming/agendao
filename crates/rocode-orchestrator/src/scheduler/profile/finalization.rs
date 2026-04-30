@@ -39,7 +39,7 @@ impl SchedulerProfileOrchestrator {
         self.plan
             .extend_final_output_metadata(&state, artifact_path.as_deref(), &mut metadata);
 
-        OrchestratorOutput {
+        let mut output = OrchestratorOutput {
             content,
             steps: state.metrics.total_steps,
             tool_calls_count: state.metrics.total_tool_calls,
@@ -49,6 +49,12 @@ impl SchedulerProfileOrchestrator {
             } else {
                 crate::runtime::events::FinishReason::EndTurn
             },
-        }
+        };
+        append_assistant_output_projection(
+            &mut output.metadata,
+            &output.content,
+            &AssistantOutputProjectionOptions::default(),
+        );
+        output
     }
 }

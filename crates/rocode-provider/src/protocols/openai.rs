@@ -237,13 +237,15 @@ impl RawChatResponse {
             })
             .collect();
 
-        let usage = self.usage.map(|u| Usage {
-            prompt_tokens: u.prompt_tokens.unwrap_or(0),
-            completion_tokens: u.completion_tokens.unwrap_or(0),
-            total_tokens: u.total_tokens.unwrap_or(0),
-            cache_read_input_tokens: u.cache_read_input_tokens.or(u.prompt_cache_hit_tokens),
-            cache_miss_input_tokens: u.prompt_cache_miss_tokens,
-            cache_creation_input_tokens: u.cache_creation_input_tokens,
+        let usage = self.usage.map(|u| {
+            crate::cache::usage_from_counts(
+                u.prompt_tokens.unwrap_or(0),
+                u.completion_tokens.unwrap_or(0),
+                u.total_tokens.unwrap_or(0),
+                u.cache_read_input_tokens.or(u.prompt_cache_hit_tokens),
+                u.prompt_cache_miss_tokens,
+                u.cache_creation_input_tokens,
+            )
         });
 
         ChatResponse {

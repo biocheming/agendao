@@ -58,6 +58,22 @@ fn test_apply_caching_ethnopic_family() {
 }
 
 #[test]
+fn test_apply_caching_uses_stable_boundary_before_current_user() {
+    let mut messages = vec![
+        Message::system("System prompt"),
+        Message::user("Hello"),
+        Message::assistant("Hi there"),
+        Message::user("Follow up"),
+    ];
+
+    apply_caching(&mut messages, ProviderType::Ethnopic);
+
+    assert!(messages[0].provider_options.is_some());
+    assert!(messages[2].provider_options.is_some());
+    assert!(messages[3].provider_options.is_none());
+}
+
+#[test]
 fn test_extract_reasoning() {
     let content = "Hello <thinking>let me think</thinking> World";
     let (reasoning, rest) = extract_reasoning_from_response(content);
@@ -277,8 +293,11 @@ fn test_apply_caching_per_part_ethnopic_family() {
     // System message should have cache control
     assert!(messages[0].cache_control.is_some());
 
-    // Last user message should have cache control
-    assert!(messages[3].cache_control.is_some());
+    // Current user message is dynamic and should not become the cache boundary.
+    assert!(messages[3].cache_control.is_none());
+
+    // Previous assistant message is the stable conversation boundary.
+    assert!(messages[2].cache_control.is_some());
 
     // First user message should NOT have cache control
     assert!(messages[1].cache_control.is_none());
