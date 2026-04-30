@@ -412,8 +412,10 @@ fn extract_text_and_tool_calls(content: &Content) -> (String, Vec<InlineToolCall
             let mut tool_calls = Vec::new();
 
             for part in parts {
-                if let Some(part_text) = &part.text {
-                    text.push_str(part_text);
+                if part.content_type != "reasoning" {
+                    if let Some(part_text) = &part.text {
+                        text.push_str(part_text);
+                    }
                 }
 
                 if part.content_type == "tool_use" {
@@ -483,5 +485,24 @@ mod tests {
         let tool_defs = build_inline_tool_definitions(tools, &disabled);
         let names: Vec<&str> = tool_defs.iter().map(|tool| tool.name.as_str()).collect();
         assert_eq!(names, vec!["websearch", "task", "task_flow"]);
+    }
+
+    #[test]
+    fn extract_text_and_tool_calls_keeps_reasoning_out_of_visible_text() {
+        let content = Content::Parts(vec![
+            ContentPart::reasoning("internal trace".to_string()),
+            ContentPart::text("visible answer".to_string()),
+            ContentPart::tool_use(
+                "tool-call-0".to_string(),
+                "read".to_string(),
+                serde_json::json!({"path":"README.md"}),
+            ),
+        ]);
+
+        let (text, tool_calls) = extract_text_and_tool_calls(&content);
+
+        assert_eq!(text, "visible answer");
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].id, "tool-call-0");
     }
 }

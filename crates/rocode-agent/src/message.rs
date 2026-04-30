@@ -16,6 +16,8 @@ pub struct Attachment {
 pub struct AgentMessage {
     pub role: MessageRole,
     pub content: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reasoning: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_result: Option<ToolResult>,
     #[serde(default)]
@@ -52,6 +54,7 @@ impl AgentMessage {
         Self {
             role: MessageRole::System,
             content: content.into(),
+            reasoning: String::new(),
             tool_result: None,
             tool_calls: Vec::new(),
             attachments: Vec::new(),
@@ -62,6 +65,7 @@ impl AgentMessage {
         Self {
             role: MessageRole::User,
             content: content.into(),
+            reasoning: String::new(),
             tool_result: None,
             tool_calls: Vec::new(),
             attachments: Vec::new(),
@@ -73,6 +77,7 @@ impl AgentMessage {
         Self {
             role: MessageRole::User,
             content: content.into(),
+            reasoning: String::new(),
             tool_result: None,
             tool_calls: Vec::new(),
             attachments,
@@ -83,6 +88,7 @@ impl AgentMessage {
         Self {
             role: MessageRole::Assistant,
             content: content.into(),
+            reasoning: String::new(),
             tool_result: None,
             tool_calls: Vec::new(),
             attachments: Vec::new(),
@@ -93,6 +99,7 @@ impl AgentMessage {
         Self {
             role: MessageRole::Assistant,
             content: content.into(),
+            reasoning: String::new(),
             tool_result: None,
             tool_calls,
             attachments: Vec::new(),
@@ -109,6 +116,7 @@ impl AgentMessage {
         Self {
             role: MessageRole::Tool,
             content: content.clone(),
+            reasoning: String::new(),
             tool_result: Some(ToolResult {
                 tool_call_id: tool_call_id.into(),
                 name: name.into(),
@@ -156,6 +164,16 @@ impl Conversation {
         self.messages.push(AgentMessage::assistant(content));
     }
 
+    pub fn add_assistant_message_with_reasoning(
+        &mut self,
+        reasoning: impl Into<String>,
+        content: impl Into<String>,
+    ) {
+        let mut message = AgentMessage::assistant(content);
+        message.reasoning = reasoning.into();
+        self.messages.push(message);
+    }
+
     pub fn add_assistant_message_with_tools(
         &mut self,
         content: impl Into<String>,
@@ -163,6 +181,17 @@ impl Conversation {
     ) {
         self.messages
             .push(AgentMessage::assistant_with_tools(content, tool_calls));
+    }
+
+    pub fn add_assistant_message_with_reasoning_and_tools(
+        &mut self,
+        reasoning: impl Into<String>,
+        content: impl Into<String>,
+        tool_calls: Vec<ToolCall>,
+    ) {
+        let mut message = AgentMessage::assistant_with_tools(content, tool_calls);
+        message.reasoning = reasoning.into();
+        self.messages.push(message);
     }
 
     pub fn add_tool_result(
@@ -245,10 +274,23 @@ impl Conversation {
                     }
                 }
                 MessageRole::Assistant => {
-                    if m.tool_calls.is_empty() {
+                    if m.tool_calls.is_empty() && m.reasoning.is_empty() {
                         rocode_provider::Message::assistant(&m.content)
                     } else {
                         let mut parts = Vec::new();
+                        if !m.reasoning.is_empty() {
+                            parts.push(rocode_provider::ContentPart {
+                                content_type: "reasoning".to_string(),
+                                text: Some(m.reasoning.clone()),
+                                image_url: None,
+                                tool_use: None,
+                                tool_result: None,
+                                cache_control: None,
+                                filename: None,
+                                media_type: None,
+                                provider_options: None,
+                            });
+                        }
                         if !m.content.is_empty() {
                             parts.push(rocode_provider::ContentPart {
                                 content_type: "text".to_string(),
@@ -365,6 +407,35 @@ mod tests {
             }
             rocode_provider::Content::Text(_) => {
                 panic!("assistant message with tool calls must serialize as parts");
+            }
+        }
+    }
+
+    #[test]
+    fn assistant_reasoning_serializes_as_protocol_part() {
+        let mut conversation = Conversation::new();
+        conversation.add_assistant_message_with_reasoning_and_tools(
+            "internal trace",
+            "visible answer",
+            vec![ToolCall {
+                id: "tool-call-0".to_string(),
+                name: "ls".to_string(),
+                arguments: serde_json::json!({"path":"."}),
+            }],
+        );
+
+        let provider_messages = conversation.to_provider_messages();
+        assert_eq!(provider_messages.len(), 1);
+        match &provider_messages[0].content {
+            rocode_provider::Content::Parts(parts) => {
+                assert_eq!(parts[0].content_type, "reasoning");
+                assert_eq!(parts[0].text.as_deref(), Some("internal trace"));
+                assert_eq!(parts[1].content_type, "text");
+                assert_eq!(parts[1].text.as_deref(), Some("visible answer"));
+                assert_eq!(parts[2].content_type, "tool_use");
+            }
+            rocode_provider::Content::Text(_) => {
+                panic!("assistant reasoning must serialize as typed parts");
             }
         }
     }
