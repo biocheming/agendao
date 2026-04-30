@@ -545,6 +545,51 @@ fn test_provider_options_map_gateway_closeai_alias() {
 }
 
 #[test]
+fn test_options_hashes_closeai_prompt_cache_key() {
+    use serde_json::json;
+    let model = models::ModelInfo {
+        id: "gpt-model".to_string(),
+        provider: Some(models::ModelProvider {
+            npm: Some("@ai-sdk/openai".to_string()),
+            api: Some("gpt-5".to_string()),
+        }),
+        ..default_model_info()
+    };
+    let opts = HashMap::from([
+        ("cacheStage".to_string(), json!("exec")),
+        ("cachePresetHash".to_string(), json!("preset_123")),
+        ("cacheRepoHash".to_string(), json!("repo_456")),
+    ]);
+
+    let result = options("openai", &model, "session-with-local-detail", &opts);
+    let key = result
+        .get("promptCacheKey")
+        .and_then(|value| value.as_str())
+        .expect("prompt cache key should be present");
+
+    assert!(key.starts_with("rocode:"));
+    assert!(key.contains(":exec:preset_123:repo_456"));
+    assert!(!key.contains("session-with-local-detail"));
+}
+
+#[test]
+fn test_options_skips_prompt_cache_key_for_unknown_closeai_compatible_provider() {
+    let model = models::ModelInfo {
+        id: "deepseek-model".to_string(),
+        provider: Some(models::ModelProvider {
+            npm: Some("@ai-sdk/openai-compatible".to_string()),
+            api: Some("deepseek-chat".to_string()),
+        }),
+        ..default_model_info()
+    };
+
+    let result = options("deepseek", &model, "session", &HashMap::new());
+
+    assert!(!result.contains_key("promptCacheKey"));
+    assert!(!result.contains_key("prompt_cache_key"));
+}
+
+#[test]
 fn test_provider_options_map_openrouter() {
     use serde_json::json;
     let model = models::ModelInfo {

@@ -41,6 +41,71 @@ pub struct ProviderCacheCapabilities {
     pub override_: ProviderCacheOverrides,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CloseAiPromptCacheKeyField {
+    CamelCase,
+    SnakeCase,
+}
+
+impl CloseAiPromptCacheKeyField {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CamelCase => "promptCacheKey",
+            Self::SnakeCase => "prompt_cache_key",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptCacheKeyContext<'a> {
+    pub session_id: &'a str,
+    pub stage: &'a str,
+    pub preset_hash: Option<&'a str>,
+    pub repo_hash: Option<&'a str>,
+}
+
+pub fn build_prompt_cache_key(ctx: PromptCacheKeyContext<'_>) -> String {
+    let session_hash = short_hash(ctx.session_id);
+    let stage = stable_key_segment(ctx.stage).unwrap_or("chat");
+    let preset = ctx
+        .preset_hash
+        .and_then(stable_key_segment)
+        .unwrap_or("default");
+    let repo = ctx
+        .repo_hash
+        .and_then(stable_key_segment)
+        .unwrap_or("no-repo");
+    format!("rocode:{session_hash}:{stage}:{preset}:{repo}")
+}
+
+pub fn closeai_prompt_cache_key_field(
+    provider_id: &str,
+    npm: &str,
+    provider_options: &serde_json::Map<String, Value>,
+) -> Option<CloseAiPromptCacheKeyField> {
+    let provider_id = provider_id.trim().to_ascii_lowercase();
+    let npm = npm.trim();
+    let explicit = provider_options
+        .get("setCacheKey")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    if explicit
+        || provider_id == "openai"
+        || npm == "@ai-sdk/openai"
+        || provider_id.starts_with("opencode")
+        || provider_id == "venice"
+    {
+        return Some(CloseAiPromptCacheKeyField::CamelCase);
+    }
+
+    if provider_id == "openrouter" || npm == "@openrouter/ai-sdk-provider" {
+        return Some(CloseAiPromptCacheKeyField::SnakeCase);
+    }
+
+    None
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderCacheOverrides {
     pub usage_parser: Option<CacheUsageParserKind>,
@@ -256,6 +321,21 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(digest)
 }
 
+fn short_hash(value: &str) -> String {
+    text_fingerprint(value).chars().take(16).collect()
+}
+
+fn stable_key_segment(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        .then_some(trimmed)
+}
+
 fn cache_tool_order_key(name: &str) -> (u8, &str) {
     match name {
         "task_flow" => (0, name),
@@ -362,6 +442,44 @@ mod tests {
         assert_eq!(metrics.cache_read_tokens, 1000);
         assert_eq!(metrics.cache_write_tokens, 200);
         assert_eq!(metrics.context_tokens, 1200);
+    }
+
+    #[test]
+    fn prompt_cache_key_hashes_session_identity() {
+        let key = build_prompt_cache_key(PromptCacheKeyContext {
+            session_id: "session-with-local-detail",
+            stage: "exec",
+            preset_hash: Some("preset_123"),
+            repo_hash: Some("repo_456"),
+        });
+
+        assert!(key.starts_with("rocode:"));
+        assert!(key.contains(":exec:preset_123:repo_456"));
+        assert!(!key.contains("session-with-local-detail"));
+    }
+
+    #[test]
+    fn prompt_cache_key_field_is_capability_gated() {
+        assert_eq!(
+            closeai_prompt_cache_key_field("openai", "@ai-sdk/openai", &serde_json::Map::new()),
+            Some(CloseAiPromptCacheKeyField::CamelCase)
+        );
+        assert_eq!(
+            closeai_prompt_cache_key_field(
+                "openrouter",
+                "@openrouter/ai-sdk-provider",
+                &serde_json::Map::new()
+            ),
+            Some(CloseAiPromptCacheKeyField::SnakeCase)
+        );
+        assert_eq!(
+            closeai_prompt_cache_key_field(
+                "deepseek",
+                "@ai-sdk/openai-compatible",
+                &serde_json::Map::new()
+            ),
+            None
+        );
     }
 
     #[test]
