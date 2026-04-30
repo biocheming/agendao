@@ -54,7 +54,7 @@ enum Matcher {
 /// ## Iterate on the results
 ///
 /// ```
-/// use rust_search::SearchBuilder;
+/// use rocode_tool::rust_search::SearchBuilder;
 ///
 /// let search = SearchBuilder::default()
 ///     .location("src")
@@ -70,7 +70,7 @@ enum Matcher {
 /// ## Collect results into a vector
 ///
 /// ```
-/// use rust_search::SearchBuilder;
+/// use rocode_tool::rust_search::SearchBuilder;
 ///
 /// let paths_vec: Vec<String> = SearchBuilder::default()
 ///     .location("src")

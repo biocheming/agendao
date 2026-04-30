@@ -32,6 +32,10 @@ pub struct SessionTelemetrySnapshot {
     pub memory: Option<SessionMemoryTelemetrySummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_bust_summary: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_surface_runtime_snapshot: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingress_stabilization: Option<serde_json::Value>,
 }
 
 pub(super) async fn get_session_telemetry(
@@ -107,6 +111,8 @@ pub(super) async fn build_session_telemetry_snapshot(
     let topology = build_session_execution_topology_snapshot(state, session_id, session).await;
     let memory = build_session_memory_telemetry(state, session).await;
     let cache_bust_summary = latest_cache_bust_summary(session);
+    let prompt_surface_runtime_snapshot = prompt_surface_runtime_snapshot(session);
+    let ingress_stabilization = latest_ingress_stabilization(session);
 
     Ok(SessionTelemetrySnapshot {
         runtime,
@@ -115,7 +121,20 @@ pub(super) async fn build_session_telemetry_snapshot(
         usage,
         memory,
         cache_bust_summary,
+        prompt_surface_runtime_snapshot,
+        ingress_stabilization,
     })
+}
+
+fn latest_ingress_stabilization(session: &Session) -> Option<serde_json::Value> {
+    let source = session.metadata.get("last_ingress_source")?.clone();
+    let policy = session.metadata.get("last_ingress_policy").cloned();
+    let batch_count = session.metadata.get("last_ingress_batch_count").cloned();
+    Some(serde_json::json!({
+        "source": source,
+        "policy": policy,
+        "batch_count": batch_count,
+    }))
 }
 
 fn latest_cache_bust_summary(session: &Session) -> Option<serde_json::Value> {
@@ -128,6 +147,26 @@ fn latest_cache_bust_summary(session: &Session) -> Option<serde_json::Value> {
             rocode_provider::cache::cache_bust_summary_from_metadata(&message.metadata)
         })
         .and_then(|summary| serde_json::to_value(summary).ok())
+}
+
+fn prompt_surface_runtime_snapshot(session: &Session) -> Option<serde_json::Value> {
+    session
+        .metadata
+        .get(rocode_session::prompt::PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY)
+        .cloned()
+        .or_else(|| {
+            session
+                .messages
+                .iter()
+                .rev()
+                .find(|message| matches!(message.role, MessageRole::Assistant))
+                .and_then(|message| {
+                    message
+                        .metadata
+                        .get(rocode_session::prompt::PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY)
+                        .cloned()
+                })
+        })
 }
 
 pub(super) async fn persist_session_telemetry_metadata(
@@ -279,6 +318,49 @@ mod tests {
     }
 
     #[test]
+    fn prompt_surface_runtime_snapshot_prefers_session_metadata() {
+        let mut session = Session::new("session-1".to_string(), ".".to_string());
+        session.insert_metadata(
+            rocode_session::prompt::PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "generation": 2,
+                "source": "session",
+            }),
+        );
+        let assistant = session.add_assistant_message();
+        assistant.metadata.insert(
+            rocode_session::prompt::PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "generation": 1,
+                "source": "assistant",
+            }),
+        );
+
+        let snapshot = prompt_surface_runtime_snapshot(&session).expect("snapshot");
+
+        assert_eq!(snapshot["generation"], 2);
+        assert_eq!(snapshot["source"], "session");
+    }
+
+    #[test]
+    fn prompt_surface_runtime_snapshot_falls_back_to_assistant_metadata() {
+        let mut session = Session::new("session-1".to_string(), ".".to_string());
+        let assistant = session.add_assistant_message();
+        assistant.metadata.insert(
+            rocode_session::prompt::PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "generation": 3,
+                "source": "assistant",
+            }),
+        );
+
+        let snapshot = prompt_surface_runtime_snapshot(&session).expect("snapshot");
+
+        assert_eq!(snapshot["generation"], 3);
+        assert_eq!(snapshot["source"], "assistant");
+    }
+
+    #[test]
     fn telemetry_snapshot_serializes_authority_contract_fields() {
         let mut runtime = SessionRuntimeState::new("session-1");
         runtime.active_stage_id = Some("stage-1".to_string());
@@ -347,6 +429,17 @@ mod tests {
             },
             memory: None,
             cache_bust_summary: None,
+            prompt_surface_runtime_snapshot: Some(serde_json::json!({
+                "generation": 7,
+                "invalidation": {
+                    "reason": "prompt surface runtime changed: toolSurfaceHash"
+                },
+            })),
+            ingress_stabilization: Some(serde_json::json!({
+                "source": "web",
+                "policy": "entry_metadata_only",
+                "batch_count": 1,
+            })),
         };
 
         let value = serde_json::to_value(&snapshot).expect("snapshot should serialize");
@@ -360,6 +453,11 @@ mod tests {
         assert_eq!(value["stages"][0]["skill_tree_truncated"], true);
         assert_eq!(value["topology"]["waiting_count"], 1);
         assert_eq!(value["usage"]["total_cost"], 0.12);
+        assert_eq!(value["prompt_surface_runtime_snapshot"]["generation"], 7);
+        assert_eq!(
+            value["ingress_stabilization"]["policy"],
+            "entry_metadata_only"
+        );
     }
 
     #[test]

@@ -443,6 +443,7 @@ impl App {
             display_mode: Some("atlas".to_string()),
             model: self.selected_model_for_prompt(),
             variant: self.context.current_model_variant(),
+            idempotency_key: Some(format!("tui_{}", uuid::Uuid::new_v4().simple())),
         });
     }
 

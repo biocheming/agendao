@@ -390,6 +390,7 @@ impl ToolRegistry {
                 name: t.id().to_string(),
                 description: t.description().to_string(),
                 parameters: t.parameters(),
+                source_kind: t.source_kind(),
             })
             .collect();
 
@@ -595,6 +596,7 @@ pub struct ToolSchema {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
+    pub source_kind: crate::ToolSchemaSourceKind,
 }
 
 pub async fn create_default_registry() -> ToolRegistry {

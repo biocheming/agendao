@@ -184,11 +184,15 @@ impl AsyncApiClient {
         scheduler_profile: Option<String>,
         model: Option<String>,
         variant: Option<String>,
+        ingress_source: Option<String>,
+        idempotency_key: Option<String>,
     ) -> anyhow::Result<PromptResponse> {
         let url = server_url(&self.base_url, &format!("/session/{}/prompt", session_id));
         let req = PromptRequest {
             message: (!content.trim().is_empty()).then_some(content),
             parts,
+            idempotency_key,
+            ingress_source,
             agent,
             scheduler_profile,
             model,
@@ -207,11 +211,15 @@ impl AsyncApiClient {
         arguments: Option<String>,
         model: Option<String>,
         variant: Option<String>,
+        ingress_source: Option<String>,
+        idempotency_key: Option<String>,
     ) -> anyhow::Result<PromptResponse> {
         let url = server_url(&self.base_url, &format!("/session/{}/prompt", session_id));
         let req = PromptRequest {
             message: None,
             parts: None,
+            idempotency_key,
+            ingress_source,
             agent: None,
             scheduler_profile: None,
             model,

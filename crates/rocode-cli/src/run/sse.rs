@@ -39,6 +39,32 @@ fn split_repeatable_answer(answer: &str) -> Vec<String> {
         .collect()
 }
 
+fn ingress_stabilization_label(value: Option<&serde_json::Value>) -> Option<String> {
+    let value = value?.as_object()?;
+    let source = value
+        .get("source")
+        .and_then(|source| {
+            source
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| source.get("source").and_then(|nested| nested.as_str()).map(str::to_string))
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+    let policy = value
+        .get("policy")
+        .and_then(|policy| policy.as_str())
+        .unwrap_or("metadata_only");
+    let batch_count = value
+        .get("batch_count")
+        .and_then(|count| count.as_u64())
+        .unwrap_or(1);
+    if batch_count > 1 {
+        Some(format!("{source} · {policy} · batch {batch_count}"))
+    } else {
+        Some(format!("{source} · {policy}"))
+    }
+}
+
 fn merge_pending_command_arguments(
     pending: &crate::api_client::PendingCommandInvocation,
     answers: &[Vec<String>],
@@ -191,6 +217,11 @@ async fn resolve_prompt_submission(
                 (runtime.resolved_model_label != "auto")
                     .then(|| runtime.resolved_model_label.clone()),
                 None,
+                Some("cli".to_string()),
+                Some(format!(
+                    "cli_command_{}",
+                    rocode_core::id::create(rocode_core::id::Prefix::User, true, None)
+                )),
             )
             .await?;
     }
@@ -285,6 +316,11 @@ async fn run_server_prompt_with_parts(
             runtime.resolved_scheduler_profile_name.clone(),
             (runtime.resolved_model_label != "auto").then(|| runtime.resolved_model_label.clone()),
             None,
+            Some("cli".to_string()),
+            Some(format!(
+                "cli_{}",
+                rocode_core::id::create(rocode_core::id::Prefix::User, true, None)
+            )),
         )
         .await
     {
@@ -940,6 +976,8 @@ async fn cli_refresh_server_info(
                         .and_then(|summary| {
                             rocode_provider::cache::cache_bust_summary_label(&summary)
                         });
+                    projection.ingress_diagnostic =
+                        ingress_stabilization_label(telemetry.ingress_stabilization.as_ref());
                 }
             }
             Err(error) => {

@@ -320,6 +320,10 @@ pub struct SessionTelemetrySnapshot {
     pub memory: Option<SessionMemoryTelemetrySummary>,
     #[serde(default)]
     pub cache_bust_summary: Option<serde_json::Value>,
+    #[serde(default)]
+    pub prompt_surface_runtime_snapshot: Option<serde_json::Value>,
+    #[serde(default)]
+    pub ingress_stabilization: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -557,6 +561,10 @@ pub struct PromptRequest {
     pub message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parts: Option<Vec<PromptPart>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingress_source: Option<String>,
     pub agent: Option<String>,
     pub scheduler_profile: Option<String>,
     pub model: Option<String>,

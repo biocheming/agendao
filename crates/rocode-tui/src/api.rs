@@ -95,8 +95,8 @@ impl RuntimeApiClient {
         fn reply_permission(&self, permission_id: &str, reply: &str, message: Option<String>) -> ();
         fn update_session_title(&self, session_id: &str, title: &str) -> SessionInfo;
         fn delete_session(&self, session_id: &str) -> bool;
-        fn send_prompt(&self, session_id: &str, content: String, parts: Option<Vec<PromptPart>>, agent: Option<String>, scheduler_profile: Option<String>, model: Option<String>, variant: Option<String>) -> PromptResponse;
-        fn send_command_prompt(&self, session_id: &str, command: String, arguments: Option<String>, model: Option<String>, variant: Option<String>) -> PromptResponse;
+        fn send_prompt(&self, session_id: &str, content: String, parts: Option<Vec<PromptPart>>, agent: Option<String>, scheduler_profile: Option<String>, model: Option<String>, variant: Option<String>, ingress_source: Option<String>, idempotency_key: Option<String>) -> PromptResponse;
+        fn send_command_prompt(&self, session_id: &str, command: String, arguments: Option<String>, model: Option<String>, variant: Option<String>, ingress_source: Option<String>, idempotency_key: Option<String>) -> PromptResponse;
         fn execute_shell(&self, session_id: &str, command: String, workdir: Option<String>) -> serde_json::Value;
         fn abort_session(&self, session_id: &str) -> serde_json::Value;
         fn cancel_tool_call(&self, session_id: &str, tool_call_id: &str) -> serde_json::Value;
@@ -416,6 +416,7 @@ impl ApiClient {
         scheduler_profile: Option<String>,
         model: Option<String>,
         variant: Option<String>,
+        idempotency_key: Option<String>,
     ) -> anyhow::Result<PromptResponse> {
         let session_id = session_id.to_string();
         self.call("send prompt", move |client| {
@@ -427,6 +428,8 @@ impl ApiClient {
                 scheduler_profile,
                 model,
                 variant,
+                Some("tui".to_string()),
+                idempotency_key,
             )
         })
     }
@@ -438,10 +441,19 @@ impl ApiClient {
         arguments: Option<String>,
         model: Option<String>,
         variant: Option<String>,
+        idempotency_key: Option<String>,
     ) -> anyhow::Result<PromptResponse> {
         let session_id = session_id.to_string();
         self.call("send command prompt", move |client| {
-            client.send_command_prompt(&session_id, command, arguments, model, variant)
+            client.send_command_prompt(
+                &session_id,
+                command,
+                arguments,
+                model,
+                variant,
+                Some("tui".to_string()),
+                idempotency_key,
+            )
         })
     }
 

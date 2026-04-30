@@ -308,10 +308,14 @@ impl BlockingApiClient {
         scheduler_profile: Option<String>,
         model: Option<String>,
         variant: Option<String>,
+        ingress_source: Option<String>,
+        idempotency_key: Option<String>,
     ) -> anyhow::Result<PromptResponse> {
         let request = PromptRequest {
             message: (!content.trim().is_empty()).then_some(content),
             parts,
+            idempotency_key,
+            ingress_source,
             agent,
             scheduler_profile,
             model,
@@ -333,10 +337,14 @@ impl BlockingApiClient {
         arguments: Option<String>,
         model: Option<String>,
         variant: Option<String>,
+        ingress_source: Option<String>,
+        idempotency_key: Option<String>,
     ) -> anyhow::Result<PromptResponse> {
         let request = PromptRequest {
             message: None,
             parts: None,
+            idempotency_key,
+            ingress_source,
             agent: None,
             scheduler_profile: None,
             model,

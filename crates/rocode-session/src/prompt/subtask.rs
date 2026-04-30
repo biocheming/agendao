@@ -469,16 +469,19 @@ mod tests {
                 name: "websearch".to_string(),
                 description: "web".to_string(),
                 parameters: serde_json::json!({}),
+                source_kind: rocode_tool::ToolSchemaSourceKind::BuiltIn,
             },
             rocode_tool::ToolSchema {
                 name: "task".to_string(),
                 description: "task".to_string(),
                 parameters: serde_json::json!({}),
+                source_kind: rocode_tool::ToolSchemaSourceKind::BuiltIn,
             },
             rocode_tool::ToolSchema {
                 name: "task_flow".to_string(),
                 description: "task flow".to_string(),
                 parameters: serde_json::json!({}),
+                source_kind: rocode_tool::ToolSchemaSourceKind::BuiltIn,
             },
         ];
 

@@ -110,6 +110,46 @@ fn filtered_tool_definitions(
     tool_defs
 }
 
+fn stream_ingress_envelope(
+    session_id: &str,
+    text: &str,
+    idempotency_key: Option<String>,
+    ingress_source: Option<&str>,
+) -> rocode_session::prompt::IngressTurnEnvelope {
+    let now = chrono::Utc::now().timestamp_millis();
+    let turn_id = idempotency_key
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| format!("ingress_{}", value.trim()))
+        .unwrap_or_else(|| format!("ingress_{}", uuid::Uuid::new_v4().simple()));
+    let mut envelope = rocode_session::prompt::IngressTurnEnvelope::new_text(
+        session_id.to_string(),
+        match ingress_source
+            .unwrap_or("web")
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "cli" => rocode_session::prompt::IngressSource::Cli,
+            "tui" => rocode_session::prompt::IngressSource::Tui,
+            "web" => rocode_session::prompt::IngressSource::Web,
+            "api" => rocode_session::prompt::IngressSource::Api,
+            "scheduler" => rocode_session::prompt::IngressSource::Scheduler,
+            other if !other.is_empty() => {
+                rocode_session::prompt::IngressSource::Other(other.to_string())
+            }
+            _ => rocode_session::prompt::IngressSource::Web,
+        },
+        turn_id,
+        now,
+        text.to_string(),
+    );
+    envelope.context_key = Some("stream".to_string());
+    envelope.idempotency_key = idempotency_key.filter(|value| !value.trim().is_empty());
+    envelope.stabilization.policy = "entry_metadata_only".to_string();
+    envelope
+}
+
 pub(crate) async fn stream_message(
     State(state): State<Arc<ServerState>>,
     Path(session_id): Path<String>,
@@ -212,16 +252,26 @@ pub(crate) async fn stream_message(
 
     broadcast_session_updated(state.as_ref(), session_id.clone(), "stream.request");
 
-    let tool_defs = filtered_tool_definitions(
-        rocode_session::resolve_tools(state.tool_registry.as_ref()).await,
-        resolved_agent.as_ref(),
-    );
+    let resolved_tool_surface =
+        rocode_session::resolve_tool_surface(state.tool_registry.as_ref()).await;
+    let tool_defs = filtered_tool_definitions(resolved_tool_surface.tools, resolved_agent.as_ref());
+    let tool_source_digests = if resolved_agent.is_some() {
+        Vec::new()
+    } else {
+        resolved_tool_surface.source_digests
+    };
 
     let (tx, rx) = mpsc::channel::<std::result::Result<Event, Infallible>>(128);
     let stream_state = state.clone();
     let stream_session_id = session_id.clone();
     let stream_config = config.clone();
     let stream_session = stream_session.clone();
+    let stream_ingress = stream_ingress_envelope(
+        &stream_session_id,
+        &req.content,
+        req.idempotency_key.clone(),
+        req.ingress_source.as_deref(),
+    );
     let stream_parts = if let Some(parts) = req.parts.clone().filter(|parts| !parts.is_empty()) {
         parts
     } else {
@@ -276,6 +326,7 @@ pub(crate) async fn stream_message(
             variant: stream_variant.clone(),
             parts: stream_parts.clone(),
             tools: None,
+            ingress: Some(stream_ingress.clone()),
         };
 
         let agent_registry = AgentRegistry::from_config(&stream_config);
@@ -356,6 +407,7 @@ pub(crate) async fn stream_message(
                     system_prompt: stream_system_prompt.clone(),
                     memory_prefetch: None,
                     tools: tool_defs,
+                    tool_source_digests,
                     compiled_request: compiled_request.clone(),
                     hooks: rocode_session::prompt::PromptHooks {
                         update_hook: Some(update_hook),

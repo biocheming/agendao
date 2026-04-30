@@ -1,6 +1,7 @@
 pub mod compaction_helpers;
 mod file_parts;
 pub(crate) mod hooks;
+pub mod ingress;
 mod loop_lifecycle;
 mod message_building;
 mod runtime_step;
@@ -14,9 +15,17 @@ mod tool_calls;
 mod tool_execution;
 pub mod tools_and_output;
 
+pub const PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY: &str = "prompt_surface_runtime_snapshot";
+pub const PROMPT_SURFACE_SNAPSHOT_INVALIDATION_METADATA_KEY: &str =
+    "prompt_surface_snapshot_invalidation";
+
 pub use compaction_helpers::{should_compact, trigger_compaction};
 pub(crate) use hooks::{
     apply_chat_message_hook_outputs, apply_chat_messages_hook_outputs, session_message_hook_payload,
+};
+pub use ingress::{
+    stabilize_ingress_turns, IngressAttachmentRef, IngressSource, IngressStabilizationMetadata,
+    IngressTurnEnvelope,
 };
 #[cfg(test)]
 pub(crate) use shell::resolve_shell_invocation;
@@ -26,8 +35,9 @@ pub use tools_and_output::{
     compose_session_title_source, create_structured_output_tool, extract_structured_output,
     generate_session_title, generate_session_title_for_session, generate_session_title_llm,
     insert_reminders, max_steps_for_agent, merge_tool_definitions, prioritize_tool_definitions,
-    resolve_tools, resolve_tools_with_mcp, resolve_tools_with_mcp_registry,
-    sanitize_session_title_source, structured_output_system_prompt, was_plan_agent, ResolvedTool,
+    resolve_tool_surface, resolve_tool_surface_with_mcp, resolve_tools, resolve_tools_with_mcp,
+    resolve_tools_with_mcp_registry, sanitize_session_title_source,
+    structured_output_system_prompt, was_plan_agent, ResolvedTool, ResolvedToolSurface,
     StructuredOutputConfig,
 };
 
@@ -71,6 +81,7 @@ pub struct PromptInput {
     pub variant: Option<String>,
     pub parts: Vec<PartInput>,
     pub tools: Option<HashMap<String, bool>>,
+    pub ingress: Option<IngressTurnEnvelope>,
 }
 
 #[derive(Debug, Clone)]
@@ -222,6 +233,7 @@ pub struct PromptRequestContext {
     pub system_prompt: Option<String>,
     pub memory_prefetch: Option<MemoryRetrievalPacket>,
     pub tools: Vec<ToolDefinition>,
+    pub tool_source_digests: Vec<rocode_provider::cache::ToolSurfaceSourceDigest>,
     pub compiled_request: CompiledExecutionRequest,
     pub hooks: PromptHooks,
 }
@@ -744,7 +756,48 @@ impl SessionPrompt {
             }
         }
 
+        Self::annotate_ingress_metadata(msg, input.ingress.as_ref());
+
         Ok(())
+    }
+
+    fn annotate_ingress_metadata(
+        msg: &mut crate::SessionMessage,
+        ingress: Option<&IngressTurnEnvelope>,
+    ) {
+        let Some(ingress) = ingress else {
+            return;
+        };
+        msg.metadata.insert(
+            "ingress_source".to_string(),
+            serde_json::json!(&ingress.source),
+        );
+        msg.metadata.insert(
+            "ingress_turn_id".to_string(),
+            serde_json::json!(&ingress.turn_id),
+        );
+        msg.metadata.insert(
+            "ingress_stabilization".to_string(),
+            serde_json::json!(&ingress.stabilization),
+        );
+        if let Some(key) = ingress.idempotency_key.as_deref() {
+            msg.metadata.insert(
+                "ingress_idempotency_key".to_string(),
+                serde_json::json!(key),
+            );
+        }
+        if let Some(context_key) = ingress.context_key.as_deref() {
+            msg.metadata.insert(
+                "ingress_context_key".to_string(),
+                serde_json::json!(context_key),
+            );
+        }
+        if let Some(stage_id) = ingress.scheduler_stage_id.as_deref() {
+            msg.metadata.insert(
+                "ingress_scheduler_stage_id".to_string(),
+                serde_json::json!(stage_id),
+            );
+        }
     }
 
     // --- file_parts methods moved to file_parts.rs ---
@@ -813,6 +866,7 @@ impl SessionPrompt {
                 system_prompt,
                 memory_prefetch: None,
                 tools,
+                tool_source_digests: Vec::new(),
                 compiled_request,
                 hooks: PromptHooks::default(),
             },

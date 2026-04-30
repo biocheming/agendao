@@ -288,6 +288,7 @@ impl App {
             (!arguments.trim().is_empty()).then_some(arguments),
             self.selected_model_for_prompt(),
             self.context.current_model_variant(),
+            Some(format!("tui_command_{}", uuid::Uuid::new_v4().simple())),
         )?;
 
         match response.status.as_str() {

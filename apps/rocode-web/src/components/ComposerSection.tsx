@@ -34,6 +34,7 @@ interface ComposerSectionProps {
   cacheMissTokens?: number | null;
   cacheWriteTokens?: number | null;
   cacheDiagnosticLabel?: string | null;
+  ingressDiagnosticLabel?: string | null;
   inputPricePerMillion?: number | null;
   outputPricePerMillion?: number | null;
   activeStageId: string | null;

@@ -2621,6 +2621,7 @@ fn cli_sidebar_lines(
         || last_turn.input_tokens > 0
         || last_turn.output_tokens > 0
         || projection.cache_diagnostic.is_some()
+        || projection.ingress_diagnostic.is_some()
     {
         lines.push(String::new());
         lines.push("─ Usage ─".to_string());
@@ -2667,9 +2668,12 @@ fn cli_sidebar_lines(
             ));
         }
         if let Some(cache_diagnostic) = projection.cache_diagnostic.as_deref() {
+            lines.push(format!("Cache:   {}", truncate_text(cache_diagnostic, 96)));
+        }
+        if let Some(ingress_diagnostic) = projection.ingress_diagnostic.as_deref() {
             lines.push(format!(
-                "Cache:   {}",
-                truncate_text(cache_diagnostic, 96)
+                "Ingress: {}",
+                truncate_text(ingress_diagnostic, 96)
             ));
         }
         if let Some(model) = model_info {

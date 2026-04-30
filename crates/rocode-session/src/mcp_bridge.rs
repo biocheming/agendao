@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use rocode_mcp::{McpClientRegistry, McpTool};
-use rocode_tool::{Tool, ToolContext, ToolError, ToolResult};
+use rocode_tool::{Tool, ToolContext, ToolError, ToolResult, ToolSchemaSourceKind};
 use std::sync::Arc;
 
 /// A bridge tool that wraps an MCP tool and makes it executable through the
@@ -29,6 +29,10 @@ impl Tool for McpBridgeTool {
 
     fn parameters(&self) -> serde_json::Value {
         self.tool.input_schema.clone()
+    }
+
+    fn source_kind(&self) -> ToolSchemaSourceKind {
+        ToolSchemaSourceKind::Mcp
     }
 
     async fn execute(
