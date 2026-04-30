@@ -32,6 +32,11 @@ import {
   isLiveStageStatus,
 } from "./lib/contextPressure";
 import {
+  cacheBustSummaryFromMetadata,
+  cacheBustSummaryLabel,
+  type CacheBustSummaryRecord,
+} from "./lib/cacheDiagnostics";
+import {
   buildWebSessionUrl,
   readWebSessionRoute,
   writeWebSessionRoute,
@@ -806,6 +811,7 @@ function buildFeedFromHistory(history: MessageRecord[], showThinking: boolean): 
               kind: "reasoning",
               phase: "start",
               role: message.role,
+              metadata: message.metadata,
               text: "",
             },
             showThinking,
@@ -836,6 +842,7 @@ function buildFeedFromHistory(history: MessageRecord[], showThinking: boolean): 
               kind: "message",
               phase: "start",
               role: message.role,
+              metadata: message.metadata,
               text: "",
             },
             showThinking,
@@ -1375,6 +1382,23 @@ export default function App() {
     }
     return null;
   }, [messageHistory]);
+  const latestCacheDiagnostic = useMemo(() => {
+    const telemetrySummary =
+      executionActivity.telemetry?.cache_bust_summary &&
+      typeof executionActivity.telemetry.cache_bust_summary === "object"
+        ? (executionActivity.telemetry.cache_bust_summary as CacheBustSummaryRecord)
+        : null;
+    const telemetryLabel = cacheBustSummaryLabel(telemetrySummary);
+    if (telemetryLabel) return telemetryLabel;
+
+    for (let index = messageHistory.length - 1; index >= 0; index -= 1) {
+      const message = messageHistory[index];
+      if (message?.role !== "assistant") continue;
+      const label = cacheBustSummaryLabel(cacheBustSummaryFromMetadata(message.metadata));
+      if (label) return label;
+    }
+    return null;
+  }, [executionActivity.telemetry?.cache_bust_summary, messageHistory]);
   const refreshExecutionActivity = executionActivity.refreshExecutionActivity;
   const conversationJump = useConversationJump({
     messages,
@@ -2906,6 +2930,7 @@ export default function App() {
               cacheReadTokens={sessionUsage?.cache_read_tokens ?? lastAssistantTurnTokens?.cacheRead ?? null}
               cacheMissTokens={sessionUsage?.cache_miss_tokens ?? lastAssistantTurnTokens?.cacheMiss ?? null}
               cacheWriteTokens={sessionUsage?.cache_write_tokens ?? lastAssistantTurnTokens?.cacheWrite ?? null}
+              cacheDiagnosticLabel={latestCacheDiagnostic}
               inputPricePerMillion={activeProviderModel?.cost_per_million_input ?? null}
               outputPricePerMillion={activeProviderModel?.cost_per_million_output ?? null}
               activeStageId={schedulerNavigation.activeStageId}

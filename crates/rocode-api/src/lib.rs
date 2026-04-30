@@ -318,6 +318,8 @@ pub struct SessionTelemetrySnapshot {
     pub usage: SessionUsage,
     #[serde(default)]
     pub memory: Option<SessionMemoryTelemetrySummary>,
+    #[serde(default)]
+    pub cache_bust_summary: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

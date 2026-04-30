@@ -2630,6 +2630,7 @@ fn cli_sidebar_lines(
         || model_info.is_some()
         || last_turn.input_tokens > 0
         || last_turn.output_tokens > 0
+        || projection.cache_diagnostic.is_some()
     {
         lines.push(String::new());
         lines.push("─ Usage ─".to_string());
@@ -2673,6 +2674,12 @@ fn cli_sidebar_lines(
                 format_token_count(ts.cache_read_tokens),
                 format_token_count(ts.cache_miss_tokens),
                 format_token_count(ts.cache_write_tokens)
+            ));
+        }
+        if let Some(cache_diagnostic) = projection.cache_diagnostic.as_deref() {
+            lines.push(format!(
+                "Cache:   {}",
+                truncate_text(cache_diagnostic, 96)
             ));
         }
         if let Some(model) = model_info {
@@ -3070,7 +3077,8 @@ mod session_projection_tests {
     use super::{
         cli_context_usage_bar, cli_current_context_tokens, cli_default_events_query_input,
         cli_format_context_meter, cli_parse_events_command_input, cli_parse_events_query_input,
-        CliEventsCommandInput, CliEventsQueryInput, CliFrontendProjection, CLI_EVENTS_DEFAULT_PAGE_SIZE,
+        cli_sidebar_lines, CliEventsCommandInput, CliEventsQueryInput, CliFrontendProjection,
+        CliObservedExecutionTopology, CLI_EVENTS_DEFAULT_PAGE_SIZE,
     };
 
     #[test]
@@ -3176,5 +3184,26 @@ mod session_projection_tests {
         projection.last_turn_tokens.input_tokens = 1_388_907;
 
         assert_eq!(cli_current_context_tokens(&projection), None);
+    }
+
+    #[test]
+    fn sidebar_surfaces_cache_diagnostic_without_token_totals() {
+        let mut projection = CliFrontendProjection::default();
+        projection.cache_diagnostic =
+            Some("hard bust · toolsHash changed: tool schema or order changed".to_string());
+        let topology = CliObservedExecutionTopology {
+            active: false,
+            root_id: None,
+            scheduler_id: None,
+            active_stage_id: None,
+            stage_order: Vec::new(),
+            nodes: Default::default(),
+        };
+
+        let lines = cli_sidebar_lines(&projection, &topology);
+
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("hard bust") && line.contains("toolsHash")));
     }
 }

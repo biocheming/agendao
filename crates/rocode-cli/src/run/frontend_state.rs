@@ -859,6 +859,8 @@ struct CliFrontendProjection {
     token_stats: CliSessionTokenStats,
     /// Latest completed turn token usage, sourced from usage SSE events.
     last_turn_tokens: CliLastTurnTokenStats,
+    /// Latest prompt cache diagnostic, sourced from assistant metadata via telemetry.
+    cache_diagnostic: Option<String>,
     model_catalog: std::collections::HashMap<String, CliModelCatalogEntry>,
     /// MCP server statuses fetched from the server.
     mcp_servers: Vec<CliMcpServerStatus>,
@@ -886,6 +888,7 @@ impl Default for CliFrontendProjection {
             scroll_offset: 0,
             token_stats: CliSessionTokenStats::default(),
             last_turn_tokens: CliLastTurnTokenStats::default(),
+            cache_diagnostic: None,
             model_catalog: std::collections::HashMap::new(),
             mcp_servers: Vec::new(),
             lsp_servers: Vec::new(),
@@ -985,6 +988,9 @@ impl CliFrontendProjection {
                     self.token_stats.cache_write_tokens
                 })
             ));
+        }
+        if let Some(cache_diagnostic) = self.cache_diagnostic.as_deref() {
+            parts.push(format!("cache {}", cache_diagnostic));
         }
         if let Some(browser) = self.events_browser.as_ref() {
             let page = (browser.offset / browser.filter.limit.unwrap_or(24).max(1)) + 1;

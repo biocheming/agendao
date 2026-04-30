@@ -193,6 +193,7 @@ interface ComposerPanelProps {
   cacheReadTokens?: number | null;
   cacheMissTokens?: number | null;
   cacheWriteTokens?: number | null;
+  cacheDiagnosticLabel?: string | null;
   inputPricePerMillion?: number | null;
   outputPricePerMillion?: number | null;
   activeStageId: string | null;
@@ -244,6 +245,7 @@ export function ComposerPanel({
   cacheReadTokens = null,
   cacheMissTokens = null,
   cacheWriteTokens = null,
+  cacheDiagnosticLabel = null,
   inputPricePerMillion = null,
   outputPricePerMillion = null,
   activeStageId,
@@ -873,6 +875,11 @@ export function ComposerPanel({
                       ) : null}
                       {cacheUsageLabel ? (
                         <span className="text-muted-foreground">{cacheUsageLabel}</span>
+                      ) : null}
+                      {cacheDiagnosticLabel ? (
+                        <span className="text-amber-700 dark:text-amber-300" title="Prompt cache diagnostic">
+                          Cache {cacheDiagnosticLabel}
+                        </span>
                       ) : null}
                       {contextCount > 0 ? (
                         <span className="roc-badge">
