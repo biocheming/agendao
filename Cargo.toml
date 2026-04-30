@@ -37,7 +37,7 @@ members = [
 ]
 
 [workspace.package]
-version = "2026.4.29"
+version = "2026.4.30"
 edition = "2021"
 authors = ["Biocheming"]
 license = "MIT"
