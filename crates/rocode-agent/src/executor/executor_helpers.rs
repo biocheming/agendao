@@ -62,8 +62,15 @@ pub(super) fn append_provider_message(
             }
             rocode_provider::Content::Parts(parts) => {
                 let mut text = String::new();
+                let mut reasoning = String::new();
                 let mut tool_calls: Vec<ToolCall> = Vec::new();
                 for part in parts {
+                    if part.content_type == "reasoning" {
+                        if let Some(part_text) = &part.text {
+                            reasoning.push_str(part_text);
+                        }
+                        continue;
+                    }
                     if let Some(part_text) = &part.text {
                         text.push_str(part_text);
                     }
@@ -77,9 +84,19 @@ pub(super) fn append_provider_message(
                     }
                 }
                 if tool_calls.is_empty() {
-                    conversation.add_assistant_message(text);
+                    if reasoning.is_empty() {
+                        conversation.add_assistant_message(text);
+                    } else {
+                        conversation.add_assistant_message_with_reasoning(reasoning, text);
+                    }
                 } else {
-                    conversation.add_assistant_message_with_tools(text, tool_calls);
+                    if reasoning.is_empty() {
+                        conversation.add_assistant_message_with_tools(text, tool_calls);
+                    } else {
+                        conversation.add_assistant_message_with_reasoning_and_tools(
+                            reasoning, text, tool_calls,
+                        );
+                    }
                 }
             }
         },
@@ -121,6 +138,7 @@ pub(super) fn extract_text_from_provider_content(content: &rocode_provider::Cont
         rocode_provider::Content::Text(text) => text.clone(),
         rocode_provider::Content::Parts(parts) => parts
             .iter()
+            .filter(|part| part.content_type != "reasoning")
             .filter_map(|part| part.text.clone())
             .collect::<Vec<_>>()
             .join(""),
@@ -410,4 +428,33 @@ pub(super) fn parse_model_string(raw: Option<&str>) -> Option<(String, String)> 
     }
 
     Some((provider.to_string(), model.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn append_provider_message_preserves_assistant_reasoning() {
+        let provider_message = rocode_provider::Message::assistant_parts(vec![
+            rocode_provider::ContentPart::reasoning("internal trace".to_string()),
+            rocode_provider::ContentPart::text("visible answer".to_string()),
+            rocode_provider::ContentPart::tool_use(
+                "tool-call-0".to_string(),
+                "ls".to_string(),
+                serde_json::json!({"path":"."}),
+            ),
+        ]);
+        let mut conversation = Conversation::new();
+        let mut tool_name_by_id = HashMap::new();
+
+        append_provider_message(&mut conversation, &provider_message, &mut tool_name_by_id);
+
+        assert_eq!(conversation.messages.len(), 1);
+        let message = &conversation.messages[0];
+        assert_eq!(message.reasoning, "internal trace");
+        assert_eq!(message.content, "visible answer");
+        assert_eq!(message.tool_calls.len(), 1);
+        assert_eq!(message.tool_calls[0].id, "tool-call-0");
+    }
 }

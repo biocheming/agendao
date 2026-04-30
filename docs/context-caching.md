@@ -45,6 +45,16 @@ ROCode 会尽量把请求组织成三段：
 
 这套策略的目标不是丢信息，而是让模型默认看到稳定摘要，并在需要时通过 anchor / artifact / hydration 按需回查细节。
 
+### Reasoning continuation
+
+模型返回的 thinking / reasoning 不是普通 assistant 文本，也不是可随意摘要的可见输出；它是协议级 continuation state。只要下一轮请求仍处于同一协议族和 thinking mode，ROCode 必须把它作为 typed reasoning part 保留到唯一提示面权威，再由 provider 序列化为对应 wire schema，例如 closeai-compatible 的 `reasoning_content` 或 ethnopic/messages 的 thinking block。
+
+因此：
+
+- agent、scheduler、subtask、projection 层不得把 reasoning 拼进普通 assistant text。
+- artifact / output projection 可以压缩可见报告和长 tool output，但不得压缩或丢弃协议必需的 reasoning continuation。
+- 如果跨 provider、跨协议族或切换 thinking 字段导致 continuation 不可兼容，应形成新的 continuation boundary，并记录 cache / prompt-surface 诊断，而不是伪装成同一条 hidden reasoning 链。
+
 ## 可观测性
 
 CLI、TUI 和 Web 都会显示缓存相关 usage：
