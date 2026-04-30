@@ -1,6 +1,6 @@
 # ROCode Docs
 
-文档基线：`v2026.4.29`（更新日期：`2026-04-29`）
+文档基线：`v2026.4.30`（更新日期：`2026-04-30`）
 
 This directory contains product-facing examples and design references for ROCode features.
 
@@ -20,6 +20,8 @@ This directory contains product-facing examples and design references for ROCode
   - 工具层参考，包括 `skill_manage` 与 memory 可观测面入口
 - `configuration.md`
   - 配置分层、workspace 边界，以及 memory 受 workspace mode 约束的作用域说明
+- `context-caching.md`
+  - closeai-compatible / ethnopic-compatible 两类协议族下的上下文缓存策略、稳定提示面、输出投影与 cache diagnostic
 - `examples/scheduler/README.md`
   - public scheduler presets、stage 默认值、当前行为说明
 - `examples/scheduler/SCHEDULER_GUIDE.md`

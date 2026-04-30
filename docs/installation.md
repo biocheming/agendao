@@ -90,6 +90,29 @@ dist/release/rocode-<version>-<target>/share/rocode/web
 dist/release/rocode-<version>-<target>.tar.gz
 ```
 
+### 版本同步脚本
+
+本仓库使用日期版本。发布或本地版本推进时，优先使用脚本维护版本信息：
+
+```bash
+./scripts/release-date.sh 2026-04-30
+```
+
+该脚本会更新 workspace 版本并调用：
+
+```bash
+./scripts/sync_version.sh
+```
+
+`sync_version.sh` 会同步受管版本文件，包括：
+
+- `Cargo.lock`
+- `apps/rocode-web/package.json`
+- `apps/rocode-web/package-lock.json`
+- `docs/examples/plugins_example/rust/Cargo.lock`
+
+README、安装指南、文档首页和示例文档中的展示版本需要作为发布说明的一部分同步更新。
+
 ---
 
 ## Linux 系统依赖
@@ -119,7 +142,7 @@ which rocode
 成功安装后输出类似：
 
 ```
-ROCode 2026.4.29
+ROCode 2026.4.30
 ```
 
 查看完整构建信息：
@@ -131,14 +154,14 @@ rocode info
 输出包括编译器版本、目标平台、构建配置和数据路径：
 
 ```
-ROCode 2026.4.29
+ROCode 2026.4.30
 
 Build Info:
   Compiler:   rustc 1.xx.x
   Profile:    release
   Target:     x86_64-unknown-linux-gnu
   Host:       x86_64-unknown-linux-gnu
-  Built at:   2026-04-29T...
+  Built at:   2026-04-30T...
 
 Paths:
   Data:       ~/.local/share/rocode
@@ -304,7 +327,7 @@ rocode uninstall --dry-run                   # 仅预览将删除的文件
 
 ```bash
 rocode upgrade
-rocode upgrade v2026.4.29           # 升级到指定版本
+rocode upgrade v2026.4.30           # 升级到指定版本
 rocode upgrade --method brew       # 显式指定包管理器方式
 ```
 
