@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::cache::plan_ethnopic_message_breakpoints;
 use crate::models;
 use crate::{CacheControl, Content, ContentPart, Message};
 
@@ -96,8 +97,11 @@ pub fn normalize_interleaved_thinking(
 /// Apply cache control markers at the part level.
 pub fn apply_caching_per_part(messages: &mut [Message], provider_type: &ProviderType) {
     if let ProviderType::Ethnopic = provider_type {
-        if let Some(boundary_index) = stable_conversation_cache_boundary_index(messages) {
-            let boundary = &mut messages[boundary_index];
+        let plan = plan_ethnopic_message_breakpoints(messages);
+        for boundary_index in plan.message_indices() {
+            let Some(boundary) = messages.get_mut(boundary_index) else {
+                continue;
+            };
             if let Content::Parts(ref mut parts) = boundary.content {
                 if let Some(last_part) = parts.last_mut() {
                     last_part.cache_control = Some(CacheControl::ephemeral());
@@ -105,28 +109,7 @@ pub fn apply_caching_per_part(messages: &mut [Message], provider_type: &Provider
             }
             boundary.cache_control = Some(CacheControl::ephemeral());
         }
-
-        for msg in messages.iter_mut() {
-            if matches!(msg.role, crate::Role::System) {
-                msg.cache_control = Some(CacheControl::ephemeral());
-                if let Content::Parts(ref mut parts) = msg.content {
-                    if let Some(last_part) = parts.last_mut() {
-                        last_part.cache_control = Some(CacheControl::ephemeral());
-                    }
-                }
-            }
-        }
     }
-}
-
-fn stable_conversation_cache_boundary_index(messages: &[Message]) -> Option<usize> {
-    let last_index = messages.len().checked_sub(1)?;
-    let boundary = if matches!(messages[last_index].role, crate::Role::User) {
-        last_index.checked_sub(1)?
-    } else {
-        last_index
-    };
-    (!matches!(messages[boundary].role, crate::Role::System)).then_some(boundary)
 }
 
 // ---------------------------------------------------------------------------

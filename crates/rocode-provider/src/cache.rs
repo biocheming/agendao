@@ -41,6 +41,100 @@ pub struct ProviderCacheCapabilities {
     pub override_: ProviderCacheOverrides,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheBreakpointBudget {
+    pub max_breakpoints: usize,
+    pub used_by_system: usize,
+    pub used_by_tools: usize,
+    pub used_by_messages: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BreakpointCandidateKind {
+    SystemBlock,
+    ToolSchema,
+    MessageBoundary,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BreakpointCandidate {
+    pub message_index: usize,
+    pub kind: BreakpointCandidateKind,
+    pub stable_score: f32,
+    pub token_count: u64,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CacheBreakpointPlan {
+    pub candidates: Vec<BreakpointCandidate>,
+    pub budget: CacheBreakpointBudget,
+}
+
+impl CacheBreakpointPlan {
+    pub fn message_indices(&self) -> impl Iterator<Item = usize> + '_ {
+        self.candidates
+            .iter()
+            .map(|candidate| candidate.message_index)
+    }
+}
+
+pub fn plan_ethnopic_message_breakpoints(messages: &[Message]) -> CacheBreakpointPlan {
+    let max_breakpoints = 4;
+    let mut candidates = Vec::new();
+
+    for index in messages
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| matches!(message.role, crate::Role::System))
+        .map(|(index, _)| index)
+        .take(2)
+    {
+        candidates.push(BreakpointCandidate {
+            message_index: index,
+            kind: BreakpointCandidateKind::SystemBlock,
+            stable_score: 1.0,
+            token_count: 0,
+            reason: "stable system prompt".to_string(),
+        });
+    }
+
+    if let Some(index) = stable_conversation_cache_boundary_index(messages) {
+        if candidates.len() < max_breakpoints
+            && !candidates
+                .iter()
+                .any(|candidate| candidate.message_index == index)
+        {
+            candidates.push(BreakpointCandidate {
+                message_index: index,
+                kind: BreakpointCandidateKind::MessageBoundary,
+                stable_score: 0.8,
+                token_count: 0,
+                reason: "last stable conversation message before dynamic suffix".to_string(),
+            });
+        }
+    }
+
+    let used_by_system = candidates
+        .iter()
+        .filter(|candidate| candidate.kind == BreakpointCandidateKind::SystemBlock)
+        .count();
+    let used_by_messages = candidates
+        .iter()
+        .filter(|candidate| candidate.kind == BreakpointCandidateKind::MessageBoundary)
+        .count();
+
+    CacheBreakpointPlan {
+        candidates,
+        budget: CacheBreakpointBudget {
+            max_breakpoints,
+            used_by_system,
+            used_by_tools: 0,
+            used_by_messages,
+        },
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CloseAiPromptCacheKeyField {
     CamelCase,
@@ -104,6 +198,16 @@ pub fn closeai_prompt_cache_key_field(
     }
 
     None
+}
+
+fn stable_conversation_cache_boundary_index(messages: &[Message]) -> Option<usize> {
+    let last_index = messages.len().checked_sub(1)?;
+    let boundary = if matches!(messages[last_index].role, crate::Role::User) {
+        last_index.checked_sub(1)?
+    } else {
+        last_index
+    };
+    (!matches!(messages[boundary].role, crate::Role::System)).then_some(boundary)
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -480,6 +584,34 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn ethnopic_breakpoint_plan_uses_system_and_stable_boundary() {
+        let messages = vec![
+            Message::system("system"),
+            Message::user("first"),
+            Message::assistant("answer"),
+            Message::user("current"),
+        ];
+
+        let plan = plan_ethnopic_message_breakpoints(&messages);
+        let indices = plan.message_indices().collect::<Vec<_>>();
+
+        assert_eq!(indices, vec![0, 2]);
+        assert_eq!(plan.budget.used_by_system, 1);
+        assert_eq!(plan.budget.used_by_messages, 1);
+        assert!(plan.budget.max_breakpoints >= indices.len());
+    }
+
+    #[test]
+    fn ethnopic_breakpoint_plan_does_not_mark_current_user() {
+        let messages = vec![Message::system("system"), Message::user("current")];
+
+        let plan = plan_ethnopic_message_breakpoints(&messages);
+        let indices = plan.message_indices().collect::<Vec<_>>();
+
+        assert_eq!(indices, vec![0]);
     }
 
     #[test]
