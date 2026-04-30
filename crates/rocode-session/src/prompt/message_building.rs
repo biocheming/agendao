@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use rocode_orchestrator::output_projection::SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY;
 use rocode_provider::{get_model_context_limit, Content, ContentPart, Message, Provider, Role};
 
 use crate::compaction::{
@@ -86,6 +87,11 @@ impl SessionPrompt {
                 continue;
             }
 
+            if let Some(summary) = Self::projected_model_context_summary(msg) {
+                messages.push(Message::assistant(summary));
+                continue;
+            }
+
             if matches!(msg.role, MessageRole::Assistant)
                 && msg
                     .parts
@@ -141,6 +147,53 @@ impl SessionPrompt {
         }
 
         Ok(messages)
+    }
+
+    fn projected_model_context_summary(msg: &SessionMessage) -> Option<String> {
+        if !matches!(msg.role, MessageRole::Assistant) {
+            return None;
+        }
+        if Self::contains_tool_protocol_parts(&msg.parts) {
+            return None;
+        }
+        msg.metadata
+            .get(SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY)
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|summary| !summary.is_empty())
+            .map(ToOwned::to_owned)
+    }
+
+    fn contains_tool_protocol_parts(parts: &[crate::MessagePart]) -> bool {
+        parts.iter().any(|part| {
+            matches!(
+                part.part_type,
+                PartType::ToolCall { .. } | PartType::ToolResult { .. }
+            )
+        })
+    }
+
+    fn model_context_char_len(message: &SessionMessage) -> usize {
+        if let Some(summary) = Self::projected_model_context_summary(message) {
+            return summary.len();
+        }
+
+        message
+            .parts
+            .iter()
+            .map(|p| match &p.part_type {
+                PartType::Text { text, .. } => text.len(),
+                PartType::ToolResult { content, title, .. } => {
+                    content.len() + title.as_ref().map_or(0, |t| t.len())
+                }
+                PartType::ToolCall { input, raw, .. } => {
+                    let input_len = serde_json::to_string(input).map_or(0, |s| s.len());
+                    input_len + raw.as_ref().map_or(0, |r| r.len())
+                }
+                PartType::Reasoning { text } => text.len(),
+                _ => 0,
+            })
+            .sum()
     }
 
     pub(super) fn parts_to_content(parts: &[crate::MessagePart]) -> Content {
@@ -426,22 +479,7 @@ impl SessionPrompt {
         // Estimate total content size across ALL part types (not just text).
         // This catches large tool results and tool call inputs that the
         // token-based check misses (it relies on cached API response counts).
-        let total_chars: usize = messages
-            .iter()
-            .flat_map(|m| m.parts.iter())
-            .map(|p| match &p.part_type {
-                PartType::Text { text, .. } => text.len(),
-                PartType::ToolResult { content, title, .. } => {
-                    content.len() + title.as_ref().map_or(0, |t| t.len())
-                }
-                PartType::ToolCall { input, raw, .. } => {
-                    let input_len = serde_json::to_string(input).map_or(0, |s| s.len());
-                    input_len + raw.as_ref().map_or(0, |r| r.len())
-                }
-                PartType::Reasoning { text } => text.len(),
-                _ => 0,
-            })
-            .sum();
+        let total_chars: usize = messages.iter().map(Self::model_context_char_len).sum();
 
         let estimated_input_tokens = (total_chars as u64) / 4;
         let estimated_usage = TokenUsage {
@@ -1639,6 +1677,85 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert!(matches!(messages[0].role, Role::Assistant));
         assert!(matches!(messages[1].role, Role::Tool));
+    }
+
+    #[test]
+    fn build_chat_messages_uses_scheduler_model_context_projection_for_assistant_text() {
+        let sid = "sid".to_string();
+        let mut assistant = SessionMessage::assistant(sid);
+        assistant.add_text("very long visible scheduler delivery");
+        assistant.metadata.insert(
+            SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY.to_string(),
+            serde_json::json!("compact scheduler summary with artifact reference"),
+        );
+
+        let messages = SessionPrompt::build_chat_messages(&[assistant], None).unwrap();
+
+        assert_eq!(messages.len(), 1);
+        assert!(matches!(messages[0].role, Role::Assistant));
+        assert!(matches!(
+            &messages[0].content,
+            Content::Text(text) if text == "compact scheduler summary with artifact reference"
+        ));
+    }
+
+    #[test]
+    fn build_chat_messages_preserves_user_text_even_when_projection_metadata_exists() {
+        let sid = "sid".to_string();
+        let mut user = SessionMessage::user(sid, "exact user instruction");
+        user.metadata.insert(
+            SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY.to_string(),
+            serde_json::json!("should not replace user intent"),
+        );
+
+        let messages = SessionPrompt::build_chat_messages(&[user], None).unwrap();
+
+        assert_eq!(messages.len(), 1);
+        assert!(matches!(messages[0].role, Role::User));
+        assert!(matches!(
+            &messages[0].content,
+            Content::Text(text) if text == "exact user instruction"
+        ));
+    }
+
+    #[test]
+    fn build_chat_messages_does_not_project_tool_protocol_rounds() {
+        let sid = "sid".to_string();
+        let mut assistant = SessionMessage::assistant(sid);
+        assistant.add_text("checking workspace");
+        assistant.add_tool_call("tool-call-0", "ls", serde_json::json!({"path": "."}));
+        assistant.metadata.insert(
+            SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY.to_string(),
+            serde_json::json!("summary must not replace tool call"),
+        );
+
+        let messages = SessionPrompt::build_chat_messages(&[assistant], None).unwrap();
+
+        assert_eq!(messages.len(), 1);
+        match &messages[0].content {
+            Content::Parts(parts) => {
+                assert_eq!(parts.len(), 2);
+                assert_eq!(parts[0].text.as_deref(), Some("checking workspace"));
+                assert_eq!(parts[1].content_type, "tool_use");
+            }
+            other => panic!("expected parts content, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn model_context_char_len_uses_projection_summary_for_large_assistant_output() {
+        let sid = "sid".to_string();
+        let mut assistant = SessionMessage::assistant(sid);
+        assistant.add_text("x".repeat(10_000));
+        assistant.metadata.insert(
+            SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY.to_string(),
+            serde_json::json!("short summary"),
+        );
+
+        assert_eq!(
+            SessionPrompt::model_context_char_len(&assistant),
+            "short summary".len()
+        );
     }
 
     #[test]
