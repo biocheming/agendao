@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::{Message, ToolDefinition, Usage};
 
@@ -510,6 +510,43 @@ impl From<&CacheBustInspection> for CacheBustSummary {
             change_count: value.changes.len(),
         }
     }
+}
+
+impl CacheBustSummary {
+    pub fn should_surface(&self) -> bool {
+        !matches!(self.status.as_str(), "stable" | "cold_start")
+            && self.severity > CacheBustSeverity::Stable
+    }
+}
+
+pub fn cache_bust_summary_from_metadata(
+    metadata: &HashMap<String, Value>,
+) -> Option<CacheBustSummary> {
+    metadata
+        .get(CACHE_BUST_SUMMARY_METADATA_KEY)
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+}
+
+pub fn cache_bust_summary_label(summary: &CacheBustSummary) -> Option<String> {
+    if !summary.should_surface() {
+        return None;
+    }
+
+    let severity = match summary.severity {
+        CacheBustSeverity::Stable => "stable",
+        CacheBustSeverity::SoftDegradation => "soft degradation",
+        CacheBustSeverity::LikelyBust => "likely bust",
+        CacheBustSeverity::HardBust => "hard bust",
+    };
+    let cause = summary
+        .primary_cause
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("prompt surface changed");
+
+    Some(format!("{} · {}", severity, cause))
 }
 
 impl PromptSurfaceFingerprint {
@@ -1303,6 +1340,46 @@ mod tests {
             .primary_cause
             .as_deref()
             .is_some_and(|cause| cause.contains("toolsHash")));
+    }
+
+    #[test]
+    fn cache_bust_summary_label_hides_stable_and_cold_start() {
+        let stable = CacheBustSummary {
+            status: "stable".to_string(),
+            severity: CacheBustSeverity::Stable,
+            primary_cause: None,
+            change_count: 0,
+        };
+        let cold_start = CacheBustSummary {
+            status: "cold_start".to_string(),
+            severity: CacheBustSeverity::SoftDegradation,
+            primary_cause: Some("no previous cache fingerprint".to_string()),
+            change_count: 1,
+        };
+
+        assert_eq!(cache_bust_summary_label(&stable), None);
+        assert_eq!(cache_bust_summary_label(&cold_start), None);
+    }
+
+    #[test]
+    fn cache_bust_summary_reads_from_message_metadata() {
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            CACHE_BUST_SUMMARY_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "status": "degraded",
+                "severity": "HardBust",
+                "primary_cause": "toolsHash changed: tool schema or order changed",
+                "change_count": 1,
+            }),
+        );
+
+        let summary = cache_bust_summary_from_metadata(&metadata).expect("summary");
+        assert_eq!(summary.severity, CacheBustSeverity::HardBust);
+        assert_eq!(
+            cache_bust_summary_label(&summary).as_deref(),
+            Some("hard bust · toolsHash changed: tool schema or order changed")
+        );
     }
 
     #[test]

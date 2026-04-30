@@ -932,6 +932,14 @@ async fn cli_refresh_server_info(
                         telemetry.usage.context_tokens,
                         telemetry.usage.total_cost,
                     );
+                    projection.cache_diagnostic = telemetry
+                        .cache_bust_summary
+                        .as_ref()
+                        .cloned()
+                        .and_then(|value| serde_json::from_value(value).ok())
+                        .and_then(|summary| {
+                            rocode_provider::cache::cache_bust_summary_label(&summary)
+                        });
                 }
             }
             Err(error) => {

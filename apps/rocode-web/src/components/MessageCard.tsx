@@ -4,6 +4,10 @@ import { Button } from "@/components/ui/button";
 import { StructuredDataView } from "@/components/StructuredDataView";
 import { cn } from "@/lib/utils";
 import {
+  cacheBustSummaryFromMetadata,
+  cacheBustSummaryLabel,
+} from "@/lib/cacheDiagnostics";
+import {
   ActivityIcon,
   BrainCircuitIcon,
   CheckIcon,
@@ -525,6 +529,9 @@ export function MessageCard({
   const roleLabel = isUser ? "You" : "ROCode";
   const clock = formatClock(message.ts);
   const summary = readableSummary(message);
+  const cacheDiagnosticLabel = cacheBustSummaryLabel(
+    cacheBustSummaryFromMetadata(message.metadata),
+  );
   const active =
     Boolean(activeStageId && message.stage_id === activeStageId) ||
     Boolean(activeToolCallId && message.tool_call_id === activeToolCallId);
@@ -559,6 +566,11 @@ export function MessageCard({
               ) : null}
               <span className="roc-section-label">{roleLabel}</span>
               {clock ? <span className="roc-badge">{clock}</span> : null}
+              {cacheDiagnosticLabel ? (
+                <span className="roc-badge border-amber-500/30 text-amber-700 dark:text-amber-300">
+                  cache {cacheDiagnosticLabel}
+                </span>
+              ) : null}
             </div>
             {message.stage_id || message.tool_call_id ? (
               <div className="roc-message-meta-group">

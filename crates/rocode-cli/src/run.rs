@@ -1270,6 +1270,7 @@ mod tests {
             scroll_offset: 0,
             token_stats: CliSessionTokenStats::default(),
             last_turn_tokens: CliLastTurnTokenStats::default(),
+            cache_diagnostic: None,
             model_catalog: HashMap::new(),
             mcp_servers: Vec::new(),
             lsp_servers: Vec::new(),

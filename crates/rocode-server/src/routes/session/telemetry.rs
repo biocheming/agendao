@@ -6,7 +6,7 @@ use rocode_command::stage_protocol::StageSummary;
 use rocode_multimodal::PersistedMultimodalExplain;
 use rocode_session::{
     load_session_telemetry_snapshot, persist_session_telemetry_snapshot,
-    session_last_run_status_label, Session, SessionUsage,
+    session_last_run_status_label, MessageRole, Session, SessionUsage,
 };
 use rocode_types::{
     SessionInsightsResponse, SessionMemoryTelemetrySummary, SessionMultimodalAttachmentInfo,
@@ -30,6 +30,8 @@ pub struct SessionTelemetrySnapshot {
     pub usage: SessionUsage,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<SessionMemoryTelemetrySummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_bust_summary: Option<serde_json::Value>,
 }
 
 pub(super) async fn get_session_telemetry(
@@ -104,6 +106,7 @@ pub(super) async fn build_session_telemetry_snapshot(
         .await;
     let topology = build_session_execution_topology_snapshot(state, session_id, session).await;
     let memory = build_session_memory_telemetry(state, session).await;
+    let cache_bust_summary = latest_cache_bust_summary(session);
 
     Ok(SessionTelemetrySnapshot {
         runtime,
@@ -111,7 +114,20 @@ pub(super) async fn build_session_telemetry_snapshot(
         topology,
         usage,
         memory,
+        cache_bust_summary,
     })
+}
+
+fn latest_cache_bust_summary(session: &Session) -> Option<serde_json::Value> {
+    session
+        .messages
+        .iter()
+        .rev()
+        .find(|message| matches!(message.role, MessageRole::Assistant))
+        .and_then(|message| {
+            rocode_provider::cache::cache_bust_summary_from_metadata(&message.metadata)
+        })
+        .and_then(|summary| serde_json::to_value(summary).ok())
 }
 
 pub(super) async fn persist_session_telemetry_metadata(
@@ -243,6 +259,26 @@ mod tests {
     }
 
     #[test]
+    fn latest_cache_bust_summary_reads_assistant_metadata() {
+        let mut session = Session::new("session-1".to_string(), ".".to_string());
+        let assistant = session.add_assistant_message();
+        assistant.metadata.insert(
+            rocode_provider::cache::CACHE_BUST_SUMMARY_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "status": "degraded",
+                "severity": "LikelyBust",
+                "primary_cause": "messagePrefixHash changed: message prefix changed before the stable boundary",
+                "change_count": 1,
+            }),
+        );
+
+        let summary = latest_cache_bust_summary(&session).expect("summary");
+
+        assert_eq!(summary["status"], "degraded");
+        assert_eq!(summary["severity"], "LikelyBust");
+    }
+
+    #[test]
     fn telemetry_snapshot_serializes_authority_contract_fields() {
         let mut runtime = SessionRuntimeState::new("session-1");
         runtime.active_stage_id = Some("stage-1".to_string());
@@ -310,6 +346,7 @@ mod tests {
                 total_cost: 0.12,
             },
             memory: None,
+            cache_bust_summary: None,
         };
 
         let value = serde_json::to_value(&snapshot).expect("snapshot should serialize");

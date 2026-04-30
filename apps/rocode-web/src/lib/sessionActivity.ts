@@ -104,6 +104,7 @@ export interface SessionTelemetrySnapshotRecord {
   topology: SessionExecutionTopologyRecord;
   usage: SessionUsageRecord;
   memory?: SessionMemoryTelemetryRecord | null;
+  cache_bust_summary?: Record<string, unknown> | null;
 }
 
 export interface ActivityEventRecord {

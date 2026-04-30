@@ -30,6 +30,7 @@ export interface OutputBlock {
   kind: string;
   phase?: string;
   role?: string;
+  metadata?: Record<string, unknown> | null;
   title?: string;
   event?: string;
   text?: string;

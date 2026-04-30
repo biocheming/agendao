@@ -826,6 +826,17 @@ impl Sidebar {
                             ]));
                         }
                     }
+                    if let Some(cache_diagnostic) =
+                        last_assistant.and_then(|message| cache_diagnostic_label(&message.metadata))
+                    {
+                        lines.push(Line::from(vec![
+                            Span::styled("Cache  ", Style::default().fg(theme.text_muted)),
+                            Span::styled(
+                                truncate_text(&cache_diagnostic, area.width as usize),
+                                Style::default().fg(theme.warning),
+                            ),
+                        ]));
+                    }
                     if let Some(model) = active_model_info.as_ref() {
                         if let (Some(input_price), Some(output_price)) =
                             (model.cost_per_million_input, model.cost_per_million_output)
@@ -1791,6 +1802,13 @@ fn sidebar_metadata_bool(metadata: &HashMap<String, serde_json::Value>, key: &st
         .unwrap_or(false)
 }
 
+fn cache_diagnostic_label(metadata: &Option<HashMap<String, serde_json::Value>>) -> Option<String> {
+    metadata
+        .as_ref()
+        .and_then(rocode_provider::cache::cache_bust_summary_from_metadata)
+        .and_then(|summary| rocode_provider::cache::cache_bust_summary_label(&summary))
+}
+
 pub(crate) fn sidebar_model_summary(
     metadata: &HashMap<String, serde_json::Value>,
 ) -> Option<String> {
@@ -2400,5 +2418,24 @@ mod tests {
         assert!(!rendered.contains("Current"));
         assert!(!rendered.contains("compact now"));
         assert!(rendered.contains("300K cumulative"));
+    }
+
+    #[test]
+    fn cache_diagnostic_label_reads_message_metadata() {
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            rocode_provider::cache::CACHE_BUST_SUMMARY_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "status": "degraded",
+                "severity": "LikelyBust",
+                "primary_cause": "messagePrefixHash changed: message prefix changed before the stable boundary",
+                "change_count": 1,
+            }),
+        );
+
+        let label = cache_diagnostic_label(&Some(metadata)).expect("label");
+
+        assert!(label.contains("likely bust"));
+        assert!(label.contains("messagePrefixHash"));
     }
 }
