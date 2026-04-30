@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::cache::{build_prompt_cache_key, closeai_prompt_cache_key_field, PromptCacheKeyContext};
 use crate::models;
 
 use super::model_config::sdk_key;
@@ -63,14 +64,26 @@ pub fn options(
         );
     }
 
-    // OpenAI prompt cache key
-    if provider_id == "openai"
-        || provider_options
-            .get("setCacheKey")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
+    let provider_options_object = provider_options
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<serde_json::Map<_, _>>();
+    let prompt_cache_key = build_prompt_cache_key(PromptCacheKeyContext {
+        session_id,
+        stage: provider_options
+            .get("cacheStage")
+            .and_then(|value| value.as_str())
+            .unwrap_or("chat"),
+        preset_hash: provider_options
+            .get("cachePresetHash")
+            .and_then(|value| value.as_str()),
+        repo_hash: provider_options
+            .get("cacheRepoHash")
+            .and_then(|value| value.as_str()),
+    });
+    if let Some(field) = closeai_prompt_cache_key_field(&provider_id, npm, &provider_options_object)
     {
-        result.insert("promptCacheKey".to_string(), json!(session_id));
+        result.insert(field.as_str().to_string(), json!(prompt_cache_key.clone()));
     }
 
     // Google thinking config
@@ -122,23 +135,12 @@ pub fn options(
         }
 
         if provider_id.starts_with("opencode") {
-            result.insert("promptCacheKey".to_string(), json!(session_id));
             result.insert(
                 "include".to_string(),
                 json!(["reasoning.encrypted_content"]),
             );
             result.insert("reasoningSummary".to_string(), json!("auto"));
         }
-    }
-
-    // Venice promptCacheKey
-    if provider_id == "venice" {
-        result.insert("promptCacheKey".to_string(), json!(session_id));
-    }
-
-    // OpenRouter prompt_cache_key
-    if provider_id == "openrouter" {
-        result.insert("prompt_cache_key".to_string(), json!(session_id));
     }
 
     // Gateway caching
