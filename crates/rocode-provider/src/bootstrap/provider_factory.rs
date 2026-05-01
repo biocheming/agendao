@@ -2,10 +2,13 @@ use crate::azure::AzureProvider;
 use crate::catalog::load_default_catalog_data_sync;
 use crate::instance::ProviderInstance;
 use crate::models::ModelsData;
+use crate::profile::{
+    resolve_npm_for_provider, ProviderApiShape, ProviderProfile, ProviderProfileResolver,
+};
 use crate::protocol::{Protocol, ProviderConfig};
 use crate::protocol_loader::{ProtocolLoader, ProtocolManifest};
 use crate::protocol_validator::ProtocolValidator;
-use crate::protocols::create_protocol_impl;
+use crate::protocols::create_protocol_impl_for_profile;
 use crate::provider::{
     ModelInfo as RuntimeModelInfo, Provider as RuntimeProvider, ProviderRegistry,
 };
@@ -84,35 +87,6 @@ fn provider_base_url(provider: &ProviderState) -> Option<String> {
                 None
             }
         })
-}
-
-fn default_npm_for_provider_id(provider_id: &str) -> &'static str {
-    match provider_id {
-        "ethnopic" => "@ai-sdk/anthropic",
-        "google" => "@ai-sdk/google",
-        "google-vertex" | "google-vertex-ethnopic" => "@ai-sdk/google-vertex",
-        "amazon-bedrock" => "@ai-sdk/amazon-bedrock",
-        "github-copilot" | "github-copilot-enterprise" => "@ai-sdk/github-copilot",
-        "gitlab" => "@gitlab/gitlab-ai-provider",
-        "openai" => "@ai-sdk/openai",
-        _ => "@ai-sdk/openai-compatible",
-    }
-}
-
-fn resolve_npm_for_provider(provider_id: &str, provider: &ProviderState) -> String {
-    if let Some(npm) = provider_option_string(provider, &["npm"]) {
-        return npm;
-    }
-
-    if let Some(npm) = provider
-        .models
-        .values()
-        .find_map(|model| (!model.api.npm.trim().is_empty()).then(|| model.api.npm.clone()))
-    {
-        return npm;
-    }
-
-    default_npm_for_provider_id(provider_id).to_string()
 }
 
 fn default_secret_env_for_provider(provider_id: &str, protocol: Protocol) -> Vec<&'static str> {
@@ -386,15 +360,25 @@ fn build_runtime_config(options: &HashMap<String, serde_json::Value>) -> Runtime
 fn provider_config_for_protocol(
     provider_id: &str,
     provider: &ProviderState,
+    profile: &ProviderProfile,
     protocol: Protocol,
 ) -> Option<ProviderConfig> {
     let fallback_env = default_secret_env_for_provider(provider_id, protocol);
-    let npm = resolve_npm_for_provider(provider_id, provider);
     let headers = collect_provider_headers(provider);
     let mut options = provider.options.clone();
-    options.insert("npm".to_string(), serde_json::Value::String(npm));
+    options.insert(
+        "npm".to_string(),
+        serde_json::Value::String(profile.npm.clone()),
+    );
+    options.insert(
+        "legacy_protocol_selector".to_string(),
+        serde_json::Value::String(protocol.to_string()),
+    );
 
-    if matches!(protocol, Protocol::OpenAI) && provider_id != "openai" {
+    if matches!(protocol, Protocol::OpenAI)
+        && provider_id != "openai"
+        && profile.api_shape != ProviderApiShape::Responses
+    {
         options.insert("legacy_only".to_string(), serde_json::Value::Bool(true));
     }
 
@@ -464,8 +448,21 @@ fn create_protocol_provider(
     }
 
     let npm = resolve_npm_for_provider(provider_id, provider);
-    let protocol = Protocol::from_npm(&npm);
-    let mut config = provider_config_for_protocol(provider_id, provider, protocol)?;
+    let provider_profile =
+        match ProviderProfileResolver::try_resolve_with_npm(provider_id, &npm, &provider.options) {
+            Ok(profile) => profile,
+            Err(error) => {
+                tracing::warn!(
+                    provider = provider_id,
+                    error = %error,
+                    "provider profile validation failed, skipping provider"
+                );
+                return None;
+            }
+        };
+    let protocol = Protocol::from_profile(&provider_profile);
+    let mut config =
+        provider_config_for_protocol(provider_id, provider, &provider_profile, protocol)?;
 
     let manifest: Option<ProtocolManifest> = ProtocolLoader::new()
         .try_load_provider(provider_id, &config.options)
@@ -514,7 +511,7 @@ fn create_protocol_provider(
         serde_json::Value::Bool(runtime_config.pipeline_enabled),
     );
 
-    let protocol_impl = create_protocol_impl(protocol);
+    let protocol_impl = create_protocol_impl_for_profile(&provider_profile);
     let mut models: HashMap<String, RuntimeModelInfo> = provider
         .models
         .values()
@@ -537,7 +534,10 @@ fn create_protocol_provider(
         config,
         protocol_impl,
         models,
-    );
+    )
+    .with_provider_profile_fingerprint(crate::cache::ProviderProfileFingerprint::from_profile(
+        &provider_profile,
+    ));
 
     if runtime_config.enabled {
         let protocol_source = if let Some(manifest) = &manifest {
@@ -574,9 +574,9 @@ fn create_protocol_provider(
                         error = %err,
                         "failed to build runtime pipeline from manifest, using provider defaults"
                     );
-                    Pipeline::for_provider(provider_id)
+                    Pipeline::for_profile(&provider_profile)
                 }),
-                None => Pipeline::for_provider(provider_id),
+                None => Pipeline::for_profile(&provider_profile),
             };
             runtime.set_pipeline(Arc::new(pipeline));
         }
@@ -674,6 +674,10 @@ impl RuntimeProvider for AliasedProvider {
 
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn provider_profile_fingerprint(&self) -> Option<crate::cache::ProviderProfileFingerprint> {
+        self.inner.provider_profile_fingerprint()
     }
 
     fn models(&self) -> Vec<RuntimeModelInfo> {
@@ -803,5 +807,74 @@ pub(super) fn register_fallback_env_providers(registry: &mut ProviderRegistry) {
         if let Some(provider) = create_concrete_provider(provider_id, &state) {
             registry.register_arc(provider);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn provider_state_with_profile(api_shape: &str) -> ProviderState {
+        let mut options = HashMap::new();
+        options.insert(
+            "providerProfile".to_string(),
+            serde_json::json!({
+                "api_style": "closeai-compatible",
+                "api_shape": api_shape,
+                "transport": "bearer",
+                "usage_shape": "closeai-cached-tokens"
+            }),
+        );
+
+        ProviderState {
+            id: "my-custom".to_string(),
+            name: "my-custom".to_string(),
+            source: "config".to_string(),
+            env: Vec::new(),
+            key: Some("test-key".to_string()),
+            options,
+            models: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn closeai_responses_profile_does_not_force_legacy_chat_completions() {
+        let provider = provider_state_with_profile("responses");
+        let profile = ProviderProfileResolver::try_resolve("my-custom", &provider)
+            .expect("profile should resolve");
+        let protocol = Protocol::from_profile(&profile);
+
+        let config = provider_config_for_protocol("my-custom", &provider, &profile, protocol)
+            .expect("config should resolve");
+
+        assert_eq!(profile.api_shape, ProviderApiShape::Responses);
+        assert_eq!(protocol, Protocol::OpenAI);
+        assert_ne!(
+            config
+                .options
+                .get("legacy_only")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn closeai_chat_completions_profile_still_uses_legacy_adapter() {
+        let provider = provider_state_with_profile("chat-completions");
+        let profile = ProviderProfileResolver::try_resolve("my-custom", &provider)
+            .expect("profile should resolve");
+        let protocol = Protocol::from_profile(&profile);
+
+        let config = provider_config_for_protocol("my-custom", &provider, &profile, protocol)
+            .expect("config should resolve");
+
+        assert_eq!(profile.api_shape, ProviderApiShape::ChatCompletions);
+        assert_eq!(
+            config
+                .options
+                .get("legacy_only")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
     }
 }

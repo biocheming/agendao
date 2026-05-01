@@ -122,68 +122,21 @@ impl BedrockProtocol {
         host: &str,
         body: &[u8],
     ) -> Result<reqwest::header::HeaderMap, ProviderError> {
-        let mut headers = reqwest::header::HeaderMap::new();
-
-        let now = chrono::Utc::now();
-        let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
-        let date_stamp = now.format("%Y%m%d").to_string();
-
-        let service = "bedrock";
-        let region = &bedrock_config.region;
-
-        let body_hash = hex::encode(sha256(body));
-        let host_lower = host.to_ascii_lowercase();
-        let amz_date_header = amz_date.clone();
-
-        headers.insert("Content-Type", "application/json".parse().unwrap());
-        headers.insert("X-Amz-Date", amz_date.parse().unwrap());
-        headers.insert("Host", host.parse().unwrap());
-
-        let mut canonical_headers = vec![
-            format!("host:{host_lower}"),
-            format!("x-amz-date:{amz_date_header}"),
-        ];
-        let mut signed_headers = vec!["host", "x-amz-date"];
-
-        if let Some(ref token) = bedrock_config.session_token {
-            headers.insert("X-Amz-Security-Token", token.parse().unwrap());
-            canonical_headers.push(format!("x-amz-security-token:{token}"));
-            signed_headers.push("x-amz-security-token");
-        }
-
-        let canonical_headers = canonical_headers.join("\n");
-        let signed_headers = signed_headers.join(";");
-        let canonical_request = format!(
-            "{}\n{}\n\n{}\n{}\n{}",
-            method, path, canonical_headers, signed_headers, body_hash
-        );
-
-        let credential_scope = format!("{}/{}/{}/aws4_request", date_stamp, region, service);
-
-        let string_to_sign = format!(
-            "AWS4-HMAC-SHA256\n{}\n{}\n{}",
-            amz_date_header,
-            credential_scope,
-            hex::encode(sha256(canonical_request.as_bytes()))
-        );
-
-        let signing_key = get_signature_key(
-            &bedrock_config.secret_access_key,
-            &date_stamp,
-            region,
-            service,
-        );
-
-        let signature = hex::encode(hmac_sha256(&signing_key, string_to_sign.as_bytes()));
-
-        let authorization = format!(
-            "AWS4-HMAC-SHA256 Credential={}/{}, SignedHeaders={}, Signature={}",
-            bedrock_config.access_key_id, credential_scope, signed_headers, signature
-        );
-
-        headers.insert("Authorization", authorization.parse().unwrap());
-
-        Ok(headers)
+        crate::transport::sign_aws_sigv4_json_request(
+            crate::transport::AwsSigV4Credentials {
+                access_key_id: &bedrock_config.access_key_id,
+                secret_access_key: &bedrock_config.secret_access_key,
+                session_token: bedrock_config.session_token.as_deref(),
+            },
+            crate::transport::AwsSigV4Request {
+                method,
+                path,
+                host,
+                region: &bedrock_config.region,
+                service: "bedrock",
+                body,
+            },
+        )
     }
 
     fn endpoint_url_and_signing_path(
@@ -242,11 +195,9 @@ impl ProtocolImpl for BedrockProtocol {
         let headers =
             Self::sign_request(&bedrock_config, "POST", &signing_path, &signing_host, &body)?;
 
-        let mut req_builder = client.post(&url).headers(headers).body(body);
-
-        for (key, value) in &config.headers {
-            req_builder = req_builder.header(key, value);
-        }
+        let req_builder =
+            crate::transport::apply_config_headers(client.post(&url).headers(headers), config)
+                .body(body);
 
         let response = req_builder
             .send()
@@ -291,15 +242,14 @@ impl ProtocolImpl for BedrockProtocol {
         let headers =
             Self::sign_request(&bedrock_config, "POST", &signing_path, &signing_host, &body)?;
 
-        let mut req_builder = client
-            .post(&url)
-            .headers(headers)
-            .header("Accept", "application/vnd.amazon.eventstream")
-            .body(body);
-
-        for (key, value) in &config.headers {
-            req_builder = req_builder.header(key, value);
-        }
+        let req_builder = crate::transport::apply_config_headers(
+            client
+                .post(&url)
+                .headers(headers)
+                .header("Accept", "application/vnd.amazon.eventstream"),
+            config,
+        )
+        .body(body);
 
         let response = req_builder
             .send()
@@ -404,31 +354,6 @@ struct BedrockUsage {
     input_tokens: u64,
     output_tokens: u64,
     total_tokens: Option<u64>,
-}
-
-// ---- Crypto helpers ----
-
-fn sha256(data: &[u8]) -> Vec<u8> {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    hasher.finalize().to_vec()
-}
-
-fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
-    use hmac::{Hmac, Mac};
-    use sha2::Sha256;
-
-    let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap();
-    mac.update(data);
-    mac.finalize().into_bytes().to_vec()
-}
-
-fn get_signature_key(key: &str, date: &str, region: &str, service: &str) -> Vec<u8> {
-    let k_date = hmac_sha256(format!("AWS4{}", key).as_bytes(), date.as_bytes());
-    let k_region = hmac_sha256(&k_date, region.as_bytes());
-    let k_service = hmac_sha256(&k_region, service.as_bytes());
-    hmac_sha256(&k_service, b"aws4_request")
 }
 
 // ---- Helpers ----

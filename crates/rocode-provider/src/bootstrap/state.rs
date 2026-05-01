@@ -81,6 +81,7 @@ impl ProviderBootstrapState {
                     .map(|provider| provider.models.clone())
                     .unwrap_or_default(),
             };
+            apply_config_provider_profile_options(&mut parsed.options, cfg_provider);
 
             if let Some(cfg_models) = &cfg_provider.models {
                 for (model_id, cfg_model) in cfg_models {
@@ -470,6 +471,56 @@ impl ProviderBootstrapState {
             provider_id: provider.id.clone(),
             model_id: model.id.clone(),
         })
+    }
+}
+
+fn apply_config_provider_profile_options(
+    options: &mut HashMap<String, serde_json::Value>,
+    cfg_provider: &ConfigProvider,
+) {
+    let mut profile = serde_json::Map::new();
+    if let Some(value) = &cfg_provider.api_style {
+        profile.insert(
+            "api_style".to_string(),
+            serde_json::Value::String(value.clone()),
+        );
+    }
+    if let Some(value) = &cfg_provider.api_shape {
+        profile.insert(
+            "api_shape".to_string(),
+            serde_json::Value::String(value.clone()),
+        );
+    }
+    if let Some(value) = &cfg_provider.transport {
+        profile.insert(
+            "transport".to_string(),
+            serde_json::Value::String(value.clone()),
+        );
+    }
+    if let Some(value) = &cfg_provider.usage_shape {
+        profile.insert(
+            "usage_shape".to_string(),
+            serde_json::Value::String(value.clone()),
+        );
+    }
+    if let Some(values) = &cfg_provider.quirks {
+        profile.insert(
+            "quirks".to_string(),
+            serde_json::Value::Array(
+                values
+                    .iter()
+                    .cloned()
+                    .map(serde_json::Value::String)
+                    .collect(),
+            ),
+        );
+    }
+
+    if !profile.is_empty() {
+        options.insert(
+            "providerProfile".to_string(),
+            serde_json::Value::Object(profile),
+        );
     }
 }
 

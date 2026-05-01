@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
+use crate::runtime::runtime_pipeline_enabled;
 use crate::{
     ChatRequest, ChatResponse, Choice, Message, ProtocolImpl, ProviderConfig, ProviderError,
     StreamResult, Usage,
@@ -12,26 +13,6 @@ use crate::{
 // OPENAI_API_URL for the OpenAI chat-completions protocol).  Users override
 // this via `base_url` in their provider configuration.
 const MESSAGES_DEFAULT_URL: &str = "https://api.anthropic.com/v1/messages";
-
-fn runtime_pipeline_enabled(config: &ProviderConfig) -> bool {
-    config
-        .option_bool(&["runtime_pipeline"])
-        .unwrap_or_else(|| {
-            std::env::var("ROCODE_RUNTIME_PIPELINE")
-                .ok()
-                .and_then(|v| {
-                    let lower = v.trim().to_ascii_lowercase();
-                    if matches!(lower.as_str(), "1" | "true" | "yes" | "on") {
-                        Some(true)
-                    } else if matches!(lower.as_str(), "0" | "false" | "no" | "off") {
-                        Some(false)
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or(true)
-        })
-}
 
 /// Build the messages endpoint URL from a user-supplied base URL.
 /// The generic messages-family transport appends `/messages` when the base URL
@@ -173,17 +154,12 @@ impl ProtocolImpl for MessagesProtocol {
 
         let messages_request = Self::convert_request(request);
 
-        let mut req_builder = client
-            .post(&url)
-            // Messages API protocol headers — required by the API specification,
-            // not brand-specific.  Analogous to OpenAI's "Authorization: Bearer".
-            .header("x-api-key", &config.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json");
-
-        for (key, value) in &config.headers {
-            req_builder = req_builder.header(key, value);
-        }
+        let req_builder = crate::transport::apply_config_headers(
+            crate::transport::apply_json_content_type(
+                crate::transport::apply_messages_api_headers(client.post(&url), config),
+            ),
+            config,
+        );
 
         let response = req_builder
             .json(&messages_request)
@@ -232,17 +208,12 @@ impl ProtocolImpl for MessagesProtocol {
             "messages protocol chat_stream request"
         );
 
-        let mut req_builder = client
-            .post(&url)
-            // Messages API protocol headers (see non-streaming chat() for rationale).
-            .header("x-api-key", &config.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .header("accept", "text/event-stream");
-
-        for (key, value) in &config.headers {
-            req_builder = req_builder.header(key, value);
-        }
+        let req_builder = crate::transport::apply_config_headers(
+            crate::transport::apply_sse_accept(crate::transport::apply_json_content_type(
+                crate::transport::apply_messages_api_headers(client.post(&url), config),
+            )),
+            config,
+        );
 
         let response = req_builder
             .json(&messages_request)

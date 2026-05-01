@@ -12,6 +12,7 @@ use crate::responses::{
     FinishReason, GenerateOptions, OpenAIResponsesConfig, OpenAIResponsesLanguageModel,
     ResponsesProviderOptions, StreamOptions,
 };
+use crate::runtime::runtime_pipeline_enabled;
 use crate::tools::InputTool;
 use crate::{
     ChatRequest, ChatResponse, Choice, Content, Message, ProtocolImpl, ProviderConfig,
@@ -32,26 +33,6 @@ fn select_copilot_route(model_id: &str) -> CopilotRoute {
     } else {
         CopilotRoute::Legacy
     }
-}
-
-fn runtime_pipeline_enabled(config: &ProviderConfig) -> bool {
-    config
-        .option_bool(&["runtime_pipeline"])
-        .unwrap_or_else(|| {
-            std::env::var("ROCODE_RUNTIME_PIPELINE")
-                .ok()
-                .and_then(|v| {
-                    let lower = v.trim().to_ascii_lowercase();
-                    if matches!(lower.as_str(), "1" | "true" | "yes" | "on") {
-                        Some(true)
-                    } else if matches!(lower.as_str(), "0" | "false" | "no" | "off") {
-                        Some(false)
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or(true)
-        })
 }
 
 async fn resolve_with_fallback<T, PFut, FFut, F>(
@@ -323,15 +304,13 @@ impl CopilotProtocol {
         let url = Self::get_api_url(config);
         let copilot_request = Self::convert_request(request);
 
-        let mut req_builder = client
-            .post(url)
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {}", config.api_key))
-            .header("Copilot-Integration-Id", "vscode-chat");
-
-        for (key, value) in &config.headers {
-            req_builder = req_builder.header(key, value);
-        }
+        let req_builder = crate::transport::apply_config_headers(
+            crate::transport::apply_copilot_headers(
+                crate::transport::apply_json_content_type(client.post(url)),
+                config,
+            ),
+            config,
+        );
 
         let response = req_builder
             .json(&copilot_request)
@@ -369,16 +348,13 @@ impl CopilotProtocol {
         let mut copilot_request = Self::convert_request(request);
         copilot_request.stream = true;
 
-        let mut req_builder = client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {}", config.api_key))
-            .header("Copilot-Integration-Id", "vscode-chat")
-            .header("Accept", "text/event-stream");
-
-        for (key, value) in &config.headers {
-            req_builder = req_builder.header(key, value);
-        }
+        let req_builder = crate::transport::apply_config_headers(
+            crate::transport::apply_sse_accept(crate::transport::apply_copilot_headers(
+                crate::transport::apply_json_content_type(client.post(&url)),
+                config,
+            )),
+            config,
+        );
 
         let response = req_builder
             .json(&copilot_request)

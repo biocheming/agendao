@@ -580,6 +580,10 @@ impl ProviderConfig {
         api_key: Option<String>,
         base_url: Option<String>,
         npm: Option<String>,
+        api_style: Option<String>,
+        api_shape: Option<String>,
+        transport: Option<String>,
+        usage_shape: Option<String>,
         env: Option<Vec<String>>,
     ) {
         merge_option_replace(&mut self.name, name);
@@ -587,6 +591,10 @@ impl ProviderConfig {
         merge_option_replace(&mut self.api_key, api_key);
         merge_option_replace(&mut self.base_url, base_url);
         merge_option_replace(&mut self.npm, npm);
+        merge_option_replace(&mut self.api_style, api_style);
+        merge_option_replace(&mut self.api_shape, api_shape);
+        merge_option_replace(&mut self.transport, transport);
+        merge_option_replace(&mut self.usage_shape, usage_shape);
         merge_option_replace(&mut self.env, env);
     }
 
@@ -617,13 +625,30 @@ impl DeepMerge for ProviderConfig {
             models,
             options,
             npm,
+            api_style,
+            api_shape,
+            transport,
+            usage_shape,
+            quirks,
             env,
             whitelist,
             blacklist,
         } = other;
 
-        self.merge_replace_fields(name, id, api_key, base_url, npm, env);
+        self.merge_replace_fields(
+            name,
+            id,
+            api_key,
+            base_url,
+            npm,
+            api_style,
+            api_shape,
+            transport,
+            usage_shape,
+            env,
+        );
         self.merge_map_fields(models, options);
+        merge_vec_replace_if_non_empty(&mut self.quirks, quirks);
         self.merge_vec_fields(whitelist, blacklist);
     }
 }

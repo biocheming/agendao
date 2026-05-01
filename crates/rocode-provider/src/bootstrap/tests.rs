@@ -159,6 +159,41 @@ fn creates_bedrock_provider_from_options() {
 }
 
 #[test]
+fn creates_custom_provider_from_declared_closeai_profile() {
+    let mut state = provider_state("my-custom");
+    state.key = Some("test-key".to_string());
+    state.options.insert(
+        "providerProfile".to_string(),
+        serde_json::json!({
+            "api_style": "closeai-compatible",
+            "api_shape": "chat-completions",
+            "transport": "bearer",
+            "usage_shape": "closeai-cached-tokens"
+        }),
+    );
+
+    let provider = create_concrete_provider("my-custom", &state).expect("provider should exist");
+    assert_eq!(provider.id(), "my-custom");
+}
+
+#[test]
+fn rejects_custom_provider_with_invalid_profile() {
+    let mut state = provider_state("my-custom");
+    state.key = Some("test-key".to_string());
+    state.options.insert(
+        "providerProfile".to_string(),
+        serde_json::json!({
+            "api_style": "ethnopic-compatible",
+            "api_shape": "chat-completions",
+            "transport": "bearer",
+            "usage_shape": "ethnopic-read-write"
+        }),
+    );
+
+    assert!(create_concrete_provider("my-custom", &state).is_none());
+}
+
+#[test]
 fn sort_models_prioritizes_big_pickle_over_non_priority_models() {
     let mut models = vec![
         provider_model("my-custom-model"),

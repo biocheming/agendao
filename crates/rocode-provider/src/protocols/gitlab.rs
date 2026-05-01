@@ -3,32 +3,13 @@ use futures::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
+use crate::runtime::runtime_pipeline_enabled;
 use crate::{
     ChatRequest, ChatResponse, Choice, Content, Message, ProtocolImpl, ProviderConfig,
     ProviderError, Role, StreamEvent, StreamResult, Usage,
 };
 
 const GITLAB_API_URL: &str = "https://gitlab.com/api/v4/ai/chat/completions";
-
-fn runtime_pipeline_enabled(config: &ProviderConfig) -> bool {
-    config
-        .option_bool(&["runtime_pipeline"])
-        .unwrap_or_else(|| {
-            std::env::var("ROCODE_RUNTIME_PIPELINE")
-                .ok()
-                .and_then(|v| {
-                    let lower = v.trim().to_ascii_lowercase();
-                    if matches!(lower.as_str(), "1" | "true" | "yes" | "on") {
-                        Some(true)
-                    } else if matches!(lower.as_str(), "0" | "false" | "no" | "off") {
-                        Some(false)
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or(true)
-        })
-}
 
 pub struct GitLabProtocol;
 
@@ -99,14 +80,13 @@ impl ProtocolImpl for GitLabProtocol {
         let url = Self::get_api_url(config);
         let gitlab_request = Self::convert_request(request);
 
-        let mut req_builder = client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header("PRIVATE-TOKEN", &config.api_key);
-
-        for (key, value) in &config.headers {
-            req_builder = req_builder.header(key, value);
-        }
+        let req_builder = crate::transport::apply_config_headers(
+            crate::transport::apply_private_token_auth(
+                crate::transport::apply_json_content_type(client.post(&url)),
+                &config.api_key,
+            ),
+            config,
+        );
 
         let response = req_builder
             .json(&gitlab_request)
@@ -145,15 +125,13 @@ impl ProtocolImpl for GitLabProtocol {
         let mut gitlab_request = Self::convert_request(request);
         gitlab_request.stream = true;
 
-        let mut req_builder = client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header("PRIVATE-TOKEN", &config.api_key)
-            .header("Accept", "text/event-stream");
-
-        for (key, value) in &config.headers {
-            req_builder = req_builder.header(key, value);
-        }
+        let req_builder = crate::transport::apply_config_headers(
+            crate::transport::apply_sse_accept(crate::transport::apply_private_token_auth(
+                crate::transport::apply_json_content_type(client.post(&url)),
+                &config.api_key,
+            )),
+            config,
+        );
 
         let response = req_builder
             .json(&gitlab_request)

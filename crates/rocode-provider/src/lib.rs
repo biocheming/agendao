@@ -11,6 +11,7 @@ pub mod error_code;
 pub mod instance;
 pub mod message;
 pub mod models;
+pub mod profile;
 pub mod protocol;
 pub mod protocol_loader;
 pub mod protocol_validator;
@@ -23,6 +24,7 @@ pub mod runtime;
 pub mod stream;
 pub mod tools;
 pub mod transform;
+pub mod transport;
 
 pub use auth::*;
 pub use bootstrap::create_registry_from_env;
@@ -44,6 +46,7 @@ pub use catalog::{
 pub use custom_fetch::*;
 pub use instance::*;
 pub use message::*;
+pub use profile::*;
 pub use protocol::*;
 pub use protocols::*;
 pub use provider::*;
@@ -59,6 +62,7 @@ pub use transform::{
     top_p_for_model, transform_messages, unsupported_parts, variants, Modality, ProviderType,
     OUTPUT_TOKEN_MAX,
 };
+pub use transport::*;
 
 pub use models::{
     get_model_context_limit, supports_function_calling, supports_vision, ModelCost,

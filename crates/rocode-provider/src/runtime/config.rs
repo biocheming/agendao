@@ -1,3 +1,5 @@
+use crate::ProviderConfig;
+
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
     pub enabled: bool,
@@ -10,6 +12,51 @@ pub struct RuntimeConfig {
     pub protocol_path: Option<String>,
     pub protocol_version: Option<String>,
     pub hot_reload: bool,
+}
+
+pub fn runtime_pipeline_enabled(config: &ProviderConfig) -> bool {
+    config
+        .option_bool(&["runtime_pipeline"])
+        .unwrap_or_else(|| {
+            std::env::var("ROCODE_RUNTIME_PIPELINE")
+                .ok()
+                .and_then(|v| {
+                    let lower = v.trim().to_ascii_lowercase();
+                    if matches!(lower.as_str(), "1" | "true" | "yes" | "on") {
+                        Some(true)
+                    } else if matches!(lower.as_str(), "0" | "false" | "no" | "off") {
+                        Some(false)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(true)
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::runtime_pipeline_enabled;
+    use crate::ProviderConfig;
+    use serde_json::Value;
+
+    #[test]
+    fn runtime_pipeline_option_disables_pipeline() {
+        let mut config = ProviderConfig::new("openai", "", "");
+        config
+            .options
+            .insert("runtime_pipeline".to_string(), Value::Bool(false));
+        assert!(!runtime_pipeline_enabled(&config));
+    }
+
+    #[test]
+    fn runtime_pipeline_option_enables_pipeline() {
+        let mut config = ProviderConfig::new("openai", "", "");
+        config
+            .options
+            .insert("runtime_pipeline".to_string(), Value::Bool(true));
+        assert!(runtime_pipeline_enabled(&config));
+    }
 }
 
 impl Default for RuntimeConfig {
