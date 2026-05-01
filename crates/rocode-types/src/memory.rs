@@ -422,3 +422,200 @@ pub struct SessionMemoryInsight {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recent_session_records: Vec<MemoryCardView>,
 }
+
+// ── Skill Evolution Proposals ──────────────────────────────────────────────
+//
+// Evidence-backed proposals for skill lifecycle changes, generated from
+// methodology candidates after consolidation. Each proposal is a reviewed,
+// deterministic suggestion — not an automatic patch.
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillEvolutionProposalKind {
+    PatchExistingSkill,
+    CreateNewSkill,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProposalStatus {
+    Draft,
+    Accepted,
+    Rejected,
+    Superseded,
+    Applied,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SuggestedSkillChange {
+    AddTriggerCondition {
+        text: String,
+        evidence_refs: Vec<String>,
+    },
+    AddCoreStep {
+        text: String,
+        evidence_refs: Vec<String>,
+    },
+    AddBoundary {
+        text: String,
+        evidence_refs: Vec<String>,
+    },
+    AddValidationStep {
+        text: String,
+        evidence_refs: Vec<String>,
+    },
+    CreateSkillDraft {
+        suggested_name: String,
+        when_to_use: Vec<String>,
+        core_steps: Vec<String>,
+        boundaries: Vec<String>,
+        validation: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillEvolutionProposal {
+    pub id: String,
+    pub session_id: String,
+    pub memory_record_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked_skill_name: Option<String>,
+    pub proposal_kind: SkillEvolutionProposalKind,
+    pub title: String,
+    pub rationale: String,
+    pub suggested_changes: Vec<SuggestedSkillChange>,
+    pub status: ProposalStatus,
+    pub evidence_hash: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct SkillEvolutionProposalGenerationSummary {
+    #[serde(default)]
+    pub proposals_created: u32,
+    #[serde(default)]
+    pub proposals_skipped: u32,
+    #[serde(default)]
+    pub methodology_candidates_seen: u32,
+}
+
+impl SkillEvolutionProposal {
+    pub fn compute_evidence_hash(
+        kind: &SkillEvolutionProposalKind,
+        linked_skill_name: Option<&str>,
+        memory_record_ids: &[String],
+        changes: &[SuggestedSkillChange],
+    ) -> String {
+        use sha2::{Digest, Sha256};
+        let mut sorted_ids = memory_record_ids.to_vec();
+        sorted_ids.sort();
+        // Use serde JSON for stable hashing — Debug output is not
+        // guaranteed stable across compiler versions or refactors.
+        let payload = serde_json::json!({
+            "kind": kind,
+            "linked_skill_name": linked_skill_name,
+            "memory_record_ids": sorted_ids,
+            "changes": changes,
+        });
+        let bytes = serde_json::to_vec(&payload).unwrap_or_default();
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        format!("{:x}", hasher.finalize())[..24].to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn suggested_skill_change_serde_roundtrip() {
+        let changes = vec![
+            SuggestedSkillChange::AddTriggerCondition {
+                text: "cargo test fails after edit".to_string(),
+                evidence_refs: vec!["session=ses_1 · tool=call_1".to_string()],
+            },
+            SuggestedSkillChange::AddBoundary {
+                text: "do not refactor before reproducing".to_string(),
+                evidence_refs: vec![],
+            },
+        ];
+        let json = serde_json::to_string(&changes).unwrap();
+        let roundtripped: Vec<SuggestedSkillChange> = serde_json::from_str(&json).unwrap();
+        assert_eq!(changes, roundtripped);
+    }
+
+    #[test]
+    fn evidence_hash_deterministic() {
+        let changes = vec![SuggestedSkillChange::AddCoreStep {
+            text: "run cargo test".to_string(),
+            evidence_refs: vec!["a".to_string()],
+        }];
+        let h1 = SkillEvolutionProposal::compute_evidence_hash(
+            &SkillEvolutionProposalKind::PatchExistingSkill,
+            Some("my-skill"),
+            &["mem_1".to_string()],
+            &changes,
+        );
+        let h2 = SkillEvolutionProposal::compute_evidence_hash(
+            &SkillEvolutionProposalKind::PatchExistingSkill,
+            Some("my-skill"),
+            &["mem_1".to_string()],
+            &changes,
+        );
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn evidence_hash_differs_on_different_kind() {
+        let changes = vec![];
+        let h1 = SkillEvolutionProposal::compute_evidence_hash(
+            &SkillEvolutionProposalKind::PatchExistingSkill,
+            None,
+            &[],
+            &changes,
+        );
+        let h2 = SkillEvolutionProposal::compute_evidence_hash(
+            &SkillEvolutionProposalKind::CreateNewSkill,
+            None,
+            &[],
+            &changes,
+        );
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn evidence_hash_memory_order_independent() {
+        let changes = vec![];
+        let h1 = SkillEvolutionProposal::compute_evidence_hash(
+            &SkillEvolutionProposalKind::PatchExistingSkill,
+            None,
+            &["b".to_string(), "a".to_string()],
+            &changes,
+        );
+        let h2 = SkillEvolutionProposal::compute_evidence_hash(
+            &SkillEvolutionProposalKind::PatchExistingSkill,
+            None,
+            &["a".to_string(), "b".to_string()],
+            &changes,
+        );
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn proposal_status_serde_roundtrip() {
+        for status in &[
+            ProposalStatus::Draft,
+            ProposalStatus::Accepted,
+            ProposalStatus::Rejected,
+            ProposalStatus::Superseded,
+            ProposalStatus::Applied,
+        ] {
+            let json = serde_json::to_string(status).unwrap();
+            let back: ProposalStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(*status, back);
+        }
+    }
+}

@@ -32,10 +32,10 @@ pub use dialogs::{
     PendingSubmit, PromptStashDialog, Provider, ProviderConnectMode, ProviderDialog,
     ProviderModelOverride, ProviderStatus, RecoveryActionDialog, RecoveryActionItem,
     SessionDeleteState, SessionExportDialog, SessionItem, SessionListDialog, SessionRenameDialog,
-    SkillCreatePayload, SkillEditPayload, SkillListDialog, StashItem, StatusDialog, StatusLine,
-    SubagentDialog, SubagentInfo, SubagentMessage, SubmitResult, Tag, TagDialog, ThemeListDialog,
-    ThemeOption, TimelineDialog, TimelineEntry, ToolCallCancelDialog, ToolCallItem,
-    VisibilityLabels,
+    SkillCreatePayload, SkillEditPayload, SkillListDialog, SkillProposalReviewDialog,
+    SkillProposalReviewItem, StashItem, StatusDialog, StatusLine, SubagentDialog, SubagentInfo,
+    SubagentMessage, SubmitResult, Tag, TagDialog, ThemeListDialog, ThemeOption, TimelineDialog,
+    TimelineEntry, ToolCallCancelDialog, ToolCallItem, VisibilityLabels,
 };
 pub use diff::{DiffLine, DiffLineType, DiffMode, DiffView};
 pub use home::HomeView;

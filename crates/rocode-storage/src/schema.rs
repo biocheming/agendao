@@ -319,6 +319,36 @@ CREATE INDEX IF NOT EXISTS idx_memory_validation_runs_memory ON memory_validatio
 CREATE INDEX IF NOT EXISTS idx_memory_retrieval_log_session ON memory_retrieval_log(session_id);
 "#;
 
+/// Skill evolution proposals table — evidence-backed skill lifecycle proposals
+/// generated from methodology candidates after consolidation.
+pub const CREATE_SKILL_EVOLUTION_PROPOSALS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS skill_evolution_proposals (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    memory_record_ids_json TEXT NOT NULL,
+    linked_skill_name TEXT,
+    proposal_kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    rationale TEXT NOT NULL,
+    suggested_changes_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',
+    evidence_hash TEXT NOT NULL UNIQUE,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL
+);
+"#;
+
+pub const CREATE_SKILL_EVOLUTION_PROPOSALS_INDEXES: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_skill_evolution_proposals_status
+ON skill_evolution_proposals(status);
+
+CREATE INDEX IF NOT EXISTS idx_skill_evolution_proposals_linked_skill
+ON skill_evolution_proposals(linked_skill_name);
+
+CREATE INDEX IF NOT EXISTS idx_skill_evolution_proposals_session
+ON skill_evolution_proposals(session_id);
+"#;
+
 /// Add finish column to messages table for existing databases.
 /// New databases get it from CREATE TABLE; this handles upgrades.
 pub const ADD_MESSAGES_FINISH_COLUMN: &str = "ALTER TABLE messages ADD COLUMN finish TEXT";
@@ -349,7 +379,9 @@ pub const ALL_MIGRATIONS: &[&str] = &[
     CREATE_MEMORY_RETRIEVAL_LOG_TABLE,
     CREATE_MEMORY_RULE_PACKS_TABLE,
     CREATE_MEMORY_RULE_HITS_TABLE,
+    CREATE_SKILL_EVOLUTION_PROPOSALS_TABLE,
     CREATE_INDEXES,
+    CREATE_SKILL_EVOLUTION_PROPOSALS_INDEXES,
     ADD_MESSAGES_FINISH_COLUMN,
     ADD_SESSIONS_METADATA_COLUMN,
     ADD_MESSAGES_METADATA_COLUMN,

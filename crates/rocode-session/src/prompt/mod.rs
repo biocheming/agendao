@@ -245,6 +245,140 @@ pub struct SessionPrompt {
     lsp_registry: Option<Arc<rocode_lsp::LspClientRegistry>>,
     tool_runtime_config: rocode_tool::ToolRuntimeConfig,
     config_store: Option<Arc<rocode_config::ConfigStore>>,
+    memory_authority: Option<Arc<rocode_memory::MemoryAuthority>>,
+    proposal_repo: Option<Arc<rocode_storage::SkillEvolutionProposalRepository>>,
+    last_review_nudge_at: std::sync::Mutex<Option<tokio::time::Instant>>,
+}
+
+/// Signals collected from a completed session turn that drive the nudge
+/// decision for background memory review.
+///
+/// Mirrors Hermes's nudge heartbeat: enough tool calls, errors, or skill
+/// writes trigger a deterministic consolidation run against the current
+/// workspace evidence.
+#[derive(Debug, Clone)]
+pub struct RuntimeReviewNudge {
+    pub session_id: String,
+    pub step_count: usize,
+    pub tool_call_count: usize,
+    pub error_tool_call_count: usize,
+    pub skill_write_count: usize,
+    pub used_skill_names: Vec<String>,
+}
+
+impl RuntimeReviewNudge {
+    /// Extract nudge signals from session messages after a completed loop.
+    pub fn from_session(session: &Session, step_count: usize) -> Self {
+        let turn_start = session
+            .messages
+            .iter()
+            .rposition(|m| m.role == MessageRole::User)
+            .unwrap_or(0);
+
+        let mut tool_call_count = 0usize;
+        let mut error_tool_call_count = 0usize;
+        let mut skill_write_count = 0usize;
+        let mut used_skill_names = Vec::new();
+
+        for msg in session.messages.iter().skip(turn_start) {
+            if msg.role != MessageRole::Assistant {
+                continue;
+            }
+            for part in &msg.parts {
+                match &part.part_type {
+                    PartType::ToolCall { name, .. } => {
+                        tool_call_count += 1;
+                        if name == "skill_manage" {
+                            skill_write_count += 1;
+                        }
+                    }
+                    PartType::ToolResult { is_error, .. } => {
+                        if *is_error {
+                            error_tool_call_count += 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(skill_name) = msg
+                .metadata
+                .get("skill_name")
+                .and_then(|v| v.as_str())
+            {
+                let name = skill_name.to_string();
+                if !used_skill_names.contains(&name) {
+                    used_skill_names.push(name);
+                }
+            }
+        }
+
+        Self {
+            session_id: session.id.clone(),
+            step_count,
+            tool_call_count,
+            error_tool_call_count,
+            skill_write_count,
+            used_skill_names,
+        }
+    }
+}
+
+/// Why a consolidation nudge was skipped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkippedReason {
+    /// Not enough tool calls, errors, or skill writes.
+    BelowThreshold,
+    /// A review ran recently (per-instance cooldown active).
+    CooldownActive,
+    /// No memory repository is available.
+    MemoryUnavailable,
+    /// Consolidation was triggered but the engine call failed.
+    ConsolidationFailed,
+}
+
+/// Outcome of the nudge decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NudgeDecision {
+    /// Triggered: consolidation ran. `promoted_records` is the count of
+    /// records that were promoted (which may include Lesson→Pattern as
+    /// well as Pattern→MethodologyCandidate; filter by kind before
+    /// treating as skill-worthy).
+    Triggered {
+        promoted: u32,
+        merged: u32,
+        archived: u32,
+        promoted_records: u32,
+        proposals_created: u32,
+        proposals_skipped: u32,
+    },
+    /// Skipped for a specific reason.
+    Skipped { reason: SkippedReason },
+}
+
+/// Append a session notice when the nudge generated skill evolution proposals.
+/// The notice appears in the TUI session timeline as a synthetic assistant
+/// message so the user can see proposals were created and use `/proposals`.
+pub fn maybe_append_proposal_notice(session: &mut Session, decision: &NudgeDecision) {
+    let proposals_created = match decision {
+        NudgeDecision::Triggered {
+            proposals_created, ..
+        } => *proposals_created,
+        NudgeDecision::Skipped { .. } => return,
+    };
+    if proposals_created == 0 {
+        return;
+    }
+
+    let note = session.add_assistant_message();
+    note.metadata.insert(
+        "runtime_hint".to_string(),
+        serde_json::json!("proposal_notice"),
+    );
+    note.add_text(format!(
+        "{} skill evolution proposal(s) generated from this run.\n\
+         Review: type /proposals or run `rocode skill proposal list`.",
+        proposals_created,
+    ));
 }
 
 pub fn compact_session_now(session: &mut Session) -> Option<String> {
@@ -634,6 +768,9 @@ impl SessionPrompt {
             lsp_registry: None,
             tool_runtime_config: rocode_tool::ToolRuntimeConfig::default(),
             config_store: None,
+            memory_authority: None,
+            proposal_repo: None,
+            last_review_nudge_at: std::sync::Mutex::new(None),
         }
     }
 
@@ -648,6 +785,204 @@ impl SessionPrompt {
     pub fn with_config_store(mut self, config_store: Arc<rocode_config::ConfigStore>) -> Self {
         self.config_store = Some(config_store);
         self
+    }
+
+    pub fn with_memory_authority(
+        mut self,
+        memory_authority: Arc<rocode_memory::MemoryAuthority>,
+    ) -> Self {
+        self.memory_authority = Some(memory_authority);
+        self
+    }
+
+    pub fn with_proposal_repo(
+        mut self,
+        proposal_repo: Arc<rocode_storage::SkillEvolutionProposalRepository>,
+    ) -> Self {
+        self.proposal_repo = Some(proposal_repo);
+        self
+    }
+
+    /// Post-run consolidation nudge: if the completed turn produced enough
+    /// tool/error/skill signals, run a deterministic memory consolidation
+    /// against the workspace repository.
+    ///
+    /// Trigger conditions (any one is sufficient):
+    /// - `skill_write_count >= 1`
+    /// - `error_tool_call_count >= 2`
+    /// - `tool_call_count >= 5`
+    /// - `used_skill_names` non-empty AND `tool_call_count >= 3`
+    ///
+    /// Cooldown: at most one consolidation per SessionPrompt instance per 10
+    /// minutes. A future persistent review job table can make this
+    /// workspace-scoped.
+    /// Consolidation runs inline (no LLM; pure DB).
+    pub async fn maybe_enqueue_background_review(
+        &self,
+        nudge: &RuntimeReviewNudge,
+    ) -> NudgeDecision {
+        const MIN_TOOL_CALLS: usize = 5;
+        const MIN_TOOL_CALLS_WITH_SKILL: usize = 3;
+        const MIN_ERRORS: usize = 2;
+        const COOLDOWN: core::time::Duration = core::time::Duration::from_secs(600);
+
+        let triggered = nudge.tool_call_count >= MIN_TOOL_CALLS
+            || nudge.error_tool_call_count >= MIN_ERRORS
+            || nudge.skill_write_count >= 1
+            || (!nudge.used_skill_names.is_empty()
+                && nudge.tool_call_count >= MIN_TOOL_CALLS_WITH_SKILL);
+
+        if !triggered {
+            return NudgeDecision::Skipped {
+                reason: SkippedReason::BelowThreshold,
+            };
+        }
+
+        let Some(memory) = self.memory_authority.as_deref() else {
+            return NudgeDecision::Skipped {
+                reason: SkippedReason::MemoryUnavailable,
+            };
+        };
+
+        // Cooldown check: skip if a review ran in this workspace recently.
+        {
+            let mut last = self
+                .last_review_nudge_at
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some(last_at) = *last {
+                if last_at.elapsed() < COOLDOWN {
+                    tracing::debug!(
+                        session_id = %nudge.session_id,
+                        "nudge: skipped (cooldown active)"
+                    );
+                    return NudgeDecision::Skipped {
+                        reason: SkippedReason::CooldownActive,
+                    };
+                }
+            }
+            *last = Some(tokio::time::Instant::now());
+        }
+
+        let started = tokio::time::Instant::now();
+        tracing::info!(
+            session_id = %nudge.session_id,
+            tool_calls = nudge.tool_call_count,
+            errors = nudge.error_tool_call_count,
+            skill_writes = nudge.skill_write_count,
+            "nudge: running consolidation after session turn"
+        );
+
+        match memory
+            .run_consolidation(&rocode_types::MemoryConsolidationRequest::default())
+            .await
+        {
+            Ok(response) => {
+                let promoted = response.run.promoted_count;
+                let merged = response.run.merged_count;
+                let archived = response.archived_record_ids.len() as u32;
+                let promoted_records = response.promoted_record_ids.len() as u32;
+                let elapsed_ms = started.elapsed().as_millis();
+
+                // Fetch promoted records and generate skill evolution proposals.
+                let (proposals_created, proposals_skipped) =
+                    self.maybe_generate_proposals(
+                        memory,
+                        &nudge.session_id,
+                        &response.promoted_record_ids,
+                    )
+                    .await;
+
+                if elapsed_ms > 1000 {
+                    tracing::warn!(
+                        session_id = %nudge.session_id,
+                        elapsed_ms,
+                        "nudge: slow consolidation"
+                    );
+                } else if promoted > 0 || merged > 0 || proposals_created > 0 {
+                    tracing::info!(
+                        session_id = %nudge.session_id,
+                        promoted,
+                        merged,
+                        archived,
+                        promoted_records,
+                        proposals_created,
+                        proposals_skipped,
+                        elapsed_ms,
+                        "nudge: consolidation completed"
+                    );
+                }
+                NudgeDecision::Triggered {
+                    promoted: response.run.promoted_count,
+                    merged: response.run.merged_count,
+                    archived,
+                    promoted_records,
+                    proposals_created,
+                    proposals_skipped,
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %nudge.session_id,
+                    %error,
+                    "nudge: consolidation failed"
+                );
+                NudgeDecision::Skipped {
+                    reason: SkippedReason::ConsolidationFailed,
+                }
+            }
+        }
+    }
+
+    /// Fetch promoted records from memory, filter to MethodologyCandidates,
+    /// and generate SkillEvolutionProposals.
+    async fn maybe_generate_proposals(
+        &self,
+        memory: &rocode_memory::MemoryAuthority,
+        session_id: &str,
+        promoted_record_ids: &[rocode_types::MemoryRecordId],
+    ) -> (u32, u32) {
+        let Some(repo) = self.proposal_repo.as_deref() else {
+            return (0, 0);
+        };
+
+        let mut candidates = Vec::new();
+        for record_id in promoted_record_ids {
+            match memory.get_memory_detail(record_id).await {
+                Ok(Some(detail)) => candidates.push(detail.record),
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        session_id,
+                        record_id = %record_id.0,
+                        %error,
+                        "nudge: failed to fetch promoted record for proposal generation"
+                    );
+                }
+            }
+        }
+
+        if candidates.is_empty() {
+            return (0, 0);
+        }
+
+        match rocode_storage::generate_skill_evolution_proposals(
+            repo,
+            &candidates,
+            session_id,
+        )
+        .await
+        {
+            Ok(summary) => (summary.proposals_created, summary.proposals_skipped),
+            Err(error) => {
+                tracing::warn!(
+                    session_id,
+                    %error,
+                    "nudge: proposal generation failed"
+                );
+                (0, 0)
+            }
+        }
     }
 
     pub fn with_mcp_clients(mut self, clients: Arc<rocode_mcp::McpClientRegistry>) -> Self {

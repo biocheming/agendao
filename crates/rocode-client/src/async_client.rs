@@ -35,7 +35,7 @@ use crate::{
     SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest, SkillHubSyncApplyRequest,
     SkillHubSyncPlanRequest, SkillHubSyncPlanResponse, SkillHubTimelineQuery,
     SkillHubTimelineResponse, SkillManageRequest, SkillManageResponse, SkillRemoteInstallPlan,
-    SkillRemoteInstallResponse, UpdateSessionRequest,
+    SkillEvolutionProposal, SkillRemoteInstallResponse, UpdateSessionRequest,
 };
 
 #[derive(Clone)]
@@ -1123,6 +1123,28 @@ impl AsyncApiClient {
                 .unwrap_or_else(|error| format!("<body read failed: {}>", error));
             Err(http_error(action, status, text))
         }
+    }
+
+    pub async fn list_skill_proposals(
+        &self,
+        status: &str,
+    ) -> anyhow::Result<Vec<SkillEvolutionProposal>> {
+        let url = format!("/skill/proposal/?status={}", status);
+        self.get_json(&url, "list skill proposals").await
+    }
+
+    pub async fn update_skill_proposal_status(
+        &self,
+        id: &str,
+        status: &str,
+    ) -> anyhow::Result<SkillEvolutionProposal> {
+        let url = format!("/skill/proposal/{}/status", id);
+        self.post_json(
+            &url,
+            "update skill proposal status",
+            &serde_json::json!({"status": status}),
+        )
+        .await
     }
 
     async fn json_ok<T: serde::de::DeserializeOwned>(

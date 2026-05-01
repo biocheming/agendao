@@ -20,6 +20,7 @@ rocode-tool = { path = "../rocode-tool" }
 rocode-mcp = { path = "../rocode-mcp" }
 rocode-lsp = { path = "../rocode-lsp" }
 rocode-plugin = { path = "../rocode-plugin" }
+rocode-memory = { path = "../rocode-memory" }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 serde = { workspace = true }

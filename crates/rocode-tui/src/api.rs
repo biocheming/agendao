@@ -77,6 +77,21 @@ impl RuntimeApiClient {
         ))
     }
 
+    fn list_skill_proposals(
+        &self,
+        status: &str,
+    ) -> anyhow::Result<Vec<SkillEvolutionProposal>> {
+        self.block_on(self.client.list_skill_proposals(status))
+    }
+
+    fn update_skill_proposal_status(
+        &self,
+        id: &str,
+        status: &str,
+    ) -> anyhow::Result<SkillEvolutionProposal> {
+        self.block_on(self.client.update_skill_proposal_status(id, status))
+    }
+
     sync_api_methods! {
         fn get_session_status(&self) -> HashMap<String, SessionStatusInfo>;
         fn get_session_executions(&self, session_id: &str) -> SessionExecutionTopology;
@@ -671,6 +686,28 @@ impl ApiClient {
     pub fn manage_skill(&self, req: &SkillManageRequest) -> anyhow::Result<SkillManageResponse> {
         let req = req.clone();
         self.call("manage skill", move |client| client.manage_skill(&req))
+    }
+
+    pub fn list_skill_proposals(
+        &self,
+        status: &str,
+    ) -> anyhow::Result<Vec<SkillEvolutionProposal>> {
+        let status = status.to_string();
+        self.call("list skill proposals", move |client| {
+            client.list_skill_proposals(&status)
+        })
+    }
+
+    pub fn update_skill_proposal_status(
+        &self,
+        id: &str,
+        status: &str,
+    ) -> anyhow::Result<SkillEvolutionProposal> {
+        let id = id.to_string();
+        let status = status.to_string();
+        self.call("update skill proposal status", move |client| {
+            client.update_skill_proposal_status(&id, &status)
+        })
     }
 
     pub fn list_memory(

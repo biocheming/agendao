@@ -245,6 +245,7 @@ pub struct ServerState {
     pub(crate) api_perf: Arc<ApiPerfCounters>,
     pub(crate) session_repo: Option<SessionRepository>,
     pub(crate) message_repo: Option<MessageRepository>,
+    pub(crate) proposal_repo: Option<Arc<rocode_storage::SkillEvolutionProposalRepository>>,
     pub(crate) category_registry: Arc<rocode_config::CategoryRegistry>,
     pub(crate) todo_manager: rocode_session::TodoManager,
 }
@@ -302,9 +303,12 @@ impl ServerState {
             user_state,
             resolved_context_authority,
             tool_registry: Arc::new(rocode_tool::ToolRegistry::new()),
-            prompt_runner: Arc::new(SessionPrompt::new(Arc::new(tokio::sync::RwLock::new(
-                SessionStateManager::new(),
-            )))),
+            prompt_runner: Arc::new(
+                SessionPrompt::new(Arc::new(tokio::sync::RwLock::new(
+                    SessionStateManager::new(),
+                )))
+                .with_memory_authority(runtime_memory.memory_authority()),
+            ),
             runtime_memory,
             runtime_telemetry,
             runtime_control,
@@ -313,6 +317,7 @@ impl ServerState {
             api_perf: Arc::new(ApiPerfCounters::new()),
             session_repo: None,
             message_repo: None,
+            proposal_repo: None,
             category_registry: Arc::new(rocode_config::CategoryRegistry::empty()),
             todo_manager: rocode_session::TodoManager::new(),
         }
@@ -438,25 +443,29 @@ impl ServerState {
         state.tool_registry = Arc::new(
             rocode_tool::create_default_registry_with_config(Some(&config_store.config())).await,
         );
+        let db = Database::new().await?;
+        let pool = db.pool().clone();
+        let memory_repo = Arc::new(MemoryRepository::new(pool.clone()));
+        let memory_authority = Arc::new(MemoryAuthority::new(
+            state.user_state.clone(),
+            state.resolved_context_authority.clone(),
+        ).with_repository(memory_repo.clone()));
+        state.runtime_memory = Arc::new(RuntimeMemoryAuthority::new(memory_authority.clone()));
+        let proposal_repo = Arc::new(rocode_storage::SkillEvolutionProposalRepository::new(
+            pool.clone(),
+        ));
+        state.proposal_repo = Some(proposal_repo.clone());
         state.prompt_runner = Arc::new(
             SessionPrompt::new(Arc::new(tokio::sync::RwLock::new(
                 SessionStateManager::new(),
             )))
             .with_config_store(config_store.clone())
-            .with_tool_runtime_config(tool_runtime_config),
+            .with_tool_runtime_config(tool_runtime_config)
+            .with_memory_authority(memory_authority)
+            .with_proposal_repo(proposal_repo),
         );
-        let db = Database::new().await?;
-        let pool = db.pool().clone();
-        let memory_repo = Arc::new(MemoryRepository::new(pool.clone()));
         state.session_repo = Some(SessionRepository::new(pool.clone()));
         state.message_repo = Some(MessageRepository::new(pool));
-        state.runtime_memory = Arc::new(RuntimeMemoryAuthority::new(Arc::new(
-            MemoryAuthority::new(
-                state.user_state.clone(),
-                state.resolved_context_authority.clone(),
-            )
-            .with_repository(memory_repo),
-        )));
         state.load_sessions_from_storage().await?;
         Ok(state)
     }

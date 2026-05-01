@@ -1,5 +1,6 @@
 use super::session_actions::TranscriptOptions;
 use super::*;
+use crate::api::SkillEvolutionProposalKind;
 use crate::components::ProviderConnectMode;
 use crate::context::DialogSlot;
 
@@ -193,6 +194,78 @@ impl App {
     pub(super) fn close_tag_dialog_modal(&mut self) {
         self.tag_dialog.close();
         self.context.close_dialog(DialogSlot::Tag);
+    }
+
+    pub(super) fn open_skill_proposal_review_dialog(&mut self) {
+        let client = match self.context.get_api_client() {
+            Some(c) => c,
+            None => return,
+        };
+        let proposals = match client.list_skill_proposals("draft") {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("Failed to fetch proposals: {}", e);
+                return;
+            }
+        };
+        if proposals.is_empty() {
+            return;
+        }
+        let items: Vec<SkillProposalReviewItem> = proposals
+            .into_iter()
+            .map(|p| {
+                let kind_label = match p.proposal_kind {
+                    SkillEvolutionProposalKind::PatchExistingSkill => "Patch",
+                    SkillEvolutionProposalKind::CreateNewSkill => "Create",
+                };
+                let skill_name = p
+                    .linked_skill_name
+                    .as_deref()
+                    .unwrap_or("(new skill)")
+                    .to_string();
+                let first_change = p
+                    .suggested_changes
+                    .first()
+                    .map(change_summary)
+                    .unwrap_or_default();
+                SkillProposalReviewItem {
+                    id: p.id,
+                    title: p.title,
+                    kind_label: kind_label.to_string(),
+                    skill_name,
+                    first_change,
+                }
+            })
+            .collect();
+        self.skill_proposal_review_dialog.open(items);
+    }
+
+    pub(super) fn close_skill_proposal_review_dialog(&mut self) {
+        self.skill_proposal_review_dialog.close();
+    }
+
+    pub(super) fn apply_skill_proposal_action(&mut self, id: &str, status: &str) {
+        let client = match self.context.get_api_client() {
+            Some(c) => c,
+            None => {
+                self.skill_proposal_review_dialog
+                    .set_status("No server connection.");
+                return;
+            }
+        };
+        match client.update_skill_proposal_status(id, status) {
+            Ok(_) => {
+                self.skill_proposal_review_dialog.remove_current();
+                self.skill_proposal_review_dialog
+                    .set_status(&format!("Proposal {} {}.", id, status));
+                self.toast
+                    .show(ToastVariant::Success, "Proposal updated.", 2000);
+            }
+            Err(e) => {
+                self.skill_proposal_review_dialog
+                    .set_status(&format!("Failed: {}", e));
+            }
+        }
     }
 
     pub(super) fn open_tool_call_cancel_dialog_modal(&mut self, items: Vec<ToolCallItem>) {
@@ -1570,6 +1643,72 @@ impl App {
             return Ok(true);
         }
 
+        if self.skill_proposal_review_dialog.is_open() {
+            match key.code {
+                KeyCode::Esc => {
+                    self.close_skill_proposal_review_dialog();
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.skill_proposal_review_dialog.previous();
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.skill_proposal_review_dialog.next();
+                }
+                KeyCode::Char('a') => {
+                    self.skill_proposal_review_dialog.pending_accept();
+                    if let Some((_action, id)) =
+                        self.skill_proposal_review_dialog.take_action()
+                    {
+                        self.apply_skill_proposal_action(&id, "accepted");
+                    }
+                }
+                KeyCode::Char('r') => {
+                    self.skill_proposal_review_dialog.pending_reject();
+                    if let Some((_action, id)) =
+                        self.skill_proposal_review_dialog.take_action()
+                    {
+                        self.apply_skill_proposal_action(&id, "rejected");
+                    }
+                }
+                KeyCode::Char('s') => {
+                    self.skill_proposal_review_dialog.pending_skip();
+                    self.skill_proposal_review_dialog.remove_current();
+                }
+                _ => {}
+            }
+            return Ok(true);
+        }
+
         Ok(false)
+    }
+}
+
+fn change_summary(change: &rocode_types::SuggestedSkillChange) -> String {
+    match change {
+        rocode_types::SuggestedSkillChange::AddTriggerCondition { text, .. } => {
+            format!("Trigger: {}", truncate_str(text, 60))
+        }
+        rocode_types::SuggestedSkillChange::AddCoreStep { text, .. } => {
+            format!("Step: {}", truncate_str(text, 60))
+        }
+        rocode_types::SuggestedSkillChange::AddBoundary { text, .. } => {
+            format!("Boundary: {}", truncate_str(text, 60))
+        }
+        rocode_types::SuggestedSkillChange::AddValidationStep { text, .. } => {
+            format!("Validation: {}", truncate_str(text, 60))
+        }
+        rocode_types::SuggestedSkillChange::CreateSkillDraft {
+            suggested_name, ..
+        } => {
+            format!("Create skill: {}", suggested_name)
+        }
+    }
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max])
     }
 }
