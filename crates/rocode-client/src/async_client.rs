@@ -26,16 +26,16 @@ use crate::{
     SessionInsightsResponse, SessionListItem, SessionListResponse, SessionRecoveryProtocol,
     SessionRuntimeState, SessionStatusInfo, SessionTelemetrySnapshot, ShareResponse,
     SkillCatalogEntry, SkillCatalogQuery, SkillDetailQuery, SkillDetailResponse,
-    SkillHubArtifactCacheResponse, SkillHubAuditResponse, SkillHubDistributionResponse,
-    SkillHubGuardRunRequest, SkillHubGuardRunResponse, SkillHubIndexRefreshRequest,
-    SkillHubIndexRefreshResponse, SkillHubIndexResponse, SkillHubLifecycleResponse,
-    SkillHubManagedDetachRequest, SkillHubManagedDetachResponse, SkillHubManagedRemoveRequest,
-    SkillHubManagedRemoveResponse, SkillHubManagedResponse, SkillHubPolicyResponse,
-    SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
+    SkillEvolutionProposal, SkillHubArtifactCacheResponse, SkillHubAuditResponse,
+    SkillHubDistributionResponse, SkillHubGuardRunRequest, SkillHubGuardRunResponse,
+    SkillHubIndexRefreshRequest, SkillHubIndexRefreshResponse, SkillHubIndexResponse,
+    SkillHubLifecycleResponse, SkillHubManagedDetachRequest, SkillHubManagedDetachResponse,
+    SkillHubManagedRemoveRequest, SkillHubManagedRemoveResponse, SkillHubManagedResponse,
+    SkillHubPolicyResponse, SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
     SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest, SkillHubSyncApplyRequest,
     SkillHubSyncPlanRequest, SkillHubSyncPlanResponse, SkillHubTimelineQuery,
     SkillHubTimelineResponse, SkillManageRequest, SkillManageResponse, SkillRemoteInstallPlan,
-    SkillEvolutionProposal, SkillRemoteInstallResponse, UpdateSessionRequest,
+    SkillRemoteInstallResponse, UpdateSessionRequest,
 };
 
 #[derive(Clone)]

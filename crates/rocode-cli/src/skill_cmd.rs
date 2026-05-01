@@ -27,9 +27,7 @@ pub(crate) async fn handle_skill_command(
 ) -> anyhow::Result<()> {
     match action {
         SkillCommands::Hub { action } => handle_skill_hub_command(action, runtime_context).await,
-        SkillCommands::Proposal { action } => {
-            handle_proposal_command(action).await
-        }
+        SkillCommands::Proposal { action } => handle_proposal_command(action).await,
     }
 }
 
@@ -810,9 +808,7 @@ async fn handle_proposal_command(action: ProposalCommands) -> anyhow::Result<()>
                     p.id,
                     kind,
                     status_label(&p.status),
-                    p.linked_skill_name
-                        .as_deref()
-                        .unwrap_or("-"),
+                    p.linked_skill_name.as_deref().unwrap_or("-"),
                     p.title,
                 );
             }
@@ -826,10 +822,16 @@ async fn handle_proposal_command(action: ProposalCommands) -> anyhow::Result<()>
             println!("Kind:            {:?}", proposal.proposal_kind);
             println!(
                 "Skill:           {}",
-                proposal.linked_skill_name.as_deref().unwrap_or("(new skill)")
+                proposal
+                    .linked_skill_name
+                    .as_deref()
+                    .unwrap_or("(new skill)")
             );
             println!("Status:          {:?}", proposal.status);
-            println!("Created:         {}", format_timestamp(proposal.created_at_ms / 1000));
+            println!(
+                "Created:         {}",
+                format_timestamp(proposal.created_at_ms / 1000)
+            );
             println!();
             println!("Title:           {}", proposal.title);
             println!();
@@ -844,25 +846,37 @@ async fn handle_proposal_command(action: ProposalCommands) -> anyhow::Result<()>
             println!("Suggested changes:");
             for change in &proposal.suggested_changes {
                 match change {
-                    rocode_types::SuggestedSkillChange::AddTriggerCondition { text, evidence_refs } => {
+                    rocode_types::SuggestedSkillChange::AddTriggerCondition {
+                        text,
+                        evidence_refs,
+                    } => {
                         println!("  + Trigger: {}", text);
                         if !evidence_refs.is_empty() {
                             println!("    refs: {}", evidence_refs.join(", "));
                         }
                     }
-                    rocode_types::SuggestedSkillChange::AddCoreStep { text, evidence_refs } => {
+                    rocode_types::SuggestedSkillChange::AddCoreStep {
+                        text,
+                        evidence_refs,
+                    } => {
                         println!("  + Step: {}", text);
                         if !evidence_refs.is_empty() {
                             println!("    refs: {}", evidence_refs.join(", "));
                         }
                     }
-                    rocode_types::SuggestedSkillChange::AddBoundary { text, evidence_refs } => {
+                    rocode_types::SuggestedSkillChange::AddBoundary {
+                        text,
+                        evidence_refs,
+                    } => {
                         println!("  + Boundary: {}", text);
                         if !evidence_refs.is_empty() {
                             println!("    refs: {}", evidence_refs.join(", "));
                         }
                     }
-                    rocode_types::SuggestedSkillChange::AddValidationStep { text, evidence_refs } => {
+                    rocode_types::SuggestedSkillChange::AddValidationStep {
+                        text,
+                        evidence_refs,
+                    } => {
                         println!("  + Validation: {}", text);
                         if !evidence_refs.is_empty() {
                             println!("    refs: {}", evidence_refs.join(", "));

@@ -300,11 +300,7 @@ impl RuntimeReviewNudge {
                     _ => {}
                 }
             }
-            if let Some(skill_name) = msg
-                .metadata
-                .get("skill_name")
-                .and_then(|v| v.as_str())
-            {
+            if let Some(skill_name) = msg.metadata.get("skill_name").and_then(|v| v.as_str()) {
                 let name = skill_name.to_string();
                 if !used_skill_names.contains(&name) {
                     used_skill_names.push(name);
@@ -885,8 +881,8 @@ impl SessionPrompt {
                 let elapsed_ms = started.elapsed().as_millis();
 
                 // Fetch promoted records and generate skill evolution proposals.
-                let (proposals_created, proposals_skipped) =
-                    self.maybe_generate_proposals(
+                let (proposals_created, proposals_skipped) = self
+                    .maybe_generate_proposals(
                         memory,
                         &nudge.session_id,
                         &response.promoted_record_ids,
@@ -966,12 +962,8 @@ impl SessionPrompt {
             return (0, 0);
         }
 
-        match rocode_storage::generate_skill_evolution_proposals(
-            repo,
-            &candidates,
-            session_id,
-        )
-        .await
+        match rocode_storage::generate_skill_evolution_proposals(repo, &candidates, session_id)
+            .await
         {
             Ok(summary) => (summary.proposals_created, summary.proposals_skipped),
             Err(error) => {

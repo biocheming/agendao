@@ -1656,17 +1656,13 @@ impl App {
                 }
                 KeyCode::Char('a') => {
                     self.skill_proposal_review_dialog.pending_accept();
-                    if let Some((_action, id)) =
-                        self.skill_proposal_review_dialog.take_action()
-                    {
+                    if let Some((_action, id)) = self.skill_proposal_review_dialog.take_action() {
                         self.apply_skill_proposal_action(&id, "accepted");
                     }
                 }
                 KeyCode::Char('r') => {
                     self.skill_proposal_review_dialog.pending_reject();
-                    if let Some((_action, id)) =
-                        self.skill_proposal_review_dialog.take_action()
-                    {
+                    if let Some((_action, id)) = self.skill_proposal_review_dialog.take_action() {
                         self.apply_skill_proposal_action(&id, "rejected");
                     }
                 }
@@ -1697,9 +1693,7 @@ fn change_summary(change: &rocode_types::SuggestedSkillChange) -> String {
         rocode_types::SuggestedSkillChange::AddValidationStep { text, .. } => {
             format!("Validation: {}", truncate_str(text, 60))
         }
-        rocode_types::SuggestedSkillChange::CreateSkillDraft {
-            suggested_name, ..
-        } => {
+        rocode_types::SuggestedSkillChange::CreateSkillDraft { suggested_name, .. } => {
             format!("Create skill: {}", suggested_name)
         }
     }
