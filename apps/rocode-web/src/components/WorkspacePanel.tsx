@@ -13,6 +13,7 @@ import {
   EyeIcon,
   PlusIcon,
   FolderPlusIcon,
+  SparklesIcon,
   UploadIcon,
 } from "lucide-react";
 import type { useExecutionActivity } from "../hooks/useExecutionActivity";
@@ -27,7 +28,12 @@ const FilePreviewPane = lazy(async () => {
   return { default: module.FilePreviewPane };
 });
 
-export type WorkspacePanelTab = "files" | "insights" | "preview";
+const SkillProposalInbox = lazy(async () => {
+  const module = await import("./SkillProposalInbox");
+  return { default: module.SkillProposalInbox };
+});
+
+export type WorkspacePanelTab = "files" | "insights" | "preview" | "proposals";
 
 interface WorkspacePanelProps {
   apiJson: <T>(path: string, options?: RequestInit) => Promise<T>;
@@ -142,6 +148,19 @@ export function WorkspacePanel({
             <EyeIcon className="size-3.25" />
             <span>Preview</span>
           </button>
+          <button
+            className={cn(
+              "inline-flex items-center justify-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-medium transition-colors",
+              activeTab === "proposals"
+                ? "bg-foreground/8 text-foreground"
+                : "text-muted-foreground hover:bg-accent/45 hover:text-foreground"
+            )}
+            type="button"
+            onClick={() => onActiveTabChange("proposals")}
+          >
+            <SparklesIcon className="size-3.25" />
+            <span>Proposals</span>
+          </button>
         </div>
         <div className="flex items-center gap-0.5 flex-shrink-0">
           <Button
@@ -230,6 +249,19 @@ export function WorkspacePanel({
               }
             >
               <FilePreviewPane filePath={selectedWorkspacePath} />
+            </Suspense>
+          </PanelErrorBoundary>
+        ) : null}
+        {activeTab === "proposals" ? (
+          <PanelErrorBoundary label="Proposals">
+            <Suspense
+              fallback={
+                <div className="flex items-center justify-center py-6 text-muted-foreground/60">
+                  <span className="text-[10px]">Loading proposals...</span>
+                </div>
+              }
+            >
+              <SkillProposalInbox />
             </Suspense>
           </PanelErrorBoundary>
         ) : null}

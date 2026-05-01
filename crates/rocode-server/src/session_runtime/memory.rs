@@ -24,6 +24,10 @@ impl RuntimeMemoryAuthority {
         Self { memory }
     }
 
+    pub(crate) fn memory_authority(&self) -> Arc<MemoryAuthority> {
+        self.memory.clone()
+    }
+
     #[cfg(test)]
     pub(crate) async fn list_memory(
         &self,

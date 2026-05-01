@@ -15,7 +15,8 @@ use crate::api_client::{
     SkillHubManagedRemoveRequest,
 };
 use crate::cli::{
-    SkillCommands, SkillHubCommands, SkillHubOutputFormat, SkillSourceArgs, SkillSourceKindArg,
+    ProposalCommands, SkillCommands, SkillHubCommands, SkillHubOutputFormat, SkillSourceArgs,
+    SkillSourceKindArg,
 };
 use crate::server_lifecycle::FrontendRuntimeContext;
 use crate::util::truncate_text;
@@ -26,6 +27,9 @@ pub(crate) async fn handle_skill_command(
 ) -> anyhow::Result<()> {
     match action {
         SkillCommands::Hub { action } => handle_skill_hub_command(action, runtime_context).await,
+        SkillCommands::Proposal { action } => {
+            handle_proposal_command(action).await
+        }
     }
 }
 
@@ -778,5 +782,143 @@ fn format_timestamp(timestamp: i64) -> String {
     match Local.timestamp_opt(timestamp, 0).single() {
         Some(datetime) => datetime.format("%Y-%m-%d %H:%M:%S %z").to_string(),
         None => timestamp.to_string(),
+    }
+}
+
+// ── Proposal commands ────────────────────────────────────────────────────
+
+async fn handle_proposal_command(action: ProposalCommands) -> anyhow::Result<()> {
+    let db = rocode_storage::Database::new().await?;
+    let repo = rocode_storage::SkillEvolutionProposalRepository::new(db.pool().clone());
+
+    match action {
+        ProposalCommands::List { status } => {
+            let status: rocode_types::ProposalStatus =
+                serde_json::from_str(&format!("\"{}\"", status))?;
+            let proposals = repo.list_by_status(&status).await?;
+            if proposals.is_empty() {
+                println!("No proposals with status: {:?}", status);
+                return Ok(());
+            }
+            for p in &proposals {
+                let kind = match p.proposal_kind {
+                    rocode_types::SkillEvolutionProposalKind::PatchExistingSkill => "patch",
+                    rocode_types::SkillEvolutionProposalKind::CreateNewSkill => "create",
+                };
+                println!(
+                    "{:<36} {:>8} {:>6} {:>12}  {}",
+                    p.id,
+                    kind,
+                    status_label(&p.status),
+                    p.linked_skill_name
+                        .as_deref()
+                        .unwrap_or("-"),
+                    p.title,
+                );
+            }
+        }
+        ProposalCommands::Show { id } => {
+            let Some(proposal) = repo.get_by_id(&id).await? else {
+                anyhow::bail!("proposal not found: {}", id);
+            };
+            println!("ID:              {}", proposal.id);
+            println!("Session:         {}", proposal.session_id);
+            println!("Kind:            {:?}", proposal.proposal_kind);
+            println!(
+                "Skill:           {}",
+                proposal.linked_skill_name.as_deref().unwrap_or("(new skill)")
+            );
+            println!("Status:          {:?}", proposal.status);
+            println!("Created:         {}", format_timestamp(proposal.created_at_ms / 1000));
+            println!();
+            println!("Title:           {}", proposal.title);
+            println!();
+            println!("Rationale:");
+            println!("  {}", proposal.rationale);
+            println!();
+            println!("Evidence (memory record IDs):");
+            for rid in &proposal.memory_record_ids {
+                println!("  - {}", rid);
+            }
+            println!();
+            println!("Suggested changes:");
+            for change in &proposal.suggested_changes {
+                match change {
+                    rocode_types::SuggestedSkillChange::AddTriggerCondition { text, evidence_refs } => {
+                        println!("  + Trigger: {}", text);
+                        if !evidence_refs.is_empty() {
+                            println!("    refs: {}", evidence_refs.join(", "));
+                        }
+                    }
+                    rocode_types::SuggestedSkillChange::AddCoreStep { text, evidence_refs } => {
+                        println!("  + Step: {}", text);
+                        if !evidence_refs.is_empty() {
+                            println!("    refs: {}", evidence_refs.join(", "));
+                        }
+                    }
+                    rocode_types::SuggestedSkillChange::AddBoundary { text, evidence_refs } => {
+                        println!("  + Boundary: {}", text);
+                        if !evidence_refs.is_empty() {
+                            println!("    refs: {}", evidence_refs.join(", "));
+                        }
+                    }
+                    rocode_types::SuggestedSkillChange::AddValidationStep { text, evidence_refs } => {
+                        println!("  + Validation: {}", text);
+                        if !evidence_refs.is_empty() {
+                            println!("    refs: {}", evidence_refs.join(", "));
+                        }
+                    }
+                    rocode_types::SuggestedSkillChange::CreateSkillDraft {
+                        suggested_name,
+                        when_to_use,
+                        core_steps,
+                        boundaries,
+                        validation,
+                    } => {
+                        println!("  = Create skill '{}'", suggested_name);
+                        println!("    When to use:");
+                        for w in when_to_use {
+                            println!("      - {}", w);
+                        }
+                        println!("    Steps:");
+                        for s in core_steps {
+                            println!("      - {}", s);
+                        }
+                        println!("    Boundaries:");
+                        for b in boundaries {
+                            println!("      - {}", b);
+                        }
+                        println!("    Validation:");
+                        for v in validation {
+                            println!("      - {}", v);
+                        }
+                    }
+                }
+                println!();
+            }
+        }
+        ProposalCommands::Approve { id } => {
+            repo.transition_status(&id, &rocode_types::ProposalStatus::Accepted)
+                .await?;
+            println!("Proposal {} approved.", id);
+            println!("Note: Accepted does not modify SKILL.md. It marks the suggestion as approved for future application.");
+        }
+        ProposalCommands::Reject { id } => {
+            repo.transition_status(&id, &rocode_types::ProposalStatus::Rejected)
+                .await?;
+            println!("Proposal {} rejected.", id);
+        }
+    }
+
+    Ok(())
+}
+
+fn status_label(status: &rocode_types::ProposalStatus) -> &'static str {
+    match status {
+        rocode_types::ProposalStatus::Draft => "draft",
+        rocode_types::ProposalStatus::Accepted => "accepted",
+        rocode_types::ProposalStatus::Rejected => "rejected",
+        rocode_types::ProposalStatus::Superseded => "superseded",
+        rocode_types::ProposalStatus::Applied => "applied",
     }
 }

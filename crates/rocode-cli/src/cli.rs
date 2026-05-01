@@ -197,6 +197,35 @@ pub(crate) enum SkillCommands {
         #[command(subcommand)]
         action: SkillHubCommands,
     },
+    #[command(about = "Review and manage skill evolution proposals")]
+    Proposal {
+        #[command(subcommand)]
+        action: ProposalCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum ProposalCommands {
+    #[command(about = "List skill evolution proposals")]
+    List {
+        #[arg(long, default_value = "draft")]
+        status: String,
+    },
+    #[command(about = "Show proposal detail")]
+    Show {
+        #[arg(value_name = "ID")]
+        id: String,
+    },
+    #[command(about = "Approve a proposal (does not apply to SKILL.md)")]
+    Approve {
+        #[arg(value_name = "ID")]
+        id: String,
+    },
+    #[command(about = "Reject a proposal")]
+    Reject {
+        #[arg(value_name = "ID")]
+        id: String,
+    },
 }
 
 #[derive(Subcommand)]

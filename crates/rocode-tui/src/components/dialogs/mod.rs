@@ -12,6 +12,7 @@ mod prompt_stash;
 mod provider;
 mod recovery_action;
 mod session_export;
+mod skill_proposal_review;
 mod session_list;
 mod session_rename;
 mod skill_list;
@@ -86,6 +87,9 @@ pub use session_export::SessionExportDialog;
 pub use session_list::{DeleteState as SessionDeleteState, SessionItem, SessionListDialog};
 pub use session_rename::SessionRenameDialog;
 pub use skill_list::{SkillCreatePayload, SkillEditPayload, SkillListDialog};
+pub use skill_proposal_review::{
+    SkillProposalReviewDialog, SkillProposalReviewItem,
+};
 pub use status::{StatusDialog, StatusLine};
 pub use subagent::{SubagentDialog, SubagentInfo, SubagentMessage};
 pub use tag::{Tag, TagDialog};

@@ -669,6 +669,7 @@ struct PromptLoopContext {
     compiled_request: CompiledExecutionRequest,
     hooks: PromptHooks,
     config_store: Option<Arc<rocode_config::ConfigStore>>,
+    memory_authority: Option<Arc<rocode_memory::MemoryAuthority>>,
 }
 
 #[derive(Clone)]
@@ -806,6 +807,7 @@ impl SessionPrompt {
                     compiled_request,
                     hooks,
                     config_store: self.config_store.clone(),
+                    memory_authority: self.memory_authority.clone(),
                 },
             )
             .await;
@@ -816,6 +818,13 @@ impl SessionPrompt {
             tracing::error!("Prompt loop error for session {}: {}", session_id, e);
             return Err(e);
         }
+
+        // Nudge-triggered background consolidation: after a completed turn,
+        // scan the execution evidence and run deterministic memory review if
+        // enough tool/error/skill signals were produced.
+        let nudge = crate::RuntimeReviewNudge::from_session(session, 0);
+        let decision = self.maybe_enqueue_background_review(&nudge).await;
+        crate::maybe_append_proposal_notice(session, &decision);
 
         Ok(())
     }
@@ -973,6 +982,7 @@ impl SessionPrompt {
                     compiled_request: compiled_request.clone(),
                     hooks: PromptHooks::default(),
                     config_store: self.config_store.clone(),
+                    memory_authority: self.memory_authority.clone(),
                 },
             )
             .await;
@@ -1112,6 +1122,7 @@ impl SessionPrompt {
         compiled_request: &CompiledExecutionRequest,
         config_store: Option<&rocode_config::ConfigStore>,
         output_block_hook: Option<&super::OutputBlockHook>,
+        memory_authority: Option<Arc<rocode_memory::MemoryAuthority>>,
     ) {
         let compaction_config = Self::runtime_compaction_config(config_store);
         if !Self::should_compact(
@@ -1158,6 +1169,7 @@ impl SessionPrompt {
                 auto: true,
                 config: Some(compaction_config.clone()),
                 session_ops: None,
+                memory_authority: memory_authority.clone(),
             },
         )
         .await
@@ -2038,6 +2050,7 @@ impl SessionPrompt {
                 &prompt_ctx.compiled_request,
                 prompt_ctx.config_store.as_deref(),
                 prompt_ctx.hooks.output_block_hook.as_ref(),
+                prompt_ctx.memory_authority.clone(),
             )
             .await;
 

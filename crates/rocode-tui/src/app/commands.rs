@@ -447,6 +447,9 @@ impl App {
             UiActionId::OpenSkills => {
                 self.open_skill_list_dialog();
             }
+            UiActionId::OpenSkillProposals => {
+                self.open_skill_proposal_review_dialog();
+            }
             UiActionId::ShowStatus => {
                 self.open_overview_status_dialog();
             }

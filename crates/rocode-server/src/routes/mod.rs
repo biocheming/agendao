@@ -15,6 +15,7 @@ mod pty;
 mod session;
 mod skill_catalog;
 mod skill_hub;
+mod skill_proposal;
 mod stream;
 mod task;
 mod tui;
@@ -31,6 +32,7 @@ use self::skill_catalog::{
     preview_skill_methodology, resolve_skill_catalog, SkillCatalogQuery,
 };
 use self::skill_hub::skill_hub_routes;
+use self::skill_proposal::skill_proposal_routes;
 use self::task::task_routes;
 use self::web_plugin::web_plugin_routes;
 use self::workspace::workspace_routes;
@@ -103,6 +105,7 @@ pub fn router() -> Router<Arc<ServerState>> {
         )
         .route("/skill/manage", post(manage_skill))
         .nest("/skill/hub", skill_hub_routes())
+        .nest("/skill/proposal", skill_proposal_routes())
         .nest("/memory", memory_routes())
         .nest("/multimodal", multimodal_routes())
         .route("/lsp", get(get_lsp_status))

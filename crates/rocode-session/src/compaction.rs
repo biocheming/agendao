@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use rocode_core::bus::{Bus, BusEventDef};
+use rocode_memory::{MemoryAuthority, ToolMemoryObservation};
 use rocode_orchestrator::compaction_request;
 use rocode_orchestrator::runtime::events::CancelToken as RuntimeCancelToken;
 use rocode_orchestrator::runtime::events::LoopRequest;
@@ -68,7 +69,7 @@ impl Default for CompactionConfig {
 }
 
 /// Input for the compaction process.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CompactionInput {
     /// The parent message ID that triggered compaction.
     pub parent_id: String,
@@ -99,6 +100,10 @@ pub struct CompactionInput {
     pub variant: Option<String>,
     /// Agent name from the original user message (for auto-continue).
     pub original_agent: Option<String>,
+    /// Memory authority for pre-compaction memory extraction.
+    /// When set, extracts candidate memory records from messages
+    /// before they are discarded by the LLM summarization.
+    pub memory_authority: Option<Arc<MemoryAuthority>>,
 }
 
 /// Result of the compaction process.
@@ -281,6 +286,44 @@ impl CompactionEngine {
     pub fn estimate_tokens(text: &str) -> u64 {
         let char_count = text.chars().count() as u64;
         char_count / 4
+    }
+
+    /// Extract candidate memory records from messages that are about to be
+    /// compacted away.
+    ///
+    /// Mirrors Hermes's `on_pre_compress` mechanism: gives the memory system a
+    /// chance to capture tool errors/successes, user preferences, and key
+    /// decisions before the LLM summarization discards the original messages.
+    ///
+    /// This is a deterministic scan — no LLM call. Each tool result is fed
+    /// through the same `ingest_tool_result_observation` path used during
+    /// normal tool execution.
+    pub async fn extract_memory_before_compaction(
+        messages: &[MessageWithParts],
+        session_id: &str,
+        memory: &MemoryAuthority,
+    ) {
+        for msg in messages {
+            for part in &msg.parts {
+                let Part::Tool(tool_part) = part else {
+                    continue;
+                };
+                let (output, is_error) = match &tool_part.state {
+                    ToolState::Completed { output, .. } => (output.as_str(), false),
+                    ToolState::Error { error, .. } => (error.as_str(), true),
+                    _ => continue,
+                };
+                let observation = ToolMemoryObservation {
+                    session_id,
+                    tool_call_id: &tool_part.call_id,
+                    tool_name: &tool_part.tool,
+                    stage_id: None,
+                    output,
+                    is_error,
+                };
+                let _ = memory.ingest_tool_result_observation(&observation).await;
+            }
+        }
     }
 
     pub fn generate_summary_prompt() -> String {
@@ -523,6 +566,20 @@ When constructing the summary, try to stick to this template:
                     error = %error,
                     "Failed to persist compaction assistant placeholder message"
                 );
+            }
+        }
+
+        // Pre-compaction memory extraction: scan messages about to be
+        // compacted away and create candidate memory records from tool
+        // results and decisions. Mirrors Hermes's on_pre_compress.
+        if let Some(ref memory) = input.memory_authority {
+            if !input.messages_with_parts.is_empty() {
+                Self::extract_memory_before_compaction(
+                    &input.messages_with_parts,
+                    &input.session_id,
+                    memory,
+                )
+                .await;
             }
         }
 
@@ -1058,6 +1115,7 @@ pub struct RunCompactionOptions<'a, S: SessionOps> {
     pub auto: bool,
     pub config: Option<CompactionConfig>,
     pub session_ops: Option<&'a S>,
+    pub memory_authority: Option<Arc<MemoryAuthority>>,
 }
 
 /// Convenience function to run the full provider-stream compaction for a session.
@@ -1085,6 +1143,7 @@ pub async fn run_compaction<S: SessionOps>(
         root: None,
         variant: None,
         original_agent: None,
+        memory_authority: options.memory_authority,
     };
 
     engine.process(input, provider, options.session_ops).await
@@ -1297,6 +1356,7 @@ mod tests {
             root: Some("/tmp".to_string()),
             variant: None,
             original_agent: Some("general".to_string()),
+            memory_authority: None,
         }
     }
 
@@ -1411,6 +1471,7 @@ mod tests {
             root: None,
             variant: None,
             original_agent: None,
+            memory_authority: None,
         };
         assert_eq!(input.parent_id, "msg_123");
         assert_eq!(input.session_id, "ses_456");

@@ -3721,6 +3721,7 @@ dependencies = [
  "rocode-execution-types",
  "rocode-lsp",
  "rocode-mcp",
+ "rocode-memory",
  "rocode-orchestrator",
  "rocode-plugin",
  "rocode-provider",
@@ -3902,6 +3903,7 @@ dependencies = [
  "rocode-content",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "uuid",
 ]

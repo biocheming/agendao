@@ -56,9 +56,10 @@ use crate::components::{
     PermissionAction, PermissionPrompt, Prompt, PromptStashDialog, ProviderDialog, QuestionOption,
     QuestionPrompt, QuestionRequest, QuestionType, RecoveryActionDialog, RecoveryActionItem,
     SessionDeleteState, SessionExportDialog, SessionItem, SessionListDialog, SessionRenameDialog,
-    SkillListDialog, SlashCommandPopup, StashItem, StatusDialog, StatusLine, SubagentDialog,
-    TagDialog, TaskKind, ThemeListDialog, ThemeOption, TimelineDialog, TimelineEntry, Toast,
-    ToastVariant, ToolCallCancelDialog, ToolCallItem, OTHER_OPTION_ID, OTHER_OPTION_LABEL,
+    SkillListDialog, SkillProposalReviewDialog, SkillProposalReviewItem, SlashCommandPopup,
+    StashItem, StatusDialog, StatusLine, SubagentDialog, TagDialog, TaskKind, ThemeListDialog,
+    ThemeOption, TimelineDialog, TimelineEntry, Toast, ToastVariant, ToolCallCancelDialog,
+    ToolCallItem, OTHER_OPTION_ID, OTHER_OPTION_LABEL,
 };
 use crate::context::keybind::{is_primary_key_event, normalize_key_event, LeaderKeyState};
 use crate::context::{
@@ -144,6 +145,7 @@ pub struct App {
     subagent_dialog: SubagentDialog,
     tag_dialog: TagDialog,
     tool_call_cancel_dialog: ToolCallCancelDialog,
+    skill_proposal_review_dialog: SkillProposalReviewDialog,
     recovery_action_dialog: RecoveryActionDialog,
     permission_prompt: PermissionPrompt,
     question_prompt: QuestionPrompt,
@@ -398,6 +400,7 @@ impl App {
             subagent_dialog: SubagentDialog::new(),
             tag_dialog: TagDialog::new(),
             tool_call_cancel_dialog: ToolCallCancelDialog::new(),
+            skill_proposal_review_dialog: SkillProposalReviewDialog::new(),
             recovery_action_dialog: RecoveryActionDialog::new(),
             permission_prompt: PermissionPrompt::new(),
             question_prompt: QuestionPrompt::new(),
@@ -572,6 +575,7 @@ impl App {
         self.subagent_dialog.render(surface, area, theme);
         self.tag_dialog.render(surface, area, theme);
         self.recovery_action_dialog.render(surface, area, theme);
+        self.skill_proposal_review_dialog.render(surface, area, theme);
         self.status_dialog.render(surface, area, theme);
         self.session_rename_dialog.render(surface, area, theme);
         self.session_export_dialog.render(surface, area, theme);

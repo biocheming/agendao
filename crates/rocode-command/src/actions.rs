@@ -41,6 +41,7 @@ pub enum UiActionId {
     ToggleCommandPalette,
     OpenStash,
     OpenSkills,
+    OpenSkillProposals,
     ListTasks,
     SubmitPrompt,
     VoiceInput,
@@ -628,6 +629,19 @@ pub fn builtin_ui_commands() -> Vec<UiCommandSpec> {
             include_in_palette: false,
             slash: Some(UiSlashCommandSpec {
                 name: "/skills",
+                aliases: &[],
+                suggested: false,
+            }),
+        },
+        UiCommandSpec {
+            action_id: UiActionId::OpenSkillProposals,
+            title: "Proposals",
+            description: "Review skill evolution proposals",
+            category: UiCommandCategory::Navigation,
+            keybind: None,
+            include_in_palette: false,
+            slash: Some(UiSlashCommandSpec {
+                name: "/proposals",
                 aliases: &[],
                 suggested: false,
             }),
