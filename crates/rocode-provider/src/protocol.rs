@@ -6,103 +6,61 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::fmt;
 
-/// Legacy protocol selector.
-///
-/// New provider routing should derive a `ProviderProfile` first, then project
-/// that profile into this selector only as a compatibility adapter for the
-/// existing protocol implementations.
+/// Runtime adapter selector derived from a typed `ProviderProfile`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Protocol {
-    /// closeai-compatible chat completions family (default for unknown npm)
-    OpenAI,
-    /// ethnopic-compatible messages family
-    Messages,
+pub enum ProviderRuntimeAdapter {
+    /// closeai-compatible chat completions family
+    CloseAiCompatible,
+    /// Ethnopic-compatible provider family
+    Ethnopic,
     /// Google Gemini generateContent API
-    Google,
+    Gemini,
     /// AWS Bedrock converse API (SigV4 auth)
-    Bedrock,
+    BedrockConverse,
     /// Google Vertex AI (Bearer token, Gemini SSE parsing)
-    Vertex,
-    /// GitHub Copilot (OAuth + hybrid routing)
-    GitHubCopilot,
-    /// GitLab AI Gateway (PRIVATE-TOKEN)
-    GitLab,
+    VertexGemini,
+    /// GitHub Copilot adapter (OAuth + hybrid routing)
+    GitHubCopilotCloseAi,
+    /// GitLab AI Gateway adapter (PRIVATE-TOKEN)
+    GitLabCloseAi,
 }
 
-impl Protocol {
+impl ProviderRuntimeAdapter {
     pub fn from_profile(profile: &ProviderProfile) -> Self {
         match profile.api_family {
-            ProviderApiFamily::EthnopicMessages => Protocol::Messages,
-            ProviderApiFamily::GeminiGenerate => {
-                if is_vertex_profile(profile) {
-                    Protocol::Vertex
-                } else {
-                    Protocol::Google
-                }
-            }
-            ProviderApiFamily::BedrockConverse => Protocol::Bedrock,
+            ProviderApiFamily::EthnopicMessages => ProviderRuntimeAdapter::Ethnopic,
+            ProviderApiFamily::GeminiGenerate => match profile.transport {
+                ProviderTransportKind::VertexBearer => ProviderRuntimeAdapter::VertexGemini,
+                _ => ProviderRuntimeAdapter::Gemini,
+            },
+            ProviderApiFamily::BedrockConverse => ProviderRuntimeAdapter::BedrockConverse,
             ProviderApiFamily::CloseAiCompatible | ProviderApiFamily::Custom => {
                 match profile.transport {
-                    ProviderTransportKind::PrivateToken => Protocol::GitLab,
-                    ProviderTransportKind::OAuth => Protocol::GitHubCopilot,
-                    _ => Protocol::OpenAI,
+                    ProviderTransportKind::PrivateToken => ProviderRuntimeAdapter::GitLabCloseAi,
+                    ProviderTransportKind::OAuth => ProviderRuntimeAdapter::GitHubCopilotCloseAi,
+                    _ => ProviderRuntimeAdapter::CloseAiCompatible,
                 }
             }
         }
     }
-
-    /// Derive protocol from npm package name.
-    /// Unknown packages default to OpenAI (closeai-compatible assumption).
-    ///
-    /// This is a legacy fallback for older callers that do not have a typed
-    /// `ProviderProfile` yet.
-    pub fn from_npm(npm: &str) -> Self {
-        let lower = npm.to_ascii_lowercase();
-
-        if (lower.contains("anthropic") || lower.contains("ethnopic")) && !lower.contains("vertex")
-        {
-            Protocol::Messages
-        } else if lower == "@openrouter/ai-sdk-provider" || lower == "@ai-sdk/perplexity" {
-            Protocol::OpenAI
-        } else if lower.contains("google-vertex") || lower.contains("vertex") {
-            Protocol::Vertex
-        } else if lower.contains("google") {
-            Protocol::Google
-        } else if lower.contains("bedrock") {
-            Protocol::Bedrock
-        } else if lower.contains("github-copilot") {
-            Protocol::GitHubCopilot
-        } else if lower.contains("gitlab") {
-            Protocol::GitLab
-        } else {
-            // Default: treat as closeai-compatible.
-            Protocol::OpenAI
-        }
-    }
 }
 
-fn is_vertex_profile(profile: &ProviderProfile) -> bool {
-    let provider_id = profile.provider_id.to_ascii_lowercase();
-    let npm = profile.npm.to_ascii_lowercase();
-    provider_id.contains("vertex") || npm.contains("vertex")
-}
-
-impl fmt::Display for Protocol {
+impl fmt::Display for ProviderRuntimeAdapter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Protocol::OpenAI => write!(f, "OpenAI"),
-            Protocol::Messages => write!(f, "Anthropic"),
-            Protocol::Google => write!(f, "google"),
-            Protocol::Bedrock => write!(f, "bedrock"),
-            Protocol::Vertex => write!(f, "vertex"),
-            Protocol::GitHubCopilot => write!(f, "github-copilot"),
-            Protocol::GitLab => write!(f, "gitlab"),
+            ProviderRuntimeAdapter::CloseAiCompatible => write!(f, "closeai-compatible"),
+            ProviderRuntimeAdapter::Ethnopic => write!(f, "ethnopic"),
+            ProviderRuntimeAdapter::Gemini => write!(f, "gemini"),
+            ProviderRuntimeAdapter::BedrockConverse => write!(f, "bedrock-converse"),
+            ProviderRuntimeAdapter::VertexGemini => write!(f, "vertex-gemini"),
+            ProviderRuntimeAdapter::GitHubCopilotCloseAi => write!(f, "github-copilot-closeai"),
+            ProviderRuntimeAdapter::GitLabCloseAi => write!(f, "gitlab-closeai"),
         }
     }
 }
 
 /// Configuration for a provider instance.
-/// Passed to ProtocolImpl methods for request construction.
+/// Passed to ProviderAdapter methods for request construction.
 #[derive(Debug, Clone)]
 pub struct ProviderConfig {
     /// Unique identifier for this provider (e.g., "deepseek", "openrouter")
@@ -113,7 +71,7 @@ pub struct ProviderConfig {
     pub api_key: String,
     /// Additional headers to include in requests
     pub headers: HashMap<String, String>,
-    /// Protocol-specific options (e.g., endpoint_path, thinking params)
+    /// Provider-specific options (e.g., endpoint_path, thinking params)
     pub options: HashMap<String, serde_json::Value>,
 }
 
@@ -181,11 +139,12 @@ impl ProviderConfig {
     }
 }
 
-/// Trait for protocol-specific request/response handling.
-/// Implementations handle HTTP construction and SSE parsing only.
+/// Runtime adapter for a provider profile.
+/// Implementations bridge a typed provider profile to HTTP request construction,
+/// response normalization, and SSE parsing.
 /// Model lists, API keys, and retry logic are handled by ProviderInstance.
 #[async_trait]
-pub trait ProtocolImpl: Send + Sync {
+pub trait ProviderAdapter: Send + Sync {
     /// Send a non-streaming chat request.
     async fn chat(
         &self,

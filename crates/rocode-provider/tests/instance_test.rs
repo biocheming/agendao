@@ -28,7 +28,7 @@ fn test_provider_instance_metadata() {
         "test".to_string(),
         "Test Provider".to_string(),
         config,
-        Arc::new(rocode_provider::protocols::OpenAIProtocol::new()),
+        Arc::new(rocode_provider::protocols::CloseAiCompatibleAdapter::new()),
         models,
     );
 
@@ -51,7 +51,7 @@ fn test_provider_instance_models_iterator() {
         "test".to_string(),
         "Test".to_string(),
         config,
-        Arc::new(rocode_provider::protocols::OpenAIProtocol::new()),
+        Arc::new(rocode_provider::protocols::CloseAiCompatibleAdapter::new()),
         models,
     );
 
@@ -61,13 +61,13 @@ fn test_provider_instance_models_iterator() {
 }
 
 #[test]
-fn test_openai_protocol_creation() {
-    let protocol = rocode_provider::protocols::OpenAIProtocol::new();
-    let _arc: Arc<dyn rocode_provider::ProtocolImpl> = Arc::new(protocol);
+fn test_closeai_compatible_adapter_creation() {
+    let adapter = rocode_provider::protocols::CloseAiCompatibleAdapter::new();
+    let _arc: Arc<dyn rocode_provider::ProviderAdapter> = Arc::new(adapter);
 }
 
 #[test]
-fn test_ethnopic_protocol_creation() {
-    let protocol = rocode_provider::protocols::EthnopicProtocol::new();
-    let _arc: Arc<dyn rocode_provider::ProtocolImpl> = Arc::new(protocol);
+fn test_ethnopic_adapter_creation() {
+    let adapter = rocode_provider::protocols::EthnopicAdapter::new();
+    let _arc: Arc<dyn rocode_provider::ProviderAdapter> = Arc::new(adapter);
 }

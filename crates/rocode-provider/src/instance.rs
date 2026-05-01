@@ -5,15 +5,15 @@ use std::sync::Arc;
 
 use crate::{
     cache::ProviderProfileFingerprint, runtime::ProviderRuntime, ChatRequest, ChatResponse,
-    ModelInfo, ProtocolImpl, Provider, ProviderConfig, ProviderError, StreamResult,
+    ModelInfo, Provider, ProviderAdapter, ProviderConfig, ProviderError, StreamResult,
 };
 
-/// Runtime provider instance combining protocol implementation + config + models.
+/// Runtime provider instance combining provider adapter + config + models.
 pub struct ProviderInstance {
     id: String,
     name: String,
     config: ProviderConfig,
-    protocol: Arc<dyn ProtocolImpl>,
+    adapter: Arc<dyn ProviderAdapter>,
     client: Client,
     models: HashMap<String, ModelInfo>,
     runtime: Option<ProviderRuntime>,
@@ -25,14 +25,14 @@ impl ProviderInstance {
         id: String,
         name: String,
         config: ProviderConfig,
-        protocol: Arc<dyn ProtocolImpl>,
+        adapter: Arc<dyn ProviderAdapter>,
         models: HashMap<String, ModelInfo>,
     ) -> Self {
         Self {
             id,
             name,
             config,
-            protocol,
+            adapter,
             client: Client::new(),
             models,
             runtime: None,
@@ -103,10 +103,7 @@ impl Provider for ProviderInstance {
             None
         };
 
-        let result = self
-            .protocol
-            .chat(&self.client, &self.config, request)
-            .await;
+        let result = self.adapter.chat(&self.client, &self.config, request).await;
 
         if let Some(runtime) = &self.runtime {
             if runtime.is_preflight_enabled() {
@@ -138,7 +135,7 @@ impl Provider for ProviderInstance {
         };
 
         let result = self
-            .protocol
+            .adapter
             .chat_stream(&self.client, &self.config, request)
             .await;
 

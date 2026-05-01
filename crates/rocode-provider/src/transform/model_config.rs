@@ -22,8 +22,8 @@ pub(super) fn remap_provider_options(messages: &mut [Message], npm: &str, provid
         None => return,
     };
 
-    // Skip if the key already matches the provider_id, or if this is Azure
-    if key == provider_id || npm == "@ai-sdk/azure" {
+    // Skip if the key already matches the provider_id.
+    if key == provider_id {
         return;
     }
 
@@ -172,9 +172,7 @@ pub fn max_output_tokens(model: &models::ModelInfo) -> u64 {
 pub fn sdk_key(npm: &str) -> Option<&'static str> {
     match npm {
         "@ai-sdk/github-copilot" => Some("copilot"),
-        "@ai-sdk/openai" | "@ai-sdk/azure" | "closeai-compatible" | "openai-compatible" => {
-            Some("openai")
-        }
+        "@ai-sdk/openai" | "closeai-compatible" | "openai-compatible" => Some("openai"),
         "@ai-sdk/amazon-bedrock" => Some("bedrock"),
         "@ai-sdk/anthropic" | "@ai-sdk/google-vertex/anthropic" | "ethnopic-compatible" => {
             Some("ethnopic")
@@ -368,29 +366,6 @@ pub fn variants(model: &models::ModelInfo) -> HashMap<String, HashMap<String, se
             .iter()
             .map(|e| (e.to_string(), hashmap! {"reasoningEffort" => json!(*e)}))
             .collect(),
-
-        "@ai-sdk/azure" => {
-            if id == "o1-mini" {
-                return HashMap::new();
-            }
-            let mut efforts: Vec<&str> = vec!["low", "medium", "high"];
-            if id.contains("gpt-5-") || id == "gpt-5" {
-                efforts.insert(0, "minimal");
-            }
-            efforts
-                .iter()
-                .map(|e| {
-                    (
-                        e.to_string(),
-                        hashmap! {
-                            "reasoningEffort" => json!(*e),
-                            "reasoningSummary" => json!("auto"),
-                            "include" => json!(["reasoning.encrypted_content"])
-                        },
-                    )
-                })
-                .collect()
-        }
 
         "@ai-sdk/openai" => {
             if id == "gpt-5-pro" {

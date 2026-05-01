@@ -52,7 +52,7 @@ fn test_apply_caching_ethnopic_family() {
 
     apply_caching(&mut messages, ProviderType::Ethnopic);
 
-    // Messages-family providers use message-level providerOptions here.
+    // Ethnopic-family providers use message-level providerOptions here.
     assert!(messages[0].provider_options.is_some());
     assert!(messages[2].provider_options.is_some());
 }
@@ -682,7 +682,7 @@ fn test_provider_options_map_perplexity() {
 }
 
 #[test]
-fn test_normalize_tool_call_id_messages_family_ascii_only() {
+fn test_normalize_tool_call_id_ethnopic_family_ascii_only() {
     let normalized = normalize_tool_call_id("call:中文/id-1", true);
     assert_eq!(normalized, "call____id-1");
 }

@@ -4,21 +4,21 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ChatRequest, ChatResponse, Choice, Content, Message, ProtocolImpl, ProviderConfig,
+    ChatRequest, ChatResponse, Choice, Content, Message, ProviderAdapter, ProviderConfig,
     ProviderError, Role, StreamEvent, StreamResult, Usage,
 };
 
 const BEDROCK_RUNTIME_URL: &str = "https://bedrock-runtime.{region}.amazonaws.com";
 
-pub struct BedrockProtocol;
+pub struct BedrockConverseAdapter;
 
-impl Default for BedrockProtocol {
+impl Default for BedrockConverseAdapter {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl BedrockProtocol {
+impl BedrockConverseAdapter {
     pub fn new() -> Self {
         Self
     }
@@ -173,7 +173,7 @@ impl BedrockProtocol {
 }
 
 #[async_trait]
-impl ProtocolImpl for BedrockProtocol {
+impl ProviderAdapter for BedrockConverseAdapter {
     async fn chat(
         &self,
         client: &reqwest::Client,
@@ -418,11 +418,12 @@ mod tests {
 
     #[test]
     fn endpoint_url_and_signing_path_respects_custom_endpoint_prefix() {
-        let (url, signing_path, signing_host) = BedrockProtocol::endpoint_url_and_signing_path(
-            "https://localhost:4566/custom-prefix/",
-            "/model/foo/converse",
-            "us-west-2",
-        );
+        let (url, signing_path, signing_host) =
+            BedrockConverseAdapter::endpoint_url_and_signing_path(
+                "https://localhost:4566/custom-prefix/",
+                "/model/foo/converse",
+                "us-west-2",
+            );
 
         assert_eq!(
             url,
@@ -442,7 +443,7 @@ mod tests {
             endpoint_url: None,
         };
 
-        let headers = BedrockProtocol::sign_request(
+        let headers = BedrockConverseAdapter::sign_request(
             &cfg,
             "POST",
             "/model/foo/converse",

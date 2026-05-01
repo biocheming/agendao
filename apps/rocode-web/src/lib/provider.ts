@@ -48,6 +48,15 @@ export interface ConnectProtocolOption {
   name: string;
 }
 
+export function displayProtocolLabel(protocol: string | null | undefined): string {
+  const value = (protocol ?? "").trim();
+  const lower = value.toLowerCase();
+  if (lower === "anthropic" || lower === "anthropic-messages" || lower === "messages") {
+    return "Ethnopic";
+  }
+  return value;
+}
+
 export type ProviderConnectDraftMode = "known" | "custom";
 
 export interface ProviderConnectDraft {

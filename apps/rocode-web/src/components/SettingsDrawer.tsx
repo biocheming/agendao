@@ -56,6 +56,7 @@ import type {
   RefreshProviderCatalogueResponseRecord,
   ResolveProviderConnectResponseRecord,
 } from "@/lib/provider";
+import { displayProtocolLabel } from "@/lib/provider";
 import { MemoryTab } from "./settings-drawer/MemoryTab";
 import { SkillsTab } from "./settings-drawer/SkillsTab";
 import {
@@ -1964,7 +1965,7 @@ export function SettingsDrawer({
                           <strong>{provider.name}</strong>
                           <span className="block text-muted-foreground">
                             {provider.id}
-                            {provider.protocol ? ` · ${provider.protocol}` : ""}
+                            {provider.protocol ? ` · ${displayProtocolLabel(provider.protocol)}` : ""}
                             {provider.base_url ? ` · ${provider.base_url}` : ""}
                           </span>
                         </button>
@@ -2032,7 +2033,7 @@ export function SettingsDrawer({
                   >
                     {connectProtocols.map((protocol) => (
                       <option key={protocol.id} value={protocol.id}>
-                        {protocol.name}
+                        {displayProtocolLabel(protocol.name)}
                       </option>
                     ))}
                   </select>
@@ -2400,7 +2401,7 @@ export function SettingsDrawer({
                       <p className="text-sm text-muted-foreground leading-relaxed">
                         {provider.id}
                         {provider.base_url ? ` · ${provider.base_url}` : ""}
-                        {provider.protocol ? ` · ${provider.protocol}` : ""}
+                        {provider.protocol ? ` · ${displayProtocolLabel(provider.protocol)}` : ""}
                       </p>
                       <p className="text-sm text-muted-foreground leading-relaxed">
                         status {provider.status}

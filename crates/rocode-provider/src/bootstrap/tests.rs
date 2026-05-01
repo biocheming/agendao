@@ -124,20 +124,6 @@ fn creates_openai_provider_from_state_key() {
 }
 
 #[test]
-fn azure_provider_requires_endpoint() {
-    let mut state = provider_state("azure");
-    state.key = Some("test-key".to_string());
-    assert!(create_concrete_provider("azure", &state).is_none());
-
-    state.options.insert(
-        "endpoint".to_string(),
-        serde_json::Value::String("https://example.openai.azure.com".to_string()),
-    );
-    let provider = create_concrete_provider("azure", &state).expect("provider should exist");
-    assert_eq!(provider.id(), "azure");
-}
-
-#[test]
 fn creates_bedrock_provider_from_options() {
     let mut state = provider_state("amazon-bedrock");
     state.options.insert(

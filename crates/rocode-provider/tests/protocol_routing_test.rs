@@ -1,15 +1,16 @@
-use rocode_provider::{Protocol, ProviderConfig};
+use rocode_provider::{ProviderConfig, ProviderProfileResolver, ProviderRuntimeAdapter};
+use std::collections::HashMap;
 
 #[test]
-fn test_deepseek_uses_openai_protocol() {
-    let protocol = Protocol::from_npm("@ai-sdk/openai-compatible");
-    assert_eq!(protocol, Protocol::OpenAI);
+fn test_deepseek_uses_closeai_compatible_adapter() {
+    let adapter = adapter_from_resolved_profile("deepseek", "@ai-sdk/openai-compatible");
+    assert_eq!(adapter, ProviderRuntimeAdapter::CloseAiCompatible);
 }
 
 #[test]
 fn test_custom_messages_endpoint() {
-    let protocol = Protocol::from_npm("@ai-sdk/anthropic");
-    assert_eq!(protocol, Protocol::Messages);
+    let adapter = adapter_from_resolved_profile("ethnopic", "@ai-sdk/anthropic");
+    assert_eq!(adapter, ProviderRuntimeAdapter::Ethnopic);
 
     let config = ProviderConfig::new(
         "bailian",
@@ -25,8 +26,8 @@ fn test_custom_messages_endpoint() {
 
 #[test]
 fn test_custom_ethnopic_endpoint_alias() {
-    let protocol = Protocol::from_npm("ethnopic-compatible");
-    assert_eq!(protocol, Protocol::Messages);
+    let adapter = adapter_from_resolved_profile("ethnopic", "ethnopic-compatible");
+    assert_eq!(adapter, ProviderRuntimeAdapter::Ethnopic);
 
     let config = ProviderConfig::new(
         "compatible-messages",
@@ -39,8 +40,8 @@ fn test_custom_ethnopic_endpoint_alias() {
 
 #[test]
 fn test_openrouter_custom_headers() {
-    let protocol = Protocol::from_npm("@openrouter/ai-sdk-provider");
-    assert_eq!(protocol, Protocol::OpenAI);
+    let adapter = adapter_from_resolved_profile("openrouter", "@openrouter/ai-sdk-provider");
+    assert_eq!(adapter, ProviderRuntimeAdapter::CloseAiCompatible);
 
     let config = ProviderConfig::new(
         "openrouter",
@@ -54,4 +55,10 @@ fn test_openrouter_custom_headers() {
         config.headers.get("HTTP-Referer").expect("referer header"),
         "https://opencode.ai/"
     );
+}
+
+fn adapter_from_resolved_profile(provider_id: &str, npm: &str) -> ProviderRuntimeAdapter {
+    let options = HashMap::new();
+    let profile = ProviderProfileResolver::resolve_with_npm(provider_id, npm, &options);
+    ProviderRuntimeAdapter::from_profile(&profile)
 }

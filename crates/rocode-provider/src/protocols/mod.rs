@@ -1,8 +1,8 @@
 mod bedrock;
 mod copilot;
+mod ethnopic;
 mod gitlab;
 mod google;
-mod messages;
 mod openai;
 mod openai_request_body;
 mod openai_response;
@@ -12,34 +12,30 @@ mod vertex;
 
 use std::sync::Arc;
 
-pub use bedrock::BedrockProtocol;
-pub use copilot::CopilotProtocol;
-pub use gitlab::GitLabProtocol;
-pub use google::GoogleProtocol;
-pub use messages::MessagesProtocol;
-/// Neutral alias for the generic messages-family protocol implementation.
-pub use messages::MessagesProtocol as EthnopicProtocol;
-pub use openai::OpenAIProtocol;
-pub use vertex::VertexProtocol;
+pub use bedrock::BedrockConverseAdapter;
+pub use copilot::GitHubCopilotCloseAiAdapter;
+pub use ethnopic::EthnopicAdapter;
+pub use gitlab::GitLabCloseAiAdapter;
+pub use google::GeminiAdapter;
+pub use openai::CloseAiCompatibleAdapter;
+pub use vertex::VertexGeminiAdapter;
 
-use crate::{Protocol, ProtocolImpl, ProviderProfile};
+use crate::{ProviderAdapter, ProviderProfile, ProviderRuntimeAdapter};
 
-pub fn create_legacy_protocol_impl(protocol: Protocol) -> Arc<dyn ProtocolImpl> {
-    match protocol {
-        Protocol::OpenAI => Arc::new(OpenAIProtocol::new()),
-        Protocol::Messages => Arc::new(EthnopicProtocol::new()),
-        Protocol::Google => Arc::new(GoogleProtocol::new()),
-        Protocol::Bedrock => Arc::new(BedrockProtocol::new()),
-        Protocol::Vertex => Arc::new(VertexProtocol::new()),
-        Protocol::GitHubCopilot => Arc::new(CopilotProtocol::new()),
-        Protocol::GitLab => Arc::new(GitLabProtocol::new()),
+pub fn create_provider_adapter(adapter: ProviderRuntimeAdapter) -> Arc<dyn ProviderAdapter> {
+    match adapter {
+        ProviderRuntimeAdapter::CloseAiCompatible => Arc::new(CloseAiCompatibleAdapter::new()),
+        ProviderRuntimeAdapter::Ethnopic => Arc::new(EthnopicAdapter::new()),
+        ProviderRuntimeAdapter::Gemini => Arc::new(GeminiAdapter::new()),
+        ProviderRuntimeAdapter::BedrockConverse => Arc::new(BedrockConverseAdapter::new()),
+        ProviderRuntimeAdapter::VertexGemini => Arc::new(VertexGeminiAdapter::new()),
+        ProviderRuntimeAdapter::GitHubCopilotCloseAi => {
+            Arc::new(GitHubCopilotCloseAiAdapter::new())
+        }
+        ProviderRuntimeAdapter::GitLabCloseAi => Arc::new(GitLabCloseAiAdapter::new()),
     }
 }
 
-pub fn create_protocol_impl(protocol: Protocol) -> Arc<dyn ProtocolImpl> {
-    create_legacy_protocol_impl(protocol)
-}
-
-pub fn create_protocol_impl_for_profile(profile: &ProviderProfile) -> Arc<dyn ProtocolImpl> {
-    create_legacy_protocol_impl(Protocol::from_profile(profile))
+pub fn create_provider_adapter_for_profile(profile: &ProviderProfile) -> Arc<dyn ProviderAdapter> {
+    create_provider_adapter(ProviderRuntimeAdapter::from_profile(profile))
 }

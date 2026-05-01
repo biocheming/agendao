@@ -5,21 +5,21 @@ use std::collections::VecDeque;
 
 use crate::runtime::runtime_pipeline_enabled;
 use crate::{
-    ChatRequest, ChatResponse, Choice, Content, Message, ProtocolImpl, ProviderConfig,
+    ChatRequest, ChatResponse, Choice, Content, Message, ProviderAdapter, ProviderConfig,
     ProviderError, Role, StreamEvent, StreamResult, Usage,
 };
 
 const GOOGLE_API_URL: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 
-pub struct GoogleProtocol;
+pub struct GeminiAdapter;
 
-impl Default for GoogleProtocol {
+impl Default for GeminiAdapter {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl GoogleProtocol {
+impl GeminiAdapter {
     pub fn new() -> Self {
         Self
     }
@@ -82,7 +82,7 @@ impl GoogleProtocol {
 }
 
 #[async_trait]
-impl ProtocolImpl for GoogleProtocol {
+impl ProviderAdapter for GeminiAdapter {
     async fn chat(
         &self,
         client: &reqwest::Client,

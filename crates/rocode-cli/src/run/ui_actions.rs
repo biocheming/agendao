@@ -16,6 +16,17 @@ fn cli_normalize_model_ref(model_ref: &str) -> String {
     }
 }
 
+fn cli_display_protocol_id(protocol: &str) -> &str {
+    if protocol.eq_ignore_ascii_case("anthropic")
+        || protocol.eq_ignore_ascii_case("anthropic-messages")
+        || protocol.eq_ignore_ascii_case("messages")
+    {
+        "Ethnopic"
+    } else {
+        protocol
+    }
+}
+
 enum CliModelCommand {
     List,
     Refresh,
@@ -1275,7 +1286,7 @@ async fn cli_execute_ui_action(
                             detail.push_str(" · connected");
                         }
                         if let Some(protocol) = provider.protocol.as_deref() {
-                            detail.push_str(&format!(" · {}", protocol));
+                            detail.push_str(&format!(" · {}", cli_display_protocol_id(protocol)));
                         }
                         if let Some(base_url) = provider.base_url.as_deref() {
                             detail.push_str(&format!(" · {}", base_url));
@@ -1444,7 +1455,7 @@ async fn cli_execute_ui_action(
                     .iter()
                     .map(|protocol| SelectOption {
                         label: protocol.id.clone(),
-                        description: Some(protocol.name.clone()),
+                        description: Some(cli_display_protocol_id(&protocol.name).to_string()),
                     })
                     .collect::<Vec<_>>();
                 if let Some(current_protocol) = draft.protocol.as_deref() {

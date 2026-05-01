@@ -1,12 +1,13 @@
 use rocode_provider::{
-    ChatRequest, Message, ModelInfo, Protocol, ProviderConfig, ProviderInstance, ProviderRegistry,
+    ChatRequest, Message, ModelInfo, ProviderConfig, ProviderInstance, ProviderRegistry,
+    ProviderRuntimeAdapter,
 };
 use std::collections::HashMap;
 
 fn create_test_registry() -> ProviderRegistry {
     let mut registry = ProviderRegistry::new();
 
-    // Ethnopic via protocol
+    // Ethnopic-family provider via runtime adapter.
     let ethnopic_models: HashMap<String, ModelInfo> = vec![
         ModelInfo {
             id: "test-model-large".to_string(),
@@ -45,11 +46,11 @@ fn create_test_registry() -> ProviderRegistry {
         "ethnopic".to_string(),
         "Ethnopic".to_string(),
         ProviderConfig::new("ethnopic", "", "test-key"),
-        rocode_provider::create_protocol_impl(Protocol::Messages),
+        rocode_provider::create_provider_adapter(ProviderRuntimeAdapter::Ethnopic),
         ethnopic_models,
     ));
 
-    // OpenAI via protocol
+    // OpenAI provider using the closeai-compatible runtime adapter.
     let openai_models: HashMap<String, ModelInfo> = vec![ModelInfo {
         id: "gpt-4o".to_string(),
         name: "GPT-4o".to_string(),
@@ -72,11 +73,11 @@ fn create_test_registry() -> ProviderRegistry {
         "openai".to_string(),
         "OpenAI".to_string(),
         ProviderConfig::new("openai", "", "test-key"),
-        rocode_provider::create_protocol_impl(Protocol::OpenAI),
+        rocode_provider::create_provider_adapter(ProviderRuntimeAdapter::CloseAiCompatible),
         openai_models,
     ));
 
-    // Google via protocol
+    // Google provider using the Gemini runtime adapter.
     let google_models: HashMap<String, ModelInfo> = vec![ModelInfo {
         id: "gemini-2.0-flash".to_string(),
         name: "Gemini 2.0 Flash".to_string(),
@@ -99,7 +100,7 @@ fn create_test_registry() -> ProviderRegistry {
         "google".to_string(),
         "Google AI".to_string(),
         ProviderConfig::new("google", "", "test-key"),
-        rocode_provider::create_protocol_impl(Protocol::Google),
+        rocode_provider::create_provider_adapter(ProviderRuntimeAdapter::Gemini),
         google_models,
     ));
 

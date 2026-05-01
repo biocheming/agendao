@@ -82,7 +82,8 @@ impl SessionPrompt {
 
         for msg in session_messages {
             // Skip messages with no parts — empty Tool/Assistant messages
-            // confuse providers (especially messages-family which rejects empty content).
+            // confuse providers, especially the Ethnopic-compatible family
+            // which rejects empty content.
             if msg.parts.is_empty() {
                 continue;
             }

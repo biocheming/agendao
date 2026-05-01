@@ -15,7 +15,7 @@ use crate::responses::{
 use crate::runtime::runtime_pipeline_enabled;
 use crate::tools::InputTool;
 use crate::{
-    ChatRequest, ChatResponse, Choice, Content, Message, ProtocolImpl, ProviderConfig,
+    ChatRequest, ChatResponse, Choice, Content, Message, ProviderAdapter, ProviderConfig,
     ProviderError, Role, StreamEvent, StreamResult, Usage,
 };
 
@@ -50,15 +50,15 @@ where
     }
 }
 
-pub struct CopilotProtocol;
+pub struct GitHubCopilotCloseAiAdapter;
 
-impl Default for CopilotProtocol {
+impl Default for GitHubCopilotCloseAiAdapter {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl CopilotProtocol {
+impl GitHubCopilotCloseAiAdapter {
     pub fn new() -> Self {
         Self
     }
@@ -416,7 +416,7 @@ impl CopilotProtocol {
 }
 
 #[async_trait]
-impl ProtocolImpl for CopilotProtocol {
+impl ProviderAdapter for GitHubCopilotCloseAiAdapter {
     async fn chat(
         &self,
         client: &reqwest::Client,
