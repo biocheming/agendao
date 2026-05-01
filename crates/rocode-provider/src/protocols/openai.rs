@@ -14,8 +14,8 @@ use crate::responses::*;
 use crate::runtime::runtime_pipeline_enabled;
 use crate::tools::InputTool;
 use crate::{
-    ChatRequest, ChatResponse, Choice, Message, ProtocolImpl, ProviderConfig, ProviderError, Role,
-    StreamEvent, StreamResult, Usage,
+    ChatRequest, ChatResponse, Choice, Message, ProviderAdapter, ProviderConfig, ProviderError,
+    Role, StreamEvent, StreamResult, Usage,
 };
 
 const OPENAI_API_URL: &str = "https://api.openai.com/v1/chat/completions";
@@ -426,18 +426,18 @@ async fn chat_stream_runtime_pipeline(
 }
 
 // ===========================================================================
-// OpenAIProtocol struct + ProtocolImpl
+// CloseAiCompatibleAdapter struct + ProviderAdapter
 // ===========================================================================
 
-pub struct OpenAIProtocol;
+pub struct CloseAiCompatibleAdapter;
 
-impl Default for OpenAIProtocol {
+impl Default for CloseAiCompatibleAdapter {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl OpenAIProtocol {
+impl CloseAiCompatibleAdapter {
     pub fn new() -> Self {
         Self
     }
@@ -445,7 +445,7 @@ impl OpenAIProtocol {
 
 // Phase 3: Full dual routing — Responses API with Legacy fallback.
 #[async_trait]
-impl ProtocolImpl for OpenAIProtocol {
+impl ProviderAdapter for CloseAiCompatibleAdapter {
     async fn chat(
         &self,
         client: &Client,

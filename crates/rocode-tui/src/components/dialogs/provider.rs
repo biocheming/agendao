@@ -34,6 +34,18 @@ pub enum ProviderStatus {
     Disconnected,
     Error,
 }
+
+fn display_protocol_label(protocol: &str) -> &str {
+    if protocol.eq_ignore_ascii_case("anthropic")
+        || protocol.eq_ignore_ascii_case("anthropic-messages")
+        || protocol.eq_ignore_ascii_case("messages")
+    {
+        "Ethnopic"
+    } else {
+        protocol
+    }
+}
+
 /// Result of an API key submission attempt.
 #[derive(Clone, Debug)]
 pub enum SubmitResult {
@@ -55,7 +67,7 @@ pub enum CustomProviderStep {
 pub struct CustomProviderState {
     pub provider_id: String,
     pub base_url: String,
-    /// Selected protocol ID (e.g., "openai", "anthropic")
+    /// Selected protocol ID (e.g., "openai", "anthropic" for Ethnopic-compatible).
     pub protocol: String,
     pub api_key: String,
     pub step: CustomProviderStep,
@@ -972,6 +984,7 @@ impl ProviderDialog {
             .selected_provider
             .as_ref()
             .and_then(|p| p.protocol.as_deref())
+            .map(display_protocol_label)
             .unwrap_or("");
 
         // Mask the key: show first 4 chars then asterisks
@@ -1617,7 +1630,7 @@ impl ProviderDialog {
                     };
                     let prefix = if is_selected { "› " } else { "  " };
                     lines.push(Line::from(Span::styled(
-                        format!("{}{}", prefix, option.name),
+                        format!("{}{}", prefix, display_protocol_label(&option.name)),
                         style,
                     )));
                 }

@@ -48,9 +48,9 @@ pub fn apply_transport_auth(
     config: &ProviderConfig,
 ) -> reqwest::RequestBuilder {
     match kind {
-        ProviderTransportKind::Bearer | ProviderTransportKind::OAuth => {
-            apply_bearer_auth(builder, &config.api_key)
-        }
+        ProviderTransportKind::Bearer
+        | ProviderTransportKind::VertexBearer
+        | ProviderTransportKind::OAuth => apply_bearer_auth(builder, &config.api_key),
         ProviderTransportKind::PrivateToken => apply_private_token_auth(builder, &config.api_key),
         ProviderTransportKind::SigV4
         | ProviderTransportKind::HeaderSet

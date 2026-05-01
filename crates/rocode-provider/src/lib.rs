@@ -1,5 +1,4 @@
 pub mod auth;
-pub mod azure;
 pub mod bootstrap;
 pub mod bridge;
 pub mod cache;
@@ -35,7 +34,7 @@ pub use bootstrap::{
 };
 pub use bridge::{
     bridge_streaming_events, driver_response_to_chat_response, streaming_event_to_stream_events,
-    DriverBasedProtocol,
+    DriverBasedAdapter,
 };
 pub use cache::*;
 pub use catalog::{

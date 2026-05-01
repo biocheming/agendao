@@ -43,7 +43,7 @@ pub enum ProviderApiFamily {
 pub enum ProviderApiShape {
     ChatCompletions,
     Responses,
-    Messages,
+    EthnopicMessages,
     GeminiGenerateContent,
     BedrockConverse,
     Custom,
@@ -52,6 +52,7 @@ pub enum ProviderApiShape {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ProviderTransportKind {
     Bearer,
+    VertexBearer,
     SigV4,
     OAuth,
     PrivateToken,
@@ -353,7 +354,7 @@ fn classify_provider(
         return (
             ProviderApiFamily::GeminiGenerate,
             ProviderApiShape::GeminiGenerateContent,
-            ProviderTransportKind::Bearer,
+            ProviderTransportKind::VertexBearer,
             ProviderUsageShape::Gemini,
             CacheProtocolFamily::Disabled,
         );
@@ -385,7 +386,7 @@ fn classify_provider(
     {
         return (
             ProviderApiFamily::EthnopicMessages,
-            ProviderApiShape::Messages,
+            ProviderApiShape::EthnopicMessages,
             ProviderTransportKind::Bearer,
             ProviderUsageShape::EthnopicReadWrite,
             CacheProtocolFamily::EthnopicCompatible,
@@ -427,7 +428,7 @@ fn parse_api_shape(value: &str) -> Result<ProviderApiShape, ProviderProfileError
     match normalize_profile_value(value).as_str() {
         "chat-completions" => Ok(ProviderApiShape::ChatCompletions),
         "responses" => Ok(ProviderApiShape::Responses),
-        "messages" => Ok(ProviderApiShape::Messages),
+        "messages" => Ok(ProviderApiShape::EthnopicMessages),
         "gemini-generate-content" | "generate-content" => {
             Ok(ProviderApiShape::GeminiGenerateContent)
         }
@@ -442,6 +443,7 @@ fn parse_api_shape(value: &str) -> Result<ProviderApiShape, ProviderProfileError
 fn parse_transport(value: &str) -> Result<ProviderTransportKind, ProviderProfileError> {
     match normalize_profile_value(value).as_str() {
         "bearer" => Ok(ProviderTransportKind::Bearer),
+        "vertex-bearer" | "vertex" => Ok(ProviderTransportKind::VertexBearer),
         "sigv4" => Ok(ProviderTransportKind::SigV4),
         "oauth" => Ok(ProviderTransportKind::OAuth),
         "private-token" => Ok(ProviderTransportKind::PrivateToken),
@@ -499,7 +501,7 @@ fn validate_profile_combination(
             api_shape,
             ProviderApiShape::ChatCompletions | ProviderApiShape::Responses
         ),
-        ProviderApiFamily::EthnopicMessages => api_shape == ProviderApiShape::Messages,
+        ProviderApiFamily::EthnopicMessages => api_shape == ProviderApiShape::EthnopicMessages,
         ProviderApiFamily::GeminiGenerate => api_shape == ProviderApiShape::GeminiGenerateContent,
         ProviderApiFamily::BedrockConverse => api_shape == ProviderApiShape::BedrockConverse,
         ProviderApiFamily::Custom => false,
@@ -690,7 +692,7 @@ mod tests {
         );
 
         assert_eq!(profile.api_family, ProviderApiFamily::EthnopicMessages);
-        assert_eq!(profile.api_shape, ProviderApiShape::Messages);
+        assert_eq!(profile.api_shape, ProviderApiShape::EthnopicMessages);
         assert_eq!(profile.transport, ProviderTransportKind::Bearer);
         assert_eq!(profile.usage_shape, ProviderUsageShape::EthnopicReadWrite);
         assert_eq!(
@@ -730,7 +732,7 @@ mod tests {
     }
 
     #[test]
-    fn projects_vertex_and_bedrock_as_non_cache_closeai_families() {
+    fn projects_vertex_and_bedrock_as_non_cache_families() {
         let vertex = ProviderProfileResolver::resolve_with_npm(
             "google-vertex",
             "@ai-sdk/google-vertex",
@@ -744,6 +746,7 @@ mod tests {
 
         assert_eq!(vertex.api_family, ProviderApiFamily::GeminiGenerate);
         assert_eq!(vertex.api_shape, ProviderApiShape::GeminiGenerateContent);
+        assert_eq!(vertex.transport, ProviderTransportKind::VertexBearer);
         assert_eq!(vertex.cache_family, CacheProtocolFamily::Disabled);
         assert_eq!(bedrock.api_family, ProviderApiFamily::BedrockConverse);
         assert_eq!(bedrock.transport, ProviderTransportKind::SigV4);
@@ -823,7 +826,7 @@ mod tests {
             ProviderProfileResolver::try_resolve_with_options("my-messages", &options).unwrap();
 
         assert_eq!(profile.api_family, ProviderApiFamily::EthnopicMessages);
-        assert_eq!(profile.api_shape, ProviderApiShape::Messages);
+        assert_eq!(profile.api_shape, ProviderApiShape::EthnopicMessages);
         assert_eq!(
             profile.cache_family,
             CacheProtocolFamily::EthnopicCompatible

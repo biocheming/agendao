@@ -28,7 +28,7 @@ impl ProviderType {
             ProviderType::Bedrock
         } else if id_lower == "gateway" {
             ProviderType::Gateway
-        } else if id_lower == "openai" || id_lower == "azure" {
+        } else if id_lower == "openai" {
             ProviderType::OpenAI
         } else {
             ProviderType::Other
@@ -318,11 +318,11 @@ pub fn normalize_messages(
     match provider_type {
         ProviderType::Ethnopic => {
             normalize_for_ethnopic_messages(messages);
-            normalize_tool_call_ids_messages_family(messages);
+            normalize_tool_call_ids_ethnopic_family(messages);
         }
         ProviderType::OpenRouter => {
             if ethnopic_protocol {
-                normalize_tool_call_ids_messages_family(messages);
+                normalize_tool_call_ids_ethnopic_family(messages);
             }
             if model_id.to_lowercase().contains("mistral")
                 || model_id.to_lowercase().contains("devstral")
@@ -332,7 +332,7 @@ pub fn normalize_messages(
         }
         ProviderType::Other => {
             if ethnopic_protocol {
-                normalize_tool_call_ids_messages_family(messages);
+                normalize_tool_call_ids_ethnopic_family(messages);
             } else if model_id.to_lowercase().contains("mistral")
                 || model_id.to_lowercase().contains("devstral")
             {
@@ -415,7 +415,7 @@ fn normalize_for_ethnopic_messages(messages: &mut Vec<Message>) {
     }
 }
 
-fn normalize_tool_call_ids_messages_family(messages: &mut [Message]) {
+fn normalize_tool_call_ids_ethnopic_family(messages: &mut [Message]) {
     for msg in messages.iter_mut() {
         if matches!(msg.role, crate::Role::Assistant | crate::Role::Tool) {
             if let Content::Parts(parts) = &mut msg.content {

@@ -1,92 +1,116 @@
 use rocode_provider::{
-    create_legacy_protocol_impl, create_protocol_impl, create_protocol_impl_for_profile,
-    ChatRequest, Protocol, ProtocolImpl, ProviderConfig, ProviderProfileResolver,
+    create_provider_adapter, create_provider_adapter_for_profile, ChatRequest, ProviderAdapter,
+    ProviderConfig, ProviderProfileResolver, ProviderRuntimeAdapter,
 };
 use std::collections::HashMap;
 
 #[test]
-fn test_protocol_from_npm_messages_family() {
-    let protocol = Protocol::from_npm("@ai-sdk/anthropic");
-    assert_eq!(protocol, Protocol::Messages);
+fn test_adapter_from_profile_ethnopic_family() {
+    let adapter = adapter_from_resolved_profile("ethnopic", "@ai-sdk/anthropic");
+    assert_eq!(adapter, ProviderRuntimeAdapter::Ethnopic);
 }
 
 #[test]
-fn test_protocol_from_npm_ethnopic_alias() {
-    let protocol = Protocol::from_npm("ethnopic-compatible");
-    assert_eq!(protocol, Protocol::Messages);
+fn test_adapter_from_profile_ethnopic_alias() {
+    let adapter = adapter_from_resolved_profile("ethnopic", "ethnopic-compatible");
+    assert_eq!(adapter, ProviderRuntimeAdapter::Ethnopic);
 }
 
 #[test]
-fn test_protocol_from_npm_openai() {
-    let protocol = Protocol::from_npm("@ai-sdk/openai");
-    assert_eq!(protocol, Protocol::OpenAI);
+fn test_adapter_from_profile_openai() {
+    let adapter = adapter_from_resolved_profile("openai", "@ai-sdk/openai");
+    assert_eq!(adapter, ProviderRuntimeAdapter::CloseAiCompatible);
 }
 
 #[test]
-fn test_protocol_from_npm_closeai_and_openai_aliases() {
-    assert_eq!(Protocol::from_npm("closeai-compatible"), Protocol::OpenAI);
-    assert_eq!(Protocol::from_npm("openai-compatible"), Protocol::OpenAI);
-}
-
-#[test]
-fn test_protocol_from_npm_openrouter_and_perplexity() {
+fn test_adapter_from_profile_closeai_and_openai_aliases() {
     assert_eq!(
-        Protocol::from_npm("@openrouter/ai-sdk-provider"),
-        Protocol::OpenAI
+        adapter_from_resolved_profile("custom-closeai", "closeai-compatible"),
+        ProviderRuntimeAdapter::CloseAiCompatible
     );
-    assert_eq!(Protocol::from_npm("@ai-sdk/perplexity"), Protocol::OpenAI);
+    assert_eq!(
+        adapter_from_resolved_profile("custom-closeai", "openai-compatible"),
+        ProviderRuntimeAdapter::CloseAiCompatible
+    );
 }
 
 #[test]
-fn test_protocol_from_npm_unknown_defaults_to_openai() {
-    let protocol = Protocol::from_npm("@custom/unknown-provider");
-    assert_eq!(protocol, Protocol::OpenAI);
+fn test_adapter_from_profile_openrouter_and_perplexity() {
+    assert_eq!(
+        adapter_from_resolved_profile("openrouter", "@openrouter/ai-sdk-provider"),
+        ProviderRuntimeAdapter::CloseAiCompatible
+    );
+    assert_eq!(
+        adapter_from_resolved_profile("perplexity", "@ai-sdk/perplexity"),
+        ProviderRuntimeAdapter::CloseAiCompatible
+    );
 }
 
 #[test]
-fn test_protocol_from_npm_vertex() {
-    let protocol = Protocol::from_npm("@ai-sdk/google-vertex");
-    assert_eq!(protocol, Protocol::Vertex);
+fn test_adapter_from_profile_unknown_defaults_to_closeai_compatible() {
+    let adapter = adapter_from_resolved_profile("custom", "@custom/unknown-provider");
+    assert_eq!(adapter, ProviderRuntimeAdapter::CloseAiCompatible);
 }
 
 #[test]
-fn test_protocol_from_npm_google() {
-    let protocol = Protocol::from_npm("@ai-sdk/google");
-    assert_eq!(protocol, Protocol::Google);
+fn test_adapter_from_profile_vertex() {
+    let adapter = adapter_from_resolved_profile("google-vertex", "@ai-sdk/google-vertex");
+    assert_eq!(adapter, ProviderRuntimeAdapter::VertexGemini);
 }
 
 #[test]
-fn test_protocol_from_npm_bedrock() {
-    let protocol = Protocol::from_npm("@ai-sdk/bedrock");
-    assert_eq!(protocol, Protocol::Bedrock);
+fn test_adapter_from_profile_google() {
+    let adapter = adapter_from_resolved_profile("google", "@ai-sdk/google");
+    assert_eq!(adapter, ProviderRuntimeAdapter::Gemini);
 }
 
 #[test]
-fn test_protocol_from_npm_github_copilot() {
-    let protocol = Protocol::from_npm("@ai-sdk/github-copilot");
-    assert_eq!(protocol, Protocol::GitHubCopilot);
+fn test_adapter_from_profile_bedrock() {
+    let adapter = adapter_from_resolved_profile("amazon-bedrock", "@ai-sdk/bedrock");
+    assert_eq!(adapter, ProviderRuntimeAdapter::BedrockConverse);
 }
 
 #[test]
-fn test_protocol_from_npm_gitlab() {
-    let protocol = Protocol::from_npm("@ai-sdk/gitlab");
-    assert_eq!(protocol, Protocol::GitLab);
+fn test_adapter_from_profile_github_copilot() {
+    let adapter = adapter_from_resolved_profile("github-copilot", "@ai-sdk/github-copilot");
+    assert_eq!(adapter, ProviderRuntimeAdapter::GitHubCopilotCloseAi);
 }
 
 #[test]
-fn test_protocol_case_insensitive() {
-    assert_eq!(Protocol::from_npm("@AI-SDK/ANTHROPIC"), Protocol::Messages);
-    assert_eq!(Protocol::from_npm("@Ai-Sdk/Openai"), Protocol::OpenAI);
+fn test_adapter_from_profile_gitlab() {
+    let adapter = adapter_from_resolved_profile("gitlab", "@ai-sdk/gitlab");
+    assert_eq!(adapter, ProviderRuntimeAdapter::GitLabCloseAi);
 }
 
 #[test]
-fn test_protocol_alias_labels() {
-    assert_eq!(Protocol::Messages.to_string(), "Anthropic");
-    assert_eq!(Protocol::OpenAI.to_string(), "OpenAI");
+fn test_adapter_resolution_is_case_insensitive() {
+    assert_eq!(
+        adapter_from_resolved_profile("ethnopic", "@AI-SDK/ANTHROPIC"),
+        ProviderRuntimeAdapter::Ethnopic
+    );
+    assert_eq!(
+        adapter_from_resolved_profile("openai", "@Ai-Sdk/Openai"),
+        ProviderRuntimeAdapter::CloseAiCompatible
+    );
+}
+
+fn adapter_from_resolved_profile(provider_id: &str, npm: &str) -> ProviderRuntimeAdapter {
+    let options = HashMap::new();
+    let profile = ProviderProfileResolver::resolve_with_npm(provider_id, npm, &options);
+    ProviderRuntimeAdapter::from_profile(&profile)
 }
 
 #[test]
-fn test_protocol_from_profile_projects_vendor_protocols_as_legacy_adapter() {
+fn test_adapter_display_labels() {
+    assert_eq!(ProviderRuntimeAdapter::Ethnopic.to_string(), "ethnopic");
+    assert_eq!(
+        ProviderRuntimeAdapter::CloseAiCompatible.to_string(),
+        "closeai-compatible"
+    );
+}
+
+#[test]
+fn test_adapter_from_profile_projects_vendor_specific_adapters() {
     let options = HashMap::new();
     let gitlab =
         ProviderProfileResolver::resolve_with_npm("gitlab", "@gitlab/gitlab-ai-provider", &options);
@@ -106,10 +130,22 @@ fn test_protocol_from_profile_projects_vendor_protocols_as_legacy_adapter() {
         &options,
     );
 
-    assert_eq!(Protocol::from_profile(&gitlab), Protocol::GitLab);
-    assert_eq!(Protocol::from_profile(&copilot), Protocol::GitHubCopilot);
-    assert_eq!(Protocol::from_profile(&vertex), Protocol::Vertex);
-    assert_eq!(Protocol::from_profile(&closeai), Protocol::OpenAI);
+    assert_eq!(
+        ProviderRuntimeAdapter::from_profile(&gitlab),
+        ProviderRuntimeAdapter::GitLabCloseAi
+    );
+    assert_eq!(
+        ProviderRuntimeAdapter::from_profile(&copilot),
+        ProviderRuntimeAdapter::GitHubCopilotCloseAi
+    );
+    assert_eq!(
+        ProviderRuntimeAdapter::from_profile(&vertex),
+        ProviderRuntimeAdapter::VertexGemini
+    );
+    assert_eq!(
+        ProviderRuntimeAdapter::from_profile(&closeai),
+        ProviderRuntimeAdapter::CloseAiCompatible
+    );
 }
 
 #[test]
@@ -168,10 +204,10 @@ fn test_provider_config_with_options() {
     );
 }
 
-struct MockProtocol;
+struct MockProviderAdapter;
 
 #[async_trait::async_trait]
-impl ProtocolImpl for MockProtocol {
+impl ProviderAdapter for MockProviderAdapter {
     async fn chat(
         &self,
         _client: &reqwest::Client,
@@ -192,34 +228,28 @@ impl ProtocolImpl for MockProtocol {
 }
 
 #[test]
-fn test_protocol_impl_trait_bounds() {
+fn test_provider_adapter_trait_bounds() {
     fn assert_send_sync<T: Send + Sync>() {}
-    assert_send_sync::<MockProtocol>();
+    assert_send_sync::<MockProviderAdapter>();
 }
 
 #[test]
-fn test_create_protocol_impl_openai() {
-    let protocol = create_protocol_impl(Protocol::OpenAI);
-    let _arc: std::sync::Arc<dyn ProtocolImpl> = protocol;
+fn test_create_provider_adapter_closeai_compatible() {
+    let adapter = create_provider_adapter(ProviderRuntimeAdapter::CloseAiCompatible);
+    let _arc: std::sync::Arc<dyn ProviderAdapter> = adapter;
 }
 
 #[test]
-fn test_create_legacy_protocol_impl_openai() {
-    let protocol = create_legacy_protocol_impl(Protocol::OpenAI);
-    let _arc: std::sync::Arc<dyn ProtocolImpl> = protocol;
+fn test_create_provider_adapter_ethnopic() {
+    let adapter = create_provider_adapter(ProviderRuntimeAdapter::Ethnopic);
+    let _arc: std::sync::Arc<dyn ProviderAdapter> = adapter;
 }
 
 #[test]
-fn test_create_protocol_impl_ethnopic_family() {
-    let protocol = create_protocol_impl(Protocol::Messages);
-    let _arc: std::sync::Arc<dyn ProtocolImpl> = protocol;
-}
-
-#[test]
-fn test_create_protocol_impl_for_profile() {
+fn test_create_provider_adapter_for_profile() {
     let options = HashMap::new();
     let profile =
         ProviderProfileResolver::resolve_with_npm("ethnopic", "@ai-sdk/anthropic", &options);
-    let protocol = create_protocol_impl_for_profile(&profile);
-    let _arc: std::sync::Arc<dyn ProtocolImpl> = protocol;
+    let adapter = create_provider_adapter_for_profile(&profile);
+    let _arc: std::sync::Arc<dyn ProviderAdapter> = adapter;
 }

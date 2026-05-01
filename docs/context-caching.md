@@ -9,7 +9,7 @@ ROCode 只把缓存策略按内部协议族分派：
 | 协议族 | ROCode 名称 | 缓存策略 |
 |--------|-------------|----------|
 | closeai-compatible | `closeai` | 自动前缀缓存；ROCode 负责稳定 prefix，并在能力明确时附加 `prompt_cache_key` |
-| ethnopic-compatible / messages | `ethnopic` / `messages` | 显式 cache breakpoint；ROCode 负责规划稳定边界并写入 `cache_control` |
+| Ethnopic-compatible | `ethnopic` | 显式 cache breakpoint；ROCode 负责规划稳定边界并写入 `cache_control`。底层 wire path 仍可能是 `/messages`。 |
 
 Provider 具体是谁不是主轴。厂商差异只作为 typed capability / usage parser override 后置处理，不能反过来驱动核心 prompt 结构。
 
@@ -47,7 +47,7 @@ ROCode 会尽量把请求组织成三段：
 
 ### Reasoning continuation
 
-模型返回的 thinking / reasoning 不是普通 assistant 文本，也不是可随意摘要的可见输出；它是协议级 continuation state。只要下一轮请求仍处于同一协议族和 thinking mode，ROCode 必须把它作为 typed reasoning part 保留到唯一提示面权威，再由 provider 序列化为对应 wire schema，例如 closeai-compatible 的 `reasoning_content` 或 ethnopic/messages 的 thinking block。
+模型返回的 thinking / reasoning 不是普通 assistant 文本，也不是可随意摘要的可见输出；它是协议级 continuation state。只要下一轮请求仍处于同一协议族和 thinking mode，ROCode 必须把它作为 typed reasoning part 保留到唯一提示面权威，再由 provider 序列化为对应 wire schema，例如 closeai-compatible 的 `reasoning_content` 或 Ethnopic-compatible thinking block。
 
 因此：
 

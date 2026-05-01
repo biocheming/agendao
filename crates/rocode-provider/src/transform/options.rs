@@ -126,11 +126,7 @@ pub fn options(
         }
 
         // textVerbosity for non-chat gpt-5.x models
-        if api_id.contains("gpt-5.")
-            && !api_id.contains("codex")
-            && !api_id.contains("-chat")
-            && provider_id != "azure"
-        {
+        if api_id.contains("gpt-5.") && !api_id.contains("codex") && !api_id.contains("-chat") {
             result.insert("textVerbosity".to_string(), json!("low"));
         }
 

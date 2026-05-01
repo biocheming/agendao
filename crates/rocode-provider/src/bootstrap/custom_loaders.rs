@@ -118,48 +118,6 @@ impl CustomLoader for GitHubCopilotEnterpriseLoader {
     }
 }
 
-struct AzureLoader;
-
-impl CustomLoader for AzureLoader {
-    fn load(
-        &self,
-        _provider: &ModelsProviderInfo,
-        _provider_state: Option<&ProviderState>,
-    ) -> CustomLoaderResult {
-        CustomLoaderResult {
-            has_custom_get_model: true,
-            ..Default::default()
-        }
-    }
-}
-
-struct AzureCognitiveServicesLoader;
-
-impl CustomLoader for AzureCognitiveServicesLoader {
-    fn load(
-        &self,
-        _provider: &ModelsProviderInfo,
-        _provider_state: Option<&ProviderState>,
-    ) -> CustomLoaderResult {
-        let mut result = CustomLoaderResult {
-            has_custom_get_model: true,
-            ..Default::default()
-        };
-
-        if let Ok(resource_name) = std::env::var("AZURE_COGNITIVE_SERVICES_RESOURCE_NAME") {
-            result.options.insert(
-                "baseURL".to_string(),
-                serde_json::Value::String(format!(
-                    "https://{}.cognitiveservices.azure.com/openai",
-                    resource_name
-                )),
-            );
-        }
-
-        result
-    }
-}
-
 /// Amazon Bedrock custom loader - the most complex loader.
 /// Handles region resolution, AWS credential chain, cross-region model prefixing.
 pub(super) struct AmazonBedrockLoader;
@@ -575,8 +533,6 @@ pub(super) fn get_custom_loader(provider_id: &str) -> Option<Box<dyn CustomLoade
         "openai" => Some(Box::new(OpenAILoader)),
         "github-copilot" => Some(Box::new(GitHubCopilotLoader)),
         "github-copilot-enterprise" => Some(Box::new(GitHubCopilotEnterpriseLoader)),
-        "azure" => Some(Box::new(AzureLoader)),
-        "azure-cognitive-services" => Some(Box::new(AzureCognitiveServicesLoader)),
         "amazon-bedrock" => Some(Box::new(AmazonBedrockLoader)),
         "openrouter" => Some(Box::new(OpenRouterLoader)),
         "zenmux" => Some(Box::new(ZenMuxLoader)),

@@ -5,21 +5,21 @@ use std::collections::VecDeque;
 
 use crate::runtime::runtime_pipeline_enabled;
 use crate::{
-    ChatRequest, ChatResponse, Choice, Content, Message, ProtocolImpl, ProviderConfig,
+    ChatRequest, ChatResponse, Choice, Content, Message, ProviderAdapter, ProviderConfig,
     ProviderError, Role, StreamEvent, StreamResult, Usage,
 };
 
 const GITLAB_API_URL: &str = "https://gitlab.com/api/v4/ai/chat/completions";
 
-pub struct GitLabProtocol;
+pub struct GitLabCloseAiAdapter;
 
-impl Default for GitLabProtocol {
+impl Default for GitLabCloseAiAdapter {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl GitLabProtocol {
+impl GitLabCloseAiAdapter {
     pub fn new() -> Self {
         Self
     }
@@ -70,7 +70,7 @@ impl GitLabProtocol {
 }
 
 #[async_trait]
-impl ProtocolImpl for GitLabProtocol {
+impl ProviderAdapter for GitLabCloseAiAdapter {
     async fn chat(
         &self,
         client: &reqwest::Client,

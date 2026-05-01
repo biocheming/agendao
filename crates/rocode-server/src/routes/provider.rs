@@ -543,7 +543,7 @@ const CONNECT_PROTOCOL_OPTIONS: &[(&str, &str)] = &[
     ("openai", "OpenAI"),
     ("openrouter", "OpenRouter"),
     ("perplexity", "Perplexity"),
-    ("anthropic", "Ethnopic / Messages"),
+    ("anthropic", "Ethnopic"),
     ("google", "Google"),
     ("bedrock", "Bedrock"),
     ("vertex", "Vertex"),
@@ -578,6 +578,14 @@ fn npm_to_protocol(npm: &str) -> Option<&'static str> {
         "@ai-sdk/github-copilot" => Some("github-copilot"),
         "@ai-sdk/gitlab" => Some("gitlab"),
         _ => None,
+    }
+}
+
+fn provider_display_name(provider_id: &str, name: &str) -> String {
+    if provider_id.eq_ignore_ascii_case("anthropic") || name.eq_ignore_ascii_case("anthropic") {
+        "Ethnopic".to_string()
+    } else {
+        name.to_string()
     }
 }
 
@@ -732,10 +740,10 @@ fn build_model_variant_lookup(data: ModelsData) -> HashMap<String, HashMap<Strin
         .collect()
 }
 
-/// Detect whether a provider+model pair uses the ethnopic/messages protocol family.
+/// Detect whether a provider+model pair uses the Ethnopic-compatible protocol family.
 ///
 /// This is a **protocol compatibility check**, not a brand reference.  When users
-/// configure an Anthropic-compatible provider (directly or via Bedrock/Vertex),
+/// configure an Ethnopic-compatible provider (directly or via Bedrock/Vertex),
 /// the thinking variant surface is `["high", "max"]` rather than the OpenAI-style
 /// `["low", "medium", "high"]`.
 fn is_ethnopic_protocol_family(provider_id: &str) -> bool {
@@ -803,7 +811,7 @@ async fn list_providers(State(state): State<Arc<ServerState>>) -> Json<ProviderL
     for (provider_id, provider) in &models_data {
         provider_names
             .entry(provider_id.clone())
-            .or_insert_with(|| provider.name.clone());
+            .or_insert_with(|| provider_display_name(provider_id, &provider.name));
         for model in provider.models.values() {
             let variants = variants_for_model(&variant_lookup, provider_id, &model.id);
             upsert_catalog_model_info(
@@ -820,7 +828,13 @@ async fn list_providers(State(state): State<Arc<ServerState>>) -> Json<ProviderL
         for (provider_id, provider) in configured_providers {
             provider_names
                 .entry(provider_id.clone())
-                .or_insert_with(|| provider.name.clone().unwrap_or_else(|| provider_id.clone()));
+                .or_insert_with(|| {
+                    provider
+                        .name
+                        .as_deref()
+                        .map(|name| provider_display_name(provider_id, name))
+                        .unwrap_or_else(|| provider_display_name(provider_id, provider_id))
+                });
             if let Some(models) = &provider.models {
                 for (configured_model_id, configured) in models {
                     let model_id = configured
@@ -1113,7 +1127,7 @@ async fn known_provider_entries(state: &ServerState) -> Vec<KnownProviderEntry> 
                 connected: connected_ids.contains(&id),
                 model_count: info.models.len(),
                 env: info.env,
-                name: info.name,
+                name: provider_display_name(&id, &info.name),
                 id,
                 base_url,
                 protocol: npm.as_deref().and_then(npm_to_protocol).map(str::to_string),
@@ -1618,7 +1632,7 @@ mod tests {
                 None,
                 None,
             ),
-            provider("anthropic", "Anthropic", &["OPENROUTER_TOKEN"], None, None),
+            provider("anthropic", "Ethnopic", &["OPENROUTER_TOKEN"], None, None),
         ];
 
         let matches = resolve_known_provider_matches(&providers, "openrouter");

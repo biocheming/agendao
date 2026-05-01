@@ -6,21 +6,21 @@ use std::collections::VecDeque;
 
 use crate::runtime::runtime_pipeline_enabled;
 use crate::{
-    ChatRequest, ChatResponse, Choice, Content, ContentPart, Message, ProtocolImpl, ProviderConfig,
-    ProviderError, Role, StreamEvent, StreamResult, ToolUse, Usage,
+    ChatRequest, ChatResponse, Choice, Content, ContentPart, Message, ProviderAdapter,
+    ProviderConfig, ProviderError, Role, StreamEvent, StreamResult, ToolUse, Usage,
 };
 
 const VERTEX_API_BASE: &str = "https://aiplatform.googleapis.com/v1";
 
-pub struct VertexProtocol;
+pub struct VertexGeminiAdapter;
 
-impl Default for VertexProtocol {
+impl Default for VertexGeminiAdapter {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl VertexProtocol {
+impl VertexGeminiAdapter {
     pub fn new() -> Self {
         Self
     }
@@ -126,7 +126,7 @@ impl VertexProtocol {
 }
 
 #[async_trait]
-impl ProtocolImpl for VertexProtocol {
+impl ProviderAdapter for VertexGeminiAdapter {
     async fn chat(
         &self,
         client: &reqwest::Client,

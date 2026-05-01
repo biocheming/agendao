@@ -26,7 +26,6 @@ pub static BUNDLED_PROVIDERS: Lazy<HashMap<&'static str, &'static str>> = Lazy::
     let mut map = HashMap::new();
     map.insert("@ai-sdk/amazon-bedrock", "amazon-bedrock");
     map.insert("@ai-sdk/anthropic", "ethnopic");
-    map.insert("@ai-sdk/azure", "azure");
     map.insert("@ai-sdk/google", "google");
     map.insert("@ai-sdk/google-vertex", "google-vertex");
     map.insert("@ai-sdk/google-vertex/anthropic", "google-vertex-ethnopic");

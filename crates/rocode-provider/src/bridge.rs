@@ -3,12 +3,12 @@
 //! This module provides two categories of conversions:
 //!
 //! 1. **Streaming events**: `StreamingEvent` → `StreamEvent`
-//!    (used by both existing protocols and DriverBasedProtocol)
+//!    (used by both existing adapters and DriverBasedAdapter)
 //!
 //! 2. **Non-streaming responses**: `DriverResponse` → `ChatResponse`
-//!    (used by DriverBasedProtocol for simple providers)
+//!    (used by DriverBasedAdapter for simple providers)
 //!
-//! Additionally, [`DriverBasedProtocol`] implements `ProtocolImpl` by delegating
+//! Additionally, [`DriverBasedAdapter`] implements `ProviderAdapter` by delegating
 //! to a `ProviderDriver`, providing a zero-boilerplate path for adding new
 //! closeai-compatible or ethnopic-compatible providers.
 
@@ -17,7 +17,7 @@ use crate::driver::{
     DriverResponse, ProviderDriver, StreamingEvent,
 };
 use crate::message::{ChatResponse, Choice, Message, Usage};
-use crate::protocol::{ProtocolImpl, ProviderConfig};
+use crate::protocol::{ProviderAdapter, ProviderConfig};
 use crate::provider::ProviderError;
 use crate::stream::{StreamEvent, StreamResult, StreamUsage};
 use async_trait::async_trait;
@@ -228,14 +228,14 @@ pub fn driver_response_to_chat_response(resp: DriverResponse) -> ChatResponse {
     }
 }
 
-// ---- Phase 2: DriverBasedProtocol ----
+// ---- Phase 2: DriverBasedAdapter ----
 
-/// A generic `ProtocolImpl` backed by a `ProviderDriver`.
+/// A generic `ProviderAdapter` backed by a `ProviderDriver`.
 ///
 /// This provides a zero-boilerplate way to add new providers that follow
-/// standard OpenAI or Anthropic API formats. For providers with custom
+/// standard OpenAI or Ethnopic-compatible API formats. For providers with custom
 /// needs (thinking config, beta headers, Responses API, etc.), use a
-/// dedicated protocol implementation instead.
+/// dedicated provider adapter instead.
 ///
 /// # Usage
 ///
@@ -243,13 +243,13 @@ pub fn driver_response_to_chat_response(resp: DriverResponse) -> ChatResponse {
 /// use rocode_provider::driver::{ApiStyle, DriverMessage};
 ///
 /// // Implement ProviderDriver for your provider, then:
-/// let protocol = DriverBasedProtocol::new(driver);
+/// let adapter = DriverBasedAdapter::new(driver);
 /// ```
-pub struct DriverBasedProtocol {
+pub struct DriverBasedAdapter {
     driver: std::sync::Arc<dyn ProviderDriver>,
 }
 
-impl DriverBasedProtocol {
+impl DriverBasedAdapter {
     pub fn new(driver: Box<dyn ProviderDriver>) -> Self {
         Self {
             driver: std::sync::Arc::from(driver),
@@ -258,7 +258,7 @@ impl DriverBasedProtocol {
 }
 
 #[async_trait]
-impl ProtocolImpl for DriverBasedProtocol {
+impl ProviderAdapter for DriverBasedAdapter {
     async fn chat(
         &self,
         client: &reqwest::Client,
@@ -268,7 +268,7 @@ impl ProtocolImpl for DriverBasedProtocol {
         // Build the URL from config
         let url = if config.base_url.trim().is_empty() {
             return Err(ProviderError::ConfigError(
-                "base_url is required for driver-based protocol".to_string(),
+                "base_url is required for driver-based adapter".to_string(),
             ));
         } else {
             config.base_url.trim_end_matches('/').to_string()
@@ -295,8 +295,8 @@ impl ProtocolImpl for DriverBasedProtocol {
         let mut req_builder = client.post(&url).header("Content-Type", "application/json");
 
         if !config.api_key.is_empty() {
-            // Use x-api-key for ethnopic-compatible/messages-style APIs,
-            // Bearer auth for the other families.
+            // Use x-api-key for Ethnopic-compatible APIs, Bearer auth for the
+            // other families.
             if uses_x_api_key_auth(self.driver.api_style()) {
                 req_builder = req_builder.header("x-api-key", &config.api_key);
             } else {
@@ -348,7 +348,7 @@ impl ProtocolImpl for DriverBasedProtocol {
     ) -> Result<StreamResult, ProviderError> {
         let url = if config.base_url.trim().is_empty() {
             return Err(ProviderError::ConfigError(
-                "base_url is required for driver-based protocol".to_string(),
+                "base_url is required for driver-based adapter".to_string(),
             ));
         } else {
             config.base_url.trim_end_matches('/').to_string()

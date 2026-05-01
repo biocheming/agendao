@@ -4,24 +4,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::runtime::runtime_pipeline_enabled;
 use crate::{
-    ChatRequest, ChatResponse, Choice, Message, ProtocolImpl, ProviderConfig, ProviderError,
+    ChatRequest, ChatResponse, Choice, Message, ProviderAdapter, ProviderConfig, ProviderError,
     StreamResult, Usage,
 };
 
-// Protocol-level default URL for the Messages API.
-// This is the technical endpoint for the messages protocol (analogous to
-// OPENAI_API_URL for the OpenAI chat-completions protocol).  Users override
+// Default URL for the Ethnopic-compatible messages wire shape. Users override
 // this via `base_url` in their provider configuration.
-const MESSAGES_DEFAULT_URL: &str = "https://api.anthropic.com/v1/messages";
+const ETHNOPIC_DEFAULT_URL: &str = "https://api.anthropic.com/v1/messages";
 
-/// Build the messages endpoint URL from a user-supplied base URL.
-/// The generic messages-family transport appends `/messages` when the base URL
+/// Build the Ethnopic-compatible endpoint URL from a user-supplied base URL.
+/// The generic ethnopic-family transport appends `/messages` when the base URL
 /// points at the provider root. The built-in default still targets the
 /// public `/v1/messages` endpoint.
-fn messages_url(base_url: &str) -> String {
+fn ethnopic_url(base_url: &str) -> String {
     let base = base_url.trim();
     if base.is_empty() {
-        return MESSAGES_DEFAULT_URL.to_string();
+        return ETHNOPIC_DEFAULT_URL.to_string();
     }
     if base.ends_with("/messages") {
         return base.to_string();
@@ -30,15 +28,15 @@ fn messages_url(base_url: &str) -> String {
     format!("{base}/messages")
 }
 
-pub struct MessagesProtocol;
+pub struct EthnopicAdapter;
 
-impl Default for MessagesProtocol {
+impl Default for EthnopicAdapter {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl MessagesProtocol {
+impl EthnopicAdapter {
     pub fn new() -> Self {
         Self
     }
@@ -142,15 +140,15 @@ impl MessagesProtocol {
 }
 
 #[async_trait]
-impl ProtocolImpl for MessagesProtocol {
+impl ProviderAdapter for EthnopicAdapter {
     async fn chat(
         &self,
         client: &reqwest::Client,
         config: &ProviderConfig,
         request: ChatRequest,
     ) -> Result<ChatResponse, ProviderError> {
-        let url = messages_url(&config.base_url);
-        tracing::debug!(url = %url, model = %request.model, "messages protocol chat request");
+        let url = ethnopic_url(&config.base_url);
+        tracing::debug!(url = %url, model = %request.model, "ethnopic adapter chat request");
 
         let messages_request = Self::convert_request(request);
 
@@ -173,7 +171,7 @@ impl ProtocolImpl for MessagesProtocol {
                 .text()
                 .await
                 .unwrap_or_else(|error| format!("<body read failed: {}>", error));
-            tracing::error!(url = %url, status = %status, "messages protocol chat error");
+            tracing::error!(url = %url, status = %status, "ethnopic adapter chat error");
             return Err(ProviderError::ApiError(format!("{}: {}", status, body)));
         }
 
@@ -192,11 +190,11 @@ impl ProtocolImpl for MessagesProtocol {
         request: ChatRequest,
     ) -> Result<StreamResult, ProviderError> {
         let use_pipeline = runtime_pipeline_enabled(config);
-        let url = messages_url(&config.base_url);
+        let url = ethnopic_url(&config.base_url);
         tracing::debug!(
             url = %url,
             model = %request.model,
-            "messages protocol chat_stream request"
+            "ethnopic adapter chat_stream request"
         );
 
         let mut messages_request = Self::convert_request(request);
@@ -205,7 +203,7 @@ impl ProtocolImpl for MessagesProtocol {
         tracing::debug!(
             model = %messages_request.model,
             thinking_enabled = ?messages_request.thinking,
-            "messages protocol chat_stream request"
+            "ethnopic adapter chat_stream request"
         );
 
         let req_builder = crate::transport::apply_config_headers(
@@ -230,7 +228,7 @@ impl ProtocolImpl for MessagesProtocol {
             tracing::error!(
                 url = %url,
                 status = %status,
-                "messages protocol chat_stream error"
+                "ethnopic adapter chat_stream error"
             );
             return Err(ProviderError::ApiError(format!("{}: {}", status, body)));
         }
@@ -251,7 +249,7 @@ impl ProtocolImpl for MessagesProtocol {
                         let event =
                             crate::stream::parse_ethnopic_value_stateful(value, &mut block_types);
                         if let Some(ref e) = event {
-                            tracing::trace!(event = ?e, "messages protocol sse event");
+                            tracing::trace!(event = ?e, "ethnopic adapter sse event");
                         }
                         Some((event.map(Ok), (json_stream, block_types)))
                     }
@@ -407,31 +405,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn messages_url_empty_falls_back_to_default() {
-        assert_eq!(messages_url(""), MESSAGES_DEFAULT_URL);
-        assert_eq!(messages_url("  "), MESSAGES_DEFAULT_URL);
+    fn ethnopic_url_empty_falls_back_to_default() {
+        assert_eq!(ethnopic_url(""), ETHNOPIC_DEFAULT_URL);
+        assert_eq!(ethnopic_url("  "), ETHNOPIC_DEFAULT_URL);
     }
 
     #[test]
-    fn messages_url_appends_messages_path() {
+    fn ethnopic_url_appends_messages_path() {
         assert_eq!(
-            messages_url("https://coding.dashscope.aliyuncs.com/apps/anthropic/v1"),
+            ethnopic_url("https://coding.dashscope.aliyuncs.com/apps/anthropic/v1"),
             "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1/messages"
         );
     }
 
     #[test]
-    fn messages_url_no_double_append() {
+    fn ethnopic_url_no_double_append() {
         assert_eq!(
-            messages_url("https://example.com/v1/messages"),
+            ethnopic_url("https://example.com/v1/messages"),
             "https://example.com/v1/messages"
         );
     }
 
     #[test]
-    fn messages_url_strips_trailing_slash() {
+    fn ethnopic_url_strips_trailing_slash() {
         assert_eq!(
-            messages_url("https://example.com/v1/"),
+            ethnopic_url("https://example.com/v1/"),
             "https://example.com/v1/messages"
         );
     }

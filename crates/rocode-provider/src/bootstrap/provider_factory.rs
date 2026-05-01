@@ -1,14 +1,13 @@
-use crate::azure::AzureProvider;
 use crate::catalog::load_default_catalog_data_sync;
 use crate::instance::ProviderInstance;
 use crate::models::ModelsData;
 use crate::profile::{
     resolve_npm_for_provider, ProviderApiShape, ProviderProfile, ProviderProfileResolver,
 };
-use crate::protocol::{Protocol, ProviderConfig};
+use crate::protocol::{ProviderConfig, ProviderRuntimeAdapter};
 use crate::protocol_loader::{ProtocolLoader, ProtocolManifest};
 use crate::protocol_validator::ProtocolValidator;
-use crate::protocols::create_protocol_impl_for_profile;
+use crate::protocols::create_provider_adapter_for_profile;
 use crate::provider::{
     ModelInfo as RuntimeModelInfo, Provider as RuntimeProvider, ProviderRegistry,
 };
@@ -89,20 +88,23 @@ fn provider_base_url(provider: &ProviderState) -> Option<String> {
         })
 }
 
-fn default_secret_env_for_provider(provider_id: &str, protocol: Protocol) -> Vec<&'static str> {
-    match protocol {
-        Protocol::Messages => vec!["ANTHROPIC_API_KEY"],
-        Protocol::Google => vec!["GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"],
-        Protocol::Bedrock => vec!["AWS_ACCESS_KEY_ID"],
-        Protocol::Vertex => vec![
+fn default_secret_env_for_provider(
+    provider_id: &str,
+    adapter: ProviderRuntimeAdapter,
+) -> Vec<&'static str> {
+    match adapter {
+        ProviderRuntimeAdapter::Ethnopic => vec!["ANTHROPIC_API_KEY"],
+        ProviderRuntimeAdapter::Gemini => vec!["GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"],
+        ProviderRuntimeAdapter::BedrockConverse => vec!["AWS_ACCESS_KEY_ID"],
+        ProviderRuntimeAdapter::VertexGemini => vec![
             "GOOGLE_VERTEX_ACCESS_TOKEN",
             "GOOGLE_CLOUD_ACCESS_TOKEN",
             "GOOGLE_OAUTH_ACCESS_TOKEN",
             "GCP_ACCESS_TOKEN",
         ],
-        Protocol::GitHubCopilot => vec!["GITHUB_COPILOT_TOKEN"],
-        Protocol::GitLab => vec!["GITLAB_TOKEN"],
-        Protocol::OpenAI => match provider_id {
+        ProviderRuntimeAdapter::GitHubCopilotCloseAi => vec!["GITHUB_COPILOT_TOKEN"],
+        ProviderRuntimeAdapter::GitLabCloseAi => vec!["GITLAB_TOKEN"],
+        ProviderRuntimeAdapter::CloseAiCompatible => match provider_id {
             "openai" => vec!["OPENAI_API_KEY"],
             "opencode" => vec!["ROCODE_API_KEY", "OPENCODE_API_KEY"],
             "openrouter" => vec!["OPENROUTER_API_KEY"],
@@ -357,13 +359,13 @@ fn build_runtime_config(options: &HashMap<String, serde_json::Value>) -> Runtime
     }
 }
 
-fn provider_config_for_protocol(
+fn provider_config_for_adapter(
     provider_id: &str,
     provider: &ProviderState,
     profile: &ProviderProfile,
-    protocol: Protocol,
+    adapter: ProviderRuntimeAdapter,
 ) -> Option<ProviderConfig> {
-    let fallback_env = default_secret_env_for_provider(provider_id, protocol);
+    let fallback_env = default_secret_env_for_provider(provider_id, adapter);
     let headers = collect_provider_headers(provider);
     let mut options = provider.options.clone();
     options.insert(
@@ -371,11 +373,11 @@ fn provider_config_for_protocol(
         serde_json::Value::String(profile.npm.clone()),
     );
     options.insert(
-        "legacy_protocol_selector".to_string(),
-        serde_json::Value::String(protocol.to_string()),
+        "runtime_adapter".to_string(),
+        serde_json::Value::String(adapter.to_string()),
     );
 
-    if matches!(protocol, Protocol::OpenAI)
+    if matches!(adapter, ProviderRuntimeAdapter::CloseAiCompatible)
         && provider_id != "openai"
         && profile.api_shape != ProviderApiShape::Responses
     {
@@ -384,8 +386,8 @@ fn provider_config_for_protocol(
 
     let base_url = provider_base_url(provider).unwrap_or_default();
 
-    let api_key = match protocol {
-        Protocol::Bedrock => {
+    let api_key = match adapter {
+        ProviderRuntimeAdapter::BedrockConverse => {
             let access_key_id = provider_option_string(provider, &["accessKeyId", "access_key_id"])
                 .or_else(|| env_any(&["AWS_ACCESS_KEY_ID"]))
                 .or_else(|| provider_secret(provider, &fallback_env))?;
@@ -415,7 +417,7 @@ fn provider_config_for_protocol(
             }
             access_key_id
         }
-        Protocol::Vertex => {
+        ProviderRuntimeAdapter::VertexGemini => {
             let token = provider_option_string(provider, &["accessToken", "access_token", "token"])
                 .or_else(|| provider_secret(provider, &fallback_env))?;
             let project = provider_option_string(provider, &["project", "projectId", "project_id"])
@@ -443,10 +445,6 @@ fn create_protocol_provider(
     provider_id: &str,
     provider: &ProviderState,
 ) -> Option<Arc<dyn RuntimeProvider>> {
-    if provider_id == "azure" {
-        return None;
-    }
-
     let npm = resolve_npm_for_provider(provider_id, provider);
     let provider_profile =
         match ProviderProfileResolver::try_resolve_with_npm(provider_id, &npm, &provider.options) {
@@ -460,9 +458,9 @@ fn create_protocol_provider(
                 return None;
             }
         };
-    let protocol = Protocol::from_profile(&provider_profile);
+    let adapter = ProviderRuntimeAdapter::from_profile(&provider_profile);
     let mut config =
-        provider_config_for_protocol(provider_id, provider, &provider_profile, protocol)?;
+        provider_config_for_adapter(provider_id, provider, &provider_profile, adapter)?;
 
     let manifest: Option<ProtocolManifest> = ProtocolLoader::new()
         .try_load_provider(provider_id, &config.options)
@@ -511,7 +509,7 @@ fn create_protocol_provider(
         serde_json::Value::Bool(runtime_config.pipeline_enabled),
     );
 
-    let protocol_impl = create_protocol_impl_for_profile(&provider_profile);
+    let provider_adapter = create_provider_adapter_for_profile(&provider_profile);
     let mut models: HashMap<String, RuntimeModelInfo> = provider
         .models
         .values()
@@ -532,7 +530,7 @@ fn create_protocol_provider(
         provider_id.to_string(),
         provider.name.clone(),
         config,
-        protocol_impl,
+        provider_adapter,
         models,
     )
     .with_provider_profile_fingerprint(crate::cache::ProviderProfileFingerprint::from_profile(
@@ -599,13 +597,6 @@ fn create_legacy_provider(
     provider: &ProviderState,
 ) -> Option<Arc<dyn RuntimeProvider>> {
     match provider_id {
-        "azure" => {
-            let api_key = provider_secret(provider, &["AZURE_API_KEY", "AZURE_OPENAI_API_KEY"])?;
-            let endpoint =
-                provider_option_string(provider, &["endpoint", "baseURL", "baseUrl", "url"])
-                    .or_else(|| env_any(&["AZURE_ENDPOINT", "AZURE_OPENAI_ENDPOINT"]))?;
-            Some(Arc::new(AzureProvider::new(api_key, endpoint)))
-        }
         _ => {
             let is_openai_compatible = provider.models.values().any(|model| {
                 model
@@ -630,7 +621,9 @@ fn create_legacy_provider(
                 provider_id.to_string(),
                 provider_id.to_string(),
                 config,
-                crate::protocols::create_protocol_impl(Protocol::OpenAI),
+                crate::protocols::create_provider_adapter(
+                    ProviderRuntimeAdapter::CloseAiCompatible,
+                ),
                 models,
             )))
         }
@@ -765,7 +758,6 @@ pub(super) fn register_fallback_env_providers(registry: &mut ProviderRegistry) {
             "google",
             vec!["GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"],
         ),
-        ("azure", vec!["AZURE_API_KEY", "AZURE_OPENAI_API_KEY"]),
         (
             "amazon-bedrock",
             vec!["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
@@ -842,13 +834,13 @@ mod tests {
         let provider = provider_state_with_profile("responses");
         let profile = ProviderProfileResolver::try_resolve("my-custom", &provider)
             .expect("profile should resolve");
-        let protocol = Protocol::from_profile(&profile);
+        let adapter = ProviderRuntimeAdapter::from_profile(&profile);
 
-        let config = provider_config_for_protocol("my-custom", &provider, &profile, protocol)
+        let config = provider_config_for_adapter("my-custom", &provider, &profile, adapter)
             .expect("config should resolve");
 
         assert_eq!(profile.api_shape, ProviderApiShape::Responses);
-        assert_eq!(protocol, Protocol::OpenAI);
+        assert_eq!(adapter, ProviderRuntimeAdapter::CloseAiCompatible);
         assert_ne!(
             config
                 .options
@@ -863,9 +855,9 @@ mod tests {
         let provider = provider_state_with_profile("chat-completions");
         let profile = ProviderProfileResolver::try_resolve("my-custom", &provider)
             .expect("profile should resolve");
-        let protocol = Protocol::from_profile(&profile);
+        let adapter = ProviderRuntimeAdapter::from_profile(&profile);
 
-        let config = provider_config_for_protocol("my-custom", &provider, &profile, protocol)
+        let config = provider_config_for_adapter("my-custom", &provider, &profile, adapter)
             .expect("config should resolve");
 
         assert_eq!(profile.api_shape, ProviderApiShape::ChatCompletions);
