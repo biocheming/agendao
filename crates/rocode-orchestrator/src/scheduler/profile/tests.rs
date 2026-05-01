@@ -9,11 +9,12 @@ use crate::runtime::events::FinishReason;
 use crate::traits::{AgentResolver, ModelResolver, NoopLifecycleHook, ToolExecutor};
 use crate::workflow_mode::{mode_artifacts_from_metadata, WORKFLOW_MODE_ARTIFACTS_METADATA_KEY};
 use crate::{
-    AgentDescriptor, DirectKind, ExecutionContext, ModelRef, Orchestrator, OrchestratorContext,
-    ReviewMode, SchedulerEffectKind, SchedulerEffectMoment, SchedulerEffectSpec,
-    SchedulerExecutionChildMode, SchedulerExecutionVerificationMode, SchedulerSessionProjection,
-    SchedulerTransitionSpec, SchedulerTransitionTarget, SchedulerTransitionTrigger, ToolExecError,
-    ToolOutput,
+    scheduler_auto_profile_config, scheduler_plan_from_profile, AgentDescriptor, DirectKind,
+    ExecutionContext, ModelRef, Orchestrator, OrchestratorContext, ReviewMode, SchedulerEffectKind,
+    SchedulerEffectMoment, SchedulerEffectSpec, SchedulerExecutionChildMode,
+    SchedulerExecutionVerificationMode, SchedulerSessionProjection, SchedulerTransitionSpec,
+    SchedulerTransitionTarget, SchedulerTransitionTrigger, ToolExecError, ToolOutput,
+    AUTO_SCHEDULER_PROFILE_NAME,
 };
 use async_trait::async_trait;
 use futures::stream;
@@ -2027,6 +2028,14 @@ fn stream_from_text(text: &str) -> rocode_provider::StreamResult {
     ]))
 }
 
+fn stream_from_events(events: Vec<rocode_provider::StreamEvent>) -> rocode_provider::StreamResult {
+    Box::pin(stream::iter(
+        events
+            .into_iter()
+            .map(Ok::<_, rocode_provider::ProviderError>),
+    ))
+}
+
 fn new_temp_workdir() -> PathBuf {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2238,6 +2247,143 @@ impl ToolExecutor for RecordingToolExecutor {
     ) -> Vec<rocode_provider::ToolDefinition> {
         Vec::new()
     }
+}
+
+#[derive(Default)]
+struct ReadOnlyRouteToolExecutor {
+    calls: Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl ToolExecutor for ReadOnlyRouteToolExecutor {
+    async fn execute(
+        &self,
+        tool_name: &str,
+        _arguments: serde_json::Value,
+        _exec_ctx: &crate::ExecutionContext,
+    ) -> Result<ToolOutput, ToolExecError> {
+        self.calls.lock().await.push(tool_name.to_string());
+        match tool_name {
+            "read" => Ok(ToolOutput {
+                output: "session metrics placeholder".to_string(),
+                is_error: false,
+                title: None,
+                metadata: None,
+            }),
+            other => Err(ToolExecError::ExecutionError(format!(
+                "unexpected tool call: {other}"
+            ))),
+        }
+    }
+
+    async fn list_ids(&self) -> Vec<String> {
+        vec!["read".to_string()]
+    }
+
+    async fn list_definitions(
+        &self,
+        _exec_ctx: &crate::ExecutionContext,
+    ) -> Vec<rocode_provider::ToolDefinition> {
+        Vec::new()
+    }
+}
+
+#[tokio::test]
+async fn auto_route_failure_fails_closed_before_execution_begins() {
+    let workdir = new_temp_workdir();
+    let tool_executor = Arc::new(ReadOnlyRouteToolExecutor::default());
+    let context = test_context_with_executor(
+        &workdir,
+        "auto-route-failure-session",
+        vec![
+            stream_from_text("execution stream should never run"),
+            stream_from_events(vec![
+                rocode_provider::StreamEvent::TextDelta("Let me inspect first.".to_string()),
+                rocode_provider::StreamEvent::ToolCallEnd {
+                    id: "tc-route-1".to_string(),
+                    name: "read".to_string(),
+                    input: serde_json::json!({ "file_path": "README.md" }),
+                },
+                rocode_provider::StreamEvent::Done,
+            ]),
+        ],
+        tool_executor.clone(),
+    );
+    let runner = ToolRunner::new(tool_executor.clone());
+    let auto_profile = scheduler_auto_profile_config();
+    let auto_plan =
+        scheduler_plan_from_profile(Some(AUTO_SCHEDULER_PROFILE_NAME.to_string()), &auto_profile)
+            .expect("auto profile should resolve");
+    let mut orchestrator = SchedulerProfileOrchestrator::new(auto_plan, runner);
+
+    let output = orchestrator
+        .execute("分析一下，我前面问你的两个问题，token的消耗", &context)
+        .await
+        .expect("auto route failure should return a fail-closed output");
+
+    assert!(
+        output
+            .content
+            .contains("Automatic workflow routing failed before preset selection."),
+        "{}",
+        output.content
+    );
+    assert!(
+        output
+            .content
+            .contains("No execution workflow was started."),
+        "{}",
+        output.content
+    );
+    assert!(
+        output.content.contains(
+            "route contract violation: route stage attempted tool `read` under disable-all policy"
+        ),
+        "{}",
+        output.content
+    );
+    assert!(output.content.contains("prometheus"), "{}", output.content);
+    assert!(!output.content.contains("execution stream should never run"));
+    assert_eq!(
+        output
+            .metadata
+            .get("scheduler_route_failure_policy")
+            .and_then(|value| value.as_str()),
+        Some("fail-closed")
+    );
+    assert_eq!(
+        output
+            .metadata
+            .get("scheduler_route_execution_started")
+            .and_then(|value| value.as_bool()),
+        Some(false)
+    );
+    assert_eq!(
+        output
+            .metadata
+            .get("scheduler_route_failure_class")
+            .and_then(|value| value.as_str()),
+        Some("route-contract-violation")
+    );
+    assert_eq!(
+        output
+            .metadata
+            .get("scheduler_route_failure_tool")
+            .and_then(|value| value.as_str()),
+        Some("read")
+    );
+    assert!(
+        output
+            .metadata
+            .get("scheduler_route_failure_raw")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| value.contains("tool execution failed: read")),
+        "{:?}",
+        output.metadata
+    );
+    assert!(tool_executor.calls.lock().await.is_empty());
+
+    std::fs::remove_dir_all(&workdir).expect("temp workdir should clean up");
 }
 
 #[tokio::test]
@@ -2621,6 +2767,28 @@ fn stage_policy_without_overrides_uses_preset_defaults() {
     let exec_policy = plan.stage_policy(SchedulerStageKind::ExecutionOrchestration);
     assert_eq!(exec_policy.tool_policy, StageToolPolicy::AllowAll);
     assert!(exec_policy.child_session);
+}
+
+#[test]
+fn auto_profile_overrides_route_stage_to_disable_all_tools() {
+    let auto_profile = scheduler_auto_profile_config();
+    let auto_plan =
+        scheduler_plan_from_profile(Some(AUTO_SCHEDULER_PROFILE_NAME.to_string()), &auto_profile)
+            .expect("auto profile should resolve");
+
+    let auto_route_policy = auto_plan.stage_policy(SchedulerStageKind::Route);
+    assert_eq!(auto_route_policy.tool_policy, StageToolPolicy::DisableAll);
+    assert_eq!(
+        auto_route_policy.loop_budget,
+        SchedulerLoopBudget::StepLimit(1)
+    );
+
+    let generic_route_plan = SchedulerProfilePlan::new(vec![SchedulerStageKind::Route]);
+    let generic_route_policy = generic_route_plan.stage_policy(SchedulerStageKind::Route);
+    assert_eq!(
+        generic_route_policy.tool_policy,
+        StageToolPolicy::AllowReadOnly
+    );
 }
 
 #[test]

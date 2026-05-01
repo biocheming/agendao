@@ -4,7 +4,7 @@ use std::str::FromStr;
 use super::{
     scheduler_preset_definition, SchedulerConfig, SchedulerConfigError, SchedulerPresetDefinition,
     SchedulerProfileConfig, SchedulerProfileOrchestrator, SchedulerProfilePlan, SchedulerStageKind,
-    SchedulerStageObservability, StageEntry,
+    SchedulerStageObservability, SchedulerStageOverride, StageEntry, StageToolPolicyOverride,
 };
 use crate::iterative_workflow::{IterativeWorkflowMode, WorkflowBasePreset};
 use crate::skill_tree::SkillTreeRequestPlan;
@@ -162,12 +162,20 @@ pub fn scheduler_stage_observability(
     scheduler_profile: &str,
     stage_name: &str,
 ) -> Option<SchedulerStageObservability> {
-    let preset = if scheduler_profile == AUTO_SCHEDULER_PROFILE_NAME {
-        SchedulerPresetKind::Sisyphus
-    } else {
-        scheduler_profile.parse::<SchedulerPresetKind>().ok()?
-    };
     let stage = SchedulerStageKind::from_event_name(stage_name)?;
+    if scheduler_profile == AUTO_SCHEDULER_PROFILE_NAME {
+        let profile = scheduler_auto_profile_config();
+        let plan =
+            scheduler_plan_from_profile(Some(scheduler_profile.to_string()), &profile).ok()?;
+        let policy = plan.stage_policy(stage);
+        return Some(SchedulerStageObservability {
+            projection: policy.session_projection.label().to_string(),
+            tool_policy: policy.tool_policy.label(),
+            loop_budget: policy.loop_budget.label(),
+        });
+    }
+
+    let preset = scheduler_profile.parse::<SchedulerPresetKind>().ok()?;
     Some(preset.stage_observability(stage))
 }
 
@@ -179,7 +187,15 @@ pub fn scheduler_auto_profile_config() -> SchedulerProfileConfig {
         ),
         stages: vec![
             StageEntry::Plain(SchedulerStageKind::RequestAnalysis),
-            StageEntry::Plain(SchedulerStageKind::Route),
+            StageEntry::Override(Box::new(SchedulerStageOverride {
+                kind: SchedulerStageKind::Route,
+                tool_policy: Some(StageToolPolicyOverride::DisableAll),
+                loop_budget: None,
+                session_projection: None,
+                agent_tree: None,
+                agents: Vec::new(),
+                skill_list: Vec::new(),
+            })),
             StageEntry::Plain(SchedulerStageKind::ExecutionOrchestration),
         ],
         ..Default::default()
@@ -375,12 +391,20 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_auto_profile_reuses_sisyphus_stage_observability() {
+    fn scheduler_auto_profile_uses_disable_all_route_observability() {
         let route = scheduler_stage_observability(AUTO_SCHEDULER_PROFILE_NAME, "route")
             .expect("auto route stage should expose observability");
-        let sisyphus = SchedulerPresetKind::Sisyphus.stage_observability(SchedulerStageKind::Route);
+        let sisyphus_route =
+            SchedulerPresetKind::Sisyphus.stage_observability(SchedulerStageKind::Route);
+        let sisyphus_execution = SchedulerPresetKind::Sisyphus
+            .stage_observability(SchedulerStageKind::ExecutionOrchestration);
+        let auto_execution =
+            scheduler_stage_observability(AUTO_SCHEDULER_PROFILE_NAME, "execution-orchestration")
+                .expect("auto execution stage should expose observability");
 
-        assert_eq!(route, sisyphus);
+        assert_eq!(route.tool_policy, "disable-all");
+        assert_ne!(route, sisyphus_route);
+        assert_eq!(auto_execution, sisyphus_execution);
     }
 
     #[test]
