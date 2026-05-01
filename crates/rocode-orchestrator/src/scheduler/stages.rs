@@ -1,4 +1,4 @@
-use crate::runtime::policy::{LoopPolicy, ToolDedupScope};
+use crate::runtime::policy::{LoopPolicy, ToolDedupScope, ToolErrorStrategy};
 use crate::skill_list::SkillListOrchestrator;
 use crate::traits::{Orchestrator, ToolExecutor};
 use crate::workflow_mode::attach_mode_artifacts_metadata;
@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use super::presets::prometheus_planning_stage_tool_policy;
+use super::{presets::prometheus_planning_stage_tool_policy, profile::SchedulerStageKind};
 
 pub const READ_ONLY_STAGE_TOOLS: &[&str] = &[
     "read",
@@ -167,11 +167,7 @@ pub async fn execute_stage_agent_with_exec_ctx(
         );
     }
 
-    let loop_policy = LoopPolicy {
-        max_steps: agent.max_steps,
-        tool_dedup: ToolDedupScope::PerStep,
-        ..Default::default()
-    };
+    let loop_policy = stage_loop_policy(agent.max_steps, policy, stage_context.as_ref());
     let (stage_ctx, runner) = filtered_stage_context(ctx, policy, Some(effective_exec_ctx));
     let mut orchestrator = SkillListOrchestrator::new(agent, runner).with_loop_policy(loop_policy);
     if let Some((stage_name, stage_index)) = stage_context {
@@ -180,6 +176,28 @@ pub async fn execute_stage_agent_with_exec_ctx(
     let mut output = orchestrator.execute(input, &stage_ctx).await?;
     attach_mode_artifacts_metadata(&mut output, &stage_ctx.exec_ctx);
     Ok(output)
+}
+
+fn stage_loop_policy(
+    max_steps: Option<u32>,
+    policy: StageToolPolicy,
+    stage_context: Option<&(String, u32)>,
+) -> LoopPolicy {
+    let on_tool_error = if matches!(policy, StageToolPolicy::DisableAll)
+        && matches!(
+            stage_context,
+            Some((stage_name, _)) if stage_name == SchedulerStageKind::Route.event_name()
+        ) {
+        ToolErrorStrategy::Fail
+    } else {
+        ToolErrorStrategy::ReportAndContinue
+    };
+
+    LoopPolicy {
+        max_steps,
+        tool_dedup: ToolDedupScope::PerStep,
+        on_tool_error,
+    }
 }
 
 pub(crate) fn clone_context_with_exec_ctx(

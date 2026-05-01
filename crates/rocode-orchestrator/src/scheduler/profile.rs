@@ -1372,6 +1372,71 @@ impl SchedulerProfileOrchestrator {
         }
     }
 
+    fn auto_route_failure_output(
+        state: &SchedulerProfileState,
+        error: &OrchestratorError,
+    ) -> OrchestratorOutput {
+        let raw_error_text = error.to_string();
+        let (error_text, failure_class, blocked_tool) = match error {
+            OrchestratorError::ToolError { tool, error }
+                if error.contains("not available in this scheduler stage") =>
+            {
+                (
+                    format!(
+                        "route contract violation: route stage attempted tool `{tool}` under disable-all policy"
+                    ),
+                    "route-contract-violation",
+                    Some(tool.as_str()),
+                )
+            }
+            _ => (raw_error_text.clone(), "stage-error", None),
+        };
+        let mut metadata = HashMap::new();
+        if !state.metrics.usage.is_zero() {
+            append_output_usage(&mut metadata, &state.metrics.usage);
+        }
+        metadata.insert(
+            "scheduler_route_failure_policy".to_string(),
+            serde_json::json!("fail-closed"),
+        );
+        metadata.insert(
+            "scheduler_route_failure_kind".to_string(),
+            serde_json::json!("auto-route"),
+        );
+        metadata.insert(
+            "scheduler_route_failure_class".to_string(),
+            serde_json::json!(failure_class),
+        );
+        metadata.insert(
+            "scheduler_route_failure".to_string(),
+            serde_json::json!(&error_text),
+        );
+        metadata.insert(
+            "scheduler_route_failure_raw".to_string(),
+            serde_json::json!(&raw_error_text),
+        );
+        if let Some(tool_name) = blocked_tool {
+            metadata.insert(
+                "scheduler_route_failure_tool".to_string(),
+                serde_json::json!(tool_name),
+            );
+        }
+        metadata.insert(
+            "scheduler_route_execution_started".to_string(),
+            serde_json::json!(false),
+        );
+
+        OrchestratorOutput {
+            content: format!(
+                "## Delivery Summary\n\n**Completion Status**\n- Automatic workflow routing failed before preset selection.\n\n**What Happened**\n- Route stage error: {error_text}\n- No execution workflow was started.\n\n**Next Step**\n- Retry the request, or choose an explicit scheduler preset (`sisyphus`, `prometheus`, `atlas`, or `hephaestus`)."
+            ),
+            steps: state.metrics.total_steps,
+            tool_calls_count: state.metrics.total_tool_calls,
+            metadata,
+            finish_reason: crate::runtime::events::FinishReason::EndTurn,
+        }
+    }
+
     async fn execute_interview_stage(
         &self,
         original_input: &str,
@@ -1636,7 +1701,13 @@ impl Orchestrator for SchedulerProfileOrchestrator {
                             }
                         }
                         Err(err) => {
-                            tracing::warn!(error = %err, "route stage failed; keeping original plan");
+                            let fail_closed = resolved_plan.profile_name.as_deref()
+                                == Some(super::AUTO_SCHEDULER_PROFILE_NAME);
+                            tracing::warn!(
+                                error = %err,
+                                fail_closed,
+                                "route stage failed"
+                            );
                             Self::emit_stage_end(
                                 &resolved_plan,
                                 stage,
@@ -1645,6 +1716,9 @@ impl Orchestrator for SchedulerProfileOrchestrator {
                                 ctx,
                             )
                             .await;
+                            if fail_closed {
+                                return Ok(Self::auto_route_failure_output(&state, &err));
+                            }
                         }
                     }
                 }
