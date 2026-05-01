@@ -47,6 +47,22 @@ struct LegacyToolStateInput<'a> {
 }
 
 impl SessionPrompt {
+    fn model_hidden_runtime_hint(message: &SessionMessage) -> Option<&str> {
+        match message
+            .metadata
+            .get("runtime_hint")
+            .and_then(|value| value.as_str())
+        {
+            Some("proposal_notice") => Some("proposal_notice"),
+            Some("skill_save_suggestion") => Some("skill_save_suggestion"),
+            _ => None,
+        }
+    }
+
+    fn is_model_visible_message(message: &SessionMessage) -> bool {
+        Self::model_hidden_runtime_hint(message).is_none()
+    }
+
     pub(super) fn runtime_compaction_config(
         config_store: Option<&rocode_config::ConfigStore>,
     ) -> CompactionConfig {
@@ -81,6 +97,10 @@ impl SessionPrompt {
         }
 
         for msg in session_messages {
+            if !Self::is_model_visible_message(msg) {
+                continue;
+            }
+
             // Skip messages with no parts — empty Tool/Assistant messages
             // confuse providers, especially the Ethnopic-compatible family
             // which rejects empty content.
@@ -174,7 +194,11 @@ impl SessionPrompt {
         })
     }
 
-    fn model_context_char_len(message: &SessionMessage) -> usize {
+    pub(super) fn model_context_char_len(message: &SessionMessage) -> usize {
+        if !Self::is_model_visible_message(message) {
+            return 0;
+        }
+
         if let Some(summary) = Self::projected_model_context_summary(message) {
             return summary.len();
         }
@@ -570,6 +594,10 @@ impl SessionPrompt {
         let mut last_user_id = String::new();
 
         for msg in messages {
+            if !Self::is_model_visible_message(msg) {
+                continue;
+            }
+
             let created = msg.created_at.timestamp_millis();
             let mut parts: Vec<V2Part> = msg
                 .parts

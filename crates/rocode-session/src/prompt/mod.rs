@@ -247,7 +247,7 @@ pub struct SessionPrompt {
     config_store: Option<Arc<rocode_config::ConfigStore>>,
     memory_authority: Option<Arc<rocode_memory::MemoryAuthority>>,
     proposal_repo: Option<Arc<rocode_storage::SkillEvolutionProposalRepository>>,
-    last_review_nudge_at: std::sync::Mutex<Option<tokio::time::Instant>>,
+    review_nudge_state: std::sync::Mutex<HashMap<String, ReviewNudgeThrottleState>>,
 }
 
 /// Signals collected from a completed session turn that drive the nudge
@@ -259,11 +259,18 @@ pub struct SessionPrompt {
 #[derive(Debug, Clone)]
 pub struct RuntimeReviewNudge {
     pub session_id: String,
+    pub workspace_key: String,
     pub step_count: usize,
     pub tool_call_count: usize,
     pub error_tool_call_count: usize,
     pub skill_write_count: usize,
     pub used_skill_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ReviewNudgeThrottleState {
+    last_completed_at: Option<tokio::time::Instant>,
+    in_flight: bool,
 }
 
 impl RuntimeReviewNudge {
@@ -310,6 +317,7 @@ impl RuntimeReviewNudge {
 
         Self {
             session_id: session.id.clone(),
+            workspace_key: session_review_scope_key(session),
             step_count,
             tool_call_count,
             error_tool_call_count,
@@ -319,13 +327,29 @@ impl RuntimeReviewNudge {
     }
 }
 
+fn session_review_scope_key(session: &Session) -> String {
+    let directory = session.directory.trim();
+    if !directory.is_empty() {
+        return format!("directory:{directory}");
+    }
+
+    let project_id = session.project_id.trim();
+    if !project_id.is_empty() {
+        return format!("project:{project_id}");
+    }
+
+    format!("session:{}", session.id)
+}
+
 /// Why a consolidation nudge was skipped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkippedReason {
     /// Not enough tool calls, errors, or skill writes.
     BelowThreshold,
-    /// A review ran recently (per-instance cooldown active).
+    /// A review ran recently for the same workspace/session scope.
     CooldownActive,
+    /// A review is already running for the same workspace/session scope.
+    ReviewInFlight,
     /// No memory repository is available.
     MemoryUnavailable,
     /// Consolidation was triggered but the engine call failed.
@@ -766,7 +790,7 @@ impl SessionPrompt {
             config_store: None,
             memory_authority: None,
             proposal_repo: None,
-            last_review_nudge_at: std::sync::Mutex::new(None),
+            review_nudge_state: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -809,9 +833,9 @@ impl SessionPrompt {
     /// - `tool_call_count >= 5`
     /// - `used_skill_names` non-empty AND `tool_call_count >= 3`
     ///
-    /// Cooldown: at most one consolidation per SessionPrompt instance per 10
-    /// minutes. A future persistent review job table can make this
-    /// workspace-scoped.
+    /// Cooldown: at most one successful consolidation per workspace/session
+    /// scope per 10 minutes, with an in-flight guard to avoid concurrent
+    /// duplicate reviews.
     /// Consolidation runs inline (no LLM; pure DB).
     pub async fn maybe_enqueue_background_review(
         &self,
@@ -840,29 +864,24 @@ impl SessionPrompt {
             };
         };
 
-        // Cooldown check: skip if a review ran in this workspace recently.
-        {
-            let mut last = self
-                .last_review_nudge_at
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if let Some(last_at) = *last {
-                if last_at.elapsed() < COOLDOWN {
-                    tracing::debug!(
-                        session_id = %nudge.session_id,
-                        "nudge: skipped (cooldown active)"
-                    );
-                    return NudgeDecision::Skipped {
-                        reason: SkippedReason::CooldownActive,
-                    };
-                }
-            }
-            *last = Some(tokio::time::Instant::now());
+        if let Err(reason) = self.try_begin_review_nudge_scope(
+            &nudge.workspace_key,
+            tokio::time::Instant::now(),
+            COOLDOWN,
+        ) {
+            tracing::debug!(
+                session_id = %nudge.session_id,
+                workspace_key = %nudge.workspace_key,
+                reason = ?reason,
+                "nudge: skipped"
+            );
+            return NudgeDecision::Skipped { reason };
         }
 
         let started = tokio::time::Instant::now();
         tracing::info!(
             session_id = %nudge.session_id,
+            workspace_key = %nudge.workspace_key,
             tool_calls = nudge.tool_call_count,
             errors = nudge.error_tool_call_count,
             skill_writes = nudge.skill_write_count,
@@ -874,6 +893,10 @@ impl SessionPrompt {
             .await
         {
             Ok(response) => {
+                self.finish_review_nudge_scope(
+                    &nudge.workspace_key,
+                    Some(tokio::time::Instant::now()),
+                );
                 let promoted = response.run.promoted_count;
                 let merged = response.run.merged_count;
                 let archived = response.archived_record_ids.len() as u32;
@@ -918,8 +941,10 @@ impl SessionPrompt {
                 }
             }
             Err(error) => {
+                self.finish_review_nudge_scope(&nudge.workspace_key, None);
                 tracing::warn!(
                     session_id = %nudge.session_id,
+                    workspace_key = %nudge.workspace_key,
                     %error,
                     "nudge: consolidation failed"
                 );
@@ -927,6 +952,53 @@ impl SessionPrompt {
                     reason: SkippedReason::ConsolidationFailed,
                 }
             }
+        }
+    }
+
+    fn try_begin_review_nudge_scope(
+        &self,
+        scope_key: &str,
+        now: tokio::time::Instant,
+        cooldown: core::time::Duration,
+    ) -> Result<(), SkippedReason> {
+        let mut states = self
+            .review_nudge_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let state = states.entry(scope_key.to_string()).or_default();
+        if state.in_flight {
+            return Err(SkippedReason::ReviewInFlight);
+        }
+        if state
+            .last_completed_at
+            .is_some_and(|last| now.duration_since(last) < cooldown)
+        {
+            return Err(SkippedReason::CooldownActive);
+        }
+        state.in_flight = true;
+        Ok(())
+    }
+
+    fn finish_review_nudge_scope(
+        &self,
+        scope_key: &str,
+        completed_at: Option<tokio::time::Instant>,
+    ) {
+        let mut states = self
+            .review_nudge_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut remove_scope = false;
+        if let Some(state) = states.get_mut(scope_key) {
+            state.in_flight = false;
+            if let Some(at) = completed_at {
+                state.last_completed_at = Some(at);
+            } else if state.last_completed_at.is_none() {
+                remove_scope = true;
+            }
+        }
+        if remove_scope {
+            states.remove(scope_key);
         }
     }
 

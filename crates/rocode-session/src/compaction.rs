@@ -1123,6 +1123,7 @@ pub async fn run_compaction<S: SessionOps>(
     session_id: &str,
     parent_id: &str,
     messages: Vec<Message>,
+    messages_with_parts: Vec<MessageWithParts>,
     model: ModelRef,
     provider: Arc<dyn Provider>,
     options: RunCompactionOptions<'_, S>,
@@ -1133,7 +1134,7 @@ pub async fn run_compaction<S: SessionOps>(
         parent_id: parent_id.to_string(),
         session_id: session_id.to_string(),
         messages,
-        messages_with_parts: vec![],
+        messages_with_parts,
         abort: options.abort,
         auto: options.auto,
         model,
@@ -1726,5 +1727,85 @@ mod tests {
             _ => String::new(),
         };
         assert_eq!(prompt, "custom compaction prompt");
+    }
+
+    #[tokio::test]
+    async fn test_run_compaction_uses_messages_with_parts_for_request_input() {
+        let provider = Arc::new(MockProvider::new(
+            "mock-model",
+            8192,
+            1024,
+            "summary from stream",
+        ));
+        let messages_with_parts = vec![MessageWithParts {
+            info: MessageInfo::User {
+                id: "msg_user".to_string(),
+                session_id: "ses_test".to_string(),
+                time: UserTime { created: 1 },
+                agent: "general".to_string(),
+                model: ModelRef {
+                    model_id: "mock-model".to_string(),
+                    provider_id: "mock".to_string(),
+                },
+                format: None,
+                summary: None,
+                system: None,
+                tools: None,
+                variant: None,
+            },
+            parts: vec![Part::Text {
+                id: "part_user".to_string(),
+                session_id: "ses_test".to_string(),
+                message_id: "msg_user".to_string(),
+                text: "from parts".to_string(),
+                synthetic: None,
+                ignored: None,
+                time: None,
+                metadata: None,
+            }],
+        }];
+
+        let result = run_compaction::<MockSessionOps>(
+            "ses_test",
+            "msg_parent",
+            vec![Message::user("legacy fallback content")],
+            messages_with_parts,
+            ModelRef {
+                model_id: "mock-model".to_string(),
+                provider_id: "mock".to_string(),
+            },
+            provider.clone(),
+            RunCompactionOptions {
+                abort: tokio_util::sync::CancellationToken::new(),
+                auto: true,
+                config: Some(CompactionConfig::default()),
+                session_ops: None,
+                memory_authority: None,
+            },
+        )
+        .await
+        .expect("run_compaction should succeed");
+        assert!(matches!(
+            result,
+            CompactionResult::Continue | CompactionResult::Stop
+        ));
+
+        let request = provider
+            .last_request()
+            .await
+            .expect("chat request should be captured");
+        let first_message = request
+            .messages
+            .first()
+            .expect("request should include converted input message");
+        let first_text = match &first_message.content {
+            rocode_provider::Content::Text(text) => text.clone(),
+            rocode_provider::Content::Parts(parts) => parts
+                .iter()
+                .filter_map(|part| part.text.clone())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        };
+        assert_eq!(first_text, "from parts");
     }
 }
