@@ -1725,3 +1725,139 @@ fn runtime_skill_save_suggestion_skips_turns_that_already_used_skill_manage() {
             == Some("skill_save_suggestion")
     }));
 }
+
+#[test]
+fn proposal_notice_is_hidden_from_model_prompt_surface() {
+    let mut session = Session::new("proj", ".");
+    session.add_user_message("analyze the workspace and extract lessons");
+
+    maybe_append_proposal_notice(
+        &mut session,
+        &NudgeDecision::Triggered {
+            promoted: 0,
+            merged: 0,
+            archived: 0,
+            promoted_records: 0,
+            proposals_created: 2,
+            proposals_skipped: 0,
+        },
+    );
+
+    let notice = session
+        .messages
+        .last()
+        .cloned()
+        .expect("proposal notice should be appended");
+    assert_eq!(
+        notice
+            .metadata
+            .get("runtime_hint")
+            .and_then(|value| value.as_str()),
+        Some("proposal_notice")
+    );
+
+    let provider_messages = SessionPrompt::build_chat_messages(&session.messages, None)
+        .expect("chat messages should build");
+    let rendered = provider_messages
+        .iter()
+        .map(|message| match &message.content {
+            rocode_provider::Content::Text(text) => text.clone(),
+            rocode_provider::Content::Parts(parts) => parts
+                .iter()
+                .filter_map(|part| part.text.clone())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(
+        !rendered.contains("skill evolution proposal(s) generated"),
+        "{rendered}"
+    );
+    assert_eq!(SessionPrompt::model_context_char_len(&notice), 0);
+}
+
+#[test]
+fn message_with_parts_filters_hidden_runtime_hints() {
+    let mut session = Session::new("proj", ".");
+    session.add_user_message("record the runtime hint but keep prompt clean");
+
+    maybe_append_proposal_notice(
+        &mut session,
+        &NudgeDecision::Triggered {
+            promoted: 0,
+            merged: 0,
+            archived: 0,
+            promoted_records: 0,
+            proposals_created: 1,
+            proposals_skipped: 0,
+        },
+    );
+
+    let converted = SessionPrompt::to_message_with_parts(&session.messages, "mock", "m", ".");
+    assert_eq!(
+        converted.len(),
+        1,
+        "runtime hint notice should stay out of model context"
+    );
+}
+
+#[test]
+fn review_nudge_scope_isolated_by_workspace_and_inflight_state() {
+    let prompt = SessionPrompt::default();
+    let now = tokio::time::Instant::now();
+    let cooldown = core::time::Duration::from_secs(600);
+
+    assert_eq!(
+        prompt.try_begin_review_nudge_scope("directory:/repo-a", now, cooldown),
+        Ok(())
+    );
+    assert_eq!(
+        prompt.try_begin_review_nudge_scope("directory:/repo-a", now, cooldown),
+        Err(SkippedReason::ReviewInFlight)
+    );
+    assert_eq!(
+        prompt.try_begin_review_nudge_scope("directory:/repo-b", now, cooldown),
+        Ok(())
+    );
+
+    prompt.finish_review_nudge_scope("directory:/repo-a", Some(now));
+    prompt.finish_review_nudge_scope("directory:/repo-b", None);
+}
+
+#[test]
+fn review_nudge_failure_does_not_burn_cooldown_but_success_does() {
+    let prompt = SessionPrompt::default();
+    let now = tokio::time::Instant::now();
+    let cooldown = core::time::Duration::from_secs(600);
+    let scope = "directory:/repo-a";
+
+    assert_eq!(
+        prompt.try_begin_review_nudge_scope(scope, now, cooldown),
+        Ok(())
+    );
+    prompt.finish_review_nudge_scope(scope, None);
+    assert_eq!(
+        prompt.try_begin_review_nudge_scope(scope, now, cooldown),
+        Ok(())
+    );
+
+    prompt.finish_review_nudge_scope(scope, Some(now));
+    assert_eq!(
+        prompt.try_begin_review_nudge_scope(
+            scope,
+            now + core::time::Duration::from_secs(1),
+            cooldown
+        ),
+        Err(SkippedReason::CooldownActive)
+    );
+    assert_eq!(
+        prompt.try_begin_review_nudge_scope(
+            scope,
+            now + cooldown + core::time::Duration::from_secs(1),
+            cooldown
+        ),
+        Ok(())
+    );
+}

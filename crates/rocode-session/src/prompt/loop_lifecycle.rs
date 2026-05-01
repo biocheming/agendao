@@ -1153,6 +1153,12 @@ impl SessionPrompt {
             .unwrap_or_default();
         let compaction_messages =
             Self::build_chat_messages(filtered_messages, None).unwrap_or_default();
+        let compaction_messages_with_parts = Self::to_message_with_parts(
+            filtered_messages,
+            provider_id,
+            model_id,
+            &session.directory,
+        );
         let model_ref = V2ModelRef {
             provider_id: provider_id.to_string(),
             model_id: model_id.to_string(),
@@ -1162,6 +1168,7 @@ impl SessionPrompt {
             session_id,
             &parent_id,
             compaction_messages,
+            compaction_messages_with_parts,
             model_ref,
             provider.clone(),
             crate::compaction::RunCompactionOptions {
