@@ -10,9 +10,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use rocode_types::{
-    ProposalStatus, SkillEvolutionProposal,
-};
+use rocode_types::{ProposalStatus, SkillEvolutionProposal};
 use serde::Deserialize;
 
 use crate::{ApiError, Result, ServerState};

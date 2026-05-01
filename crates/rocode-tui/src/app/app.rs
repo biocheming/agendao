@@ -575,7 +575,8 @@ impl App {
         self.subagent_dialog.render(surface, area, theme);
         self.tag_dialog.render(surface, area, theme);
         self.recovery_action_dialog.render(surface, area, theme);
-        self.skill_proposal_review_dialog.render(surface, area, theme);
+        self.skill_proposal_review_dialog
+            .render(surface, area, theme);
         self.status_dialog.render(surface, area, theme);
         self.session_rename_dialog.render(surface, area, theme);
         self.session_export_dialog.render(surface, area, theme);

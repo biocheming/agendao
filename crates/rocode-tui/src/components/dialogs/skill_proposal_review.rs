@@ -88,9 +88,7 @@ impl SkillProposalReviewDialog {
     }
 
     pub fn selected_item(&self) -> Option<&SkillProposalReviewItem> {
-        self.state
-            .selected()
-            .and_then(|i| self.items.get(i))
+        self.state.selected().and_then(|i| self.items.get(i))
     }
 
     pub fn take_action(&mut self) -> Option<(ProposalAction, String)> {
@@ -165,14 +163,14 @@ impl SkillProposalReviewDialog {
             .items
             .iter()
             .map(|item| {
-                let primary = Line::from(Span::styled(
-                    &item.title,
-                    Style::default().fg(theme.text),
-                ));
+                let primary =
+                    Line::from(Span::styled(&item.title, Style::default().fg(theme.text)));
                 let secondary = Line::from(vec![
                     Span::styled(
                         &item.kind_label,
-                        Style::default().fg(theme.primary).add_modifier(Modifier::DIM),
+                        Style::default()
+                            .fg(theme.primary)
+                            .add_modifier(Modifier::DIM),
                     ),
                     Span::styled(
                         format!("  {}", item.skill_name),
@@ -181,7 +179,9 @@ impl SkillProposalReviewDialog {
                 ]);
                 let third = Line::from(Span::styled(
                     format!("  {}", item.first_change),
-                    Style::default().fg(theme.text_muted).add_modifier(Modifier::DIM),
+                    Style::default()
+                        .fg(theme.text_muted)
+                        .add_modifier(Modifier::DIM),
                 ));
                 ListItem::new(vec![primary, secondary, third])
             })
@@ -200,23 +200,31 @@ impl SkillProposalReviewDialog {
         // Status message
         let hint_idx = if status_height > 0 { 2 } else { 1 };
         if let Some(ref msg) = self.status_message {
-            let status = Paragraph::new(msg.clone())
-                .style(Style::default().fg(theme.primary));
+            let status = Paragraph::new(msg.clone()).style(Style::default().fg(theme.primary));
             surface.render_widget(status, rows[1]);
         }
 
         // Hint bar
         let hint = Line::from(vec![
             Span::styled(
-                "A", Style::default().fg(theme.primary).add_modifier(Modifier::BOLD),
+                "A",
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled("ccept  ", Style::default().fg(theme.text_muted)),
             Span::styled(
-                "R", Style::default().fg(theme.primary).add_modifier(Modifier::BOLD),
+                "R",
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled("eject  ", Style::default().fg(theme.text_muted)),
             Span::styled(
-                "S", Style::default().fg(theme.primary).add_modifier(Modifier::BOLD),
+                "S",
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled("kip  ", Style::default().fg(theme.text_muted)),
             Span::styled("↑↓/Esc", Style::default().fg(theme.text_muted)),

@@ -137,10 +137,11 @@ impl SkillEvolutionProposalRepository {
     }
 
     /// List proposals by status.
-    pub async fn list_by_status(&self, status: &ProposalStatus) -> Result<Vec<SkillEvolutionProposal>> {
-        let status_str: String = serde_json::to_string(status)?
-            .trim_matches('"')
-            .to_string();
+    pub async fn list_by_status(
+        &self,
+        status: &ProposalStatus,
+    ) -> Result<Vec<SkillEvolutionProposal>> {
+        let status_str: String = serde_json::to_string(status)?.trim_matches('"').to_string();
 
         let rows = sqlx::query_as::<_, ProposalRow>(
             "SELECT * FROM skill_evolution_proposals WHERE status = ? ORDER BY created_at_ms DESC",
@@ -168,14 +169,8 @@ impl SkillEvolutionProposalRepository {
     }
 
     /// Update proposal status.
-    pub async fn update_status(
-        &self,
-        id: &str,
-        status: &ProposalStatus,
-    ) -> Result<()> {
-        let status_str: String = serde_json::to_string(status)?
-            .trim_matches('"')
-            .to_string();
+    pub async fn update_status(&self, id: &str, status: &ProposalStatus) -> Result<()> {
+        let status_str: String = serde_json::to_string(status)?.trim_matches('"').to_string();
         let now = chrono::Utc::now().timestamp_millis();
 
         sqlx::query(
@@ -208,11 +203,7 @@ impl SkillEvolutionProposalRepository {
     /// Allowed transitions:
     /// - Draft → Accepted, Rejected, Superseded
     /// - Accepted → Rejected, Applied
-    pub async fn transition_status(
-        &self,
-        id: &str,
-        next: &ProposalStatus,
-    ) -> Result<()> {
+    pub async fn transition_status(&self, id: &str, next: &ProposalStatus) -> Result<()> {
         let Some(current) = self.get_by_id(id).await? else {
             anyhow::bail!("proposal not found: {}", id);
         };
@@ -301,8 +292,7 @@ pub async fn generate_skill_evolution_proposals(
             None => SkillEvolutionProposalKind::CreateNewSkill,
         };
 
-        let (title, suggested_changes) =
-            build_suggested_changes(record, &proposal_kind);
+        let (title, suggested_changes) = build_suggested_changes(record, &proposal_kind);
 
         let evidence_hash = SkillEvolutionProposal::compute_evidence_hash(
             &proposal_kind,
@@ -365,10 +355,7 @@ fn build_suggested_changes(
 ) -> (String, Vec<SuggestedSkillChange>) {
     match kind {
         SkillEvolutionProposalKind::PatchExistingSkill => {
-            let skill_name = record
-                .linked_skill_name
-                .as_deref()
-                .unwrap_or("unknown");
+            let skill_name = record.linked_skill_name.as_deref().unwrap_or("unknown");
             let mut changes = Vec::new();
             let mut title_parts = vec![format!("Patch skill '{}'", skill_name)];
 
@@ -376,11 +363,7 @@ fn build_suggested_changes(
             for trigger in &record.trigger_conditions {
                 changes.push(SuggestedSkillChange::AddTriggerCondition {
                     text: trigger.clone(),
-                    evidence_refs: record
-                        .evidence_refs
-                        .iter()
-                        .map(|e| format_ref(e))
-                        .collect(),
+                    evidence_refs: record.evidence_refs.iter().map(|e| format_ref(e)).collect(),
                 });
                 title_parts.push(format!("add trigger '{}'", trigger));
             }
@@ -396,11 +379,7 @@ fn build_suggested_changes(
                 {
                     changes.push(SuggestedSkillChange::AddCoreStep {
                         text: fact.clone(),
-                        evidence_refs: record
-                            .evidence_refs
-                            .iter()
-                            .map(|e| format_ref(e))
-                            .collect(),
+                        evidence_refs: record.evidence_refs.iter().map(|e| format_ref(e)).collect(),
                     });
                 }
             }
@@ -409,11 +388,7 @@ fn build_suggested_changes(
             for boundary in &record.boundaries {
                 changes.push(SuggestedSkillChange::AddBoundary {
                     text: boundary.clone(),
-                    evidence_refs: record
-                        .evidence_refs
-                        .iter()
-                        .map(|e| format_ref(e))
-                        .collect(),
+                    evidence_refs: record.evidence_refs.iter().map(|e| format_ref(e)).collect(),
                 });
             }
 
@@ -431,8 +406,7 @@ fn build_suggested_changes(
                 .clone()
                 .unwrap_or_else(|| "unnamed-skill".to_string());
 
-            let when_to_use: Vec<String> =
-                record.trigger_conditions.iter().cloned().collect();
+            let when_to_use: Vec<String> = record.trigger_conditions.iter().cloned().collect();
             let core_steps: Vec<String> = record
                 .normalized_facts
                 .iter()
@@ -444,11 +418,8 @@ fn build_suggested_changes(
                 .cloned()
                 .collect();
             let boundaries: Vec<String> = record.boundaries.clone();
-            let validation: Vec<String> = record
-                .evidence_refs
-                .iter()
-                .map(|e| format_ref(e))
-                .collect();
+            let validation: Vec<String> =
+                record.evidence_refs.iter().map(|e| format_ref(e)).collect();
 
             (
                 format!("Create skill '{}'", suggested_name),

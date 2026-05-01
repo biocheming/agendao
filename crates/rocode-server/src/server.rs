@@ -446,10 +446,13 @@ impl ServerState {
         let db = Database::new().await?;
         let pool = db.pool().clone();
         let memory_repo = Arc::new(MemoryRepository::new(pool.clone()));
-        let memory_authority = Arc::new(MemoryAuthority::new(
-            state.user_state.clone(),
-            state.resolved_context_authority.clone(),
-        ).with_repository(memory_repo.clone()));
+        let memory_authority = Arc::new(
+            MemoryAuthority::new(
+                state.user_state.clone(),
+                state.resolved_context_authority.clone(),
+            )
+            .with_repository(memory_repo.clone()),
+        );
         state.runtime_memory = Arc::new(RuntimeMemoryAuthority::new(memory_authority.clone()));
         let proposal_repo = Arc::new(rocode_storage::SkillEvolutionProposalRepository::new(
             pool.clone(),

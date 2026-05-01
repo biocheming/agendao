@@ -77,10 +77,7 @@ impl RuntimeApiClient {
         ))
     }
 
-    fn list_skill_proposals(
-        &self,
-        status: &str,
-    ) -> anyhow::Result<Vec<SkillEvolutionProposal>> {
+    fn list_skill_proposals(&self, status: &str) -> anyhow::Result<Vec<SkillEvolutionProposal>> {
         self.block_on(self.client.list_skill_proposals(status))
     }
 
