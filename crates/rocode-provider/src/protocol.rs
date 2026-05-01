@@ -1,10 +1,16 @@
-use crate::{ChatRequest, ChatResponse, ProviderError, StreamResult};
+use crate::{
+    ChatRequest, ChatResponse, ProviderApiFamily, ProviderError, ProviderProfile,
+    ProviderTransportKind, StreamResult,
+};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::fmt;
 
-/// Protocol type derived from npm package name.
-/// Determines how requests are formatted and responses are parsed.
+/// Legacy protocol selector.
+///
+/// New provider routing should derive a `ProviderProfile` first, then project
+/// that profile into this selector only as a compatibility adapter for the
+/// existing protocol implementations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Protocol {
     /// closeai-compatible chat completions family (default for unknown npm)
@@ -24,8 +30,32 @@ pub enum Protocol {
 }
 
 impl Protocol {
+    pub fn from_profile(profile: &ProviderProfile) -> Self {
+        match profile.api_family {
+            ProviderApiFamily::EthnopicMessages => Protocol::Messages,
+            ProviderApiFamily::GeminiGenerate => {
+                if is_vertex_profile(profile) {
+                    Protocol::Vertex
+                } else {
+                    Protocol::Google
+                }
+            }
+            ProviderApiFamily::BedrockConverse => Protocol::Bedrock,
+            ProviderApiFamily::CloseAiCompatible | ProviderApiFamily::Custom => {
+                match profile.transport {
+                    ProviderTransportKind::PrivateToken => Protocol::GitLab,
+                    ProviderTransportKind::OAuth => Protocol::GitHubCopilot,
+                    _ => Protocol::OpenAI,
+                }
+            }
+        }
+    }
+
     /// Derive protocol from npm package name.
     /// Unknown packages default to OpenAI (closeai-compatible assumption).
+    ///
+    /// This is a legacy fallback for older callers that do not have a typed
+    /// `ProviderProfile` yet.
     pub fn from_npm(npm: &str) -> Self {
         let lower = npm.to_ascii_lowercase();
 
@@ -49,6 +79,12 @@ impl Protocol {
             Protocol::OpenAI
         }
     }
+}
+
+fn is_vertex_profile(profile: &ProviderProfile) -> bool {
+    let provider_id = profile.provider_id.to_ascii_lowercase();
+    let npm = profile.npm.to_ascii_lowercase();
+    provider_id.contains("vertex") || npm.contains("vertex")
 }
 
 impl fmt::Display for Protocol {

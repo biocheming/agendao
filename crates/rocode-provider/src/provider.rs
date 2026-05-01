@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::{ChatRequest, ChatResponse, StreamResult};
+use crate::{cache::ProviderProfileFingerprint, ChatRequest, ChatResponse, StreamResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
@@ -41,6 +41,9 @@ pub struct ProviderInfo {
 pub trait Provider: Send + Sync {
     fn id(&self) -> &str;
     fn name(&self) -> &str;
+    fn provider_profile_fingerprint(&self) -> Option<ProviderProfileFingerprint> {
+        None
+    }
 
     fn models(&self) -> Vec<ModelInfo>;
     fn get_model(&self, id: &str) -> Option<&ModelInfo>;

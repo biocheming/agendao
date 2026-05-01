@@ -6,6 +6,7 @@ use futures::{stream, Stream, StreamExt};
 use std::pin::Pin;
 
 use crate::driver::StreamingEvent;
+use crate::profile::{ProviderApiFamily, ProviderProfile};
 use crate::protocol_loader::ProtocolManifest;
 use crate::runtime::pipeline::decode::SseDecoder;
 use crate::runtime::pipeline::event_map::PathEventMapper;
@@ -78,6 +79,20 @@ impl Pipeline {
         }
     }
 
+    pub fn for_profile(profile: &ProviderProfile) -> Self {
+        let provider_id = profile.provider_id.to_ascii_lowercase();
+        match profile.api_family {
+            ProviderApiFamily::EthnopicMessages => Self::ethnopic_default(),
+            ProviderApiFamily::GeminiGenerate if provider_id.contains("vertex") => {
+                Self::vertex_default()
+            }
+            ProviderApiFamily::GeminiGenerate => Self::google_default(),
+            ProviderApiFamily::CloseAiCompatible
+            | ProviderApiFamily::BedrockConverse
+            | ProviderApiFamily::Custom => Self::openai_default(),
+        }
+    }
+
     pub fn process_stream(
         &self,
         input: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
@@ -102,7 +117,9 @@ impl Pipeline {
 mod tests {
     use super::{is_ethnopic_compatible_provider, Pipeline};
     use crate::driver::StreamingEvent;
+    use crate::profile::{ProviderApiFamily, ProviderProfileResolver};
     use futures::StreamExt;
+    use std::collections::HashMap;
 
     #[test]
     fn detects_ethnopic_compatible_provider_ids() {
@@ -117,6 +134,49 @@ mod tests {
         let stream = pipeline.process_stream(Box::pin(futures::stream::iter(vec![Ok(
             bytes::Bytes::from_static(
                 b"data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"hello\"},\"message\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n\n",
+            ),
+        )])));
+
+        let events = futures::executor::block_on(async { stream.collect::<Vec<_>>().await });
+        assert!(events.iter().any(|event| matches!(
+            event,
+            Ok(StreamingEvent::PartialContentDelta { content, .. }) if content == "hello"
+        )));
+    }
+
+    #[test]
+    fn profile_family_selects_messages_pipeline() {
+        let profile = ProviderProfileResolver::resolve_with_npm(
+            "ethnopic",
+            "@ai-sdk/anthropic",
+            &HashMap::new(),
+        );
+        assert_eq!(profile.api_family, ProviderApiFamily::EthnopicMessages);
+
+        let pipeline = Pipeline::for_profile(&profile);
+        let stream = pipeline.process_stream(Box::pin(futures::stream::iter(vec![Ok(
+            bytes::Bytes::from_static(
+                b"data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"hello\"}}\n\n",
+            ),
+        )])));
+
+        let events = futures::executor::block_on(async { stream.collect::<Vec<_>>().await });
+        assert!(events.iter().any(|event| matches!(
+            event,
+            Ok(StreamingEvent::PartialContentDelta { content, .. }) if content == "hello"
+        )));
+    }
+
+    #[test]
+    fn profile_family_selects_google_pipeline() {
+        let profile =
+            ProviderProfileResolver::resolve_with_npm("google", "@ai-sdk/google", &HashMap::new());
+        assert_eq!(profile.api_family, ProviderApiFamily::GeminiGenerate);
+
+        let pipeline = Pipeline::for_profile(&profile);
+        let stream = pipeline.process_stream(Box::pin(futures::stream::iter(vec![Ok(
+            bytes::Bytes::from_static(
+                b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello\"}]}}]}\n\n",
             ),
         )])));
 

@@ -5,7 +5,7 @@ pub mod pipeline;
 pub mod preflight;
 pub mod rate_limiter;
 
-pub use config::RuntimeConfig;
+pub use config::{runtime_pipeline_enabled, RuntimeConfig};
 pub use context::{ProtocolSource, RuntimeContext};
 pub use pipeline::Pipeline;
 pub use preflight::PreflightGuard;

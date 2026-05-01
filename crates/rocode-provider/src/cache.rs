@@ -4,7 +4,10 @@ use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 
-use crate::{Message, ToolDefinition, Usage};
+use crate::{
+    Message, ProviderApiFamily, ProviderApiShape, ProviderProfile, ProviderTransportKind,
+    ProviderUsageShape, ToolDefinition, Usage,
+};
 
 pub const CACHE_REQUEST_FINGERPRINT_METADATA_KEY: &str = "cache_request_fingerprint";
 pub const CACHE_BUST_INSPECTION_METADATA_KEY: &str = "cache_bust_inspection";
@@ -433,6 +436,52 @@ pub enum NormalizedCacheUsage {
     },
 }
 
+pub fn normalize_cache_usage(
+    raw: RawCacheUsage,
+    usage_shape: ProviderUsageShape,
+) -> Option<NormalizedCacheUsage> {
+    match raw {
+        RawCacheUsage::CloseAi { raw_json } => {
+            let metrics = TokenUsageMetrics::from_value_with_shape(&raw_json, usage_shape);
+            Some(NormalizedCacheUsage::CloseAi {
+                input_tokens: metrics.input_tokens,
+                cached_input_tokens: metrics.cache_read_tokens,
+                non_cached_input_tokens: metrics.cache_miss_tokens.max(
+                    metrics
+                        .input_tokens
+                        .saturating_sub(metrics.cache_read_tokens),
+                ),
+                output_tokens: metrics.output_tokens,
+            })
+        }
+        RawCacheUsage::Ethnopic { raw_json } => {
+            let metrics = TokenUsageMetrics::from_value_with_shape(
+                &raw_json,
+                ProviderUsageShape::EthnopicReadWrite,
+            );
+            Some(NormalizedCacheUsage::Ethnopic {
+                input_tokens: metrics.input_tokens,
+                cache_read_input_tokens: metrics.cache_read_tokens,
+                cache_creation_input_tokens: metrics.cache_write_tokens,
+                output_tokens: metrics.output_tokens,
+            })
+        }
+        RawCacheUsage::Unknown { raw_json } => match usage_shape {
+            ProviderUsageShape::CloseAiCachedTokens => normalize_cache_usage(
+                RawCacheUsage::CloseAi { raw_json },
+                ProviderUsageShape::CloseAiCachedTokens,
+            ),
+            ProviderUsageShape::EthnopicReadWrite => normalize_cache_usage(
+                RawCacheUsage::Ethnopic { raw_json },
+                ProviderUsageShape::EthnopicReadWrite,
+            ),
+            ProviderUsageShape::Gemini
+            | ProviderUsageShape::Bedrock
+            | ProviderUsageShape::Unknown => None,
+        },
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptSurfaceFingerprint {
     pub model: String,
@@ -462,9 +511,38 @@ pub struct EthnopicCacheFingerprint {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderProfileFingerprint {
+    pub provider_id: String,
+    pub npm: String,
+    pub api_family: ProviderApiFamily,
+    pub api_shape: ProviderApiShape,
+    pub transport: ProviderTransportKind,
+    pub usage_shape: ProviderUsageShape,
+    pub cache_family: CacheProtocolFamily,
+    pub profile_hash: String,
+}
+
+impl ProviderProfileFingerprint {
+    pub fn from_profile(profile: &ProviderProfile) -> Self {
+        Self {
+            provider_id: profile.provider_id.clone(),
+            npm: profile.npm.clone(),
+            api_family: profile.api_family,
+            api_shape: profile.api_shape,
+            transport: profile.transport,
+            usage_shape: profile.usage_shape,
+            cache_family: profile.cache_family,
+            profile_hash: serializable_fingerprint(profile),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CacheRequestFingerprint {
     pub family: CacheProtocolFamily,
     pub surface: PromptSurfaceFingerprint,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_profile: Option<ProviderProfileFingerprint>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub closeai: Option<CloseAiCacheFingerprint>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -636,6 +714,7 @@ pub fn inspect_cache_fingerprint_change(
     );
     inspect_closeai_fingerprint(previous, current, &mut changes);
     inspect_ethnopic_fingerprint(previous, current, &mut changes);
+    inspect_provider_profile_fingerprint(previous, current, &mut changes);
 
     let severity = changes
         .iter()
@@ -657,6 +736,59 @@ pub fn inspect_cache_fingerprint_change(
         primary_cause,
         changes,
     }
+}
+
+fn inspect_provider_profile_fingerprint(
+    previous: &CacheRequestFingerprint,
+    current: &CacheRequestFingerprint,
+    changes: &mut Vec<CacheFingerprintDiff>,
+) {
+    let (Some(previous), Some(current)) = (
+        previous.provider_profile.as_ref(),
+        current.provider_profile.as_ref(),
+    ) else {
+        return;
+    };
+    push_diff(
+        changes,
+        "providerProfileHash",
+        previous.profile_hash.as_str(),
+        current.profile_hash.as_str(),
+        CacheBustSeverity::LikelyBust,
+        "provider profile changed",
+    );
+    push_diff(
+        changes,
+        "providerApiFamily",
+        previous.api_family,
+        current.api_family,
+        CacheBustSeverity::HardBust,
+        "provider API family changed",
+    );
+    push_diff(
+        changes,
+        "providerApiShape",
+        previous.api_shape,
+        current.api_shape,
+        CacheBustSeverity::LikelyBust,
+        "provider API shape changed",
+    );
+    push_diff(
+        changes,
+        "providerUsageShape",
+        previous.usage_shape,
+        current.usage_shape,
+        CacheBustSeverity::SoftDegradation,
+        "provider usage normalization shape changed",
+    );
+    push_diff(
+        changes,
+        "providerTransport",
+        previous.transport,
+        current.transport,
+        CacheBustSeverity::LikelyBust,
+        "provider transport profile changed",
+    );
 }
 
 fn inspect_closeai_fingerprint(
@@ -757,45 +889,20 @@ pub struct TokenUsageMetrics {
 
 impl TokenUsageMetrics {
     pub fn from_value(value: &Value) -> Self {
+        Self::from_value_with_shape(value, ProviderUsageShape::Unknown)
+    }
+
+    pub fn from_value_with_shape(value: &Value, usage_shape: ProviderUsageShape) -> Self {
         let input_tokens = read_u64_any(value, &["prompt_tokens", "input_tokens"]);
         let output_tokens = read_u64_any(value, &["completion_tokens", "output_tokens"]);
         let total_tokens = read_u64_any(value, &["total_tokens"]);
         let reasoning_tokens = read_u64_any(value, &["reasoning_tokens"]);
-        let cache_read_tokens = read_u64_any(
-            value,
-            &[
-                "cached_tokens",
-                "cache_read_input_tokens",
-                "cache_read_tokens",
-                "prompt_cache_hit_tokens",
-            ],
-        )
-        .max(read_nested_u64_any(
-            value,
-            &[
-                &["prompt_tokens_details", "cached_tokens"],
-                &["input_tokens_details", "cached_tokens"],
-            ],
-        ));
-        let cache_miss_tokens = read_u64_any(
-            value,
-            &[
-                "cache_miss_input_tokens",
-                "cache_miss_tokens",
-                "prompt_cache_miss_tokens",
-            ],
-        );
-        let cache_write_tokens = read_u64_any(
-            value,
-            &["cache_creation_input_tokens", "cache_write_tokens"],
-        )
-        .max(read_nested_u64_any(
-            value,
-            &[
-                &["prompt_tokens_details", "cache_creation_input_tokens"],
-                &["input_tokens_details", "cache_creation_input_tokens"],
-            ],
-        ));
+        let (cache_read_tokens, cache_miss_tokens, cache_write_tokens) = match usage_shape {
+            ProviderUsageShape::CloseAiCachedTokens => closeai_usage_cache_tokens(value),
+            ProviderUsageShape::EthnopicReadWrite => ethnopic_usage_cache_tokens(value),
+            ProviderUsageShape::Gemini | ProviderUsageShape::Bedrock => (0, 0, 0),
+            ProviderUsageShape::Unknown => autodetect_usage_cache_tokens(value),
+        };
         let context_tokens = input_tokens
             .max(cache_read_tokens.saturating_add(cache_miss_tokens))
             .max(cache_read_tokens.saturating_add(cache_write_tokens));
@@ -822,6 +929,57 @@ impl TokenUsageMetrics {
             nonzero(self.cache_write_tokens),
         )
     }
+}
+
+fn autodetect_usage_cache_tokens(value: &Value) -> (u64, u64, u64) {
+    let closeai = closeai_usage_cache_tokens(value);
+    let ethnopic = ethnopic_usage_cache_tokens(value);
+
+    (
+        closeai.0.max(ethnopic.0),
+        closeai.1.max(ethnopic.1),
+        closeai.2.max(ethnopic.2),
+    )
+}
+
+fn closeai_usage_cache_tokens(value: &Value) -> (u64, u64, u64) {
+    let cache_read_tokens = read_u64_any(value, &["cached_tokens", "prompt_cache_hit_tokens"]).max(
+        read_nested_u64_any(
+            value,
+            &[
+                &["prompt_tokens_details", "cached_tokens"],
+                &["input_tokens_details", "cached_tokens"],
+            ],
+        ),
+    );
+    let cache_miss_tokens = read_u64_any(
+        value,
+        &[
+            "cache_miss_input_tokens",
+            "cache_miss_tokens",
+            "prompt_cache_miss_tokens",
+        ],
+    );
+    let cache_write_tokens = read_nested_u64_any(
+        value,
+        &[
+            &["prompt_tokens_details", "cache_creation_input_tokens"],
+            &["input_tokens_details", "cache_creation_input_tokens"],
+        ],
+    );
+
+    (cache_read_tokens, cache_miss_tokens, cache_write_tokens)
+}
+
+fn ethnopic_usage_cache_tokens(value: &Value) -> (u64, u64, u64) {
+    let cache_read_tokens = read_u64_any(value, &["cache_read_input_tokens", "cache_read_tokens"]);
+    let cache_miss_tokens = read_u64_any(value, &["cache_miss_input_tokens", "cache_miss_tokens"]);
+    let cache_write_tokens = read_u64_any(
+        value,
+        &["cache_creation_input_tokens", "cache_write_tokens"],
+    );
+
+    (cache_read_tokens, cache_miss_tokens, cache_write_tokens)
 }
 
 pub fn usage_from_counts(
@@ -1074,6 +1232,53 @@ mod tests {
         assert_eq!(metrics.cache_read_tokens, 1000);
         assert_eq!(metrics.cache_write_tokens, 200);
         assert_eq!(metrics.context_tokens, 1200);
+    }
+
+    #[test]
+    fn usage_shape_prevents_cross_family_cache_field_bleed() {
+        let raw = serde_json::json!({
+            "prompt_tokens": 1000,
+            "completion_tokens": 50,
+            "cached_tokens": 700,
+            "cache_read_input_tokens": 200,
+            "cache_creation_input_tokens": 100
+        });
+
+        let closeai =
+            TokenUsageMetrics::from_value_with_shape(&raw, ProviderUsageShape::CloseAiCachedTokens);
+        let ethnopic =
+            TokenUsageMetrics::from_value_with_shape(&raw, ProviderUsageShape::EthnopicReadWrite);
+
+        assert_eq!(closeai.cache_read_tokens, 700);
+        assert_eq!(closeai.cache_write_tokens, 0);
+        assert_eq!(ethnopic.cache_read_tokens, 200);
+        assert_eq!(ethnopic.cache_write_tokens, 100);
+    }
+
+    #[test]
+    fn normalizes_raw_cache_usage_by_provider_usage_shape() {
+        let normalized = normalize_cache_usage(
+            RawCacheUsage::Unknown {
+                raw_json: serde_json::json!({
+                    "prompt_tokens": 1000,
+                    "completion_tokens": 50,
+                    "prompt_tokens_details": {
+                        "cached_tokens": 750
+                    }
+                }),
+            },
+            ProviderUsageShape::CloseAiCachedTokens,
+        );
+
+        assert_eq!(
+            normalized,
+            Some(NormalizedCacheUsage::CloseAi {
+                input_tokens: 1000,
+                cached_input_tokens: 750,
+                non_cached_input_tokens: 250,
+                output_tokens: 50,
+            })
+        );
     }
 
     #[test]
@@ -1372,6 +1577,37 @@ mod tests {
     }
 
     #[test]
+    fn cache_bust_inspector_reports_provider_profile_changes() {
+        let mut previous = test_cache_request_fingerprint("tools-a", "messages-a");
+        previous.provider_profile = Some(ProviderProfileFingerprint::from_profile(
+            &crate::ProviderProfileResolver::resolve_with_npm(
+                "openai",
+                "@ai-sdk/openai",
+                &HashMap::new(),
+            ),
+        ));
+        let mut current = previous.clone();
+        current.provider_profile = Some(ProviderProfileFingerprint::from_profile(
+            &crate::ProviderProfileResolver::resolve_with_npm(
+                "openai",
+                "@ai-sdk/openai",
+                &HashMap::from([("useResponsesApi".to_string(), Value::Bool(true))]),
+            ),
+        ));
+
+        let inspection = inspect_cache_fingerprint_change(Some(&previous), &current);
+
+        assert!(inspection
+            .changes
+            .iter()
+            .any(|change| change.field == "providerProfileHash"));
+        assert!(inspection
+            .changes
+            .iter()
+            .any(|change| change.field == "providerApiShape"));
+    }
+
+    #[test]
     fn cache_bust_inspector_reports_cold_start() {
         let current = test_cache_request_fingerprint("tools-a", "messages-a");
 
@@ -1467,6 +1703,7 @@ mod tests {
                 message_prefix_hash: message_prefix_hash.to_string(),
                 api_params_hash: "params-a".to_string(),
             },
+            provider_profile: None,
             closeai: None,
             ethnopic: None,
         }

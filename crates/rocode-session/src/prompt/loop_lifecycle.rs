@@ -18,8 +18,9 @@ use rocode_plugin::{HookContext, HookEvent};
 use rocode_provider::cache::{
     inspect_cache_fingerprint_change, CacheBustSummary, CacheProtocolFamily,
     CacheRequestFingerprint, CloseAiCacheFingerprint, EthnopicCacheFingerprint,
-    EthnopicCachePolicy, PromptSurfaceFingerprint, CACHE_BUST_INSPECTION_METADATA_KEY,
-    CACHE_BUST_SUMMARY_METADATA_KEY, CACHE_REQUEST_FINGERPRINT_METADATA_KEY,
+    EthnopicCachePolicy, PromptSurfaceFingerprint, ProviderProfileFingerprint,
+    CACHE_BUST_INSPECTION_METADATA_KEY, CACHE_BUST_SUMMARY_METADATA_KEY,
+    CACHE_REQUEST_FINGERPRINT_METADATA_KEY,
 };
 use rocode_provider::transform::{apply_caching, ProviderType};
 use rocode_provider::{Provider, ToolDefinition};
@@ -130,9 +131,23 @@ mod cache_fingerprint_tests {
             &[],
             &compiled,
             ProviderType::OpenAI,
+            Some(openai_provider_profile_fingerprint()),
         );
 
         assert_eq!(fingerprint.family, CacheProtocolFamily::CloseAiCompatible);
+        let provider_profile = fingerprint
+            .provider_profile
+            .as_ref()
+            .expect("provider profile fingerprint should be recorded");
+        assert_eq!(provider_profile.provider_id, "openai");
+        assert_eq!(
+            provider_profile.api_family,
+            rocode_provider::ProviderApiFamily::CloseAiCompatible
+        );
+        assert_eq!(
+            provider_profile.api_shape,
+            rocode_provider::ProviderApiShape::ChatCompletions
+        );
         assert_eq!(
             fingerprint
                 .closeai
@@ -141,6 +156,38 @@ mod cache_fingerprint_tests {
             Some("rocode:key")
         );
         assert!(fingerprint.ethnopic.is_none());
+    }
+
+    #[test]
+    fn cache_request_fingerprint_ignores_profile_like_request_options() {
+        let messages = vec![Message::system("system"), Message::user("hello")];
+        let compiled = CompiledExecutionRequest {
+            model_id: "gpt-test".to_string(),
+            provider_options: Some(HashMap::from([(
+                "transport".to_string(),
+                serde_json::json!("bearer"),
+            )])),
+            ..Default::default()
+        };
+
+        let fingerprint = SessionPrompt::cache_request_fingerprint(
+            "ses_test",
+            "custom-provider",
+            "gpt-test",
+            Some("system"),
+            &messages,
+            &[],
+            &compiled,
+            ProviderType::OpenAI,
+            None,
+        );
+
+        assert_eq!(fingerprint.family, CacheProtocolFamily::CloseAiCompatible);
+        assert!(
+            fingerprint.provider_profile.is_none(),
+            "request options are not provider profile authority"
+        );
+        assert!(fingerprint.closeai.is_some());
     }
 
     #[test]
@@ -164,6 +211,7 @@ mod cache_fingerprint_tests {
             &[],
             &compiled,
             ProviderType::OpenAI,
+            None,
         );
 
         let prompt_cache_key = fingerprint
@@ -173,6 +221,22 @@ mod cache_fingerprint_tests {
             .expect("generated prompt cache key should be recorded");
         assert!(prompt_cache_key.starts_with("rocode:"));
         assert!(!prompt_cache_key.contains("ses_generated_key"));
+    }
+
+    fn openai_provider_profile_fingerprint() -> ProviderProfileFingerprint {
+        provider_profile_fingerprint("openai", HashMap::new())
+    }
+
+    fn provider_profile_fingerprint(
+        provider_id: &str,
+        options: HashMap<String, serde_json::Value>,
+    ) -> ProviderProfileFingerprint {
+        let profile = rocode_provider::ProviderProfileResolver::try_resolve_with_options(
+            provider_id,
+            &options,
+        )
+        .expect("provider profile should resolve");
+        ProviderProfileFingerprint::from_profile(&profile)
     }
 
     #[test]
@@ -187,6 +251,7 @@ mod cache_fingerprint_tests {
                 message_prefix_hash: "messages-a".to_string(),
                 api_params_hash: "params-a".to_string(),
             },
+            provider_profile: None,
             closeai: None,
             ethnopic: None,
         };
@@ -488,6 +553,33 @@ mod cache_fingerprint_tests {
     }
 
     #[test]
+    fn prompt_surface_stable_fields_records_responses_api_shape_from_provider_profile() {
+        let compiled = CompiledExecutionRequest::default();
+        let session = Session::new("project", "/tmp");
+        let mut fingerprint =
+            test_cache_fingerprint("system-a", "tools-a", "messages-a", "params-a");
+        fingerprint.provider_profile = Some(provider_profile_fingerprint(
+            "openai",
+            HashMap::from([("useResponsesApi".to_string(), serde_json::json!(true))]),
+        ));
+
+        let stable = SessionPrompt::prompt_surface_stable_fields(
+            &session,
+            "openai",
+            "gpt-test",
+            &compiled,
+            &fingerprint,
+            Some("system"),
+            "tool-source-a".to_string(),
+        );
+
+        assert_eq!(
+            stable.api_shape,
+            Some(rocode_provider::cache::CloseAiCompatibleApiShape::Responses)
+        );
+    }
+
+    #[test]
     fn scc_stable_refs_hash_ignores_memory_anchor_title_text() {
         let mut first = Session::new("project", "/tmp");
         first.insert_metadata(
@@ -552,6 +644,7 @@ mod cache_fingerprint_tests {
                 message_prefix_hash: message_prefix_hash.to_string(),
                 api_params_hash: api_params_hash.to_string(),
             },
+            provider_profile: None,
             closeai: Some(CloseAiCacheFingerprint {
                 prompt_cache_key: Some("rocode:key".to_string()),
                 prompt_cache_retention: None,
@@ -1228,8 +1321,19 @@ impl SessionPrompt {
             })
             .map(|value| rocode_provider::cache::json_fingerprint(&value));
         let tool_policy_hash = Self::tool_policy_hash(provider_options);
-        let api_shape = (fingerprint.family == CacheProtocolFamily::CloseAiCompatible)
-            .then_some(rocode_provider::cache::CloseAiCompatibleApiShape::ChatCompletions);
+        let api_shape =
+            (fingerprint.family == CacheProtocolFamily::CloseAiCompatible).then(
+                || match fingerprint
+                    .provider_profile
+                    .as_ref()
+                    .map(|profile| profile.api_shape)
+                {
+                    Some(rocode_provider::ProviderApiShape::Responses) => {
+                        rocode_provider::cache::CloseAiCompatibleApiShape::Responses
+                    }
+                    _ => rocode_provider::cache::CloseAiCompatibleApiShape::ChatCompletions,
+                },
+            );
         let closeai_prompt_cache_key = fingerprint
             .closeai
             .as_ref()
@@ -1636,6 +1740,7 @@ impl SessionPrompt {
         tools: &[ToolDefinition],
         compiled_request: &CompiledExecutionRequest,
         provider_type: ProviderType,
+        provider_profile: Option<ProviderProfileFingerprint>,
     ) -> CacheRequestFingerprint {
         let family = Self::cache_protocol_family(provider_type);
         let api_params = serde_json::json!({
@@ -1689,6 +1794,7 @@ impl SessionPrompt {
         CacheRequestFingerprint {
             family,
             surface,
+            provider_profile,
             closeai,
             ethnopic,
         }
@@ -1958,6 +2064,7 @@ impl SessionPrompt {
                 &extra_tools,
             );
             let resolved_tools = merge_tool_definitions(base_tools, extra_tools);
+            let provider_profile = prompt_ctx.provider.provider_profile_fingerprint();
             let cache_fingerprint = Self::cache_request_fingerprint(
                 &session_id,
                 &prompt_ctx.provider_id,
@@ -1967,6 +2074,7 @@ impl SessionPrompt {
                 &resolved_tools,
                 &prompt_ctx.compiled_request,
                 provider_type,
+                provider_profile,
             );
             let previous_cache_fingerprint = Self::latest_cache_request_fingerprint(session);
             let cache_bust_inspection = inspect_cache_fingerprint_change(

@@ -1,4 +1,7 @@
-use rocode_provider::{create_protocol_impl, ChatRequest, Protocol, ProtocolImpl, ProviderConfig};
+use rocode_provider::{
+    create_legacy_protocol_impl, create_protocol_impl, create_protocol_impl_for_profile,
+    ChatRequest, Protocol, ProtocolImpl, ProviderConfig, ProviderProfileResolver,
+};
 use std::collections::HashMap;
 
 #[test]
@@ -80,6 +83,33 @@ fn test_protocol_case_insensitive() {
 fn test_protocol_alias_labels() {
     assert_eq!(Protocol::Messages.to_string(), "Anthropic");
     assert_eq!(Protocol::OpenAI.to_string(), "OpenAI");
+}
+
+#[test]
+fn test_protocol_from_profile_projects_vendor_protocols_as_legacy_adapter() {
+    let options = HashMap::new();
+    let gitlab =
+        ProviderProfileResolver::resolve_with_npm("gitlab", "@gitlab/gitlab-ai-provider", &options);
+    let copilot = ProviderProfileResolver::resolve_with_npm(
+        "github-copilot",
+        "@ai-sdk/github-copilot",
+        &options,
+    );
+    let vertex = ProviderProfileResolver::resolve_with_npm(
+        "google-vertex",
+        "@ai-sdk/google-vertex",
+        &options,
+    );
+    let closeai = ProviderProfileResolver::resolve_with_npm(
+        "custom-closeai",
+        "@ai-sdk/openai-compatible",
+        &options,
+    );
+
+    assert_eq!(Protocol::from_profile(&gitlab), Protocol::GitLab);
+    assert_eq!(Protocol::from_profile(&copilot), Protocol::GitHubCopilot);
+    assert_eq!(Protocol::from_profile(&vertex), Protocol::Vertex);
+    assert_eq!(Protocol::from_profile(&closeai), Protocol::OpenAI);
 }
 
 #[test]
@@ -174,7 +204,22 @@ fn test_create_protocol_impl_openai() {
 }
 
 #[test]
+fn test_create_legacy_protocol_impl_openai() {
+    let protocol = create_legacy_protocol_impl(Protocol::OpenAI);
+    let _arc: std::sync::Arc<dyn ProtocolImpl> = protocol;
+}
+
+#[test]
 fn test_create_protocol_impl_ethnopic_family() {
     let protocol = create_protocol_impl(Protocol::Messages);
+    let _arc: std::sync::Arc<dyn ProtocolImpl> = protocol;
+}
+
+#[test]
+fn test_create_protocol_impl_for_profile() {
+    let options = HashMap::new();
+    let profile =
+        ProviderProfileResolver::resolve_with_npm("ethnopic", "@ai-sdk/anthropic", &options);
+    let protocol = create_protocol_impl_for_profile(&profile);
     let _arc: std::sync::Arc<dyn ProtocolImpl> = protocol;
 }

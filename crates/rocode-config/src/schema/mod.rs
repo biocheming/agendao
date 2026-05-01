@@ -829,6 +829,21 @@ pub struct ProviderConfig {
     pub options: Option<HashMap<String, serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub npm: Option<String>,
+    #[serde(
+        alias = "apiStyle",
+        alias = "api_family",
+        alias = "apiFamily",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub api_style: Option<String>,
+    #[serde(alias = "apiShape", skip_serializing_if = "Option::is_none")]
+    pub api_shape: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    #[serde(alias = "usageShape", skip_serializing_if = "Option::is_none")]
+    pub usage_shape: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quirks: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

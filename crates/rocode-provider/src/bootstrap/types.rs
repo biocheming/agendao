@@ -255,6 +255,16 @@ pub struct ConfigProvider {
     pub api: Option<String>,
     #[serde(default)]
     pub npm: Option<String>,
+    #[serde(default, alias = "apiStyle", alias = "api_family", alias = "apiFamily")]
+    pub api_style: Option<String>,
+    #[serde(default, alias = "apiShape")]
+    pub api_shape: Option<String>,
+    #[serde(default)]
+    pub transport: Option<String>,
+    #[serde(default, alias = "usageShape")]
+    pub usage_shape: Option<String>,
+    #[serde(default)]
+    pub quirks: Option<Vec<String>>,
     #[serde(default)]
     pub options: Option<HashMap<String, serde_json::Value>>,
     #[serde(default)]

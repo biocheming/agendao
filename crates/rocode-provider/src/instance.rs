@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::{
-    runtime::ProviderRuntime, ChatRequest, ChatResponse, ModelInfo, ProtocolImpl, Provider,
-    ProviderConfig, ProviderError, StreamResult,
+    cache::ProviderProfileFingerprint, runtime::ProviderRuntime, ChatRequest, ChatResponse,
+    ModelInfo, ProtocolImpl, Provider, ProviderConfig, ProviderError, StreamResult,
 };
 
 /// Runtime provider instance combining protocol implementation + config + models.
@@ -17,6 +17,7 @@ pub struct ProviderInstance {
     client: Client,
     models: HashMap<String, ModelInfo>,
     runtime: Option<ProviderRuntime>,
+    provider_profile_fingerprint: Option<ProviderProfileFingerprint>,
 }
 
 impl ProviderInstance {
@@ -35,7 +36,16 @@ impl ProviderInstance {
             client: Client::new(),
             models,
             runtime: None,
+            provider_profile_fingerprint: None,
         }
+    }
+
+    pub fn with_provider_profile_fingerprint(
+        mut self,
+        fingerprint: ProviderProfileFingerprint,
+    ) -> Self {
+        self.provider_profile_fingerprint = Some(fingerprint);
+        self
     }
 
     pub fn with_runtime(mut self, runtime: ProviderRuntime) -> Self {
@@ -64,6 +74,10 @@ impl Provider for ProviderInstance {
 
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn provider_profile_fingerprint(&self) -> Option<ProviderProfileFingerprint> {
+        self.provider_profile_fingerprint.clone()
     }
 
     fn models(&self) -> Vec<ModelInfo> {
