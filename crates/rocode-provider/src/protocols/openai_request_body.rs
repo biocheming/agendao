@@ -281,9 +281,27 @@ pub(super) fn build_request_body(request: &ChatRequest) -> Result<Value, Provide
                 Value::String(effort.to_string()),
             );
         }
+
+        // Models like deepseek-v4 automatically enter thinking mode based
+        // on conversation complexity. Until reasoning_content round-trip
+        // is fully supported, explicitly disable thinking when the user
+        // has not opted in with a variant.
+        if request.variant.is_none() && is_auto_thinking_model(&request.model) {
+            if !obj.contains_key("thinking") {
+                obj.insert(
+                    "thinking".to_string(),
+                    serde_json::json!({"type": "disabled"}),
+                );
+            }
+        }
     }
 
     Ok(value)
+}
+
+fn is_auto_thinking_model(model_id: &str) -> bool {
+    let id = model_id.to_lowercase();
+    id.contains("deepseek") && id.contains("v4")
 }
 
 pub(super) fn openai_reasoning_effort(
