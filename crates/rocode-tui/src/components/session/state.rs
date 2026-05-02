@@ -582,6 +582,9 @@ fn record_session_render_perf(mut update: impl FnMut(&mut SessionRenderPerfCount
 }
 
 #[cfg(not(test))]
+// Render perf counters are test-only instrumentation. Non-test builds compile
+// the call sites down to a no-op so the main TUI render path stays allocation-
+// free and branch-light.
 fn record_session_render_perf(_update: impl FnMut(&mut SessionRenderPerfCounters)) {}
 
 #[cfg(test)]
