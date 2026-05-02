@@ -547,6 +547,11 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
         _: Option<u32>,
         _: &OrchestratorExecutionContext,
     ) {
+        // Intentionally empty for now. Session-level snapshotting is anchored
+        // at the first step start and at successful file-modifying tool
+        // completion so we do not mutate session state before the scheduler
+        // has actually begun work. Future orchestration-level metadata can be
+        // recorded here without touching prompt-visible context.
     }
 
     async fn on_step_start(

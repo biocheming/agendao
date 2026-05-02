@@ -15,6 +15,9 @@ pub trait RenderSurface {
         state: &mut W::State,
     );
 
+    // Cursor placement is an optional capability: interactive terminal
+    // surfaces can honor it, while offscreen/test surfaces may safely ignore
+    // it and still reuse the same rendering code.
     fn set_cursor_position(&mut self, _x: u16, _y: u16) {}
 }
 

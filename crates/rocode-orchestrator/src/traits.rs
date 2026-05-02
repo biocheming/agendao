@@ -65,6 +65,8 @@ pub trait LifecycleHook: Send + Sync {
         _tool_args: &serde_json::Value,
         _exec_ctx: &ExecutionContext,
     ) {
+        // Optional observability hook. Most hook implementations only care about
+        // a subset of lifecycle events, so the default remains a true no-op.
     }
 
     async fn on_tool_end(
@@ -75,6 +77,8 @@ pub trait LifecycleHook: Send + Sync {
         _tool_output: &ToolOutput,
         _exec_ctx: &ExecutionContext,
     ) {
+        // Optional observability hook. Concrete implementations should add
+        // behavior here instead of changing the default no-op contract.
     }
 
     async fn on_orchestration_end(&self, agent_name: &str, steps: u32, exec_ctx: &ExecutionContext);
@@ -87,6 +91,8 @@ pub trait LifecycleHook: Send + Sync {
         _capabilities: Option<&SchedulerStageCapabilities>,
         _exec_ctx: &ExecutionContext,
     ) {
+        // Optional stage-timeline hook for implementations that surface
+        // scheduler progress, usage, or remote control metadata.
     }
 
     async fn on_scheduler_stage_end(
@@ -98,6 +104,8 @@ pub trait LifecycleHook: Send + Sync {
         _content: &str,
         _exec_ctx: &ExecutionContext,
     ) {
+        // Optional stage-timeline hook. Left empty so callers can ignore stage
+        // end notifications without extra boilerplate.
     }
 
     async fn on_scheduler_stage_content(
@@ -107,6 +115,8 @@ pub trait LifecycleHook: Send + Sync {
         _content_delta: &str,
         _exec_ctx: &ExecutionContext,
     ) {
+        // Optional streaming hook for UIs or telemetry sinks that want
+        // incremental stage content.
     }
 
     async fn on_scheduler_stage_reasoning(
@@ -116,6 +126,8 @@ pub trait LifecycleHook: Send + Sync {
         _reasoning_delta: &str,
         _exec_ctx: &ExecutionContext,
     ) {
+        // Optional streaming hook for implementations that expose reasoning
+        // separately from visible content.
     }
 
     async fn on_scheduler_stage_usage(
@@ -126,9 +138,14 @@ pub trait LifecycleHook: Send + Sync {
         _finalized: bool,
         _exec_ctx: &ExecutionContext,
     ) {
+        // Optional usage hook. The default no-op keeps the trait ergonomic for
+        // callers that do not collect per-stage token accounting.
     }
 }
 
+/// Null-object hook for runtimes and tests that do not need lifecycle
+/// observability. Keeping this explicit avoids ad hoc empty hook structs at
+/// call sites.
 pub struct NoopLifecycleHook;
 
 #[async_trait]

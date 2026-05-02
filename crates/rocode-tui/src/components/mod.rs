@@ -1,4 +1,3 @@
-mod dialog;
 mod dialogs;
 mod diff;
 mod home;
@@ -24,7 +23,6 @@ mod todo_item;
 mod tool_call;
 mod tool_views;
 
-pub use dialog::Dialog;
 pub use dialogs::{
     provider_from_connect_draft, Agent, AgentSelectDialog, AlertDialog, CommandPalette,
     ConfirmDialog, CustomProviderState, CustomProviderStep, ForkDialog, ForkEntry, HelpDialog,
