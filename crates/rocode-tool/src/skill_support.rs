@@ -1,12 +1,14 @@
 use rocode_config::ConfigStore;
 use rocode_skill::{
     infer_toolsets_from_tools, LoadedSkill, LoadedSkillFile, SkillAuthority, SkillCategoryView,
-    SkillDetailView, SkillError, SkillFilter, SkillGovernanceAuthority, SkillMetaView,
+    SkillDetailView, SkillError, SkillFileRef, SkillFilter, SkillGovernanceAuthority,
+    SkillMetaView,
 };
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::execution_preflight::ExecutionPreflightReport;
 use crate::{Metadata, ToolContext, ToolError};
 
 #[derive(Debug, Clone, Default)]
@@ -409,6 +411,90 @@ pub(crate) fn format_loaded_skill_output(
     (output, metadata)
 }
 
+pub(crate) fn build_skill_runtime_preflight(
+    skill_name: &str,
+    subject: &str,
+    supporting_files: &[SkillFileRef],
+    detail: &SkillDetailView,
+) -> ExecutionPreflightReport {
+    let mut report = ExecutionPreflightReport::new("skill_runtime_requirements", subject);
+    report
+        .metadata
+        .insert("skill_name".to_string(), serde_json::json!(skill_name));
+    report.metadata.insert(
+        "supporting_files".to_string(),
+        serde_json::json!(supporting_files
+            .iter()
+            .map(|file| file.relative_path.clone())
+            .collect::<Vec<_>>()),
+    );
+    report.metadata.insert(
+        "supporting_file_count".to_string(),
+        serde_json::json!(supporting_files.len()),
+    );
+    report.metadata.insert(
+        "required_environment_variables".to_string(),
+        serde_json::json!(detail.required_environment_variables),
+    );
+    report.metadata.insert(
+        "required_commands".to_string(),
+        serde_json::json!(detail.required_commands),
+    );
+    report.metadata.insert(
+        "missing_required_environment_variables".to_string(),
+        serde_json::json!(detail.missing_required_environment_variables),
+    );
+    report.metadata.insert(
+        "missing_required_commands".to_string(),
+        serde_json::json!(detail.missing_required_commands),
+    );
+    report.metadata.insert(
+        "setup_needed".to_string(),
+        serde_json::json!(detail.setup_needed),
+    );
+    report.metadata.insert(
+        "setup_skipped".to_string(),
+        serde_json::json!(detail.setup_skipped),
+    );
+    report.metadata.insert(
+        "readiness_status".to_string(),
+        serde_json::json!(detail.readiness_status),
+    );
+
+    if !detail.missing_required_environment_variables.is_empty() {
+        report = report.soft_warn(
+            "missing_required_environment_variables",
+            format!(
+                "skill runtime is missing environment variables: {}",
+                detail.missing_required_environment_variables.join(", ")
+            ),
+        );
+    }
+
+    if !detail.missing_required_commands.is_empty() {
+        report = report.soft_warn(
+            "missing_required_commands",
+            format!(
+                "skill runtime is missing commands: {}",
+                detail.missing_required_commands.join(", ")
+            ),
+        );
+    }
+
+    report
+}
+
+pub(crate) fn attach_skill_runtime_preflight(
+    metadata: &mut Metadata,
+    skill_name: &str,
+    subject: &str,
+    supporting_files: &[SkillFileRef],
+    detail: &SkillDetailView,
+) {
+    let report = build_skill_runtime_preflight(skill_name, subject, supporting_files, detail);
+    report.attach_to_metadata(metadata);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -632,6 +718,44 @@ mod tests {
         );
         assert_eq!(metadata.get("file_type"), Some(&serde_json::json!(".md")));
         assert_eq!(metadata.get("is_binary"), Some(&serde_json::json!(false)));
+    }
+
+    #[test]
+    fn skill_runtime_preflight_surfaces_missing_requirements_as_soft_warn() {
+        let detail = SkillDetailView {
+            required_environment_variables: vec![SkillRequiredEnvironmentVariable {
+                name: "DEMO_API_KEY".to_string(),
+                description: Some("Demo token".to_string()),
+                prompt: None,
+                help: None,
+                required_for: None,
+            }],
+            required_commands: vec!["demo-cli".to_string()],
+            missing_required_environment_variables: vec!["DEMO_API_KEY".to_string()],
+            missing_required_commands: vec!["demo-cli".to_string()],
+            setup_needed: true,
+            setup_skipped: false,
+            readiness_status: SkillReadinessStatus::SetupNeeded,
+            ..SkillDetailView::default()
+        };
+        let supporting_files = vec![SkillFileRef {
+            relative_path: "references/api.md".to_string(),
+            location: PathBuf::from("/tmp/example/references/api.md"),
+        }];
+
+        let report =
+            build_skill_runtime_preflight("example", "example", &supporting_files, &detail);
+
+        assert_eq!(report.status(), crate::ExecutionPreflightStatus::SoftWarn);
+        assert_eq!(report.issues.len(), 2);
+        assert_eq!(
+            report.metadata.get("supporting_file_count"),
+            Some(&serde_json::json!(1))
+        );
+        assert_eq!(
+            report.metadata.get("readiness_status"),
+            Some(&serde_json::json!("setup_needed"))
+        );
     }
 }
 

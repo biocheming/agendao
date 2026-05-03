@@ -10,6 +10,7 @@ pub mod codesearch;
 pub mod context_docs;
 pub mod context_docs_backend;
 pub mod edit;
+mod execution_preflight;
 pub mod external_directory;
 pub mod git_runtime;
 pub mod github_research;
@@ -47,6 +48,11 @@ pub mod webfetch;
 pub mod websearch;
 pub mod write;
 
+pub use execution_preflight::{
+    execution_preflight_from_metadata, execution_preflight_from_value, ExecutionPreflightIssue,
+    ExecutionPreflightMetadata, ExecutionPreflightSeverity, ExecutionPreflightStatus,
+    EXECUTION_PREFLIGHT_METADATA_KEY,
+};
 pub use external_directory::{
     assert_external_directory, ExternalDirectoryKind, ExternalDirectoryOptions,
 };

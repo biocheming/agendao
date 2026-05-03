@@ -3,9 +3,9 @@ use serde::Deserialize;
 use std::path::Path;
 
 use crate::skill_support::{
-    authority_for, format_loaded_skill_file_output, format_loaded_skill_output,
-    load_skill_with_runtime_materialization, map_skill_error, resolve_skill_filter,
-    resolve_skill_with_runtime_materialization,
+    attach_skill_runtime_preflight, authority_for, format_loaded_skill_file_output,
+    format_loaded_skill_output, load_skill_with_runtime_materialization, map_skill_error,
+    resolve_skill_filter, resolve_skill_with_runtime_materialization,
 };
 use crate::{PermissionRequest, Tool, ToolContext, ToolError, ToolResult};
 
@@ -74,7 +74,17 @@ impl Tool for SkillViewTool {
             let loaded = authority
                 .load_skill_file(&meta.name, file_path)
                 .map_err(map_skill_error)?;
-            let (output, metadata) = format_loaded_skill_file_output(&loaded);
+            let detail = authority
+                .load_skill_detail_for_meta(&meta)
+                .map_err(map_skill_error)?;
+            let (output, mut metadata) = format_loaded_skill_file_output(&loaded);
+            attach_skill_runtime_preflight(
+                &mut metadata,
+                &meta.name,
+                &format!("{}::{}", meta.name, loaded.file_path),
+                &meta.supporting_files,
+                &detail,
+            );
             return Ok(ToolResult {
                 title: format!(
                     "Loaded skill file: {} :: {}",
@@ -104,12 +114,19 @@ impl Tool for SkillViewTool {
         let detail = authority
             .load_skill_detail_for_meta(&loaded.meta)
             .map_err(map_skill_error)?;
-        let (output, metadata) = format_loaded_skill_output(
+        let (output, mut metadata) = format_loaded_skill_output(
             &loaded,
             Some(&detail),
             Path::new(&ctx.directory),
             None,
             None,
+        );
+        attach_skill_runtime_preflight(
+            &mut metadata,
+            &loaded.meta.name,
+            &loaded.meta.name,
+            &loaded.meta.supporting_files,
+            &detail,
         );
         Ok(ToolResult {
             title: format!("Loaded skill: {}", loaded.meta.name),
@@ -117,5 +134,57 @@ impl Tool for SkillViewTool {
             metadata,
             truncated: false,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn skill_view_file_result_attaches_skill_runtime_preflight() {
+        let dir = tempdir().unwrap();
+        let skill_dir = dir.path().join(".rocode/skills/frontend-ui-ux");
+        std::fs::create_dir_all(skill_dir.join("references")).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            r#"---
+name: frontend-ui-ux
+description: frontend
+required_commands: [definitely-missing-skill-cli]
+---
+Use clear visual hierarchy.
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            skill_dir.join("references/api.md"),
+            "Use the design tokens in this file.\n",
+        )
+        .unwrap();
+
+        let ctx = ToolContext::new(
+            "session-1".into(),
+            "message-1".into(),
+            dir.path().to_string_lossy().to_string(),
+        );
+        let args = serde_json::json!({
+            "name": "frontend-ui-ux",
+            "file_path": "references/api.md"
+        });
+
+        let result = SkillViewTool.execute(args, ctx).await.unwrap();
+
+        assert_eq!(result.metadata["file"], "references/api.md");
+        assert_eq!(
+            result.metadata["preflight"]["subject"],
+            "frontend-ui-ux::references/api.md"
+        );
+        assert_eq!(result.metadata["preflight"]["status"], "soft_warn");
+        assert_eq!(
+            result.metadata["preflight"]["metadata"]["missing_required_commands"],
+            serde_json::json!(["definitely-missing-skill-cli"])
+        );
     }
 }

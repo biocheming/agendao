@@ -310,6 +310,52 @@ pub struct ChildSessionSummary {
     pub parent_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionPreflightSeverity {
+    Advisory,
+    SoftWarn,
+    HardFail,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionPreflightStatus {
+    Ready,
+    Advisory,
+    SoftWarn,
+    HardFail,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecutionPreflightIssue {
+    pub severity: ExecutionPreflightSeverity,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionExecutionPreflightSource {
+    ToolCallState,
+    ToolResultPart,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionExecutionPreflightSummary {
+    pub tool_call_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    pub source: SessionExecutionPreflightSource,
+    pub runner: String,
+    pub subject: String,
+    pub status: ExecutionPreflightStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub issues: Vec<ExecutionPreflightIssue>,
+    #[serde(default)]
+    pub attachment_count: usize,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderDiagnosticSeverity {
@@ -351,6 +397,8 @@ pub struct SessionTelemetrySnapshot {
     pub prompt_surface_runtime_snapshot: Option<serde_json::Value>,
     #[serde(default)]
     pub ingress_stabilization: Option<serde_json::Value>,
+    #[serde(default)]
+    pub execution_preflight_summary: Option<SessionExecutionPreflightSummary>,
     #[serde(default)]
     pub provider_diagnostic_summary: Option<ProviderDiagnosticSummary>,
 }

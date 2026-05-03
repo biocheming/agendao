@@ -788,11 +788,31 @@ mod tests {
     use crate::session_runtime::{emit_scheduler_stage_message, SchedulerStageMessageInput};
     use crate::ServerState;
     use rocode_orchestrator::ExecutionContext;
-    use rocode_plugin::{global, Hook};
+    use rocode_plugin::{global, Hook, HookContext};
     use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::sync::mpsc;
     use tokio::time::{timeout, Duration};
+
+    async fn recv_stage_summary_hook_for_session(
+        rx: &mut mpsc::UnboundedReceiver<HookContext>,
+        session_id: &str,
+        wait: Duration,
+    ) -> Option<HookContext> {
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return None;
+            }
+            let remaining = deadline.saturating_duration_since(now);
+            match timeout(remaining, rx.recv()).await {
+                Ok(Some(ctx)) if ctx.session_id.as_deref() == Some(session_id) => return Some(ctx),
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => return None,
+            }
+        }
+    }
 
     #[tokio::test]
     async fn refresh_stage_summary_emits_hook_from_authority_summary() {
@@ -839,10 +859,10 @@ mod tests {
         })
         .await;
 
-        let hook_ctx = timeout(Duration::from_secs(1), rx.recv())
-            .await
-            .expect("hook should fire")
-            .expect("hook payload should arrive");
+        let hook_ctx =
+            recv_stage_summary_hook_for_session(&mut rx, &session_id, Duration::from_secs(1))
+                .await
+                .expect("hook payload should arrive");
         assert_eq!(hook_ctx.session_id.as_deref(), Some(session_id.as_str()));
         assert_eq!(
             hook_ctx.get("sessionID"),
@@ -872,9 +892,13 @@ mod tests {
             .runtime_telemetry
             .refresh_stage_summary_from_message(&session_id, &message_snapshot)
             .await;
-        assert!(timeout(Duration::from_millis(200), rx.recv())
-            .await
-            .is_err());
+        assert!(recv_stage_summary_hook_for_session(
+            &mut rx,
+            &session_id,
+            Duration::from_millis(200)
+        )
+        .await
+        .is_none());
 
         let _ = global()
             .remove(&HookEvent::StageSummaryUpdated, &hook_name)
