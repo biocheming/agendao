@@ -29,7 +29,9 @@ use db::{handle_db_command, handle_stats_command};
 use debug::handle_debug_command;
 use generate::list_models;
 use github::{handle_github_command, handle_pr_command};
-use import_export::{export_session_data, import_session_data};
+use import_export::{
+    export_memory_data, export_session_data, import_memory_data, import_session_data,
+};
 use mcp_cmd::handle_mcp_command;
 use run::{run_non_interactive, RunNonInteractiveOptions};
 pub use server_lifecycle::{FrontendRuntimeContext, ServerDiscoveryRequest};
@@ -106,6 +108,14 @@ where
         Commands::Session { action } => {
             handle_session_command(action).await?;
         }
+        Commands::Memory { action } => match action {
+            MemoryCommands::Export { output } => {
+                export_memory_data(output).await?;
+            }
+            MemoryCommands::Import { file } => {
+                import_memory_data(file).await?;
+            }
+        },
         Commands::Skill { action } => {
             handle_skill_command(action, &runtime_context).await?;
         }

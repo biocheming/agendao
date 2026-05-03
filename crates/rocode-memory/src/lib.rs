@@ -1,8 +1,13 @@
+mod artifact;
 mod authority;
 mod consolidation;
 mod rules;
 mod validation;
 
+pub use artifact::{
+    export_memory_artifact_bundle, import_memory_artifact_bundle,
+    import_memory_artifact_bundle_with_legacy_adapter, MemoryArtifactLegacyAdapter,
+};
 pub use authority::{
     allowed_scopes_for_mode, load_last_prefetch_packet, load_persisted_memory_snapshot,
     persist_last_prefetch_packet, persist_persisted_memory_snapshot, render_frozen_snapshot_block,

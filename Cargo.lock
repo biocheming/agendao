@@ -3331,6 +3331,7 @@ dependencies = [
  "rocode-grep",
  "rocode-launcher",
  "rocode-lsp",
+ "rocode-memory",
  "rocode-multimodal",
  "rocode-orchestrator",
  "rocode-permission",
