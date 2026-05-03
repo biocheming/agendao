@@ -65,6 +65,17 @@ fn ingress_stabilization_label(value: Option<&serde_json::Value>) -> Option<Stri
     }
 }
 
+fn provider_diagnostic_label(
+    summary: Option<&crate::api_client::ProviderDiagnosticSummary>,
+) -> Option<String> {
+    let summary = summary?;
+    match summary.code.as_str() {
+        "thinking_replay_missing" => Some("thinking replay missing".to_string()),
+        "thinking_replay_rejected" => Some("thinking replay rejected".to_string()),
+        _ => Some(summary.code.replace('_', " ")),
+    }
+}
+
 fn merge_pending_command_arguments(
     pending: &crate::api_client::PendingCommandInvocation,
     answers: &[Vec<String>],
@@ -978,6 +989,8 @@ async fn cli_refresh_server_info(
                         });
                     projection.ingress_diagnostic =
                         ingress_stabilization_label(telemetry.ingress_stabilization.as_ref());
+                    projection.provider_diagnostic =
+                        provider_diagnostic_label(telemetry.provider_diagnostic_summary.as_ref());
                 }
             }
             Err(error) => {

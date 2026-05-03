@@ -38,8 +38,7 @@ pub(super) fn to_openai_compatible_chat_messages(messages: &[Message]) -> Vec<Va
                 }));
             }
             Role::Assistant => {
-                let (assistant_msg, emitted_tool_calls) =
-                    assistant_message_to_openai(&message.content);
+                let (assistant_msg, emitted_tool_calls) = assistant_message_to_openai(message);
                 assistant_tool_call_ids.extend(emitted_tool_calls.iter().cloned());
                 converted.push(assistant_msg);
                 for tool_call_id in emitted_tool_calls {
@@ -115,8 +114,41 @@ fn user_content_to_openai(content: &crate::Content) -> Value {
     }
 }
 
-fn assistant_message_to_openai(content: &crate::Content) -> (Value, Vec<String>) {
-    match content {
+fn assistant_reasoning_wire_fields(
+    message: &Message,
+    parts: &[crate::ContentPart],
+) -> Map<String, Value> {
+    let mut fields = Map::new();
+
+    apply_reasoning_wire_fields(message.provider_options.as_ref(), &mut fields);
+    for part in parts {
+        apply_reasoning_wire_fields(part.provider_options.as_ref(), &mut fields);
+    }
+
+    fields
+}
+
+fn apply_reasoning_wire_fields(
+    provider_options: Option<&std::collections::HashMap<String, Value>>,
+    fields: &mut Map<String, Value>,
+) {
+    let Some(provider_options) = provider_options else {
+        return;
+    };
+
+    let Some(Value::Object(openai_compatible)) = provider_options.get("openaiCompatible") else {
+        return;
+    };
+
+    for field in ["reasoning_content", "reasoning_details"] {
+        if let Some(value) = openai_compatible.get(field) {
+            fields.insert(field.to_string(), value.clone());
+        }
+    }
+}
+
+fn assistant_message_to_openai(message: &Message) -> (Value, Vec<String>) {
+    match &message.content {
         crate::Content::Text(text) => (
             json!({
                 "role": "assistant",
@@ -136,7 +168,7 @@ fn assistant_message_to_openai(content: &crate::Content) -> (Value, Vec<String>)
                             text.push_str(part_text);
                         }
                     }
-                    "reasoning" => {
+                    "reasoning" | "thinking" => {
                         if let Some(part_text) = &part.text {
                             reasoning_content.push_str(part_text);
                         }
@@ -166,18 +198,23 @@ fn assistant_message_to_openai(content: &crate::Content) -> (Value, Vec<String>)
                 }
             }
 
-            let mut message = Map::new();
-            message.insert("role".to_string(), Value::String("assistant".to_string()));
-            if !reasoning_content.is_empty() {
-                message.insert(
+            let mut assistant_obj = Map::new();
+            assistant_obj.insert("role".to_string(), Value::String("assistant".to_string()));
+            let reasoning_wire_fields = assistant_reasoning_wire_fields(message, parts);
+            if !reasoning_wire_fields.is_empty() {
+                for (field, value) in reasoning_wire_fields {
+                    assistant_obj.insert(field, value);
+                }
+            } else if !reasoning_content.is_empty() {
+                assistant_obj.insert(
                     "reasoning_content".to_string(),
                     Value::String(reasoning_content),
                 );
             }
             if tool_calls.is_empty() {
-                message.insert("content".to_string(), Value::String(text));
+                assistant_obj.insert("content".to_string(), Value::String(text));
             } else {
-                message.insert(
+                assistant_obj.insert(
                     "content".to_string(),
                     if text.is_empty() {
                         Value::Null
@@ -185,9 +222,9 @@ fn assistant_message_to_openai(content: &crate::Content) -> (Value, Vec<String>)
                         Value::String(text)
                     },
                 );
-                message.insert("tool_calls".to_string(), Value::Array(tool_calls));
+                assistant_obj.insert("tool_calls".to_string(), Value::Array(tool_calls));
             }
-            let ids = message
+            let ids = assistant_obj
                 .get("tool_calls")
                 .and_then(|value| value.as_array())
                 .map(|calls| {
@@ -199,7 +236,7 @@ fn assistant_message_to_openai(content: &crate::Content) -> (Value, Vec<String>)
                 })
                 .unwrap_or_default();
 
-            (Value::Object(message), ids)
+            (Value::Object(assistant_obj), ids)
         }
     }
 }

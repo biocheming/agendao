@@ -107,6 +107,7 @@ export interface SessionTelemetrySnapshotRecord {
   cache_bust_summary?: Record<string, unknown> | null;
   prompt_surface_runtime_snapshot?: Record<string, unknown> | null;
   ingress_stabilization?: Record<string, unknown> | null;
+  provider_diagnostic_summary?: Record<string, unknown> | null;
 }
 
 export interface ActivityEventRecord {

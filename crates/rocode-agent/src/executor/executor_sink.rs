@@ -11,31 +11,22 @@ use super::{AgentError, AgentRenderEvent, AgentRenderOutcome, AgentToolOutput};
 
 pub(super) fn map_runtime_loop_error(error: RuntimeLoopError) -> AgentError {
     match error {
-        RuntimeLoopError::ModelError(message) => {
-            if message.contains("no provider available") {
+        RuntimeLoopError::ModelError(failure) => {
+            if failure.is_provider_not_found() {
                 AgentError::NoProvider
             } else {
-                AgentError::ProviderError(message)
+                AgentError::ProviderError(failure.to_string())
             }
         }
         RuntimeLoopError::ToolDispatchError { error, .. } => AgentError::ToolError(error),
         RuntimeLoopError::Cancelled => AgentError::Cancelled,
         RuntimeLoopError::SinkError(message) => {
-            if message.contains("no provider available") {
-                return AgentError::NoProvider;
-            }
             if let Some(inner) = message.strip_prefix("model call failed: ") {
                 return AgentError::ProviderError(inner.to_string());
             }
             AgentError::ProviderError(message)
         }
-        RuntimeLoopError::Other(message) => {
-            if message.contains("no provider available") {
-                AgentError::NoProvider
-            } else {
-                AgentError::ProviderError(message)
-            }
-        }
+        RuntimeLoopError::Other(message) => AgentError::ProviderError(message),
     }
 }
 
@@ -418,7 +409,9 @@ impl LoopSink for AgentStreamingLoopSink {
             }
             LoopEvent::Error(message) => {
                 self.outcome.stream_error = Some(message.clone());
-                return Err(RuntimeLoopError::ModelError(message.clone()));
+                return Err(RuntimeLoopError::ModelError(
+                    rocode_orchestrator::runtime::events::ModelFailure::Message(message.clone()),
+                ));
             }
             LoopEvent::StepDone { usage, .. } => {
                 if let Some(usage) = usage {
@@ -552,5 +545,44 @@ impl LoopSink for AgentStreamingLoopSink {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::map_runtime_loop_error;
+    use crate::executor::AgentError;
+    use rocode_orchestrator::runtime::events::LoopError as RuntimeLoopError;
+
+    #[test]
+    fn sink_error_no_longer_maps_no_provider_by_substring() {
+        let error = map_runtime_loop_error(RuntimeLoopError::SinkError(
+            "no provider available".to_string(),
+        ));
+
+        assert!(
+            matches!(error, AgentError::ProviderError(message) if message == "no provider available")
+        );
+    }
+
+    #[test]
+    fn sink_error_still_strips_model_call_failed_prefix() {
+        let error = map_runtime_loop_error(RuntimeLoopError::SinkError(
+            "model call failed: upstream exploded".to_string(),
+        ));
+
+        assert!(
+            matches!(error, AgentError::ProviderError(message) if message == "upstream exploded")
+        );
+    }
+
+    #[test]
+    fn other_error_no_longer_maps_no_provider_by_substring() {
+        let error =
+            map_runtime_loop_error(RuntimeLoopError::Other("no provider available".to_string()));
+
+        assert!(
+            matches!(error, AgentError::ProviderError(message) if message == "no provider available")
+        );
     }
 }

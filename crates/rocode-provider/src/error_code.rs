@@ -1,7 +1,9 @@
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// AI-Protocol V2 standard error codes used for cross-provider consistency.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum StandardErrorCode {
     InvalidRequest,
     Authentication,

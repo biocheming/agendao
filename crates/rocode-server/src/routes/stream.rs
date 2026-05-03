@@ -19,6 +19,7 @@ use rocode_provider::ToolDefinition;
 use rocode_session::{MessageRole as SessionMessageRole, Session};
 
 use super::permission::request_permission;
+use super::provider_diagnostics::attach_provider_diagnostic_from_error;
 use super::session::{
     resolve_prompt_request_config, resolved_session_directory, to_task_agent_info,
     SendMessageRequest,
@@ -435,6 +436,12 @@ pub(crate) async fn stream_message(
                     .metadata
                     .insert("agent".to_string(), serde_json::json!(agent));
             }
+            attach_provider_diagnostic_from_error(
+                assistant,
+                &error,
+                &stream_provider_id,
+                Some(&stream_model_id),
+            );
             assistant.add_text(format!("Provider error: {}", error));
             let _ = update_tx.send(session.clone());
             let message_id = session

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
@@ -36,6 +37,8 @@ pub struct SessionTelemetrySnapshot {
     pub prompt_surface_runtime_snapshot: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ingress_stabilization: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_diagnostic_summary: Option<rocode_provider::ProviderDiagnosticSummary>,
 }
 
 pub(super) async fn get_session_telemetry(
@@ -113,6 +116,7 @@ pub(super) async fn build_session_telemetry_snapshot(
     let cache_bust_summary = latest_cache_bust_summary(session);
     let prompt_surface_runtime_snapshot = prompt_surface_runtime_snapshot(session);
     let ingress_stabilization = latest_ingress_stabilization(session);
+    let provider_diagnostic_summary = latest_provider_diagnostic_summary(session);
 
     Ok(SessionTelemetrySnapshot {
         runtime,
@@ -123,6 +127,7 @@ pub(super) async fn build_session_telemetry_snapshot(
         cache_bust_summary,
         prompt_surface_runtime_snapshot,
         ingress_stabilization,
+        provider_diagnostic_summary,
     })
 }
 
@@ -166,6 +171,21 @@ fn prompt_surface_runtime_snapshot(session: &Session) -> Option<serde_json::Valu
                         .get(rocode_session::prompt::PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY)
                         .cloned()
                 })
+        })
+}
+
+fn latest_provider_diagnostic_summary(
+    session: &Session,
+) -> Option<rocode_provider::ProviderDiagnosticSummary> {
+    session
+        .messages
+        .iter()
+        .rev()
+        .find(|message| matches!(message.role, MessageRole::Assistant))
+        .and_then(|message| {
+            rocode_provider::provider_error_summary_from_metadata(&message.metadata)
+                .and_then(|summary| summary.provider_diagnostic)
+                .or_else(|| rocode_provider::provider_diagnostic_from_metadata(&message.metadata))
         })
 }
 
@@ -318,6 +338,27 @@ mod tests {
     }
 
     #[test]
+    fn latest_provider_diagnostic_summary_reads_assistant_metadata() {
+        let mut session = Session::new("session-1".to_string(), ".".to_string());
+        let assistant = session.add_assistant_message();
+        rocode_provider::ProviderDiagnosticSummary {
+            severity: rocode_provider::ProviderDiagnosticSeverity::HardFail,
+            source: rocode_provider::ProviderDiagnosticSource::RequestValidation,
+            code: "thinking_replay_missing".to_string(),
+            provider_id: "deepseek".to_string(),
+            model_id: Some("deepseek-reasoner".to_string()),
+            message: "missing replay".to_string(),
+        }
+        .attach_to_metadata(&mut assistant.metadata);
+
+        let summary = latest_provider_diagnostic_summary(&session).expect("summary");
+
+        assert_eq!(summary.code, "thinking_replay_missing");
+        assert_eq!(summary.provider_id, "deepseek");
+        assert_eq!(summary.model_id.as_deref(), Some("deepseek-reasoner"));
+    }
+
+    #[test]
     fn prompt_surface_runtime_snapshot_prefers_session_metadata() {
         let mut session = Session::new("session-1".to_string(), ".".to_string());
         session.insert_metadata(
@@ -440,6 +481,14 @@ mod tests {
                 "policy": rocode_session::prompt::INGRESS_POLICY_ENTRY_METADATA_ONLY,
                 "batch_count": 1,
             })),
+            provider_diagnostic_summary: Some(rocode_provider::ProviderDiagnosticSummary {
+                severity: rocode_provider::ProviderDiagnosticSeverity::HardFail,
+                source: rocode_provider::ProviderDiagnosticSource::ApiErrorRewrite,
+                code: "thinking_replay_rejected".to_string(),
+                provider_id: "deepseek".to_string(),
+                model_id: Some("deepseek-reasoner".to_string()),
+                message: "rejected replay".to_string(),
+            }),
         };
 
         let value = serde_json::to_value(&snapshot).expect("snapshot should serialize");
@@ -457,6 +506,14 @@ mod tests {
         assert_eq!(
             value["ingress_stabilization"]["policy"],
             rocode_session::prompt::INGRESS_POLICY_ENTRY_METADATA_ONLY
+        );
+        assert_eq!(
+            value["provider_diagnostic_summary"]["code"],
+            "thinking_replay_rejected"
+        );
+        assert_eq!(
+            value["provider_diagnostic_summary"]["provider_id"],
+            "deepseek"
         );
     }
 

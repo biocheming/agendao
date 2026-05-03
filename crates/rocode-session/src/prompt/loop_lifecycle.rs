@@ -1188,7 +1188,9 @@ impl SessionPrompt {
 
         match outcome {
             Ok(_) => Ok(output),
-            Err(RuntimeLoopError::ModelError(message)) => Err(anyhow::anyhow!("{}", message)),
+            Err(RuntimeLoopError::ModelError(failure)) => Err(anyhow::Error::new(
+                super::PromptError::ProviderFailure(failure),
+            )),
             Err(RuntimeLoopError::ToolDispatchError { tool, error }) => {
                 let lower = error.to_ascii_lowercase();
                 if token.is_cancelled()

@@ -1,5 +1,5 @@
 use crate::runtime::events::{
-    LoopError, LoopEvent, LoopRequest, StepBoundary, ToolCallReady, ToolResult,
+    LoopError, LoopEvent, LoopRequest, ModelFailure, StepBoundary, ToolCallReady, ToolResult,
 };
 use async_trait::async_trait;
 
@@ -14,6 +14,17 @@ pub trait ModelCaller: Send + Sync {
         &self,
         req: LoopRequest,
     ) -> Result<rocode_provider::StreamResult, LoopError>;
+
+    fn model_failure_from_provider_error(
+        &self,
+        error: &rocode_provider::ProviderError,
+    ) -> ModelFailure {
+        ModelFailure::Provider(rocode_provider::summarize_provider_error(
+            "unconfigured",
+            None,
+            error,
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------

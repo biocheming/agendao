@@ -511,14 +511,14 @@ impl ModelResolver for SessionSchedulerModelResolver {
 
         let provider = {
             let providers = self.state.providers.read().await;
-            providers
-                .get_provider(&provider_id)
-                .map_err(|error| OrchestratorError::ModelError(error.to_string()))?
+            providers.get_provider(&provider_id).map_err(|error| {
+                OrchestratorError::from_provider_error(&provider_id, Some(&model_id), &error)
+            })?
         };
 
         let mut request = self
             .fallback_request
-            .with_model(model_id)
+            .with_model(model_id.clone())
             .to_chat_request(messages, tools, true);
         apply_caching(
             &mut request.messages,
@@ -540,10 +540,9 @@ impl ModelResolver for SessionSchedulerModelResolver {
                     .unwrap_or(20),
             ));
         }
-        provider
-            .chat_stream(request)
-            .await
-            .map_err(|error| OrchestratorError::ModelError(error.to_string()))
+        provider.chat_stream(request).await.map_err(|error| {
+            OrchestratorError::from_provider_error(&provider_id, Some(&model_id), &error)
+        })
     }
 }
 

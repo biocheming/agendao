@@ -310,6 +310,32 @@ pub struct ChildSessionSummary {
     pub parent_id: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderDiagnosticSeverity {
+    Advisory,
+    SoftWarn,
+    HardFail,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderDiagnosticSource {
+    RequestValidation,
+    ApiErrorRewrite,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderDiagnosticSummary {
+    pub severity: ProviderDiagnosticSeverity,
+    pub source: ProviderDiagnosticSource,
+    pub code: String,
+    pub provider_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionTelemetrySnapshot {
     pub runtime: SessionRuntimeState,
@@ -325,6 +351,8 @@ pub struct SessionTelemetrySnapshot {
     pub prompt_surface_runtime_snapshot: Option<serde_json::Value>,
     #[serde(default)]
     pub ingress_stabilization: Option<serde_json::Value>,
+    #[serde(default)]
+    pub provider_diagnostic_summary: Option<ProviderDiagnosticSummary>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

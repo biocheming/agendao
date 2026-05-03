@@ -509,7 +509,7 @@ mod tests {
         // Loop should abort with ModelError, not return Ok(EndTurn).
         assert!(result.is_err());
         assert!(
-            matches!(result.unwrap_err(), LoopError::ModelError(msg) if msg.contains("connection reset"))
+            matches!(result.unwrap_err(), LoopError::ModelError(msg) if msg.message().contains("connection reset"))
         );
 
         // Error event was dispatched to sink before abort.

@@ -24,6 +24,7 @@ use tokio_util::sync::CancellationToken;
 use crate::recovery::RecoveryExecutionContext;
 use crate::routes::multimodal::resolve_provider_model;
 use crate::routes::permission::request_permission;
+use crate::routes::provider_diagnostics::attach_provider_diagnostic_from_error;
 use crate::routes::skill_catalog::enrich_scheduler_plan_skills;
 use crate::runtime_control::SessionRunStatus;
 use crate::session_runtime::events::{
@@ -2828,6 +2829,12 @@ pub(super) async fn session_prompt(
                     .metadata
                     .insert("agent".to_string(), serde_json::json!(agent));
             }
+            attach_provider_diagnostic_from_error(
+                assistant,
+                &error,
+                &task_provider,
+                Some(&task_model),
+            );
             assistant.add_text(format!("Provider error: {}", error));
         }
         match tokio::time::timeout(Duration::from_secs(1), &mut update_task).await {

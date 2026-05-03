@@ -497,7 +497,7 @@ When constructing the summary, try to stick to this template:
             .await
             .map_err(|error| anyhow::anyhow!("Compaction model call failed: {}", error))?;
         let cancel = CompactionAbortToken { abort };
-        rocode_orchestrator::runtime::collect_text_chunks(stream, &cancel)
+        rocode_orchestrator::runtime::collect_text_chunks(model_caller, stream, &cancel)
             .await
             .map_err(|err| anyhow::anyhow!("Compaction stream failed: {}", err))
     }

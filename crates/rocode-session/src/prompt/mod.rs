@@ -1541,10 +1541,65 @@ pub enum PromptError {
     Busy(String),
     #[error("No user message found")]
     NoUserMessage,
+    #[error("{0}")]
+    ProviderFailure(rocode_orchestrator::runtime::events::ModelFailure),
     #[error("Provider error: {0}")]
     Provider(String),
     #[error("Cancelled")]
     Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptProviderFailure {
+    TypedSummary(rocode_provider::ProviderErrorSummary),
+    LegacyMessage(String),
+}
+
+impl PromptError {
+    pub fn provider_failure(&self) -> Option<PromptProviderFailure> {
+        match self {
+            Self::ProviderFailure(
+                rocode_orchestrator::runtime::events::ModelFailure::Provider(summary),
+            ) => Some(PromptProviderFailure::TypedSummary(summary.clone())),
+            Self::ProviderFailure(rocode_orchestrator::runtime::events::ModelFailure::Message(
+                message,
+            ))
+            | Self::Provider(message) => {
+                Some(PromptProviderFailure::LegacyMessage(message.clone()))
+            }
+            Self::Busy(_) | Self::NoUserMessage | Self::Cancelled => None,
+        }
+    }
+
+    pub fn provider_error_summary(&self) -> Option<rocode_provider::ProviderErrorSummary> {
+        match self.provider_failure()? {
+            PromptProviderFailure::TypedSummary(summary) => Some(summary),
+            PromptProviderFailure::LegacyMessage(_) => None,
+        }
+    }
+}
+
+pub fn provider_failure_from_anyhow(error: &anyhow::Error) -> Option<PromptProviderFailure> {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<PromptError>())?
+        .provider_failure()
+}
+
+pub fn provider_error_summary_from_anyhow(
+    error: &anyhow::Error,
+) -> Option<rocode_provider::ProviderErrorSummary> {
+    match provider_failure_from_anyhow(error)? {
+        PromptProviderFailure::TypedSummary(summary) => Some(summary),
+        PromptProviderFailure::LegacyMessage(_) => None,
+    }
+}
+
+pub fn legacy_provider_error_text_from_anyhow(error: &anyhow::Error) -> Option<String> {
+    match provider_failure_from_anyhow(error)? {
+        PromptProviderFailure::TypedSummary(_) => None,
+        PromptProviderFailure::LegacyMessage(message) => Some(message),
+    }
 }
 
 /// Regex that matches `@reference` patterns. We use a capturing group for the

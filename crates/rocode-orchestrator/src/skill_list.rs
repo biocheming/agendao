@@ -123,11 +123,11 @@ impl Orchestrator for SkillListOrchestrator {
         )
         .await
         .map_err(|e| match e {
-            LoopError::ModelError(msg) => {
-                if msg.contains("no provider available") {
+            LoopError::ModelError(failure) => {
+                if failure.is_provider_not_found() {
                     OrchestratorError::NoProvider
                 } else {
-                    OrchestratorError::ModelError(msg)
+                    OrchestratorError::ModelError(failure)
                 }
             }
             LoopError::ToolDispatchError { tool, error } => {
@@ -657,6 +657,61 @@ mod tests {
         assert_eq!(output.content, "hello from unbounded");
         assert_eq!(output.steps, 1);
         assert_eq!(output.tool_calls_count, 0);
+    }
+
+    #[tokio::test]
+    async fn execute_maps_typed_provider_not_found_to_no_provider() {
+        struct MissingProviderResolver;
+
+        #[async_trait]
+        impl ModelResolver for MissingProviderResolver {
+            async fn chat_stream(
+                &self,
+                _model: Option<&ModelRef>,
+                _messages: Vec<rocode_provider::Message>,
+                _tools: Vec<rocode_provider::ToolDefinition>,
+                _exec_ctx: &ExecutionContext,
+            ) -> Result<rocode_provider::StreamResult, OrchestratorError> {
+                Err(OrchestratorError::from_provider_error(
+                    "openai",
+                    Some("gpt-test"),
+                    &rocode_provider::ProviderError::ProviderNotFound("openai".to_string()),
+                ))
+            }
+        }
+
+        let tool_executor: Arc<dyn ToolExecutor> = Arc::new(TestToolExecutor);
+        let context = OrchestratorContext {
+            agent_resolver: Arc::new(TestAgentResolver),
+            model_resolver: Arc::new(MissingProviderResolver),
+            tool_executor: tool_executor.clone(),
+            lifecycle_hook: Arc::new(TestLifecycleHook),
+            cancel_token: Arc::new(crate::runtime::events::NeverCancel),
+            exec_ctx: ExecutionContext {
+                session_id: "test".to_string(),
+                workdir: ".".to_string(),
+                agent_name: "test-agent".to_string(),
+                metadata: HashMap::new(),
+            },
+        };
+        let mut orchestrator = SkillListOrchestrator::new(
+            AgentDescriptor {
+                name: "test-agent".to_string(),
+                system_prompt: None,
+                model: Some(ModelRef {
+                    provider_id: "openai".to_string(),
+                    model_id: "gpt-test".to_string(),
+                }),
+                max_steps: Some(4),
+                temperature: None,
+                allowed_tools: Vec::new(),
+            },
+            ToolRunner::new(tool_executor),
+        );
+
+        let error = orchestrator.execute("hi", &context).await.unwrap_err();
+
+        assert!(matches!(error, OrchestratorError::NoProvider));
     }
 
     #[tokio::test]
