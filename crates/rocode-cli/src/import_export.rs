@@ -1,41 +1,8 @@
 use std::fs;
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
-
 use rocode_storage::{Database, MessageRepository, SessionRepository};
-use rocode_types::{MessagePart, Session, SessionMessage};
-
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct SessionExportEntry {
-    info: Session,
-    messages: Vec<SessionMessage>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct SessionExportFile {
-    version: String,
-    exported_at: i64,
-    sessions: Vec<SessionExportEntry>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(untagged)]
-enum SessionImportPayload {
-    Wrapped(SessionExportFile),
-    Single(SessionExportEntry),
-    Legacy {
-        info: Session,
-        messages: Vec<LegacyMessageExport>,
-    },
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct LegacyMessageExport {
-    info: SessionMessage,
-    #[serde(default)]
-    parts: Vec<MessagePart>,
-}
+use rocode_types::{SessionArtifactBundle, SessionArtifactEntry, SessionArtifactImportEnvelope};
 
 pub(crate) async fn export_session_data(
     session_id: Option<String>,
@@ -60,14 +27,7 @@ pub(crate) async fn export_session_data(
     };
 
     let messages = message_repo.list_for_session(&session.id).await?;
-    let export = SessionExportFile {
-        version: "rocode-rust/v1".to_string(),
-        exported_at: chrono::Utc::now().timestamp_millis(),
-        sessions: vec![SessionExportEntry {
-            info: session,
-            messages,
-        }],
-    };
+    let export = SessionArtifactBundle::new_now(vec![SessionArtifactEntry::new(session, messages)]);
 
     let json = serde_json::to_string_pretty(&export)?;
     match output {
@@ -82,30 +42,6 @@ pub(crate) async fn export_session_data(
 
     Ok(())
 }
-
-fn normalize_import_payload(payload: SessionImportPayload) -> Vec<SessionExportEntry> {
-    match payload {
-        SessionImportPayload::Wrapped(file) => file.sessions,
-        SessionImportPayload::Single(entry) => vec![entry],
-        SessionImportPayload::Legacy { info, messages } => {
-            let normalized_messages = messages
-                .into_iter()
-                .map(|legacy| {
-                    let mut msg = legacy.info;
-                    if msg.parts.is_empty() {
-                        msg.parts = legacy.parts;
-                    }
-                    msg
-                })
-                .collect();
-            vec![SessionExportEntry {
-                info,
-                messages: normalized_messages,
-            }]
-        }
-    }
-}
-
 fn parse_share_slug(url: &str) -> Option<String> {
     let trimmed = url.trim_end_matches('/');
     if let Some(idx) = trimmed.rfind("/share/") {
@@ -132,8 +68,8 @@ pub(crate) async fn import_session_data(file_or_url: String) -> anyhow::Result<(
     } else {
         fs::read_to_string(&file_or_url)?
     };
-    let payload: SessionImportPayload = serde_json::from_str(&raw)?;
-    let entries = normalize_import_payload(payload);
+    let payload: SessionArtifactImportEnvelope = serde_json::from_str(&raw)?;
+    let entries = payload.into_entries();
 
     if entries.is_empty() {
         anyhow::bail!("No session entries found in {}", file_or_url);
@@ -145,17 +81,18 @@ pub(crate) async fn import_session_data(file_or_url: String) -> anyhow::Result<(
 
     let mut imported = 0usize;
     for mut entry in entries {
-        entry.info.messages.clear();
+        let session_id = entry.session.id.clone();
+        entry.session.messages.clear();
 
-        if session_repo.get(&entry.info.id).await?.is_some() {
-            session_repo.update(&entry.info).await?;
+        if session_repo.get(&entry.session.id).await?.is_some() {
+            session_repo.update(&entry.session).await?;
         } else {
-            session_repo.create(&entry.info).await?;
+            session_repo.create(&entry.session).await?;
         }
 
         for mut message in entry.messages {
             if message.session_id.is_empty() {
-                message.session_id = entry.info.id.clone();
+                message.session_id = session_id.clone();
             }
             message_repo.upsert(&message).await?;
         }

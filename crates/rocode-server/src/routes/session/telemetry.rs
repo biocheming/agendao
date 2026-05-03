@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
@@ -7,11 +6,11 @@ use rocode_command::stage_protocol::StageSummary;
 use rocode_multimodal::PersistedMultimodalExplain;
 use rocode_session::{
     load_session_telemetry_snapshot, persist_session_telemetry_snapshot,
-    session_last_run_status_label, MessageRole, Session, SessionUsage,
+    session_last_run_status_label, Session, SessionUsage,
 };
 use rocode_types::{
-    SessionInsightsResponse, SessionMemoryTelemetrySummary, SessionMultimodalAttachmentInfo,
-    SessionMultimodalInsight,
+    SessionDiagnosticsSidecar, SessionInsightsResponse, SessionMemoryTelemetrySummary,
+    SessionMultimodalAttachmentInfo, SessionMultimodalInsight,
 };
 use serde::{Deserialize, Serialize};
 
@@ -146,12 +145,27 @@ pub(super) async fn build_session_telemetry_snapshot(
         .await;
     let topology = build_session_execution_topology_snapshot(state, session_id, session).await;
     let memory = build_session_memory_telemetry(state, session).await;
-    let cache_bust_summary = latest_cache_bust_summary(session);
-    let prompt_surface_runtime_snapshot = prompt_surface_runtime_snapshot(session);
-    let prompt_surface_snapshot_invalidation = latest_prompt_surface_snapshot_invalidation(session);
-    let ingress_stabilization = latest_ingress_stabilization(session);
-    let execution_preflight_summary = latest_execution_preflight_summary(session);
-    let provider_diagnostic_summary = latest_provider_diagnostic_summary(session);
+    let diagnostics = SessionDiagnosticsSidecar::derive_from_session(session);
+    let cache_bust_summary = diagnostics
+        .as_ref()
+        .and_then(SessionDiagnosticsSidecar::latest_cache_bust_summary_value);
+    let prompt_surface_runtime_snapshot = diagnostics
+        .as_ref()
+        .and_then(SessionDiagnosticsSidecar::prompt_surface_runtime_snapshot_value);
+    let prompt_surface_snapshot_invalidation = diagnostics
+        .as_ref()
+        .and_then(SessionDiagnosticsSidecar::latest_prompt_surface_snapshot_invalidation_value)
+        .and_then(|value| serde_json::from_value(value).ok());
+    let ingress_stabilization = diagnostics
+        .as_ref()
+        .and_then(SessionDiagnosticsSidecar::ingress_stabilization_value);
+    let execution_preflight_summary = diagnostics
+        .as_ref()
+        .and_then(latest_execution_preflight_summary_from_sidecar);
+    let provider_diagnostic_summary = diagnostics
+        .as_ref()
+        .and_then(SessionDiagnosticsSidecar::latest_provider_diagnostic_value)
+        .and_then(|value| serde_json::from_value(value).ok());
 
     Ok(SessionTelemetrySnapshot {
         runtime,
@@ -168,231 +182,69 @@ pub(super) async fn build_session_telemetry_snapshot(
     })
 }
 
-fn latest_ingress_stabilization(session: &Session) -> Option<serde_json::Value> {
-    let source = session.metadata.get("last_ingress_source")?.clone();
-    let policy = session.metadata.get("last_ingress_policy").cloned();
-    let batch_count = session.metadata.get("last_ingress_batch_count").cloned();
-    Some(serde_json::json!({
-        "source": source,
-        "policy": policy,
-        "batch_count": batch_count,
-    }))
-}
-
+#[cfg(test)]
 fn latest_cache_bust_summary(session: &Session) -> Option<serde_json::Value> {
-    session
-        .messages
-        .iter()
-        .rev()
-        .find(|message| matches!(message.role, MessageRole::Assistant))
-        .and_then(|message| {
-            rocode_provider::cache::cache_bust_summary_from_metadata(&message.metadata)
-        })
-        .and_then(|summary| serde_json::to_value(summary).ok())
+    diagnostics_sidecar(session).and_then(|sidecar| sidecar.latest_cache_bust_summary_value())
 }
 
+#[cfg(test)]
 fn prompt_surface_runtime_snapshot(session: &Session) -> Option<serde_json::Value> {
-    session
-        .metadata
-        .get(rocode_session::prompt::PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY)
-        .cloned()
-        .or_else(|| {
-            session
-                .messages
-                .iter()
-                .rev()
-                .find(|message| matches!(message.role, MessageRole::Assistant))
-                .and_then(|message| {
-                    message
-                        .metadata
-                        .get(rocode_session::prompt::PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY)
-                        .cloned()
-                })
-        })
+    diagnostics_sidecar(session).and_then(|sidecar| sidecar.prompt_surface_runtime_snapshot_value())
 }
 
+#[cfg(test)]
 fn latest_prompt_surface_snapshot_invalidation(
     session: &Session,
 ) -> Option<PromptSurfaceSnapshotInvalidationSummary> {
-    session
-        .messages
-        .iter()
-        .rev()
-        .find(|message| matches!(message.role, MessageRole::Assistant))
-        .and_then(|message| {
-            message
-                .metadata
-                .get(rocode_session::prompt::PROMPT_SURFACE_SNAPSHOT_INVALIDATION_METADATA_KEY)
-                .cloned()
-        })
+    diagnostics_sidecar(session)
+        .and_then(|sidecar| sidecar.latest_prompt_surface_snapshot_invalidation_value())
         .and_then(|value| serde_json::from_value(value).ok())
-        .or_else(|| {
-            prompt_surface_runtime_snapshot(session).and_then(|snapshot| {
-                snapshot
-                    .get("invalidation")
-                    .cloned()
-                    .and_then(|value| serde_json::from_value(value).ok())
-            })
-        })
 }
 
+#[cfg(test)]
 fn latest_provider_diagnostic_summary(
     session: &Session,
 ) -> Option<rocode_provider::ProviderDiagnosticSummary> {
-    session
-        .messages
-        .iter()
-        .rev()
-        .find(|message| matches!(message.role, MessageRole::Assistant))
-        .and_then(|message| {
-            rocode_provider::provider_error_summary_from_metadata(&message.metadata)
-                .and_then(|summary| summary.provider_diagnostic)
-                .or_else(|| rocode_provider::provider_diagnostic_from_metadata(&message.metadata))
-        })
+    diagnostics_sidecar(session)
+        .and_then(|sidecar| sidecar.latest_provider_diagnostic_value())
+        .and_then(|value| serde_json::from_value(value).ok())
 }
 
-#[derive(Debug, Clone)]
-struct ExecutionPreflightCandidate {
-    tool_call_id: String,
-    tool_name: Option<String>,
-    source: SessionExecutionPreflightSource,
-    order: (usize, usize),
-    preflight: rocode_tool::ExecutionPreflightMetadata,
-}
-
+#[cfg(test)]
 fn latest_execution_preflight_summary(
     session: &Session,
 ) -> Option<SessionExecutionPreflightSummary> {
-    let tool_names = tool_call_name_index(session);
-    let mut candidates = HashMap::<String, ExecutionPreflightCandidate>::new();
-
-    for (message_index, message) in session.messages.iter().enumerate() {
-        for (part_index, part) in message.parts.iter().enumerate() {
-            let Some(candidate) =
-                execution_preflight_candidate(part, &tool_names, (message_index, part_index))
-            else {
-                continue;
-            };
-
-            match candidates.get_mut(&candidate.tool_call_id) {
-                Some(existing) => merge_execution_preflight_candidate(existing, candidate),
-                None => {
-                    candidates.insert(candidate.tool_call_id.clone(), candidate);
-                }
-            }
-        }
-    }
-
-    candidates
-        .into_values()
-        .max_by_key(|candidate| candidate.order)
-        .map(|candidate| SessionExecutionPreflightSummary {
-            tool_call_id: candidate.tool_call_id,
-            tool_name: candidate.tool_name,
-            source: candidate.source,
-            runner: candidate.preflight.runner,
-            subject: candidate.preflight.subject,
-            status: candidate.preflight.status,
-            issues: candidate.preflight.issues,
-            attachment_count: candidate.preflight.attachment_count,
-        })
+    diagnostics_sidecar(session)
+        .and_then(|sidecar| latest_execution_preflight_summary_from_sidecar(&sidecar))
 }
 
-fn tool_call_name_index(session: &Session) -> HashMap<String, String> {
-    let mut names = HashMap::new();
-
-    for message in &session.messages {
-        for part in &message.parts {
-            if let rocode_session::PartType::ToolCall { id, name, .. } = &part.part_type {
-                names.insert(id.clone(), name.clone());
-            }
-        }
-    }
-
-    names
+#[cfg(test)]
+fn diagnostics_sidecar(session: &Session) -> Option<SessionDiagnosticsSidecar> {
+    SessionDiagnosticsSidecar::derive_from_session(session)
 }
 
-fn execution_preflight_candidate(
-    part: &rocode_session::MessagePart,
-    tool_names: &HashMap<String, String>,
-    order: (usize, usize),
-) -> Option<ExecutionPreflightCandidate> {
-    match &part.part_type {
-        rocode_session::PartType::ToolCall {
-            id,
-            name,
-            state: Some(rocode_session::ToolState::Completed { metadata, .. }),
-            ..
-        } => rocode_tool::execution_preflight_from_metadata(metadata).map(|preflight| {
-            ExecutionPreflightCandidate {
-                tool_call_id: id.clone(),
-                tool_name: Some(name.clone()),
-                source: SessionExecutionPreflightSource::ToolCallState,
-                order,
-                preflight,
+fn latest_execution_preflight_summary_from_sidecar(
+    sidecar: &SessionDiagnosticsSidecar,
+) -> Option<SessionExecutionPreflightSummary> {
+    let entry = sidecar.latest_execution_preflight_entry()?;
+    let preflight: rocode_tool::ExecutionPreflightMetadata = entry.decode_metadata()?;
+    Some(SessionExecutionPreflightSummary {
+        tool_call_id: entry.tool_call_id,
+        tool_name: entry.tool_name,
+        source: match entry.source {
+            rocode_types::SessionExecutionPreflightMetadataSource::ToolCallState => {
+                SessionExecutionPreflightSource::ToolCallState
             }
-        }),
-        rocode_session::PartType::ToolCall {
-            id,
-            name,
-            state:
-                Some(rocode_session::ToolState::Error {
-                    metadata: Some(metadata),
-                    ..
-                }),
-            ..
-        } => rocode_tool::execution_preflight_from_metadata(metadata).map(|preflight| {
-            ExecutionPreflightCandidate {
-                tool_call_id: id.clone(),
-                tool_name: Some(name.clone()),
-                source: SessionExecutionPreflightSource::ToolCallState,
-                order,
-                preflight,
+            rocode_types::SessionExecutionPreflightMetadataSource::ToolResultPart => {
+                SessionExecutionPreflightSource::ToolResultPart
             }
-        }),
-        rocode_session::PartType::ToolResult {
-            tool_call_id,
-            metadata: Some(metadata),
-            ..
-        } => rocode_tool::execution_preflight_from_metadata(metadata).map(|preflight| {
-            ExecutionPreflightCandidate {
-                tool_call_id: tool_call_id.clone(),
-                tool_name: tool_names.get(tool_call_id).cloned(),
-                source: SessionExecutionPreflightSource::ToolResultPart,
-                order,
-                preflight,
-            }
-        }),
-        _ => None,
-    }
-}
-
-fn merge_execution_preflight_candidate(
-    existing: &mut ExecutionPreflightCandidate,
-    candidate: ExecutionPreflightCandidate,
-) {
-    let next_order = existing.order.max(candidate.order);
-    let should_replace = match (existing.source, candidate.source) {
-        (
-            SessionExecutionPreflightSource::ToolResultPart,
-            SessionExecutionPreflightSource::ToolCallState,
-        ) => true,
-        (
-            SessionExecutionPreflightSource::ToolCallState,
-            SessionExecutionPreflightSource::ToolResultPart,
-        ) => false,
-        _ => candidate.order >= existing.order,
-    };
-
-    if should_replace {
-        existing.tool_name = candidate.tool_name;
-        existing.source = candidate.source;
-        existing.preflight = candidate.preflight;
-    } else if existing.tool_name.is_none() {
-        existing.tool_name = candidate.tool_name;
-    }
-
-    existing.order = next_order;
+        },
+        runner: preflight.runner,
+        subject: preflight.subject,
+        status: preflight.status,
+        issues: preflight.issues,
+        attachment_count: preflight.attachment_count,
+    })
 }
 
 pub(super) async fn persist_session_telemetry_metadata(
