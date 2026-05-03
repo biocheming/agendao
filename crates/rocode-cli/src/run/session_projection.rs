@@ -2622,6 +2622,7 @@ fn cli_sidebar_lines(
         || last_turn.output_tokens > 0
         || projection.cache_diagnostic.is_some()
         || projection.ingress_diagnostic.is_some()
+        || projection.provider_diagnostic.is_some()
     {
         lines.push(String::new());
         lines.push("─ Usage ─".to_string());
@@ -2674,6 +2675,12 @@ fn cli_sidebar_lines(
             lines.push(format!(
                 "Ingress: {}",
                 truncate_text(ingress_diagnostic, 96)
+            ));
+        }
+        if let Some(provider_diagnostic) = projection.provider_diagnostic.as_deref() {
+            lines.push(format!(
+                "Provider: {}",
+                truncate_text(provider_diagnostic, 96)
             ));
         }
         if let Some(model) = model_info {
@@ -3199,5 +3206,25 @@ mod session_projection_tests {
         assert!(lines
             .iter()
             .any(|line| line.contains("hard bust") && line.contains("toolsHash")));
+    }
+
+    #[test]
+    fn sidebar_surfaces_provider_diagnostic_without_token_totals() {
+        let mut projection = CliFrontendProjection::default();
+        projection.provider_diagnostic = Some("thinking replay rejected".to_string());
+        let topology = CliObservedExecutionTopology {
+            active: false,
+            root_id: None,
+            scheduler_id: None,
+            active_stage_id: None,
+            stage_order: Vec::new(),
+            nodes: Default::default(),
+        };
+
+        let lines = cli_sidebar_lines(&projection, &topology);
+
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("Provider:") && line.contains("thinking replay rejected")));
     }
 }

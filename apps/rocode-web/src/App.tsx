@@ -37,6 +37,10 @@ import {
   type CacheBustSummaryRecord,
 } from "./lib/cacheDiagnostics";
 import {
+  providerDiagnosticFromMetadata,
+  providerDiagnosticLabel,
+} from "./lib/providerDiagnostics";
+import {
   buildWebSessionUrl,
   readWebSessionRoute,
   writeWebSessionRoute,
@@ -1417,6 +1421,21 @@ export default function App() {
     () => ingressStabilizationLabel(executionActivity.telemetry?.ingress_stabilization ?? null),
     [executionActivity.telemetry?.ingress_stabilization],
   );
+  const latestProviderDiagnostic = useMemo(() => {
+    const telemetrySummary = providerDiagnosticFromMetadata({
+      provider_diagnostic: executionActivity.telemetry?.provider_diagnostic_summary ?? null,
+    });
+    const telemetryLabel = providerDiagnosticLabel(telemetrySummary);
+    if (telemetryLabel) return telemetryLabel;
+
+    for (let index = messageHistory.length - 1; index >= 0; index -= 1) {
+      const message = messageHistory[index];
+      if (message?.role !== "assistant") continue;
+      const label = providerDiagnosticLabel(providerDiagnosticFromMetadata(message.metadata));
+      if (label) return label;
+    }
+    return null;
+  }, [executionActivity.telemetry?.provider_diagnostic_summary, messageHistory]);
   const refreshExecutionActivity = executionActivity.refreshExecutionActivity;
   const conversationJump = useConversationJump({
     messages,
@@ -2956,6 +2975,7 @@ export default function App() {
               cacheWriteTokens={sessionUsage?.cache_write_tokens ?? lastAssistantTurnTokens?.cacheWrite ?? null}
               cacheDiagnosticLabel={latestCacheDiagnostic}
               ingressDiagnosticLabel={latestIngressDiagnostic}
+              providerDiagnosticLabel={latestProviderDiagnostic}
               inputPricePerMillion={activeProviderModel?.cost_per_million_input ?? null}
               outputPricePerMillion={activeProviderModel?.cost_per_million_output ?? null}
               activeStageId={schedulerNavigation.activeStageId}

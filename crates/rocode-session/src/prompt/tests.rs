@@ -304,6 +304,62 @@ fn insert_reminders_adds_build_switch_after_plan() {
     assert!(injected.contains("The user has approved your plan"));
 }
 
+#[test]
+fn provider_error_summary_from_anyhow_reads_wrapped_prompt_error() {
+    let summary = rocode_provider::ProviderErrorSummary {
+        kind: rocode_provider::ProviderErrorKind::InvalidRequest,
+        provider_id: "deepseek".to_string(),
+        model_id: Some("deepseek-reasoner".to_string()),
+        message: "missing replay".to_string(),
+        status_code: Some(400),
+        standard_code: rocode_provider::error_code::StandardErrorCode::InvalidRequest,
+        retryable: false,
+        provider_diagnostic: Some(rocode_provider::ProviderDiagnosticSummary {
+            severity: rocode_provider::ProviderDiagnosticSeverity::HardFail,
+            source: rocode_provider::ProviderDiagnosticSource::RequestValidation,
+            code: "thinking_replay_missing".to_string(),
+            provider_id: "deepseek".to_string(),
+            model_id: Some("deepseek-reasoner".to_string()),
+            message: "missing replay".to_string(),
+        }),
+    };
+    let error = anyhow::Error::new(PromptError::ProviderFailure(
+        rocode_orchestrator::runtime::events::ModelFailure::Provider(summary.clone()),
+    ))
+    .context("session prompt failed");
+
+    let loaded = provider_error_summary_from_anyhow(&error).expect("typed summary should load");
+
+    assert_eq!(loaded, summary);
+}
+
+#[test]
+fn provider_failure_from_anyhow_reads_wrapped_legacy_provider_message() {
+    let error = anyhow::Error::new(PromptError::ProviderFailure(
+        rocode_orchestrator::runtime::events::ModelFailure::Message(
+            "provider `deepseek` rejected the request because thinking-mode reasoning replay was missing or incompatible: 400 Bad Request"
+                .to_string(),
+        ),
+    ))
+    .context("session prompt failed");
+
+    let failure = provider_failure_from_anyhow(&error).expect("provider failure should load");
+
+    assert_eq!(
+        failure,
+        PromptProviderFailure::LegacyMessage(
+            "provider `deepseek` rejected the request because thinking-mode reasoning replay was missing or incompatible: 400 Bad Request"
+                .to_string()
+        )
+    );
+    assert_eq!(
+        legacy_provider_error_text_from_anyhow(&error).as_deref(),
+        Some(
+            "provider `deepseek` rejected the request because thinking-mode reasoning replay was missing or incompatible: 400 Bad Request"
+        )
+    );
+}
+
 #[tokio::test]
 async fn prompt_with_update_hook_emits_incremental_snapshots() {
     let prompt = SessionPrompt::default();

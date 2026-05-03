@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 // ---------------------------------------------------------------------------
 // LoopEvent – the single normalized event type that LoopSink receives.
@@ -164,6 +165,42 @@ pub struct LoopOutcome {
     pub finish_reason: FinishReason,
 }
 
+#[derive(Debug, Clone)]
+pub enum ModelFailure {
+    Provider(rocode_provider::ProviderErrorSummary),
+    Message(String),
+}
+
+impl ModelFailure {
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Provider(summary) => summary.message.as_str(),
+            Self::Message(message) => message.as_str(),
+        }
+    }
+
+    pub fn provider_summary(&self) -> Option<&rocode_provider::ProviderErrorSummary> {
+        match self {
+            Self::Provider(summary) => Some(summary),
+            Self::Message(_) => None,
+        }
+    }
+
+    pub fn is_provider_not_found(&self) -> bool {
+        matches!(
+            self,
+            Self::Provider(summary)
+                if summary.kind == rocode_provider::ProviderErrorKind::ProviderNotFound
+        )
+    }
+}
+
+impl fmt::Display for ModelFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // LoopError – errors that abort the loop or propagate from Sink/Dispatcher.
 // ---------------------------------------------------------------------------
@@ -171,7 +208,7 @@ pub struct LoopOutcome {
 #[derive(Debug, thiserror::Error)]
 pub enum LoopError {
     #[error("model call failed: {0}")]
-    ModelError(String),
+    ModelError(ModelFailure),
 
     #[error("sink rejected event: {0}")]
     SinkError(String),

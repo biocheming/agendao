@@ -605,6 +605,23 @@ mod tests {
         assert_eq!(messages[0].content, "trigger missing provider");
     }
 
+    #[tokio::test]
+    async fn execute_text_response_maps_typed_missing_provider_to_no_provider() {
+        let mut executor =
+            build_executor(AgentInfo::general().with_model("gpt-4.1-mini", "missing-provider"));
+
+        let result = executor
+            .execute_text_response("trigger missing configured provider".to_string())
+            .await;
+
+        assert!(matches!(result, Err(AgentError::NoProvider)));
+
+        let messages = &executor.conversation().messages;
+        assert_eq!(messages.len(), 1);
+        assert!(matches!(messages[0].role, crate::MessageRole::User));
+        assert_eq!(messages[0].content, "trigger missing configured provider");
+    }
+
     #[test]
     fn executor_enforces_explore_allowlist() {
         let executor = build_executor(AgentInfo::explore());

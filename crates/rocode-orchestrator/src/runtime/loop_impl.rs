@@ -178,7 +178,8 @@ pub async fn run_loop<S: LoopSink>(
                     }
                 }
                 Err(provider_err) => {
-                    let err_msg = provider_err.to_string();
+                    let failure = model.model_failure_from_provider_error(&provider_err);
+                    let err_msg = failure.message().to_string();
                     let err_event = LoopEvent::Error(err_msg.clone());
                     sink.on_event(&err_event)
                         .await
@@ -192,7 +193,7 @@ pub async fn run_loop<S: LoopSink>(
                     })
                     .await
                     .map_err(|e| LoopError::SinkError(e.to_string()))?;
-                    return Err(LoopError::ModelError(err_msg));
+                    return Err(LoopError::ModelError(failure));
                 }
             }
         }

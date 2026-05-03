@@ -1,4 +1,4 @@
-use crate::runtime::events::{LoopError, LoopRequest, ToolCallReady, ToolResult};
+use crate::runtime::events::{LoopError, LoopRequest, ModelFailure, ToolCallReady, ToolResult};
 use crate::runtime::traits::{ModelCaller, ToolDispatcher};
 use crate::tool_runner::{ToolCallInput, ToolRunner};
 use crate::traits::{ModelResolver, ToolExecutor};
@@ -31,6 +31,32 @@ impl ModelCallerBridge {
             exec_ctx,
         }
     }
+
+    fn no_provider_failure(&self) -> ModelFailure {
+        let provider_id = self
+            .model
+            .as_ref()
+            .map(|model| model.provider_id.clone())
+            .unwrap_or_else(|| "unconfigured".to_string());
+        let model_id = self.model.as_ref().map(|model| model.model_id.as_str());
+        let provider_error = rocode_provider::ProviderError::ProviderNotFound(provider_id.clone());
+        ModelFailure::Provider(rocode_provider::summarize_provider_error(
+            provider_id.as_str(),
+            model_id,
+            &provider_error,
+        ))
+    }
+
+    fn model_failure_from_orchestrator_error(
+        &self,
+        error: crate::error::OrchestratorError,
+    ) -> ModelFailure {
+        match error {
+            crate::error::OrchestratorError::ModelError(failure) => failure,
+            crate::error::OrchestratorError::NoProvider => self.no_provider_failure(),
+            other => ModelFailure::Message(other.to_string()),
+        }
+    }
 }
 
 #[async_trait]
@@ -42,7 +68,26 @@ impl ModelCaller for ModelCallerBridge {
         self.model_resolver
             .chat_stream(self.model.as_ref(), req.messages, req.tools, &self.exec_ctx)
             .await
-            .map_err(|e| LoopError::ModelError(e.to_string()))
+            .map_err(|e| LoopError::ModelError(self.model_failure_from_orchestrator_error(e)))
+    }
+
+    fn model_failure_from_provider_error(
+        &self,
+        error: &rocode_provider::ProviderError,
+    ) -> ModelFailure {
+        let Some(model) = self.model.as_ref() else {
+            return ModelFailure::Provider(rocode_provider::summarize_provider_error(
+                "unconfigured",
+                None,
+                error,
+            ));
+        };
+
+        ModelFailure::Provider(rocode_provider::summarize_provider_error(
+            model.provider_id.as_str(),
+            Some(model.model_id.as_str()),
+            error,
+        ))
     }
 }
 

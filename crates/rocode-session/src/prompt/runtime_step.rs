@@ -713,7 +713,9 @@ impl<'a> LoopSink for SessionStepSink<'a> {
             }
             LoopEvent::Error(msg) => {
                 self.finish_output_blocks().await;
-                return Err(RuntimeLoopError::ModelError(msg.clone()));
+                return Err(RuntimeLoopError::ModelError(
+                    rocode_orchestrator::runtime::events::ModelFailure::Message(msg.clone()),
+                ));
             }
         }
         Ok(())

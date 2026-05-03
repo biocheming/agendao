@@ -202,12 +202,11 @@ pub enum ParsedStreamError {
 }
 
 pub fn parse_api_call_error(provider_id: &str, error: &ProviderError) -> ParsedAPICallError {
-    let message = format_error_message(provider_id, error);
-    let standard_code = crate::error_classification::classify_provider_error(error);
+    let summary = crate::error_summary::summarize_provider_error(provider_id, None, error);
 
-    if ProviderError::is_overflow(&message) {
+    if summary.standard_code == crate::error_code::StandardErrorCode::RequestTooLarge {
         return ParsedAPICallError::ContextOverflow {
-            message,
+            message: summary.message,
             response_body: None,
             standard_code: Some(
                 crate::error_code::StandardErrorCode::RequestTooLarge
@@ -217,34 +216,19 @@ pub fn parse_api_call_error(provider_id: &str, error: &ProviderError) -> ParsedA
         };
     }
 
-    let (status_code, is_retryable) = match error {
-        ProviderError::ApiErrorWithStatus { status_code, .. } => {
-            let retryable = if provider_id.starts_with("openai") {
-                is_openai_error_retryable(*status_code)
-            } else {
-                matches!(status_code, 429 | 500 | 502 | 503 | 504)
-            };
-            (Some(*status_code), retryable)
-        }
-        ProviderError::RateLimit => (Some(429), true),
-        ProviderError::Timeout => (None, true),
-        ProviderError::NetworkError(_) => (None, true),
-        _ => (None, false),
-    };
-
     ParsedAPICallError::ApiError {
-        message,
-        status_code,
-        is_retryable,
+        message: summary.message,
+        status_code: summary.status_code,
+        is_retryable: summary.retryable,
         response_headers: None,
         response_body: None,
         metadata: None,
-        standard_code: Some(standard_code.code().to_string()),
-        is_fallbackable: Some(standard_code.fallbackable()),
+        standard_code: Some(summary.standard_code.code().to_string()),
+        is_fallbackable: Some(summary.standard_code.fallbackable()),
     }
 }
 
-fn format_error_message(provider_id: &str, error: &ProviderError) -> String {
+pub(crate) fn format_error_message(provider_id: &str, error: &ProviderError) -> String {
     // GitHub Copilot 403 special case
     if provider_id.contains("github-copilot") {
         if let ProviderError::ApiErrorWithStatus {
@@ -257,7 +241,7 @@ fn format_error_message(provider_id: &str, error: &ProviderError) -> String {
     error.to_string()
 }
 
-fn is_openai_error_retryable(status: u16) -> bool {
+pub(crate) fn is_openai_error_retryable(status: u16) -> bool {
     // OpenAI sometimes returns 404 for models that are actually available
     status == 404 || matches!(status, 429 | 500 | 502 | 503 | 504)
 }

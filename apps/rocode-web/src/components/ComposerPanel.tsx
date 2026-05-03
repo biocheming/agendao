@@ -195,6 +195,7 @@ interface ComposerPanelProps {
   cacheWriteTokens?: number | null;
   cacheDiagnosticLabel?: string | null;
   ingressDiagnosticLabel?: string | null;
+  providerDiagnosticLabel?: string | null;
   inputPricePerMillion?: number | null;
   outputPricePerMillion?: number | null;
   activeStageId: string | null;
@@ -248,6 +249,7 @@ export function ComposerPanel({
   cacheWriteTokens = null,
   cacheDiagnosticLabel = null,
   ingressDiagnosticLabel = null,
+  providerDiagnosticLabel = null,
   inputPricePerMillion = null,
   outputPricePerMillion = null,
   activeStageId,
@@ -886,6 +888,11 @@ export function ComposerPanel({
                       {ingressDiagnosticLabel ? (
                         <span className="text-muted-foreground" title="Ingress stabilization">
                           Ingress {ingressDiagnosticLabel}
+                        </span>
+                      ) : null}
+                      {providerDiagnosticLabel ? (
+                        <span className="text-amber-700 dark:text-amber-300" title="Provider diagnostic">
+                          Provider {providerDiagnosticLabel}
                         </span>
                       ) : null}
                       {contextCount > 0 ? (

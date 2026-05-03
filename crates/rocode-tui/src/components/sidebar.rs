@@ -846,6 +846,20 @@ impl Sidebar {
                             ),
                         ]));
                     }
+                    if let Some(provider_diagnostic) = last_assistant
+                        .and_then(|message| provider_diagnostic_label(&message.metadata))
+                    {
+                        lines.push(Line::from(vec![
+                            Span::styled("Provider", Style::default().fg(theme.text_muted)),
+                            Span::styled(
+                                format!(
+                                    " {}",
+                                    truncate_text(&provider_diagnostic, area.width as usize)
+                                ),
+                                Style::default().fg(theme.warning),
+                            ),
+                        ]));
+                    }
                     if let Some(ingress_diagnostic) =
                         last_user.and_then(|message| ingress_diagnostic_label(&message.metadata))
                     {
@@ -1832,6 +1846,15 @@ fn cache_diagnostic_label(metadata: &Option<HashMap<String, serde_json::Value>>)
         .and_then(|summary| rocode_provider::cache::cache_bust_summary_label(&summary))
 }
 
+fn provider_diagnostic_label(
+    metadata: &Option<HashMap<String, serde_json::Value>>,
+) -> Option<String> {
+    metadata
+        .as_ref()
+        .and_then(rocode_provider::provider_diagnostic_from_metadata)
+        .map(|summary| rocode_provider::provider_diagnostic_label(&summary).to_string())
+}
+
 fn ingress_diagnostic_label(
     metadata: &Option<HashMap<String, serde_json::Value>>,
 ) -> Option<String> {
@@ -2483,5 +2506,23 @@ mod tests {
 
         assert!(label.contains("likely bust"));
         assert!(label.contains("messagePrefixHash"));
+    }
+
+    #[test]
+    fn provider_diagnostic_label_reads_message_metadata() {
+        let mut metadata = HashMap::new();
+        rocode_provider::ProviderDiagnosticSummary {
+            severity: rocode_provider::ProviderDiagnosticSeverity::HardFail,
+            source: rocode_provider::ProviderDiagnosticSource::ApiErrorRewrite,
+            code: "thinking_replay_rejected".to_string(),
+            provider_id: "deepseek".to_string(),
+            model_id: Some("deepseek-reasoner".to_string()),
+            message: "rejected replay".to_string(),
+        }
+        .attach_to_metadata(&mut metadata);
+
+        let label = provider_diagnostic_label(&Some(metadata)).expect("label");
+
+        assert_eq!(label, "thinking replay rejected");
     }
 }

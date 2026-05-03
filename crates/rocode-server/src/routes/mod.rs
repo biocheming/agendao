@@ -11,6 +11,7 @@ mod plugin_auth;
 mod process;
 mod project;
 mod provider;
+mod provider_diagnostics;
 mod pty;
 mod session;
 mod skill_catalog;

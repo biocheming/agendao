@@ -215,16 +215,22 @@ impl OrchestratorModelResolver for ProviderModelResolver {
         _exec_ctx: &ExecutionContext,
     ) -> Result<rocode_provider::StreamResult, OrchestratorError> {
         let (provider, model_id) = if let Some(model) = model {
-            let provider = self
-                .providers
-                .get(&model.provider_id)
-                .ok_or(OrchestratorError::NoProvider)?;
+            let provider = self.providers.get(&model.provider_id).ok_or_else(|| {
+                OrchestratorError::from_provider_error(
+                    &model.provider_id,
+                    Some(&model.model_id),
+                    &rocode_provider::ProviderError::ProviderNotFound(model.provider_id.clone()),
+                )
+            })?;
             (provider, model.model_id.clone())
         } else if let Some(model) = self.execution.model_ref() {
-            let provider = self
-                .providers
-                .get(&model.provider_id)
-                .ok_or(OrchestratorError::NoProvider)?;
+            let provider = self.providers.get(&model.provider_id).ok_or_else(|| {
+                OrchestratorError::from_provider_error(
+                    &model.provider_id,
+                    Some(&model.model_id),
+                    &rocode_provider::ProviderError::ProviderNotFound(model.provider_id.clone()),
+                )
+            })?;
             (provider, model.model_id)
         } else {
             let provider = self
@@ -245,10 +251,9 @@ impl OrchestratorModelResolver for ProviderModelResolver {
             .execution
             .compile_with_model(model_id.clone())
             .to_chat_request(messages, tools, true);
-        provider
-            .chat_stream(request)
-            .await
-            .map_err(|error| OrchestratorError::ModelError(error.to_string()))
+        provider.chat_stream(request).await.map_err(|error| {
+            OrchestratorError::from_provider_error(provider.id(), Some(&model_id), &error)
+        })
     }
 }
 
