@@ -32,9 +32,14 @@ use crate::{MessageRole, Session, SessionMessage};
 use super::runtime_step::{SessionStepRuntimeOutput, SessionStepSink, SessionStepToolDispatcher};
 use super::{
     apply_chat_message_hook_outputs, apply_chat_messages_hook_outputs, is_terminal_finish,
-    merge_tool_definitions, session_message_hook_payload, skill_reflection, tools_and_output,
-    PromptHooks, PromptInput, PromptRequestContext, SessionPrompt, SessionStepShared, MAX_STEPS,
-    PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY,
+    merge_tool_definitions, session_message_hook_payload, skill_reflection,
+    surface_contract::{
+        collect_prompt_surface_provider_options, is_volatile_system_section,
+        normalize_stable_system_line, sanctioned_model_context_projection_for_message,
+        PromptSurfaceProviderOptionGroup,
+    },
+    tools_and_output, PromptHooks, PromptInput, PromptRequestContext, SessionPrompt,
+    SessionStepShared, MAX_STEPS, PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY,
     PROMPT_SURFACE_SNAPSHOT_INVALIDATION_METADATA_KEY, STREAM_UPDATE_INTERVAL_MS,
 };
 
@@ -314,6 +319,7 @@ mod cache_fingerprint_tests {
             test_cache_fingerprint("system-a", "tools-a", "messages-a", "params-a");
         let first_stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
+            &session.messages,
             "openai",
             "gpt-test",
             &compiled,
@@ -332,6 +338,7 @@ mod cache_fingerprint_tests {
             test_cache_fingerprint("system-a", "tools-a", "messages-changed", "params-a");
         let second_stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
+            &session.messages,
             "openai",
             "gpt-test",
             &compiled,
@@ -362,6 +369,7 @@ mod cache_fingerprint_tests {
             test_cache_fingerprint("system-a", "tools-a", "messages-a", "params-a");
         let first_stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
+            &session.messages,
             "openai",
             "gpt-test",
             &compiled,
@@ -380,6 +388,7 @@ mod cache_fingerprint_tests {
             test_cache_fingerprint("system-a", "tools-b", "messages-a", "params-a");
         let second_stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
+            &session.messages,
             "openai",
             "gpt-test",
             &compiled,
@@ -462,6 +471,7 @@ mod cache_fingerprint_tests {
             test_cache_fingerprint("system-full-a", "tools-a", "messages-a", "params-a");
         let first_stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
+            &session.messages,
             "openai",
             "gpt-test",
             &compiled,
@@ -480,6 +490,7 @@ mod cache_fingerprint_tests {
             test_cache_fingerprint("system-full-b", "tools-a", "messages-a", "params-a");
         let second_stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
+            &session.messages,
             "openai",
             "gpt-test",
             &compiled,
@@ -516,6 +527,7 @@ mod cache_fingerprint_tests {
 
         let stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
+            &session.messages,
             "openai",
             "gpt-test",
             &compiled,
@@ -533,6 +545,7 @@ mod cache_fingerprint_tests {
         );
         let stable_again = SessionPrompt::prompt_surface_stable_fields(
             &session,
+            &session.messages,
             "openai",
             "gpt-test",
             &compiled,
@@ -565,6 +578,7 @@ mod cache_fingerprint_tests {
 
         let first_stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
+            &session.messages,
             "openai",
             "gpt-test",
             &compiled,
@@ -586,6 +600,7 @@ mod cache_fingerprint_tests {
         );
         let second_stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
+            &session.messages,
             "openai",
             "gpt-test",
             &compiled,
@@ -627,6 +642,7 @@ mod cache_fingerprint_tests {
 
         let stable = SessionPrompt::prompt_surface_stable_fields(
             &session,
+            &session.messages,
             "openai",
             "gpt-test",
             &compiled,
@@ -639,6 +655,139 @@ mod cache_fingerprint_tests {
             stable.api_shape,
             Some(rocode_provider::cache::CloseAiCompatibleApiShape::Responses)
         );
+    }
+
+    #[test]
+    fn prompt_surface_snapshot_invalidates_on_output_projection_policy_change() {
+        let compiled = CompiledExecutionRequest::default();
+        let session = Session::new("project", "/tmp");
+        let fingerprint = test_cache_fingerprint("system-a", "tools-a", "messages-a", "params-a");
+
+        let mut projected = SessionMessage::assistant(session.id.clone());
+        projected.add_text("large assistant delivery");
+        projected.metadata.insert(
+            rocode_orchestrator::output_projection::SCHEDULER_OUTPUT_PROJECTION_POLICY_METADATA_KEY
+                .to_string(),
+            serde_json::to_value(
+                rocode_orchestrator::output_projection::ContextProjectionPolicy::OnDemandArtifact,
+            )
+            .expect("policy should serialize"),
+        );
+        projected.metadata.insert(
+            rocode_orchestrator::output_projection::SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY
+                .to_string(),
+            serde_json::json!("artifact-backed summary"),
+        );
+
+        let first_stable = SessionPrompt::prompt_surface_stable_fields(
+            &session,
+            &[projected],
+            "openai",
+            "gpt-test",
+            &compiled,
+            &fingerprint,
+            Some("system"),
+            "tool-source-a".to_string(),
+        );
+        let first = SessionPrompt::build_prompt_surface_runtime_snapshot(
+            "ses_test",
+            None,
+            first_stable,
+            100,
+        );
+
+        let mut full = SessionMessage::assistant(session.id.clone());
+        full.add_text("large assistant delivery");
+
+        let second_stable = SessionPrompt::prompt_surface_stable_fields(
+            &session,
+            &[full],
+            "openai",
+            "gpt-test",
+            &compiled,
+            &fingerprint,
+            Some("system"),
+            "tool-source-a".to_string(),
+        );
+        let second = SessionPrompt::build_prompt_surface_runtime_snapshot(
+            "ses_test",
+            Some(&first),
+            second_stable,
+            200,
+        );
+
+        let invalidation = second
+            .invalidation
+            .as_ref()
+            .expect("projection policy changes should invalidate stable snapshot");
+        assert_eq!(second.generation, first.generation + 1);
+        assert_eq!(
+            invalidation.severity,
+            rocode_provider::cache::CacheBustSeverity::LikelyBust
+        );
+        assert!(invalidation
+            .changed_fields
+            .contains(&"outputProjectionPolicyHash".to_string()));
+    }
+
+    #[test]
+    fn prompt_surface_snapshot_ignores_provider_diagnostic_metadata() {
+        let compiled = CompiledExecutionRequest::default();
+        let session = Session::new("project", "/tmp");
+        let fingerprint = test_cache_fingerprint("system-a", "tools-a", "messages-a", "params-a");
+
+        let mut baseline = SessionMessage::assistant(session.id.clone());
+        baseline.add_text("visible answer");
+        let first_stable = SessionPrompt::prompt_surface_stable_fields(
+            &session,
+            &[baseline.clone()],
+            "openai",
+            "gpt-test",
+            &compiled,
+            &fingerprint,
+            Some("system"),
+            "tool-source-a".to_string(),
+        );
+        let first = SessionPrompt::build_prompt_surface_runtime_snapshot(
+            "ses_test",
+            None,
+            first_stable,
+            100,
+        );
+
+        let summary = rocode_provider::ProviderDiagnosticSummary {
+            severity: rocode_provider::ProviderDiagnosticSeverity::HardFail,
+            source: rocode_provider::ProviderDiagnosticSource::ApiErrorRewrite,
+            code: "thinking_replay_rejected".to_string(),
+            provider_id: "deepseek".to_string(),
+            model_id: Some("deepseek-v4".to_string()),
+            message: "thinking replay rejected".to_string(),
+        };
+        summary.attach_to_metadata(&mut baseline.metadata);
+
+        let second_stable = SessionPrompt::prompt_surface_stable_fields(
+            &session,
+            &[baseline],
+            "openai",
+            "gpt-test",
+            &compiled,
+            &fingerprint,
+            Some("system"),
+            "tool-source-a".to_string(),
+        );
+        let second = SessionPrompt::build_prompt_surface_runtime_snapshot(
+            "ses_test",
+            Some(&first),
+            second_stable,
+            200,
+        );
+
+        assert_eq!(
+            first.output_projection_policy_hash,
+            second.output_projection_policy_hash
+        );
+        assert_eq!(second.generation, first.generation);
+        assert!(second.invalidation.is_none());
     }
 
     #[test]
@@ -751,6 +900,11 @@ struct RuntimeStepInput {
     chat_messages: Vec<rocode_provider::Message>,
     tool_registry: Arc<rocode_tool::ToolRegistry>,
     step_ctx: RuntimeStepContext,
+}
+
+struct PreparedChatMessages {
+    prompt_messages: Vec<SessionMessage>,
+    chat_messages: Vec<rocode_provider::Message>,
 }
 
 impl SessionPrompt {
@@ -1353,7 +1507,7 @@ impl SessionPrompt {
         system_prompt: Option<&str>,
         mut filtered_messages: Vec<SessionMessage>,
         provider_type: ProviderType,
-    ) -> anyhow::Result<Vec<rocode_provider::Message>> {
+    ) -> anyhow::Result<PreparedChatMessages> {
         if rocode_plugin::should_trigger_script_hooks(HookEvent::ChatMessagesTransform, agent_name)
             .await
         {
@@ -1381,7 +1535,10 @@ impl SessionPrompt {
 
         let mut chat_messages = Self::build_chat_messages(&prompt_messages, system_prompt)?;
         apply_caching(&mut chat_messages, provider_type);
-        Ok(chat_messages)
+        Ok(PreparedChatMessages {
+            prompt_messages,
+            chat_messages,
+        })
     }
 
     fn latest_cache_request_fingerprint(session: &Session) -> Option<CacheRequestFingerprint> {
@@ -1415,6 +1572,7 @@ impl SessionPrompt {
 
     fn prompt_surface_stable_fields(
         session: &Session,
+        prompt_messages: &[SessionMessage],
         provider_id: &str,
         model_id: &str,
         compiled_request: &CompiledExecutionRequest,
@@ -1424,22 +1582,14 @@ impl SessionPrompt {
     ) -> PromptSurfaceStableFields {
         let provider_options = compiled_request.provider_options.as_ref();
         let reasoning_mode_hash = provider_options
-            .and_then(|options| {
-                let mut relevant = serde_json::Map::new();
-                for key in [
-                    "reasoning",
-                    "reasoning_effort",
-                    "reasoningEffort",
-                    "thinking",
-                    "include_reasoning",
-                    "includeReasoning",
-                ] {
-                    if let Some(value) = options.get(key) {
-                        relevant.insert(key.to_string(), value.clone());
-                    }
-                }
-                (!relevant.is_empty()).then_some(serde_json::Value::Object(relevant))
+            .map(|options| {
+                collect_prompt_surface_provider_options(
+                    options,
+                    PromptSurfaceProviderOptionGroup::ReasoningMode,
+                )
             })
+            .filter(|relevant| !relevant.is_empty())
+            .map(serde_json::Value::Object)
             .map(|value| rocode_provider::cache::json_fingerprint(&value));
         let tool_policy_hash = Self::tool_policy_hash(provider_options);
         let api_shape =
@@ -1483,12 +1633,7 @@ impl SessionPrompt {
             provider_params_hash: fingerprint.surface.api_params_hash.clone(),
             tool_policy_hash,
             reasoning_mode_hash,
-            output_projection_policy_hash: rocode_provider::cache::json_fingerprint(
-                &serde_json::json!({
-                    "policy": "default",
-                    "owner": "prompt_surface_authority",
-                }),
-            ),
+            output_projection_policy_hash: Self::output_projection_policy_hash(prompt_messages),
             scc_stable_refs_hash: Self::scc_stable_refs_hash(session),
             closeai_prompt_cache_key,
             ethnopic_policy_hash,
@@ -1521,20 +1666,13 @@ impl SessionPrompt {
     }
 
     fn stable_system_surface_projection(system_prompt: &str) -> String {
-        let volatile_sections = [
-            "Exact Recent Tail",
-            "Working Ledger",
-            "Latest Compaction Summary",
-        ];
         let mut lines = Vec::new();
         let mut skipping_section = false;
 
         for line in system_prompt.lines() {
             if let Some(header) = line.strip_prefix("## ") {
                 let title = header.trim();
-                skipping_section = volatile_sections
-                    .iter()
-                    .any(|volatile| title.eq_ignore_ascii_case(volatile));
+                skipping_section = is_volatile_system_section(title);
                 if skipping_section {
                     continue;
                 }
@@ -1544,15 +1682,7 @@ impl SessionPrompt {
                 continue;
             }
 
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("Today's date:") || trimmed.starts_with("Today’s date:") {
-                let indent_len = line.len().saturating_sub(trimmed.len());
-                let indent = &line[..indent_len];
-                lines.push(format!("{indent}Today's date: <dynamic>"));
-                continue;
-            }
-
-            lines.push(line.to_string());
+            lines.push(normalize_stable_system_line(line).into_owned());
         }
 
         lines.join("\n")
@@ -1647,22 +1777,31 @@ impl SessionPrompt {
     fn tool_policy_hash(
         provider_options: Option<&HashMap<String, serde_json::Value>>,
     ) -> Option<String> {
-        let provider_options = provider_options?;
-        let mut relevant = serde_json::Map::new();
-        for key in [
-            "allowed_tools",
-            "allowedTools",
-            "tool_choice",
-            "toolChoice",
-            "allowed_tool_names",
-            "allowedToolNames",
-        ] {
-            if let Some(value) = provider_options.get(key) {
-                relevant.insert(key.to_string(), value.clone());
-            }
-        }
+        let relevant = collect_prompt_surface_provider_options(
+            provider_options?,
+            PromptSurfaceProviderOptionGroup::ToolPolicy,
+        );
         (!relevant.is_empty())
             .then(|| rocode_provider::cache::json_fingerprint(&serde_json::Value::Object(relevant)))
+    }
+
+    fn output_projection_policy_hash(prompt_messages: &[SessionMessage]) -> String {
+        let projected = prompt_messages
+            .iter()
+            .filter_map(sanctioned_model_context_projection_for_message)
+            .map(|projection| {
+                serde_json::json!({
+                    "path": projection.path.as_str(),
+                    "policy": projection.policy,
+                    "legacy_without_policy": projection.legacy_without_policy,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        rocode_provider::cache::json_fingerprint(&serde_json::json!({
+            "owner": "sanctioned_model_context_projection",
+            "entries": projected,
+        }))
     }
 
     fn build_prompt_surface_runtime_snapshot(
@@ -2170,7 +2309,10 @@ impl SessionPrompt {
                 "prompt loop step start"
             );
 
-            let chat_messages = Self::prepare_chat_messages(
+            let PreparedChatMessages {
+                prompt_messages,
+                chat_messages,
+            } = Self::prepare_chat_messages(
                 &session_id,
                 prompt_ctx.agent_name.as_deref(),
                 prompt_ctx.system_prompt.as_deref(),
@@ -2207,6 +2349,7 @@ impl SessionPrompt {
                 Self::latest_prompt_surface_runtime_snapshot(session);
             let prompt_surface_stable_fields = Self::prompt_surface_stable_fields(
                 session,
+                &prompt_messages,
                 &prompt_ctx.provider_id,
                 &prompt_ctx.model_id,
                 &prompt_ctx.compiled_request,

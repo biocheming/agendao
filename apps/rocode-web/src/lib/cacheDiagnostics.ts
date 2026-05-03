@@ -5,6 +5,12 @@ export interface CacheBustSummaryRecord {
   change_count?: number | null;
 }
 
+export interface PromptSurfaceInvalidationRecord {
+  severity?: string | null;
+  reason?: string | null;
+  changed_fields?: string[] | null;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
@@ -53,4 +59,21 @@ export function cacheBustSummaryLabel(summary: CacheBustSummaryRecord | null | u
 
   const cause = summary.primary_cause?.replace(/\s+/g, " ").trim() || "prompt surface changed";
   return `${severity} · ${cause}`;
+}
+
+export function promptSurfaceInvalidationFromTelemetry(
+  telemetry: Record<string, unknown> | null | undefined,
+): PromptSurfaceInvalidationRecord | null {
+  const invalidation = telemetry?.prompt_surface_snapshot_invalidation;
+  if (!isRecord(invalidation)) return null;
+  return {
+    severity:
+      typeof invalidation.severity === "string" ? invalidation.severity : null,
+    reason: typeof invalidation.reason === "string" ? invalidation.reason : null,
+    changed_fields: Array.isArray(invalidation.changed_fields)
+      ? invalidation.changed_fields.filter(
+          (value): value is string => typeof value === "string",
+        )
+      : null,
+  };
 }
