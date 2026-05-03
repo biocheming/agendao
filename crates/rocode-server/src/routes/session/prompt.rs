@@ -732,13 +732,7 @@ fn count_scheduler_context_messages(session: &rocode_session::Session) -> usize 
 
 fn scheduler_context_text_for_message(message: &SessionMessage) -> (String, bool) {
     if matches!(message.role, MessageRole::Assistant) {
-        if let Some(summary) = message
-            .metadata
-            .get(SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY)
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
+        if let Some(summary) = rocode_session::prompt::sanctioned_model_context_summary(message) {
             return (
                 format!(
                     "Projected assistant output for model context. The visible assistant message is preserved in session history; use `scheduler_context_hydrate` with message id `{}` if exact text is required.\n\n{}",
@@ -3127,6 +3121,43 @@ mod tests {
         assert_eq!(
             metadata["exact_recent_tail"][1]["projected"],
             serde_json::json!(true)
+        );
+    }
+
+    #[test]
+    fn scheduler_session_context_rejects_unsanctioned_full_projection_policy() {
+        let mut session = Session::new("project", "/tmp");
+        session.add_user_message("总结这次调查");
+        let assistant_id = {
+            let assistant = session.add_assistant_message();
+            assistant.add_text("full report body should remain the scheduler context source");
+            assistant.metadata.insert(
+                SCHEDULER_OUTPUT_PROJECTION_POLICY_METADATA_KEY.to_string(),
+                serde_json::json!("Full"),
+            );
+            assistant.metadata.insert(
+                SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY.to_string(),
+                serde_json::json!("summary must not override full projection"),
+            );
+            assistant.id.clone()
+        };
+
+        let block = build_scheduler_session_context_block(&session)
+            .expect("same-session scheduler context should render");
+        let packet = build_scheduler_session_context_packet(&session)
+            .expect("same-session scheduler context packet should render");
+        let metadata = packet.metadata_value();
+
+        assert!(!block.contains("Projected assistant output for model context"));
+        assert!(block.contains("full report body should remain the scheduler context source"));
+        assert!(!block.contains("summary must not override full projection"));
+        assert_eq!(
+            metadata["exact_recent_tail"][1]["projected"],
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            metadata["exact_recent_tail"][1]["message_id"].as_str(),
+            Some(assistant_id.as_str())
         );
     }
 

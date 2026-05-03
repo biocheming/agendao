@@ -9,6 +9,7 @@ pub mod shell;
 mod skill_reflection;
 pub mod subtask;
 mod subtask_runtime;
+mod surface_contract;
 #[cfg(test)]
 mod tests;
 mod tool_calls;
@@ -18,6 +19,11 @@ pub mod tools_and_output;
 pub const PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY: &str = "prompt_surface_runtime_snapshot";
 pub const PROMPT_SURFACE_SNAPSHOT_INVALIDATION_METADATA_KEY: &str =
     "prompt_surface_snapshot_invalidation";
+
+pub fn sanctioned_model_context_summary(message: &SessionMessage) -> Option<&str> {
+    surface_contract::sanctioned_model_context_projection_for_message(message)
+        .map(|projection| projection.summary)
+}
 
 pub use compaction_helpers::{should_compact, trigger_compaction};
 pub(crate) use hooks::{
@@ -33,6 +39,7 @@ pub use ingress::{
 pub(crate) use shell::resolve_shell_invocation;
 pub use shell::{resolve_command_template, shell_exec, CommandInput, ShellInput};
 pub use subtask::{tool_definitions_from_schemas, SubtaskExecutor, ToolSchema};
+use surface_contract::HiddenRuntimeHint;
 pub use tools_and_output::{
     compose_session_title_source, create_structured_output_tool, extract_structured_output,
     generate_session_title, generate_session_title_for_session, generate_session_title_llm,
@@ -394,7 +401,7 @@ pub fn maybe_append_proposal_notice(session: &mut Session, decision: &NudgeDecis
     let note = session.add_assistant_message();
     note.metadata.insert(
         "runtime_hint".to_string(),
-        serde_json::json!("proposal_notice"),
+        serde_json::json!(HiddenRuntimeHint::ProposalNotice.as_str()),
     );
     note.add_text(format!(
         "{} skill evolution proposal(s) generated from this run.\n\
@@ -775,7 +782,7 @@ impl SessionPrompt {
         let note = session.add_assistant_message();
         note.metadata.insert(
             "runtime_hint".to_string(),
-            serde_json::json!("skill_save_suggestion"),
+            serde_json::json!(HiddenRuntimeHint::SkillSaveSuggestion.as_str()),
         );
         note.add_text(
             "System suggestion: this turn may be a good skill candidate. Save it only if you can express reusable triggers, steps, validation, and boundaries with `skill_manage`.",

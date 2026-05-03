@@ -3,7 +3,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use rocode_orchestrator::output_projection::SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY;
 use rocode_provider::{get_model_context_limit, Content, ContentPart, Message, Provider, Role};
 
 use crate::compaction::{
@@ -18,6 +17,9 @@ use crate::message_v2::{
 use crate::summary::{summarize_into_session, SummarizeInput};
 use crate::{MessageRole, PartType, Session, SessionMessage};
 
+use super::surface_contract::{
+    parse_hidden_runtime_hint, sanctioned_model_context_projection_for_message,
+};
 use super::tools_and_output::{compose_session_title_source, generate_session_title_for_session};
 use super::SessionPrompt;
 
@@ -48,15 +50,13 @@ struct LegacyToolStateInput<'a> {
 
 impl SessionPrompt {
     fn model_hidden_runtime_hint(message: &SessionMessage) -> Option<&str> {
-        match message
-            .metadata
-            .get("runtime_hint")
-            .and_then(|value| value.as_str())
-        {
-            Some("proposal_notice") => Some("proposal_notice"),
-            Some("skill_save_suggestion") => Some("skill_save_suggestion"),
-            _ => None,
-        }
+        parse_hidden_runtime_hint(
+            message
+                .metadata
+                .get("runtime_hint")
+                .and_then(|value| value.as_str())?,
+        )
+        .map(|hint| hint.as_str())
     }
 
     fn is_model_visible_message(message: &SessionMessage) -> bool {
@@ -171,27 +171,8 @@ impl SessionPrompt {
     }
 
     fn projected_model_context_summary(msg: &SessionMessage) -> Option<String> {
-        if !matches!(msg.role, MessageRole::Assistant) {
-            return None;
-        }
-        if Self::contains_tool_protocol_parts(&msg.parts) {
-            return None;
-        }
-        msg.metadata
-            .get(SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY)
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|summary| !summary.is_empty())
-            .map(ToOwned::to_owned)
-    }
-
-    fn contains_tool_protocol_parts(parts: &[crate::MessagePart]) -> bool {
-        parts.iter().any(|part| {
-            matches!(
-                part.part_type,
-                PartType::ToolCall { .. } | PartType::ToolResult { .. }
-            )
-        })
+        sanctioned_model_context_projection_for_message(msg)
+            .map(|projection| projection.summary.to_owned())
     }
 
     pub(super) fn model_context_char_len(message: &SessionMessage) -> usize {
@@ -1143,6 +1124,10 @@ mod tests {
     use async_trait::async_trait;
     use futures::stream;
     use rocode_config::{CompactionConfig as AppCompactionConfig, Config, ConfigStore};
+    use rocode_orchestrator::output_projection::{
+        ContextProjectionPolicy, SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY,
+        SCHEDULER_OUTPUT_PROJECTION_POLICY_METADATA_KEY,
+    };
     use rocode_provider::{ChatRequest, ChatResponse, ModelInfo, ProviderError, StreamResult};
 
     struct StaticModelProvider {
@@ -1714,6 +1699,11 @@ mod tests {
         let mut assistant = SessionMessage::assistant(sid);
         assistant.add_text("very long visible scheduler delivery");
         assistant.metadata.insert(
+            SCHEDULER_OUTPUT_PROJECTION_POLICY_METADATA_KEY.to_string(),
+            serde_json::to_value(ContextProjectionPolicy::OnDemandArtifact)
+                .expect("policy should serialize"),
+        );
+        assistant.metadata.insert(
             SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY.to_string(),
             serde_json::json!("compact scheduler summary with artifact reference"),
         );
@@ -1725,6 +1715,50 @@ mod tests {
         assert!(matches!(
             &messages[0].content,
             Content::Text(text) if text == "compact scheduler summary with artifact reference"
+        ));
+    }
+
+    #[test]
+    fn build_chat_messages_keeps_legacy_projection_without_policy() {
+        let sid = "sid".to_string();
+        let mut assistant = SessionMessage::assistant(sid);
+        assistant.add_text("legacy large assistant text");
+        assistant.metadata.insert(
+            SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY.to_string(),
+            serde_json::json!("legacy summary"),
+        );
+
+        let messages = SessionPrompt::build_chat_messages(&[assistant], None).unwrap();
+
+        assert_eq!(messages.len(), 1);
+        assert!(matches!(messages[0].role, Role::Assistant));
+        assert!(matches!(
+            &messages[0].content,
+            Content::Text(text) if text == "legacy summary"
+        ));
+    }
+
+    #[test]
+    fn build_chat_messages_rejects_unsanctioned_full_projection_policy() {
+        let sid = "sid".to_string();
+        let mut assistant = SessionMessage::assistant(sid);
+        assistant.add_text("full output should stay visible");
+        assistant.metadata.insert(
+            SCHEDULER_OUTPUT_PROJECTION_POLICY_METADATA_KEY.to_string(),
+            serde_json::to_value(ContextProjectionPolicy::Full).expect("policy should serialize"),
+        );
+        assistant.metadata.insert(
+            SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY.to_string(),
+            serde_json::json!("must not override visible text"),
+        );
+
+        let messages = SessionPrompt::build_chat_messages(&[assistant], None).unwrap();
+
+        assert_eq!(messages.len(), 1);
+        assert!(matches!(messages[0].role, Role::Assistant));
+        assert!(matches!(
+            &messages[0].content,
+            Content::Text(text) if text == "full output should stay visible"
         ));
     }
 
@@ -1745,6 +1779,79 @@ mod tests {
             &messages[0].content,
             Content::Text(text) if text == "exact user instruction"
         ));
+    }
+
+    #[test]
+    fn build_chat_messages_ignores_provider_diagnostic_metadata() {
+        let sid = "sid".to_string();
+        let mut assistant = SessionMessage::assistant(sid);
+        assistant.add_text("visible answer");
+        rocode_provider::ProviderDiagnosticSummary {
+            severity: rocode_provider::ProviderDiagnosticSeverity::HardFail,
+            source: rocode_provider::ProviderDiagnosticSource::ApiErrorRewrite,
+            code: "thinking_replay_rejected".to_string(),
+            provider_id: "deepseek".to_string(),
+            model_id: Some("deepseek-v4".to_string()),
+            message: "thinking replay rejected".to_string(),
+        }
+        .attach_to_metadata(&mut assistant.metadata);
+
+        let messages = SessionPrompt::build_chat_messages(&[assistant], None).unwrap();
+
+        assert_eq!(messages.len(), 1);
+        assert!(matches!(messages[0].role, Role::Assistant));
+        assert!(matches!(
+            &messages[0].content,
+            Content::Text(text) if text == "visible answer"
+        ));
+    }
+
+    #[test]
+    fn build_chat_messages_ignores_tool_preflight_metadata() {
+        let sid = "sid".to_string();
+        let mut tool = SessionMessage::tool(sid);
+        tool.add_tool_result("call_1", "read ok", false);
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            rocode_tool::EXECUTION_PREFLIGHT_METADATA_KEY.to_string(),
+            serde_json::to_value(rocode_tool::ExecutionPreflightMetadata {
+                runner: "read".to_string(),
+                subject: "/tmp/report.md".to_string(),
+                status: rocode_tool::ExecutionPreflightStatus::SoftWarn,
+                issues: vec![rocode_tool::ExecutionPreflightIssue {
+                    severity: rocode_tool::ExecutionPreflightSeverity::SoftWarn,
+                    code: "missing_context".to_string(),
+                    message: "context snapshot was partial".to_string(),
+                }],
+                output: String::new(),
+                metadata: HashMap::new(),
+                attachment_count: 0,
+            })
+            .expect("preflight metadata should serialize"),
+        );
+        match &mut tool.parts[0].part_type {
+            PartType::ToolResult {
+                metadata: part_metadata,
+                ..
+            } => {
+                *part_metadata = Some(metadata);
+            }
+            other => panic!("expected tool result part, got {other:?}"),
+        }
+
+        let messages = SessionPrompt::build_chat_messages(&[tool], None).unwrap();
+
+        assert_eq!(messages.len(), 1);
+        assert!(matches!(messages[0].role, Role::Tool));
+        match &messages[0].content {
+            Content::Parts(parts) => {
+                assert_eq!(parts.len(), 1);
+                assert_eq!(parts[0].content_type, "tool_result");
+                let tool_result = parts[0].tool_result.as_ref().expect("tool result content");
+                assert_eq!(tool_result.content, "read ok");
+            }
+            other => panic!("expected tool content, got {other:?}"),
+        }
     }
 
     #[test]

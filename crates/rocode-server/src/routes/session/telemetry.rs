@@ -13,7 +13,7 @@ use rocode_types::{
     SessionInsightsResponse, SessionMemoryTelemetrySummary, SessionMultimodalAttachmentInfo,
     SessionMultimodalInsight,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::runtime_control::SessionExecutionTopology;
 use crate::session_runtime::state::SessionRuntimeState;
@@ -35,6 +35,8 @@ pub struct SessionTelemetrySnapshot {
     pub cache_bust_summary: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_surface_runtime_snapshot: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_surface_snapshot_invalidation: Option<PromptSurfaceSnapshotInvalidationSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ingress_stabilization: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -63,6 +65,13 @@ pub struct SessionExecutionPreflightSummary {
     pub issues: Vec<rocode_tool::ExecutionPreflightIssue>,
     #[serde(default)]
     pub attachment_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromptSurfaceSnapshotInvalidationSummary {
+    pub severity: rocode_provider::cache::CacheBustSeverity,
+    pub reason: String,
+    pub changed_fields: Vec<String>,
 }
 
 pub(super) async fn get_session_telemetry(
@@ -139,6 +148,7 @@ pub(super) async fn build_session_telemetry_snapshot(
     let memory = build_session_memory_telemetry(state, session).await;
     let cache_bust_summary = latest_cache_bust_summary(session);
     let prompt_surface_runtime_snapshot = prompt_surface_runtime_snapshot(session);
+    let prompt_surface_snapshot_invalidation = latest_prompt_surface_snapshot_invalidation(session);
     let ingress_stabilization = latest_ingress_stabilization(session);
     let execution_preflight_summary = latest_execution_preflight_summary(session);
     let provider_diagnostic_summary = latest_provider_diagnostic_summary(session);
@@ -151,6 +161,7 @@ pub(super) async fn build_session_telemetry_snapshot(
         memory,
         cache_bust_summary,
         prompt_surface_runtime_snapshot,
+        prompt_surface_snapshot_invalidation,
         ingress_stabilization,
         execution_preflight_summary,
         provider_diagnostic_summary,
@@ -197,6 +208,31 @@ fn prompt_surface_runtime_snapshot(session: &Session) -> Option<serde_json::Valu
                         .get(rocode_session::prompt::PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY)
                         .cloned()
                 })
+        })
+}
+
+fn latest_prompt_surface_snapshot_invalidation(
+    session: &Session,
+) -> Option<PromptSurfaceSnapshotInvalidationSummary> {
+    session
+        .messages
+        .iter()
+        .rev()
+        .find(|message| matches!(message.role, MessageRole::Assistant))
+        .and_then(|message| {
+            message
+                .metadata
+                .get(rocode_session::prompt::PROMPT_SURFACE_SNAPSHOT_INVALIDATION_METADATA_KEY)
+                .cloned()
+        })
+        .and_then(|value| serde_json::from_value(value).ok())
+        .or_else(|| {
+            prompt_surface_runtime_snapshot(session).and_then(|snapshot| {
+                snapshot
+                    .get("invalidation")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value(value).ok())
+            })
         })
 }
 
@@ -594,6 +630,64 @@ mod tests {
     }
 
     #[test]
+    fn latest_prompt_surface_snapshot_invalidation_reads_assistant_metadata() {
+        let mut session = Session::new("session-1".to_string(), ".".to_string());
+        let assistant = session.add_assistant_message();
+        assistant.metadata.insert(
+            rocode_session::prompt::PROMPT_SURFACE_SNAPSHOT_INVALIDATION_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "severity": "LikelyBust",
+                "reason": "prompt surface runtime changed: outputProjectionPolicyHash",
+                "changed_fields": ["outputProjectionPolicyHash"],
+            }),
+        );
+
+        let invalidation =
+            latest_prompt_surface_snapshot_invalidation(&session).expect("invalidation");
+
+        assert_eq!(
+            invalidation.severity,
+            rocode_provider::cache::CacheBustSeverity::LikelyBust
+        );
+        assert_eq!(
+            invalidation.reason,
+            "prompt surface runtime changed: outputProjectionPolicyHash"
+        );
+        assert_eq!(
+            invalidation.changed_fields,
+            vec!["outputProjectionPolicyHash".to_string()]
+        );
+    }
+
+    #[test]
+    fn latest_prompt_surface_snapshot_invalidation_falls_back_to_snapshot_payload() {
+        let mut session = Session::new("session-1".to_string(), ".".to_string());
+        session.insert_metadata(
+            rocode_session::prompt::PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "generation": 7,
+                "invalidation": {
+                    "severity": "SoftDegradation",
+                    "reason": "prompt surface runtime changed: ingressPolicyHash",
+                    "changed_fields": ["ingressPolicyHash"]
+                }
+            }),
+        );
+
+        let invalidation =
+            latest_prompt_surface_snapshot_invalidation(&session).expect("invalidation");
+
+        assert_eq!(
+            invalidation.severity,
+            rocode_provider::cache::CacheBustSeverity::SoftDegradation
+        );
+        assert_eq!(
+            invalidation.changed_fields,
+            vec!["ingressPolicyHash".to_string()]
+        );
+    }
+
+    #[test]
     fn latest_execution_preflight_summary_prefers_tool_call_state_metadata() {
         let mut session = Session::new("session-1".to_string(), ".".to_string());
         let call_id = "call-1";
@@ -783,6 +877,11 @@ mod tests {
                     "reason": "prompt surface runtime changed: toolSurfaceHash"
                 },
             })),
+            prompt_surface_snapshot_invalidation: Some(PromptSurfaceSnapshotInvalidationSummary {
+                severity: rocode_provider::cache::CacheBustSeverity::HardBust,
+                reason: "prompt surface runtime changed: toolSurfaceHash".to_string(),
+                changed_fields: vec!["toolSurfaceHash".to_string()],
+            }),
             ingress_stabilization: Some(serde_json::json!({
                 "source": "web",
                 "policy": rocode_session::prompt::INGRESS_POLICY_ENTRY_METADATA_ONLY,
@@ -820,6 +919,10 @@ mod tests {
         assert_eq!(value["topology"]["waiting_count"], 1);
         assert_eq!(value["usage"]["total_cost"], 0.12);
         assert_eq!(value["prompt_surface_runtime_snapshot"]["generation"], 7);
+        assert_eq!(
+            value["prompt_surface_snapshot_invalidation"]["changed_fields"][0],
+            "toolSurfaceHash"
+        );
         assert_eq!(
             value["ingress_stabilization"]["policy"],
             rocode_session::prompt::INGRESS_POLICY_ENTRY_METADATA_ONLY
