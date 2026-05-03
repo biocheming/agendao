@@ -3,6 +3,10 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_WEB_BATCH_WINDOW_MS: i64 = 250;
+pub const INGRESS_POLICY_UNSPECIFIED: &str = "none";
+pub const INGRESS_POLICY_ENTRY_METADATA_ONLY: &str = "entry_metadata_only";
+pub const INGRESS_POLICY_SCHEDULER_METADATA_ONLY: &str = "scheduler_metadata_only";
+pub const INGRESS_POLICY_SAME_SESSION_CONTEXT_BATCH: &str = "same_session_context_batch";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -15,6 +19,21 @@ pub enum IngressSource {
     Other(String),
 }
 
+/// Canonical normalization for ingress source labels supplied by clients/routes.
+/// Missing or blank values default to `Api`: ingress source represents caller
+/// identity, not the HTTP transport shape used to deliver the turn.
+pub fn normalize_ingress_source(value: Option<&str>) -> IngressSource {
+    match value.unwrap_or("api").trim().to_ascii_lowercase().as_str() {
+        "cli" => IngressSource::Cli,
+        "tui" => IngressSource::Tui,
+        "web" => IngressSource::Web,
+        "api" => IngressSource::Api,
+        "scheduler" => IngressSource::Scheduler,
+        other if !other.is_empty() => IngressSource::Other(other.to_string()),
+        _ => IngressSource::Api,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IngressAttachmentRef {
     pub id: String,
@@ -24,9 +43,17 @@ pub struct IngressAttachmentRef {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IngressStabilizationMetadata {
+    /// Live field: exposed as diagnostics/telemetry and incremented by the
+    /// constrained web batching path when multiple turns are merged.
     pub batch_count: usize,
+    /// Helper/reserved field: populated by stabilization helpers when duplicate
+    /// ingress items are collapsed, but not currently consumed by the prompt
+    /// authority pipeline.
     pub dedupe_keys: Vec<String>,
+    /// Helper/reserved field: preserved for ordering-aware stabilization work.
     pub ordering_key: String,
+    /// Live field: records the ingress handling policy that produced the
+    /// stabilized turn and may participate in prompt-surface diagnostics.
     pub policy: String,
 }
 
@@ -46,19 +73,34 @@ pub struct IngressTurnEnvelope {
     pub session_id: String,
     pub source: IngressSource,
     pub turn_id: String,
+    /// Helper/runtime timestamp for stabilization logic; not part of prompt
+    /// authority.
     pub received_at_ms: i64,
+    /// Helper/runtime timestamp for stabilization logic; not part of prompt
+    /// authority.
     pub stabilized_at_ms: i64,
+    /// Non-authoritative shadow text. `PromptInput.parts` remains the sole
+    /// model-visible user input authority.
     pub user_intent_text: String,
+    /// Reserved field for future ingress-native attachment descriptors.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<IngressAttachmentRef>,
+    /// Reserved field for future quoted-context references.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub quoted_context_refs: Vec<String>,
+    /// Helper/control-turn marker used by stabilization logic to avoid merging
+    /// command/reply turns into ordinary user prompts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+    /// Live runtime metadata field. This may steer ingress-local handling but
+    /// must not become prompt authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_key: Option<String>,
+    /// Live runtime metadata field for scheduler-originated turns.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduler_stage_id: Option<String>,
+    /// Live runtime metadata field for scoped dedupe across repeated ingress
+    /// submissions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<String>,
     pub stabilization: IngressStabilizationMetadata,
@@ -86,11 +128,18 @@ impl IngressTurnEnvelope {
             context_key: None,
             scheduler_stage_id: None,
             idempotency_key: None,
-            stabilization: IngressStabilizationMetadata::single(turn_id, "none"),
+            stabilization: IngressStabilizationMetadata::single(
+                turn_id,
+                INGRESS_POLICY_UNSPECIFIED,
+            ),
         }
     }
 }
 
+/// Shared stabilization helper for ingress merge/dedupe semantics.
+/// Live prompt execution currently uses this helper only for the constrained
+/// `session_prompt` Web burst-batching path; outside that narrow route it
+/// remains helper/test infrastructure rather than a global ingress pipeline.
 pub fn stabilize_ingress_turns(mut turns: Vec<IngressTurnEnvelope>) -> Vec<IngressTurnEnvelope> {
     turns.sort_by(|a, b| {
         a.received_at_ms
@@ -147,6 +196,8 @@ fn is_control_or_reply_turn(turn: &IngressTurnEnvelope) -> bool {
 }
 
 fn merge_ingress_turn(target: &mut IngressTurnEnvelope, next: IngressTurnEnvelope) {
+    // This only merges ingress shadow text and ingress-local metadata. Live
+    // callers must separately rebuild authoritative `PromptInput.parts`.
     if !target.user_intent_text.is_empty() && !next.user_intent_text.is_empty() {
         target.user_intent_text.push('\n');
     }
@@ -159,12 +210,32 @@ fn merge_ingress_turn(target: &mut IngressTurnEnvelope, next: IngressTurnEnvelop
     }
     target.stabilized_at_ms = target.stabilized_at_ms.max(next.received_at_ms);
     target.stabilization.batch_count += next.stabilization.batch_count.max(1);
-    target.stabilization.policy = "same_session_context_batch".to_string();
+    target.stabilization.policy = INGRESS_POLICY_SAME_SESSION_CONTEXT_BATCH.to_string();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Helper-only: these tests cover ingress.rs stabilization semantics, not
+    // the live session prompt execution pipeline.
+
+    #[test]
+    fn normalize_ingress_source_defaults_to_api_and_preserves_known_sources() {
+        assert_eq!(normalize_ingress_source(None), IngressSource::Api);
+        assert_eq!(normalize_ingress_source(Some("")), IngressSource::Api);
+        assert_eq!(normalize_ingress_source(Some("cli")), IngressSource::Cli);
+        assert_eq!(normalize_ingress_source(Some("TUI")), IngressSource::Tui);
+        assert_eq!(normalize_ingress_source(Some("web")), IngressSource::Web);
+        assert_eq!(
+            normalize_ingress_source(Some("scheduler")),
+            IngressSource::Scheduler
+        );
+        assert_eq!(
+            normalize_ingress_source(Some("feishu")),
+            IngressSource::Other("feishu".to_string())
+        );
+    }
 
     #[test]
     fn stabilizes_same_session_text_burst_into_one_turn() {

@@ -124,29 +124,15 @@ fn stream_ingress_envelope(
         .unwrap_or_else(|| format!("ingress_{}", uuid::Uuid::new_v4().simple()));
     let mut envelope = rocode_session::prompt::IngressTurnEnvelope::new_text(
         session_id.to_string(),
-        match ingress_source
-            .unwrap_or("web")
-            .trim()
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "cli" => rocode_session::prompt::IngressSource::Cli,
-            "tui" => rocode_session::prompt::IngressSource::Tui,
-            "web" => rocode_session::prompt::IngressSource::Web,
-            "api" => rocode_session::prompt::IngressSource::Api,
-            "scheduler" => rocode_session::prompt::IngressSource::Scheduler,
-            other if !other.is_empty() => {
-                rocode_session::prompt::IngressSource::Other(other.to_string())
-            }
-            _ => rocode_session::prompt::IngressSource::Web,
-        },
+        rocode_session::prompt::normalize_ingress_source(ingress_source),
         turn_id,
         now,
         text.to_string(),
     );
     envelope.context_key = Some("stream".to_string());
     envelope.idempotency_key = idempotency_key.filter(|value| !value.trim().is_empty());
-    envelope.stabilization.policy = "entry_metadata_only".to_string();
+    envelope.stabilization.policy =
+        rocode_session::prompt::INGRESS_POLICY_ENTRY_METADATA_ONLY.to_string();
     envelope
 }
 
@@ -513,7 +499,10 @@ mod tests {
     use crate::session_runtime::scheduler_stage_block_from_message;
     use chrono::Utc;
     use rocode_command::governance_fixtures::canonical_scheduler_stage_fixture;
+    use rocode_session::prompt::IngressSource;
     use rocode_session::{MessagePart, MessageRole, PartType, SessionMessage};
+
+    use super::stream_ingress_envelope;
 
     #[test]
     fn scheduler_stage_message_projects_canonical_governance_block() {
@@ -570,6 +559,41 @@ mod tests {
         assert_eq!(
             block.text,
             "Decision pending on the unresolved task ledger."
+        );
+    }
+
+    #[test]
+    fn stream_ingress_source_defaults_to_api_and_preserves_known_sources() {
+        let defaulted = stream_ingress_envelope("ses_1", "hello", None, None);
+        assert_eq!(defaulted.source, IngressSource::Api);
+        assert_eq!(defaulted.context_key.as_deref(), Some("stream"));
+        assert_eq!(
+            defaulted.stabilization.policy,
+            rocode_session::prompt::INGRESS_POLICY_ENTRY_METADATA_ONLY
+        );
+
+        let blank = stream_ingress_envelope("ses_1", "hello", None, Some(""));
+        assert_eq!(blank.source, IngressSource::Api);
+
+        assert_eq!(
+            stream_ingress_envelope("ses_1", "hello", None, Some("cli")).source,
+            IngressSource::Cli
+        );
+        assert_eq!(
+            stream_ingress_envelope("ses_1", "hello", None, Some("TUI")).source,
+            IngressSource::Tui
+        );
+        assert_eq!(
+            stream_ingress_envelope("ses_1", "hello", None, Some("web")).source,
+            IngressSource::Web
+        );
+        assert_eq!(
+            stream_ingress_envelope("ses_1", "hello", None, Some("scheduler")).source,
+            IngressSource::Scheduler
+        );
+        assert_eq!(
+            stream_ingress_envelope("ses_1", "hello", None, Some("feishu")).source,
+            IngressSource::Other("feishu".to_string())
         );
     }
 }

@@ -437,7 +437,7 @@ mod tests {
             })),
             ingress_stabilization: Some(serde_json::json!({
                 "source": "web",
-                "policy": "entry_metadata_only",
+                "policy": rocode_session::prompt::INGRESS_POLICY_ENTRY_METADATA_ONLY,
                 "batch_count": 1,
             })),
         };
@@ -456,7 +456,7 @@ mod tests {
         assert_eq!(value["prompt_surface_runtime_snapshot"]["generation"], 7);
         assert_eq!(
             value["ingress_stabilization"]["policy"],
-            "entry_metadata_only"
+            rocode_session::prompt::INGRESS_POLICY_ENTRY_METADATA_ONLY
         );
     }
 
