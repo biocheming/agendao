@@ -24,8 +24,10 @@ pub(crate) use hooks::{
     apply_chat_message_hook_outputs, apply_chat_messages_hook_outputs, session_message_hook_payload,
 };
 pub use ingress::{
-    stabilize_ingress_turns, IngressAttachmentRef, IngressSource, IngressStabilizationMetadata,
-    IngressTurnEnvelope,
+    normalize_ingress_source, stabilize_ingress_turns, IngressAttachmentRef, IngressSource,
+    IngressStabilizationMetadata, IngressTurnEnvelope, INGRESS_POLICY_ENTRY_METADATA_ONLY,
+    INGRESS_POLICY_SAME_SESSION_CONTEXT_BATCH, INGRESS_POLICY_SCHEDULER_METADATA_ONLY,
+    INGRESS_POLICY_UNSPECIFIED,
 };
 #[cfg(test)]
 pub(crate) use shell::resolve_shell_invocation;
@@ -1065,6 +1067,16 @@ impl SessionPrompt {
             return Err(anyhow::anyhow!("Session {} is busy", session_id));
         }
         Ok(())
+    }
+
+    pub async fn reserve_session_run(&self, session_id: &str) -> anyhow::Result<CancellationToken> {
+        self.start(session_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("Session {} is busy", session_id))
+    }
+
+    pub async fn release_reserved_session_run(&self, session_id: &str) {
+        self.finish_run(session_id).await;
     }
 
     pub async fn create_user_message(

@@ -74,6 +74,26 @@ const SCHEDULER_MEMORY_HYDRATE_DEFAULT_RECORD_LIMIT: usize = 4_000;
 const SCHEDULER_MEMORY_HYDRATE_MAX_RECORD_LIMIT: usize = 12_000;
 const SCHEDULER_MEMORY_HYDRATE_MAX_RECORDS: usize = 8;
 
+fn scheduler_ingress_envelope(
+    session_id: &str,
+    profile_name: &str,
+    display_prompt_text: &str,
+) -> rocode_session::prompt::IngressTurnEnvelope {
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut envelope = rocode_session::prompt::IngressTurnEnvelope::new_text(
+        session_id.to_string(),
+        rocode_session::prompt::IngressSource::Scheduler,
+        format!("ingress_{}", uuid::Uuid::new_v4().simple()),
+        now,
+        display_prompt_text.to_string(),
+    );
+    envelope.context_key = Some("local_scheduler".to_string());
+    envelope.scheduler_stage_id = Some(profile_name.to_string());
+    envelope.stabilization.policy =
+        rocode_session::prompt::INGRESS_POLICY_SCHEDULER_METADATA_ONLY.to_string();
+    envelope
+}
+
 fn to_orchestrator_skill_tree(node: &SkillTreeNodeConfig) -> SkillTreeNode {
     SkillTreeNode {
         node_id: node.node_id.clone(),
@@ -1951,20 +1971,11 @@ pub async fn run_local_scheduler_prompt(
         variant: req.variant.clone(),
         parts: prompt_parts,
         tools: None,
-        ingress: Some({
-            let now = chrono::Utc::now().timestamp_millis();
-            let mut envelope = rocode_session::prompt::IngressTurnEnvelope::new_text(
-                session_id.clone(),
-                rocode_session::prompt::IngressSource::Scheduler,
-                format!("ingress_{}", uuid::Uuid::new_v4().simple()),
-                now,
-                req.display_prompt_text.clone(),
-            );
-            envelope.context_key = Some("local_scheduler".to_string());
-            envelope.scheduler_stage_id = Some(profile_name.clone());
-            envelope.stabilization.policy = "scheduler_metadata_only".to_string();
-            envelope
-        }),
+        ingress: Some(scheduler_ingress_envelope(
+            &session_id,
+            &profile_name,
+            &req.display_prompt_text,
+        )),
     };
     let user_message_id = create_scheduler_user_message(
         state.prompt_runner.as_ref(),
@@ -2308,6 +2319,22 @@ pub async fn abort_local_session_execution(
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn scheduler_ingress_envelope_uses_internal_scheduler_contract() {
+        let ingress = scheduler_ingress_envelope("ses_1", "prometheus", "review the workspace");
+
+        assert_eq!(
+            ingress.source,
+            rocode_session::prompt::IngressSource::Scheduler
+        );
+        assert_eq!(ingress.context_key.as_deref(), Some("local_scheduler"));
+        assert_eq!(ingress.scheduler_stage_id.as_deref(), Some("prometheus"));
+        assert_eq!(
+            ingress.stabilization.policy,
+            rocode_session::prompt::INGRESS_POLICY_SCHEDULER_METADATA_ONLY
+        );
+    }
 
     #[test]
     fn verifier_logprob_options_merge_top_level_and_responses_options() {

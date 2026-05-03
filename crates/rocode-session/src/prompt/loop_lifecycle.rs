@@ -510,7 +510,7 @@ mod cache_fingerprint_tests {
         session.insert_metadata("last_ingress_source".to_string(), serde_json::json!("web"));
         session.insert_metadata(
             "last_ingress_policy".to_string(),
-            serde_json::json!("entry_metadata_only"),
+            serde_json::json!(crate::prompt::INGRESS_POLICY_ENTRY_METADATA_ONLY),
         );
         let fingerprint = test_cache_fingerprint("system-a", "tools-a", "messages-a", "params-a");
 
@@ -529,7 +529,7 @@ mod cache_fingerprint_tests {
         session.insert_metadata("last_ingress_source".to_string(), serde_json::json!("web"));
         session.insert_metadata(
             "last_ingress_policy".to_string(),
-            serde_json::json!("entry_metadata_only"),
+            serde_json::json!(crate::prompt::INGRESS_POLICY_ENTRY_METADATA_ONLY),
         );
         let stable_again = SessionPrompt::prompt_surface_stable_fields(
             &session,
@@ -550,6 +550,68 @@ mod cache_fingerprint_tests {
         assert!(first.ingress_policy_hash.is_some());
         assert_eq!(second.generation, first.generation);
         assert!(second.invalidation.is_none());
+    }
+
+    #[test]
+    fn prompt_surface_snapshot_soft_degrades_on_ingress_policy_change() {
+        let compiled = CompiledExecutionRequest::default();
+        let mut session = Session::new("project", "/tmp");
+        session.insert_metadata("last_ingress_source".to_string(), serde_json::json!("web"));
+        session.insert_metadata(
+            "last_ingress_policy".to_string(),
+            serde_json::json!(crate::prompt::INGRESS_POLICY_ENTRY_METADATA_ONLY),
+        );
+        let fingerprint = test_cache_fingerprint("system-a", "tools-a", "messages-a", "params-a");
+
+        let first_stable = SessionPrompt::prompt_surface_stable_fields(
+            &session,
+            "openai",
+            "gpt-test",
+            &compiled,
+            &fingerprint,
+            Some("system"),
+            "tool-source-a".to_string(),
+        );
+        let first = SessionPrompt::build_prompt_surface_runtime_snapshot(
+            "ses_test",
+            None,
+            first_stable,
+            100,
+        );
+
+        session.insert_metadata("last_ingress_source".to_string(), serde_json::json!("api"));
+        session.insert_metadata(
+            "last_ingress_policy".to_string(),
+            serde_json::json!(crate::prompt::INGRESS_POLICY_SCHEDULER_METADATA_ONLY),
+        );
+        let second_stable = SessionPrompt::prompt_surface_stable_fields(
+            &session,
+            "openai",
+            "gpt-test",
+            &compiled,
+            &fingerprint,
+            Some("system"),
+            "tool-source-a".to_string(),
+        );
+        let second = SessionPrompt::build_prompt_surface_runtime_snapshot(
+            "ses_test",
+            Some(&first),
+            second_stable,
+            200,
+        );
+
+        let invalidation = second
+            .invalidation
+            .as_ref()
+            .expect("ingress policy changes should be tracked");
+        assert_eq!(second.generation, first.generation + 1);
+        assert_eq!(
+            invalidation.severity,
+            rocode_provider::cache::CacheBustSeverity::SoftDegradation
+        );
+        assert!(invalidation
+            .changed_fields
+            .contains(&"ingressPolicyHash".to_string()));
     }
 
     #[test]
@@ -714,6 +776,28 @@ impl SessionPrompt {
         session: &mut Session,
         request: PromptRequestContext,
     ) -> anyhow::Result<()> {
+        self.prompt_with_optional_reservation(input, session, request, None)
+            .await
+    }
+
+    pub async fn prompt_with_reserved_update_hook(
+        &self,
+        input: PromptInput,
+        session: &mut Session,
+        request: PromptRequestContext,
+        token: CancellationToken,
+    ) -> anyhow::Result<()> {
+        self.prompt_with_optional_reservation(input, session, request, Some(token))
+            .await
+    }
+
+    async fn prompt_with_optional_reservation(
+        &self,
+        input: PromptInput,
+        session: &mut Session,
+        request: PromptRequestContext,
+        reserved_token: Option<CancellationToken>,
+    ) -> anyhow::Result<()> {
         let PromptRequestContext {
             provider,
             system_prompt,
@@ -726,7 +810,8 @@ impl SessionPrompt {
         let system_prompt =
             skill_reflection::augment_system_prompt_with_skill_reflection(session, system_prompt);
 
-        if Self::is_duplicate_ingress_turn(session, &input) {
+        let used_reserved_token = reserved_token.is_some();
+        if !used_reserved_token && Self::is_duplicate_ingress_turn(session, &input) {
             tracing::debug!(
                 session_id = %input.session_id,
                 "ignored duplicate ingress turn before prompt execution"
@@ -734,13 +819,27 @@ impl SessionPrompt {
             return Ok(());
         }
 
-        self.assert_not_busy(&input.session_id).await?;
-
-        let cancel_token = self.start(&input.session_id).await;
-        let token = match cancel_token {
-            Some(t) => t,
-            None => return Err(anyhow::anyhow!("Session already running")),
+        let token = match reserved_token {
+            Some(token) => token,
+            None => {
+                self.assert_not_busy(&input.session_id).await?;
+                let cancel_token = self.start(&input.session_id).await;
+                match cancel_token {
+                    Some(t) => t,
+                    None => return Err(anyhow::anyhow!("Session already running")),
+                }
+            }
         };
+        let session_id = input.session_id.clone();
+
+        if used_reserved_token && Self::is_duplicate_ingress_turn(session, &input) {
+            tracing::debug!(
+                session_id = %input.session_id,
+                "ignored duplicate ingress turn after reserved ingress window"
+            );
+            self.finish_run(&session_id).await;
+            return Ok(());
+        }
 
         let model_id = input
             .model
@@ -753,80 +852,81 @@ impl SessionPrompt {
             .map(|m| m.provider_id.clone())
             .unwrap_or_else(|| "ethnopic".to_string());
 
-        Self::record_ingress_turn(session, &input);
+        let result = async {
+            Self::record_ingress_turn(session, &input);
 
-        self.create_user_message(&input, session).await?;
-        self.apply_runtime_workspace_context(session).await?;
-        Self::apply_runtime_memory_prefetch(session, memory_prefetch.as_ref())?;
-        Self::annotate_latest_user_message(session, &input, system_prompt.as_deref());
+            self.create_user_message(&input, session).await?;
+            self.apply_runtime_workspace_context(session).await?;
+            Self::apply_runtime_memory_prefetch(session, memory_prefetch.as_ref())?;
+            Self::annotate_latest_user_message(session, &input, system_prompt.as_deref());
 
-        if session.is_default_title() {
-            if let Some(text) = session
-                .messages
-                .iter()
-                .find(|m| matches!(m.role, MessageRole::User))
-                .map(|m| m.get_text())
-            {
-                let immediate = tools_and_output::generate_session_title(
-                    &tools_and_output::sanitize_session_title_source(&text),
-                );
-                if !immediate.is_empty() && immediate != "New Session" {
-                    session.set_auto_title(immediate);
+            if session.is_default_title() {
+                if let Some(text) = session
+                    .messages
+                    .iter()
+                    .find(|m| matches!(m.role, MessageRole::User))
+                    .map(|m| m.get_text())
+                {
+                    let immediate = tools_and_output::generate_session_title(
+                        &tools_and_output::sanitize_session_title_source(&text),
+                    );
+                    if !immediate.is_empty() && immediate != "New Session" {
+                        session.set_auto_title(immediate);
+                    }
                 }
             }
+
+            session.touch();
+            Self::emit_session_update(hooks.update_hook.as_ref(), session);
+
+            if input.no_reply {
+                return Ok(());
+            }
+
+            {
+                let mut session_state = self.session_state.write().await;
+                session_state.set_busy(&input.session_id);
+            }
+
+            let result = self
+                .loop_inner(
+                    session_id.clone(),
+                    token,
+                    session,
+                    PromptLoopContext {
+                        provider,
+                        model_id,
+                        provider_id,
+                        agent_name: input.agent.clone(),
+                        system_prompt,
+                        tools,
+                        tool_source_digests,
+                        compiled_request,
+                        hooks,
+                        config_store: self.config_store.clone(),
+                        memory_authority: self.memory_authority.clone(),
+                    },
+                )
+                .await;
+
+            if let Err(e) = result {
+                tracing::error!("Prompt loop error for session {}: {}", session_id, e);
+                return Err(e);
+            }
+
+            // Nudge-triggered background consolidation: after a completed turn,
+            // scan the execution evidence and run deterministic memory review if
+            // enough tool/error/skill signals were produced.
+            let nudge = crate::RuntimeReviewNudge::from_session(session, 0);
+            let decision = self.maybe_enqueue_background_review(&nudge).await;
+            crate::maybe_append_proposal_notice(session, &decision);
+
+            Ok(())
         }
-
-        session.touch();
-        Self::emit_session_update(hooks.update_hook.as_ref(), session);
-
-        if input.no_reply {
-            self.finish_run(&input.session_id).await;
-            return Ok(());
-        }
-
-        {
-            let mut session_state = self.session_state.write().await;
-            session_state.set_busy(&input.session_id);
-        }
-
-        let session_id = input.session_id.clone();
-
-        let result = self
-            .loop_inner(
-                session_id.clone(),
-                token,
-                session,
-                PromptLoopContext {
-                    provider,
-                    model_id,
-                    provider_id,
-                    agent_name: input.agent.clone(),
-                    system_prompt,
-                    tools,
-                    tool_source_digests,
-                    compiled_request,
-                    hooks,
-                    config_store: self.config_store.clone(),
-                    memory_authority: self.memory_authority.clone(),
-                },
-            )
-            .await;
+        .await;
 
         self.finish_run(&session_id).await;
-
-        if let Err(e) = result {
-            tracing::error!("Prompt loop error for session {}: {}", session_id, e);
-            return Err(e);
-        }
-
-        // Nudge-triggered background consolidation: after a completed turn,
-        // scan the execution evidence and run deterministic memory review if
-        // enough tool/error/skill signals were produced.
-        let nudge = crate::RuntimeReviewNudge::from_session(session, 0);
-        let decision = self.maybe_enqueue_background_review(&nudge).await;
-        crate::maybe_append_proposal_notice(session, &decision);
-
-        Ok(())
+        result
     }
 
     fn ingress_scoped_idempotency_key(input: &PromptInput) -> Option<String> {

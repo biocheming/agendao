@@ -509,6 +509,81 @@ async fn prompt_ignores_duplicate_ingress_idempotency_key() {
 }
 
 #[tokio::test]
+async fn create_user_message_uses_parts_as_authority_not_ingress_shadow_text() {
+    let prompt = SessionPrompt::default();
+    let mut session = Session::new("proj", ".");
+    let mut ingress = IngressTurnEnvelope::new_text(
+        session.id.clone(),
+        IngressSource::Web,
+        "turn_shadow",
+        100,
+        "shadow text should not reach the model",
+    );
+    ingress.context_key = Some("session_prompt".to_string());
+    ingress.idempotency_key = Some("idem_shadow".to_string());
+    ingress.stabilization.policy = INGRESS_POLICY_ENTRY_METADATA_ONLY.to_string();
+
+    let input = PromptInput {
+        session_id: session.id.clone(),
+        message_id: None,
+        model: None,
+        agent: None,
+        no_reply: false,
+        system: None,
+        variant: None,
+        parts: vec![PartInput::Text {
+            text: "authoritative text from parts".to_string(),
+        }],
+        tools: None,
+        ingress: Some(ingress),
+    };
+
+    prompt
+        .create_user_message(&input, &mut session)
+        .await
+        .expect("user message should be created");
+
+    let user_message = session
+        .messages
+        .iter()
+        .find(|message| matches!(message.role, MessageRole::User))
+        .expect("user message should exist");
+    assert_eq!(user_message.get_text(), "authoritative text from parts");
+    assert_eq!(
+        user_message
+            .metadata
+            .get("ingress_source")
+            .cloned()
+            .expect("ingress source metadata should be recorded"),
+        serde_json::json!(IngressSource::Web)
+    );
+
+    let provider_messages = SessionPrompt::build_chat_messages(&session.messages, None)
+        .expect("chat messages should build");
+    let rendered = provider_messages
+        .iter()
+        .map(|message| match &message.content {
+            rocode_provider::Content::Text(text) => text.clone(),
+            rocode_provider::Content::Parts(parts) => parts
+                .iter()
+                .filter_map(|part| part.text.clone())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(
+        rendered.contains("authoritative text from parts"),
+        "{rendered}"
+    );
+    assert!(
+        !rendered.contains("shadow text should not reach the model"),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
 async fn prompt_continues_after_tool_calls_without_finish_step_reason() {
     let prompt = SessionPrompt::default();
     let mut session = Session::new("proj", ".");
@@ -1801,6 +1876,52 @@ fn message_with_parts_filters_hidden_runtime_hints() {
         1,
         "runtime hint notice should stay out of model context"
     );
+}
+
+#[test]
+fn ingress_metadata_is_hidden_from_model_prompt_surface() {
+    let mut session = Session::new("proj", ".");
+    let message = session.add_user_message("only parts text is visible");
+    message.metadata.insert(
+        "ingress_source".to_string(),
+        serde_json::json!(IngressSource::Web),
+    );
+    message.metadata.insert(
+        "ingress_stabilization".to_string(),
+        serde_json::json!({
+            "batch_count": 1,
+            "dedupe_keys": [],
+            "ordering_key": "turn_1",
+            "policy": INGRESS_POLICY_ENTRY_METADATA_ONLY,
+        }),
+    );
+    message.metadata.insert(
+        "ingress_context_key".to_string(),
+        serde_json::json!("session_prompt"),
+    );
+
+    let provider_messages = SessionPrompt::build_chat_messages(&session.messages, None)
+        .expect("chat messages should build");
+    let rendered = provider_messages
+        .iter()
+        .map(|message| match &message.content {
+            rocode_provider::Content::Text(text) => text.clone(),
+            rocode_provider::Content::Parts(parts) => parts
+                .iter()
+                .filter_map(|part| part.text.clone())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert_eq!(rendered, "only parts text is visible");
+    assert!(!rendered.contains("ingress_source"), "{rendered}");
+    assert!(
+        !rendered.contains(INGRESS_POLICY_ENTRY_METADATA_ONLY),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("session_prompt"), "{rendered}");
 }
 
 #[test]

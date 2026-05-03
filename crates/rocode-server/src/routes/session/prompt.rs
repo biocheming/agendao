@@ -17,7 +17,7 @@ use rocode_types::{
     MemoryRetrievalPacket, MemoryRetrievalQuery, MessageRole, PartType as SessionPartType,
     SessionMessage,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
@@ -87,6 +87,31 @@ struct ResolvedPromptPayload {
     autoresearch_profile_override_record: Option<AutoresearchProfileOverrideRecord>,
     command: Option<Command>,
     pending_raw_arguments: Option<String>,
+}
+
+const LIVE_WEB_INGRESS_BATCH_METADATA_KEY: &str = "live_web_ingress_batch";
+const LIVE_WEB_INGRESS_BATCH_WINDOW_MS: i64 = 250;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LiveWebIngressBatch {
+    owner_turn_id: String,
+    opened_at_ms: i64,
+    items: Vec<LiveWebIngressBatchItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LiveWebIngressBatchItem {
+    ingress: rocode_session::prompt::IngressTurnEnvelope,
+    parts: Vec<rocode_session::prompt::PartInput>,
+}
+
+enum LiveWebIngressBatchStage {
+    Bypass,
+    Leader {
+        owner_turn_id: String,
+        reservation: CancellationToken,
+    },
+    Follower,
 }
 
 fn set_autoresearch_override_metadata(
@@ -1293,22 +1318,283 @@ fn build_ingress_envelope(
     envelope.context_key = context_key;
     envelope.scheduler_stage_id = scheduler_stage_id;
     envelope.idempotency_key = idempotency_key.filter(|value| !value.trim().is_empty());
-    envelope.stabilization.policy = "entry_metadata_only".to_string();
+    envelope.stabilization.policy =
+        rocode_session::prompt::INGRESS_POLICY_ENTRY_METADATA_ONLY.to_string();
     envelope
 }
 
 fn ingress_source_from_request(value: Option<&str>) -> rocode_session::prompt::IngressSource {
-    match value.unwrap_or("api").trim().to_ascii_lowercase().as_str() {
-        "cli" => rocode_session::prompt::IngressSource::Cli,
-        "tui" => rocode_session::prompt::IngressSource::Tui,
-        "web" => rocode_session::prompt::IngressSource::Web,
-        "api" => rocode_session::prompt::IngressSource::Api,
-        "scheduler" => rocode_session::prompt::IngressSource::Scheduler,
-        other if !other.is_empty() => {
-            rocode_session::prompt::IngressSource::Other(other.to_string())
+    rocode_session::prompt::normalize_ingress_source(value)
+}
+
+fn supports_live_web_ingress_batch(ingress: &rocode_session::prompt::IngressTurnEnvelope) -> bool {
+    matches!(ingress.source, rocode_session::prompt::IngressSource::Web)
+        && ingress.context_key.as_deref() == Some("session_prompt")
+        && ingress.scheduler_stage_id.is_none()
+        && ingress.command.is_none()
+}
+
+fn load_live_web_ingress_batch(session: &rocode_session::Session) -> Option<LiveWebIngressBatch> {
+    session
+        .metadata
+        .get(LIVE_WEB_INGRESS_BATCH_METADATA_KEY)
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+}
+
+fn store_live_web_ingress_batch(
+    session: &mut rocode_session::Session,
+    batch: &LiveWebIngressBatch,
+) -> bool {
+    match serde_json::to_value(batch) {
+        Ok(value) => {
+            session.insert_metadata(LIVE_WEB_INGRESS_BATCH_METADATA_KEY.to_string(), value);
+            true
         }
-        _ => rocode_session::prompt::IngressSource::Api,
+        Err(error) => {
+            tracing::warn!(%error, "failed to serialize live web ingress batch");
+            false
+        }
     }
+}
+
+fn clear_live_web_ingress_batch(session: &mut rocode_session::Session) {
+    session.remove_metadata(LIVE_WEB_INGRESS_BATCH_METADATA_KEY);
+}
+
+fn stale_live_web_ingress_batch(batch: &LiveWebIngressBatch, now_ms: i64) -> bool {
+    now_ms.saturating_sub(batch.opened_at_ms) > LIVE_WEB_INGRESS_BATCH_WINDOW_MS
+}
+
+fn matching_live_web_ingress_batch(
+    batch: &LiveWebIngressBatch,
+    ingress: &rocode_session::prompt::IngressTurnEnvelope,
+) -> bool {
+    batch
+        .items
+        .first()
+        .map(|first| {
+            first.ingress.session_id == ingress.session_id
+                && first.ingress.source == ingress.source
+                && first.ingress.context_key == ingress.context_key
+                && first.ingress.scheduler_stage_id == ingress.scheduler_stage_id
+                && first.ingress.command == ingress.command
+        })
+        .unwrap_or(false)
+}
+
+fn append_live_web_ingress_batch_if_present(
+    session: &mut rocode_session::Session,
+    ingress: rocode_session::prompt::IngressTurnEnvelope,
+    parts: Vec<rocode_session::prompt::PartInput>,
+    now_ms: i64,
+) -> bool {
+    if !supports_live_web_ingress_batch(&ingress) {
+        return false;
+    }
+
+    let item = LiveWebIngressBatchItem { ingress, parts };
+    let batch = load_live_web_ingress_batch(session)
+        .filter(|batch| !stale_live_web_ingress_batch(batch, now_ms));
+    if batch.is_none() {
+        clear_live_web_ingress_batch(session);
+    }
+
+    if let Some(mut batch) = batch {
+        if matching_live_web_ingress_batch(&batch, &item.ingress) {
+            batch.items.push(item);
+            return store_live_web_ingress_batch(session, &batch);
+        }
+        clear_live_web_ingress_batch(session);
+    }
+
+    false
+}
+
+fn open_live_web_ingress_batch(
+    session: &mut rocode_session::Session,
+    ingress: rocode_session::prompt::IngressTurnEnvelope,
+    parts: Vec<rocode_session::prompt::PartInput>,
+    now_ms: i64,
+) -> Option<String> {
+    if !supports_live_web_ingress_batch(&ingress) {
+        return None;
+    }
+
+    let item = LiveWebIngressBatchItem { ingress, parts };
+    clear_live_web_ingress_batch(session);
+
+    let owner_turn_id = item.ingress.turn_id.clone();
+    let batch = LiveWebIngressBatch {
+        owner_turn_id: owner_turn_id.clone(),
+        opened_at_ms: now_ms,
+        items: vec![item],
+    };
+    if store_live_web_ingress_batch(session, &batch) {
+        Some(owner_turn_id)
+    } else {
+        None
+    }
+}
+
+fn drain_live_web_ingress_batch(
+    session: &mut rocode_session::Session,
+    owner_turn_id: &str,
+) -> Option<LiveWebIngressBatch> {
+    let batch = load_live_web_ingress_batch(session)?;
+    if batch.owner_turn_id != owner_turn_id {
+        return None;
+    }
+    clear_live_web_ingress_batch(session);
+    Some(batch)
+}
+
+fn resolve_live_web_ingress_batch(
+    batch: LiveWebIngressBatch,
+) -> Option<(
+    rocode_session::prompt::IngressTurnEnvelope,
+    Vec<rocode_session::prompt::PartInput>,
+)> {
+    let mut items = batch.items;
+    items.sort_by(|left, right| {
+        left.ingress
+            .received_at_ms
+            .cmp(&right.ingress.received_at_ms)
+            .then_with(|| left.ingress.turn_id.cmp(&right.ingress.turn_id))
+    });
+
+    // `stabilize_ingress_turns()` only owns ingress-local merge semantics
+    // (shadow text, metadata, dedupe markers). Authoritative prompt content is
+    // rebuilt from `PartInput` below, not from `user_intent_text`.
+    let stabilized = rocode_session::prompt::stabilize_ingress_turns(
+        items.iter().map(|item| item.ingress.clone()).collect(),
+    );
+    if stabilized.len() != 1 {
+        tracing::warn!(
+            item_count = items.len(),
+            stabilized_count = stabilized.len(),
+            "live web ingress batch did not stabilize to a single turn"
+        );
+        return None;
+    }
+
+    let mut seen_idempotency_keys = std::collections::HashSet::new();
+    let mut merged_parts = Vec::new();
+    for item in items {
+        let duplicate = item
+            .ingress
+            .idempotency_key
+            .as_deref()
+            .map(|key| {
+                let scoped = format!(
+                    "{}:{:?}:{}",
+                    item.ingress.session_id, item.ingress.source, key
+                );
+                !seen_idempotency_keys.insert(scoped)
+            })
+            .unwrap_or(false);
+        if duplicate {
+            continue;
+        }
+        merged_parts.extend(item.parts);
+    }
+
+    stabilized
+        .into_iter()
+        .next()
+        .map(|ingress| (ingress, merged_parts))
+}
+
+async fn stage_live_web_ingress_batch(
+    state: &Arc<ServerState>,
+    session_id: &str,
+    ingress: &rocode_session::prompt::IngressTurnEnvelope,
+    parts: &[rocode_session::prompt::PartInput],
+) -> Result<LiveWebIngressBatchStage> {
+    if !supports_live_web_ingress_batch(ingress) {
+        return Ok(LiveWebIngressBatchStage::Bypass);
+    }
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    {
+        let mut sessions = state.sessions.lock().await;
+        let Some(mut session) = sessions.get(session_id).cloned() else {
+            return Err(ApiError::SessionNotFound(session_id.to_string()));
+        };
+        if append_live_web_ingress_batch_if_present(
+            &mut session,
+            ingress.clone(),
+            parts.to_vec(),
+            now_ms,
+        ) {
+            sessions.update(session);
+            return Ok(LiveWebIngressBatchStage::Follower);
+        }
+        sessions.update(session);
+    }
+
+    let reservation = match state.prompt_runner.reserve_session_run(session_id).await {
+        Ok(token) => token,
+        Err(error) => {
+            let mut sessions = state.sessions.lock().await;
+            let Some(mut session) = sessions.get(session_id).cloned() else {
+                return Err(ApiError::SessionNotFound(session_id.to_string()));
+            };
+            if append_live_web_ingress_batch_if_present(
+                &mut session,
+                ingress.clone(),
+                parts.to_vec(),
+                now_ms,
+            ) {
+                sessions.update(session);
+                return Ok(LiveWebIngressBatchStage::Follower);
+            }
+            return Err(ApiError::BadRequest(error.to_string()));
+        }
+    };
+
+    let mut sessions = state.sessions.lock().await;
+    let Some(mut session) = sessions.get(session_id).cloned() else {
+        drop(sessions);
+        state
+            .prompt_runner
+            .release_reserved_session_run(session_id)
+            .await;
+        return Err(ApiError::SessionNotFound(session_id.to_string()));
+    };
+
+    if append_live_web_ingress_batch_if_present(
+        &mut session,
+        ingress.clone(),
+        parts.to_vec(),
+        now_ms,
+    ) {
+        sessions.update(session);
+        drop(sessions);
+        state
+            .prompt_runner
+            .release_reserved_session_run(session_id)
+            .await;
+        return Ok(LiveWebIngressBatchStage::Follower);
+    }
+
+    let Some(owner_turn_id) =
+        open_live_web_ingress_batch(&mut session, ingress.clone(), parts.to_vec(), now_ms)
+    else {
+        sessions.update(session);
+        drop(sessions);
+        state
+            .prompt_runner
+            .release_reserved_session_run(session_id)
+            .await;
+        return Ok(LiveWebIngressBatchStage::Bypass);
+    };
+
+    sessions.update(session);
+    Ok(LiveWebIngressBatchStage::Leader {
+        owner_turn_id,
+        reservation,
+    })
 }
 
 pub(super) struct SchedulerUserMessageContext<'a> {
@@ -1709,7 +1995,7 @@ pub(super) async fn session_prompt(
     let task_recovery = req.recovery.clone();
     let task_prompt_parts = prompt_parts.clone();
     let task_multimodal_explain = multimodal_explain.clone();
-    let task_ingress = build_ingress_envelope(
+    let mut task_ingress = build_ingress_envelope(
         &session_id,
         ingress_source_from_request(req.ingress_source.as_deref()),
         &display_prompt_text,
@@ -1717,9 +2003,36 @@ pub(super) async fn session_prompt(
         Some("session_prompt".to_string()),
         None,
     );
+    task_ingress.command = resolved_prompt
+        .command
+        .as_ref()
+        .map(|command| command.name.clone())
+        .or_else(|| req.command.clone());
+    let live_web_ingress_stage =
+        stage_live_web_ingress_batch(&state, &session_id, &task_ingress, &task_prompt_parts)
+            .await?;
     let task_scheduler_profile_config = request_config.scheduler_profile_config.clone();
     let task_autoresearch_override_record =
         resolved_prompt.autoresearch_profile_override_record.clone();
+    if matches!(live_web_ingress_stage, LiveWebIngressBatchStage::Follower) {
+        return Ok(Json(serde_json::json!({
+            "status": "accepted",
+            "ok": true,
+            "session_id": id,
+            "model": format!("{}/{}", provider_id, model_id),
+            "variant": req.variant,
+            "command": resolved_prompt.command.as_ref().map(|command| command.name.clone()),
+            "batched": true,
+        })));
+    }
+    if matches!(live_web_ingress_stage, LiveWebIngressBatchStage::Bypass)
+        && state.prompt_runner.is_running(&session_id).await
+    {
+        return Err(ApiError::BadRequest(format!(
+            "Session {} is busy",
+            session_id
+        )));
+    }
     let mut pending_command_cleared = false;
     {
         let mut sessions = state.sessions.lock().await;
@@ -1740,13 +2053,53 @@ pub(super) async fn session_prompt(
     }
     let output_block_hook: Option<rocode_session::prompt::OutputBlockHook> =
         Some(server_output_block_hook(task_state.clone()));
+    let task_live_batch_owner_turn_id = match &live_web_ingress_stage {
+        LiveWebIngressBatchStage::Leader { owner_turn_id, .. } => Some(owner_turn_id.clone()),
+        _ => None,
+    };
+    let task_reserved_run = match live_web_ingress_stage {
+        LiveWebIngressBatchStage::Leader { reservation, .. } => Some(reservation),
+        _ => None,
+    };
     tokio::spawn(async move {
-        let mut session = {
+        let (mut session, effective_ingress, effective_parts) = if let Some(owner_turn_id) =
+            task_live_batch_owner_turn_id.as_deref()
+        {
+            tokio::time::sleep(Duration::from_millis(
+                LIVE_WEB_INGRESS_BATCH_WINDOW_MS as u64,
+            ))
+            .await;
+            let drained = {
+                let mut sessions = task_state.sessions.lock().await;
+                match sessions.get(&session_id).cloned() {
+                    Some(mut session) => {
+                        let resolved = drain_live_web_ingress_batch(&mut session, owner_turn_id)
+                            .and_then(resolve_live_web_ingress_batch)
+                            .map(|(ingress, parts)| (session.clone(), ingress, parts));
+                        sessions.update(session);
+                        resolved
+                    }
+                    None => None,
+                }
+            };
+            match drained {
+                Some(values) => values,
+                None => {
+                    if task_reserved_run.is_some() {
+                        task_state
+                            .prompt_runner
+                            .release_reserved_session_run(&session_id)
+                            .await;
+                    }
+                    return;
+                }
+            }
+        } else {
             let sessions = task_state.sessions.lock().await;
             let Some(session) = sessions.get(&session_id).cloned() else {
                 return;
             };
-            session
+            (session, task_ingress.clone(), task_prompt_parts.clone())
         };
         let normalized_directory = resolved_session_directory(
             session.record().directory.as_str(),
@@ -2329,9 +2682,9 @@ pub(super) async fn session_prompt(
             no_reply: false,
             system: None,
             variant: task_variant.clone(),
-            parts: task_prompt_parts.clone(),
+            parts: effective_parts.clone(),
             tools: None,
-            ingress: Some(task_ingress.clone()),
+            ingress: Some(effective_ingress.clone()),
         };
 
         let agent_registry = AgentRegistry::from_config(&config);
@@ -2419,30 +2772,35 @@ pub(super) async fn session_prompt(
             ))
         };
 
-        if let Err(error) = prompt_runner
-            .prompt_with_update_hook(
-                input,
-                &mut session,
-                rocode_session::prompt::PromptRequestContext {
-                    provider,
-                    system_prompt: task_system_prompt.clone(),
-                    memory_prefetch: memory_prefetch_packet.clone(),
-                    tools: tool_defs,
-                    tool_source_digests: resolved_tool_surface.source_digests,
-                    compiled_request: task_compiled_request.clone(),
-                    hooks: rocode_session::prompt::PromptHooks {
-                        update_hook: Some(update_hook),
-                        event_broadcast,
-                        output_block_hook,
-                        agent_lookup,
-                        ask_question_hook,
-                        ask_permission_hook,
-                        publish_bus_hook,
-                    },
-                },
-            )
-            .await
-        {
+        let prompt_request = rocode_session::prompt::PromptRequestContext {
+            provider,
+            system_prompt: task_system_prompt.clone(),
+            memory_prefetch: memory_prefetch_packet.clone(),
+            tools: tool_defs,
+            tool_source_digests: resolved_tool_surface.source_digests,
+            compiled_request: task_compiled_request.clone(),
+            hooks: rocode_session::prompt::PromptHooks {
+                update_hook: Some(update_hook),
+                event_broadcast,
+                output_block_hook,
+                agent_lookup,
+                ask_question_hook,
+                ask_permission_hook,
+                publish_bus_hook,
+            },
+        };
+
+        let prompt_result = if let Some(token) = task_reserved_run {
+            prompt_runner
+                .prompt_with_reserved_update_hook(input, &mut session, prompt_request, token)
+                .await
+        } else {
+            prompt_runner
+                .prompt_with_update_hook(input, &mut session, prompt_request)
+                .await
+        };
+
+        if let Err(error) = prompt_result {
             tracing::error!(
                 session_id = %session_id,
                 provider_id = %task_provider,
@@ -2542,7 +2900,7 @@ mod tests {
         ModalityPreflightResult, ModalitySupportView, ModalityTransportResult,
         MultimodalDisplaySummary, PreflightCapabilityView, RuntimeMultimodalExplain,
     };
-    use rocode_session::{PartType, Session, SessionStateManager};
+    use rocode_session::{IngressSource, PartType, Session, SessionStateManager};
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
@@ -2578,6 +2936,121 @@ mod tests {
             ingress_source_from_request(Some("feishu")),
             IngressSource::Other("feishu".to_string())
         );
+    }
+
+    #[test]
+    fn build_ingress_envelope_uses_entry_metadata_contract() {
+        let ingress = build_ingress_envelope(
+            "ses_1",
+            ingress_source_from_request(None),
+            "hello",
+            Some("idem_1".to_string()),
+            Some("session_prompt".to_string()),
+            None,
+        );
+
+        assert_eq!(ingress.source, rocode_session::prompt::IngressSource::Api);
+        assert_eq!(ingress.context_key.as_deref(), Some("session_prompt"));
+        assert_eq!(ingress.idempotency_key.as_deref(), Some("idem_1"));
+        assert_eq!(
+            ingress.stabilization.policy,
+            rocode_session::prompt::INGRESS_POLICY_ENTRY_METADATA_ONLY
+        );
+    }
+
+    #[test]
+    fn live_web_ingress_batch_merges_parts_and_uses_stabilized_ingress() {
+        let mut session = Session::new("project", "/tmp");
+        let now_ms = 1_000;
+        let mut first = build_ingress_envelope(
+            &session.id,
+            IngressSource::Web,
+            "first",
+            Some("web_1".to_string()),
+            Some("session_prompt".to_string()),
+            None,
+        );
+        first.received_at_ms = now_ms;
+        first.stabilized_at_ms = now_ms;
+
+        let mut second = build_ingress_envelope(
+            &session.id,
+            IngressSource::Web,
+            "second",
+            Some("web_2".to_string()),
+            Some("session_prompt".to_string()),
+            None,
+        );
+        second.received_at_ms = now_ms + 10;
+        second.stabilized_at_ms = now_ms + 10;
+
+        let owner = open_live_web_ingress_batch(
+            &mut session,
+            first,
+            vec![rocode_session::prompt::PartInput::Text {
+                text: "first".to_string(),
+            }],
+            now_ms,
+        )
+        .expect("leader batch should open");
+        assert!(append_live_web_ingress_batch_if_present(
+            &mut session,
+            second,
+            vec![rocode_session::prompt::PartInput::Text {
+                text: "second".to_string(),
+            }],
+            now_ms + 10,
+        ));
+
+        let batch = drain_live_web_ingress_batch(&mut session, &owner).expect("batch should drain");
+        let (ingress, parts) =
+            resolve_live_web_ingress_batch(batch).expect("batch should resolve to one turn");
+
+        assert_eq!(
+            ingress.stabilization.policy,
+            rocode_session::prompt::INGRESS_POLICY_SAME_SESSION_CONTEXT_BATCH
+        );
+        let rendered = parts
+            .iter()
+            .filter_map(|part| match part {
+                rocode_session::prompt::PartInput::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(rendered, vec!["first", "second"]);
+    }
+
+    #[test]
+    fn live_web_ingress_batch_does_not_accept_command_turns() {
+        let mut session = Session::new("project", "/tmp");
+        let now_ms = 1_000;
+        let mut ingress = build_ingress_envelope(
+            &session.id,
+            IngressSource::Web,
+            "/new",
+            Some("web_cmd".to_string()),
+            Some("session_prompt".to_string()),
+            None,
+        );
+        ingress.command = Some("new".to_string());
+
+        assert!(!append_live_web_ingress_batch_if_present(
+            &mut session,
+            ingress.clone(),
+            vec![rocode_session::prompt::PartInput::Text {
+                text: "/new".to_string(),
+            }],
+            now_ms,
+        ));
+        assert!(open_live_web_ingress_batch(
+            &mut session,
+            ingress,
+            vec![rocode_session::prompt::PartInput::Text {
+                text: "/new".to_string(),
+            }],
+            now_ms,
+        )
+        .is_none());
     }
 
     #[test]
