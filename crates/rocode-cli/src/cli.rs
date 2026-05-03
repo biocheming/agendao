@@ -64,6 +64,11 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         action: SessionCommands,
     },
+    #[command(about = "Manage memory authority artifacts")]
+    Memory {
+        #[command(subcommand)]
+        action: MemoryCommands,
+    },
     #[command(about = "Manage skill catalog and remote hub", alias = "skills")]
     Skill {
         #[command(subcommand)]
@@ -187,6 +192,20 @@ pub(crate) enum SessionCommands {
     Delete {
         #[arg(required = true)]
         session_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum MemoryCommands {
+    #[command(about = "Export memory authority records as JSON")]
+    Export {
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    #[command(about = "Import memory authority records from JSON file")]
+    Import {
+        #[arg(value_name = "FILE")]
+        file: String,
     },
 }
 

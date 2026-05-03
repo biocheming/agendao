@@ -1,8 +1,12 @@
 use std::fs;
 use std::path::PathBuf;
 
-use rocode_storage::{Database, MessageRepository, SessionRepository};
-use rocode_types::{SessionArtifactBundle, SessionArtifactEntry, SessionArtifactImportEnvelope};
+use rocode_memory::{export_memory_artifact_bundle, import_memory_artifact_bundle};
+use rocode_storage::{Database, MemoryRepository, MessageRepository, SessionRepository};
+use rocode_types::{
+    MemoryArtifactImportEnvelope, SessionArtifactBundle, SessionArtifactEntry,
+    SessionArtifactImportEnvelope,
+};
 
 pub(crate) async fn export_session_data(
     session_id: Option<String>,
@@ -42,6 +46,26 @@ pub(crate) async fn export_session_data(
 
     Ok(())
 }
+
+pub(crate) async fn export_memory_data(output: Option<PathBuf>) -> anyhow::Result<()> {
+    let db = Database::new().await?;
+    let memory_repo = MemoryRepository::new(db.pool().clone());
+    let export = export_memory_artifact_bundle(&memory_repo).await?;
+
+    let json = serde_json::to_string_pretty(&export)?;
+    match output {
+        Some(path) => {
+            fs::write(&path, json)?;
+            println!("Exported memory data to {}", path.display());
+        }
+        None => {
+            println!("{}", json);
+        }
+    }
+
+    Ok(())
+}
+
 fn parse_share_slug(url: &str) -> Option<String> {
     let trimmed = url.trim_end_matches('/');
     if let Some(idx) = trimmed.rfind("/share/") {
@@ -100,5 +124,17 @@ pub(crate) async fn import_session_data(file_or_url: String) -> anyhow::Result<(
     }
 
     println!("Imported {} session(s) from {}", imported, file_or_url);
+    Ok(())
+}
+
+pub(crate) async fn import_memory_data(file: String) -> anyhow::Result<()> {
+    let raw = fs::read_to_string(&file)?;
+    let payload: MemoryArtifactImportEnvelope = serde_json::from_str(&raw)?;
+
+    let db = Database::new().await?;
+    let memory_repo = MemoryRepository::new(db.pool().clone());
+    let imported = import_memory_artifact_bundle(&memory_repo, payload).await?;
+
+    println!("Imported {} memory record(s) from {}", imported, file);
     Ok(())
 }
