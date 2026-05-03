@@ -38,7 +38,31 @@ pub struct SessionTelemetrySnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ingress_stabilization: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_preflight_summary: Option<SessionExecutionPreflightSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_diagnostic_summary: Option<rocode_provider::ProviderDiagnosticSummary>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionExecutionPreflightSource {
+    ToolCallState,
+    ToolResultPart,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionExecutionPreflightSummary {
+    pub tool_call_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    pub source: SessionExecutionPreflightSource,
+    pub runner: String,
+    pub subject: String,
+    pub status: rocode_tool::ExecutionPreflightStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub issues: Vec<rocode_tool::ExecutionPreflightIssue>,
+    #[serde(default)]
+    pub attachment_count: usize,
 }
 
 pub(super) async fn get_session_telemetry(
@@ -116,6 +140,7 @@ pub(super) async fn build_session_telemetry_snapshot(
     let cache_bust_summary = latest_cache_bust_summary(session);
     let prompt_surface_runtime_snapshot = prompt_surface_runtime_snapshot(session);
     let ingress_stabilization = latest_ingress_stabilization(session);
+    let execution_preflight_summary = latest_execution_preflight_summary(session);
     let provider_diagnostic_summary = latest_provider_diagnostic_summary(session);
 
     Ok(SessionTelemetrySnapshot {
@@ -127,6 +152,7 @@ pub(super) async fn build_session_telemetry_snapshot(
         cache_bust_summary,
         prompt_surface_runtime_snapshot,
         ingress_stabilization,
+        execution_preflight_summary,
         provider_diagnostic_summary,
     })
 }
@@ -187,6 +213,150 @@ fn latest_provider_diagnostic_summary(
                 .and_then(|summary| summary.provider_diagnostic)
                 .or_else(|| rocode_provider::provider_diagnostic_from_metadata(&message.metadata))
         })
+}
+
+#[derive(Debug, Clone)]
+struct ExecutionPreflightCandidate {
+    tool_call_id: String,
+    tool_name: Option<String>,
+    source: SessionExecutionPreflightSource,
+    order: (usize, usize),
+    preflight: rocode_tool::ExecutionPreflightMetadata,
+}
+
+fn latest_execution_preflight_summary(
+    session: &Session,
+) -> Option<SessionExecutionPreflightSummary> {
+    let tool_names = tool_call_name_index(session);
+    let mut candidates = HashMap::<String, ExecutionPreflightCandidate>::new();
+
+    for (message_index, message) in session.messages.iter().enumerate() {
+        for (part_index, part) in message.parts.iter().enumerate() {
+            let Some(candidate) =
+                execution_preflight_candidate(part, &tool_names, (message_index, part_index))
+            else {
+                continue;
+            };
+
+            match candidates.get_mut(&candidate.tool_call_id) {
+                Some(existing) => merge_execution_preflight_candidate(existing, candidate),
+                None => {
+                    candidates.insert(candidate.tool_call_id.clone(), candidate);
+                }
+            }
+        }
+    }
+
+    candidates
+        .into_values()
+        .max_by_key(|candidate| candidate.order)
+        .map(|candidate| SessionExecutionPreflightSummary {
+            tool_call_id: candidate.tool_call_id,
+            tool_name: candidate.tool_name,
+            source: candidate.source,
+            runner: candidate.preflight.runner,
+            subject: candidate.preflight.subject,
+            status: candidate.preflight.status,
+            issues: candidate.preflight.issues,
+            attachment_count: candidate.preflight.attachment_count,
+        })
+}
+
+fn tool_call_name_index(session: &Session) -> HashMap<String, String> {
+    let mut names = HashMap::new();
+
+    for message in &session.messages {
+        for part in &message.parts {
+            if let rocode_session::PartType::ToolCall { id, name, .. } = &part.part_type {
+                names.insert(id.clone(), name.clone());
+            }
+        }
+    }
+
+    names
+}
+
+fn execution_preflight_candidate(
+    part: &rocode_session::MessagePart,
+    tool_names: &HashMap<String, String>,
+    order: (usize, usize),
+) -> Option<ExecutionPreflightCandidate> {
+    match &part.part_type {
+        rocode_session::PartType::ToolCall {
+            id,
+            name,
+            state: Some(rocode_session::ToolState::Completed { metadata, .. }),
+            ..
+        } => rocode_tool::execution_preflight_from_metadata(metadata).map(|preflight| {
+            ExecutionPreflightCandidate {
+                tool_call_id: id.clone(),
+                tool_name: Some(name.clone()),
+                source: SessionExecutionPreflightSource::ToolCallState,
+                order,
+                preflight,
+            }
+        }),
+        rocode_session::PartType::ToolCall {
+            id,
+            name,
+            state:
+                Some(rocode_session::ToolState::Error {
+                    metadata: Some(metadata),
+                    ..
+                }),
+            ..
+        } => rocode_tool::execution_preflight_from_metadata(metadata).map(|preflight| {
+            ExecutionPreflightCandidate {
+                tool_call_id: id.clone(),
+                tool_name: Some(name.clone()),
+                source: SessionExecutionPreflightSource::ToolCallState,
+                order,
+                preflight,
+            }
+        }),
+        rocode_session::PartType::ToolResult {
+            tool_call_id,
+            metadata: Some(metadata),
+            ..
+        } => rocode_tool::execution_preflight_from_metadata(metadata).map(|preflight| {
+            ExecutionPreflightCandidate {
+                tool_call_id: tool_call_id.clone(),
+                tool_name: tool_names.get(tool_call_id).cloned(),
+                source: SessionExecutionPreflightSource::ToolResultPart,
+                order,
+                preflight,
+            }
+        }),
+        _ => None,
+    }
+}
+
+fn merge_execution_preflight_candidate(
+    existing: &mut ExecutionPreflightCandidate,
+    candidate: ExecutionPreflightCandidate,
+) {
+    let next_order = existing.order.max(candidate.order);
+    let should_replace = match (existing.source, candidate.source) {
+        (
+            SessionExecutionPreflightSource::ToolResultPart,
+            SessionExecutionPreflightSource::ToolCallState,
+        ) => true,
+        (
+            SessionExecutionPreflightSource::ToolCallState,
+            SessionExecutionPreflightSource::ToolResultPart,
+        ) => false,
+        _ => candidate.order >= existing.order,
+    };
+
+    if should_replace {
+        existing.tool_name = candidate.tool_name;
+        existing.source = candidate.source;
+        existing.preflight = candidate.preflight;
+    } else if existing.tool_name.is_none() {
+        existing.tool_name = candidate.tool_name;
+    }
+
+    existing.order = next_order;
 }
 
 pub(super) async fn persist_session_telemetry_metadata(
@@ -292,6 +462,28 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::mpsc;
     use tokio::time::{timeout, Duration};
+
+    fn sample_execution_preflight_metadata(
+        status: rocode_tool::ExecutionPreflightStatus,
+        issues: Vec<rocode_tool::ExecutionPreflightIssue>,
+        attachment_count: usize,
+    ) -> HashMap<String, serde_json::Value> {
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            rocode_tool::EXECUTION_PREFLIGHT_METADATA_KEY.to_string(),
+            serde_json::to_value(rocode_tool::ExecutionPreflightMetadata {
+                runner: "read".to_string(),
+                subject: "/tmp/sample.pdf".to_string(),
+                status,
+                issues,
+                output: "PDF read successfully".to_string(),
+                metadata: HashMap::new(),
+                attachment_count,
+            })
+            .expect("execution preflight metadata should serialize"),
+        );
+        metadata
+    }
 
     #[test]
     fn telemetry_snapshot_syncs_runtime_usage_from_session_when_missing() {
@@ -402,6 +594,121 @@ mod tests {
     }
 
     #[test]
+    fn latest_execution_preflight_summary_prefers_tool_call_state_metadata() {
+        let mut session = Session::new("session-1".to_string(), ".".to_string());
+        let call_id = "call-1";
+
+        let mut assistant = rocode_session::SessionMessage::assistant(session.id.clone());
+        assistant.add_tool_call(
+            call_id,
+            "media_inspect",
+            serde_json::json!({ "file_path": "/tmp/sample.pdf" }),
+        );
+        if let Some(rocode_session::MessagePart {
+            part_type: rocode_session::PartType::ToolCall { status, state, .. },
+            ..
+        }) = assistant.parts.last_mut()
+        {
+            *status = rocode_session::ToolCallStatus::Completed;
+            *state = Some(rocode_session::ToolState::Completed {
+                input: serde_json::json!({ "file_path": "/tmp/sample.pdf" }),
+                output: "ok".to_string(),
+                title: "Media Inspect".to_string(),
+                metadata: sample_execution_preflight_metadata(
+                    rocode_tool::ExecutionPreflightStatus::Ready,
+                    Vec::new(),
+                    1,
+                ),
+                time: rocode_session::CompletedTime {
+                    start: 1,
+                    end: 2,
+                    compacted: None,
+                },
+                attachments: None,
+            });
+        }
+        session.push_message(assistant);
+
+        let mut tool = rocode_session::SessionMessage::tool(session.id.clone());
+        tool.add_tool_result(call_id, "delegated result", false);
+        if let Some(rocode_session::MessagePart {
+            part_type: rocode_session::PartType::ToolResult { metadata, .. },
+            ..
+        }) = tool.parts.last_mut()
+        {
+            *metadata = Some(sample_execution_preflight_metadata(
+                rocode_tool::ExecutionPreflightStatus::SoftWarn,
+                vec![rocode_tool::ExecutionPreflightIssue {
+                    severity: rocode_tool::ExecutionPreflightSeverity::SoftWarn,
+                    code: "attachment_missing".to_string(),
+                    message: "attachment payload missing".to_string(),
+                }],
+                0,
+            ));
+        }
+        session.push_message(tool);
+
+        let summary = latest_execution_preflight_summary(&session).expect("summary");
+
+        assert_eq!(summary.tool_call_id, call_id);
+        assert_eq!(summary.tool_name.as_deref(), Some("media_inspect"));
+        assert_eq!(
+            summary.source,
+            SessionExecutionPreflightSource::ToolCallState
+        );
+        assert_eq!(summary.status, rocode_tool::ExecutionPreflightStatus::Ready);
+        assert_eq!(summary.attachment_count, 1);
+        assert!(summary.issues.is_empty());
+    }
+
+    #[test]
+    fn latest_execution_preflight_summary_falls_back_to_tool_result_metadata() {
+        let mut session = Session::new("session-1".to_string(), ".".to_string());
+        let call_id = "call-2";
+
+        let mut assistant = rocode_session::SessionMessage::assistant(session.id.clone());
+        assistant.add_tool_call(
+            call_id,
+            "media_inspect",
+            serde_json::json!({ "file_path": "/tmp/sample.pdf" }),
+        );
+        session.push_message(assistant);
+
+        let mut tool = rocode_session::SessionMessage::tool(session.id.clone());
+        tool.add_tool_result(call_id, "delegated result", false);
+        if let Some(rocode_session::MessagePart {
+            part_type: rocode_session::PartType::ToolResult { metadata, .. },
+            ..
+        }) = tool.parts.last_mut()
+        {
+            *metadata = Some(sample_execution_preflight_metadata(
+                rocode_tool::ExecutionPreflightStatus::SoftWarn,
+                vec![rocode_tool::ExecutionPreflightIssue {
+                    severity: rocode_tool::ExecutionPreflightSeverity::SoftWarn,
+                    code: "attachment_missing".to_string(),
+                    message: "attachment payload missing".to_string(),
+                }],
+                0,
+            ));
+        }
+        session.push_message(tool);
+
+        let summary = latest_execution_preflight_summary(&session).expect("summary");
+
+        assert_eq!(summary.tool_call_id, call_id);
+        assert_eq!(summary.tool_name.as_deref(), Some("media_inspect"));
+        assert_eq!(
+            summary.source,
+            SessionExecutionPreflightSource::ToolResultPart
+        );
+        assert_eq!(
+            summary.status,
+            rocode_tool::ExecutionPreflightStatus::SoftWarn
+        );
+        assert_eq!(summary.issues.len(), 1);
+    }
+
+    #[test]
     fn telemetry_snapshot_serializes_authority_contract_fields() {
         let mut runtime = SessionRuntimeState::new("session-1");
         runtime.active_stage_id = Some("stage-1".to_string());
@@ -481,6 +788,16 @@ mod tests {
                 "policy": rocode_session::prompt::INGRESS_POLICY_ENTRY_METADATA_ONLY,
                 "batch_count": 1,
             })),
+            execution_preflight_summary: Some(SessionExecutionPreflightSummary {
+                tool_call_id: "call-1".to_string(),
+                tool_name: Some("media_inspect".to_string()),
+                source: SessionExecutionPreflightSource::ToolCallState,
+                runner: "read".to_string(),
+                subject: "/tmp/sample.pdf".to_string(),
+                status: rocode_tool::ExecutionPreflightStatus::Ready,
+                issues: Vec::new(),
+                attachment_count: 1,
+            }),
             provider_diagnostic_summary: Some(rocode_provider::ProviderDiagnosticSummary {
                 severity: rocode_provider::ProviderDiagnosticSeverity::HardFail,
                 source: rocode_provider::ProviderDiagnosticSource::ApiErrorRewrite,
@@ -506,6 +823,11 @@ mod tests {
         assert_eq!(
             value["ingress_stabilization"]["policy"],
             rocode_session::prompt::INGRESS_POLICY_ENTRY_METADATA_ONLY
+        );
+        assert_eq!(value["execution_preflight_summary"]["runner"], "read");
+        assert_eq!(
+            value["execution_preflight_summary"]["source"],
+            "tool_call_state"
         );
         assert_eq!(
             value["provider_diagnostic_summary"]["code"],

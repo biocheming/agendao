@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::skill_support::{
-    authority_for, format_loaded_skill_output, load_skill_with_runtime_materialization,
-    resolve_skill_filter,
+    attach_skill_runtime_preflight, authority_for, format_loaded_skill_output,
+    load_skill_with_runtime_materialization, resolve_skill_filter,
 };
 use crate::{PermissionRequest, Tool, ToolContext, ToolError, ToolResult};
 
@@ -82,12 +82,19 @@ impl Tool for SkillTool {
             .load_skill_detail_for_meta(&skill.meta)
             .map_err(crate::skill_support::map_skill_error)?;
 
-        let (output, metadata) = format_loaded_skill_output(
+        let (output, mut metadata) = format_loaded_skill_output(
             &skill,
             Some(&detail),
             Path::new(&ctx.directory),
             input.arguments.as_ref(),
             input.prompt.as_deref(),
+        );
+        attach_skill_runtime_preflight(
+            &mut metadata,
+            &skill.meta.name,
+            &skill.meta.name,
+            &skill.meta.supporting_files,
+            &detail,
         );
 
         Ok(ToolResult {
@@ -108,6 +115,7 @@ impl Default for SkillTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn skill_parameters_do_not_inline_skill_catalog_enum() {
@@ -118,5 +126,45 @@ mod tests {
             .as_str()
             .unwrap_or_default()
             .contains("skills_categories"));
+    }
+
+    #[tokio::test]
+    async fn skill_result_attaches_execution_preflight_for_missing_runtime_requirements() {
+        let dir = tempdir().unwrap();
+        let skill_path = dir.path().join(".rocode/skills/frontend-ui-ux/SKILL.md");
+        std::fs::create_dir_all(skill_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &skill_path,
+            r#"---
+name: frontend-ui-ux
+description: frontend
+required_commands: [definitely-missing-skill-cli]
+---
+Use clear visual hierarchy.
+"#,
+        )
+        .unwrap();
+
+        let ctx = ToolContext::new(
+            "session-1".into(),
+            "message-1".into(),
+            dir.path().to_string_lossy().to_string(),
+        );
+        let args = serde_json::json!({
+            "skill_name": "frontend-ui-ux"
+        });
+
+        let result = SkillTool.execute(args, ctx).await.unwrap();
+
+        assert_eq!(
+            result.metadata["preflight"]["runner"],
+            "skill_runtime_requirements"
+        );
+        assert_eq!(result.metadata["preflight"]["subject"], "frontend-ui-ux");
+        assert_eq!(result.metadata["preflight"]["status"], "soft_warn");
+        assert_eq!(
+            result.metadata["preflight"]["metadata"]["missing_required_commands"],
+            serde_json::json!(["definitely-missing-skill-cli"])
+        );
     }
 }

@@ -3,9 +3,11 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::attachment_metadata::collect_attachments_from_metadata;
+use crate::execution_preflight::{
+    execute_registry_tool_execution_preflight, ExecutionPreflightReport, ExecutionPreflightRunner,
+};
 use crate::path_guard::{resolve_user_path, RootPathFallbackPolicy};
-use crate::{Metadata, PermissionRequest, Tool, ToolContext, ToolError, ToolRegistry, ToolResult};
+use crate::{Metadata, PermissionRequest, Tool, ToolContext, ToolError, ToolResult};
 
 const DEFAULT_QUESTION: &str =
     "Describe the relevant contents of this media file and answer the user's need concisely.";
@@ -29,11 +31,8 @@ struct MediaInspectInput {
     question: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-struct MediaPreflight {
-    output: String,
-    metadata: Metadata,
-    attachments: Vec<serde_json::Value>,
+struct MediaReadPreflight {
+    resolved_path: PathBuf,
 }
 
 pub struct MediaInspectTool;
@@ -49,7 +48,7 @@ impl MediaInspectTool {
         ctx: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         let resolved_path = resolve_media_path(input, ctx)?;
-        let preflight = run_media_preflight(input, &resolved_path, ctx).await?;
+        let preflight = run_media_preflight(&resolved_path, ctx).await?;
         let agent = ctx.do_get_agent_info("media-reader").await.ok_or_else(|| {
             ToolError::ExecutionError("media-reader agent is not configured".to_string())
         })?;
@@ -71,11 +70,7 @@ impl MediaInspectTool {
                 Vec::new(),
             )
             .await?;
-        let prompt = build_media_prompt(
-            &resolved_path,
-            input.question.as_deref(),
-            preflight.as_ref(),
-        );
+        let prompt = build_media_prompt(&resolved_path, input.question.as_deref(), &preflight);
         let result_text = ctx.do_prompt_subsession(session_id.clone(), prompt).await?;
 
         let mut metadata = Metadata::new();
@@ -96,24 +91,8 @@ impl MediaInspectTool {
         {
             metadata.insert("question".to_string(), serde_json::json!(question));
         }
-        if let Some(preflight) = preflight {
-            metadata.insert(
-                "preflight".to_string(),
-                serde_json::json!({
-                    "output": preflight.output,
-                    "metadata": preflight.metadata,
-                }),
-            );
-            if !preflight.attachments.is_empty() {
-                metadata.insert(
-                    "attachments".to_string(),
-                    serde_json::Value::Array(preflight.attachments.clone()),
-                );
-                if let Some(first) = preflight.attachments.first() {
-                    metadata.insert("attachment".to_string(), first.clone());
-                }
-            }
-        }
+        preflight.attach_to_metadata(&mut metadata);
+        attach_media_preflight_attachments(&preflight, &mut metadata);
 
         Ok(ToolResult {
             title: format_media_title(&resolved_path),
@@ -210,45 +189,20 @@ fn resolve_media_path(input: &MediaInspectInput, ctx: &ToolContext) -> Result<Pa
 }
 
 async fn run_media_preflight(
-    input: &MediaInspectInput,
     resolved_path: &Path,
     ctx: &ToolContext,
-) -> Result<Option<MediaPreflight>, ToolError> {
-    let Some(registry) = ctx.registry.as_ref().map(Arc::clone) else {
-        return Ok(None);
-    };
-    execute_preflight_read(&registry, resolved_path, input, ctx)
-        .await
-        .map(Some)
-}
-
-async fn execute_preflight_read(
-    registry: &ToolRegistry,
-    resolved_path: &Path,
-    _input: &MediaInspectInput,
-    ctx: &ToolContext,
-) -> Result<MediaPreflight, ToolError> {
-    let result = registry
-        .execute(
-            "read",
-            serde_json::json!({
-                "file_path": resolved_path.to_string_lossy().to_string(),
-            }),
-            ctx.clone(),
-        )
-        .await?;
-    let attachments = collect_attachments_from_metadata(&result.metadata);
-    Ok(MediaPreflight {
-        output: result.output,
-        metadata: result.metadata,
-        attachments,
-    })
+) -> Result<ExecutionPreflightReport, ToolError> {
+    MediaReadPreflight {
+        resolved_path: resolved_path.to_path_buf(),
+    }
+    .run(ctx)
+    .await
 }
 
 fn build_media_prompt(
     path: &Path,
     question: Option<&str>,
-    preflight: Option<&MediaPreflight>,
+    preflight: &ExecutionPreflightReport,
 ) -> String {
     let question = question
         .map(str::trim)
@@ -261,7 +215,7 @@ fn build_media_prompt(
         question
     );
 
-    if let Some(preflight) = preflight {
+    if preflight.has_guidance() {
         let attachment_summary = summarize_attachment_payloads(&preflight.attachments);
         prompt.push_str("\n\nPreflight media context from the authoritative `read` tool:\n");
         prompt.push_str(&format!(
@@ -287,6 +241,56 @@ fn build_media_prompt(
     }
 
     prompt
+}
+
+#[async_trait]
+impl ExecutionPreflightRunner for MediaReadPreflight {
+    async fn run(&self, ctx: &ToolContext) -> Result<ExecutionPreflightReport, ToolError> {
+        let subject = self.resolved_path.to_string_lossy().to_string();
+        let Some(registry) = ctx.registry.as_ref().map(Arc::clone) else {
+            return Ok(ExecutionPreflightReport::new("read", subject).advisory(
+                "registry_unavailable",
+                "tool registry unavailable; skipped authoritative `read` preflight",
+            ));
+        };
+
+        let mut report = execute_registry_tool_execution_preflight(
+            &registry,
+            "read",
+            serde_json::json!({
+                "file_path": subject.clone(),
+            }),
+            ctx,
+            "read",
+            subject,
+        )
+        .await?;
+
+        if report.attachments.is_empty() {
+            report = report.soft_warn(
+                "attachment_missing",
+                "authoritative `read` preflight did not return an attachment payload",
+            );
+        }
+
+        Ok(report)
+    }
+}
+
+fn attach_media_preflight_attachments(
+    preflight: &ExecutionPreflightReport,
+    metadata: &mut Metadata,
+) {
+    if preflight.attachments.is_empty() {
+        return;
+    }
+    metadata.insert(
+        "attachments".to_string(),
+        serde_json::Value::Array(preflight.attachments.clone()),
+    );
+    if let Some(first) = preflight.attachments.first() {
+        metadata.insert("attachment".to_string(), first.clone());
+    }
 }
 
 fn summarize_attachment_payloads(attachments: &[serde_json::Value]) -> Option<String> {
@@ -348,29 +352,60 @@ mod tests {
 
     #[test]
     fn prompt_mentions_preflight_context_when_available() {
-        let preflight = MediaPreflight {
-            output: "PDF read successfully (12 bytes)".to_string(),
-            metadata: {
-                let mut metadata = Metadata::new();
-                metadata.insert("mime".to_string(), serde_json::json!("application/pdf"));
-                metadata.insert("size".to_string(), serde_json::json!(12));
-                metadata
-            },
-            attachments: vec![serde_json::json!({
-                "mime": "application/pdf",
-                "filename": "sample.pdf",
-                "url": "data:application/pdf;base64,AA=="
-            })],
-        };
+        let mut preflight = ExecutionPreflightReport::new("read", "/tmp/sample.pdf");
+        preflight.output = "PDF read successfully (12 bytes)".to_string();
+        preflight
+            .metadata
+            .insert("mime".to_string(), serde_json::json!("application/pdf"));
+        preflight
+            .metadata
+            .insert("size".to_string(), serde_json::json!(12));
+        preflight.attachments.push(serde_json::json!({
+            "mime": "application/pdf",
+            "filename": "sample.pdf",
+            "url": "data:application/pdf;base64,AA=="
+        }));
         let prompt = build_media_prompt(
             Path::new("/tmp/sample.pdf"),
             Some("Summarize the first page"),
-            Some(&preflight),
+            &preflight,
         );
         assert!(prompt.contains("Preflight media context"));
         assert!(prompt.contains("mime: application/pdf"));
         assert!(prompt.contains("attachment summary"));
         assert!(prompt.contains("Summarize the first page"));
+    }
+
+    #[test]
+    fn advisory_only_preflight_does_not_render_guidance_block() {
+        let preflight = ExecutionPreflightReport::new("read", "/tmp/sample.pdf")
+            .advisory("registry_unavailable", "tool registry unavailable");
+        let prompt = build_media_prompt(
+            Path::new("/tmp/sample.pdf"),
+            Some("Summarize the first page"),
+            &preflight,
+        );
+
+        assert!(!prompt.contains("Preflight media context"));
+        assert!(prompt.contains("First call the `read` tool on this exact path."));
+    }
+
+    #[test]
+    fn media_attachment_projection_remains_adopter_policy() {
+        let mut preflight = ExecutionPreflightReport::new("read", "/tmp/sample.pdf");
+        preflight.attachments.push(serde_json::json!({
+            "mime": "application/pdf",
+            "filename": "sample.pdf",
+            "url": "data:application/pdf;base64,AA=="
+        }));
+
+        let mut metadata = Metadata::new();
+        preflight.attach_to_metadata(&mut metadata);
+        assert!(!metadata.contains_key("attachments"));
+
+        attach_media_preflight_attachments(&preflight, &mut metadata);
+        assert!(metadata.contains_key("attachments"));
+        assert!(metadata.contains_key("attachment"));
     }
 
     #[tokio::test]
@@ -456,6 +491,10 @@ mod tests {
             serde_json::json!("media_reader_session")
         );
         assert!(result.metadata.contains_key("preflight"));
+        assert_eq!(
+            result.metadata["preflight"]["status"],
+            serde_json::json!("ready")
+        );
         let attachments = result
             .metadata
             .get("attachments")
