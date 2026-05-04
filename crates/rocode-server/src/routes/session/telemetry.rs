@@ -19,6 +19,7 @@ use crate::session_runtime::state::SessionRuntimeState;
 use crate::{Result, ServerState};
 
 use super::cancel::ensure_session_exists;
+use super::effective_policy::build_session_effective_policy;
 use super::executions::build_session_execution_topology_snapshot;
 use super::session_crud::runtime_snapshot_or_default;
 
@@ -125,6 +126,9 @@ pub(super) async fn get_session_insights(
         directory: session_record.directory.clone(),
         updated: session_record.time.updated,
         telemetry: load_session_telemetry_snapshot(&session),
+        effective_policy: Some(
+            build_session_effective_policy(&state, &session, memory.as_ref()).await,
+        ),
         memory,
         multimodal: build_session_multimodal_insight(&session),
     }))
@@ -1018,6 +1022,14 @@ mod tests {
                 .as_ref()
                 .map(|multimodal| multimodal.transport_replaced_parts.clone()),
             Some(vec!["voice.wav".to_string()])
+        );
+        assert!(response.effective_policy.is_some());
+        assert_eq!(
+            response
+                .effective_policy
+                .as_ref()
+                .map(|policy| policy.session_id.as_str()),
+            Some(session_id.as_str())
         );
     }
 

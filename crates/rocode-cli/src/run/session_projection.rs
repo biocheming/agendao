@@ -979,7 +979,192 @@ fn cli_session_insights_lines(
         }
     }
 
+    if let Some(policy) = insights.effective_policy.as_ref() {
+        lines.push(String::new());
+        lines.extend(cli_effective_policy_lines(policy));
+    }
+
     lines
+}
+
+fn cli_effective_policy_lines(
+    policy: &rocode_types::SessionEffectivePolicyView,
+) -> Vec<String> {
+    let mut lines = vec![format!(
+        "Effective policy: session {}",
+        policy.session_id
+    )];
+
+    if let Some(scheduler) = policy.scheduler.as_ref() {
+        let requested = scheduler.requested_profile.as_deref().unwrap_or("--");
+        let effective = scheduler.effective_profile.as_deref().unwrap_or("--");
+        lines.push(format!(
+            "  Scheduler: requested {} · effective {} · source {} · applied {}",
+            requested,
+            effective,
+            scheduler.source,
+            cli_yes_no(scheduler.applied)
+        ));
+        if scheduler.mode_kind.is_some()
+            || scheduler.root_agent.is_some()
+            || scheduler.resolved_agent.is_some()
+        {
+            lines.push(format!(
+                "    Mode {} · root agent {} · resolved agent {}",
+                scheduler.mode_kind.as_deref().unwrap_or("--"),
+                scheduler.root_agent.as_deref().unwrap_or("--"),
+                scheduler.resolved_agent.as_deref().unwrap_or("--")
+            ));
+        }
+    }
+
+    if let Some(provider) = policy.provider.as_ref() {
+        lines.push(format!(
+            "  Provider: {} · variant {}",
+            provider.resolved_model,
+            provider.variant.as_deref().unwrap_or("--")
+        ));
+        if let Some(descriptor) = provider.configured_descriptor.as_ref() {
+            lines.push(format!(
+                "    Configured descriptor: base {} · env {}",
+                descriptor.base_url.as_deref().unwrap_or("--"),
+                cli_join_or_placeholder(&descriptor.env)
+            ));
+            if let Some(profile) = descriptor.profile.as_ref() {
+                lines.push(format!(
+                    "    Configured profile: {}",
+                    cli_provider_profile_summary(profile)
+                ));
+            }
+        }
+        if let Some(error) = provider.configured_descriptor_error.as_deref() {
+            lines.push(format!(
+                "    Descriptor projection error: {}",
+                truncate_text(error, 108)
+            ));
+        }
+        if let Some(runtime) = provider.runtime_profile.as_ref() {
+            lines.push(format!(
+                "    Runtime profile: {} · hash {}",
+                cli_provider_profile_summary(&runtime.profile),
+                truncate_text(&runtime.profile_hash, 40)
+            ));
+        }
+    }
+
+    if let Some(skill_tree) = policy.skill_tree.as_ref() {
+        lines.push(format!(
+            "  Skill tree: configured {} · enabled {} · applied {} · source {}",
+            cli_yes_no(skill_tree.configured),
+            cli_yes_no(skill_tree.enabled),
+            cli_yes_no(skill_tree.applied),
+            skill_tree.source
+        ));
+        if skill_tree.estimated_tokens.is_some()
+            || skill_tree.token_budget.is_some()
+            || skill_tree.truncation_strategy.is_some()
+            || skill_tree.truncated.is_some()
+        {
+            lines.push(format!(
+                "    Estimated {} · budget {} · truncation {} · truncated {}",
+                skill_tree
+                    .estimated_tokens
+                    .map(format_token_count)
+                    .unwrap_or_else(|| "--".to_string()),
+                skill_tree
+                    .token_budget
+                    .map(format_token_count)
+                    .unwrap_or_else(|| "--".to_string()),
+                skill_tree.truncation_strategy.as_deref().unwrap_or("--"),
+                skill_tree
+                    .truncated
+                    .map(cli_yes_no)
+                    .unwrap_or("--")
+            ));
+        }
+    }
+
+    if let Some(memory) = policy.memory.as_ref() {
+        lines.push(format!(
+            "  Memory: {} · {} · scopes {}",
+            memory.workspace_mode,
+            truncate_text(&memory.workspace_key, 88),
+            if memory.allowed_scopes.is_empty() {
+                "--".to_string()
+            } else {
+                memory
+                    .allowed_scopes
+                    .iter()
+                    .map(|scope| format!("{scope:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        ));
+        lines.push(format!(
+            "    Frozen snapshot {} · last prefetch {}",
+            memory.frozen_snapshot_items, memory.last_prefetch_items
+        ));
+    }
+
+    lines.push(format!(
+        "  Compaction: auto {} · prune {} · reserved {}",
+        cli_yes_no(policy.compaction.auto),
+        cli_yes_no(policy.compaction.prune),
+        policy
+            .compaction
+            .reserved
+            .map(format_token_count)
+            .unwrap_or_else(|| "--".to_string())
+    ));
+
+    if let Some(external) = policy.external_adapter.as_ref() {
+        lines.push(format!(
+            "  External adapter: source {} · policy {} · batch {}",
+            external.last_ingress_source,
+            external.last_ingress_policy.as_deref().unwrap_or("--"),
+            external
+                .last_ingress_batch_count
+                .map(|value: u64| value.to_string())
+                .unwrap_or_else(|| "--".to_string())
+        ));
+    }
+
+    if !policy.warnings.is_empty() {
+        lines.push("  Warnings:".to_string());
+        for warning in &policy.warnings {
+            lines.push(format!("    {}", truncate_text(warning, 108)));
+        }
+    }
+
+    lines
+}
+
+fn cli_provider_profile_summary(
+    profile: &rocode_types::ProviderProfileDescriptorView,
+) -> String {
+    let mut parts = vec![
+        format!("family {}", profile.api_family),
+        format!("shape {}", profile.api_shape),
+        format!("transport {}", profile.transport),
+        format!("usage {}", profile.usage_shape),
+        format!("cache {}", profile.cache_family),
+    ];
+    if !profile.quirks.is_empty() {
+        parts.push(format!("quirks {}", profile.quirks.join(", ")));
+    }
+    parts.join(" · ")
+}
+
+fn cli_join_or_placeholder(values: &[String]) -> String {
+    if values.is_empty() {
+        "--".to_string()
+    } else {
+        values.join(", ")
+    }
+}
+
+fn cli_yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
 }
 
 type CliEventsQueryInput = rocode_command::interactive::InteractiveEventsQuery;
@@ -1214,7 +1399,7 @@ async fn cli_print_session_insights(
     match api_client.get_session_insights(&session_id).await {
         Ok(insights) => {
             let lines = cli_session_insights_lines(&session_id, &insights);
-            let footer = "Source: /session/{id}/insights · includes persisted telemetry, multimodal explain, and memory explain";
+            let footer = "Source: /session/{id}/insights · includes persisted telemetry, multimodal explain, memory explain, and effective policy";
             let _ = print_cli_list_on_surface(
                 Some(runtime),
                 "Session Insights",
@@ -3078,8 +3263,19 @@ mod session_projection_tests {
     use super::{
         cli_context_usage_bar, cli_current_context_tokens, cli_default_events_query_input,
         cli_format_context_meter, cli_parse_events_command_input, cli_parse_events_query_input,
-        cli_sidebar_lines, CliEventsCommandInput, CliEventsQueryInput, CliFrontendProjection,
-        CliObservedExecutionTopology, CLI_EVENTS_DEFAULT_PAGE_SIZE,
+        cli_session_insights_lines, cli_sidebar_lines, CliEventsCommandInput,
+        CliEventsQueryInput, CliFrontendProjection, CliObservedExecutionTopology,
+        CLI_EVENTS_DEFAULT_PAGE_SIZE,
+    };
+    use crate::api_client::{
+        SessionInsightsResponse,
+    };
+    use rocode_types::{
+        MemoryScope, ProviderConnectionDescriptorCandidate, ProviderProfileDescriptorView,
+        SessionEffectiveCompactionPolicy, SessionEffectiveExternalAdapterPolicy,
+        SessionEffectiveMemoryPolicy, SessionEffectivePolicyView,
+        SessionEffectiveProviderPolicy, SessionEffectiveProviderRuntimeProfile,
+        SessionEffectiveSchedulerPolicy, SessionEffectiveSkillTreePolicy,
     };
 
     #[test]
@@ -3226,5 +3422,143 @@ mod session_projection_tests {
         assert!(lines
             .iter()
             .any(|line| line.contains("Provider:") && line.contains("thinking replay rejected")));
+    }
+
+    #[test]
+    fn session_insights_surface_effective_policy_sections() {
+        let insights = SessionInsightsResponse {
+            id: "sess_123".to_string(),
+            title: "Session title".to_string(),
+            directory: "/workspace/project".to_string(),
+            updated: 1_714_560_000_000,
+            telemetry: None,
+            memory: None,
+            multimodal: None,
+            effective_policy: Some(SessionEffectivePolicyView {
+                session_id: "sess_123".to_string(),
+                scheduler: Some(SessionEffectiveSchedulerPolicy {
+                    requested_profile: Some("prometheus".to_string()),
+                    effective_profile: Some("prometheus".to_string()),
+                    source: "session_metadata".to_string(),
+                    applied: true,
+                    mode_kind: Some("orchestrator".to_string()),
+                    root_agent: Some("planner".to_string()),
+                    resolved_agent: Some("planner".to_string()),
+                }),
+                provider: Some(SessionEffectiveProviderPolicy {
+                    provider_id: "openai".to_string(),
+                    model_id: "gpt-4o".to_string(),
+                    resolved_model: "openai/gpt-4o".to_string(),
+                    variant: Some("fast".to_string()),
+                    configured_descriptor: Some(ProviderConnectionDescriptorCandidate {
+                        provider_id: "openai".to_string(),
+                        name: Some("OpenAI".to_string()),
+                        base_url: Some("https://api.openai.com/v1".to_string()),
+                        env: vec!["OPENAI_API_KEY".to_string()],
+                        profile: Some(ProviderProfileDescriptorView {
+                            provider_id: "openai".to_string(),
+                            npm: "@ai-sdk/openai".to_string(),
+                            api_family: "closeai-compatible".to_string(),
+                            api_shape: "chat-completions".to_string(),
+                            transport: "bearer".to_string(),
+                            usage_shape: "closeai-cached-tokens".to_string(),
+                            cache_family: "closeai-compatible".to_string(),
+                            quirks: vec!["responses-fallback-to-chat".to_string()],
+                        }),
+                    }),
+                    configured_descriptor_error: None,
+                    runtime_profile: Some(SessionEffectiveProviderRuntimeProfile {
+                        profile: ProviderProfileDescriptorView {
+                            provider_id: "openai".to_string(),
+                            npm: "@ai-sdk/openai".to_string(),
+                            api_family: "closeai-compatible".to_string(),
+                            api_shape: "responses".to_string(),
+                            transport: "bearer".to_string(),
+                            usage_shape: "closeai-cached-tokens".to_string(),
+                            cache_family: "closeai-compatible".to_string(),
+                            quirks: Vec::new(),
+                        },
+                        profile_hash: "1234567890abcdef1234567890abcdef1234567890abcdef".to_string(),
+                    }),
+                }),
+                skill_tree: Some(SessionEffectiveSkillTreePolicy {
+                    configured: true,
+                    enabled: true,
+                    applied: true,
+                    source: "config_composition".to_string(),
+                    estimated_tokens: Some(256),
+                    token_budget: Some(512),
+                    truncation_strategy: Some("tail".to_string()),
+                    truncated: Some(false),
+                }),
+                memory: Some(SessionEffectiveMemoryPolicy {
+                    workspace_key: "/workspace/project".to_string(),
+                    workspace_mode: "workspace_shared".to_string(),
+                    allowed_scopes: vec![
+                        MemoryScope::WorkspaceShared,
+                        MemoryScope::SessionEphemeral,
+                    ],
+                    frozen_snapshot_items: 2,
+                    last_prefetch_items: 5,
+                }),
+                compaction: SessionEffectiveCompactionPolicy {
+                    auto: false,
+                    prune: true,
+                    reserved: Some(512),
+                },
+                external_adapter: Some(SessionEffectiveExternalAdapterPolicy {
+                    last_ingress_source: "external:generic-webhook:generic".to_string(),
+                    last_ingress_policy: Some("external_adapter_metadata_only".to_string()),
+                    last_ingress_batch_count: Some(1),
+                }),
+                warnings: vec![
+                    "provider descriptor projection failed for `openai`: invalid profile".to_string(),
+                ],
+            }),
+        };
+
+        let lines = cli_session_insights_lines("sess_123", &insights);
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "Effective policy: session sess_123")
+        );
+        assert!(lines.iter().any(|line| {
+            line.contains("Scheduler: requested prometheus")
+                && line.contains("source session_metadata")
+                && line.contains("applied yes")
+        }));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("Provider: openai/gpt-4o · variant fast")));
+        assert!(lines.iter().any(|line| {
+            line.contains("Configured profile:")
+                && line.contains("family closeai-compatible")
+                && line.contains("quirks responses-fallback-to-chat")
+        }));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("Runtime profile:") && line.contains("shape responses")));
+        assert!(lines.iter().any(|line| {
+            line.contains("Skill tree: configured yes")
+                && line.contains("source config_composition")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.contains("Memory: workspace_shared")
+                && line.contains("WorkspaceShared, SessionEphemeral")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.contains("Compaction: auto no")
+                && line.contains("prune yes")
+                && line.contains("reserved 512")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.contains("External adapter: source external:generic-webhook:generic")
+                && line.contains("policy external_adapter_metadata_only")
+        }));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("provider descriptor projection failed")));
     }
 }
