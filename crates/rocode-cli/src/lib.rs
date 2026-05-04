@@ -14,6 +14,7 @@ mod generate;
 mod github;
 mod import_export;
 mod mcp_cmd;
+mod provider_cmd;
 mod providers;
 mod remote;
 mod run;
@@ -33,6 +34,7 @@ use import_export::{
     export_memory_data, export_session_data, import_memory_data, import_session_data,
 };
 use mcp_cmd::handle_mcp_command;
+use provider_cmd::handle_provider_command;
 use run::{run_non_interactive, RunNonInteractiveOptions};
 pub use server_lifecycle::{FrontendRuntimeContext, ServerDiscoveryRequest};
 use session_cmd::{handle_session_command, show_config};
@@ -118,6 +120,9 @@ where
         },
         Commands::Skill { action } => {
             handle_skill_command(action, &runtime_context).await?;
+        }
+        Commands::Provider { action } => {
+            handle_provider_command(action).await?;
         }
         Commands::Stats {
             days,

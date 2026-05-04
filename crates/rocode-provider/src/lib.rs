@@ -1,3 +1,4 @@
+pub mod artifact;
 pub mod auth;
 pub mod bootstrap;
 pub mod bridge;
@@ -28,6 +29,7 @@ pub mod tools;
 pub mod transform;
 pub mod transport;
 
+pub use artifact::*;
 pub use auth::*;
 pub use bootstrap::create_registry_from_env;
 pub use bootstrap::create_registry_from_env_with_auth_store;
