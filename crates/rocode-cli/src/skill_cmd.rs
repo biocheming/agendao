@@ -18,6 +18,7 @@ use crate::cli::{
     ProposalCommands, SkillCommands, SkillHubCommands, SkillHubOutputFormat, SkillSourceArgs,
     SkillSourceKindArg,
 };
+use crate::import_export::{export_skill_data, import_skill_data};
 use crate::server_lifecycle::FrontendRuntimeContext;
 use crate::util::truncate_text;
 
@@ -26,6 +27,8 @@ pub(crate) async fn handle_skill_command(
     runtime_context: &FrontendRuntimeContext,
 ) -> anyhow::Result<()> {
     match action {
+        SkillCommands::Export { output } => export_skill_data(output),
+        SkillCommands::Import { file } => import_skill_data(file),
         SkillCommands::Hub { action } => handle_skill_hub_command(action, runtime_context).await,
         SkillCommands::Proposal { action } => handle_proposal_command(action).await,
     }
