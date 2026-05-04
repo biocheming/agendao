@@ -985,7 +985,7 @@ impl App {
                 let lines = tui_session_insights_lines(&session_id, &insights);
                 self.status_dialog.set_title("Insights");
                 self.status_dialog.set_footer_hint(Some(
-                    "Esc close · /memory show <id> · /memory hits record=<id> · /session/{id}/insights includes telemetry, multimodal explain, and memory explain".to_string(),
+                    "Esc close · /memory show <id> · /memory hits record=<id> · /session/{id}/insights includes telemetry, multimodal explain, memory explain, and effective policy".to_string(),
                 ));
                 self.status_dialog.set_status_lines(lines);
                 true
@@ -2059,7 +2059,344 @@ fn tui_session_insights_lines(
         }
     }
 
+    if let Some(policy) = insights.effective_policy.as_ref() {
+        lines.push(StatusLine::muted(String::new()));
+        lines.extend(tui_effective_policy_lines(policy));
+    }
+
     lines
+}
+
+fn tui_effective_policy_lines(
+    policy: &rocode_types::SessionEffectivePolicyView,
+) -> Vec<StatusLine> {
+    let mut lines = vec![
+        StatusLine::title("Effective Policy"),
+        StatusLine::normal(format!("Session: {}", policy.session_id)),
+    ];
+
+    if let Some(scheduler) = policy.scheduler.as_ref() {
+        lines.push(StatusLine::normal(format!(
+            "Scheduler: requested {} · effective {} · source {} · applied {}",
+            scheduler.requested_profile.as_deref().unwrap_or("--"),
+            scheduler.effective_profile.as_deref().unwrap_or("--"),
+            scheduler.source,
+            tui_yes_no(scheduler.applied)
+        )));
+        if scheduler.mode_kind.is_some()
+            || scheduler.root_agent.is_some()
+            || scheduler.resolved_agent.is_some()
+        {
+            lines.push(StatusLine::muted(format!(
+                "Mode {} · root agent {} · resolved agent {}",
+                scheduler.mode_kind.as_deref().unwrap_or("--"),
+                scheduler.root_agent.as_deref().unwrap_or("--"),
+                scheduler.resolved_agent.as_deref().unwrap_or("--")
+            )));
+        }
+    }
+
+    if let Some(provider) = policy.provider.as_ref() {
+        lines.push(StatusLine::normal(format!(
+            "Provider: {} · variant {}",
+            provider.resolved_model,
+            provider.variant.as_deref().unwrap_or("--")
+        )));
+        if let Some(descriptor) = provider.configured_descriptor.as_ref() {
+            lines.push(StatusLine::muted(format!(
+                "Configured descriptor: base {} · env {}",
+                descriptor.base_url.as_deref().unwrap_or("--"),
+                tui_join_or_placeholder(&descriptor.env)
+            )));
+            if let Some(profile) = descriptor.profile.as_ref() {
+                lines.push(StatusLine::muted(format!(
+                    "Configured profile: {}",
+                    tui_provider_profile_summary(profile)
+                )));
+            }
+        }
+        if let Some(error) = provider.configured_descriptor_error.as_deref() {
+            lines.push(StatusLine::warning(format!(
+                "Descriptor projection error: {}",
+                error
+            )));
+        }
+        if let Some(runtime) = provider.runtime_profile.as_ref() {
+            lines.push(StatusLine::muted(format!(
+                "Runtime profile: {} · hash {}",
+                tui_provider_profile_summary(&runtime.profile),
+                runtime.profile_hash
+            )));
+        }
+    }
+
+    if let Some(skill_tree) = policy.skill_tree.as_ref() {
+        lines.push(StatusLine::normal(format!(
+            "Skill tree: configured {} · enabled {} · applied {} · source {}",
+            tui_yes_no(skill_tree.configured),
+            tui_yes_no(skill_tree.enabled),
+            tui_yes_no(skill_tree.applied),
+            skill_tree.source
+        )));
+        if skill_tree.estimated_tokens.is_some()
+            || skill_tree.token_budget.is_some()
+            || skill_tree.truncation_strategy.is_some()
+            || skill_tree.truncated.is_some()
+        {
+            lines.push(StatusLine::muted(format!(
+                "Estimated {} · budget {} · truncation {} · truncated {}",
+                skill_tree
+                    .estimated_tokens
+                    .map(tui_format_token_count)
+                    .unwrap_or_else(|| "--".to_string()),
+                skill_tree
+                    .token_budget
+                    .map(tui_format_token_count)
+                    .unwrap_or_else(|| "--".to_string()),
+                skill_tree.truncation_strategy.as_deref().unwrap_or("--"),
+                skill_tree.truncated.map(tui_yes_no).unwrap_or("--")
+            )));
+        }
+    }
+
+    if let Some(memory) = policy.memory.as_ref() {
+        lines.push(StatusLine::normal(format!(
+            "Memory: {} · {}",
+            memory.workspace_mode, memory.workspace_key
+        )));
+        lines.push(StatusLine::muted(format!(
+            "Scopes {} · frozen snapshot {} · last prefetch {}",
+            if memory.allowed_scopes.is_empty() {
+                "--".to_string()
+            } else {
+                memory
+                    .allowed_scopes
+                    .iter()
+                    .map(|scope| format!("{scope:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            },
+            memory.frozen_snapshot_items,
+            memory.last_prefetch_items
+        )));
+    }
+
+    lines.push(StatusLine::normal(format!(
+        "Compaction: auto {} · prune {} · reserved {}",
+        tui_yes_no(policy.compaction.auto),
+        tui_yes_no(policy.compaction.prune),
+        policy
+            .compaction
+            .reserved
+            .map(tui_format_token_count)
+            .unwrap_or_else(|| "--".to_string())
+    )));
+
+    if let Some(external) = policy.external_adapter.as_ref() {
+        lines.push(StatusLine::normal(format!(
+            "External adapter: source {} · policy {} · batch {}",
+            external.last_ingress_source,
+            external.last_ingress_policy.as_deref().unwrap_or("--"),
+            external
+                .last_ingress_batch_count
+                .map(|value: u64| value.to_string())
+                .unwrap_or_else(|| "--".to_string())
+        )));
+    }
+
+    if !policy.warnings.is_empty() {
+        lines.push(StatusLine::title("Warnings"));
+        for warning in &policy.warnings {
+            lines.push(StatusLine::warning(warning.clone()));
+        }
+    }
+
+    lines
+}
+
+fn tui_provider_profile_summary(profile: &rocode_types::ProviderProfileDescriptorView) -> String {
+    let mut parts = vec![
+        format!("family {}", profile.api_family),
+        format!("shape {}", profile.api_shape),
+        format!("transport {}", profile.transport),
+        format!("usage {}", profile.usage_shape),
+        format!("cache {}", profile.cache_family),
+    ];
+    if !profile.quirks.is_empty() {
+        parts.push(format!("quirks {}", profile.quirks.join(", ")));
+    }
+    parts.join(" · ")
+}
+
+fn tui_join_or_placeholder(values: &[String]) -> String {
+    if values.is_empty() {
+        "--".to_string()
+    } else {
+        values.join(", ")
+    }
+}
+
+fn tui_yes_no(value: bool) -> &'static str {
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::SessionInsightsResponse;
+    use rocode_types::{
+        MemoryScope, ProviderConnectionDescriptorCandidate, ProviderProfileDescriptorView,
+        SessionEffectiveCompactionPolicy, SessionEffectiveExternalAdapterPolicy,
+        SessionEffectiveMemoryPolicy, SessionEffectivePolicyView, SessionEffectiveProviderPolicy,
+        SessionEffectiveProviderRuntimeProfile, SessionEffectiveSchedulerPolicy,
+        SessionEffectiveSkillTreePolicy,
+    };
+
+    #[test]
+    fn session_insights_surface_effective_policy_sections() {
+        let insights = SessionInsightsResponse {
+            id: "sess_123".to_string(),
+            title: "Session title".to_string(),
+            directory: "/workspace/project".to_string(),
+            updated: 1_714_560_000_000,
+            telemetry: None,
+            memory: None,
+            multimodal: None,
+            effective_policy: Some(SessionEffectivePolicyView {
+                session_id: "sess_123".to_string(),
+                scheduler: Some(SessionEffectiveSchedulerPolicy {
+                    requested_profile: Some("prometheus".to_string()),
+                    effective_profile: Some("prometheus".to_string()),
+                    source: "session_metadata".to_string(),
+                    applied: true,
+                    mode_kind: Some("orchestrator".to_string()),
+                    root_agent: Some("planner".to_string()),
+                    resolved_agent: Some("planner".to_string()),
+                }),
+                provider: Some(SessionEffectiveProviderPolicy {
+                    provider_id: "openai".to_string(),
+                    model_id: "gpt-4o".to_string(),
+                    resolved_model: "openai/gpt-4o".to_string(),
+                    variant: Some("fast".to_string()),
+                    configured_descriptor: Some(ProviderConnectionDescriptorCandidate {
+                        provider_id: "openai".to_string(),
+                        name: Some("OpenAI".to_string()),
+                        base_url: Some("https://api.openai.com/v1".to_string()),
+                        env: vec!["OPENAI_API_KEY".to_string()],
+                        profile: Some(ProviderProfileDescriptorView {
+                            provider_id: "openai".to_string(),
+                            npm: "@ai-sdk/openai".to_string(),
+                            api_family: "closeai-compatible".to_string(),
+                            api_shape: "chat-completions".to_string(),
+                            transport: "bearer".to_string(),
+                            usage_shape: "closeai-cached-tokens".to_string(),
+                            cache_family: "closeai-compatible".to_string(),
+                            quirks: vec!["responses-fallback-to-chat".to_string()],
+                        }),
+                    }),
+                    configured_descriptor_error: None,
+                    runtime_profile: Some(SessionEffectiveProviderRuntimeProfile {
+                        profile: ProviderProfileDescriptorView {
+                            provider_id: "openai".to_string(),
+                            npm: "@ai-sdk/openai".to_string(),
+                            api_family: "closeai-compatible".to_string(),
+                            api_shape: "responses".to_string(),
+                            transport: "bearer".to_string(),
+                            usage_shape: "closeai-cached-tokens".to_string(),
+                            cache_family: "closeai-compatible".to_string(),
+                            quirks: Vec::new(),
+                        },
+                        profile_hash: "1234567890abcdef".to_string(),
+                    }),
+                }),
+                skill_tree: Some(SessionEffectiveSkillTreePolicy {
+                    configured: true,
+                    enabled: true,
+                    applied: true,
+                    source: "config_composition".to_string(),
+                    estimated_tokens: Some(256),
+                    token_budget: Some(512),
+                    truncation_strategy: Some("tail".to_string()),
+                    truncated: Some(false),
+                }),
+                memory: Some(SessionEffectiveMemoryPolicy {
+                    workspace_key: "/workspace/project".to_string(),
+                    workspace_mode: "workspace_shared".to_string(),
+                    allowed_scopes: vec![
+                        MemoryScope::WorkspaceShared,
+                        MemoryScope::SessionEphemeral,
+                    ],
+                    frozen_snapshot_items: 2,
+                    last_prefetch_items: 5,
+                }),
+                compaction: SessionEffectiveCompactionPolicy {
+                    auto: false,
+                    prune: true,
+                    reserved: Some(512),
+                },
+                external_adapter: Some(SessionEffectiveExternalAdapterPolicy {
+                    last_ingress_source: "external:generic-webhook:generic".to_string(),
+                    last_ingress_policy: Some("external_adapter_metadata_only".to_string()),
+                    last_ingress_batch_count: Some(1),
+                }),
+                warnings: vec![
+                    "provider descriptor projection failed for `openai`: invalid profile"
+                        .to_string(),
+                ],
+            }),
+        };
+
+        let texts = tui_session_insights_lines("sess_123", &insights)
+            .into_iter()
+            .map(|line| line.text)
+            .collect::<Vec<_>>();
+
+        assert!(texts.iter().any(|line| line == "Effective Policy"));
+        assert!(texts.iter().any(|line| line == "Session: sess_123"));
+        assert!(texts.iter().any(|line| {
+            line.contains("Scheduler: requested prometheus")
+                && line.contains("source session_metadata")
+                && line.contains("applied yes")
+        }));
+        assert!(texts
+            .iter()
+            .any(|line| line.contains("Provider: openai/gpt-4o · variant fast")));
+        assert!(texts.iter().any(|line| {
+            line.contains("Configured profile:")
+                && line.contains("family closeai-compatible")
+                && line.contains("quirks responses-fallback-to-chat")
+        }));
+        assert!(texts
+            .iter()
+            .any(|line| line.contains("Runtime profile:") && line.contains("shape responses")));
+        assert!(texts.iter().any(|line| {
+            line.contains("Skill tree: configured yes")
+                && line.contains("source config_composition")
+        }));
+        assert!(texts.iter().any(|line| {
+            line.contains("Memory: workspace_shared") && line.contains("/workspace/project")
+        }));
+        assert!(texts.iter().any(|line| {
+            line.contains("Scopes WorkspaceShared, SessionEphemeral")
+                && line.contains("frozen snapshot 2")
+        }));
+        assert!(texts.iter().any(|line| {
+            line.contains("Compaction: auto no")
+                && line.contains("prune yes")
+                && line.contains("reserved 512")
+        }));
+        assert!(texts.iter().any(|line| {
+            line.contains("External adapter: source external:generic-webhook:generic")
+                && line.contains("policy external_adapter_metadata_only")
+        }));
+        assert!(texts
+            .iter()
+            .any(|line| { line.contains("provider descriptor projection failed") }));
+    }
 }
 
 fn tui_events_query(

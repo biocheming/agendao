@@ -1,5 +1,6 @@
 mod autoresearch_target;
 mod cancel;
+mod effective_policy;
 mod events;
 mod executions;
 mod messages;

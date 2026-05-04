@@ -68,6 +68,29 @@ impl Default for CompactionConfig {
     }
 }
 
+pub fn resolved_compaction_config(
+    config_store: Option<&rocode_config::ConfigStore>,
+) -> CompactionConfig {
+    let mut config = CompactionConfig::default();
+    let Some(store) = config_store else {
+        return config;
+    };
+
+    if let Some(compaction) = store.config().compaction.as_ref() {
+        if let Some(auto) = compaction.auto {
+            config.auto = auto;
+        }
+        if let Some(prune) = compaction.prune {
+            config.prune = prune;
+        }
+        if let Some(reserved) = compaction.reserved {
+            config.reserved = Some(reserved);
+        }
+    }
+
+    config
+}
+
 /// Input for the compaction process.
 #[derive(Clone)]
 pub struct CompactionInput {

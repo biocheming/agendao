@@ -6,8 +6,8 @@ use std::sync::Arc;
 use rocode_provider::{get_model_context_limit, Content, ContentPart, Message, Provider, Role};
 
 use crate::compaction::{
-    CompactionConfig, CompactionEngine, MessageForPrune, ModelLimits, PruneToolPart, TokenUsage,
-    ToolPartStatus,
+    resolved_compaction_config, CompactionConfig, CompactionEngine, MessageForPrune, ModelLimits,
+    PruneToolPart, TokenUsage, ToolPartStatus,
 };
 use crate::message_v2::{
     AssistantTime, AssistantTokens, CacheTokens, CompactionPart as V2CompactionPart, MessageInfo,
@@ -66,24 +66,7 @@ impl SessionPrompt {
     pub(super) fn runtime_compaction_config(
         config_store: Option<&rocode_config::ConfigStore>,
     ) -> CompactionConfig {
-        let mut config = CompactionConfig::default();
-        let Some(store) = config_store else {
-            return config;
-        };
-
-        if let Some(compaction) = store.config().compaction.as_ref() {
-            if let Some(auto) = compaction.auto {
-                config.auto = auto;
-            }
-            if let Some(prune) = compaction.prune {
-                config.prune = prune;
-            }
-            if let Some(reserved) = compaction.reserved {
-                config.reserved = Some(reserved);
-            }
-        }
-
-        config
+        resolved_compaction_config(config_store)
     }
 
     pub(super) fn build_chat_messages(

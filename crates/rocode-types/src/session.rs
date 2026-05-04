@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use crate::SessionMemoryTelemetrySummary;
+use crate::{
+    MemoryScope, ProviderConnectionDescriptorCandidate, ProviderProfileDescriptorView,
+    SessionMemoryTelemetrySummary,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SessionSummary {
@@ -295,6 +298,108 @@ pub struct SessionInsightsResponse {
     pub memory: Option<crate::SessionMemoryInsight>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multimodal: Option<SessionMultimodalInsight>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_policy: Option<SessionEffectivePolicyView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionEffectivePolicyView {
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduler: Option<SessionEffectiveSchedulerPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<SessionEffectiveProviderPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_tree: Option<SessionEffectiveSkillTreePolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<SessionEffectiveMemoryPolicy>,
+    pub compaction: SessionEffectiveCompactionPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_adapter: Option<SessionEffectiveExternalAdapterPolicy>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionEffectiveSchedulerPolicy {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_profile: Option<String>,
+    pub source: String,
+    pub applied: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_agent: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionEffectiveProviderRuntimeProfile {
+    pub profile: ProviderProfileDescriptorView,
+    pub profile_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionEffectiveProviderPolicy {
+    pub provider_id: String,
+    pub model_id: String,
+    pub resolved_model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configured_descriptor: Option<ProviderConnectionDescriptorCandidate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configured_descriptor_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_profile: Option<SessionEffectiveProviderRuntimeProfile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionEffectiveSkillTreePolicy {
+    pub configured: bool,
+    pub enabled: bool,
+    pub applied: bool,
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_budget: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncation_strategy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionEffectiveMemoryPolicy {
+    pub workspace_key: String,
+    pub workspace_mode: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_scopes: Vec<MemoryScope>,
+    #[serde(default)]
+    pub frozen_snapshot_items: u32,
+    #[serde(default)]
+    pub last_prefetch_items: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionEffectiveCompactionPolicy {
+    pub auto: bool,
+    pub prune: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reserved: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionEffectiveExternalAdapterPolicy {
+    pub last_ingress_source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_ingress_policy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_ingress_batch_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
