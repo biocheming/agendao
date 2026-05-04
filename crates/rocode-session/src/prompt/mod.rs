@@ -30,10 +30,11 @@ pub(crate) use hooks::{
     apply_chat_message_hook_outputs, apply_chat_messages_hook_outputs, session_message_hook_payload,
 };
 pub use ingress::{
-    normalize_ingress_source, stabilize_ingress_turns, IngressAttachmentRef, IngressSource,
+    external_adapter_event_to_ingress_turn, normalize_ingress_source, stabilize_ingress_turns,
+    ExternalAdapterIngressMappingError, IngressAttachmentRef, IngressSource,
     IngressStabilizationMetadata, IngressTurnEnvelope, INGRESS_POLICY_ENTRY_METADATA_ONLY,
-    INGRESS_POLICY_SAME_SESSION_CONTEXT_BATCH, INGRESS_POLICY_SCHEDULER_METADATA_ONLY,
-    INGRESS_POLICY_UNSPECIFIED,
+    INGRESS_POLICY_EXTERNAL_ADAPTER_METADATA_ONLY, INGRESS_POLICY_SAME_SESSION_CONTEXT_BATCH,
+    INGRESS_POLICY_SCHEDULER_METADATA_ONLY, INGRESS_POLICY_UNSPECIFIED,
 };
 #[cfg(test)]
 pub(crate) use shell::resolve_shell_invocation;

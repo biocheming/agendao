@@ -1019,6 +1019,35 @@ impl DeepMerge for VoiceCommandConfig {
     }
 }
 
+impl DeepMerge for ExternalAdapterConfig {
+    fn deep_merge(&mut self, other: Self) {
+        merge_map_deep_values(&mut self.adapters, other.adapters);
+        merge_option_deep(&mut self.replay, other.replay);
+    }
+}
+
+impl DeepMerge for ExternalAdapterEntryConfig {
+    fn deep_merge(&mut self, other: Self) {
+        merge_option_replace_fields!(
+            self,
+            other,
+            enabled,
+            source,
+            secret_ref,
+            default_workspace,
+            route_policy_id,
+            allow_session_run,
+        );
+        merge_vec_replace_if_non_empty(&mut self.allowed_workspaces, other.allowed_workspaces);
+    }
+}
+
+impl DeepMerge for ExternalAdapterReplayConfig {
+    fn deep_merge(&mut self, other: Self) {
+        merge_option_replace_fields!(self, other, retention_seconds, nonce_window_seconds,);
+    }
+}
+
 impl DeepMerge for UiPreferencesConfig {
     fn deep_merge(&mut self, other: Self) {
         merge_option_replace_fields!(
@@ -1093,6 +1122,7 @@ impl Config {
         permission: Option<PermissionConfig>,
         web_search: Option<WebSearchConfig>,
         multimodal: Option<MultimodalConfig>,
+        external_adapter: Option<ExternalAdapterConfig>,
         voice: Option<VoiceConfig>,
         enterprise: Option<EnterpriseConfig>,
         compaction: Option<CompactionConfig>,
@@ -1113,6 +1143,7 @@ impl Config {
         merge_option_deep(&mut self.permission, permission);
         merge_option_deep(&mut self.web_search, web_search);
         merge_option_deep(&mut self.multimodal, multimodal);
+        merge_option_deep(&mut self.external_adapter, external_adapter);
         merge_option_deep(&mut self.voice, voice);
         merge_option_deep(&mut self.enterprise, enterprise);
         merge_option_deep(&mut self.compaction, compaction);
@@ -1194,6 +1225,7 @@ impl Config {
             tools,
             web_search,
             multimodal,
+            external_adapter,
             voice,
             enterprise,
             compaction,
@@ -1233,6 +1265,7 @@ impl Config {
             permission,
             web_search,
             multimodal,
+            external_adapter,
             voice,
             enterprise,
             compaction,

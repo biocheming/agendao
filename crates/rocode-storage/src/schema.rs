@@ -286,6 +286,30 @@ CREATE TABLE IF NOT EXISTS memory_rule_hits (
 );
 "#;
 
+/// External adapter replay table - stores ingress idempotency and replay guard
+/// audit records. External platform secrets are not stored here.
+pub const CREATE_EXTERNAL_ADAPTER_REPLAY_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS external_adapter_replay (
+    adapter_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    external_event_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    external_user_id TEXT NOT NULL,
+    external_conversation_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    actor_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    nonce TEXT NOT NULL,
+    signature_hash TEXT NOT NULL,
+    received_at_ms INTEGER NOT NULL,
+    recorded_at_ms INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    PRIMARY KEY (adapter_id, source, external_event_id),
+    UNIQUE (adapter_id, source, idempotency_key),
+    UNIQUE (adapter_id, source, nonce)
+);
+"#;
+
 /// Create indexes for better query performance
 pub const CREATE_INDEXES: &str = r#"
 -- Session indexes
@@ -317,6 +341,12 @@ CREATE INDEX IF NOT EXISTS idx_memory_records_session ON memory_records(source_s
 CREATE INDEX IF NOT EXISTS idx_memory_evidence_memory ON memory_evidence(memory_id);
 CREATE INDEX IF NOT EXISTS idx_memory_validation_runs_memory ON memory_validation_runs(memory_id);
 CREATE INDEX IF NOT EXISTS idx_memory_retrieval_log_session ON memory_retrieval_log(session_id);
+
+-- External adapter replay indexes
+CREATE INDEX IF NOT EXISTS idx_external_adapter_replay_session
+ON external_adapter_replay(session_id);
+CREATE INDEX IF NOT EXISTS idx_external_adapter_replay_recorded
+ON external_adapter_replay(recorded_at_ms);
 "#;
 
 /// Skill evolution proposals table — evidence-backed skill lifecycle proposals
@@ -379,6 +409,7 @@ pub const ALL_MIGRATIONS: &[&str] = &[
     CREATE_MEMORY_RETRIEVAL_LOG_TABLE,
     CREATE_MEMORY_RULE_PACKS_TABLE,
     CREATE_MEMORY_RULE_HITS_TABLE,
+    CREATE_EXTERNAL_ADAPTER_REPLAY_TABLE,
     CREATE_SKILL_EVOLUTION_PROPOSALS_TABLE,
     CREATE_INDEXES,
     CREATE_SKILL_EVOLUTION_PROPOSALS_INDEXES,

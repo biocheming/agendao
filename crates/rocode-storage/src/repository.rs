@@ -144,6 +144,156 @@ pub struct MemoryConflictRecord {
     pub detected_at: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalAdapterReplayRecord {
+    pub adapter_id: String,
+    pub source: String,
+    pub external_event_id: String,
+    pub idempotency_key: String,
+    pub external_user_id: String,
+    pub external_conversation_id: String,
+    pub session_id: String,
+    pub actor_id: String,
+    pub workspace_id: String,
+    pub nonce: String,
+    pub signature_hash: String,
+    pub received_at_ms: i64,
+    pub recorded_at_ms: i64,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExternalAdapterReplayInsertOutcome {
+    Inserted,
+    Duplicate,
+}
+
+#[derive(Clone)]
+pub struct ExternalAdapterReplayRepository {
+    pool: SqlitePool,
+}
+
+impl ExternalAdapterReplayRepository {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn record(
+        &self,
+        record: &ExternalAdapterReplayRecord,
+    ) -> Result<ExternalAdapterReplayInsertOutcome, DatabaseError> {
+        let result = sqlx::query(
+            r#"
+            INSERT INTO external_adapter_replay (
+                adapter_id, source, external_event_id, idempotency_key,
+                external_user_id, external_conversation_id, session_id, actor_id, workspace_id,
+                nonce, signature_hash, received_at_ms, recorded_at_ms, status
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&record.adapter_id)
+        .bind(&record.source)
+        .bind(&record.external_event_id)
+        .bind(&record.idempotency_key)
+        .bind(&record.external_user_id)
+        .bind(&record.external_conversation_id)
+        .bind(&record.session_id)
+        .bind(&record.actor_id)
+        .bind(&record.workspace_id)
+        .bind(&record.nonce)
+        .bind(&record.signature_hash)
+        .bind(record.received_at_ms)
+        .bind(record.recorded_at_ms)
+        .bind(&record.status)
+        .execute(&self.pool)
+        .await;
+
+        match result {
+            Ok(_) => Ok(ExternalAdapterReplayInsertOutcome::Inserted),
+            Err(error) if is_sqlite_unique_constraint_error(&error) => {
+                Ok(ExternalAdapterReplayInsertOutcome::Duplicate)
+            }
+            Err(error) => Err(DatabaseError::QueryError(error.to_string())),
+        }
+    }
+
+    pub async fn get_by_event(
+        &self,
+        adapter_id: &str,
+        source: &str,
+        external_event_id: &str,
+    ) -> Result<Option<ExternalAdapterReplayRecord>, DatabaseError> {
+        sqlx::query_as::<_, ExternalAdapterReplayRow>(
+            r#"
+            SELECT adapter_id, source, external_event_id, idempotency_key,
+                   external_user_id, external_conversation_id, session_id, actor_id, workspace_id,
+                   nonce, signature_hash, received_at_ms, recorded_at_ms, status
+            FROM external_adapter_replay
+            WHERE adapter_id = ? AND source = ? AND external_event_id = ?
+            "#,
+        )
+        .bind(adapter_id)
+        .bind(source)
+        .bind(external_event_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map(|row| row.map(ExternalAdapterReplayRow::into_record))
+        .map_err(|error| DatabaseError::QueryError(error.to_string()))
+    }
+}
+
+#[derive(Debug, FromRow)]
+struct ExternalAdapterReplayRow {
+    adapter_id: String,
+    source: String,
+    external_event_id: String,
+    idempotency_key: String,
+    external_user_id: String,
+    external_conversation_id: String,
+    session_id: String,
+    actor_id: String,
+    workspace_id: String,
+    nonce: String,
+    signature_hash: String,
+    received_at_ms: i64,
+    recorded_at_ms: i64,
+    status: String,
+}
+
+impl ExternalAdapterReplayRow {
+    fn into_record(self) -> ExternalAdapterReplayRecord {
+        ExternalAdapterReplayRecord {
+            adapter_id: self.adapter_id,
+            source: self.source,
+            external_event_id: self.external_event_id,
+            idempotency_key: self.idempotency_key,
+            external_user_id: self.external_user_id,
+            external_conversation_id: self.external_conversation_id,
+            session_id: self.session_id,
+            actor_id: self.actor_id,
+            workspace_id: self.workspace_id,
+            nonce: self.nonce,
+            signature_hash: self.signature_hash,
+            received_at_ms: self.received_at_ms,
+            recorded_at_ms: self.recorded_at_ms,
+            status: self.status,
+        }
+    }
+}
+
+fn is_sqlite_unique_constraint_error(error: &sqlx::Error) -> bool {
+    error
+        .as_database_error()
+        .map(|database_error| {
+            database_error.code().as_deref() == Some("2067")
+                || database_error
+                    .message()
+                    .contains("UNIQUE constraint failed")
+        })
+        .unwrap_or(false)
+}
+
 #[derive(Debug, FromRow)]
 struct MemoryRecordRow {
     id: String,
@@ -2988,5 +3138,64 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].rule_pack_id.as_deref(), Some(pack.id.as_str()));
         assert_eq!(hits[0].memory_id.as_ref(), Some(&record.id));
+    }
+
+    fn replay_record(event_id: &str, nonce: &str) -> ExternalAdapterReplayRecord {
+        ExternalAdapterReplayRecord {
+            adapter_id: "generic".to_string(),
+            source: "generic-webhook".to_string(),
+            external_event_id: event_id.to_string(),
+            idempotency_key: format!("external:generic:generic-webhook:{event_id}"),
+            external_user_id: "user_1".to_string(),
+            external_conversation_id: "chat_1".to_string(),
+            session_id: "ses_1".to_string(),
+            actor_id: "actor_1".to_string(),
+            workspace_id: "ws_1".to_string(),
+            nonce: nonce.to_string(),
+            signature_hash: "sha256:test".to_string(),
+            received_at_ms: 1_714_000_000_000,
+            recorded_at_ms: 1_714_000_000_001,
+            status: "accepted".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn external_adapter_replay_repository_records_and_rejects_duplicates() {
+        let db = Database::in_memory().await.unwrap();
+        let repo = ExternalAdapterReplayRepository::new(db.pool().clone());
+        let record = replay_record("evt_1", "nonce_1");
+
+        assert_eq!(
+            repo.record(&record).await.unwrap(),
+            ExternalAdapterReplayInsertOutcome::Inserted
+        );
+        assert_eq!(
+            repo.record(&record).await.unwrap(),
+            ExternalAdapterReplayInsertOutcome::Duplicate
+        );
+
+        let stored = repo
+            .get_by_event("generic", "generic-webhook", "evt_1")
+            .await
+            .unwrap()
+            .expect("replay row should exist");
+        assert_eq!(stored, record);
+    }
+
+    #[tokio::test]
+    async fn external_adapter_replay_repository_scopes_nonce_to_adapter_and_source() {
+        let db = Database::in_memory().await.unwrap();
+        let repo = ExternalAdapterReplayRepository::new(db.pool().clone());
+        let first = replay_record("evt_1", "nonce_1");
+        let second = replay_record("evt_2", "nonce_1");
+
+        assert_eq!(
+            repo.record(&first).await.unwrap(),
+            ExternalAdapterReplayInsertOutcome::Inserted
+        );
+        assert_eq!(
+            repo.record(&second).await.unwrap(),
+            ExternalAdapterReplayInsertOutcome::Duplicate
+        );
     }
 }
