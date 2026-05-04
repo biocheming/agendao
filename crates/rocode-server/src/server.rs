@@ -245,6 +245,8 @@ pub struct ServerState {
     pub(crate) api_perf: Arc<ApiPerfCounters>,
     pub(crate) session_repo: Option<SessionRepository>,
     pub(crate) message_repo: Option<MessageRepository>,
+    pub(crate) external_adapter_replay_repo:
+        Option<Arc<rocode_storage::ExternalAdapterReplayRepository>>,
     pub(crate) proposal_repo: Option<Arc<rocode_storage::SkillEvolutionProposalRepository>>,
     pub(crate) category_registry: Arc<rocode_config::CategoryRegistry>,
     pub(crate) todo_manager: rocode_session::TodoManager,
@@ -317,6 +319,7 @@ impl ServerState {
             api_perf: Arc::new(ApiPerfCounters::new()),
             session_repo: None,
             message_repo: None,
+            external_adapter_replay_repo: None,
             proposal_repo: None,
             category_registry: Arc::new(rocode_config::CategoryRegistry::empty()),
             todo_manager: rocode_session::TodoManager::new(),
@@ -458,6 +461,9 @@ impl ServerState {
             pool.clone(),
         ));
         state.proposal_repo = Some(proposal_repo.clone());
+        state.external_adapter_replay_repo = Some(Arc::new(
+            rocode_storage::ExternalAdapterReplayRepository::new(pool.clone()),
+        ));
         state.prompt_runner = Arc::new(
             SessionPrompt::new(Arc::new(tokio::sync::RwLock::new(
                 SessionStateManager::new(),

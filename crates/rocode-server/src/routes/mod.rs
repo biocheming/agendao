@@ -1,4 +1,5 @@
 mod config;
+mod external_adapter;
 mod file;
 #[cfg(debug_assertions)]
 mod frontend_smoke;
@@ -24,6 +25,7 @@ mod web_plugin;
 mod workspace;
 
 // Re-export all pub items from sub-modules so `pub use routes::*` in lib.rs continues to work.
+use self::external_adapter::external_adapter_routes;
 use self::memory::memory_routes;
 use self::multimodal::multimodal_routes;
 use self::plugin_auth::{ensure_plugin_loader_active, plugin_auth_routes};
@@ -117,6 +119,7 @@ pub fn router() -> Router<Arc<ServerState>> {
         .nest("/session", session_routes())
         .nest("/provider", provider_routes())
         .nest("/config", config_routes())
+        .nest("/external-adapter", external_adapter_routes())
         .nest("/mcp", mcp_routes())
         .nest("/file", file_routes())
         .nest("/find", find_routes())

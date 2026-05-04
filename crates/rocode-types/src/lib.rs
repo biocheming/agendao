@@ -1,4 +1,5 @@
 pub mod context_pressure;
+pub mod external_adapter;
 pub mod memory;
 pub mod memory_artifact;
 pub mod message;
@@ -11,6 +12,7 @@ pub mod todo;
 pub mod workspace_skill_artifact;
 
 pub use context_pressure::*;
+pub use external_adapter::*;
 pub use memory::*;
 pub use memory_artifact::*;
 pub use message::*;

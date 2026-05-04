@@ -220,6 +220,104 @@ fn provider_model_merge_preserves_and_updates_extended_model_fields() {
 }
 
 #[test]
+fn external_adapter_config_keeps_secret_values_out_of_config_and_merges_refs() {
+    let mut config: Config = serde_json::from_value(serde_json::json!({
+        "externalAdapter": {
+            "adapters": {
+                "generic": {
+                    "enabled": true,
+                    "source": "generic-webhook",
+                    "secretRef": "external-adapter:generic",
+                    "defaultWorkspace": "main",
+                    "allowSessionRun": true,
+                    "allowedWorkspaces": ["main"]
+                }
+            },
+            "replay": {
+                "retentionSeconds": 86400,
+                "nonceWindowSeconds": 300
+            }
+        }
+    }))
+    .unwrap();
+
+    let adapter = config
+        .external_adapter
+        .take()
+        .unwrap()
+        .adapters
+        .remove("generic")
+        .unwrap();
+    assert_eq!(
+        adapter.secret_ref.as_deref(),
+        Some("external-adapter:generic")
+    );
+    assert_eq!(adapter.allow_session_run, Some(true));
+    let serialized = serde_json::to_value(&adapter).unwrap();
+    assert!(serialized.get("secret").is_none());
+    assert!(serialized.get("signature").is_none());
+}
+
+#[test]
+fn external_adapter_config_deep_merges_adapter_entries() {
+    let mut base = Config {
+        external_adapter: Some(ExternalAdapterConfig {
+            adapters: HashMap::from([(
+                "generic".to_string(),
+                ExternalAdapterEntryConfig {
+                    enabled: Some(true),
+                    source: Some("generic-webhook".to_string()),
+                    secret_ref: Some("external-adapter:generic".to_string()),
+                    default_workspace: Some("main".to_string()),
+                    route_policy_id: None,
+                    allow_session_run: Some(false),
+                    allowed_workspaces: vec!["main".to_string()],
+                },
+            )]),
+            replay: Some(ExternalAdapterReplayConfig {
+                retention_seconds: Some(86_400),
+                nonce_window_seconds: None,
+            }),
+        }),
+        ..Default::default()
+    };
+
+    base.merge(Config {
+        external_adapter: Some(ExternalAdapterConfig {
+            adapters: HashMap::from([(
+                "generic".to_string(),
+                ExternalAdapterEntryConfig {
+                    route_policy_id: Some("trusted-webhook".to_string()),
+                    allow_session_run: Some(true),
+                    allowed_workspaces: vec!["ops".to_string()],
+                    ..Default::default()
+                },
+            )]),
+            replay: Some(ExternalAdapterReplayConfig {
+                retention_seconds: None,
+                nonce_window_seconds: Some(300),
+            }),
+        }),
+        ..Default::default()
+    });
+
+    let external = base.external_adapter.unwrap();
+    let adapter = external.adapters.get("generic").unwrap();
+    assert_eq!(adapter.enabled, Some(true));
+    assert_eq!(adapter.source.as_deref(), Some("generic-webhook"));
+    assert_eq!(
+        adapter.secret_ref.as_deref(),
+        Some("external-adapter:generic")
+    );
+    assert_eq!(adapter.route_policy_id.as_deref(), Some("trusted-webhook"));
+    assert_eq!(adapter.allow_session_run, Some(true));
+    assert_eq!(adapter.allowed_workspaces, vec!["ops"]);
+    let replay = external.replay.unwrap();
+    assert_eq!(replay.retention_seconds, Some(86_400));
+    assert_eq!(replay.nonce_window_seconds, Some(300));
+}
+
+#[test]
 fn provider_merge_replaces_identity_and_env_while_preserving_existing_models() {
     let mut base = Config {
         provider: Some(HashMap::from([(

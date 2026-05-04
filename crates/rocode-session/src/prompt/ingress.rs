@@ -1,10 +1,14 @@
 use std::collections::HashSet;
 
+use rocode_types::{
+    ExternalAdapterEvent, ExternalAdapterIngressRef, ExternalAdapterValidationError,
+};
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_WEB_BATCH_WINDOW_MS: i64 = 250;
 pub const INGRESS_POLICY_UNSPECIFIED: &str = "none";
 pub const INGRESS_POLICY_ENTRY_METADATA_ONLY: &str = "entry_metadata_only";
+pub const INGRESS_POLICY_EXTERNAL_ADAPTER_METADATA_ONLY: &str = "external_adapter_metadata_only";
 pub const INGRESS_POLICY_SCHEDULER_METADATA_ONLY: &str = "scheduler_metadata_only";
 pub const INGRESS_POLICY_SAME_SESSION_CONTEXT_BATCH: &str = "same_session_context_batch";
 
@@ -103,6 +107,11 @@ pub struct IngressTurnEnvelope {
     /// submissions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<String>,
+    /// Typed audit reference for externally sourced turns. This metadata is
+    /// preserved for delivery/audit consumers and must not become prompt
+    /// authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_adapter: Option<ExternalAdapterIngressRef>,
     pub stabilization: IngressStabilizationMetadata,
 }
 
@@ -128,12 +137,72 @@ impl IngressTurnEnvelope {
             context_key: None,
             scheduler_stage_id: None,
             idempotency_key: None,
+            external_adapter: None,
             stabilization: IngressStabilizationMetadata::single(
                 turn_id,
                 INGRESS_POLICY_UNSPECIFIED,
             ),
         }
     }
+}
+
+pub fn external_adapter_event_to_ingress_turn(
+    session_id: impl Into<String>,
+    event: &ExternalAdapterEvent,
+) -> Result<IngressTurnEnvelope, ExternalAdapterIngressMappingError> {
+    let session_id = session_id.into();
+    if session_id.trim().is_empty() {
+        return Err(ExternalAdapterIngressMappingError::MissingSessionBinding);
+    }
+
+    event
+        .validate()
+        .map_err(ExternalAdapterIngressMappingError::InvalidEvent)?;
+
+    let turn_id = format!(
+        "external:{}:{}:{}",
+        event.source.as_str(),
+        event.adapter_id.trim(),
+        event.external_event_id.trim()
+    );
+    let mut turn = IngressTurnEnvelope::new_text(
+        session_id.trim().to_string(),
+        IngressSource::Other(
+            event
+                .ingress_source_label()
+                .map_err(ExternalAdapterIngressMappingError::InvalidEvent)?,
+        ),
+        turn_id,
+        event.received_at_ms,
+        event.text.clone(),
+    );
+
+    turn.attachments = event
+        .attachments
+        .iter()
+        .map(|attachment| IngressAttachmentRef {
+            id: attachment.id.trim().to_string(),
+            kind: attachment.kind.trim().to_string(),
+            uri: attachment.uri.trim().to_string(),
+        })
+        .collect();
+    turn.idempotency_key = Some(
+        event
+            .stable_idempotency_key()
+            .map_err(ExternalAdapterIngressMappingError::InvalidEvent)?,
+    );
+    turn.external_adapter = Some(ExternalAdapterIngressRef::from(event));
+    turn.stabilization.policy = INGRESS_POLICY_EXTERNAL_ADAPTER_METADATA_ONLY.to_string();
+
+    Ok(turn)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ExternalAdapterIngressMappingError {
+    #[error("external adapter event has no resolved ROCode session binding")]
+    MissingSessionBinding,
+    #[error(transparent)]
+    InvalidEvent(ExternalAdapterValidationError),
 }
 
 /// Shared stabilization helper for ingress merge/dedupe semantics.
@@ -340,5 +409,116 @@ mod tests {
         let stabilized = stabilize_ingress_turns(vec![first, second]);
 
         assert_eq!(stabilized.len(), 2);
+    }
+
+    fn sample_external_event() -> ExternalAdapterEvent {
+        ExternalAdapterEvent {
+            adapter_id: "generic".to_string(),
+            source: rocode_types::ExternalAdapterSource::GenericWebhook,
+            external_event_id: "evt_1".to_string(),
+            external_user_id: "user_1".to_string(),
+            external_conversation_id: "chat_1".to_string(),
+            external_thread_id: Some("thread_1".to_string()),
+            received_at_ms: 1_714_000_000_000,
+            text: "show status".to_string(),
+            attachments: vec![rocode_types::ExternalAdapterAttachmentRef {
+                id: "file_1".to_string(),
+                kind: "image".to_string(),
+                uri: "rocode://external/generic/file_1".to_string(),
+            }],
+            idempotency_key: None,
+            reply_target: Some(rocode_types::ExternalAdapterReplyTarget {
+                target_type: "chat".to_string(),
+                target_id: "chat_1".to_string(),
+                thread_id: Some("thread_1".to_string()),
+            }),
+            raw_event_ref: Some(rocode_types::ExternalAdapterRawEventRef {
+                kind: "object-ref".to_string(),
+                uri: "rocode://external/generic/evt_1".to_string(),
+                checksum: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn maps_external_adapter_event_after_session_binding() {
+        let event = sample_external_event();
+
+        let turn = external_adapter_event_to_ingress_turn("ses_external", &event).unwrap();
+
+        assert_eq!(turn.session_id, "ses_external");
+        assert_eq!(
+            turn.source,
+            IngressSource::Other("external:generic-webhook:generic".to_string())
+        );
+        assert_eq!(turn.turn_id, "external:generic-webhook:generic:evt_1");
+        assert_eq!(turn.user_intent_text, "show status");
+        assert_eq!(
+            turn.idempotency_key,
+            Some("external:generic:generic-webhook:evt_1".to_string())
+        );
+        assert_eq!(
+            turn.stabilization.policy,
+            INGRESS_POLICY_EXTERNAL_ADAPTER_METADATA_ONLY
+        );
+    }
+
+    #[test]
+    fn external_adapter_mapping_requires_resolved_session_binding() {
+        let event = sample_external_event();
+
+        assert_eq!(
+            external_adapter_event_to_ingress_turn(" ", &event),
+            Err(ExternalAdapterIngressMappingError::MissingSessionBinding)
+        );
+    }
+
+    #[test]
+    fn external_adapter_metadata_does_not_enter_shadow_prompt_text() {
+        let event = sample_external_event();
+
+        let turn = external_adapter_event_to_ingress_turn("ses_external", &event).unwrap();
+
+        assert_eq!(turn.user_intent_text, "show status");
+        assert!(!turn.user_intent_text.contains("user_1"));
+        assert!(!turn.user_intent_text.contains("chat_1"));
+        let external = turn.external_adapter.unwrap();
+        assert_eq!(external.external_user_id, "user_1");
+        assert_eq!(external.external_conversation_id, "chat_1");
+        assert_eq!(
+            external.raw_event_ref.unwrap().uri,
+            "rocode://external/generic/evt_1"
+        );
+    }
+
+    #[test]
+    fn external_adapter_attachments_remain_refs() {
+        let event = sample_external_event();
+
+        let turn = external_adapter_event_to_ingress_turn("ses_external", &event).unwrap();
+
+        assert_eq!(turn.attachments.len(), 1);
+        assert_eq!(turn.attachments[0].id, "file_1");
+        assert_eq!(turn.attachments[0].kind, "image");
+        assert_eq!(turn.attachments[0].uri, "rocode://external/generic/file_1");
+        assert!(!turn.user_intent_text.contains("file_1"));
+    }
+
+    #[test]
+    fn external_adapter_dedupe_uses_stable_scoped_idempotency_key() {
+        let first =
+            external_adapter_event_to_ingress_turn("ses_external", &sample_external_event())
+                .unwrap();
+        let mut second_event = sample_external_event();
+        second_event.text = "retry should not run twice".to_string();
+        let second = external_adapter_event_to_ingress_turn("ses_external", &second_event).unwrap();
+
+        let stabilized = stabilize_ingress_turns(vec![first, second]);
+
+        assert_eq!(stabilized.len(), 1);
+        assert_eq!(
+            stabilized[0].stabilization.dedupe_keys,
+            vec!["external:generic:generic-webhook:evt_1"]
+        );
     }
 }

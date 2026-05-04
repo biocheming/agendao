@@ -21,6 +21,8 @@ use crate::ServerState;
 
 // ─── Re-exports for sibling route modules (e.g. stream.rs) ─────────────────
 pub(crate) use self::messages::SendMessageRequest;
+#[allow(unused_imports)]
+pub(crate) use self::prompt::{session_prompt_with_verified_ingress, SessionPromptRequest};
 pub(crate) use self::scheduler::{
     resolve_prompt_request_config, to_task_agent_info, PromptRequestConfigInput,
 };

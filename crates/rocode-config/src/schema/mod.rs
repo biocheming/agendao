@@ -152,6 +152,13 @@ pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub multimodal: Option<MultimodalConfig>,
 
+    #[serde(
+        rename = "externalAdapter",
+        alias = "external_adapter",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub external_adapter: Option<ExternalAdapterConfig>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub voice: Option<VoiceConfig>,
 
@@ -388,6 +395,83 @@ pub struct VoiceCommandConfig {
         skip_serializing_if = "HashMap::is_empty"
     )]
     pub env: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExternalAdapterConfig {
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub adapters: HashMap<String, ExternalAdapterEntryConfig>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replay: Option<ExternalAdapterReplayConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExternalAdapterEntryConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+
+    /// Secret lookup key owned by `AuthManager`, for example
+    /// `external-adapter:generic`. The config layer owns the reference only,
+    /// never the secret value.
+    #[serde(
+        rename = "secretRef",
+        alias = "secret_ref",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub secret_ref: Option<String>,
+
+    #[serde(
+        rename = "defaultWorkspace",
+        alias = "default_workspace",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub default_workspace: Option<String>,
+
+    #[serde(
+        rename = "routePolicyId",
+        alias = "route_policy_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub route_policy_id: Option<String>,
+
+    /// Explicit execution gate for endpoints that can call into the shared
+    /// session runtime entrypoint after webhook verification and replay
+    /// recording. Defaults to false when omitted.
+    #[serde(
+        rename = "allowSessionRun",
+        alias = "allow_session_run",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub allow_session_run: Option<bool>,
+
+    #[serde(
+        default,
+        rename = "allowedWorkspaces",
+        alias = "allowed_workspaces",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub allowed_workspaces: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExternalAdapterReplayConfig {
+    #[serde(
+        rename = "retentionSeconds",
+        alias = "retention_seconds",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub retention_seconds: Option<u64>,
+
+    #[serde(
+        rename = "nonceWindowSeconds",
+        alias = "nonce_window_seconds",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub nonce_window_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

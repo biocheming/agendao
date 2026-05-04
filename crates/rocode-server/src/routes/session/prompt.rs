@@ -1271,7 +1271,7 @@ fn frontend_smoke_skip_execution_enabled() -> bool {
 }
 
 #[derive(Debug, Deserialize)]
-pub(super) struct SessionPromptRequest {
+pub(crate) struct SessionPromptRequest {
     pub message: Option<String>,
     #[serde(default)]
     pub parts: Option<Vec<rocode_session::prompt::PartInput>>,
@@ -1287,6 +1287,26 @@ pub(super) struct SessionPromptRequest {
     pub arguments: Option<String>,
     #[serde(default)]
     pub(super) recovery: Option<RecoveryExecutionContext>,
+}
+
+impl SessionPromptRequest {
+    pub(crate) fn from_verified_ingress(
+        ingress: &rocode_session::prompt::IngressTurnEnvelope,
+    ) -> Self {
+        Self {
+            message: Some(ingress.user_intent_text.clone()),
+            parts: None,
+            idempotency_key: ingress.idempotency_key.clone(),
+            ingress_source: None,
+            model: None,
+            variant: None,
+            agent: None,
+            scheduler_profile: None,
+            command: None,
+            arguments: None,
+            recovery: None,
+        }
+    }
 }
 
 fn build_ingress_envelope(
@@ -1316,6 +1336,43 @@ fn build_ingress_envelope(
     envelope.stabilization.policy =
         rocode_session::prompt::INGRESS_POLICY_ENTRY_METADATA_ONLY.to_string();
     envelope
+}
+
+fn task_ingress_for_prompt(
+    session_id: &str,
+    display_prompt_text: &str,
+    req: &SessionPromptRequest,
+    resolved_prompt: &ResolvedPromptPayload,
+    verified_ingress: Option<rocode_session::prompt::IngressTurnEnvelope>,
+) -> Result<rocode_session::prompt::IngressTurnEnvelope> {
+    let mut ingress = if let Some(ingress) = verified_ingress {
+        if ingress.session_id != session_id {
+            return Err(ApiError::BadRequest(format!(
+                "verified ingress session_id `{}` does not match route session `{}`",
+                ingress.session_id, session_id
+            )));
+        }
+        ingress
+    } else {
+        build_ingress_envelope(
+            session_id,
+            ingress_source_from_request(req.ingress_source.as_deref()),
+            display_prompt_text,
+            req.idempotency_key.clone(),
+            Some("session_prompt".to_string()),
+            None,
+        )
+    };
+
+    if ingress.command.is_none() {
+        ingress.command = resolved_prompt
+            .command
+            .as_ref()
+            .map(|command| command.name.clone())
+            .or_else(|| req.command.clone());
+    }
+
+    Ok(ingress)
 }
 
 fn ingress_source_from_request(value: Option<&str>) -> rocode_session::prompt::IngressSource {
@@ -1746,6 +1803,27 @@ pub(super) async fn session_prompt(
     Path(id): Path<String>,
     Json(req): Json<SessionPromptRequest>,
 ) -> Result<Json<serde_json::Value>> {
+    session_prompt_inner(state, headers, id, req, None).await
+}
+
+#[allow(dead_code)]
+pub(crate) async fn session_prompt_with_verified_ingress(
+    state: Arc<ServerState>,
+    headers: HeaderMap,
+    id: String,
+    req: SessionPromptRequest,
+    ingress: rocode_session::prompt::IngressTurnEnvelope,
+) -> Result<Json<serde_json::Value>> {
+    session_prompt_inner(state, headers, id, req, Some(ingress)).await
+}
+
+async fn session_prompt_inner(
+    state: Arc<ServerState>,
+    headers: HeaderMap,
+    id: String,
+    req: SessionPromptRequest,
+    verified_ingress: Option<rocode_session::prompt::IngressTurnEnvelope>,
+) -> Result<Json<serde_json::Value>> {
     if req.agent.is_some() && req.scheduler_profile.is_some() {
         return Err(ApiError::BadRequest(
             "`agent` and `scheduler_profile` are mutually exclusive".to_string(),
@@ -1990,19 +2068,13 @@ pub(super) async fn session_prompt(
     let task_recovery = req.recovery.clone();
     let task_prompt_parts = prompt_parts.clone();
     let task_multimodal_explain = multimodal_explain.clone();
-    let mut task_ingress = build_ingress_envelope(
+    let task_ingress = task_ingress_for_prompt(
         &session_id,
-        ingress_source_from_request(req.ingress_source.as_deref()),
         &display_prompt_text,
-        req.idempotency_key.clone(),
-        Some("session_prompt".to_string()),
-        None,
-    );
-    task_ingress.command = resolved_prompt
-        .command
-        .as_ref()
-        .map(|command| command.name.clone())
-        .or_else(|| req.command.clone());
+        &req,
+        &resolved_prompt,
+        verified_ingress,
+    )?;
     let live_web_ingress_stage =
         stage_live_web_ingress_batch(&state, &session_id, &task_ingress, &task_prompt_parts)
             .await?;
@@ -2957,6 +3029,116 @@ mod tests {
             ingress.stabilization.policy,
             rocode_session::prompt::INGRESS_POLICY_ENTRY_METADATA_ONLY
         );
+    }
+
+    fn unresolved_prompt_payload(text: &str) -> ResolvedPromptPayload {
+        ResolvedPromptPayload {
+            display_text: text.to_string(),
+            execution_text: text.to_string(),
+            agent: None,
+            scheduler_profile: None,
+            scheduler_profile_override: None,
+            autoresearch_profile_override_record: None,
+            command: None,
+            pending_raw_arguments: None,
+        }
+    }
+
+    fn prompt_request_message(text: &str) -> SessionPromptRequest {
+        SessionPromptRequest {
+            message: Some(text.to_string()),
+            parts: None,
+            idempotency_key: None,
+            ingress_source: None,
+            model: None,
+            variant: None,
+            agent: None,
+            scheduler_profile: None,
+            command: None,
+            arguments: None,
+            recovery: None,
+        }
+    }
+
+    fn sample_external_ingress(session_id: &str) -> rocode_session::prompt::IngressTurnEnvelope {
+        let event = rocode_types::ExternalAdapterEvent {
+            adapter_id: "generic".to_string(),
+            source: rocode_types::ExternalAdapterSource::GenericWebhook,
+            external_event_id: "evt_1".to_string(),
+            external_user_id: "user_1".to_string(),
+            external_conversation_id: "chat_1".to_string(),
+            external_thread_id: None,
+            received_at_ms: 1_714_000_000_000,
+            text: "hello from webhook".to_string(),
+            attachments: Vec::new(),
+            idempotency_key: None,
+            reply_target: None,
+            raw_event_ref: None,
+        };
+        rocode_session::prompt::external_adapter_event_to_ingress_turn(session_id, &event)
+            .expect("external adapter event should map to ingress")
+    }
+
+    #[test]
+    fn task_ingress_for_prompt_preserves_verified_external_adapter_ingress() {
+        let verified_ingress = sample_external_ingress("ses_1");
+        let request = prompt_request_message("hello from webhook");
+        let resolved = unresolved_prompt_payload("hello from webhook");
+
+        let ingress = task_ingress_for_prompt(
+            "ses_1",
+            "hello from webhook",
+            &request,
+            &resolved,
+            Some(verified_ingress),
+        )
+        .unwrap();
+
+        assert_eq!(
+            ingress.source,
+            rocode_session::prompt::IngressSource::Other(
+                "external:generic-webhook:generic".to_string()
+            )
+        );
+        assert_eq!(
+            ingress.stabilization.policy,
+            rocode_session::prompt::INGRESS_POLICY_EXTERNAL_ADAPTER_METADATA_ONLY
+        );
+        assert!(ingress.external_adapter.is_some());
+        assert_ne!(ingress.context_key.as_deref(), Some("session_prompt"));
+    }
+
+    #[test]
+    fn task_ingress_for_prompt_rejects_verified_ingress_for_other_session() {
+        let verified_ingress = sample_external_ingress("ses_other");
+        let request = prompt_request_message("hello from webhook");
+        let resolved = unresolved_prompt_payload("hello from webhook");
+
+        let error = task_ingress_for_prompt(
+            "ses_1",
+            "hello from webhook",
+            &request,
+            &resolved,
+            Some(verified_ingress),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, ApiError::BadRequest(_)));
+    }
+
+    #[test]
+    fn task_ingress_for_prompt_still_builds_http_entry_ingress_when_unset() {
+        let mut request = prompt_request_message("hello");
+        request.idempotency_key = Some("idem_1".to_string());
+        request.ingress_source = Some("api".to_string());
+        let resolved = unresolved_prompt_payload("hello");
+
+        let ingress = task_ingress_for_prompt("ses_1", "hello", &request, &resolved, None).unwrap();
+
+        assert_eq!(ingress.source, rocode_session::prompt::IngressSource::Api);
+        assert_eq!(ingress.context_key.as_deref(), Some("session_prompt"));
+        assert_eq!(ingress.idempotency_key.as_deref(), Some("idem_1"));
+        assert!(ingress.external_adapter.is_none());
     }
 
     #[test]
