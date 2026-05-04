@@ -4,6 +4,7 @@ pub mod bridge;
 pub mod cache;
 pub mod catalog;
 pub mod custom_fetch;
+pub mod descriptor;
 pub mod diagnostics;
 pub mod driver;
 pub mod error_classification;
@@ -45,6 +46,7 @@ pub use catalog::{
     CatalogSnapshot, ModelCatalogAuthority,
 };
 pub use custom_fetch::*;
+pub use descriptor::*;
 pub use diagnostics::*;
 pub use error_summary::*;
 pub use instance::*;

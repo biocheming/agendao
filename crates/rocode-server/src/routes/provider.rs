@@ -11,7 +11,9 @@ use crate::oauth::ProviderAuth;
 use crate::{ApiError, Result, ServerState};
 use rocode_config::ModelConfig;
 use rocode_provider::{
-    AuthInfo, AuthMethodType, CatalogRefreshStatus, CatalogSnapshot, ModelsData, ModelsDevInfo,
+    provider_connection_descriptor_candidate_from_config_provider, AuthInfo, AuthMethodType,
+    CatalogRefreshStatus, CatalogSnapshot, ConfigProvider, ModelsData, ModelsDevInfo,
+    ProviderConnectionDescriptorCandidate,
 };
 
 pub(crate) fn provider_routes() -> Router<Arc<ServerState>> {
@@ -25,6 +27,7 @@ pub(crate) fn provider_routes() -> Router<Arc<ServerState>> {
         .route("/connect", post(connect_provider))
         .route("/register", post(register_custom_provider))
         .route("/auth", get(get_provider_auth))
+        .route("/{id}/descriptor", get(get_provider_descriptor))
         .route("/{id}", put(update_provider).delete(delete_provider))
         .route("/{id}/oauth/authorize", post(oauth_authorize))
         .route("/{id}/oauth/callback", post(oauth_callback))
@@ -68,9 +71,22 @@ pub struct ManagedProviderInfo {
     pub base_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub protocol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub descriptor_candidate: Option<ProviderConnectionDescriptorCandidate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub descriptor_candidate_error: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub model_overrides: Vec<ManagedModelOverrideInfo>,
     pub models: Vec<ModelInfo>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProviderDescriptorResponse {
+    pub provider_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub descriptor_candidate: Option<ProviderConnectionDescriptorCandidate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub descriptor_candidate_error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -937,6 +953,71 @@ fn managed_provider_auth_type(auth: Option<&AuthInfo>) -> Option<String> {
     }
 }
 
+fn configured_provider_to_descriptor_candidate(
+    provider_id: &str,
+    provider: &rocode_config::ProviderConfig,
+) -> std::result::Result<ProviderConnectionDescriptorCandidate, String> {
+    let bootstrap_provider = ConfigProvider {
+        name: provider.name.clone(),
+        env: provider.env.clone(),
+        api: provider.base_url.clone(),
+        npm: provider.npm.clone(),
+        api_style: provider.api_style.clone(),
+        api_shape: provider.api_shape.clone(),
+        transport: provider.transport.clone(),
+        usage_shape: provider.usage_shape.clone(),
+        quirks: (!provider.quirks.is_empty()).then_some(provider.quirks.clone()),
+        ..Default::default()
+    };
+
+    provider_connection_descriptor_candidate_from_config_provider(provider_id, &bootstrap_provider)
+        .map_err(|error| error.to_string())
+}
+
+fn provider_descriptor_projection(
+    provider_id: &str,
+    provider: &rocode_config::ProviderConfig,
+) -> (
+    Option<ProviderConnectionDescriptorCandidate>,
+    Option<String>,
+) {
+    match configured_provider_to_descriptor_candidate(provider_id, provider) {
+        Ok(candidate) => (Some(candidate), None),
+        Err(error) => (None, Some(error)),
+    }
+}
+
+fn provider_descriptor_response(
+    provider_id: &str,
+    provider: &rocode_config::ProviderConfig,
+) -> ProviderDescriptorResponse {
+    let (descriptor_candidate, descriptor_candidate_error) =
+        provider_descriptor_projection(provider_id, provider);
+
+    ProviderDescriptorResponse {
+        provider_id: provider_id.to_string(),
+        descriptor_candidate,
+        descriptor_candidate_error,
+    }
+}
+
+async fn get_provider_descriptor(
+    State(state): State<Arc<ServerState>>,
+    Path(id): Path<String>,
+) -> Result<Json<ProviderDescriptorResponse>> {
+    let config = state.config_store.config();
+    let provider_id = id.trim();
+    let provider = config
+        .provider
+        .as_ref()
+        .and_then(|providers| providers.get(provider_id))
+        .ok_or_else(|| {
+            ApiError::NotFound(format!("Configured provider not found: {provider_id}"))
+        })?;
+
+    Ok(Json(provider_descriptor_response(provider_id, provider)))
+}
+
 async fn list_managed_providers(
     State(state): State<Arc<ServerState>>,
 ) -> Json<ManagedProvidersResponse> {
@@ -1061,6 +1142,9 @@ async fn list_managed_providers(
             let auth = auth_store.get(&id);
             let has_auth = auth.is_some();
             let configured_flag = configured.is_some();
+            let (descriptor_candidate, descriptor_candidate_error) = configured
+                .map(|provider| provider_descriptor_projection(&id, provider))
+                .unwrap_or((None, None));
 
             ManagedProviderInfo {
                 id: id.clone(),
@@ -1084,6 +1168,8 @@ async fn list_managed_providers(
                     .and_then(|provider| provider.npm.as_deref())
                     .and_then(npm_to_protocol)
                     .map(str::to_string),
+                descriptor_candidate,
+                descriptor_candidate_error,
                 model_overrides,
                 models,
             }
@@ -1565,10 +1651,12 @@ async fn register_custom_provider(
 #[cfg(test)]
 mod tests {
     use super::{
-        connect_draft_from_custom_query, connect_draft_from_known_provider, npm_to_protocol,
-        protocol_to_npm, resolve_known_provider_matches, KnownProviderEntry,
+        configured_provider_to_descriptor_candidate, connect_draft_from_custom_query,
+        connect_draft_from_known_provider, npm_to_protocol, protocol_to_npm,
+        provider_descriptor_response, resolve_known_provider_matches, KnownProviderEntry,
         ProviderConnectDraftMode, CONNECT_PROTOCOL_OPTIONS,
     };
+    use rocode_config::ProviderConfig;
 
     fn provider(
         id: &str,
@@ -1693,5 +1781,87 @@ mod tests {
         );
         assert_eq!(draft.protocol.as_deref(), Some("openrouter"));
         assert_eq!(draft.env, vec!["OPENROUTER_API_KEY".to_string()]);
+    }
+
+    #[test]
+    fn configured_provider_descriptor_candidate_exposes_non_secret_projection() {
+        let configured = ProviderConfig {
+            name: Some(" OpenRouter ".to_string()),
+            api_key: Some("secret-123".to_string()),
+            base_url: Some(" https://openrouter.ai/api/v1 ".to_string()),
+            npm: Some("@openrouter/ai-sdk-provider".to_string()),
+            env: Some(vec![" OPENROUTER_API_KEY ".to_string()]),
+            ..Default::default()
+        };
+
+        let candidate = configured_provider_to_descriptor_candidate("openrouter", &configured)
+            .expect("candidate should build");
+        let value = serde_json::to_value(&candidate).expect("candidate should serialize");
+
+        assert_eq!(candidate.provider_id, "openrouter");
+        assert_eq!(candidate.name.as_deref(), Some("OpenRouter"));
+        assert_eq!(
+            candidate.base_url.as_deref(),
+            Some("https://openrouter.ai/api/v1")
+        );
+        assert_eq!(candidate.env, vec!["OPENROUTER_API_KEY".to_string()]);
+        assert!(value.get("api_key").is_none());
+        assert!(value.get("options").is_none());
+        assert!(candidate.profile.is_some());
+    }
+
+    #[test]
+    fn configured_provider_descriptor_candidate_reports_invalid_profile() {
+        let configured = ProviderConfig {
+            api_style: Some("closeai-compatible".to_string()),
+            api_shape: Some("messages".to_string()),
+            transport: Some("bearer".to_string()),
+            usage_shape: Some("closeai-cached-tokens".to_string()),
+            ..Default::default()
+        };
+
+        let error = configured_provider_to_descriptor_candidate("broken", &configured)
+            .expect_err("invalid config should surface as inspection error");
+
+        assert!(error.contains("invalid provider profile combination"));
+    }
+
+    #[test]
+    fn provider_descriptor_response_uses_shared_candidate_field() {
+        let configured = ProviderConfig {
+            name: Some(" OpenAI ".to_string()),
+            base_url: Some(" https://api.openai.com/v1 ".to_string()),
+            env: Some(vec![" OPENAI_API_KEY ".to_string()]),
+            ..Default::default()
+        };
+
+        let response = provider_descriptor_response("openai", &configured);
+        let value = serde_json::to_value(&response).expect("response should serialize");
+
+        assert_eq!(value["provider_id"], serde_json::json!("openai"));
+        assert_eq!(
+            value["descriptor_candidate"]["name"],
+            serde_json::json!("OpenAI")
+        );
+        assert!(value.get("descriptor_candidate_error").is_none());
+    }
+
+    #[test]
+    fn provider_descriptor_response_preserves_projection_error_without_candidate() {
+        let configured = ProviderConfig {
+            api_style: Some("closeai-compatible".to_string()),
+            api_shape: Some("messages".to_string()),
+            transport: Some("bearer".to_string()),
+            usage_shape: Some("closeai-cached-tokens".to_string()),
+            ..Default::default()
+        };
+
+        let response = provider_descriptor_response("broken", &configured);
+
+        assert!(response.descriptor_candidate.is_none());
+        assert!(response
+            .descriptor_candidate_error
+            .as_deref()
+            .is_some_and(|error| error.contains("invalid provider profile combination")));
     }
 }

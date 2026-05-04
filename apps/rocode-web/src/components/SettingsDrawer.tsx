@@ -51,8 +51,11 @@ import type {
   KnownProviderEntry,
   ManagedModelOverrideInfoRecord,
   ManagedProviderInfoRecord,
+  ProviderConnectionDescriptorCandidateRecord,
   ProviderConnectDraft,
+  ProviderDescriptorResponseRecord,
   ProviderRecord,
+  ProviderProfileDescriptorViewRecord,
   RefreshProviderCatalogueResponseRecord,
   ResolveProviderConnectResponseRecord,
 } from "@/lib/provider";
@@ -361,6 +364,12 @@ export function SettingsDrawer({
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [configSnapshot, setConfigSnapshot] = useState<AppConfigSnapshot | null>(null);
   const [managedProviders, setManagedProviders] = useState<ManagedProviderInfoRecord[]>([]);
+  const [selectedManagedProviderId, setSelectedManagedProviderId] = useState<string | null>(null);
+  const [providerDescriptorLoading, setProviderDescriptorLoading] = useState(false);
+  const [selectedProviderDescriptor, setSelectedProviderDescriptor] =
+    useState<ProviderConnectionDescriptorCandidateRecord | null>(null);
+  const [selectedProviderDescriptorError, setSelectedProviderDescriptorError] =
+    useState<string | null>(null);
   const [modelOverrideDraft, setModelOverrideDraft] = useState<ModelOverrideDraft>(
     emptyModelOverrideDraft(),
   );
@@ -453,6 +462,18 @@ export function SettingsDrawer({
   const isolatedNotice = workspaceMode === "isolated" ? isolatedWorkspaceNotice(activeTab) : null;
   const connectMatches = connectResolution?.matches ?? [];
   const exactKnownProvider = connectResolution?.exact_match ? connectResolution.draft : null;
+  const selectedManagedProvider = useMemo(
+    () =>
+      managedProviders.find(
+        (provider) =>
+          provider.id.trim().toLowerCase() === (selectedManagedProviderId ?? "").trim().toLowerCase(),
+      ) ?? null,
+    [managedProviders, selectedManagedProviderId],
+  );
+  const selectedProviderProfile = useMemo<ProviderProfileDescriptorViewRecord | null>(
+    () => selectedProviderDescriptor?.profile ?? null,
+    [selectedProviderDescriptor],
+  );
   const selectedSkillEntry = useMemo(
     () =>
       skillCatalog.find(
@@ -839,6 +860,60 @@ export function SettingsDrawer({
       providerId: providerChoices[0],
     }));
   }, [modelOverrideDraft.providerId, providerChoices]);
+
+  useEffect(() => {
+    if (managedProviders.length === 0) {
+      setSelectedManagedProviderId(null);
+      setSelectedProviderDescriptor(null);
+      setSelectedProviderDescriptorError(null);
+      setProviderDescriptorLoading(false);
+      return;
+    }
+
+    const selected = (selectedManagedProviderId ?? "").trim().toLowerCase();
+    const stillExists = managedProviders.some(
+      (provider) => provider.id.trim().toLowerCase() === selected,
+    );
+    if (stillExists) {
+      return;
+    }
+    setSelectedManagedProviderId(managedProviders[0].id);
+  }, [managedProviders, selectedManagedProviderId]);
+
+  useEffect(() => {
+    if (activeTab !== "providers" || !selectedManagedProviderId) {
+      setProviderDescriptorLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setProviderDescriptorLoading(true);
+    setSelectedProviderDescriptor(null);
+    setSelectedProviderDescriptorError(null);
+
+    void (async () => {
+      try {
+        const response = await apiJson<ProviderDescriptorResponseRecord>(
+          `/provider/${encodeURIComponent(selectedManagedProviderId)}/descriptor`,
+        );
+        if (cancelled) return;
+        setSelectedProviderDescriptor(response.descriptor_candidate ?? null);
+        setSelectedProviderDescriptorError(response.descriptor_candidate_error ?? null);
+      } catch (error) {
+        if (cancelled) return;
+        setSelectedProviderDescriptor(null);
+        setSelectedProviderDescriptorError(formatError(error));
+      } finally {
+        if (!cancelled) {
+          setProviderDescriptorLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, apiJson, selectedManagedProviderId]);
 
   useEffect(() => {
     if (activeTab !== "memory") {
@@ -2394,26 +2469,126 @@ export function SettingsDrawer({
                   <p className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Managed Providers</p>
                   <span>{managedProviders.length} items</span>
                 </div>
-                {managedProviders.map((provider) => (
-                  <div key={provider.id} className="rounded-lg border border-border/40 bg-card p-4 flex items-start justify-between gap-4">
-                    <div>
-                      <strong>{provider.name}</strong>
-                      <p className="text-sm text-muted-foreground leading-relaxed">
-                        {provider.id}
-                        {provider.base_url ? ` · ${provider.base_url}` : ""}
-                        {provider.protocol ? ` · ${displayProtocolLabel(provider.protocol)}` : ""}
-                      </p>
-                      <p className="text-sm text-muted-foreground leading-relaxed">
-                        status {provider.status}
-                        {provider.auth_type ? ` · auth ${provider.auth_type}` : ""}
-                        {provider.env?.length ? ` · env ${provider.env.join(", ")}` : ""}
-                      </p>
+                {managedProviders.map((provider) => {
+                  const selected =
+                    provider.id.trim().toLowerCase() ===
+                    (selectedManagedProviderId ?? "").trim().toLowerCase();
+                  return (
+                    <button
+                      key={provider.id}
+                      type="button"
+                      className={cn(
+                        "rounded-lg border bg-card p-4 text-left transition-colors flex items-start justify-between gap-4",
+                        selected
+                          ? "border-primary/50 bg-primary/5"
+                          : "border-border/40 hover:border-border/70",
+                      )}
+                      onClick={() => setSelectedManagedProviderId(provider.id)}
+                    >
+                      <div>
+                        <strong>{provider.name}</strong>
+                        <p className="text-sm text-muted-foreground leading-relaxed">
+                          {provider.id}
+                        </p>
+                        <p className="text-sm text-muted-foreground leading-relaxed">
+                          status {provider.status}
+                          {provider.auth_type ? ` · auth ${provider.auth_type}` : ""}
+                        </p>
+                      </div>
+                      <span className={cn("rounded-full border px-3 py-1.5 text-xs font-semibold", statusTone(provider.status) === "ok" ? "border-green-300 bg-green-50 text-green-800 dark:border-green-700 dark:bg-green-950 dark:text-green-300" : statusTone(provider.status) === "warn" ? "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300" : statusTone(provider.status) === "danger" ? "border-red-300 bg-red-50 text-red-800 dark:border-red-700 dark:bg-red-950 dark:text-red-300" : "border-border bg-muted text-muted-foreground")}>
+                        {provider.status}
+                      </span>
+                    </button>
+                  );
+                })}
+                {selectedManagedProvider ? (
+                  <div className="roc-section">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">
+                          Provider Inspection
+                        </p>
+                        <strong>
+                          {selectedProviderDescriptor?.name ??
+                            selectedManagedProvider.name}
+                        </strong>
+                        <p className="text-sm text-muted-foreground leading-relaxed">
+                          {selectedManagedProvider.id}
+                        </p>
+                      </div>
+                      <span className="text-sm text-muted-foreground">
+                        {providerDescriptorLoading ? "Loading..." : "Read-only"}
+                      </span>
                     </div>
-                    <span className={cn("rounded-full border px-3 py-1.5 text-xs font-semibold", statusTone(provider.status) === "ok" ? "border-green-300 bg-green-50 text-green-800 dark:border-green-700 dark:bg-green-950 dark:text-green-300" : statusTone(provider.status) === "warn" ? "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300" : statusTone(provider.status) === "danger" ? "border-red-300 bg-red-50 text-red-800 dark:border-red-700 dark:bg-red-950 dark:text-red-300" : "border-border bg-muted text-muted-foreground")}>
-                      {provider.status}
-                    </span>
+                    {selectedProviderDescriptorError ? (
+                      <p className="m-0 text-sm text-red-600 dark:text-red-300">
+                        Descriptor unavailable: {selectedProviderDescriptorError}
+                      </p>
+                    ) : null}
+                    {selectedProviderDescriptor ? (
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <div className="grid gap-1">
+                          <span className={formLabelClass}>Base URL</span>
+                          <span className="text-sm text-foreground">
+                            {selectedProviderDescriptor.base_url || "--"}
+                          </span>
+                        </div>
+                        <div className="grid gap-1">
+                          <span className={formLabelClass}>Env</span>
+                          <span className="text-sm text-foreground">
+                            {(selectedProviderDescriptor.env ?? []).length
+                              ? (selectedProviderDescriptor.env ?? []).join(", ")
+                              : "--"}
+                          </span>
+                        </div>
+                        <div className="grid gap-1">
+                          <span className={formLabelClass}>API Family</span>
+                          <span className="text-sm text-foreground">
+                            {selectedProviderProfile?.api_family || "--"}
+                          </span>
+                        </div>
+                        <div className="grid gap-1">
+                          <span className={formLabelClass}>API Shape</span>
+                          <span className="text-sm text-foreground">
+                            {selectedProviderProfile?.api_shape || "--"}
+                          </span>
+                        </div>
+                        <div className="grid gap-1">
+                          <span className={formLabelClass}>Transport</span>
+                          <span className="text-sm text-foreground">
+                            {selectedProviderProfile?.transport || "--"}
+                          </span>
+                        </div>
+                        <div className="grid gap-1">
+                          <span className={formLabelClass}>Usage Shape</span>
+                          <span className="text-sm text-foreground">
+                            {selectedProviderProfile?.usage_shape || "--"}
+                          </span>
+                        </div>
+                        <div className="grid gap-1">
+                          <span className={formLabelClass}>Cache Family</span>
+                          <span className="text-sm text-foreground">
+                            {selectedProviderProfile?.cache_family || "--"}
+                          </span>
+                        </div>
+                        <div className="grid gap-1">
+                          <span className={formLabelClass}>Quirks</span>
+                          <span className="text-sm text-foreground">
+                            {(selectedProviderProfile?.quirks ?? []).length
+                              ? (selectedProviderProfile?.quirks ?? []).join(", ")
+                              : "--"}
+                          </span>
+                        </div>
+                      </div>
+                    ) : providerDescriptorLoading ? (
+                      <p className={formHintClass}>Loading descriptor...</p>
+                    ) : (
+                      <p className={formHintClass}>
+                        No descriptor candidate available for this provider.
+                      </p>
+                    )}
                   </div>
-                ))}
+                ) : null}
               </div>
             </div>
           ) : null}

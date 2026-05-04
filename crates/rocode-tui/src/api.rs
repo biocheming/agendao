@@ -81,6 +81,13 @@ impl RuntimeApiClient {
         self.block_on(self.client.list_skill_proposals(status))
     }
 
+    fn get_provider_descriptor(
+        &self,
+        provider_id: &str,
+    ) -> anyhow::Result<ProviderDescriptorResponse> {
+        self.block_on(self.client.get_provider_descriptor(provider_id))
+    }
+
     fn update_skill_proposal_status(
         &self,
         id: &str,
@@ -600,6 +607,16 @@ impl ApiClient {
     pub fn get_provider_connect_schema(&self) -> anyhow::Result<ProviderConnectSchemaResponse> {
         self.call("get provider connect schema", |client| {
             client.get_provider_connect_schema()
+        })
+    }
+
+    pub fn get_provider_descriptor(
+        &self,
+        provider_id: &str,
+    ) -> anyhow::Result<ProviderDescriptorResponse> {
+        let provider_id = provider_id.to_string();
+        self.call("get provider descriptor", move |client| {
+            client.get_provider_descriptor(&provider_id)
         })
     }
 

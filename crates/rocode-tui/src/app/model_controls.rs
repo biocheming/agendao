@@ -207,8 +207,13 @@ impl App {
                     .apply_resolve_response(response.clone());
                 match response.draft.mode {
                     crate::api::ProviderConnectDraftMode::Known => {
-                        let provider =
+                        let mut provider =
                             crate::components::provider_from_connect_draft(&response.draft);
+                        if let Ok(descriptor) = client.get_provider_descriptor(&provider.id) {
+                            provider.descriptor_candidate = descriptor.descriptor_candidate;
+                            provider.descriptor_candidate_error =
+                                descriptor.descriptor_candidate_error;
+                        }
                         self.provider_dialog.enter_input_mode_for_provider(provider);
                     }
                     crate::api::ProviderConnectDraftMode::Custom => {

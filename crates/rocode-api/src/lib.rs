@@ -19,21 +19,22 @@ pub use rocode_types::{
     MemoryDetailView, MemoryListQuery, MemoryListResponse, MemoryRetrievalPreviewResponse,
     MemoryRetrievalQuery, MemoryRuleHitListResponse, MemoryRuleHitQuery,
     MemoryRulePackListResponse, MemoryValidationReportResponse, ProposalStatus,
-    SessionInsightsResponse, SessionMemoryTelemetrySummary, SessionStatusInfo,
-    SkillArtifactCacheEntry, SkillAuditEvent, SkillDistributionRecord, SkillEvolutionProposal,
-    SkillEvolutionProposalKind, SkillGovernanceTimelineEntry, SkillGovernanceTimelineStatus,
-    SkillGovernanceWriteResult, SkillGuardReport, SkillGuardStatus, SkillHubArtifactCacheResponse,
-    SkillHubAuditResponse, SkillHubDistributionResponse, SkillHubGuardRunRequest,
-    SkillHubGuardRunResponse, SkillHubIndexRefreshRequest, SkillHubIndexRefreshResponse,
-    SkillHubIndexResponse, SkillHubLifecycleResponse, SkillHubManagedDetachRequest,
-    SkillHubManagedDetachResponse, SkillHubManagedRemoveRequest, SkillHubManagedRemoveResponse,
-    SkillHubManagedResponse, SkillHubPolicy, SkillHubPolicyResponse,
-    SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
-    SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest, SkillHubSyncApplyRequest,
-    SkillHubSyncPlanRequest, SkillHubSyncPlanResponse, SkillHubTimelineQuery,
-    SkillHubTimelineResponse, SkillManagedLifecycleRecord, SkillRemoteInstallAction,
-    SkillRemoteInstallEntry, SkillRemoteInstallPlan, SkillRemoteInstallResponse,
-    SkillSourceIndexSnapshot, SkillSourceKind, SkillSourceRef, SkillSyncPlan,
+    ProviderConnectionDescriptorCandidate, ProviderProfileDescriptorView, SessionInsightsResponse,
+    SessionMemoryTelemetrySummary, SessionStatusInfo, SkillArtifactCacheEntry, SkillAuditEvent,
+    SkillDistributionRecord, SkillEvolutionProposal, SkillEvolutionProposalKind,
+    SkillGovernanceTimelineEntry, SkillGovernanceTimelineStatus, SkillGovernanceWriteResult,
+    SkillGuardReport, SkillGuardStatus, SkillHubArtifactCacheResponse, SkillHubAuditResponse,
+    SkillHubDistributionResponse, SkillHubGuardRunRequest, SkillHubGuardRunResponse,
+    SkillHubIndexRefreshRequest, SkillHubIndexRefreshResponse, SkillHubIndexResponse,
+    SkillHubLifecycleResponse, SkillHubManagedDetachRequest, SkillHubManagedDetachResponse,
+    SkillHubManagedRemoveRequest, SkillHubManagedRemoveResponse, SkillHubManagedResponse,
+    SkillHubPolicy, SkillHubPolicyResponse, SkillHubRemoteInstallApplyRequest,
+    SkillHubRemoteInstallPlanRequest, SkillHubRemoteUpdateApplyRequest,
+    SkillHubRemoteUpdatePlanRequest, SkillHubSyncApplyRequest, SkillHubSyncPlanRequest,
+    SkillHubSyncPlanResponse, SkillHubTimelineQuery, SkillHubTimelineResponse,
+    SkillManagedLifecycleRecord, SkillRemoteInstallAction, SkillRemoteInstallEntry,
+    SkillRemoteInstallPlan, SkillRemoteInstallResponse, SkillSourceIndexSnapshot, SkillSourceKind,
+    SkillSourceRef, SkillSyncPlan,
 };
 
 pub type PromptPart = rocode_session::prompt::PartInput;
@@ -722,6 +723,15 @@ pub struct ProviderConnectSchemaResponse {
     pub providers: Vec<KnownProviderEntry>,
     #[serde(default)]
     pub protocols: Vec<ConnectProtocolOption>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderDescriptorResponse {
+    pub provider_id: String,
+    #[serde(default)]
+    pub descriptor_candidate: Option<ProviderConnectionDescriptorCandidate>,
+    #[serde(default)]
+    pub descriptor_candidate_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
