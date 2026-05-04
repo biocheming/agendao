@@ -64,27 +64,51 @@ pub(crate) async fn setup_providers_for_dir(
 fn convert_config_providers(
     config: &rocode_config::Config,
 ) -> std::collections::HashMap<String, BootstrapConfigProvider> {
+    convert_config_providers_with_mode(config, ProviderBootstrapMode::Runtime)
+}
+
+pub(crate) fn convert_config_providers_for_artifact(
+    config: &rocode_config::Config,
+) -> std::collections::HashMap<String, BootstrapConfigProvider> {
+    convert_config_providers_with_mode(config, ProviderBootstrapMode::Artifact)
+}
+
+fn convert_config_providers_with_mode(
+    config: &rocode_config::Config,
+    mode: ProviderBootstrapMode,
+) -> std::collections::HashMap<String, BootstrapConfigProvider> {
     let Some(ref providers) = config.provider else {
         return std::collections::HashMap::new();
     };
 
     providers
         .iter()
-        .map(|(id, p)| (id.clone(), provider_to_bootstrap(p)))
+        .map(|(id, p)| (id.clone(), provider_to_bootstrap(p, mode)))
         .collect()
 }
 
-fn provider_to_bootstrap(provider: &rocode_config::ProviderConfig) -> BootstrapConfigProvider {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderBootstrapMode {
+    Runtime,
+    Artifact,
+}
+
+fn provider_to_bootstrap(
+    provider: &rocode_config::ProviderConfig,
+    mode: ProviderBootstrapMode,
+) -> BootstrapConfigProvider {
     let mut options = provider.options.clone().unwrap_or_default();
-    if let Some(api_key) = &provider.api_key {
-        options
-            .entry("apiKey".to_string())
-            .or_insert_with(|| serde_json::Value::String(api_key.clone()));
-    }
-    if let Some(base_url) = &provider.base_url {
-        options
-            .entry("baseURL".to_string())
-            .or_insert_with(|| serde_json::Value::String(base_url.clone()));
+    if mode == ProviderBootstrapMode::Runtime {
+        if let Some(api_key) = &provider.api_key {
+            options
+                .entry("apiKey".to_string())
+                .or_insert_with(|| serde_json::Value::String(api_key.clone()));
+        }
+        if let Some(base_url) = &provider.base_url {
+            options
+                .entry("baseURL".to_string())
+                .or_insert_with(|| serde_json::Value::String(base_url.clone()));
+        }
     }
 
     let models = provider.models.as_ref().map(|models| {

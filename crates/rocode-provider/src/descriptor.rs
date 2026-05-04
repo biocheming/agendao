@@ -1,11 +1,8 @@
-use std::collections::HashMap;
-
 use crate::bootstrap::{ConfigProvider, BUNDLED_PROVIDERS};
 use crate::cache::CacheProtocolFamily;
 use crate::profile::{
-    default_npm_for_provider_id, ProviderApiFamily, ProviderApiShape, ProviderProfile,
-    ProviderProfileError, ProviderProfileResolver, ProviderQuirk, ProviderTransportKind,
-    ProviderUsageShape,
+    ProviderApiFamily, ProviderApiShape, ProviderProfile, ProviderProfileError,
+    ProviderProfileResolver, ProviderQuirk, ProviderTransportKind, ProviderUsageShape,
 };
 pub use rocode_types::{ProviderConnectionDescriptorCandidate, ProviderProfileDescriptorView};
 
@@ -44,16 +41,7 @@ fn resolve_profile_candidate(
         return Ok(None);
     }
 
-    let mut options = HashMap::new();
-    apply_explicit_profile_options(&mut options, provider);
-    let npm = provider
-        .npm
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| default_npm_for_provider_id(provider_id));
-
-    let profile = ProviderProfileResolver::try_resolve_with_npm(provider_id, npm, &options)?;
+    let profile = ProviderProfileResolver::try_resolve_config_provider(provider_id, provider)?;
     Ok(Some(profile))
 }
 
@@ -78,58 +66,6 @@ fn is_bundled_provider_id(provider_id: &str) -> bool {
     BUNDLED_PROVIDERS
         .values()
         .any(|known| known.eq_ignore_ascii_case(provider_id))
-}
-
-fn apply_explicit_profile_options(
-    options: &mut HashMap<String, serde_json::Value>,
-    provider: &ConfigProvider,
-) {
-    let mut profile = serde_json::Map::new();
-    if let Some(value) = provider
-        .api_style
-        .as_ref()
-        .and_then(|value| trimmed_option(Some(value)))
-    {
-        profile.insert("api_style".to_string(), serde_json::Value::String(value));
-    }
-    if let Some(value) = provider
-        .api_shape
-        .as_ref()
-        .and_then(|value| trimmed_option(Some(value)))
-    {
-        profile.insert("api_shape".to_string(), serde_json::Value::String(value));
-    }
-    if let Some(value) = provider
-        .transport
-        .as_ref()
-        .and_then(|value| trimmed_option(Some(value)))
-    {
-        profile.insert("transport".to_string(), serde_json::Value::String(value));
-    }
-    if let Some(value) = provider
-        .usage_shape
-        .as_ref()
-        .and_then(|value| trimmed_option(Some(value)))
-    {
-        profile.insert("usage_shape".to_string(), serde_json::Value::String(value));
-    }
-    if let Some(quirks) = provider.quirks.as_ref() {
-        let quirks = quirks
-            .iter()
-            .filter_map(|value| trimmed_option(Some(value)))
-            .map(serde_json::Value::String)
-            .collect::<Vec<_>>();
-        if !quirks.is_empty() {
-            profile.insert("quirks".to_string(), serde_json::Value::Array(quirks));
-        }
-    }
-
-    if !profile.is_empty() {
-        options.insert(
-            "providerProfile".to_string(),
-            serde_json::Value::Object(profile),
-        );
-    }
 }
 
 fn sanitize_env_refs(env: Option<&Vec<String>>) -> Vec<String> {
@@ -233,6 +169,7 @@ fn provider_quirk_label(value: ProviderQuirk) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn projects_bundled_provider_profile_from_config_without_runtime_state() {

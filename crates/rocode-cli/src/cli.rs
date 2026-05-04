@@ -74,6 +74,11 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         action: SkillCommands,
     },
+    #[command(about = "Manage provider authority artifacts")]
+    Provider {
+        #[command(subcommand)]
+        action: ProviderCommands,
+    },
     #[command(about = "Show token usage and cost statistics")]
     Stats {
         #[arg(long)]
@@ -230,6 +235,20 @@ pub(crate) enum SkillCommands {
     Proposal {
         #[command(subcommand)]
         action: ProposalCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum ProviderCommands {
+    #[command(about = "Export provider authority artifact as JSON")]
+    Export {
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    #[command(about = "Import provider authority artifact from JSON file")]
+    Import {
+        #[arg(value_name = "FILE")]
+        file: String,
     },
 }
 

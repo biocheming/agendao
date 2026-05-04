@@ -67,6 +67,10 @@ impl ConfigLoader {
         Ok(())
     }
 
+    pub fn into_config(self) -> Config {
+        self.config
+    }
+
     pub fn load_from_file<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
         let path = path.as_ref();
         if !path.exists() {

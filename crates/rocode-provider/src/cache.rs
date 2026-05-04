@@ -20,6 +20,16 @@ pub enum CacheProtocolFamily {
     Disabled,
 }
 
+impl CacheProtocolFamily {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CloseAiCompatible => "closeai-compatible",
+            Self::EthnopicCompatible => "ethnopic-compatible",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CloseAiCompatibleApiShape {
     ChatCompletions,

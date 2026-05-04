@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::bootstrap::ProviderState;
+use crate::bootstrap::{ConfigProvider, ProviderState};
 use crate::cache::CacheProtocolFamily;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +39,18 @@ pub enum ProviderApiFamily {
     Custom,
 }
 
+impl ProviderApiFamily {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CloseAiCompatible => "closeai-compatible",
+            Self::EthnopicMessages => "ethnopic-compatible",
+            Self::GeminiGenerate => "gemini-generate",
+            Self::BedrockConverse => "bedrock-converse",
+            Self::Custom => "custom",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ProviderApiShape {
     ChatCompletions,
@@ -47,6 +59,19 @@ pub enum ProviderApiShape {
     GeminiGenerateContent,
     BedrockConverse,
     Custom,
+}
+
+impl ProviderApiShape {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ChatCompletions => "chat-completions",
+            Self::Responses => "responses",
+            Self::EthnopicMessages => "ethnopic-messages",
+            Self::GeminiGenerateContent => "gemini-generate-content",
+            Self::BedrockConverse => "bedrock-converse",
+            Self::Custom => "custom",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -60,6 +85,20 @@ pub enum ProviderTransportKind {
     Custom,
 }
 
+impl ProviderTransportKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bearer => "bearer",
+            Self::VertexBearer => "vertex-bearer",
+            Self::SigV4 => "sigv4",
+            Self::OAuth => "oauth",
+            Self::PrivateToken => "private-token",
+            Self::HeaderSet => "header-set",
+            Self::Custom => "custom",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ProviderUsageShape {
     CloseAiCachedTokens,
@@ -69,6 +108,18 @@ pub enum ProviderUsageShape {
     Unknown,
 }
 
+impl ProviderUsageShape {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CloseAiCachedTokens => "closeai-cached-tokens",
+            Self::EthnopicReadWrite => "ethnopic-read-write",
+            Self::Gemini => "gemini",
+            Self::Bedrock => "bedrock",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ProviderQuirk {
     NonStreamingSse,
@@ -76,6 +127,18 @@ pub enum ProviderQuirk {
     RequiresThinkingReplay,
     ResponsesFallbackToChat,
     IgnoresUnknownFields,
+}
+
+impl ProviderQuirk {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NonStreamingSse => "non-streaming-sse",
+            Self::RawJsonLines => "raw-json-lines",
+            Self::RequiresThinkingReplay => "requires-thinking-replay",
+            Self::ResponsesFallbackToChat => "responses-fallback-to-chat",
+            Self::IgnoresUnknownFields => "ignores-unknown-fields",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,6 +196,20 @@ impl ProviderProfileResolver {
     ) -> Result<ProviderProfile, ProviderProfileError> {
         let npm = resolve_npm_for_provider(provider_id, provider);
         Self::try_resolve_with_npm(provider_id, &npm, &provider.options)
+    }
+
+    pub fn try_resolve_config_provider(
+        provider_id: &str,
+        provider: &ConfigProvider,
+    ) -> Result<ProviderProfile, ProviderProfileError> {
+        let options = explicit_profile_options_from_config_provider(provider);
+        let npm = provider
+            .npm
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| default_npm_for_provider_id(provider_id));
+        Self::try_resolve_with_npm(provider_id, npm, &options)
     }
 
     pub fn resolve_with_options(
@@ -254,6 +331,59 @@ fn custom_profile_from_options(
         quirks: option_string_list(options, &["quirks"])?,
     };
     config.into_profile(provider_id, npm).map(Some)
+}
+
+fn explicit_profile_options_from_config_provider(
+    provider: &ConfigProvider,
+) -> HashMap<String, serde_json::Value> {
+    let mut options = HashMap::new();
+    let mut profile = serde_json::Map::new();
+    if let Some(value) = provider
+        .api_style
+        .as_ref()
+        .and_then(|value| trimmed_option(Some(value)))
+    {
+        profile.insert("api_style".to_string(), serde_json::Value::String(value));
+    }
+    if let Some(value) = provider
+        .api_shape
+        .as_ref()
+        .and_then(|value| trimmed_option(Some(value)))
+    {
+        profile.insert("api_shape".to_string(), serde_json::Value::String(value));
+    }
+    if let Some(value) = provider
+        .transport
+        .as_ref()
+        .and_then(|value| trimmed_option(Some(value)))
+    {
+        profile.insert("transport".to_string(), serde_json::Value::String(value));
+    }
+    if let Some(value) = provider
+        .usage_shape
+        .as_ref()
+        .and_then(|value| trimmed_option(Some(value)))
+    {
+        profile.insert("usage_shape".to_string(), serde_json::Value::String(value));
+    }
+    if let Some(quirks) = provider.quirks.as_ref() {
+        let quirks = quirks
+            .iter()
+            .filter_map(|value| trimmed_option(Some(value)))
+            .map(serde_json::Value::String)
+            .collect::<Vec<_>>();
+        if !quirks.is_empty() {
+            profile.insert("quirks".to_string(), serde_json::Value::Array(quirks));
+        }
+    }
+
+    if !profile.is_empty() {
+        options.insert(
+            "providerProfile".to_string(),
+            serde_json::Value::Object(profile),
+        );
+    }
+    options
 }
 
 impl CustomProviderProfileConfig {
@@ -532,6 +662,13 @@ fn validate_profile_combination(
 
 fn normalize_profile_value(value: &str) -> String {
     value.trim().replace('_', "-").to_ascii_lowercase()
+}
+
+fn trimmed_option(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn provider_option_string(provider: &ProviderState, keys: &[&str]) -> Option<String> {
