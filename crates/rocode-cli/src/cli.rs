@@ -211,6 +211,16 @@ pub(crate) enum MemoryCommands {
 
 #[derive(Subcommand)]
 pub(crate) enum SkillCommands {
+    #[command(about = "Export workspace-local skill authority artifact as JSON")]
+    Export {
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    #[command(about = "Import workspace-local skill authority artifact from JSON file")]
+    Import {
+        #[arg(value_name = "FILE")]
+        file: String,
+    },
     #[command(about = "Remote distribution, lifecycle, and managed source operations")]
     Hub {
         #[command(subcommand)]
