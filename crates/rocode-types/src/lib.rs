@@ -7,6 +7,7 @@ pub mod session;
 pub mod session_artifact;
 pub mod skill;
 pub mod todo;
+pub mod workspace_skill_artifact;
 
 pub use context_pressure::*;
 pub use memory::*;
@@ -17,3 +18,4 @@ pub use session::*;
 pub use session_artifact::*;
 pub use skill::*;
 pub use todo::*;
+pub use workspace_skill_artifact::*;

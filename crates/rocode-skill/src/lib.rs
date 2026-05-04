@@ -14,6 +14,7 @@ mod methodology;
 mod runtime;
 mod sync;
 mod types;
+mod workspace_artifact;
 mod write;
 
 pub use artifact::SkillArtifactStore;
@@ -43,6 +44,11 @@ pub use types::{
     SkillFileRef, SkillFrontmatter, SkillFrontmatterPatch, SkillHermesMetadata, SkillMeta,
     SkillMetaView, SkillMetadataBlocks, SkillPrerequisites, SkillReadinessStatus,
     SkillRequiredEnvironmentVariable, SkillRocodeMetadata, SkillSummary,
+};
+pub use workspace_artifact::{
+    export_workspace_skill_artifact_bundle, import_workspace_skill_artifact_bundle,
+    import_workspace_skill_artifact_bundle_with_legacy_adapter,
+    WorkspaceSkillArtifactLegacyAdapter,
 };
 pub use write::{
     CreateSkillRequest, DeleteSkillRequest, EditSkillRequest, PatchSkillRequest,
