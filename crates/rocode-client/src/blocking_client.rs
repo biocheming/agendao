@@ -24,18 +24,18 @@ use crate::{
     MemoryValidationReportResponse, MessageInfo, MultimodalCapabilitiesResponse,
     MultimodalPolicyResponse, MultimodalPreflightRequest, MultimodalPreflightResponse,
     PermissionRequestInfo, PromptPart, PromptRequest, PromptResponse,
-    ProviderConnectSchemaResponse, ProviderListResponse, QuestionInfo, RecoveryActionKind,
-    RefreshProviderCatalogResponse, ResolveProviderConnectRequest, ResolveProviderConnectResponse,
-    RevertRequest, RevertResponse, SessionEventsQuery, SessionExecutionTopology, SessionInfo,
-    SessionInsightsResponse, SessionListItem, SessionListResponse, SessionRecoveryProtocol,
-    SessionRuntimeState, SessionStatusInfo, SessionTelemetrySnapshot, ShareResponse,
-    SkillCatalogEntry, SkillCatalogQuery, SkillDetailQuery, SkillDetailResponse,
-    SkillHubArtifactCacheResponse, SkillHubAuditResponse, SkillHubDistributionResponse,
-    SkillHubGuardRunRequest, SkillHubGuardRunResponse, SkillHubIndexRefreshRequest,
-    SkillHubIndexRefreshResponse, SkillHubIndexResponse, SkillHubLifecycleResponse,
-    SkillHubManagedDetachRequest, SkillHubManagedDetachResponse, SkillHubManagedRemoveRequest,
-    SkillHubManagedRemoveResponse, SkillHubManagedResponse, SkillHubPolicyResponse,
-    SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
+    ProviderConnectSchemaResponse, ProviderDescriptorResponse, ProviderListResponse, QuestionInfo,
+    RecoveryActionKind, RefreshProviderCatalogResponse, ResolveProviderConnectRequest,
+    ResolveProviderConnectResponse, RevertRequest, RevertResponse, SessionEventsQuery,
+    SessionExecutionTopology, SessionInfo, SessionInsightsResponse, SessionListItem,
+    SessionListResponse, SessionRecoveryProtocol, SessionRuntimeState, SessionStatusInfo,
+    SessionTelemetrySnapshot, ShareResponse, SkillCatalogEntry, SkillCatalogQuery,
+    SkillDetailQuery, SkillDetailResponse, SkillHubArtifactCacheResponse, SkillHubAuditResponse,
+    SkillHubDistributionResponse, SkillHubGuardRunRequest, SkillHubGuardRunResponse,
+    SkillHubIndexRefreshRequest, SkillHubIndexRefreshResponse, SkillHubIndexResponse,
+    SkillHubLifecycleResponse, SkillHubManagedDetachRequest, SkillHubManagedDetachResponse,
+    SkillHubManagedRemoveRequest, SkillHubManagedRemoveResponse, SkillHubManagedResponse,
+    SkillHubPolicyResponse, SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
     SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest, SkillHubSyncApplyRequest,
     SkillHubSyncPlanRequest, SkillHubSyncPlanResponse, SkillHubTimelineQuery,
     SkillHubTimelineResponse, SkillManageRequest, SkillManageResponse, SkillRemoteInstallPlan,
@@ -494,6 +494,16 @@ impl BlockingApiClient {
 
     pub fn get_provider_connect_schema(&self) -> anyhow::Result<ProviderConnectSchemaResponse> {
         self.get_json("/provider/connect/schema", "get provider connect schema")
+    }
+
+    pub fn get_provider_descriptor(
+        &self,
+        provider_id: &str,
+    ) -> anyhow::Result<ProviderDescriptorResponse> {
+        self.get_json(
+            &format!("/provider/{}/descriptor", urlencoding::encode(provider_id)),
+            &format!("get provider descriptor `{provider_id}`"),
+        )
     }
 
     pub fn resolve_provider_connect(

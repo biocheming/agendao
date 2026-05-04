@@ -12,7 +12,7 @@ use std::collections::HashSet;
 
 use crate::api::{
     ConnectProtocolOption, ProviderConnectDraft, ProviderConnectSchemaResponse,
-    ResolveProviderConnectResponse,
+    ProviderConnectionDescriptorCandidate, ResolveProviderConnectResponse,
 };
 use crate::theme::Theme;
 use crate::ui::RenderSurface;
@@ -24,6 +24,8 @@ pub struct Provider {
     pub env_hint: String,
     pub base_url: Option<String>,
     pub protocol: Option<String>,
+    pub descriptor_candidate: Option<ProviderConnectionDescriptorCandidate>,
+    pub descriptor_candidate_error: Option<String>,
     pub model_count: usize,
     pub status: ProviderStatus,
 }
@@ -254,6 +256,8 @@ impl ProviderDialog {
                 env_hint: e.env.first().cloned().unwrap_or_default(),
                 base_url: e.base_url,
                 protocol: e.protocol,
+                descriptor_candidate: None,
+                descriptor_candidate_error: None,
                 model_count: e.model_count,
                 status: if e.connected {
                     ProviderStatus::Connected
@@ -973,18 +977,44 @@ impl ProviderDialog {
         let env_hint = self
             .selected_provider
             .as_ref()
-            .map(|p| p.env_hint.as_str())
-            .unwrap_or("");
+            .and_then(|provider| provider.descriptor_candidate.as_ref())
+            .map(|descriptor| descriptor.env.join(", "))
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                self.selected_provider
+                    .as_ref()
+                    .map(|provider| provider.env_hint.clone())
+                    .filter(|value| !value.is_empty())
+            })
+            .unwrap_or_default();
         let base_url = self
             .selected_provider
             .as_ref()
-            .and_then(|p| p.base_url.as_deref())
-            .unwrap_or("");
-        let protocol = self
+            .and_then(|provider| {
+                provider
+                    .descriptor_candidate
+                    .as_ref()
+                    .and_then(|descriptor| descriptor.base_url.as_deref())
+                    .or(provider.base_url.as_deref())
+            })
+            .unwrap_or("")
+            .to_string();
+        let profile = self
             .selected_provider
             .as_ref()
-            .and_then(|p| p.protocol.as_deref())
+            .and_then(|provider| provider.descriptor_candidate.as_ref())
+            .and_then(|descriptor| descriptor.profile.as_ref());
+        let adapter = self
+            .selected_provider
+            .as_ref()
+            .and_then(|provider| provider.protocol.as_deref())
             .map(display_protocol_label)
+            .unwrap_or("")
+            .to_string();
+        let descriptor_error = self
+            .selected_provider
+            .as_ref()
+            .and_then(|provider| provider.descriptor_candidate_error.as_deref())
             .unwrap_or("");
 
         // Mask the key: show first 4 chars then asterisks
@@ -1007,11 +1037,7 @@ impl ProviderDialog {
             ]),
             Line::from(vec![
                 Span::styled("Base URL: ", Style::default().fg(theme.text_muted)),
-                Span::styled(base_url, Style::default().fg(theme.text)),
-            ]),
-            Line::from(vec![
-                Span::styled("Protocol: ", Style::default().fg(theme.text_muted)),
-                Span::styled(protocol, Style::default().fg(theme.text)),
+                Span::styled(base_url.as_str(), Style::default().fg(theme.text)),
             ]),
             Line::from(""),
             Line::from(Span::styled(
@@ -1024,6 +1050,44 @@ impl ProviderDialog {
             )),
             Line::from(""),
         ];
+
+        if let Some(profile) = profile {
+            lines.splice(
+                4..4,
+                [
+                    Line::from(vec![
+                        Span::styled("API Family: ", Style::default().fg(theme.text_muted)),
+                        Span::styled(profile.api_family.as_str(), Style::default().fg(theme.text)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("API Shape: ", Style::default().fg(theme.text_muted)),
+                        Span::styled(profile.api_shape.as_str(), Style::default().fg(theme.text)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Transport: ", Style::default().fg(theme.text_muted)),
+                        Span::styled(profile.transport.as_str(), Style::default().fg(theme.text)),
+                    ]),
+                ],
+            );
+        } else if !adapter.is_empty() {
+            lines.insert(
+                4,
+                Line::from(vec![
+                    Span::styled("Adapter: ", Style::default().fg(theme.text_muted)),
+                    Span::styled(adapter.as_str(), Style::default().fg(theme.text)),
+                ]),
+            );
+        }
+
+        if !descriptor_error.is_empty() {
+            lines.insert(
+                lines.len().saturating_sub(4),
+                Line::from(vec![
+                    Span::styled("Descriptor: ", Style::default().fg(theme.text_muted)),
+                    Span::styled(descriptor_error, Style::default().fg(theme.error)),
+                ]),
+            );
+        }
 
         // Show submit result feedback
         if let Some(ref result) = self.submit_result {
@@ -1735,6 +1799,8 @@ mod tests {
             env_hint: "OPENAI_API_KEY".to_string(),
             base_url: Some("https://api.openai.com/v1".to_string()),
             protocol: Some("openai".to_string()),
+            descriptor_candidate: None,
+            descriptor_candidate_error: None,
             model_count: 3,
             status: ProviderStatus::Disconnected,
         }]);
@@ -1760,6 +1826,8 @@ fn provider_from_draft_match(entry: crate::api::KnownProviderEntry) -> Provider 
         env_hint: entry.env.first().cloned().unwrap_or_default(),
         base_url: entry.base_url,
         protocol: entry.protocol,
+        descriptor_candidate: None,
+        descriptor_candidate_error: None,
         model_count: entry.model_count,
         status: if entry.connected {
             ProviderStatus::Connected
@@ -1781,6 +1849,8 @@ pub fn provider_from_connect_draft(draft: &ProviderConnectDraft) -> Provider {
         env_hint: draft.env.first().cloned().unwrap_or_default(),
         base_url: draft.base_url.clone(),
         protocol: draft.protocol.clone(),
+        descriptor_candidate: None,
+        descriptor_candidate_error: None,
         model_count: draft.model_count,
         status: if draft.connected {
             ProviderStatus::Connected

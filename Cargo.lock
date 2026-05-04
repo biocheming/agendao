@@ -3630,6 +3630,7 @@ dependencies = [
  "reqwest",
  "reqwest-eventsource",
  "rocode-core",
+ "rocode-types",
  "rocode-util",
  "serde",
  "serde_json",

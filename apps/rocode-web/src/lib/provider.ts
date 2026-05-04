@@ -133,6 +133,31 @@ export interface ManagedProviderListResponseRecord {
   providers: ManagedProviderInfoRecord[];
 }
 
+export interface ProviderProfileDescriptorViewRecord {
+  provider_id: string;
+  npm: string;
+  api_family: string;
+  api_shape: string;
+  transport: string;
+  usage_shape: string;
+  cache_family: string;
+  quirks?: string[];
+}
+
+export interface ProviderConnectionDescriptorCandidateRecord {
+  provider_id: string;
+  name?: string | null;
+  base_url?: string | null;
+  env?: string[];
+  profile?: ProviderProfileDescriptorViewRecord | null;
+}
+
+export interface ProviderDescriptorResponseRecord {
+  provider_id: string;
+  descriptor_candidate?: ProviderConnectionDescriptorCandidateRecord | null;
+  descriptor_candidate_error?: string | null;
+}
+
 export interface RefreshProviderCatalogueResponseRecord {
   changed: boolean;
   generation_before: number;

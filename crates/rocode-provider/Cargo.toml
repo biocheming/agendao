@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 rocode-core = { path = "../rocode-core" }
+rocode-types = { path = "../rocode-types" }
 rocode-util = { path = "../rocode-util" }
 tokio = { workspace = true }
 serde = { workspace = true }
