@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
+  ConfigPolicyValidationItemRecord,
+  ConfigPolicyValidationOwnerRecord,
+  ConfigPolicyValidationSnapshotRecord,
+} from "@/lib/configPolicy";
+import type {
   MemoryConsolidationResponseRecord,
   MemoryConsolidationRunListResponseRecord,
   MemoryConflictResponseRecord,
@@ -74,6 +79,7 @@ type SettingsTabId =
   | "memory"
   | "providers"
   | "scheduler"
+  | "validation"
   | "skills"
   | "mcp"
   | "plugins"
@@ -203,6 +209,7 @@ const SETTINGS_TABS: Array<{ id: SettingsTabId; label: string }> = [
   { id: "memory", label: "Memory" },
   { id: "providers", label: "Providers" },
   { id: "scheduler", label: "Scheduler" },
+  { id: "validation", label: "Validation" },
   { id: "skills", label: "Skills" },
   { id: "mcp", label: "MCP" },
   { id: "plugins", label: "Plugins" },
@@ -219,6 +226,8 @@ function isolatedWorkspaceNotice(tab: SettingsTabId): string | null {
       return "Memory reads here come from the current workspace authority. In isolated mode, that means you are inspecting sandbox-local memory state rather than inherited global memory records.";
     case "scheduler":
       return "Scheduler edits here write global config. The active isolated sandbox will continue resolving scheduler behavior from its local workspace authority until you switch to shared mode or add matching workspace-local config.";
+    case "validation":
+      return "Validation here explains the persisted config snapshot behind this settings drawer. In isolated mode, the current sandbox runtime can still differ until matching workspace-local authority exists.";
     case "skills":
       return "Skill mutations here always target this workspace's .rocode/skills. In isolated mode, that means the current sandbox stays local and does not inherit or modify global skill config.";
     case "mcp":
@@ -276,6 +285,88 @@ function statusTone(status: string | null | undefined) {
     default:
       return "muted";
   }
+}
+
+function formatDateTime(ts?: number | null) {
+  if (!ts) return "--";
+  return new Date(ts).toLocaleString();
+}
+
+function validationSeverityTone(severity: string | null | undefined) {
+  switch ((severity || "").toLowerCase()) {
+    case "error":
+      return "danger";
+    case "warning":
+      return "warn";
+    default:
+      return "muted";
+  }
+}
+
+function validationOwnerLabel(owner: ConfigPolicyValidationOwnerRecord) {
+  switch (owner) {
+    case "scheduler":
+      return "Scheduler";
+    case "skill_tree":
+      return "Skill Tree";
+    case "provider_profile":
+      return "Provider Profile";
+    case "external_adapter":
+      return "External Adapter";
+  }
+}
+
+function validationEffectLabel(effect: string | null | undefined) {
+  switch ((effect || "").toLowerCase()) {
+    case "soft_fallback":
+      return "soft fallback";
+    case "fail_closed_bootstrap":
+      return "fail-closed bootstrap";
+    case "fail_closed_request_gate":
+      return "fail-closed request gate";
+    default:
+      return effect || "--";
+  }
+}
+
+function validationScopeLabel(scopeKind: string | null | undefined) {
+  switch ((scopeKind || "").toLowerCase()) {
+    case "scheduler_path":
+      return "scheduler path";
+    case "skill_tree":
+      return "skill tree";
+    case "provider":
+      return "provider";
+    case "external_adapter":
+      return "external adapter";
+    default:
+      return scopeKind || "--";
+  }
+}
+
+function validationJumpTarget(
+  item: ConfigPolicyValidationItemRecord,
+):
+  | {
+      tab: Extract<SettingsTabId, "providers" | "scheduler">;
+      label: string;
+      providerId?: string;
+    }
+  | null {
+  if (item.owner === "provider_profile") {
+    return {
+      tab: "providers",
+      label: "Open Providers",
+      providerId: item.scope.subject_id ?? undefined,
+    };
+  }
+  if (item.owner === "scheduler") {
+    return {
+      tab: "scheduler",
+      label: "Open Scheduler",
+    };
+  }
+  return null;
 }
 
 function emptyModelOverrideDraft(providerId = ""): ModelOverrideDraft {
@@ -380,6 +471,8 @@ export function SettingsDrawer({
   const [schedulerConfig, setSchedulerConfig] = useState<SchedulerConfigResponse | null>(null);
   const [schedulerPathDraft, setSchedulerPathDraft] = useState("");
   const [schedulerContentDraft, setSchedulerContentDraft] = useState("");
+  const [configValidation, setConfigValidation] =
+    useState<ConfigPolicyValidationSnapshotRecord | null>(null);
   const [memorySearchDraft, setMemorySearchDraft] = useState("");
   const [memoryListLoading, setMemoryListLoading] = useState(false);
   const [memoryListResponse, setMemoryListResponse] = useState<MemoryListResponseRecord | null>(null);
@@ -622,7 +715,44 @@ export function SettingsDrawer({
       ),
     [managedProviders],
   );
+  const validationReports = configValidation?.reports ?? [];
+  const validationGroups = useMemo(() => {
+    const groups: Array<{
+      owner: ConfigPolicyValidationOwnerRecord;
+      items: ConfigPolicyValidationItemRecord[];
+    }> = [];
+    for (const item of validationReports) {
+      const last = groups[groups.length - 1];
+      if (last && last.owner === item.owner) {
+        last.items.push(item);
+      } else {
+        groups.push({ owner: item.owner, items: [item] });
+      }
+    }
+    return groups;
+  }, [validationReports]);
+  const validationErrorCount = useMemo(
+    () => validationReports.filter((item) => item.severity === "error").length,
+    [validationReports],
+  );
+  const validationWarningCount = useMemo(
+    () => validationReports.filter((item) => item.severity === "warning").length,
+    [validationReports],
+  );
   const skillsMutationsEnabled = Boolean(selectedSessionId);
+  const jumpToValidationTarget = useCallback(
+    (item: ConfigPolicyValidationItemRecord) => {
+      const target = validationJumpTarget(item);
+      if (!target) {
+        return;
+      }
+      if (target.tab === "providers" && target.providerId) {
+        setSelectedManagedProviderId(target.providerId);
+      }
+      setActiveTab(target.tab);
+    },
+    [],
+  );
 
   const reloadSettingsData = useCallback(async () => {
     setRefreshing(true);
@@ -631,11 +761,12 @@ export function SettingsDrawer({
       const skillCatalogPath = selectedSessionId
         ? `/skill/catalog?session_id=${encodeURIComponent(selectedSessionId)}`
         : "/skill/catalog";
-      const [config, managed, scheduler, mcp, plugins, lsp, formatter, skills, skillHubManaged, skillHubIndex, skillHubDistributions, skillHubArtifactCache, skillHubPolicyResponse, skillHubLifecycle, skillHubAudit, skillHubTimeline] =
+      const [config, managed, scheduler, validation, mcp, plugins, lsp, formatter, skills, skillHubManaged, skillHubIndex, skillHubDistributions, skillHubArtifactCache, skillHubPolicyResponse, skillHubLifecycle, skillHubAudit, skillHubTimeline] =
         await Promise.all([
           apiJson<AppConfigSnapshot>("/config"),
           apiJson<{ providers: ManagedProviderInfoRecord[] }>("/provider/managed"),
           apiJson<SchedulerConfigResponse>("/config/scheduler"),
+          apiJson<ConfigPolicyValidationSnapshotRecord>("/config/validation").catch(() => null),
           apiJson<Record<string, McpStatusInfo>>("/mcp"),
           apiJson<PluginAuthProviderInfo[]>("/plugin/auth").catch(() => []),
           apiJson<LspStatus>("/lsp"),
@@ -655,6 +786,7 @@ export function SettingsDrawer({
       setSchedulerConfig(scheduler);
       setSchedulerPathDraft(scheduler.raw_path ?? "");
       setSchedulerContentDraft(scheduler.content ?? "");
+      setConfigValidation(validation);
       setMcpStatus(mcp ?? {});
       setMcpDrafts(
         Object.fromEntries(
@@ -1786,7 +1918,7 @@ export function SettingsDrawer({
         <header className="flex items-start justify-between gap-4 px-8 pt-8 pb-6">
           <div>
             <p className="m-0 mb-1.5 text-xs tracking-widest uppercase text-amber-700 font-bold">Settings</p>
-            <h2 className="text-xl font-semibold tracking-tight">General, providers, scheduler, skills, MCP, plugins, LSP</h2>
+            <h2 className="text-xl font-semibold tracking-tight">General, providers, scheduler, validation, skills, MCP, plugins, LSP</h2>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -2657,6 +2789,114 @@ export function SettingsDrawer({
                   <p className="flex flex-col items-center justify-center gap-3 text-muted-foreground py-8">No scheduler profiles parsed yet.</p>
                 )}
               </div>
+            </div>
+          ) : null}
+
+          {!loading && activeTab === "validation" ? (
+            <div className="grid gap-6">
+              <div className="grid gap-3 sm:grid-cols-4">
+                <div className={summaryCardClass}>
+                  <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Config Revision</span>
+                  <strong>{configValidation?.revision ?? "--"}</strong>
+                </div>
+                <div className={summaryCardClass}>
+                  <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Generated</span>
+                  <strong className="text-sm">{formatDateTime(configValidation?.generated_at_ms)}</strong>
+                </div>
+                <div className={summaryCardClass}>
+                  <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Errors</span>
+                  <strong>{configValidation ? validationErrorCount : "--"}</strong>
+                </div>
+                <div className={summaryCardClass}>
+                  <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Warnings</span>
+                  <strong>{configValidation ? validationWarningCount : "--"}</strong>
+                </div>
+              </div>
+
+              {!configValidation ? (
+                <div className={mutedCardClass}>
+                  Validation snapshot was unavailable during this refresh. The rest of the settings surface still reflects current config and owner-local inspections.
+                </div>
+              ) : null}
+
+              {configValidation && validationReports.length === 0 ? (
+                <div className={mutedCardClass}>
+                  No validation findings are present in the current config snapshot.
+                </div>
+              ) : null}
+
+              {configValidation && validationGroups.length > 0 ? (
+                validationGroups.map((group) => (
+                  <div key={group.owner} className="roc-section">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">
+                        {validationOwnerLabel(group.owner)}
+                      </p>
+                      <span className="text-sm text-muted-foreground">
+                        {group.items.length} finding{group.items.length === 1 ? "" : "s"}
+                      </span>
+                    </div>
+                    <div className="grid gap-3">
+                      {group.items.map((item) => {
+                        const jumpTarget = validationJumpTarget(item);
+                        return (
+                          <div
+                            key={`${item.owner}:${item.path}:${item.code}:${item.scope.subject_id ?? ""}`}
+                            className="rounded-lg border border-border/35 bg-card p-4 grid gap-3"
+                          >
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div className="grid gap-1">
+                                <strong>{item.code}</strong>
+                                <p className="m-0 text-sm text-muted-foreground leading-relaxed break-all">
+                                  <code>{item.path}</code>
+                                </p>
+                              </div>
+                              <div className="flex flex-wrap items-center justify-end gap-2">
+                                <span
+                                  className={cn(
+                                    "rounded-full border px-3 py-1.5 text-xs font-semibold",
+                                    validationSeverityTone(item.severity) === "danger"
+                                      ? "border-red-300 bg-red-50 text-red-800 dark:border-red-700 dark:bg-red-950 dark:text-red-300"
+                                      : validationSeverityTone(item.severity) === "warn"
+                                        ? "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                                        : "border-border bg-muted text-muted-foreground",
+                                  )}
+                                >
+                                  {item.severity}
+                                </span>
+                                <span className="rounded-full border border-border bg-muted px-3 py-1.5 text-xs font-semibold text-muted-foreground">
+                                  {validationEffectLabel(item.effect)}
+                                </span>
+                                {jumpTarget ? (
+                                  <button
+                                    className={secondaryButtonClass}
+                                    type="button"
+                                    onClick={() => jumpToValidationTarget(item)}
+                                  >
+                                    {jumpTarget.label}
+                                  </button>
+                                ) : null}
+                              </div>
+                            </div>
+                            <p className="m-0 text-sm leading-relaxed text-foreground">
+                              {item.message}
+                            </p>
+                            <div className="grid gap-1 text-sm text-muted-foreground">
+                              <p className="m-0">
+                                Scope: {validationScopeLabel(item.scope.kind)}
+                                {item.scope.subject_id ? ` · ${item.scope.subject_id}` : ""}
+                              </p>
+                              {item.fallback ? (
+                                <p className="m-0">Fallback: {item.fallback}</p>
+                              ) : null}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))
+              ) : null}
             </div>
           ) : null}
 

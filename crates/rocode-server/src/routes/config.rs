@@ -3,6 +3,7 @@ use axum::{
     routing::{get, put},
     Json, Router,
 };
+use chrono::Utc;
 use rocode_orchestrator::SchedulerConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -15,10 +16,20 @@ use crate::{Result, ServerState};
 use rocode_config::{
     Config as AppConfig, McpServerConfig, ModelConfig, PluginConfig, ProviderConfig,
 };
+use rocode_types::{
+    ConfigPolicyValidationEffect, ConfigPolicyValidationItem, ConfigPolicyValidationOwner,
+    ConfigPolicyValidationScope, ConfigPolicyValidationScopeKind, ConfigPolicyValidationSeverity,
+    ConfigPolicyValidationSnapshot,
+};
+
+use super::external_adapter::collect_external_adapter_config_validation;
+use super::provider::collect_provider_profile_validation;
+use super::session::collect_skill_tree_validation;
 
 pub(crate) fn config_routes() -> Router<Arc<ServerState>> {
     Router::new()
         .route("/", get(get_config).patch(patch_config))
+        .route("/validation", get(get_config_validation))
         .route("/providers", get(get_config_providers))
         .route(
             "/provider/{key}",
@@ -42,6 +53,12 @@ pub(crate) fn config_routes() -> Router<Arc<ServerState>> {
 async fn get_config(State(state): State<Arc<ServerState>>) -> Result<Json<AppConfig>> {
     let config = state.config_store.config();
     Ok(Json((*config).clone()))
+}
+
+async fn get_config_validation(
+    State(state): State<Arc<ServerState>>,
+) -> Result<Json<ConfigPolicyValidationSnapshot>> {
+    Ok(Json(build_config_policy_validation_snapshot(&state).await))
 }
 
 async fn patch_config(
@@ -351,9 +368,18 @@ fn merge_model_config(existing: &mut ModelConfig, patch: ModelConfig) {
 
 #[cfg(test)]
 mod tests {
-    use super::merge_model_config;
-    use rocode_config::ModelConfig;
+    use super::{build_config_policy_validation_snapshot, merge_model_config};
+    use crate::ServerState;
+    use rocode_config::{
+        CompositionConfig, Config, ConfigStore, ExternalAdapterConfig, ExternalAdapterEntryConfig,
+        ModelConfig, ProviderConfig, SkillTreeConfig, SkillTreeNodeConfig,
+    };
+    use rocode_types::{
+        ConfigPolicyValidationEffect, ConfigPolicyValidationOwner, ConfigPolicyValidationSeverity,
+    };
     use std::collections::HashMap;
+    use std::sync::Arc;
+    use tempfile::tempdir;
 
     #[test]
     fn merge_model_config_preserves_unedited_fields() {
@@ -434,6 +460,118 @@ mod tests {
             .as_ref()
             .is_some_and(|headers| !headers.contains_key("X-Old")));
     }
+
+    fn validation_state(config: Config) -> Arc<ServerState> {
+        let mut state = ServerState::new();
+        state.config_store = Arc::new(ConfigStore::new(config));
+        Arc::new(state)
+    }
+
+    #[tokio::test]
+    async fn config_validation_snapshot_collects_first_batch_owner_errors() {
+        let dir = tempdir().expect("tempdir");
+        let scheduler_path = dir.path().join("scheduler.jsonc");
+        std::fs::write(&scheduler_path, "{ invalid jsonc").expect("write invalid scheduler config");
+
+        let state = validation_state(Config {
+            scheduler_path: Some(scheduler_path.display().to_string()),
+            composition: Some(CompositionConfig {
+                skill_tree: Some(SkillTreeConfig {
+                    enabled: Some(true),
+                    root: Some(SkillTreeNodeConfig {
+                        node_id: "root".to_string(),
+                        markdown_path: "skill://root".to_string(),
+                        children: Vec::new(),
+                    }),
+                    truncation_strategy: Some("middle".to_string()),
+                    ..Default::default()
+                }),
+            }),
+            provider: Some(HashMap::from([(
+                "broken".to_string(),
+                ProviderConfig {
+                    api_style: Some("closeai-compatible".to_string()),
+                    api_shape: Some("messages".to_string()),
+                    transport: Some("bearer".to_string()),
+                    usage_shape: Some("closeai-cached-tokens".to_string()),
+                    ..Default::default()
+                },
+            )])),
+            external_adapter: Some(ExternalAdapterConfig {
+                adapters: HashMap::from([(
+                    "generic".to_string(),
+                    ExternalAdapterEntryConfig {
+                        enabled: Some(true),
+                        source: Some("generic-webhook".to_string()),
+                        ..Default::default()
+                    },
+                )]),
+                replay: None,
+            }),
+            ..Default::default()
+        });
+
+        let snapshot = build_config_policy_validation_snapshot(&state).await;
+
+        assert_eq!(snapshot.revision, 0);
+        assert_eq!(snapshot.reports.len(), 4);
+
+        let scheduler = snapshot
+            .reports
+            .iter()
+            .find(|item| item.owner == ConfigPolicyValidationOwner::Scheduler)
+            .expect("scheduler validation item");
+        assert_eq!(scheduler.path, "scheduler_path");
+        assert_eq!(scheduler.code, "scheduler_config_parse_error");
+        assert_eq!(scheduler.severity, ConfigPolicyValidationSeverity::Error);
+        assert_eq!(scheduler.effect, ConfigPolicyValidationEffect::SoftFallback);
+
+        let skill_tree = snapshot
+            .reports
+            .iter()
+            .find(|item| item.owner == ConfigPolicyValidationOwner::SkillTree)
+            .expect("skill tree validation item");
+        assert_eq!(
+            skill_tree.path,
+            "composition.skill_tree.truncation_strategy"
+        );
+        assert_eq!(skill_tree.code, "skill_tree_unknown_truncation_strategy");
+        assert_eq!(skill_tree.fallback.as_deref(), Some("head-tail"));
+
+        let provider = snapshot
+            .reports
+            .iter()
+            .find(|item| item.owner == ConfigPolicyValidationOwner::ProviderProfile)
+            .expect("provider validation item");
+        assert_eq!(provider.path, "provider.broken");
+        assert_eq!(provider.code, "provider_profile_invalid");
+        assert_eq!(
+            provider.effect,
+            ConfigPolicyValidationEffect::FailClosedBootstrap
+        );
+
+        let adapter = snapshot
+            .reports
+            .iter()
+            .find(|item| item.owner == ConfigPolicyValidationOwner::ExternalAdapter)
+            .expect("external adapter validation item");
+        assert_eq!(adapter.path, "external_adapter.adapters.generic.secret_ref");
+        assert_eq!(adapter.code, "external_adapter_missing_secret_ref");
+        assert_eq!(
+            adapter.effect,
+            ConfigPolicyValidationEffect::FailClosedRequestGate
+        );
+    }
+
+    #[tokio::test]
+    async fn config_validation_snapshot_is_empty_for_clean_config() {
+        let state = validation_state(Config::default());
+        let snapshot = build_config_policy_validation_snapshot(&state).await;
+
+        assert_eq!(snapshot.revision, 0);
+        assert!(snapshot.generated_at_ms > 0);
+        assert!(snapshot.reports.is_empty());
+    }
 }
 
 async fn delete_plugin_config(
@@ -511,6 +649,18 @@ struct PutSchedulerConfigRequest {
     content: String,
 }
 
+#[derive(Debug)]
+struct SchedulerConfigInspection {
+    raw_path: Option<String>,
+    resolved_path: Option<String>,
+    exists: bool,
+    content: String,
+    default_profile: Option<String>,
+    profiles: Vec<SchedulerProfileSummary>,
+    parse_error: Option<String>,
+    read_error: Option<String>,
+}
+
 fn summarize_scheduler_profiles(
     content: &str,
 ) -> (Option<String>, Vec<SchedulerProfileSummary>, Option<String>) {
@@ -544,9 +694,7 @@ fn summarize_scheduler_profiles(
     }
 }
 
-async fn scheduler_config_response(
-    state: &Arc<ServerState>,
-) -> Result<Json<SchedulerConfigResponse>> {
+async fn inspect_scheduler_config(state: &Arc<ServerState>) -> SchedulerConfigInspection {
     let config = state.config_store.config();
     let raw_path = config
         .scheduler_path
@@ -555,18 +703,27 @@ async fn scheduler_config_response(
         .filter(|value| !value.is_empty())
         .map(str::to_string);
     let resolved_path = state.config_store.resolved_scheduler_path().await;
+    let resolved_path_string = resolved_path
+        .as_ref()
+        .map(|path| path.display().to_string());
 
-    let (exists, content) = match resolved_path.as_ref() {
+    let (exists, content, read_error) = match resolved_path.as_ref() {
         Some(path) => match fs::read_to_string(path).await {
-            Ok(content) => (true, content),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (false, String::new()),
-            Err(error) => {
-                return Err(crate::ApiError::InternalError(format!(
-                    "failed to read scheduler config: {error}"
-                )));
+            Ok(content) => (true, content, None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                (false, String::new(), None)
             }
+            Err(error) => (false, String::new(), Some(error.to_string())),
         },
-        None => (false, String::new()),
+        None if raw_path.is_some() => (
+            false,
+            String::new(),
+            Some(
+                "configured scheduler_path could not be resolved against a project directory"
+                    .to_string(),
+            ),
+        ),
+        None => (false, String::new(), None),
     };
 
     let (default_profile, profiles, parse_error) = if content.trim().is_empty() {
@@ -575,15 +732,108 @@ async fn scheduler_config_response(
         summarize_scheduler_profiles(&content)
     };
 
-    Ok(Json(SchedulerConfigResponse {
+    SchedulerConfigInspection {
         raw_path,
-        resolved_path: resolved_path.map(|path| path.display().to_string()),
+        resolved_path: resolved_path_string,
         exists,
         content,
         default_profile,
         profiles,
         parse_error,
+        read_error,
+    }
+}
+
+async fn scheduler_config_response(
+    state: &Arc<ServerState>,
+) -> Result<Json<SchedulerConfigResponse>> {
+    let inspection = inspect_scheduler_config(state).await;
+    if let Some(error) = inspection.read_error.as_deref() {
+        return Err(crate::ApiError::InternalError(format!(
+            "failed to read scheduler config: {error}"
+        )));
+    }
+
+    Ok(Json(SchedulerConfigResponse {
+        raw_path: inspection.raw_path,
+        resolved_path: inspection.resolved_path,
+        exists: inspection.exists,
+        content: inspection.content,
+        default_profile: inspection.default_profile,
+        profiles: inspection.profiles,
+        parse_error: inspection.parse_error,
     }))
+}
+
+async fn collect_scheduler_config_validation(
+    state: &Arc<ServerState>,
+) -> Vec<ConfigPolicyValidationItem> {
+    let inspection = inspect_scheduler_config(state).await;
+    let Some(raw_path) = inspection.raw_path.as_deref() else {
+        return Vec::new();
+    };
+
+    let base_item = |code: &str, message: String| ConfigPolicyValidationItem {
+        owner: ConfigPolicyValidationOwner::Scheduler,
+        scope: ConfigPolicyValidationScope {
+            kind: ConfigPolicyValidationScopeKind::SchedulerPath,
+            subject_id: None,
+        },
+        path: "scheduler_path".to_string(),
+        severity: ConfigPolicyValidationSeverity::Error,
+        effect: ConfigPolicyValidationEffect::SoftFallback,
+        code: code.to_string(),
+        message,
+        fallback: None,
+    };
+
+    if !inspection.exists {
+        if let Some(error) = inspection.read_error {
+            return vec![base_item(
+                "scheduler_config_unreadable",
+                format!("Configured scheduler_path `{raw_path}` could not be read: {error}"),
+            )];
+        }
+
+        let location = inspection.resolved_path.as_deref().unwrap_or(raw_path);
+        return vec![base_item(
+            "scheduler_config_missing",
+            format!("Configured scheduler_path `{raw_path}` does not exist at `{location}`."),
+        )];
+    }
+
+    if let Some(error) = inspection.parse_error {
+        return vec![base_item(
+            "scheduler_config_parse_error",
+            format!("Configured scheduler_path `{raw_path}` could not be parsed: {error}"),
+        )];
+    }
+
+    Vec::new()
+}
+
+async fn build_config_policy_validation_snapshot(
+    state: &Arc<ServerState>,
+) -> ConfigPolicyValidationSnapshot {
+    let config = state.config_store.config();
+    let mut reports = collect_scheduler_config_validation(state).await;
+    reports.extend(collect_skill_tree_validation(&config));
+    reports.extend(collect_provider_profile_validation(&config));
+    reports.extend(collect_external_adapter_config_validation(&config));
+    reports.sort_by(|left, right| {
+        left.owner
+            .cmp(&right.owner)
+            .then_with(|| left.scope.kind.cmp(&right.scope.kind))
+            .then_with(|| left.scope.subject_id.cmp(&right.scope.subject_id))
+            .then_with(|| left.path.cmp(&right.path))
+            .then_with(|| left.code.cmp(&right.code))
+    });
+
+    ConfigPolicyValidationSnapshot {
+        revision: state.config_store.revision(),
+        generated_at_ms: Utc::now().timestamp_millis(),
+        reports,
+    }
 }
 
 async fn get_scheduler_config(

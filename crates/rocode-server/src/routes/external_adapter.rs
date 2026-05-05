@@ -11,6 +11,8 @@ use rocode_storage::{
     ExternalAdapterReplayRepository,
 };
 use rocode_types::{
+    ConfigPolicyValidationEffect, ConfigPolicyValidationItem, ConfigPolicyValidationOwner,
+    ConfigPolicyValidationScope, ConfigPolicyValidationScopeKind, ConfigPolicyValidationSeverity,
     ExternalAdapterEvent, ExternalAdapterResolvedBinding, ExternalAdapterSource,
     ExternalAdapterValidationError,
 };
@@ -26,6 +28,81 @@ pub(crate) fn external_adapter_routes() -> Router<Arc<ServerState>> {
         .route("/generic-webhook/parse", post(parse_generic_webhook))
         .route("/generic-webhook/verify", post(verify_generic_webhook))
         .route("/generic-webhook/run", post(run_generic_webhook))
+}
+
+pub(crate) fn collect_external_adapter_config_validation(
+    config: &Config,
+) -> Vec<ConfigPolicyValidationItem> {
+    let Some(external) = config.external_adapter.as_ref() else {
+        return Vec::new();
+    };
+
+    let mut adapter_ids = external.adapters.keys().cloned().collect::<Vec<_>>();
+    adapter_ids.sort();
+
+    adapter_ids
+        .into_iter()
+        .filter_map(|adapter_id| {
+            let adapter = external.adapters.get(&adapter_id)?;
+            external_adapter_missing_secret_ref_item(&adapter_id, adapter)
+        })
+        .collect()
+}
+
+fn external_adapter_missing_secret_ref_item(
+    adapter_id: &str,
+    adapter: &ExternalAdapterEntryConfig,
+) -> Option<ConfigPolicyValidationItem> {
+    if adapter.enabled == Some(false) {
+        return None;
+    }
+
+    let source = adapter
+        .source
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    if source != ExternalAdapterSource::GenericWebhook.as_str() {
+        return None;
+    }
+
+    if adapter
+        .secret_ref
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+    {
+        return None;
+    }
+
+    let adapter_id = adapter_id.trim();
+    let subject_id = (!adapter_id.is_empty()).then(|| adapter_id.to_string());
+    let path = if let Some(subject_id) = subject_id.as_deref() {
+        format!("external_adapter.adapters.{subject_id}.secret_ref")
+    } else {
+        "external_adapter.adapters".to_string()
+    };
+    let label = if adapter_id.is_empty() {
+        "<unknown>"
+    } else {
+        adapter_id
+    };
+
+    Some(ConfigPolicyValidationItem {
+        owner: ConfigPolicyValidationOwner::ExternalAdapter,
+        scope: ConfigPolicyValidationScope {
+            kind: ConfigPolicyValidationScopeKind::ExternalAdapter,
+            subject_id,
+        },
+        path,
+        severity: ConfigPolicyValidationSeverity::Error,
+        effect: ConfigPolicyValidationEffect::FailClosedRequestGate,
+        code: "external_adapter_missing_secret_ref".to_string(),
+        message: format!(
+            "External adapter `{label}` is configured for generic-webhook but does not declare secret_ref."
+        ),
+        fallback: None,
+    })
 }
 
 async fn parse_generic_webhook(

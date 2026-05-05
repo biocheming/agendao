@@ -13,7 +13,11 @@ use rocode_config::ModelConfig;
 use rocode_provider::{
     provider_connection_descriptor_candidate_from_config_provider, AuthInfo, AuthMethodType,
     CatalogRefreshStatus, CatalogSnapshot, ConfigProvider, ModelsData, ModelsDevInfo,
-    ProviderConnectionDescriptorCandidate,
+    ProviderConnectionDescriptorCandidate, ProviderDescriptorError, ProviderProfileError,
+};
+use rocode_types::{
+    ConfigPolicyValidationEffect, ConfigPolicyValidationItem, ConfigPolicyValidationOwner,
+    ConfigPolicyValidationScope, ConfigPolicyValidationScopeKind, ConfigPolicyValidationSeverity,
 };
 
 pub(crate) fn provider_routes() -> Router<Arc<ServerState>> {
@@ -953,11 +957,10 @@ fn managed_provider_auth_type(auth: Option<&AuthInfo>) -> Option<String> {
     }
 }
 
-fn configured_provider_to_descriptor_candidate(
-    provider_id: &str,
+fn configured_provider_to_bootstrap_provider(
     provider: &rocode_config::ProviderConfig,
-) -> std::result::Result<ProviderConnectionDescriptorCandidate, String> {
-    let bootstrap_provider = ConfigProvider {
+) -> ConfigProvider {
+    ConfigProvider {
         name: provider.name.clone(),
         env: provider.env.clone(),
         api: provider.base_url.clone(),
@@ -968,9 +971,22 @@ fn configured_provider_to_descriptor_candidate(
         usage_shape: provider.usage_shape.clone(),
         quirks: (!provider.quirks.is_empty()).then_some(provider.quirks.clone()),
         ..Default::default()
-    };
+    }
+}
 
+fn configured_provider_to_descriptor_candidate_result(
+    provider_id: &str,
+    provider: &rocode_config::ProviderConfig,
+) -> std::result::Result<ProviderConnectionDescriptorCandidate, ProviderDescriptorError> {
+    let bootstrap_provider = configured_provider_to_bootstrap_provider(provider);
     provider_connection_descriptor_candidate_from_config_provider(provider_id, &bootstrap_provider)
+}
+
+fn configured_provider_to_descriptor_candidate(
+    provider_id: &str,
+    provider: &rocode_config::ProviderConfig,
+) -> std::result::Result<ProviderConnectionDescriptorCandidate, String> {
+    configured_provider_to_descriptor_candidate_result(provider_id, provider)
         .map_err(|error| error.to_string())
 }
 
@@ -985,6 +1001,87 @@ fn provider_descriptor_projection(
         Ok(candidate) => (Some(candidate), None),
         Err(error) => (None, Some(error)),
     }
+}
+
+pub(crate) fn collect_provider_profile_validation(
+    config: &rocode_config::Config,
+) -> Vec<ConfigPolicyValidationItem> {
+    let Some(providers) = config.provider.as_ref() else {
+        return Vec::new();
+    };
+
+    let mut provider_ids = providers.keys().cloned().collect::<Vec<_>>();
+    provider_ids.sort();
+
+    provider_ids
+        .into_iter()
+        .filter_map(|provider_id| {
+            let provider = providers.get(&provider_id)?;
+            let error =
+                configured_provider_to_descriptor_candidate_result(&provider_id, provider).err()?;
+            Some(provider_profile_validation_item(&provider_id, &error))
+        })
+        .collect()
+}
+
+fn provider_profile_validation_item(
+    provider_id: &str,
+    error: &ProviderDescriptorError,
+) -> ConfigPolicyValidationItem {
+    ConfigPolicyValidationItem {
+        owner: ConfigPolicyValidationOwner::ProviderProfile,
+        scope: ConfigPolicyValidationScope {
+            kind: ConfigPolicyValidationScopeKind::Provider,
+            subject_id: normalized_subject_id(provider_id),
+        },
+        path: provider_profile_validation_path(provider_id, error),
+        severity: ConfigPolicyValidationSeverity::Error,
+        effect: ConfigPolicyValidationEffect::FailClosedBootstrap,
+        code: "provider_profile_invalid".to_string(),
+        message: error.to_string(),
+        fallback: None,
+    }
+}
+
+fn provider_profile_validation_path(provider_id: &str, error: &ProviderDescriptorError) -> String {
+    let provider_id = provider_id.trim();
+    let root = if provider_id.is_empty() {
+        "provider".to_string()
+    } else {
+        format!("provider.{provider_id}")
+    };
+
+    match error {
+        ProviderDescriptorError::MissingProviderId => root,
+        ProviderDescriptorError::InvalidProfile(profile_error) => {
+            match provider_profile_error_field(profile_error) {
+                Some(field) => format!("{root}.{field}"),
+                None => root,
+            }
+        }
+    }
+}
+
+fn provider_profile_error_field(error: &ProviderProfileError) -> Option<&'static str> {
+    match error {
+        ProviderProfileError::UnsupportedValue { field, .. }
+        | ProviderProfileError::MissingField(field) => match field.as_str() {
+            "api_style" => Some("api_style"),
+            "api_shape" => Some("api_shape"),
+            "transport" => Some("transport"),
+            "usage_shape" => Some("usage_shape"),
+            "quirks" => Some("quirks"),
+            _ => None,
+        },
+        ProviderProfileError::InvalidConfig(_) | ProviderProfileError::InvalidCombination(_) => {
+            None
+        }
+    }
+}
+
+fn normalized_subject_id(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 fn provider_descriptor_response(
