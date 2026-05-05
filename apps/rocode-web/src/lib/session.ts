@@ -77,6 +77,31 @@ export interface SessionRecord {
   };
 }
 
+export interface ExternalAdapterResolvedBindingRecord {
+  session_id: string;
+  actor_id: string;
+  workspace_id: string;
+  route_policy_id?: string | null;
+}
+
+export interface ProvisionExternalAdapterSessionRequestRecord {
+  adapter_id: string;
+  actor_id: string;
+  workspace_id?: string | null;
+  route_policy_id?: string | null;
+  scheduler_profile?: string | null;
+  directory?: string | null;
+  project_id?: string | null;
+  title?: string | null;
+}
+
+export interface ProvisionExternalAdapterSessionResponseRecord {
+  adapter: string;
+  source: string;
+  binding: ExternalAdapterResolvedBindingRecord;
+  session: SessionRecord;
+}
+
 export interface SessionListContractRecord {
   filter_query_parameters: string[];
   search_fields: string[];

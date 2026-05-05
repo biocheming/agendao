@@ -1,6 +1,7 @@
 use axum::{extract::State, http::HeaderMap, routing::post, Json, Router};
 use chrono::Utc;
 use hmac::{Hmac, Mac};
+use rocode_api::{ProvisionExternalAdapterSessionRequest, ProvisionExternalAdapterSessionResponse};
 use rocode_config::{Config, ExternalAdapterEntryConfig};
 use rocode_provider::AuthManager;
 use rocode_session::prompt::{
@@ -255,33 +256,6 @@ struct GenericWebhookParseResponse {
 struct GenericWebhookRunResponse {
     pub verification: GenericWebhookParseResponse,
     pub session: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProvisionExternalAdapterSessionRequest {
-    pub adapter_id: String,
-    pub actor_id: String,
-    #[serde(default)]
-    pub workspace_id: Option<String>,
-    #[serde(default)]
-    pub route_policy_id: Option<String>,
-    #[serde(default)]
-    pub scheduler_profile: Option<String>,
-    #[serde(default)]
-    pub directory: Option<String>,
-    #[serde(default)]
-    pub project_id: Option<String>,
-    #[serde(default)]
-    pub title: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct ProvisionExternalAdapterSessionResponse {
-    pub adapter: String,
-    pub source: ExternalAdapterSource,
-    pub binding: ExternalAdapterResolvedBinding,
-    pub session: rocode_types::SessionInfo,
 }
 
 #[derive(Debug)]

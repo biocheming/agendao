@@ -1,21 +1,53 @@
+use crate::api_client::{
+    CliApiClient, ProvisionExternalAdapterSessionRequest, ProvisionExternalAdapterSessionResponse,
+};
 use rocode_storage::{Database, MessageRepository, SessionRepository};
 
-use crate::cli::{SessionCommands, SessionListFormat};
+use crate::cli::{SessionCommands, SessionListFormat, SessionProvisionFormat};
+use crate::server_lifecycle::FrontendRuntimeContext;
 use crate::util::truncate_text;
 
-pub(crate) async fn handle_session_command(action: SessionCommands) -> anyhow::Result<()> {
-    let db = Database::new()
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to open session database: {}", e))?;
-    let session_repo = SessionRepository::new(db.pool().clone());
-    let message_repo = MessageRepository::new(db.pool().clone());
-
+pub(crate) async fn handle_session_command(
+    action: SessionCommands,
+    runtime_context: &FrontendRuntimeContext,
+) -> anyhow::Result<()> {
     match action {
+        SessionCommands::ProvisionExternalAdapter {
+            adapter_id,
+            actor_id,
+            workspace_id,
+            route_policy_id,
+            scheduler_profile,
+            directory,
+            project_id,
+            title,
+            format,
+        } => {
+            let client = session_client(runtime_context).await?;
+            let response = client
+                .provision_external_adapter_session(&ProvisionExternalAdapterSessionRequest {
+                    adapter_id,
+                    actor_id,
+                    workspace_id,
+                    route_policy_id,
+                    scheduler_profile,
+                    directory: directory.map(|path| path.display().to_string()),
+                    project_id,
+                    title,
+                })
+                .await?;
+            print_provisioned_external_adapter_session(&response, format)?;
+            return Ok(());
+        }
         SessionCommands::List {
             max_count,
             format,
             project,
         } => {
+            let db = Database::new()
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to open session database: {}", e))?;
+            let session_repo = SessionRepository::new(db.pool().clone());
             let limit = max_count.unwrap_or(50).max(1);
             let sessions = session_repo
                 .list(project.as_deref(), limit)
@@ -61,6 +93,11 @@ pub(crate) async fn handle_session_command(action: SessionCommands) -> anyhow::R
             }
         }
         SessionCommands::Show { session_id } => {
+            let db = Database::new()
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to open session database: {}", e))?;
+            let session_repo = SessionRepository::new(db.pool().clone());
+            let message_repo = MessageRepository::new(db.pool().clone());
             let Some(session) = session_repo
                 .get(&session_id)
                 .await
@@ -85,6 +122,11 @@ pub(crate) async fn handle_session_command(action: SessionCommands) -> anyhow::R
             println!("  Messages: {}", messages.len());
         }
         SessionCommands::Delete { session_id } => {
+            let db = Database::new()
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to open session database: {}", e))?;
+            let session_repo = SessionRepository::new(db.pool().clone());
+            let message_repo = MessageRepository::new(db.pool().clone());
             message_repo
                 .delete_for_session(&session_id)
                 .await
@@ -96,5 +138,37 @@ pub(crate) async fn handle_session_command(action: SessionCommands) -> anyhow::R
             println!("Session {} deleted.", session_id);
         }
     }
+    Ok(())
+}
+
+async fn session_client(runtime_context: &FrontendRuntimeContext) -> anyhow::Result<CliApiClient> {
+    let base_url = runtime_context.discover_or_start_server(None).await?;
+    Ok(CliApiClient::new(base_url))
+}
+
+fn print_provisioned_external_adapter_session(
+    response: &ProvisionExternalAdapterSessionResponse,
+    format: SessionProvisionFormat,
+) -> anyhow::Result<()> {
+    match format {
+        SessionProvisionFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(response)?);
+        }
+        SessionProvisionFormat::Text => {
+            println!("Provisioned external adapter session");
+            println!("  Session: {}", response.session.id);
+            println!("  Adapter: {}", response.adapter);
+            println!("  Source: {}", response.source.as_str());
+            println!("  Actor: {}", response.binding.actor_id);
+            println!("  Workspace: {}", response.binding.workspace_id);
+            println!(
+                "  Route policy: {}",
+                response.binding.route_policy_id.as_deref().unwrap_or("--")
+            );
+            println!("  Title: {}", response.session.title);
+            println!("  Directory: {}", response.session.directory);
+        }
+    }
+
     Ok(())
 }

@@ -16,12 +16,13 @@ pub use rocode_session::{
 pub use rocode_types::{
     ConfigPolicyValidationEffect, ConfigPolicyValidationItem, ConfigPolicyValidationOwner,
     ConfigPolicyValidationScope, ConfigPolicyValidationScopeKind, ConfigPolicyValidationSeverity,
-    ConfigPolicyValidationSnapshot, ManagedSkillRecord, MemoryConflictResponse,
-    MemoryConsolidationRequest, MemoryConsolidationResponse, MemoryConsolidationRunListResponse,
-    MemoryConsolidationRunQuery, MemoryDetailView, MemoryListQuery, MemoryListResponse,
-    MemoryRetrievalPreviewResponse, MemoryRetrievalQuery, MemoryRuleHitListResponse,
-    MemoryRuleHitQuery, MemoryRulePackListResponse, MemoryScope, MemoryValidationReportResponse,
-    ProposalStatus, ProviderConnectionDescriptorCandidate, ProviderProfileDescriptorView,
+    ConfigPolicyValidationSnapshot, ExternalAdapterResolvedBinding, ExternalAdapterSource,
+    ManagedSkillRecord, MemoryConflictResponse, MemoryConsolidationRequest,
+    MemoryConsolidationResponse, MemoryConsolidationRunListResponse, MemoryConsolidationRunQuery,
+    MemoryDetailView, MemoryListQuery, MemoryListResponse, MemoryRetrievalPreviewResponse,
+    MemoryRetrievalQuery, MemoryRuleHitListResponse, MemoryRuleHitQuery,
+    MemoryRulePackListResponse, MemoryScope, MemoryValidationReportResponse, ProposalStatus,
+    ProviderConnectionDescriptorCandidate, ProviderProfileDescriptorView,
     SessionEffectiveCompactionPolicy, SessionEffectiveExternalAdapterPolicy,
     SessionEffectiveMemoryPolicy, SessionEffectivePolicyView, SessionEffectiveProviderPolicy,
     SessionEffectiveProviderRuntimeProfile, SessionEffectiveSchedulerPolicy,
@@ -670,6 +671,33 @@ pub struct CreateSessionRequest {
     pub directory: Option<String>,
     pub project_id: Option<String>,
     pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvisionExternalAdapterSessionRequest {
+    pub adapter_id: String,
+    pub actor_id: String,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub route_policy_id: Option<String>,
+    #[serde(default)]
+    pub scheduler_profile: Option<String>,
+    #[serde(default)]
+    pub directory: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProvisionExternalAdapterSessionResponse {
+    pub adapter: String,
+    pub source: ExternalAdapterSource,
+    pub binding: ExternalAdapterResolvedBinding,
+    pub session: SessionInfo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

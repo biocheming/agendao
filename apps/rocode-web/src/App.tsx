@@ -43,6 +43,7 @@ import {
 import {
   buildWebSessionUrl,
   readWebSessionRoute,
+  type WebExternalAdapterProvisioningRoute,
   writeWebSessionRoute,
 } from "./lib/webSessionUrl";
 import {
@@ -82,6 +83,8 @@ import {
   questionInteractionFromInfo,
 } from "./lib/interaction";
 import type {
+  ProvisionExternalAdapterSessionRequestRecord,
+  ProvisionExternalAdapterSessionResponseRecord,
   PendingCommandInvocationRecord,
   SessionListResponseRecord,
   SessionRecord,
@@ -1497,6 +1500,49 @@ export default function App() {
     return normalizeSessionRecords(sessionData?.items ?? []);
   };
 
+  const provisionExternalAdapterSession = useCallback(
+    async (
+      route: WebExternalAdapterProvisioningRoute,
+      options: { replace?: boolean } = {},
+    ): Promise<string> => {
+      const request: ProvisionExternalAdapterSessionRequestRecord = {
+        adapter_id: route.adapterId,
+        actor_id: route.actorId,
+        workspace_id: route.workspaceId,
+        route_policy_id: route.routePolicyId,
+        scheduler_profile: route.schedulerProfile,
+        directory: route.directory,
+        project_id: route.projectId,
+        title: route.title,
+      };
+      const provisioned = await apiJson<ProvisionExternalAdapterSessionResponseRecord>(
+        "/external-adapter/session/provision",
+        {
+          method: "POST",
+          body: JSON.stringify(request),
+        },
+      );
+      const normalized = normalizeSessionRecord(provisioned.session);
+      setSessions((current) =>
+        normalizeSessionRecords([normalized, ...current.filter((item) => item.id !== normalized.id)]),
+      );
+      setCurrentWorkspacePath(
+        (current) => normalized.directory?.trim() || request.directory?.trim() || current,
+      );
+      writeWebSessionRoute(
+        {
+          sessionId: normalized.id,
+          messageId: null,
+          highlightIds: [],
+          externalProvisioning: null,
+        },
+        { replace: options.replace ?? true },
+      );
+      return normalized.id;
+    },
+    [apiJson],
+  );
+
   const copyMessageLink = async (message: FeedMessage) => {
     if (!selectedSessionId || !message.anchorId) return;
     const relative = buildWebSessionUrl({
@@ -1623,14 +1669,37 @@ export default function App() {
   }, [selectedSessionId]);
 
   useEffect(() => {
+    let active = true;
+
     const handlePopState = () => {
       const route = readWebSessionRoute();
+      if (!route.sessionId && route.externalProvisioning) {
+        void (async () => {
+          try {
+            const sessionId = await provisionExternalAdapterSession(
+              route.externalProvisioning!,
+              { replace: true },
+            );
+            if (!active) return;
+            routeSyncSourceRef.current = "browser";
+            setSelectedSessionId(sessionId);
+          } catch (error) {
+            if (active) {
+              setBanner(`Failed to provision external adapter session: ${formatError(error)}`);
+            }
+          }
+        })();
+        return;
+      }
       routeSyncSourceRef.current = "browser";
       setSelectedSessionId(route.sessionId);
     };
     window.addEventListener("popstate", handlePopState);
-    return () => window.removeEventListener("popstate", handlePopState);
-  }, []);
+    return () => {
+      active = false;
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, [provisionExternalAdapterSession]);
 
   useEffect(() => {
     autoPreviewSignatureRef.current = "";
@@ -1708,6 +1777,23 @@ export default function App() {
 
     const loadBootstrap = async () => {
       try {
+        const initialRoute = readWebSessionRoute();
+        let routeSessionId = initialRoute.sessionId;
+        let routeSessionProvisioned = false;
+        if (!routeSessionId && initialRoute.externalProvisioning) {
+          try {
+            routeSessionId = await provisionExternalAdapterSession(
+              initialRoute.externalProvisioning,
+              { replace: true },
+            );
+            routeSessionProvisioned = true;
+          } catch (error) {
+            if (!cancelled) {
+              setBanner(`Failed to provision external adapter session: ${formatError(error)}`);
+            }
+          }
+        }
+
         const [sessionData, providersData, modeData, context, connectSchema, paths] = await Promise.all([
           fetchSessions(),
           apiJson<ConfigProvidersResponseRecord>("/config/providers"),
@@ -1740,11 +1826,16 @@ export default function App() {
         setSelectedModel(prefs.model);
         setShowThinking(prefs.showThinking);
         setConnectProtocol((current) => current || connectSchema.protocols?.[0]?.id || "");
-        const routeSessionId = readWebSessionRoute().sessionId;
         const routeSessionExists = Boolean(
           routeSessionId && sessionData.some((session) => session.id === routeSessionId),
         );
-        setSelectedSessionId((current) => current ?? (routeSessionExists ? routeSessionId : sessionData[0]?.id ?? null));
+        setSelectedSessionId(
+          (current) =>
+            current
+            ?? (routeSessionProvisioned || routeSessionExists
+              ? routeSessionId
+              : sessionData[0]?.id ?? null),
+        );
         preferencesReadyRef.current = true;
       } catch (error) {
         if (!cancelled) {
@@ -1757,7 +1848,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [apiJson, provisionExternalAdapterSession]);
 
   useEffect(() => {
     let cancelled = false;
