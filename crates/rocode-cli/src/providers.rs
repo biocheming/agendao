@@ -247,9 +247,8 @@ async fn load_plugin_auth_store(
     rocode_plugin::set_global_loader(loader.clone());
 
     let directory = cwd.to_string_lossy().to_string();
-    let server_url = std::env::var("ROCODE_SERVER_URL")
-        .or_else(|_| std::env::var("OPENCODE_SERVER_URL"))
-        .unwrap_or_else(|_| DEFAULT_PLUGIN_SERVER_URL.into());
+    let server_url =
+        std::env::var("ROCODE_SERVER_URL").unwrap_or_else(|_| DEFAULT_PLUGIN_SERVER_URL.into());
     let context = PluginContext {
         worktree: directory.clone(),
         directory,

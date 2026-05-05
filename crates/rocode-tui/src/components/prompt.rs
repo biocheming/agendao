@@ -936,7 +936,7 @@ impl Prompt {
             }
         } else {
             for item in self.history.iter().rev().cloned() {
-                let history_score = legacy_subsequence_score(token.as_str(), item.as_str());
+                let history_score = subsequence_score(token.as_str(), item.as_str());
                 Self::push_candidate(
                     &mut scored,
                     &mut dedup,
@@ -1464,7 +1464,7 @@ fn render_prompt_continuation_row<S: RenderSurface>(
     surface.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn legacy_subsequence_score(query: &str, target: &str) -> Option<i32> {
+fn subsequence_score(query: &str, target: &str) -> Option<i32> {
     let query_lower = query.trim().to_lowercase();
     if query_lower.is_empty() {
         return Some(0);
@@ -1509,7 +1509,6 @@ fn prompt_agent_color(theme: &Theme, agent_name: &str) -> Color {
 
 fn spinner_mode_from_env() -> SpinnerMode {
     match std::env::var("ROCODE_TUI_SPINNER")
-        .or_else(|_| std::env::var("OPENCODE_TUI_SPINNER"))
         .ok()
         .unwrap_or_default()
         .trim()
@@ -1585,7 +1584,6 @@ fn next_char_boundary(input: &str, cursor_position: usize) -> Option<usize> {
 
 fn prompt_state_dir() -> PathBuf {
     let base = std::env::var("ROCODE_STATE_DIR")
-        .or_else(|_| std::env::var("OPENCODE_STATE_DIR"))
         .ok()
         .filter(|v| !v.trim().is_empty())
         .map(PathBuf::from)

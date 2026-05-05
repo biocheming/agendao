@@ -81,8 +81,7 @@ use self::mappers::{
     map_api_todo, map_mcp_status, provider_from_model,
 };
 use self::server_events::{
-    env_var_enabled, env_var_with_fallback, resolve_tui_base_url, spawn_server_event_listener_task,
-    SessionFilter,
+    env_var, env_var_enabled, resolve_tui_base_url, spawn_server_event_listener_task, SessionFilter,
 };
 use self::support::{
     append_execution_status_node, apply_selected_mode, current_mode_label, default_export_filename,
@@ -316,7 +315,7 @@ impl App {
             .agent_name
             .as_deref()
             .map(str::to_string)
-            .or_else(|| env_var_with_fallback("ROCODE_TUI_AGENT", "OPENCODE_TUI_AGENT"))
+            .or_else(|| env_var("ROCODE_TUI_AGENT"))
         {
             let agent = agent.trim();
             if !agent.is_empty() {
@@ -327,7 +326,7 @@ impl App {
             .model
             .as_deref()
             .map(str::to_string)
-            .or_else(|| env_var_with_fallback("ROCODE_TUI_MODEL", "OPENCODE_TUI_MODEL"))
+            .or_else(|| env_var("ROCODE_TUI_MODEL"))
         {
             let model = model.trim();
             if !model.is_empty() {
@@ -339,7 +338,7 @@ impl App {
             .session_id
             .as_deref()
             .map(str::to_string)
-            .or_else(|| env_var_with_fallback("ROCODE_TUI_SESSION", "OPENCODE_TUI_SESSION"))
+            .or_else(|| env_var("ROCODE_TUI_SESSION"))
         {
             let session_id = session_id.trim();
             if !session_id.is_empty() {
@@ -358,7 +357,7 @@ impl App {
             .initial_prompt
             .as_deref()
             .map(str::to_string)
-            .or_else(|| env_var_with_fallback("ROCODE_TUI_PROMPT", "OPENCODE_TUI_PROMPT"))
+            .or_else(|| env_var("ROCODE_TUI_PROMPT"))
         {
             let initial_prompt = initial_prompt.trim();
             if !initial_prompt.is_empty() {

@@ -471,7 +471,6 @@ pub(crate) async fn maybe_share_remote_session(
     share_requested: bool,
 ) -> anyhow::Result<()> {
     let auto_share_env = std::env::var("ROCODE_AUTO_SHARE")
-        .or_else(|_| std::env::var("OPENCODE_AUTO_SHARE"))
         .ok()
         .map(|v| parse_bool_env(&v))
         .unwrap_or(false);

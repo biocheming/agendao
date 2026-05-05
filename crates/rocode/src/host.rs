@@ -1,5 +1,5 @@
 use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command as ProcessCommand, Stdio};
 use std::time::Duration;
 
@@ -395,31 +395,6 @@ mod tests {
     }
 }
 
-fn find_local_ts_opencode_package_dir() -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-
-    if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.join("../opencode/packages/opencode"));
-        candidates.push(cwd.join("opencode/packages/opencode"));
-    }
-
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(mut base) = exe.parent().map(PathBuf::from) {
-            for _ in 0..6 {
-                candidates.push(base.join("../opencode/packages/opencode"));
-                candidates.push(base.join("opencode/packages/opencode"));
-                if !base.pop() {
-                    break;
-                }
-            }
-        }
-    }
-
-    candidates
-        .into_iter()
-        .find(|candidate| candidate.join("src/index.ts").exists())
-}
-
 fn run_acp_bridge_candidate(
     program: &str,
     args: &[String],
@@ -430,8 +405,7 @@ fn run_acp_bridge_candidate(
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
-        .env("ROCODE_ACP_BRIDGE_ACTIVE", "1")
-        .env("OPENCODE_ACP_BRIDGE_ACTIVE", "1");
+        .env("ROCODE_ACP_BRIDGE_ACTIVE", "1");
 
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
@@ -503,18 +477,14 @@ pub async fn discover_or_start_local_server(
 }
 
 fn resolve_server_url(port_override: Option<u16>) -> String {
-    if let Ok(url) =
-        std::env::var("ROCODE_SERVER_URL").or_else(|_| std::env::var("OPENCODE_SERVER_URL"))
-    {
+    if let Ok(url) = std::env::var("ROCODE_SERVER_URL") {
         let url = url.trim().to_string();
         if !url.is_empty() {
             return url;
         }
     }
 
-    if let Ok(url) =
-        std::env::var("ROCODE_TUI_BASE_URL").or_else(|_| std::env::var("OPENCODE_TUI_BASE_URL"))
-    {
+    if let Ok(url) = std::env::var("ROCODE_TUI_BASE_URL") {
         let url = url.trim().to_string();
         if !url.is_empty() {
             return url;
@@ -548,30 +518,21 @@ fn try_run_external_acp_bridge(
     cors: &[String],
     cwd: &Path,
 ) -> anyhow::Result<bool> {
-    if std::env::var("ROCODE_ACP_BRIDGE_ACTIVE")
-        .or_else(|_| std::env::var("OPENCODE_ACP_BRIDGE_ACTIVE"))
-        .ok()
-        .as_deref()
-        == Some("1")
-    {
+    if std::env::var("ROCODE_ACP_BRIDGE_ACTIVE").ok().as_deref() == Some("1") {
         return Ok(false);
     }
 
     let acp_args = build_acp_network_args(port, hostname, mdns, mdns_domain, cors, cwd);
 
-    if let Ok(bin) =
-        std::env::var("ROCODE_ACP_BRIDGE_BIN").or_else(|_| std::env::var("OPENCODE_ACP_BRIDGE_BIN"))
-    {
+    if let Ok(bin) = std::env::var("ROCODE_ACP_BRIDGE_BIN") {
         let bin = bin.trim();
         if bin.is_empty() {
-            anyhow::bail!(
-                "ROCODE_ACP_BRIDGE_BIN is set but empty (legacy fallback: OPENCODE_ACP_BRIDGE_BIN)."
-            );
+            anyhow::bail!("ROCODE_ACP_BRIDGE_BIN is set but empty.");
         }
         return run_acp_bridge_candidate(bin, &acp_args, None);
     }
 
-    if let Ok(rocode_path) = which::which("rocode").or_else(|_| which::which("opencode")) {
+    if let Ok(rocode_path) = which::which("rocode") {
         let is_self = std::env::current_exe()
             .ok()
             .and_then(|exe| {
@@ -582,22 +543,6 @@ fn try_run_external_acp_bridge(
             .unwrap_or(false);
         if !is_self && run_acp_bridge_candidate("rocode", &acp_args, None)? {
             return Ok(true);
-        }
-    }
-
-    if which::which("bun").is_ok() {
-        if let Some(pkg_dir) = find_local_ts_opencode_package_dir() {
-            let mut bun_args = vec![
-                "run".to_string(),
-                "--cwd".to_string(),
-                pkg_dir.display().to_string(),
-                "--conditions=browser".to_string(),
-                "src/index.ts".to_string(),
-            ];
-            bun_args.extend(acp_args);
-            if run_acp_bridge_candidate("bun", &bun_args, None)? {
-                return Ok(true);
-            }
         }
     }
 

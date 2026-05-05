@@ -118,9 +118,7 @@ pub(crate) fn provider_secret_keys(provider: &str) -> Vec<&'static str> {
 }
 
 pub(crate) async fn choose_github_model() -> anyhow::Result<String> {
-    if let Ok(model) =
-        std::env::var("ROCODE_GITHUB_MODEL").or_else(|_| std::env::var("OPENCODE_GITHUB_MODEL"))
-    {
+    if let Ok(model) = std::env::var("ROCODE_GITHUB_MODEL") {
         if !model.trim().is_empty() {
             return Ok(model);
         }

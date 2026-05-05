@@ -17,10 +17,8 @@ pub(super) fn env_var_enabled(name: &str) -> bool {
     !normalized.is_empty() && !matches!(normalized.as_str(), "0" | "false" | "no" | "off")
 }
 
-pub(super) fn env_var_with_fallback(primary: &str, fallback: &str) -> Option<String> {
-    std::env::var(primary)
-        .ok()
-        .or_else(|| std::env::var(fallback).ok())
+pub(super) fn env_var(name: &str) -> Option<String> {
+    std::env::var(name).ok()
 }
 
 pub(super) fn resolve_tui_base_url(base_url_override: Option<&str>) -> String {
@@ -31,7 +29,7 @@ pub(super) fn resolve_tui_base_url(base_url_override: Option<&str>) -> String {
         }
     }
 
-    if let Some(value) = env_var_with_fallback("ROCODE_TUI_BASE_URL", "OPENCODE_TUI_BASE_URL") {
+    if let Some(value) = env_var("ROCODE_TUI_BASE_URL") {
         let trimmed = value.trim();
         if !trimmed.is_empty() {
             return trimmed.to_string();
@@ -39,7 +37,7 @@ pub(super) fn resolve_tui_base_url(base_url_override: Option<&str>) -> String {
     }
 
     // Prefer a live backend endpoint over a hardcoded default. This avoids
-    // accidental 404s when localhost:3000 is occupied by a non-opencode service.
+    // accidental 404s when localhost:3000 is occupied by a non-rocode service.
     let candidates = [
         "http://127.0.0.1:3000",
         "http://localhost:3000",

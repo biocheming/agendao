@@ -187,7 +187,6 @@ pub(crate) async fn refresh_plugin_auth_state(
 fn plugin_idle_timeout() -> Duration {
     let secs = std::env::var("ROCODE_PLUGIN_IDLE_SECS")
         .ok()
-        .or_else(|| std::env::var("OPENCODE_PLUGIN_IDLE_SECS").ok())
         .and_then(|raw| raw.trim().parse::<u64>().ok())
         .unwrap_or(90);
     Duration::from_secs(secs)
@@ -237,8 +236,7 @@ pub struct ServerState {
     pub(crate) prompt_runner: Arc<SessionPrompt>,
     pub(crate) runtime_memory: Arc<RuntimeMemoryAuthority>,
     pub(crate) runtime_telemetry: Arc<RuntimeTelemetryAuthority>,
-    // Legacy compatibility fields. Phase 1 keeps them so existing write paths
-    // can keep compiling while read paths start going through the authority.
+    // Shared runtime registries still used by server routes and session runtime.
     pub(crate) runtime_control: Arc<RuntimeControlRegistry>,
     pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) event_bus: broadcast::Sender<String>,
@@ -713,9 +711,7 @@ fn variant_to_bootstrap(
 }
 
 fn auth_data_dir() -> PathBuf {
-    if let Ok(path) =
-        std::env::var("ROCODE_DATA_DIR").or_else(|_| std::env::var("OPENCODE_DATA_DIR"))
-    {
+    if let Ok(path) = std::env::var("ROCODE_DATA_DIR") {
         let trimmed = path.trim();
         if !trimmed.is_empty() {
             return PathBuf::from(trimmed);
