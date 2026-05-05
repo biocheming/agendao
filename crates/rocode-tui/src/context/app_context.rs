@@ -959,7 +959,7 @@ impl AppContext {
                 .map(|entry| (entry.provider.clone(), entry.model.clone()))
                 .collect()
         } else {
-            legacy_recent_models_from_config(&context.config)
+            recent_models_from_config(&context.config)
         };
         *self.recent_models.write() = recent_models;
     }
@@ -974,7 +974,7 @@ impl AppContext {
                 tracing::warn!(%error, "failed to fetch workspace context; falling back to config");
                 let config = client.get_config()?;
                 self.apply_config(&config);
-                *self.recent_models.write() = legacy_recent_models_from_config(&config);
+                *self.recent_models.write() = recent_models_from_config(&config);
             }
         }
         Ok(())
@@ -1129,9 +1129,7 @@ fn normalize_theme_name(name: &str) -> String {
 }
 
 fn detect_terminal_theme_mode() -> &'static str {
-    if let Ok(mode) =
-        std::env::var("ROCODE_THEME_MODE").or_else(|_| std::env::var("OPENCODE_THEME_MODE"))
-    {
+    if let Ok(mode) = std::env::var("ROCODE_THEME_MODE") {
         if mode.eq_ignore_ascii_case("light") {
             return "light";
         }
@@ -1153,7 +1151,7 @@ fn detect_terminal_theme_mode() -> &'static str {
     "dark"
 }
 
-fn legacy_recent_models_from_config(config: &AppConfig) -> Vec<(String, String)> {
+fn recent_models_from_config(config: &AppConfig) -> Vec<(String, String)> {
     config
         .ui_preferences
         .as_ref()

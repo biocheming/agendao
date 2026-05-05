@@ -50,12 +50,10 @@ impl JsRuntime {
 
 /// Detect the best available JS runtime.
 ///
-/// Override order with `ROCODE_PLUGIN_RUNTIME` / `OPENCODE_PLUGIN_RUNTIME`.
+/// Override order with `ROCODE_PLUGIN_RUNTIME`.
 /// Default preference is bun > deno > node (node requires >=22.6 for TS).
 pub fn detect_runtime() -> Option<JsRuntime> {
-    if let Ok(raw) =
-        std::env::var("ROCODE_PLUGIN_RUNTIME").or_else(|_| std::env::var("OPENCODE_PLUGIN_RUNTIME"))
-    {
+    if let Ok(raw) = std::env::var("ROCODE_PLUGIN_RUNTIME") {
         let forced = raw.trim().to_ascii_lowercase();
         let runtime = match forced.as_str() {
             "bun" => Some(JsRuntime::Bun),
