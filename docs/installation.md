@@ -95,7 +95,7 @@ dist/release/rocode-<version>-<target>.tar.gz
 本仓库使用日期版本。发布或本地版本推进时，优先使用脚本维护版本信息：
 
 ```bash
-./scripts/release-date.sh 2026-04-30
+./scripts/release-date.sh 2026-05-05
 ```
 
 该脚本会更新 workspace 版本并调用：
@@ -142,7 +142,7 @@ which rocode
 成功安装后输出类似：
 
 ```
-ROCode 2026.4.30
+ROCode 2026.5.5
 ```
 
 查看完整构建信息：
@@ -154,14 +154,14 @@ rocode info
 输出包括编译器版本、目标平台、构建配置和数据路径：
 
 ```
-ROCode 2026.4.30
+ROCode 2026.5.5
 
 Build Info:
   Compiler:   rustc 1.xx.x
   Profile:    release
   Target:     x86_64-unknown-linux-gnu
   Host:       x86_64-unknown-linux-gnu
-  Built at:   2026-04-30T...
+  Built at:   2026-05-05T...
 
 Paths:
   Data:       ~/.local/share/rocode
@@ -241,6 +241,15 @@ touch ~/.config/rocode/rocode.jsonc
 ```
 
 参见 [配置参考](configuration) 了解完整配置选项。
+
+如果你还想一起启用外部 scheduler 配置，不要再去找旧的平铺示例文件名。当前示例入口在：
+
+- `docs/examples/scheduler/presets/`
+- `docs/examples/scheduler/verifier/`
+- `docs/examples/scheduler/pso/`
+- `docs/examples/scheduler/autoresearch/`
+
+更稳妥的做法是把对应示例复制到你的项目里，再让 `schedulerPath` 指向项目内副本，这样示例里的 `workflowPath`、`agentTree` 和 `trees/` 相对路径不会丢。
 
 ### 3. 启动 ROCode
 
@@ -327,7 +336,7 @@ rocode uninstall --dry-run                   # 仅预览将删除的文件
 
 ```bash
 rocode upgrade
-rocode upgrade v2026.4.30           # 升级到指定版本
+rocode upgrade v2026.5.5            # 升级到指定版本
 rocode upgrade --method brew       # 显式指定包管理器方式
 ```
 

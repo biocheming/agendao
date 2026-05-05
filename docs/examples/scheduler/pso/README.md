@@ -188,7 +188,7 @@ This accelerates convergence compared to a single aggregation step.
 ## Files
 
 ```
-pso.example.jsonc          # Scheduler config with pso-3iter and pso-5iter profiles
+example.jsonc              # Scheduler config with pso-3iter and pso-5iter profiles
 trees/pso-swarm.json       # 3-particle agent tree (Architect, Empiricist, Adversary)
 ```
 

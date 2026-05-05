@@ -303,17 +303,17 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
     }
 
-    fn checked_in_scheduler_example_path(file_name: &str) -> PathBuf {
-        repo_root().join("docs/examples/scheduler").join(file_name)
+    fn checked_in_scheduler_example_path(relative_path: &str) -> PathBuf {
+        repo_root().join("docs/examples/scheduler").join(relative_path)
     }
 
     fn assert_checked_in_public_scheduler_example(
-        file_name: &str,
+        relative_path: &str,
         profile_name: &str,
         orchestrator: &str,
         expected_stages: Vec<SchedulerStageKind>,
     ) {
-        let path = checked_in_scheduler_example_path(file_name);
+        let path = checked_in_scheduler_example_path(relative_path);
         let config = SchedulerConfig::load_from_file(&path)
             .unwrap_or_else(|err| panic!("example {} should parse: {}", path.display(), err));
         let profile = config.default_profile().unwrap_or_else(|err| {
@@ -756,37 +756,37 @@ mod tests {
     #[test]
     fn checked_in_public_scheduler_examples_align_with_runtime_defaults() {
         assert_checked_in_public_scheduler_example(
-            "sisyphus.example.jsonc",
+            "presets/sisyphus.example.jsonc",
             "sisyphus-default",
             "sisyphus",
             crate::scheduler::sisyphus_default_stages(),
         );
         assert_checked_in_public_scheduler_example(
-            "prometheus.example.jsonc",
+            "presets/prometheus.example.jsonc",
             "prometheus-default",
             "prometheus",
             crate::scheduler::prometheus_default_stages(),
         );
         assert_checked_in_public_scheduler_example(
-            "atlas.example.jsonc",
+            "presets/atlas.example.jsonc",
             "atlas-default",
             "atlas",
             crate::scheduler::atlas_default_stages(),
         );
         assert_checked_in_public_scheduler_example(
-            "hephaestus.example.jsonc",
+            "presets/hephaestus.example.jsonc",
             "hephaestus-default",
             "hephaestus",
             crate::scheduler::hephaestus_default_stages(),
         );
         assert_checked_in_public_scheduler_example(
-            "verifier.simple.example.jsonc",
+            "verifier/minimal.example.jsonc",
             "verifier-simple",
             "verifier",
             crate::scheduler::verifier_default_stages(),
         );
         assert_checked_in_public_scheduler_example(
-            "verifier.example.jsonc",
+            "verifier/profile.example.jsonc",
             "verifier-default",
             "verifier",
             crate::scheduler::verifier_default_stages(),
@@ -795,7 +795,7 @@ mod tests {
 
     #[test]
     fn verifier_example_exposes_verify_workflow_defaults() {
-        let path = checked_in_scheduler_example_path("verifier.example.jsonc");
+        let path = checked_in_scheduler_example_path("verifier/profile.example.jsonc");
         let config = SchedulerConfig::load_from_file(&path)
             .unwrap_or_else(|err| panic!("verifier example should parse: {}", err));
         let profile = config.default_profile().unwrap();
@@ -829,7 +829,7 @@ mod tests {
 
     #[test]
     fn verifier_simple_example_keeps_user_facing_defaults_minimal() {
-        let path = checked_in_scheduler_example_path("verifier.simple.example.jsonc");
+        let path = checked_in_scheduler_example_path("verifier/minimal.example.jsonc");
         let config = SchedulerConfig::load_from_file(&path)
             .unwrap_or_else(|err| panic!("verifier simple example should parse: {}", err));
         let profile = config.default_profile().unwrap();
@@ -852,7 +852,7 @@ mod tests {
 
     #[test]
     fn verifier_example_custom_profile_resolves_external_workflow() {
-        let path = checked_in_scheduler_example_path("verifier.example.jsonc");
+        let path = checked_in_scheduler_example_path("verifier/profile.example.jsonc");
         let config = SchedulerConfig::load_from_file(&path)
             .unwrap_or_else(|err| panic!("verifier example should parse: {}", err));
         let profile = config.profile("verifier-custom").unwrap();
@@ -889,7 +889,7 @@ mod tests {
 
     #[test]
     fn pso_example_parses_and_resolves_agent_tree_paths() {
-        let path = checked_in_scheduler_example_path("pso.example.jsonc");
+        let path = checked_in_scheduler_example_path("pso/example.jsonc");
         let config = SchedulerConfig::load_from_file(&path)
             .unwrap_or_else(|err| panic!("PSO example should parse: {}", err));
 

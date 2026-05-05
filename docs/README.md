@@ -1,6 +1,6 @@
 # ROCode Docs
 
-文档基线：`v2026.4.30`（更新日期：`2026-04-30`）
+文档基线：`v2026.5.5`（更新日期：`2026-05-05`）
 
 This directory contains product-facing examples and design references for ROCode features.
 
@@ -39,8 +39,8 @@ This directory contains product-facing examples and design references for ROCode
   - Includes `context-docs-registry` schema and example
   - Includes `context-docs-index` schema and example docs index
 - `examples/scheduler/`
-  - Formal external scheduler profile examples for the public OMO-aligned presets: `sisyphus`, `prometheus`, `atlas`, `hephaestus`, and `verifier`
-  - Includes generic scheduler JSON Schema and current public example profiles
+  - 按目录拆分的 scheduler 示例入口：公开 preset、verifier、PSO、autoresearch workflow、共享 trees
+  - Includes generic scheduler JSON Schema and current public example profiles / workflow examples
 - `plugins_example/`
   - Skill / TS plugin / Rust extension examples
 
@@ -88,16 +88,21 @@ The canonical scheduler example entry is:
 
 - `docs/examples/scheduler/README.md`
 - `docs/examples/scheduler/scheduler-profile.schema.json`
-- `docs/examples/scheduler/sisyphus.example.jsonc`
-- `docs/examples/scheduler/prometheus.example.jsonc`
-- `docs/examples/scheduler/atlas.example.jsonc`
-- `docs/examples/scheduler/hephaestus.example.jsonc`
-- `docs/examples/scheduler/VERIFIER.md`
+- `docs/examples/scheduler/presets/`
+  - `sisyphus.example.jsonc`
+  - `prometheus.example.jsonc`
+  - `atlas.example.jsonc`
+  - `hephaestus.example.jsonc`
+- `docs/examples/scheduler/verifier/README.md`
   - Verifier preset 的完整上手指南：解决的问题、原算法、ROCode 实现路线、artifacts、fallback、cache 和调优建议
-- `docs/examples/scheduler/verifier.simple.example.jsonc`
+- `docs/examples/scheduler/verifier/minimal.example.jsonc`
   - Verifier preset 的最小上手配置：保留通过验证的候选，并用一个 criterion 选优
-- `docs/examples/scheduler/verifier.example.jsonc`
-- `docs/examples/scheduler/verifier.workflow.jsonc`
+- `docs/examples/scheduler/verifier/profile.example.jsonc`
+- `docs/examples/scheduler/verifier/workflow.example.jsonc`
+- `docs/examples/scheduler/pso/README.md`
+- `docs/examples/scheduler/pso/example.jsonc`
+- `docs/examples/scheduler/autoresearch/README.md`
+- `docs/examples/scheduler/autoresearch/book-authoring.example.jsonc`
 The public scheduler presets are:
 
 - `sisyphus`

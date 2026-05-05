@@ -1,282 +1,141 @@
 # Scheduler Examples
 
-This directory contains formal external scheduler profile examples for ROCode.
+这个目录现在按“示例类型”分组，不再把所有 scheduler 相关文件平铺在一层。
 
-> **Tutorial & User Guide**: See [`SCHEDULER_GUIDE.md`](SCHEDULER_GUIDE.md) for a
-> comprehensive guide covering all scheduler concepts, configuration, and usage patterns.
->
-> **Verifier Guide**: See [`VERIFIER.md`](VERIFIER.md) for a detailed explanation of
-> the verifier preset, canonical score-job algorithm, trajectory evidence, artifacts,
-> and configuration advice.
+如果你第一次进来，按这个顺序看：
 
-## Files
+1. [`SCHEDULER_GUIDE.md`](SCHEDULER_GUIDE.md)
+   - 完整使用指南，解释 preset、stage、agent tree、skill tree、hydration 和自定义配置
+2. [`presets/`](presets/)
+   - 公开内置 preset 的正式示例：`sisyphus`、`prometheus`、`atlas`、`hephaestus`
+3. [`verifier/`](verifier/)
+   - verifier preset 的最小配置、完整配置和外置 workflow 示例
+4. [`pso/`](pso/)
+   - PSO 这种用户自定义 topology 的说明、配置和 swarm tree
+5. [`autoresearch/`](autoresearch/)
+   - workflow 级 autoresearch 示例，不属于公开 preset，但常和 scheduler profile 一起使用
+6. [`trees/`](trees/)
+   - 可被多个 profile 复用的共享 agent tree 示例
 
-### Schema
+## 目录结构
 
-- `scheduler-profile.schema.json`
-  - Formal schema for the generic scheduler profile file
-  - Public orchestrator surface: `sisyphus`, `prometheus`, `atlas`, `hephaestus`, `verifier`
-  - Supports per-stage policy overrides via the `stageOverride` schema
-  - Exposes inline iterative workflows through `workflow`, `workflowPath`, and `iterativeWorkflow`
-
-### Public OMO examples
-
-- `sisyphus.example.jsonc`
-  - Public OMO-aligned delegation-first example
-- `prometheus.example.jsonc`
-  - Public OMO-aligned planning-first example
-- `atlas.example.jsonc`
-  - Public OMO-aligned coordination example
-- `hephaestus.example.jsonc`
-  - Public OMO-aligned autonomous execution example
-- `verifier.simple.example.jsonc`
-  - Minimal verifier example for users who only want to keep passing candidates and pick the best one
-- `verifier.example.jsonc`
-  - Public verifier example showing both inline `workflow` and external `workflowPath`
-- `verifier.workflow.jsonc`
-  - External verifier workflow file referenced by `verifier-custom`
-- `VERIFIER.md`
-  - Detailed verifier guide covering the problem, algorithm, ROCode implementation,
-    artifacts, fallback behavior, and tuning advice
-
-### Agent tree files
-
-- `trees/coordinator-tree.json`
-  - Reusable coordinator agent tree with frontend-dev and backend-dev children
-- `trees/deep-worker-tree.jsonc`
-  - Reusable deep-worker agent tree with code-explorer and docs-researcher children (JSONC format)
-- `trees/pso-swarm.json`
-  - 3-particle swarm agent tree (Architect, Empiricist, Adversary) for PSO topology
-
-### User-defined topology examples
-
-- `pso.example.jsonc`
-  - Particle Swarm Optimization topology using iterative multi-agent convergence
-  - See [`PSO.md`](PSO.md) for detailed usage guide, applicable scenarios, and customization
-
-### Related workflow examples
-
-- [`../autoresearch_example/book-authoring.autoresearch.jsonc`](../autoresearch_example/book-authoring.autoresearch.jsonc)
-  - Runnable autoresearch workflow example outside this scheduler subdirectory
-- [`../autoresearch_example/book-authoring-jsonc-verify.sh`](../autoresearch_example/book-authoring-jsonc-verify.sh)
-  - Companion verify script used by the checked-in autoresearch example
-- [`../autoresearch_example/book-authoring-jsonc-guard.sh`](../autoresearch_example/book-authoring-jsonc-guard.sh)
-  - Companion guard script used by the checked-in autoresearch example
-
-Each example file contains two profiles:
-- A **`*-default`** profile using plain stage strings (preset defaults)
-- A **`*-custom`** profile demonstrating per-stage overrides
-
-## Per-Stage Overrides
-
-Stage entries in the `stages` array can be either:
-
-1. **Plain string** — uses preset defaults for that stage:
-   ```jsonc
-   "stages": ["request-analysis", "route", "execution-orchestration"]
-   ```
-
-2. **Object with overrides** — customize individual stage policies:
-   ```jsonc
-   "stages": [
-     "request-analysis",
-     {
-       "kind": "execution-orchestration",
-       "toolPolicy": "allow-all",
-       "loopBudget": "step-limit:10",
-       "sessionProjection": "transcript",
-       "childSession": true,
-       "agentTree": {
-         "agent": { "name": "coordinator" },
-         "children": [
-           { "agent": { "name": "worker-a" }, "prompt": "Do A." },
-           { "agent": { "name": "worker-b" }, "prompt": "Do B." }
-         ]
-       }
-     },
-     "synthesis"
-   ]
-   ```
-
-### Override fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `kind` | `string` | **Required.** Stage kind (e.g. `"plan"`, `"execution-orchestration"`). |
-| `toolPolicy` | `"allow-all"` \| `"allow-read-only"` \| `"disable-all"` | Tool access policy. |
-| `loopBudget` | `"unbounded"` \| `"step-limit:N"` | Max LLM loop iterations. |
-| `sessionProjection` | `"hidden"` \| `"transcript"` | Whether stage output is visible. |
-| `childSession` | `boolean` | Create an isolated child session. |
-| `agentTree` | `AgentTreeNode` \| `string` | Per-stage agent tree (overrides profile-level). Accepts an inline object or a file path string. |
-| `agents` | `string[]` | Agent name filter. |
-| `skillList` | `string[]` | Skills available to this stage. |
-
-Omitted fields fall through to the preset → hardcoded default chain.
-
-### Override priority
-
-```
-per-stage JSON override  →  preset function override  →  hardcoded default
-```
-
-## Agent Tree File Paths
-
-Both profile-level and per-stage `agentTree` fields accept either:
-
-1. **Inline object** — the agent tree definition directly in the config:
-   ```jsonc
-   "agentTree": {
-     "agent": { "name": "deep-worker" },
-     "children": [
-       { "agent": { "name": "code-explorer" }, "prompt": "Explore code." }
-     ]
-   }
-   ```
-
-2. **File path string** — a relative path to an external JSON/JSONC file:
-   ```jsonc
-   "agentTree": "./trees/coordinator-tree.json"
-   ```
-
-File paths are resolved relative to the config file's directory. The referenced
-file must contain a valid `AgentTreeNode` JSON/JSONC object. JSONC features
-(comments, trailing commas) are supported in external tree files.
-
-### Example directory layout
-
-```
-project/
-├── rocode.jsonc                          # schedulerPath → ./scheduler.jsonc
-├── scheduler.jsonc                       # main scheduler config
+```text
+docs/examples/scheduler/
+├── README.md
+├── SCHEDULER_GUIDE.md
+├── scheduler-profile.schema.json
+├── presets/
+│   ├── README.md
+│   ├── sisyphus.example.jsonc
+│   ├── prometheus.example.jsonc
+│   ├── atlas.example.jsonc
+│   └── hephaestus.example.jsonc
+├── verifier/
+│   ├── README.md
+│   ├── minimal.example.jsonc
+│   ├── profile.example.jsonc
+│   └── workflow.example.jsonc
+├── pso/
+│   ├── README.md
+│   ├── example.jsonc
+│   └── trees/
+│       └── pso-swarm.json
+├── autoresearch/
+│   ├── README.md
+│   ├── book-authoring.example.jsonc
+│   ├── verify.sh
+│   ├── guard.sh
+│   └── skill/
+│       ├── SKILL.md
+│       └── scripts/
+│           ├── verify.sh
+│           └── guard.sh
 └── trees/
-    ├── coordinator-tree.json             # reusable agent tree
-    └── deep-worker-tree.jsonc            # another tree (with comments)
+    ├── coordinator-tree.json
+    └── deep-worker-tree.jsonc
 ```
 
-### Benefits
+## 这几个目录分别代表什么
 
-- **Reuse**: The same agent tree file can be referenced by multiple profiles or stages.
-- **Readability**: Keeps the main scheduler config compact when trees are large or deeply nested.
-- **Separation of concerns**: Agent team composition can be managed independently from stage orchestration policy.
+### `presets/`
 
-### Example files
+放的是 ROCode 公开内置 preset 的正式外部配置示例。
 
-- `trees/coordinator-tree.json` — A coordinator with frontend-dev and backend-dev children.
-- `trees/deep-worker-tree.jsonc` — A deep-worker with code-explorer and docs-researcher children (JSONC format).
+- `sisyphus`：执行优先
+- `prometheus`：规划优先
+- `atlas`：协调优先
+- `hephaestus`：自治执行优先
 
-## Current Scope
+这些例子用于说明“公开 preset 如何通过外部 scheduler profile 文件显式配置”。
 
-These examples reflect the current implementation scope:
+### `verifier/`
 
-- external JSON / JSONC config parsing exists in `rocode-orchestrator`
-- public preset profiles are:
-  - `sisyphus`
-  - `prometheus`
-  - `atlas`
-  - `hephaestus`
-  - `verifier`
-- named orchestrators are presets over the shared scheduler profile kernel, not separate execution engines
-- workflow-backed profiles can inline iterative workflow config via `workflow` or load it from `workflowPath`
-- `Sisyphus` currently defaults to stages:
-  - `request-analysis`
-  - `route`
-  - `execution-orchestration`
-- `Prometheus` currently defaults to stages:
-  - `request-analysis`
-  - `route`
-  - `interview`
-  - `plan`
-  - `review`
-  - `handoff`
-- `Atlas` currently defaults to stages:
-  - `request-analysis`
-  - `execution-orchestration`
-  - `synthesis`
-- `Hephaestus` currently defaults to stages:
-  - `request-analysis`
-  - `execution-orchestration`
-- `Verifier` currently defaults to stages:
-  - `request-analysis`
-  - `execution-orchestration`
+放的是 verifier 这一类“内置 preset + workflow mode”组合的完整材料。
 
-## Current Behavioral Notes
+- `minimal.example.jsonc`
+  - 最小可用配置
+- `profile.example.jsonc`
+  - 带内联 workflow 和外置 workflowPath 的完整配置
+- `workflow.example.jsonc`
+  - 外置 workflow 文件
+- `README.md`
+  - verifier 算法、candidate trajectory、artifact 和调优说明
 
-These public examples now assume the following runtime semantics:
+### `pso/`
 
-- `Prometheus`
-  - planner-only workflow
-  - blocking interview questions should use the formal `question` tool / question-card flow
-  - review stays enabled by default before handoff
-- `Atlas`
-  - coordination / delegation / verification preset
-  - QA `Gate Decision` YES/NO checks are Atlas internal rubric, not a user questionnaire
-  - use the `question` tool only for real user decision blockers, not for Atlas's own QA responsibility
-- `Hephaestus`
-  - autonomous deep-worker preset
-  - failure recovery follows a clearer `3-Level Escalation Protocol`
-- `Verifier`
-  - workflow-backed verifier preset over the autonomous execution kernel
-  - use when explicit multi-candidate comparison is worth the extra judge cost
-  - canonical mode keeps multiple candidates and selects the winner through score jobs over `(pair, criterion, repetition)`
-  - with `useLogprobs=true`, score jobs compute A-T score-token expected reward; artifacts expose score-job matrix, logprob status, pair means, and round-robin win counts
-- `Sisyphus`
-  - execution-oriented single-loop preset
-  - favors bounded execution with final delivery normalization rather than planner-style interview flow
+放的是 PSO 这种用户自定义 topology 示例。它不是公开 preset，而是基于现有 stage 语义拼出的高级结构。
 
-## Session Continuity
+- `example.jsonc`
+  - 3 轮 / 5 轮两种 PSO 收敛配置
+- `trees/pso-swarm.json`
+  - 3 粒子 swarm tree
+- `README.md`
+  - 适用场景、运行机制和自定义建议
 
-All public scheduler presets receive the same continuity contract. The server builds a `SchedulerSessionContextPacket` for each turn, renders a markdown `Session Continuity Context` for the model, and passes a structured `scheduler_session_context_packet` for runtime enforcement.
+### `autoresearch/`
 
-- Source Anchors authorize `scheduler_context_hydrate` to recover exact same-session messages or compaction summaries.
-- Memory Anchors authorize `scheduler_memory_hydrate` to recover exact memory record details from the runtime memory authority.
-- Both tools are read-only stage tools and reject ids outside the current packet anchors.
-- Hydration outcomes are persisted on the scheduler stage message as audit metadata.
+放的是 workflow 级 autoresearch 示例。它不是 scheduler preset，但会嵌在 scheduler profile 的 `workflow` 字段里，因此放在这里更容易和 verifier / PSO 对照理解。
 
-## Stage Capability Observability
+- `book-authoring.example.jsonc`
+  - 一个长文写作 workflow
+- `verify.sh` / `guard.sh`
+  - 对应的验证与 guard
+- `skill/`
+  - machine-parsed skill 示例
 
-Scheduler stage runtime metadata distinguishes between capability pool and
-runtime activation:
+### `trees/`
 
-- `available_skill_count`
-- `available_agent_count`
-- `available_category_count`
-  - these describe the stage's accessible capability pool only
-  - they do not mean all listed capabilities were used for the current task
-- `active_skills`
-- `active_agents`
-- `active_categories`
-  - these describe runtime-verified activation only
-  - they should be populated from concrete scheduling evidence such as:
-    - delegated agent selection
-    - delegated category selection
-    - explicit skill loading
+这是共享 agent tree 示例区，服务于多个 scheduler 配置，不绑定某一个 preset。
 
-The authority boundary is strict:
+## 示例路径约定
 
-- scheduler/orchestration runtime owns the semantic meaning of `active_*`
-- TUI / CLI / Web consume and render these fields
-- adapters must not infer "used capabilities" from the full available pool
-- generic tool activity, question flow, summaries, and stage prose do not count
-  as capability activation by themselves
+- profile 里的 `agentTree` 路径，总是相对当前配置文件解析
+- `workflowPath` 也是相对当前配置文件解析
+- 因此：
+  - `presets/sisyphus.example.jsonc` 引共享 tree 时写 `../trees/...`
+  - `verifier/profile.example.jsonc` 引 workflow 时写 `./workflow.example.jsonc`
+  - `pso/example.jsonc` 引 swarm tree 时写 `./trees/pso-swarm.json`
 
-These examples do not yet cover the full future scheduler system described in long-form plans.
+## 当前公开 preset
 
-## Intended Usage
+- `sisyphus`
+- `prometheus`
+- `atlas`
+- `hephaestus`
+- `verifier`
 
-These files are intended to be referenced externally by a future `schedulerPath` field in `rocode.json` / `rocode.jsonc`.
+它们共享同一个 schema：
 
-Example:
+- `https://rocode.dev/schemas/scheduler-profile.schema.json`
+
+## 一个最直接的入口
+
+如果你只是想先跑一个公开 preset 示例，可以从：
 
 ```jsonc
 {
-  "schedulerPath": "./docs/examples/scheduler/sisyphus.example.jsonc"
+  "schedulerPath": "./docs/examples/scheduler/presets/sisyphus.example.jsonc"
 }
 ```
 
-## Validation
-
-The checked-in public examples should stay aligned with the scheduler runtime authority:
-
-- they should parse through `SchedulerConfig::load_from_file(...)`
-- their default profile should resolve successfully
-- their `orchestrator` and `stages` should match the corresponding public preset defaults in code
+开始。等你需要 verifier、PSO 或 autoresearch，再进入对应子目录。

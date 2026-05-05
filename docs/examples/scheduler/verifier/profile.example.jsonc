@@ -1,6 +1,6 @@
 {
   "$schema": "https://rocode.dev/schemas/scheduler-profile.schema.json",
-  "version": "2026-04-30",
+  "version": "2026-05-05",
 
   "defaults": {
     "profile": "verifier-default"
@@ -134,7 +134,7 @@
           }
         }
       ],
-      "workflowPath": "./verifier.workflow.jsonc"
+      "workflowPath": "./workflow.example.jsonc"
     }
   }
 }

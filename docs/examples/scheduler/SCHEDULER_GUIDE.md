@@ -218,7 +218,7 @@ Scheduler 通过 JSON/JSONC 文件配置。JSONC 支持注释和尾逗号。
 ```jsonc
 {
   "$schema": "https://rocode.dev/schemas/scheduler-profile.schema.json",
-  "version": "2026-03-14",
+  "version": "2026-05-05",
   "defaults": {
     "profile": "my-default"       // 默认激活的 profile 名
   },
@@ -745,9 +745,9 @@ request-analysis
 > 如果你拿到任务会先想 10 分钟再动手，并且中途可能推翻最初的想法——用 PSO。
 > 如果你拿到任务就知道该怎么做——用 Sisyphus 或 Hephaestus。
 
-详细文档见 [`PSO.md`](PSO.md)。
+详细文档见 [`pso/README.md`](pso/README.md)。
 
-Verifier 的详细算法、配置和 artifact 解读见 [`VERIFIER.md`](VERIFIER.md)。
+Verifier 的详细算法、配置和 artifact 解读见 [`verifier/README.md`](verifier/README.md)。
 
 ---
 
@@ -759,19 +759,28 @@ Verifier 的详细算法、配置和 artifact 解读见 [`VERIFIER.md`](VERIFIER
 docs/examples/scheduler/
 ├── SCHEDULER_GUIDE.md                 ← 本文档
 ├── README.md                          ← 示例文件索引
-├── PSO.md                             ← PSO 拓扑详细文档
-├── VERIFIER.md                        ← Verifier 算法与示例详细指南
 ├── scheduler-profile.schema.json      ← JSON Schema
-├── sisyphus.example.jsonc             ← Sisyphus 示例（default + custom）
-├── prometheus.example.jsonc           ← Prometheus 示例（default + custom）
-├── atlas.example.jsonc                ← Atlas 示例（default + custom）
-├── hephaestus.example.jsonc           ← Hephaestus 示例（default + custom）
-├── verifier.example.jsonc             ← Verifier 示例（default + custom）
-├── pso.example.jsonc                  ← PSO 示例（3iter + 5iter）
+├── presets/
+│   ├── sisyphus.example.jsonc         ← Sisyphus 示例（default + custom）
+│   ├── prometheus.example.jsonc       ← Prometheus 示例（default + custom）
+│   ├── atlas.example.jsonc            ← Atlas 示例（default + custom）
+│   └── hephaestus.example.jsonc       ← Hephaestus 示例（default + custom）
+├── verifier/
+│   ├── README.md                      ← Verifier 算法与示例详细指南
+│   ├── minimal.example.jsonc          ← Verifier 最小配置
+│   ├── profile.example.jsonc          ← Verifier 完整 profile 示例
+│   └── workflow.example.jsonc         ← 外置 workflow 示例
+├── pso/
+│   ├── README.md                      ← PSO 拓扑详细文档
+│   ├── example.jsonc                  ← PSO 示例（3iter + 5iter）
+│   └── trees/
+│       └── pso-swarm.json             ← PSO 3 粒子 agent tree
+├── autoresearch/
+│   ├── README.md                      ← workflow 级 autoresearch 示例说明
+│   └── book-authoring.example.jsonc   ← 长文写作 workflow 示例
 └── trees/
     ├── coordinator-tree.json          ← 可复用 agent tree：coordinator
     ├── deep-worker-tree.jsonc         ← 可复用 agent tree：deep-worker
-    └── pso-swarm.json                 ← PSO 3 粒子 agent tree
 ```
 
 ### AgentDescriptor 字段
