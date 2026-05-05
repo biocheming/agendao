@@ -1,7 +1,7 @@
 //! Slash Commands System
 //!
 //! Provides a command system for loading and executing slash commands from:
-//! - `.opencode/commands/*.md` files
+//! - `.rocode/commands/*.md` files
 //! - MCP prompts
 //! - Built-in commands
 pub mod actions;
