@@ -40,6 +40,15 @@ pub struct CreateSessionRequest {
     pub title: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CreateSessionSpec {
+    pub parent_id: Option<String>,
+    pub scheduler_profile: Option<String>,
+    pub directory: Option<String>,
+    pub project_id: Option<String>,
+    pub title: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PermissionRulesetInput {
     pub allow: Option<Vec<String>>,
@@ -269,7 +278,7 @@ pub(super) fn session_to_list_item(session: &rocode_session::Session) -> Session
     }
 }
 
-pub(super) fn session_to_info(session: &rocode_session::Session) -> SessionInfo {
+pub(crate) fn session_to_info(session: &rocode_session::Session) -> SessionInfo {
     let session_record = session.record();
     SessionInfo {
         id: session_record.id.clone(),
@@ -514,7 +523,26 @@ pub(super) async fn create_session(
     State(state): State<Arc<ServerState>>,
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<Json<SessionInfo>> {
-    let requested_scheduler_profile = req
+    let session = create_session_from_spec(
+        &state,
+        CreateSessionSpec {
+            parent_id: req.parent_id,
+            scheduler_profile: req.scheduler_profile,
+            directory: req.directory,
+            project_id: req.project_id,
+            title: req.title,
+        },
+    )
+    .await?;
+    persist_sessions_if_enabled(&state).await;
+    Ok(Json(session_to_info(&session)))
+}
+
+pub(crate) async fn create_session_from_spec(
+    state: &Arc<ServerState>,
+    spec: CreateSessionSpec,
+) -> Result<rocode_session::Session> {
+    let requested_scheduler_profile = spec
         .scheduler_profile
         .as_deref()
         .map(str::trim)
@@ -527,19 +555,19 @@ pub(super) async fn create_session(
     } else {
         None
     };
-    let requested_directory = req
+    let requested_directory = spec
         .directory
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| resolved_session_directory(value, &state.project_root()));
-    let requested_project_id = req
+    let requested_project_id = spec
         .project_id
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string);
-    let requested_title = req
+    let requested_title = spec
         .title
         .as_deref()
         .map(str::trim)
@@ -547,7 +575,7 @@ pub(super) async fn create_session(
         .map(ToString::to_string);
 
     let mut sessions = state.sessions.lock().await;
-    let mut session = if let Some(parent_id) = &req.parent_id {
+    let mut session = if let Some(parent_id) = spec.parent_id.as_ref() {
         sessions
             .create_child(parent_id)
             .ok_or_else(|| ApiError::SessionNotFound(parent_id.clone()))?
@@ -581,8 +609,7 @@ pub(super) async fn create_session(
         sessions.update(session.clone());
     }
     drop(sessions);
-    persist_sessions_if_enabled(&state).await;
-    Ok(Json(session_to_info(&session)))
+    Ok(session)
 }
 
 pub(super) async fn get_session(

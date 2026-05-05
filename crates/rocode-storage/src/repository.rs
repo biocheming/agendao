@@ -241,6 +241,15 @@ impl ExternalAdapterReplayRepository {
         .map(|row| row.map(ExternalAdapterReplayRow::into_record))
         .map_err(|error| DatabaseError::QueryError(error.to_string()))
     }
+
+    pub async fn prune_recorded_before(&self, cutoff_ms: i64) -> Result<u64, DatabaseError> {
+        sqlx::query("DELETE FROM external_adapter_replay WHERE recorded_at_ms < ?")
+            .bind(cutoff_ms)
+            .execute(&self.pool)
+            .await
+            .map(|result| result.rows_affected())
+            .map_err(|error| DatabaseError::QueryError(error.to_string()))
+    }
 }
 
 #[derive(Debug, FromRow)]
@@ -3197,5 +3206,40 @@ mod tests {
             repo.record(&second).await.unwrap(),
             ExternalAdapterReplayInsertOutcome::Duplicate
         );
+    }
+
+    #[tokio::test]
+    async fn external_adapter_replay_repository_prunes_old_rows() {
+        let db = Database::in_memory().await.unwrap();
+        let repo = ExternalAdapterReplayRepository::new(db.pool().clone());
+        let old = replay_record("evt_old", "nonce_old");
+        let mut fresh = replay_record("evt_new", "nonce_new");
+        fresh.recorded_at_ms = old.recorded_at_ms + 10_000;
+
+        assert_eq!(
+            repo.record(&old).await.unwrap(),
+            ExternalAdapterReplayInsertOutcome::Inserted
+        );
+        assert_eq!(
+            repo.record(&fresh).await.unwrap(),
+            ExternalAdapterReplayInsertOutcome::Inserted
+        );
+
+        assert_eq!(
+            repo.prune_recorded_before(fresh.recorded_at_ms)
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(repo
+            .get_by_event("generic", "generic-webhook", "evt_old")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(repo
+            .get_by_event("generic", "generic-webhook", "evt_new")
+            .await
+            .unwrap()
+            .is_some());
     }
 }

@@ -434,7 +434,7 @@ fn runtime_profile_from_fingerprint(
             transport: fingerprint.transport.as_str().to_string(),
             usage_shape: fingerprint.usage_shape.as_str().to_string(),
             cache_family: fingerprint.cache_family.as_str().to_string(),
-            quirks: Vec::new(),
+            quirks: fingerprint.quirks.clone(),
         },
         profile_hash: fingerprint.profile_hash.clone(),
     }
@@ -707,8 +707,28 @@ mod tests {
             ..Default::default()
         }));
 
-        let runtime_profile =
-            ProviderProfileResolver::resolve_with_npm("openai", "@ai-sdk/openai", &HashMap::new());
+        let runtime_profile = ProviderProfileResolver::resolve_with_options(
+            "openai",
+            &HashMap::from([
+                (
+                    "api_style".to_string(),
+                    serde_json::json!("closeai-compatible"),
+                ),
+                (
+                    "api_shape".to_string(),
+                    serde_json::json!("chat-completions"),
+                ),
+                ("transport".to_string(), serde_json::json!("bearer")),
+                (
+                    "usage_shape".to_string(),
+                    serde_json::json!("closeai-cached-tokens"),
+                ),
+                (
+                    "quirks".to_string(),
+                    serde_json::json!(["requires-thinking-replay"]),
+                ),
+            ]),
+        );
         state
             .providers
             .write()
@@ -786,6 +806,13 @@ mod tests {
                 .as_ref()
                 .map(|profile| profile.profile.api_shape.as_str()),
             Some("chat-completions")
+        );
+        assert_eq!(
+            provider
+                .runtime_profile
+                .as_ref()
+                .map(|profile| profile.profile.quirks.clone()),
+            Some(vec!["requires-thinking-replay".to_string()])
         );
 
         let skill_tree = policy.skill_tree.expect("skill tree policy");

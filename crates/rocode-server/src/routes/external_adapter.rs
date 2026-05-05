@@ -6,6 +6,7 @@ use rocode_provider::AuthManager;
 use rocode_session::prompt::{
     external_adapter_event_to_ingress_turn, ExternalAdapterIngressMappingError, IngressTurnEnvelope,
 };
+use rocode_session::Session;
 use rocode_storage::{
     ExternalAdapterReplayInsertOutcome, ExternalAdapterReplayRecord,
     ExternalAdapterReplayRepository,
@@ -20,11 +21,19 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
-use super::session::{session_prompt_with_verified_ingress, SessionPromptRequest};
+use super::session::{
+    create_session_from_spec, load_verified_external_adapter_binding,
+    persist_verified_external_adapter_binding, session_prompt_with_verified_ingress,
+    session_to_info, CreateSessionSpec, SessionPromptRequest, VerifiedSessionIngress,
+};
 use crate::{ApiError, Result, ServerState};
 
 pub(crate) fn external_adapter_routes() -> Router<Arc<ServerState>> {
     Router::new()
+        .route(
+            "/session/provision",
+            post(provision_external_adapter_session),
+        )
         .route("/generic-webhook/parse", post(parse_generic_webhook))
         .route("/generic-webhook/verify", post(verify_generic_webhook))
         .route("/generic-webhook/run", post(run_generic_webhook))
@@ -40,29 +49,26 @@ pub(crate) fn collect_external_adapter_config_validation(
     let mut adapter_ids = external.adapters.keys().cloned().collect::<Vec<_>>();
     adapter_ids.sort();
 
-    adapter_ids
-        .into_iter()
-        .filter_map(|adapter_id| {
-            let adapter = external.adapters.get(&adapter_id)?;
-            external_adapter_missing_secret_ref_item(&adapter_id, adapter)
-        })
-        .collect()
+    let mut reports = Vec::new();
+    for adapter_id in adapter_ids {
+        let Some(adapter) = external.adapters.get(&adapter_id) else {
+            continue;
+        };
+        if let Some(item) = external_adapter_missing_secret_ref_item(&adapter_id, adapter) {
+            reports.push(item);
+        }
+        if let Some(item) = external_adapter_missing_default_workspace_item(&adapter_id, adapter) {
+            reports.push(item);
+        }
+    }
+    reports
 }
 
 fn external_adapter_missing_secret_ref_item(
     adapter_id: &str,
     adapter: &ExternalAdapterEntryConfig,
 ) -> Option<ConfigPolicyValidationItem> {
-    if adapter.enabled == Some(false) {
-        return None;
-    }
-
-    let source = adapter
-        .source
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())?;
-    if source != ExternalAdapterSource::GenericWebhook.as_str() {
+    if !generic_webhook_adapter_enabled(adapter) {
         return None;
     }
 
@@ -105,6 +111,53 @@ fn external_adapter_missing_secret_ref_item(
     })
 }
 
+fn external_adapter_missing_default_workspace_item(
+    adapter_id: &str,
+    adapter: &ExternalAdapterEntryConfig,
+) -> Option<ConfigPolicyValidationItem> {
+    if !generic_webhook_adapter_enabled(adapter) || adapter.allow_session_run != Some(true) {
+        return None;
+    }
+
+    if adapter
+        .default_workspace
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+    {
+        return None;
+    }
+
+    let adapter_id = adapter_id.trim();
+    let subject_id = (!adapter_id.is_empty()).then(|| adapter_id.to_string());
+    let path = if let Some(subject_id) = subject_id.as_deref() {
+        format!("external_adapter.adapters.{subject_id}.default_workspace")
+    } else {
+        "external_adapter.adapters".to_string()
+    };
+    let label = if adapter_id.is_empty() {
+        "<unknown>"
+    } else {
+        adapter_id
+    };
+
+    Some(ConfigPolicyValidationItem {
+        owner: ConfigPolicyValidationOwner::ExternalAdapter,
+        scope: ConfigPolicyValidationScope {
+            kind: ConfigPolicyValidationScopeKind::ExternalAdapter,
+            subject_id,
+        },
+        path,
+        severity: ConfigPolicyValidationSeverity::Error,
+        effect: ConfigPolicyValidationEffect::FailClosedRequestGate,
+        code: "external_adapter_missing_default_workspace".to_string(),
+        message: format!(
+            "External adapter `{label}` allows session runs but does not declare default_workspace for owner-local session provisioning."
+        ),
+        fallback: None,
+    })
+}
+
 async fn parse_generic_webhook(
     State(state): State<Arc<ServerState>>,
     Json(request): Json<GenericWebhookParseRequest>,
@@ -131,18 +184,14 @@ async fn run_generic_webhook(
     headers: HeaderMap,
     Json(request): Json<GenericWebhookParseRequest>,
 ) -> Result<Json<GenericWebhookRunResponse>> {
-    let config = state.config_store.config();
-    let replay_repo = state.external_adapter_replay_repo.as_deref();
-    let verified_run =
-        verify_generic_webhook_for_session_run(request, &config, &state.auth_manager, replay_repo)
-            .await?;
+    let verified_run = verify_generic_webhook_for_session_run(request, state.clone()).await?;
 
     let Json(session) = session_prompt_with_verified_ingress(
         state,
         headers,
         verified_run.session_id,
         verified_run.prompt_request,
-        verified_run.ingress,
+        verified_run.verified_ingress,
     )
     .await?;
 
@@ -150,6 +199,14 @@ async fn run_generic_webhook(
         verification: verified_run.verification,
         session,
     }))
+}
+
+async fn provision_external_adapter_session(
+    State(state): State<Arc<ServerState>>,
+    Json(request): Json<ProvisionExternalAdapterSessionRequest>,
+) -> Result<Json<ProvisionExternalAdapterSessionResponse>> {
+    let provisioned = provision_generic_webhook_session(state, request).await?;
+    Ok(Json(provisioned))
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -200,12 +257,39 @@ struct GenericWebhookRunResponse {
     pub session: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProvisionExternalAdapterSessionRequest {
+    pub adapter_id: String,
+    pub actor_id: String,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub route_policy_id: Option<String>,
+    #[serde(default)]
+    pub scheduler_profile: Option<String>,
+    #[serde(default)]
+    pub directory: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProvisionExternalAdapterSessionResponse {
+    pub adapter: String,
+    pub source: ExternalAdapterSource,
+    pub binding: ExternalAdapterResolvedBinding,
+    pub session: rocode_types::SessionInfo,
+}
+
 #[derive(Debug)]
 struct VerifiedGenericWebhookRun {
     pub verification: GenericWebhookParseResponse,
     pub session_id: String,
     pub prompt_request: SessionPromptRequest,
-    pub ingress: IngressTurnEnvelope,
+    pub verified_ingress: VerifiedSessionIngress,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -302,7 +386,11 @@ async fn verify_generic_webhook_request(
             "external adapter replay store is required before accepting webhook events".to_string(),
         )
     })?;
-    let adapter = configured_generic_webhook_adapter(config, &request.event)?;
+    let replay_config = config
+        .external_adapter
+        .as_ref()
+        .and_then(|external| external.replay.as_ref());
+    let adapter = configured_generic_webhook_adapter(&config, &request.event)?;
     enforce_binding_policy(adapter, &request.binding)?;
     let secret_ref = adapter
         .secret_ref
@@ -322,7 +410,8 @@ async fn verify_generic_webhook_request(
         ))
     })?;
 
-    verify_replay_signature(&request, &secret)?;
+    verify_replay_signature(&request, &secret, replay_config)?;
+    apply_replay_retention(replay_repo, replay_config).await?;
 
     let mut response = parse_generic_webhook_request(request.clone(), true)?;
     let replay_record = replay_record_from_request_and_response(&request, &response);
@@ -351,19 +440,30 @@ async fn verify_generic_webhook_request(
 
 async fn verify_generic_webhook_for_session_run(
     request: GenericWebhookParseRequest,
-    config: &Config,
-    auth_manager: &AuthManager,
-    replay_repo: Option<&ExternalAdapterReplayRepository>,
+    state: Arc<ServerState>,
 ) -> Result<VerifiedGenericWebhookRun> {
-    let adapter = configured_generic_webhook_adapter(config, &request.event)?;
+    let config = state.config_store.config();
+    let adapter = configured_generic_webhook_adapter(&config, &request.event)?;
     enforce_binding_policy(adapter, &request.binding)?;
     enforce_session_run_allowed(adapter, request.event.adapter_id.trim())?;
+    let session =
+        load_session_for_external_adapter_run(state.as_ref(), request.binding.session_id.trim())
+            .await?;
+    enforce_session_binding_authority(&session, &request.binding)?;
 
-    let mut verification =
-        verify_generic_webhook_request(request, config, auth_manager, replay_repo).await?;
+    let mut verification = verify_generic_webhook_request(
+        request,
+        &config,
+        &state.auth_manager,
+        state.external_adapter_replay_repo.as_deref(),
+    )
+    .await?;
     let session_id = verification.binding.session_id.clone();
     let prompt_request = SessionPromptRequest::from_verified_ingress(&verification.ingress);
-    let ingress = verification.ingress.clone();
+    let verified_ingress = VerifiedSessionIngress {
+        ingress: verification.ingress.clone(),
+        external_adapter_binding: Some(verification.binding.clone()),
+    };
 
     verification.dry_run = false;
     verification.would_enqueue = true;
@@ -376,21 +476,41 @@ async fn verify_generic_webhook_for_session_run(
         verification,
         session_id,
         prompt_request,
-        ingress,
+        verified_ingress,
     })
+}
+
+fn generic_webhook_adapter_enabled(adapter: &ExternalAdapterEntryConfig) -> bool {
+    if adapter.enabled == Some(false) {
+        return false;
+    }
+
+    adapter
+        .source
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        == Some(ExternalAdapterSource::GenericWebhook.as_str())
 }
 
 fn configured_generic_webhook_adapter<'a>(
     config: &'a Config,
     event: &ExternalAdapterEvent,
 ) -> Result<&'a ExternalAdapterEntryConfig> {
-    if event.source != ExternalAdapterSource::GenericWebhook {
+    configured_external_adapter_for_source(config, event.adapter_id.trim(), event.source)
+}
+
+fn configured_external_adapter_for_source<'a>(
+    config: &'a Config,
+    adapter_id: &str,
+    source: ExternalAdapterSource,
+) -> Result<&'a ExternalAdapterEntryConfig> {
+    if source != ExternalAdapterSource::GenericWebhook {
         return Err(ApiError::BadRequest(format!(
             "generic webhook endpoint requires event.source `{}`",
             ExternalAdapterSource::GenericWebhook.as_str()
         )));
     }
-    let adapter_id = event.adapter_id.trim();
     let adapter = config
         .external_adapter
         .as_ref()
@@ -413,12 +533,12 @@ fn configured_generic_webhook_adapter<'a>(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        != Some(ExternalAdapterSource::GenericWebhook.as_str())
+        != Some(source.as_str())
     {
         return Err(ApiError::BadRequest(format!(
             "external adapter `{}` is not configured for `{}`",
             adapter_id,
-            ExternalAdapterSource::GenericWebhook.as_str()
+            source.as_str()
         )));
     }
 
@@ -482,8 +602,74 @@ fn enforce_session_run_allowed(
     )))
 }
 
-fn verify_replay_signature(request: &GenericWebhookParseRequest, secret: &str) -> Result<()> {
+async fn load_session_for_external_adapter_run(
+    state: &ServerState,
+    session_id: &str,
+) -> Result<Session> {
+    let sessions = state.sessions.lock().await;
+    sessions
+        .get(session_id)
+        .cloned()
+        .ok_or_else(|| ApiError::SessionNotFound(session_id.to_string()))
+}
+
+fn enforce_session_binding_authority(
+    session: &Session,
+    binding: &ExternalAdapterResolvedBinding,
+) -> Result<()> {
+    let binding = normalized_binding(binding);
+    if let Some(existing) = load_verified_external_adapter_binding(session) {
+        if normalized_binding(&existing) != binding {
+            return Err(ApiError::BadRequest(format!(
+                "session `{}` is already bound to a different external adapter actor/workspace",
+                session.record().id
+            )));
+        }
+        return Ok(());
+    }
+
+    Err(ApiError::BadRequest(format!(
+        "session `{}` is not provisioned for external adapter binding; provision it through the owner-local external-adapter session path first",
+        session.record().id
+    )))
+}
+
+fn normalized_binding(binding: &ExternalAdapterResolvedBinding) -> ExternalAdapterResolvedBinding {
+    ExternalAdapterResolvedBinding {
+        session_id: binding.session_id.trim().to_string(),
+        actor_id: binding.actor_id.trim().to_string(),
+        workspace_id: binding.workspace_id.trim().to_string(),
+        route_policy_id: binding
+            .route_policy_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
+    }
+}
+
+fn verify_replay_signature(
+    request: &GenericWebhookParseRequest,
+    secret: &str,
+    replay_config: Option<&rocode_config::ExternalAdapterReplayConfig>,
+) -> Result<()> {
     request.replay_guard.validate()?;
+    if let Some(window_seconds) = replay_config
+        .and_then(|replay| replay.nonce_window_seconds)
+        .filter(|window| *window > 0)
+    {
+        let now_ms = Utc::now().timestamp_millis();
+        let window_ms = i64::try_from(window_seconds.saturating_mul(1000)).unwrap_or(i64::MAX);
+        let age_ms = now_ms
+            .saturating_sub(request.replay_guard.timestamp_ms)
+            .abs();
+        if age_ms > window_ms {
+            return Err(ApiError::BadRequest(
+                "external adapter webhook timestamp is outside the configured replay window"
+                    .to_string(),
+            ));
+        }
+    }
     let expected = generic_webhook_signature(secret, request)?;
     let supplied = normalize_signature(&request.replay_guard.signature);
     if expected != supplied {
@@ -491,6 +677,30 @@ fn verify_replay_signature(request: &GenericWebhookParseRequest, secret: &str) -
             "invalid external adapter webhook signature".to_string(),
         ));
     }
+    Ok(())
+}
+
+async fn apply_replay_retention(
+    replay_repo: &ExternalAdapterReplayRepository,
+    replay_config: Option<&rocode_config::ExternalAdapterReplayConfig>,
+) -> Result<()> {
+    let Some(retention_seconds) = replay_config
+        .and_then(|replay| replay.retention_seconds)
+        .filter(|retention| *retention > 0)
+    else {
+        return Ok(());
+    };
+
+    let retention_ms = i64::try_from(retention_seconds.saturating_mul(1000)).unwrap_or(i64::MAX);
+    let cutoff_ms = Utc::now().timestamp_millis().saturating_sub(retention_ms);
+    replay_repo
+        .prune_recorded_before(cutoff_ms)
+        .await
+        .map_err(|error| {
+            ApiError::InternalError(format!(
+                "failed to prune external adapter replay state: {error}"
+            ))
+        })?;
     Ok(())
 }
 
@@ -588,10 +798,104 @@ fn require_non_blank(field: &str, value: &str) -> Result<()> {
     }
 }
 
+async fn provision_generic_webhook_session(
+    state: Arc<ServerState>,
+    request: ProvisionExternalAdapterSessionRequest,
+) -> Result<ProvisionExternalAdapterSessionResponse> {
+    let config = state.config_store.config();
+    let adapter_id = request.adapter_id.trim();
+    require_non_blank("adapter_id", adapter_id)?;
+    require_non_blank("actor_id", &request.actor_id)?;
+
+    let adapter = configured_generic_webhook_adapter_by_id(&config, adapter_id)?;
+    enforce_session_run_allowed(adapter, adapter_id)?;
+
+    let workspace_id = request
+        .workspace_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            adapter
+                .default_workspace
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+        })
+        .ok_or_else(|| {
+            ApiError::BadRequest(
+                "external adapter session provisioning requires workspace_id or adapter default_workspace"
+                    .to_string(),
+            )
+        })?;
+
+    let preflight_binding = normalized_binding(&ExternalAdapterResolvedBinding {
+        session_id: "__provision__".to_string(),
+        actor_id: request.actor_id.clone(),
+        workspace_id: workspace_id.clone(),
+        route_policy_id: request.route_policy_id.clone(),
+    });
+    enforce_binding_policy(adapter, &preflight_binding)?;
+
+    let session = create_session_from_spec(
+        &state,
+        CreateSessionSpec {
+            parent_id: None,
+            scheduler_profile: request.scheduler_profile.clone(),
+            directory: request.directory.clone(),
+            project_id: request.project_id.clone(),
+            title: request.title.clone(),
+        },
+    )
+    .await?;
+
+    let binding = normalized_binding(&ExternalAdapterResolvedBinding {
+        session_id: session.record().id.clone(),
+        actor_id: request.actor_id,
+        workspace_id,
+        route_policy_id: request.route_policy_id,
+    });
+
+    let session = {
+        let mut sessions = state.sessions.lock().await;
+        let Some(mut session) = sessions.get(&binding.session_id).cloned() else {
+            return Err(ApiError::SessionNotFound(binding.session_id.clone()));
+        };
+        persist_verified_external_adapter_binding(&mut session, &binding);
+        sessions.update(session.clone());
+        session
+    };
+    state.sync_sessions_to_storage().await.map_err(|error| {
+        ApiError::InternalError(format!(
+            "failed to persist provisioned external adapter session: {error}"
+        ))
+    })?;
+
+    Ok(ProvisionExternalAdapterSessionResponse {
+        adapter: adapter_id.to_string(),
+        source: ExternalAdapterSource::GenericWebhook,
+        binding,
+        session: session_to_info(&session),
+    })
+}
+
+fn configured_generic_webhook_adapter_by_id<'a>(
+    config: &'a Config,
+    adapter_id: &str,
+) -> Result<&'a ExternalAdapterEntryConfig> {
+    configured_external_adapter_for_source(
+        config,
+        adapter_id,
+        ExternalAdapterSource::GenericWebhook,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rocode_config::{ExternalAdapterConfig, ExternalAdapterEntryConfig};
+    use rocode_config::{ConfigStore, ExternalAdapterConfig, ExternalAdapterEntryConfig};
     use rocode_provider::{AuthInfo, AuthManager};
     use rocode_storage::Database;
     use rocode_types::{ExternalAdapterAttachmentRef, ExternalAdapterReplyTarget};
@@ -670,6 +974,66 @@ mod tests {
         )
         .await;
         auth
+    }
+
+    fn request_for_session(session_id: &str) -> GenericWebhookParseRequest {
+        let mut request = sample_request();
+        request.binding.session_id = session_id.to_string();
+        request
+    }
+
+    async fn configured_session_run_state(
+        config: Config,
+    ) -> (
+        Arc<ServerState>,
+        Arc<ExternalAdapterReplayRepository>,
+        String,
+    ) {
+        let db = Database::in_memory().await.unwrap();
+        let repo = Arc::new(ExternalAdapterReplayRepository::new(db.pool().clone()));
+        let mut state = ServerState::new();
+        state.config_store = Arc::new(ConfigStore::new(config));
+        state.external_adapter_replay_repo = Some(repo.clone());
+        state
+            .auth_manager
+            .set(
+                "external-adapter:generic",
+                AuthInfo::Api {
+                    key: "webhook-secret".to_string(),
+                },
+            )
+            .await;
+        let session_id = {
+            let mut sessions = state.sessions.lock().await;
+            sessions.create("default", ".").id.clone()
+        };
+        (Arc::new(state), repo, session_id)
+    }
+
+    async fn provisioned_session_run_state(
+        config: Config,
+    ) -> (
+        Arc<ServerState>,
+        Arc<ExternalAdapterReplayRepository>,
+        String,
+    ) {
+        let (state, repo, _) = configured_session_run_state(config).await;
+        let provisioned = provision_generic_webhook_session(
+            state.clone(),
+            ProvisionExternalAdapterSessionRequest {
+                adapter_id: "generic".to_string(),
+                actor_id: "actor_1".to_string(),
+                workspace_id: None,
+                route_policy_id: Some("default".to_string()),
+                scheduler_profile: None,
+                directory: None,
+                project_id: None,
+                title: None,
+            },
+        )
+        .await
+        .expect("session should provision");
+        (state, repo, provisioned.binding.session_id)
     }
 
     fn sign_request(request: &mut GenericWebhookParseRequest) {
@@ -801,6 +1165,35 @@ mod tests {
         assert!(prompt_request.agent.is_none());
     }
 
+    #[test]
+    fn external_adapter_validation_reports_missing_default_workspace_for_session_run() {
+        let reports = collect_external_adapter_config_validation(&Config {
+            external_adapter: Some(ExternalAdapterConfig {
+                adapters: HashMap::from([(
+                    "generic".to_string(),
+                    ExternalAdapterEntryConfig {
+                        enabled: Some(true),
+                        source: Some("generic-webhook".to_string()),
+                        secret_ref: Some("external-adapter:generic".to_string()),
+                        allow_session_run: Some(true),
+                        ..Default::default()
+                    },
+                )]),
+                replay: None,
+            }),
+            ..Default::default()
+        });
+
+        let item = reports
+            .iter()
+            .find(|item| item.code == "external_adapter_missing_default_workspace")
+            .expect("missing default workspace item");
+        assert_eq!(
+            item.path,
+            "external_adapter.adapters.generic.default_workspace"
+        );
+    }
+
     #[tokio::test]
     async fn verify_generic_webhook_uses_config_auth_and_replay_store() {
         let db = Database::in_memory().await.unwrap();
@@ -837,14 +1230,12 @@ mod tests {
 
     #[tokio::test]
     async fn run_generic_webhook_gate_rejects_before_replay_record() {
-        let db = Database::in_memory().await.unwrap();
-        let repo = ExternalAdapterReplayRepository::new(db.pool().clone());
         let config = configured_external_adapter_with_session_run(false);
-        let auth = configured_auth_manager().await;
-        let mut request = sample_request();
+        let (state, repo, session_id) = configured_session_run_state(config).await;
+        let mut request = request_for_session(&session_id);
         sign_request(&mut request);
 
-        let error = verify_generic_webhook_for_session_run(request, &config, &auth, Some(&repo))
+        let error = verify_generic_webhook_for_session_run(request, state)
             .await
             .unwrap_err();
 
@@ -858,27 +1249,32 @@ mod tests {
 
     #[tokio::test]
     async fn run_generic_webhook_records_replay_before_runtime_input() {
-        let db = Database::in_memory().await.unwrap();
-        let repo = ExternalAdapterReplayRepository::new(db.pool().clone());
         let config = configured_external_adapter_with_session_run(true);
-        let auth = configured_auth_manager().await;
-        let mut request = sample_request();
+        let (state, repo, session_id) = provisioned_session_run_state(config).await;
+        let mut request = request_for_session(&session_id);
         sign_request(&mut request);
 
-        let run = verify_generic_webhook_for_session_run(request, &config, &auth, Some(&repo))
+        let run = verify_generic_webhook_for_session_run(request, state)
             .await
             .unwrap();
 
         assert!(!run.verification.dry_run);
         assert!(run.verification.would_enqueue);
-        assert_eq!(run.session_id, "ses_1");
+        assert_eq!(run.session_id, session_id);
         assert_eq!(run.prompt_request.message.as_deref(), Some("hello"));
         assert_eq!(
             run.prompt_request.idempotency_key.as_deref(),
             Some("external:generic:generic-webhook:evt_1")
         );
-        assert_eq!(run.ingress.session_id, "ses_1");
-        assert!(run.ingress.external_adapter.is_some());
+        assert_eq!(run.verified_ingress.ingress.session_id, session_id);
+        assert!(run.verified_ingress.ingress.external_adapter.is_some());
+        assert_eq!(
+            run.verified_ingress
+                .external_adapter_binding
+                .as_ref()
+                .map(|binding| binding.workspace_id.as_str()),
+            Some("ws_1")
+        );
 
         let stored = repo
             .get_by_event("generic", "generic-webhook", "evt_1")
@@ -886,7 +1282,100 @@ mod tests {
             .unwrap()
             .expect("run verification should record replay before runtime input is used");
         assert_eq!(stored.status, "verified");
-        assert_eq!(stored.session_id, "ses_1");
+        assert_eq!(stored.session_id, session_id);
+    }
+
+    #[tokio::test]
+    async fn provision_generic_webhook_session_creates_bound_session() {
+        let config = configured_external_adapter_with_session_run(true);
+        let (state, _, _) = configured_session_run_state(config).await;
+
+        let response = provision_generic_webhook_session(
+            state.clone(),
+            ProvisionExternalAdapterSessionRequest {
+                adapter_id: "generic".to_string(),
+                actor_id: "actor_1".to_string(),
+                workspace_id: None,
+                route_policy_id: Some("default".to_string()),
+                scheduler_profile: None,
+                directory: None,
+                project_id: None,
+                title: Some("Webhook Session".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.adapter, "generic");
+        assert_eq!(response.binding.actor_id, "actor_1");
+        assert_eq!(response.binding.workspace_id, "ws_1");
+        assert_eq!(response.session.title, "Webhook Session");
+
+        let sessions = state.sessions.lock().await;
+        let session = sessions
+            .get(&response.binding.session_id)
+            .expect("provisioned session should exist");
+        assert_eq!(
+            load_verified_external_adapter_binding(session)
+                .as_ref()
+                .map(|binding| binding.workspace_id.as_str()),
+            Some("ws_1")
+        );
+    }
+
+    #[tokio::test]
+    async fn run_generic_webhook_rejects_unprovisioned_session() {
+        let config = configured_external_adapter_with_session_run(true);
+        let (state, repo, session_id) = configured_session_run_state(config).await;
+        let mut request = request_for_session(&session_id);
+        sign_request(&mut request);
+
+        let error = verify_generic_webhook_for_session_run(request, state)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, ApiError::BadRequest(_)));
+        assert!(repo
+            .get_by_event("generic", "generic-webhook", "evt_1")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn run_generic_webhook_rejects_conflicting_existing_binding() {
+        let config = configured_external_adapter_with_session_run(true);
+        let (state, repo, session_id) = provisioned_session_run_state(config).await;
+        {
+            let mut sessions = state.sessions.lock().await;
+            let mut session = sessions
+                .get(&session_id)
+                .cloned()
+                .expect("session should exist");
+            session.insert_metadata(
+                "verified_external_adapter_binding".to_string(),
+                serde_json::json!({
+                    "session_id": session_id,
+                    "actor_id": "actor_existing",
+                    "workspace_id": "ws_1",
+                    "route_policy_id": "default"
+                }),
+            );
+            sessions.update(session);
+        }
+        let mut request = request_for_session(&session_id);
+        sign_request(&mut request);
+
+        let error = verify_generic_webhook_for_session_run(request, state)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, ApiError::BadRequest(_)));
+        assert!(repo
+            .get_by_event("generic", "generic-webhook", "evt_1")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -944,6 +1433,78 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, ApiError::BadRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn verify_generic_webhook_rejects_timestamp_outside_nonce_window() {
+        let db = Database::in_memory().await.unwrap();
+        let repo = ExternalAdapterReplayRepository::new(db.pool().clone());
+        let mut config = configured_external_adapter();
+        config
+            .external_adapter
+            .as_mut()
+            .expect("external adapter config")
+            .replay = Some(rocode_config::ExternalAdapterReplayConfig {
+            retention_seconds: None,
+            nonce_window_seconds: Some(60),
+        });
+        let auth = configured_auth_manager().await;
+        let mut request = sample_request();
+        request.replay_guard.timestamp_ms = 1;
+        sign_request(&mut request);
+
+        let error = verify_generic_webhook_request(request, &config, &auth, Some(&repo))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, ApiError::BadRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn verify_generic_webhook_prunes_old_replay_rows_using_retention() {
+        let db = Database::in_memory().await.unwrap();
+        let repo = ExternalAdapterReplayRepository::new(db.pool().clone());
+        let mut config = configured_external_adapter();
+        config
+            .external_adapter
+            .as_mut()
+            .expect("external adapter config")
+            .replay = Some(rocode_config::ExternalAdapterReplayConfig {
+            retention_seconds: Some(60),
+            nonce_window_seconds: None,
+        });
+        let auth = configured_auth_manager().await;
+
+        repo.record(&ExternalAdapterReplayRecord {
+            adapter_id: "generic".to_string(),
+            source: "generic-webhook".to_string(),
+            external_event_id: "evt_old".to_string(),
+            idempotency_key: "external:generic:generic-webhook:evt_old".to_string(),
+            external_user_id: "user_1".to_string(),
+            external_conversation_id: "chat_1".to_string(),
+            session_id: "ses_old".to_string(),
+            actor_id: "actor_old".to_string(),
+            workspace_id: "ws_1".to_string(),
+            nonce: "nonce_old".to_string(),
+            signature_hash: "sha256:old".to_string(),
+            received_at_ms: 1,
+            recorded_at_ms: Utc::now().timestamp_millis() - 120_000,
+            status: "verified".to_string(),
+        })
+        .await
+        .unwrap();
+
+        let mut request = sample_request();
+        sign_request(&mut request);
+        verify_generic_webhook_request(request, &config, &auth, Some(&repo))
+            .await
+            .unwrap();
+
+        assert!(repo
+            .get_by_event("generic", "generic-webhook", "evt_old")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

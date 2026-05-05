@@ -23,7 +23,10 @@ use crate::ServerState;
 // ─── Re-exports for sibling route modules (e.g. stream.rs) ─────────────────
 pub(crate) use self::messages::SendMessageRequest;
 #[allow(unused_imports)]
-pub(crate) use self::prompt::{session_prompt_with_verified_ingress, SessionPromptRequest};
+pub(crate) use self::prompt::{
+    load_verified_external_adapter_binding, persist_verified_external_adapter_binding,
+    session_prompt_with_verified_ingress, SessionPromptRequest, VerifiedSessionIngress,
+};
 pub(crate) use self::scheduler::{
     apply_scheduler_selection_session_metadata, collect_skill_tree_validation,
     resolve_prompt_request_config, to_task_agent_info, PromptRequestConfigInput,
@@ -52,6 +55,7 @@ use self::session_crud::{
     set_session_summary, set_session_title, share_session, start_compaction, unshare_session,
     update_part, update_session,
 };
+pub(crate) use self::session_crud::{create_session_from_spec, session_to_info, CreateSessionSpec};
 use self::stages::get_session_stages;
 use self::telemetry::{get_session_insights, get_session_telemetry};
 
