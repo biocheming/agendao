@@ -529,10 +529,7 @@ fn cli_runtime_snapshot_lines(
             lines.push(format!("Focus: {}", focus));
         }
         if let Some(context_tokens) = stage.context_tokens.or(stage.estimated_context_tokens) {
-            lines.push(format!(
-                "Context: {}",
-                format_token_count(context_tokens)
-            ));
+            lines.push(format!("Context: {}", format_token_count(context_tokens)));
         }
         if let Some(strategy) = stage.skill_tree_truncation_strategy.as_deref() {
             let truncated = if stage.skill_tree_truncated.unwrap_or(false) {
@@ -987,13 +984,8 @@ fn cli_session_insights_lines(
     lines
 }
 
-fn cli_effective_policy_lines(
-    policy: &rocode_types::SessionEffectivePolicyView,
-) -> Vec<String> {
-    let mut lines = vec![format!(
-        "Effective policy: session {}",
-        policy.session_id
-    )];
+fn cli_effective_policy_lines(policy: &rocode_types::SessionEffectivePolicyView) -> Vec<String> {
+    let mut lines = vec![format!("Effective policy: session {}", policy.session_id)];
 
     if let Some(scheduler) = policy.scheduler.as_ref() {
         let requested = scheduler.requested_profile.as_deref().unwrap_or("--");
@@ -1023,8 +1015,8 @@ fn cli_effective_policy_lines(
                     .selection_trace
                     .iter()
                     .map(|step| {
-                        let mut parts = vec![cli_scheduler_trace_step_kind_label(&step.kind)
-                            .to_string()];
+                        let mut parts =
+                            vec![cli_scheduler_trace_step_kind_label(&step.kind).to_string()];
                         if let Some(profile) = step.profile.as_deref() {
                             parts.push(profile.to_string());
                         }
@@ -1101,10 +1093,7 @@ fn cli_effective_policy_lines(
                     .map(format_token_count)
                     .unwrap_or_else(|| "--".to_string()),
                 skill_tree.truncation_strategy.as_deref().unwrap_or("--"),
-                skill_tree
-                    .truncated
-                    .map(cli_yes_no)
-                    .unwrap_or("--")
+                skill_tree.truncated.map(cli_yes_no).unwrap_or("--")
             ));
         }
     }
@@ -1164,9 +1153,7 @@ fn cli_effective_policy_lines(
     lines
 }
 
-fn cli_provider_profile_summary(
-    profile: &rocode_types::ProviderProfileDescriptorView,
-) -> String {
+fn cli_provider_profile_summary(profile: &rocode_types::ProviderProfileDescriptorView) -> String {
     let mut parts = vec![
         format!("source {}", profile.source),
         format!("family {}", profile.api_family),
@@ -1214,7 +1201,11 @@ fn cli_join_or_placeholder(values: &[String]) -> String {
 }
 
 fn cli_yes_no(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
 }
 
 type CliEventsQueryInput = rocode_command::interactive::InteractiveEventsQuery;
@@ -2457,7 +2448,7 @@ async fn cli_execute_new_session_action(
     match api_client
         .create_session(
             None,
-            runtime.resolved_scheduler_profile_name.clone(),
+            runtime.scheduler_profile_name.clone(),
             Some(cli_session_directory(&runtime.working_dir)),
         )
         .await
@@ -3343,20 +3334,17 @@ mod session_projection_tests {
     use super::{
         cli_context_usage_bar, cli_current_context_tokens, cli_default_events_query_input,
         cli_format_context_meter, cli_parse_events_command_input, cli_parse_events_query_input,
-        cli_session_insights_lines, cli_sidebar_lines, CliEventsCommandInput,
-        CliEventsQueryInput, CliFrontendProjection, CliObservedExecutionTopology,
-        CLI_EVENTS_DEFAULT_PAGE_SIZE,
+        cli_session_insights_lines, cli_sidebar_lines, CliEventsCommandInput, CliEventsQueryInput,
+        CliFrontendProjection, CliObservedExecutionTopology, CLI_EVENTS_DEFAULT_PAGE_SIZE,
     };
-    use crate::api_client::{
-        SessionInsightsResponse,
-    };
+    use crate::api_client::SessionInsightsResponse;
     use rocode_types::{
         MemoryScope, ProviderConnectionDescriptorCandidate, ProviderProfileDescriptorView,
         SessionEffectiveCompactionPolicy, SessionEffectiveExternalAdapterPolicy,
-        SessionEffectiveMemoryPolicy, SessionEffectivePolicyView,
-        SessionEffectiveProviderPolicy, SessionEffectiveProviderRuntimeProfile,
-        SessionEffectiveSchedulerPolicy, SessionEffectiveSchedulerTraceStep,
-        SessionEffectiveSchedulerTraceStepKind, SessionEffectiveSkillTreePolicy,
+        SessionEffectiveMemoryPolicy, SessionEffectivePolicyView, SessionEffectiveProviderPolicy,
+        SessionEffectiveProviderRuntimeProfile, SessionEffectiveSchedulerPolicy,
+        SessionEffectiveSchedulerTraceStep, SessionEffectiveSchedulerTraceStepKind,
+        SessionEffectiveSkillTreePolicy,
     };
 
     #[test]
@@ -3614,11 +3602,9 @@ mod session_projection_tests {
 
         let lines = cli_session_insights_lines("sess_123", &insights);
 
-        assert!(
-            lines
-                .iter()
-                .any(|line| line == "Effective policy: session sess_123")
-        );
+        assert!(lines
+            .iter()
+            .any(|line| line == "Effective policy: session sess_123"));
         assert!(lines.iter().any(|line| {
             line.contains("Scheduler: requested prometheus")
                 && line.contains("source session_pinned_profile")
@@ -3627,9 +3613,9 @@ mod session_projection_tests {
         assert!(lines
             .iter()
             .any(|line| line.contains("Trace session_pinned_profile")));
-        assert!(lines
-            .iter()
-            .any(|line| line.contains("Warning configured scheduler defaults could not be resolved")));
+        assert!(lines.iter().any(
+            |line| line.contains("Warning configured scheduler defaults could not be resolved")
+        ));
         assert!(lines
             .iter()
             .any(|line| line.contains("Provider: openai/gpt-4o · variant fast")));

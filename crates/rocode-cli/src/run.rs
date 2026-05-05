@@ -254,7 +254,7 @@ struct CliRunSelection {
 
 struct CliExecutionRuntime {
     resolved_agent_name: String,
-    resolved_scheduler_profile_name: Option<String>,
+    scheduler_profile_name: Option<String>,
     resolved_model_label: String,
     working_dir: PathBuf,
     observed_topology: Arc<Mutex<CliObservedExecutionTopology>>,
@@ -796,7 +796,7 @@ mod tests {
 
         CliExecutionRuntime {
             resolved_agent_name: "build".to_string(),
-            resolved_scheduler_profile_name: None,
+            scheduler_profile_name: None,
             resolved_model_label: "openai/gpt-4.1".to_string(),
             working_dir: std::path::PathBuf::from("/tmp/project"),
             observed_topology: Arc::new(Mutex::new(CliObservedExecutionTopology::default())),
@@ -1226,7 +1226,6 @@ mod tests {
                 model_provider: Some("zhipuai".to_string()),
                 model_id: Some("GLM-5".to_string()),
                 scheduler_profile: Some("prometheus".to_string()),
-                resolved_scheduler_profile: None,
                 agent: None,
             }),
             pending_command_invocation: None,

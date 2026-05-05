@@ -44,10 +44,12 @@ fn ingress_stabilization_label(value: Option<&serde_json::Value>) -> Option<Stri
     let source = value
         .get("source")
         .and_then(|source| {
-            source
-                .as_str()
-                .map(str::to_string)
-                .or_else(|| source.get("source").and_then(|nested| nested.as_str()).map(str::to_string))
+            source.as_str().map(str::to_string).or_else(|| {
+                source
+                    .get("source")
+                    .and_then(|nested| nested.as_str())
+                    .map(str::to_string)
+            })
         })
         .unwrap_or_else(|| "unknown".to_string());
     let policy = value
@@ -166,7 +168,10 @@ async fn resolve_prompt_submission(
     session_id: &str,
     style: &CliStyle,
     prompt_response: crate::api_client::PromptResponse,
-) -> anyhow::Result<(crate::api_client::PromptResponse, std::collections::HashSet<String>)> {
+) -> anyhow::Result<(
+    crate::api_client::PromptResponse,
+    std::collections::HashSet<String>,
+)> {
     let mut response = prompt_response;
     let mut ignored_question_ids = std::collections::HashSet::new();
 
@@ -195,7 +200,10 @@ async fn resolve_prompt_submission(
             .map(|question| question_defs_from_info(&question))
             .unwrap_or_default();
         if questions.is_empty() {
-            anyhow::bail!("pending question `{}` was not available to answer", question_id);
+            anyhow::bail!(
+                "pending question `{}` was not available to answer",
+                question_id
+            );
         }
 
         let guard = runtime
@@ -213,7 +221,9 @@ async fn resolve_prompt_submission(
         )
         .await
         .map_err(|error| anyhow::anyhow!("command question failed: {}", error))?;
-        api_client.reply_question(&question_id, answers.clone()).await?;
+        api_client
+            .reply_question(&question_id, answers.clone())
+            .await?;
 
         let session = api_client.get_session(session_id).await?;
         let Some(pending) = pending_command_from_session(&session, &question_id) else {
@@ -275,7 +285,7 @@ async fn run_server_prompt_with_parts(
     if let Ok(mut topology) = runtime.observed_topology.lock() {
         topology.reset_for_run(
             &runtime.resolved_agent_name,
-            runtime.resolved_scheduler_profile_name.as_deref(),
+            runtime.scheduler_profile_name.as_deref(),
         );
     }
     if let Ok(mut snapshots) = runtime.scheduler_stage_snapshots.lock() {
@@ -286,7 +296,7 @@ async fn run_server_prompt_with_parts(
         CliFrontendPhase::Busy,
         Some(
             runtime
-                .resolved_scheduler_profile_name
+                .scheduler_profile_name
                 .as_deref()
                 .map(|profile| format!("preset {}", profile))
                 .unwrap_or_else(|| "assistant response".to_string()),
@@ -315,7 +325,7 @@ async fn run_server_prompt_with_parts(
 
     let prompt_agent = cli_prompt_agent_override(
         &runtime.resolved_agent_name,
-        runtime.resolved_scheduler_profile_name.as_deref(),
+        runtime.scheduler_profile_name.as_deref(),
     );
 
     let prompt_response = match api_client
@@ -324,7 +334,7 @@ async fn run_server_prompt_with_parts(
             input.to_string(),
             parts,
             prompt_agent,
-            runtime.resolved_scheduler_profile_name.clone(),
+            runtime.scheduler_profile_name.clone(),
             (runtime.resolved_model_label != "auto").then(|| runtime.resolved_model_label.clone()),
             None,
             Some("cli".to_string()),
@@ -337,23 +347,23 @@ async fn run_server_prompt_with_parts(
     {
         Ok(response) => response,
         Err(error) => {
-        cli_frontend_set_phase(
-            &runtime.frontend_projection,
-            CliFrontendPhase::Failed,
-            Some("send prompt failed".to_string()),
-        );
-        let _ = print_block(
-            Some(runtime),
-            OutputBlock::Status(StatusBlock::error(format!(
-                "Failed to send prompt: {}",
-                error
-            ))),
-            style,
-        );
-        let mut active_abort = runtime.active_abort.lock().await;
-        *active_abort = None;
-        cli_frontend_clear(runtime);
-        return Ok(());
+            cli_frontend_set_phase(
+                &runtime.frontend_projection,
+                CliFrontendPhase::Failed,
+                Some("send prompt failed".to_string()),
+            );
+            let _ = print_block(
+                Some(runtime),
+                OutputBlock::Status(StatusBlock::error(format!(
+                    "Failed to send prompt: {}",
+                    error
+                ))),
+                style,
+            );
+            let mut active_abort = runtime.active_abort.lock().await;
+            *active_abort = None;
+            cli_frontend_clear(runtime);
+            return Ok(());
         }
     };
 
@@ -455,9 +465,9 @@ async fn run_server_prompt_with_parts(
 
 fn cli_prompt_agent_override(
     resolved_agent_name: &str,
-    resolved_scheduler_profile_name: Option<&str>,
+    scheduler_profile_name: Option<&str>,
 ) -> Option<String> {
-    if resolved_scheduler_profile_name.is_some() {
+    if scheduler_profile_name.is_some() {
         None
     } else {
         Some(resolved_agent_name.to_string())

@@ -1018,10 +1018,6 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
             "scheduler_profile".to_string(),
             serde_json::json!(&self.scheduler_profile),
         );
-        message.metadata.insert(
-            "resolved_scheduler_profile".to_string(),
-            serde_json::json!(&self.scheduler_profile),
-        );
         message
             .metadata
             .insert("scheduler_stage".to_string(), serde_json::json!(stage_name));
@@ -1698,7 +1694,6 @@ fn scheduler_stage_runtime_metadata(message: &SessionMessage) -> serde_json::Val
     let mut metadata = serde_json::Map::new();
     for key in [
         "scheduler_profile",
-        "resolved_scheduler_profile",
         "scheduler_stage",
         "scheduler_stage_index",
         "scheduler_stage_total",
@@ -2674,7 +2669,7 @@ fn gate_outcome_label(status: &str) -> String {
 pub(crate) fn scheduler_stage_title(scheduler_profile: &str, stage_name: &str) -> String {
     format!(
         "{} · {}",
-        scheduler_profile,
+        pretty_scheduler_profile_name(scheduler_profile),
         pretty_scheduler_stage_name(stage_name)
     )
 }
@@ -2717,6 +2712,10 @@ fn prettify_token(token: &str) -> String {
         .join(" ")
 }
 
+fn pretty_scheduler_profile_name(profile: &str) -> String {
+    prettify_token(profile)
+}
+
 pub(crate) async fn emit_scheduler_stage_message(input: SchedulerStageMessageInput<'_>) {
     let SchedulerStageMessageInput {
         state,
@@ -2748,10 +2747,6 @@ pub(crate) async fn emit_scheduler_stage_message(input: SchedulerStageMessageInp
     );
     message.metadata.insert(
         "scheduler_profile".to_string(),
-        serde_json::json!(scheduler_profile),
-    );
-    message.metadata.insert(
-        "resolved_scheduler_profile".to_string(),
         serde_json::json!(scheduler_profile),
     );
     message
@@ -3112,11 +3107,12 @@ fn pretty_scheduler_stage_title(
 ) -> String {
     let stage_title = prettify_decision_value(stage);
     match metadata
-        .get("resolved_scheduler_profile")
-        .or_else(|| metadata.get("scheduler_profile"))
+        .get("scheduler_profile")
         .and_then(|value| value.as_str())
     {
-        Some(profile) if !profile.is_empty() => format!("{profile} · {stage_title}"),
+        Some(profile) if !profile.is_empty() => {
+            format!("{} · {stage_title}", pretty_scheduler_profile_name(profile))
+        }
         _ => stage_title,
     }
 }
@@ -3318,10 +3314,10 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_stage_title_prettifies_hyphenated_stage_names() {
+    fn scheduler_stage_title_prettifies_profile_and_hyphenated_stage_names() {
         assert_eq!(
             scheduler_stage_title("prometheus", "execution-orchestration"),
-            "prometheus · Execution Orchestration"
+            "Prometheus · Execution Orchestration"
         );
     }
 

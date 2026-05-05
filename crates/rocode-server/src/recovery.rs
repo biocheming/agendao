@@ -208,8 +208,7 @@ pub(crate) fn collect_stage_recovery_targets(
             let metadata = &message.metadata;
             let stage = metadata.get("scheduler_stage")?.as_str()?.to_string();
             let profile = metadata
-                .get("resolved_scheduler_profile")
-                .or_else(|| metadata.get("scheduler_profile"))
+                .get("scheduler_profile")
                 .and_then(|value| value.as_str())
                 .map(|value| value.to_string());
             let status = metadata
@@ -670,10 +669,9 @@ mod tests {
         assistant
             .metadata
             .insert("scheduler_stage_total".to_string(), serde_json::json!(5));
-        assistant.metadata.insert(
-            "resolved_scheduler_profile".to_string(),
-            serde_json::json!("atlas"),
-        );
+        assistant
+            .metadata
+            .insert("scheduler_profile".to_string(), serde_json::json!("atlas"));
         assistant
             .add_text("{\"status\":\"blocked\",\"summary\":\"Task B still lacks verification.\"}");
 

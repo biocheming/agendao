@@ -393,7 +393,6 @@ pub(crate) enum PromptRequestSchedulerProfileSource {
     ExplicitRequest,
     CommandWorkflow,
     SessionPinnedProfile,
-    LegacySessionMetadata,
 }
 
 pub(crate) struct PromptRequestConfigInput<'a> {
@@ -422,9 +421,6 @@ fn scheduler_selection_source_label(
         Some(PromptRequestSchedulerProfileSource::ExplicitRequest) => "explicit_request",
         Some(PromptRequestSchedulerProfileSource::CommandWorkflow) => "command_workflow",
         Some(PromptRequestSchedulerProfileSource::SessionPinnedProfile) => "session_pinned_profile",
-        Some(PromptRequestSchedulerProfileSource::LegacySessionMetadata) => {
-            "legacy_session_metadata"
-        }
         None if scheduler_applied => "config_default",
         None => "none",
     }
@@ -454,9 +450,6 @@ fn scheduler_selection_warning(
             )),
             PromptRequestSchedulerProfileSource::SessionPinnedProfile => Some(format!(
                 "session-pinned scheduler profile `{profile_name}` did not resolve; continuing without scheduler profile"
-            )),
-            PromptRequestSchedulerProfileSource::LegacySessionMetadata => Some(format!(
-                "legacy session scheduler profile `{profile_name}` did not resolve; continuing without scheduler profile"
             )),
             PromptRequestSchedulerProfileSource::ExplicitRequest => None,
         });
@@ -501,10 +494,6 @@ fn scheduler_selection_trace(
             Some(PromptRequestSchedulerProfileSource::SessionPinnedProfile) => (
                 SessionEffectiveSchedulerTraceStepKind::SessionPinnedProfile,
                 "session metadata pinned this scheduler profile",
-            ),
-            Some(PromptRequestSchedulerProfileSource::LegacySessionMetadata) => (
-                SessionEffectiveSchedulerTraceStepKind::LegacySessionPinnedProfile,
-                "legacy session metadata supplied this scheduler profile",
             ),
             _ => (
                 SessionEffectiveSchedulerTraceStepKind::RequestedProfile,
@@ -2412,10 +2401,6 @@ pub async fn run_local_scheduler_prompt(
             .insert("model_id".to_string(), serde_json::json!(&model_id));
         assistant.metadata.insert(
             "scheduler_profile".to_string(),
-            serde_json::json!(profile_name.clone()),
-        );
-        assistant.metadata.insert(
-            "resolved_scheduler_profile".to_string(),
             serde_json::json!(profile_name.clone()),
         );
         assistant.metadata.insert(

@@ -1,7 +1,7 @@
 {
   "block": {
     "stage_id": "stage_abc123",
-    "profile": "Atlas",
+    "profile": "atlas",
     "stage": "coordination-gate",
     "title": "Atlas · Coordination Gate",
     "text": "Decision pending on the unresolved task ledger.",
@@ -31,7 +31,7 @@
   "payload": {
     "kind": "scheduler_stage",
     "stage_id": "stage_abc123",
-    "profile": "Atlas",
+    "profile": "atlas",
     "stage": "coordination-gate",
     "title": "Atlas · Coordination Gate",
     "text": "Decision pending on the unresolved task ledger.",
@@ -59,7 +59,6 @@
     "scheduler_stage": "coordination-gate",
     "scheduler_stage_id": "stage_abc123",
     "scheduler_profile": "atlas",
-    "resolved_scheduler_profile": "Atlas",
     "scheduler_stage_index": 2,
     "scheduler_stage_total": 3,
     "scheduler_stage_step": 4,

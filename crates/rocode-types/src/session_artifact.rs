@@ -57,7 +57,6 @@ const MESSAGE_SANCTIONED_METADATA_KEYS: &[&str] = &[
     "provider_error_summary",
     "resolved_agent",
     "resolved_execution_mode_kind",
-    "resolved_scheduler_profile",
     "resolved_system_prompt",
     "resolved_system_prompt_applied",
     "resolved_system_prompt_preview",
@@ -1143,10 +1142,6 @@ mod tests {
     fn classifier_demotes_narrow_or_noncanonical_metadata_keys() {
         let mut session = sample_session();
         session.metadata.insert(
-            "resolved_scheduler_profile".to_string(),
-            serde_json::json!("auto"),
-        );
-        session.metadata.insert(
             "scheduler_session_context".to_string(),
             serde_json::json!("recent turns"),
         );
@@ -1169,7 +1164,7 @@ mod tests {
             .is_none());
         assert_eq!(
             value["metadata_authority"]["session"]["passthrough_keys"],
-            serde_json::json!(["resolved_scheduler_profile", "scheduler_session_context"])
+            serde_json::json!(["scheduler_session_context"])
         );
         assert!(value["metadata_authority"]["messages"][0]["keys"]
             .get("sanctioned_keys")

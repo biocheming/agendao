@@ -869,10 +869,6 @@ impl SessionContext {
             serde_json::json!(block.profile.clone()),
         );
         metadata.insert(
-            "resolved_scheduler_profile".to_string(),
-            serde_json::json!(block.profile.clone()),
-        );
-        metadata.insert(
             "scheduler_stage".to_string(),
             serde_json::json!(block.stage.clone()),
         );

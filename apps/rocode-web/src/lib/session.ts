@@ -48,7 +48,6 @@ export interface SessionListHintsRecord {
   model_provider?: string | null;
   model_id?: string | null;
   scheduler_profile?: string | null;
-  resolved_scheduler_profile?: string | null;
   agent?: string | null;
 }
 
