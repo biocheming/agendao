@@ -1,6 +1,6 @@
 {
   "$schema": "https://rocode.dev/schemas/scheduler-profile.schema.json",
-  "version": "2026-03-14",
+  "version": "2026-05-05",
 
   "defaults": {
     "profile": "sisyphus-default"
@@ -70,12 +70,12 @@
           "kind": "execution-orchestration",
           "loopBudget": "step-limit:10",
           "childSession": true,
-          // File path instead of inline object — loads ./trees/coordinator-tree.json
-          "agentTree": "./trees/coordinator-tree.json"
+          // File path instead of inline object — loads ../trees/coordinator-tree.json
+          "agentTree": "../trees/coordinator-tree.json"
         }
       ],
       // Profile-level agentTree also supports file paths.
-      "agentTree": "./trees/deep-worker-tree.jsonc"
+      "agentTree": "../trees/deep-worker-tree.jsonc"
     }
   }
 }

@@ -182,7 +182,7 @@ provider 的特殊分支。
 
 ## 示例配置
 
-`docs/examples/scheduler/verifier.example.jsonc` 提供了两个入口：
+`docs/examples/scheduler/verifier/profile.example.jsonc` 提供了两个入口：
 
 - `verifier-default`：内联 workflow 配置；
 - `verifier-custom`：通过 `workflowPath` 引用外部 workflow 文件。
@@ -415,12 +415,12 @@ winner 和可选 criterion scores。
 先看这三个文件：
 
 - `docs/examples/scheduler/README.md`
-- `docs/examples/scheduler/verifier.example.jsonc`
-- `docs/examples/scheduler/verifier.workflow.jsonc`
+- `docs/examples/scheduler/verifier/profile.example.jsonc`
+- `docs/examples/scheduler/verifier/workflow.example.jsonc`
 
-`verifier.example.jsonc` 展示 scheduler profile 如何选择 `verifier` preset。
+`profile.example.jsonc` 展示 scheduler profile 如何选择 `verifier` preset。
 
-`verifier.workflow.jsonc` 展示外置 workflow 配置如何表达：
+`workflow.example.jsonc` 展示外置 workflow 配置如何表达：
 
 - `workflow.mode: "verify"`；
 - verifier judge model；

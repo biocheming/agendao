@@ -1,6 +1,6 @@
 {
   "$schema": "https://rocode.dev/schemas/scheduler-profile.schema.json",
-  "version": "2026-04-15",
+  "version": "2026-05-05",
 
   "defaults": {
     "profile": "book-authoring-run"
@@ -22,7 +22,7 @@
               "manuscript/**",
               "notes/**",
               "references/**",
-              "docs/examples/autoresearch_example/**"
+              "docs/examples/scheduler/autoresearch/**"
             ],
             "exclude": [
               "target/**",
@@ -37,11 +37,11 @@
             "pattern": "score=([0-9]+)"
           },
           "verify": {
-            "command": "bash ./docs/examples/autoresearch_example/book-authoring-jsonc-verify.sh manuscript/book-chapter.md",
+            "command": "bash ./docs/examples/scheduler/autoresearch/verify.sh manuscript/book-chapter.md",
             "timeoutMs": 120000
           },
           "guard": {
-            "command": "bash ./docs/examples/autoresearch_example/book-authoring-jsonc-guard.sh manuscript/book-chapter.md",
+            "command": "bash ./docs/examples/scheduler/autoresearch/guard.sh manuscript/book-chapter.md",
             "timeoutMs": 120000
           }
         },

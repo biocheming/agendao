@@ -4,7 +4,7 @@
 
 ## 0. 版本
 
-- 当前版本：`v2026.4.26`
+- 当前版本：`v2026.5.5`
 - 当前 CLI 命令：`rocode`
 
 ## 1. 先选运行方式
@@ -425,5 +425,9 @@ rocode debug docs validate --help
 - 项目总览：[README.md](/home/biocheming/tests/python/rust/rocode/README.md)
 - 文档索引：[docs/README.md](/home/biocheming/tests/python/rust/rocode/docs/README.md)
 - Scheduler 示例：[docs/examples/scheduler/README.md](/home/biocheming/tests/python/rust/rocode/docs/examples/scheduler/README.md)
+  - `presets/` 看公开内置 preset
+  - `verifier/` 看候选比较选优
+  - `pso/` 看自定义 topology
+  - `autoresearch/` 看 workflow 级示例
 - Context Docs：[docs/examples/context_docs/README.md](/home/biocheming/tests/python/rust/rocode/docs/examples/context_docs/README.md)
 - 插件 / skill 示例：[docs/examples/plugins_example/README.md](/home/biocheming/tests/python/rust/rocode/docs/examples/plugins_example/README.md)

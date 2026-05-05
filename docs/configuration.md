@@ -611,7 +611,18 @@ CLI：`rocode mcp add <name> --command <cmd>`、`rocode mcp add <name> --url <ur
 
 每个 profile 包含 `orchestrator`（preset 名）、`stages`（阶段列表）、`agentTree`（agent 树）和 `skillTree`（知识树）。stages 可以是字符串或带 override 的对象。`agentTree` 支持内联对象或外部文件路径。详见 [Scheduler 示例](examples/scheduler/README)。
 
-参见 [Scheduler 示例](examples/scheduler/README) 了解五个内置 preset 的详细说明和 per-stage override 配置。
+当前 checked-in scheduler 示例不再平铺在一个目录里，而是按语义分组：
+
+- `examples/scheduler/presets/`
+  - `sisyphus`、`prometheus`、`atlas`、`hephaestus` 这些公开内置 preset
+- `examples/scheduler/verifier/`
+  - verifier 的最小配置、完整 profile 和外置 workflow
+- `examples/scheduler/pso/`
+  - PSO 这类用户自定义 topology
+- `examples/scheduler/autoresearch/`
+  - 嵌入 scheduler profile 的 workflow 级 autoresearch 示例
+
+如果你从仓库里的示例起步，推荐把对应目录复制到项目内，再让 `schedulerPath` 指向项目里的副本。因为这些示例经常依赖同目录下的相对路径文件，比如 `workflowPath`、`agentTree` 或 `trees/`。
 
 ---
 
@@ -619,5 +630,5 @@ CLI：`rocode mcp add <name> --command <cmd>`、`rocode mcp add <name> --url <ur
 
 - [认证](auth) -- API 密钥和多 Provider 配置
 - [安装指南](installation) -- 构建和环境设置
-- [Scheduler 示例](examples/scheduler/README) -- 调度器 preset 和 stage override
+- [Scheduler 示例](examples/scheduler/README) -- 调度器 presets / verifier / pso / autoresearch 示例入口
 - [Scheduler 指南](examples/scheduler/SCHEDULER_GUIDE) -- 完整调度器使用教程

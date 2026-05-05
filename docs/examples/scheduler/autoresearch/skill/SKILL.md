@@ -19,7 +19,7 @@ Produce or improve `manuscript/book-chapter.md` as a chapter draft of at least 4
 - manuscript/**
 - notes/**
 - references/**
-- docs/examples/autoresearch_example/**
+- docs/examples/scheduler/autoresearch/**
 
 ## Exclude
 - target/**
