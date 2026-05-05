@@ -208,7 +208,7 @@ impl CliPromptChrome {
             selection: Mutex::new(CliPromptSelectionState {
                 model: runtime.resolved_model_label.clone(),
                 agent: runtime.resolved_agent_name.clone(),
-                preset: runtime.resolved_scheduler_profile_name.clone(),
+                preset: runtime.scheduler_profile_name.clone(),
             }),
             catalog: Mutex::new(CliPromptCatalog {
                 models: cli_prompt_models(provider_registry),
@@ -230,7 +230,7 @@ impl CliPromptChrome {
         if let Ok(mut selection) = self.selection.lock() {
             selection.model = runtime.resolved_model_label.clone();
             selection.agent = runtime.resolved_agent_name.clone();
-            selection.preset = runtime.resolved_scheduler_profile_name.clone();
+            selection.preset = runtime.scheduler_profile_name.clone();
         }
     }
 
@@ -904,8 +904,8 @@ impl Default for CliFrontendProjection {
 
 impl CliFrontendProjection {
     fn current_context_tokens(&self) -> Option<u64> {
-        let usage_context_tokens = (self.token_stats.context_tokens > 0)
-            .then_some(self.token_stats.context_tokens);
+        let usage_context_tokens =
+            (self.token_stats.context_tokens > 0).then_some(self.token_stats.context_tokens);
         let active_stage_id = self
             .session_runtime
             .as_ref()
@@ -957,8 +957,8 @@ impl CliFrontendProjection {
                 .and_then(|entry| entry.context_window)
                 .filter(|value| *value > 0);
             if let Some(limit) = context_window {
-                let percent = (((current_tokens as f64 / limit as f64) * 100.0).round() as u64)
-                    .max(1);
+                let percent =
+                    (((current_tokens as f64 / limit as f64) * 100.0).round() as u64).max(1);
                 let mut label = format!(
                     "ctx {}/{} {}%",
                     format_token_count(current_tokens),
@@ -974,7 +974,10 @@ impl CliFrontendProjection {
                 parts.push(format!("ctx {}", format_token_count(current_tokens)));
             }
         } else if self.token_stats.total_tokens > 0 {
-            parts.push(format!("total {}", format_token_count(self.token_stats.total_tokens)));
+            parts.push(format!(
+                "total {}",
+                format_token_count(self.token_stats.total_tokens)
+            ));
         }
         if self.token_stats.cache_read_tokens > 0
             || self.token_stats.cache_miss_tokens > 0
@@ -1453,9 +1456,10 @@ async fn build_cli_execution_runtime(
         .unwrap_or_else(AgentInfo::build);
 
     if let Some(ref model_id) = selection.model {
-        let provider_id = selection.provider.clone().unwrap_or_else(|| {
-            "openai".to_string()
-        });
+        let provider_id = selection
+            .provider
+            .clone()
+            .unwrap_or_else(|| "openai".to_string());
         agent_info = agent_info.with_model(model_id.clone(), provider_id);
     } else if let Some((provider_id, model_id)) = scheduler_resolution.profile_model.clone() {
         agent_info = agent_info.with_model(model_id, provider_id);
@@ -1489,7 +1493,7 @@ async fn build_cli_execution_runtime(
 
     Ok(CliExecutionRuntime {
         resolved_agent_name: agent_name,
-        resolved_scheduler_profile_name: scheduler_profile_name,
+        scheduler_profile_name,
         resolved_model_label,
         working_dir,
         observed_topology,
@@ -1626,7 +1630,7 @@ fn print_cli_list_on_surface(
 }
 
 fn cli_mode_label(runtime: &CliExecutionRuntime) -> String {
-    match runtime.resolved_scheduler_profile_name.as_deref() {
+    match runtime.scheduler_profile_name.as_deref() {
         Some(profile) => format!("Preset {}", profile),
         None => format!("Agent {}", runtime.resolved_agent_name),
     }
@@ -1652,7 +1656,6 @@ fn cli_session_hint_string(
         "model_provider" => hints.model_provider.as_deref(),
         "model_id" => hints.model_id.as_deref(),
         "scheduler_profile" => hints.scheduler_profile.as_deref(),
-        "resolved_scheduler_profile" => hints.resolved_scheduler_profile.as_deref(),
         "agent" => hints.agent.as_deref(),
         _ => None,
     }?;
@@ -1681,11 +1684,9 @@ fn cli_recent_session_info_for_directory(
             .zip(cli_session_hint_string(session, "model_id"))
             .map(|(provider, model)| format!("{provider}/{model}"))
     });
-    let preset_label = cli_session_hint_string(session, "scheduler_profile")
-        .or_else(|| cli_session_hint_string(session, "resolved_scheduler_profile"))
-        .or_else(|| {
-            cli_session_hint_string(session, "agent").map(|agent| format!("agent:{agent}"))
-        });
+    let preset_label = cli_session_hint_string(session, "scheduler_profile").or_else(|| {
+        cli_session_hint_string(session, "agent").map(|agent| format!("agent:{agent}"))
+    });
     let title = (!session.title.trim().is_empty()).then(|| session.title.trim().to_string());
 
     Some(CliRecentSessionInfo {

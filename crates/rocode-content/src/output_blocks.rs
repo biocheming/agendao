@@ -372,8 +372,7 @@ impl SchedulerStageBlock {
             .and_then(|v| v.as_str())
             .map(String::from);
         let profile = metadata
-            .get("resolved_scheduler_profile")
-            .or_else(|| metadata.get("scheduler_profile"))
+            .get("scheduler_profile")
             .and_then(|v| v.as_str())
             .map(String::from);
         let stage_index = metadata

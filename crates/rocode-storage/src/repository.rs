@@ -2638,7 +2638,7 @@ mod tests {
             serde_json::json!("You are Sisyphus"),
         );
         message.metadata.insert(
-            "resolved_scheduler_profile".to_string(),
+            "scheduler_profile".to_string(),
             serde_json::json!("sisyphus"),
         );
         message
@@ -2653,7 +2653,7 @@ mod tests {
             Some(&serde_json::json!("You are Sisyphus"))
         );
         assert_eq!(
-            loaded.metadata.get("resolved_scheduler_profile"),
+            loaded.metadata.get("scheduler_profile"),
             Some(&serde_json::json!("sisyphus"))
         );
         assert_eq!(

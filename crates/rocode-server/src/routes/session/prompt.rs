@@ -1734,7 +1734,7 @@ pub(super) async fn create_scheduler_user_message(
     }
 
     user_message.metadata.insert(
-        "resolved_scheduler_profile".to_string(),
+        "scheduler_profile".to_string(),
         serde_json::json!(ctx.profile_name),
     );
     user_message.metadata.insert(
@@ -2584,10 +2584,6 @@ async fn session_prompt_inner(
                     .insert("model_id".to_string(), serde_json::json!(&task_model));
                 assistant.metadata.insert(
                     "scheduler_profile".to_string(),
-                    serde_json::json!(profile_name.clone()),
-                );
-                assistant.metadata.insert(
-                    "resolved_scheduler_profile".to_string(),
                     serde_json::json!(profile_name.clone()),
                 );
                 assistant.metadata.insert(
@@ -3681,7 +3677,7 @@ mod tests {
             if filename == "note.txt" && mime == "text/plain"
         )));
         assert_eq!(
-            message.metadata.get("resolved_scheduler_profile"),
+            message.metadata.get("scheduler_profile"),
             Some(&serde_json::json!("atlas"))
         );
     }

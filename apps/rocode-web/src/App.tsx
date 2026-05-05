@@ -480,9 +480,7 @@ function schedulerStageBlockFromHistoryMessage(message: MessageRecord): OutputBl
     .map((part) => part.text ?? "")
     .join("");
   const { title, body } = schedulerStageTitleFromText(text);
-  const profile =
-    metadataString(metadata, "resolved_scheduler_profile") ??
-    metadataString(metadata, "scheduler_profile");
+  const profile = metadataString(metadata, "scheduler_profile");
   const fallbackTitle = profile
     ? `${profile} · ${prettifySchedulerToken(stage)}`
     : prettifySchedulerToken(stage);

@@ -4,7 +4,7 @@
     {
       "block": {
         "stage_id": "stage_plan_001",
-        "profile": "Atlas",
+        "profile": "atlas",
         "stage": "planning",
         "title": "Atlas · Planning",
         "text": "Analyzing project requirements and dependencies.",
@@ -35,7 +35,6 @@
         "scheduler_stage": "planning",
         "scheduler_stage_id": "stage_plan_001",
         "scheduler_profile": "atlas",
-        "resolved_scheduler_profile": "Atlas",
         "scheduler_stage_index": 0,
         "scheduler_stage_total": 3,
         "scheduler_stage_step": 2,
@@ -140,7 +139,7 @@
     {
       "block": {
         "stage_id": "stage_impl_002",
-        "profile": "Atlas",
+        "profile": "atlas",
         "stage": "implementation",
         "title": "Atlas · Implementation",
         "text": "Writing the data pipeline module.",
@@ -171,7 +170,6 @@
         "scheduler_stage": "implementation",
         "scheduler_stage_id": "stage_impl_002",
         "scheduler_profile": "atlas",
-        "resolved_scheduler_profile": "Atlas",
         "scheduler_stage_index": 1,
         "scheduler_stage_total": 3,
         "scheduler_stage_step": 3,
@@ -307,7 +305,7 @@
     {
       "block": {
         "stage_id": "stage_review_003",
-        "profile": "Atlas",
+        "profile": "atlas",
         "stage": "review",
         "title": "Atlas · Review",
         "text": "Reviewing implementation and running verification.",
@@ -358,7 +356,6 @@
         "scheduler_stage": "review",
         "scheduler_stage_id": "stage_review_003",
         "scheduler_profile": "atlas",
-        "resolved_scheduler_profile": "Atlas",
         "scheduler_stage_index": 2,
         "scheduler_stage_total": 3,
         "scheduler_stage_step": 1,

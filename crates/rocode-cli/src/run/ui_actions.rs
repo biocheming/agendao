@@ -174,7 +174,11 @@ fn cli_parse_model_command(
                 .and_then(|provider| provider.models.as_ref())
                 .and_then(|models| models.get(&model_key))
                 .cloned()
-                .ok_or_else(|| anyhow::anyhow!("No configured model override `{provider_id}/{model_key}` found."))?;
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "No configured model override `{provider_id}/{model_key}` found."
+                    )
+                })?;
             cli_apply_model_config_assignments(&mut config, &tokens[2..])?;
             Ok(CliModelCommand::Edit {
                 provider_id,
@@ -358,7 +362,10 @@ async fn cli_capture_voice_prompt(
     }
 
     println!();
-    println!("  Recording voice input for up to {} seconds...", duration_seconds);
+    println!(
+        "  Recording voice input for up to {} seconds...",
+        duration_seconds
+    );
     println!("  Configure `multimodal.voice.record.command` / `multimodal.voice.transcribe.command` if autodetect is not enough.");
     println!();
     let _ = io::stdout().flush();
@@ -402,7 +409,8 @@ async fn cli_capture_voice_prompt(
         ));
     }
     let parts = rocode_multimodal::SessionPartAdapter::to_session_parts(&multimodal_parts);
-    let summary = multimodal.build_display_summary(capture.transcript.as_deref(), &multimodal_parts);
+    let summary =
+        multimodal.build_display_summary(capture.transcript.as_deref(), &multimodal_parts);
     let preflight_request = crate::api_client::MultimodalPreflightRequest {
         model: None,
         parts: Vec::new(),
@@ -695,8 +703,13 @@ async fn cli_execute_ui_action(
             Ok(CliUiActionOutcome::Continue)
         }
         UiActionId::CompactSession => {
-            cli_execute_compact_session_action(runtime, api_client, repl_style, argument.as_deref())
-                .await;
+            cli_execute_compact_session_action(
+                runtime,
+                api_client,
+                repl_style,
+                argument.as_deref(),
+            )
+            .await;
             Ok(CliUiActionOutcome::Continue)
         }
         UiActionId::ShowStatus => {
@@ -765,7 +778,7 @@ async fn cli_execute_ui_action(
                 format!("Directory: {}", current_dir.display()),
                 format!("Runtime: {}", phase),
             ];
-            if let Some(ref profile) = runtime.resolved_scheduler_profile_name {
+            if let Some(ref profile) = runtime.scheduler_profile_name {
                 lines.push(format!("Scheduler: {}", profile));
             }
             if let Some(active_label) = active_label.filter(|value| !value.trim().is_empty()) {
@@ -1135,7 +1148,7 @@ async fn cli_execute_ui_action(
                                     == normalized
                         });
                         if let Some(mode) = found {
-                            runtime.resolved_scheduler_profile_name = match mode.kind.as_str() {
+                            runtime.scheduler_profile_name = match mode.kind.as_str() {
                                 "preset" | "profile" => Some(mode.id.clone()),
                                 _ => None,
                             };
@@ -1227,8 +1240,7 @@ async fn cli_execute_ui_action(
                 }
             };
 
-            let query = if let Some(raw) =
-                argument.map(str::trim).filter(|value| !value.is_empty())
+            let query = if let Some(raw) = argument.map(str::trim).filter(|value| !value.is_empty())
             {
                 raw.to_string()
             } else {
@@ -1241,9 +1253,7 @@ async fn cli_execute_ui_action(
                 else {
                     let _ = print_block(
                         Some(runtime),
-                        OutputBlock::Status(StatusBlock::warning(
-                            "Provider connect cancelled.",
-                        )),
+                        OutputBlock::Status(StatusBlock::warning("Provider connect cancelled.")),
                         repl_style,
                     );
                     return Ok(CliUiActionOutcome::Continue);
@@ -1366,8 +1376,8 @@ async fn cli_execute_ui_action(
                 return Ok(CliUiActionOutcome::Continue);
             };
 
-            let wants_advanced =
-                if draft.mode == crate::api_client::ProviderConnectDraftMode::Known {
+            let wants_advanced = if draft.mode == crate::api_client::ProviderConnectDraftMode::Known
+            {
                 let options = vec![
                     SelectOption {
                         label: "Use suggested settings".to_string(),
@@ -1375,11 +1385,15 @@ async fn cli_execute_ui_action(
                     },
                     SelectOption {
                         label: "Edit advanced fields".to_string(),
-                        description: Some("Adjust base URL and protocol before connecting".to_string()),
+                        description: Some(
+                            "Adjust base URL and protocol before connecting".to_string(),
+                        ),
                     },
                     SelectOption {
                         label: "Use custom provider id".to_string(),
-                        description: Some("Ignore the known match and use the custom draft".to_string()),
+                        description: Some(
+                            "Ignore the known match and use the custom draft".to_string(),
+                        ),
                     },
                 ];
                 let Some(choice) = cli_prompt_action_select(
@@ -1392,9 +1406,7 @@ async fn cli_execute_ui_action(
                 else {
                     let _ = print_block(
                         Some(runtime),
-                        OutputBlock::Status(StatusBlock::warning(
-                            "Provider connect cancelled.",
-                        )),
+                        OutputBlock::Status(StatusBlock::warning("Provider connect cancelled.")),
                         repl_style,
                     );
                     return Ok(CliUiActionOutcome::Continue);
@@ -1418,7 +1430,8 @@ async fn cli_execute_ui_action(
                     Some("connect provider"),
                     &format!(
                         "Enter provider base URL{}:",
-                        draft.base_url
+                        draft
+                            .base_url
                             .as_deref()
                             .map(|value| format!(" [{} leave empty to keep]", value))
                             .unwrap_or_default()
@@ -1492,7 +1505,9 @@ async fn cli_execute_ui_action(
                     )
                     .await
             } else {
-                api_client.set_auth(&draft.provider_id, api_key.trim()).await
+                api_client
+                    .set_auth(&draft.provider_id, api_key.trim())
+                    .await
             };
 
             match connect_result {
@@ -1545,7 +1560,7 @@ async fn cli_execute_ui_action(
                 let found = agents.iter().find(|info| info.name == agent_name);
                 if let Some(info) = found {
                     runtime.resolved_agent_name = info.name.clone();
-                    runtime.resolved_scheduler_profile_name = None;
+                    runtime.scheduler_profile_name = None;
                     let _ = print_block(
                         Some(runtime),
                         OutputBlock::Status(StatusBlock::title(format!(
@@ -1589,7 +1604,7 @@ async fn cli_execute_ui_action(
             if let Some(preset_name) = argument.map(str::trim).filter(|value| !value.is_empty()) {
                 let presets = cli_available_presets(&load_config(current_dir)?);
                 if presets.iter().any(|preset| preset == preset_name) {
-                    runtime.resolved_scheduler_profile_name = Some(preset_name.to_string());
+                    runtime.scheduler_profile_name = Some(preset_name.to_string());
                     let _ = print_block(
                         Some(runtime),
                         OutputBlock::Status(StatusBlock::title(format!(
@@ -1612,7 +1627,7 @@ async fn cli_execute_ui_action(
             }
             cli_list_presets(
                 &load_config(current_dir)?,
-                runtime.resolved_scheduler_profile_name.as_deref(),
+                runtime.scheduler_profile_name.as_deref(),
                 Some(runtime),
             );
             Ok(CliUiActionOutcome::Continue)

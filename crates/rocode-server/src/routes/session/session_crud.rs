@@ -177,6 +177,11 @@ fn session_list_summary(session: &rocode_session::Session) -> Option<SessionList
 
 fn session_list_hints(session: &rocode_session::Session) -> Option<SessionListHints> {
     let session = session.record();
+    let scheduler_profile = session
+        .metadata
+        .get("scheduler_profile")
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned);
     let hints = SessionListHints {
         current_model: session
             .metadata
@@ -193,16 +198,7 @@ fn session_list_hints(session: &rocode_session::Session) -> Option<SessionListHi
             .get("model_id")
             .and_then(|value| value.as_str())
             .map(ToOwned::to_owned),
-        scheduler_profile: session
-            .metadata
-            .get("scheduler_profile")
-            .and_then(|value| value.as_str())
-            .map(ToOwned::to_owned),
-        resolved_scheduler_profile: session
-            .metadata
-            .get("resolved_scheduler_profile")
-            .and_then(|value| value.as_str())
-            .map(ToOwned::to_owned),
+        scheduler_profile: scheduler_profile.clone(),
         agent: session
             .metadata
             .get("agent")
@@ -214,7 +210,6 @@ fn session_list_hints(session: &rocode_session::Session) -> Option<SessionListHi
         && hints.model_provider.is_none()
         && hints.model_id.is_none()
         && hints.scheduler_profile.is_none()
-        && hints.resolved_scheduler_profile.is_none()
         && hints.agent.is_none()
     {
         None
@@ -407,7 +402,6 @@ pub(super) fn session_scheduler_profile_override(
         .record()
         .metadata
         .get("scheduler_profile")
-        .or_else(|| session.record().metadata.get("resolved_scheduler_profile"))
         .and_then(|value| value.as_str())
         .map(|value| value.to_string())
 }
@@ -548,7 +542,8 @@ pub(crate) async fn create_session_from_spec(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string);
-    let resolved_scheduler_profile = if let Some(profile) = requested_scheduler_profile.as_deref() {
+    let effective_scheduler_profile = if let Some(profile) = requested_scheduler_profile.as_deref()
+    {
         resolve_scheduler_request_defaults_validated(&state.config_store.config(), Some(profile))?
             .and_then(|defaults| defaults.profile_name)
             .or_else(|| Some(profile.to_string()))
@@ -600,7 +595,7 @@ pub(crate) async fn create_session_from_spec(
         session.set_title(title);
     }
     sessions.update(session.clone());
-    if let Some(profile) = resolved_scheduler_profile
+    if let Some(profile) = effective_scheduler_profile
         .as_deref()
         .or(requested_scheduler_profile.as_deref())
     {
