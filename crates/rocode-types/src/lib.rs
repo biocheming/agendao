@@ -1,3 +1,4 @@
+pub mod config_policy;
 pub mod context_pressure;
 pub mod external_adapter;
 pub mod memory;
@@ -11,6 +12,7 @@ pub mod skill;
 pub mod todo;
 pub mod workspace_skill_artifact;
 
+pub use config_policy::*;
 pub use context_pressure::*;
 pub use external_adapter::*;
 pub use memory::*;

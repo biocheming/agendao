@@ -25,7 +25,8 @@ pub(crate) use self::messages::SendMessageRequest;
 #[allow(unused_imports)]
 pub(crate) use self::prompt::{session_prompt_with_verified_ingress, SessionPromptRequest};
 pub(crate) use self::scheduler::{
-    resolve_prompt_request_config, to_task_agent_info, PromptRequestConfigInput,
+    collect_skill_tree_validation, resolve_prompt_request_config, to_task_agent_info,
+    PromptRequestConfigInput,
 };
 pub(crate) use self::session_crud::resolved_session_directory;
 

@@ -40,7 +40,11 @@ use rocode_session::prompt::{
     auto_compact_session_with_focus_if_needed, OutputBlockEvent, OutputBlockHook,
 };
 use rocode_session::{MessageRole, PartType as SessionPartType, SessionMessage};
-use rocode_types::{MemoryDetailView, MemoryEvidenceRef, MemoryRecordId};
+use rocode_types::{
+    ConfigPolicyValidationEffect, ConfigPolicyValidationItem, ConfigPolicyValidationOwner,
+    ConfigPolicyValidationScope, ConfigPolicyValidationScopeKind, ConfigPolicyValidationSeverity,
+    MemoryDetailView, MemoryEvidenceRef, MemoryRecordId,
+};
 
 use super::super::permission::request_permission;
 use super::super::tui::request_question_answers;
@@ -239,6 +243,49 @@ pub(crate) fn resolve_scheduler_request_defaults(
             None
         }
     }
+}
+
+pub(crate) fn collect_skill_tree_validation(config: &AppConfig) -> Vec<ConfigPolicyValidationItem> {
+    let Some(skill_tree) = config
+        .composition
+        .as_ref()
+        .and_then(|composition| composition.skill_tree.as_ref())
+    else {
+        return Vec::new();
+    };
+
+    if matches!(skill_tree.enabled, Some(false)) || skill_tree.root.is_none() {
+        return Vec::new();
+    }
+
+    let Some(strategy) = skill_tree
+        .truncation_strategy
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Vec::new();
+    };
+
+    if SkillTreeTruncationStrategy::from_label(strategy).is_some() {
+        return Vec::new();
+    }
+
+    vec![ConfigPolicyValidationItem {
+        owner: ConfigPolicyValidationOwner::SkillTree,
+        scope: ConfigPolicyValidationScope {
+            kind: ConfigPolicyValidationScopeKind::SkillTree,
+            subject_id: None,
+        },
+        path: "composition.skill_tree.truncation_strategy".to_string(),
+        severity: ConfigPolicyValidationSeverity::Warning,
+        effect: ConfigPolicyValidationEffect::SoftFallback,
+        code: "skill_tree_unknown_truncation_strategy".to_string(),
+        message: format!(
+            "Unknown skill tree truncation strategy `{strategy}`; using default head-tail."
+        ),
+        fallback: Some("head-tail".to_string()),
+    }]
 }
 
 pub(crate) fn resolve_scheduler_request_defaults_validated(
