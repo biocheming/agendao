@@ -99,8 +99,11 @@ pub(crate) enum Commands {
         #[arg(long, default_value = "tsv")]
         format: DbOutputFormat,
     },
-    #[command(about = "Show configuration")]
-    Config,
+    #[command(about = "Show configuration and config validation")]
+    Config {
+        #[command(subcommand)]
+        action: Option<ConfigCommands>,
+    },
     #[command(about = "Manage credentials")]
     Auth {
         #[command(subcommand)]
@@ -250,6 +253,27 @@ pub(crate) enum ProviderCommands {
         #[arg(value_name = "FILE")]
         file: String,
     },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum ConfigCommands {
+    #[command(about = "Show authority-backed config validation snapshot")]
+    Validation {
+        #[command(flatten)]
+        output: ConfigOutputArgs,
+    },
+}
+
+#[derive(Args, Clone, Debug)]
+pub(crate) struct ConfigOutputArgs {
+    #[arg(long, default_value = "text")]
+    pub format: ConfigOutputFormat,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum ConfigOutputFormat {
+    Text,
+    Json,
 }
 
 #[derive(Subcommand)]
@@ -888,4 +912,31 @@ pub(crate) enum GithubCommands {
         #[arg(long)]
         token: Option<String>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_command_keeps_default_show_behavior_without_subcommand() {
+        let cli = Cli::parse_from(["rocode", "config"]);
+        match cli.command {
+            Commands::Config { action: None } => {}
+            _ => panic!("expected bare config command"),
+        }
+    }
+
+    #[test]
+    fn config_validation_command_parses_output_format() {
+        let cli = Cli::parse_from(["rocode", "config", "validation", "--format", "json"]);
+        match cli.command {
+            Commands::Config {
+                action: Some(ConfigCommands::Validation { output }),
+            } => {
+                assert_eq!(output.format, ConfigOutputFormat::Json);
+            }
+            _ => panic!("expected config validation command"),
+        }
+    }
 }
