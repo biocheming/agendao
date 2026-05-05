@@ -529,6 +529,8 @@ pub struct ProviderProfileFingerprint {
     pub transport: ProviderTransportKind,
     pub usage_shape: ProviderUsageShape,
     pub cache_family: CacheProtocolFamily,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quirks: Vec<String>,
     pub profile_hash: String,
 }
 
@@ -542,6 +544,12 @@ impl ProviderProfileFingerprint {
             transport: profile.transport,
             usage_shape: profile.usage_shape,
             cache_family: profile.cache_family,
+            quirks: profile
+                .quirks
+                .as_slice()
+                .iter()
+                .map(|quirk| quirk.as_str().to_string())
+                .collect(),
             profile_hash: serializable_fingerprint(profile),
         }
     }

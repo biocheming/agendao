@@ -14,8 +14,8 @@ use rocode_memory::{
     render_prefetch_packet_block, PersistedMemorySnapshot, MEMORY_LAST_PREFETCH_METADATA_KEY,
 };
 use rocode_types::{
-    MemoryRetrievalPacket, MemoryRetrievalQuery, MessageRole, PartType as SessionPartType,
-    SessionMessage,
+    ExternalAdapterResolvedBinding, MemoryRetrievalPacket, MemoryRetrievalQuery, MessageRole,
+    PartType as SessionPartType, SessionMessage,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
@@ -93,6 +93,14 @@ struct ResolvedPromptPayload {
 
 const LIVE_WEB_INGRESS_BATCH_METADATA_KEY: &str = "live_web_ingress_batch";
 const LIVE_WEB_INGRESS_BATCH_WINDOW_MS: i64 = 250;
+pub(crate) const VERIFIED_EXTERNAL_ADAPTER_BINDING_METADATA_KEY: &str =
+    "verified_external_adapter_binding";
+
+#[derive(Debug, Clone)]
+pub(crate) struct VerifiedSessionIngress {
+    pub ingress: rocode_session::prompt::IngressTurnEnvelope,
+    pub external_adapter_binding: Option<ExternalAdapterResolvedBinding>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LiveWebIngressBatch {
@@ -130,6 +138,31 @@ fn set_autoresearch_override_metadata(
         }
     }
     session.remove_metadata(AUTORESEARCH_PROFILE_OVERRIDE_METADATA_KEY);
+}
+
+pub(crate) fn load_verified_external_adapter_binding(
+    session: &rocode_session::Session,
+) -> Option<ExternalAdapterResolvedBinding> {
+    serde_json::from_value(
+        session
+            .record()
+            .metadata
+            .get(VERIFIED_EXTERNAL_ADAPTER_BINDING_METADATA_KEY)?
+            .clone(),
+    )
+    .ok()
+}
+
+pub(crate) fn persist_verified_external_adapter_binding(
+    session: &mut rocode_session::Session,
+    binding: &ExternalAdapterResolvedBinding,
+) {
+    if let Ok(value) = serde_json::to_value(binding) {
+        session.insert_metadata(
+            VERIFIED_EXTERNAL_ADAPTER_BINDING_METADATA_KEY.to_string(),
+            value,
+        );
+    }
 }
 
 async fn resolve_prompt_payload(
@@ -1813,9 +1846,9 @@ pub(crate) async fn session_prompt_with_verified_ingress(
     headers: HeaderMap,
     id: String,
     req: SessionPromptRequest,
-    ingress: rocode_session::prompt::IngressTurnEnvelope,
+    verified: VerifiedSessionIngress,
 ) -> Result<Json<serde_json::Value>> {
-    session_prompt_inner(state, headers, id, req, Some(ingress)).await
+    session_prompt_inner(state, headers, id, req, Some(verified)).await
 }
 
 async fn session_prompt_inner(
@@ -1823,7 +1856,7 @@ async fn session_prompt_inner(
     headers: HeaderMap,
     id: String,
     req: SessionPromptRequest,
-    verified_ingress: Option<rocode_session::prompt::IngressTurnEnvelope>,
+    verified_ingress: Option<VerifiedSessionIngress>,
 ) -> Result<Json<serde_json::Value>> {
     if req.agent.is_some() && req.scheduler_profile.is_some() {
         return Err(ApiError::BadRequest(
@@ -2080,12 +2113,17 @@ async fn session_prompt_inner(
     let task_recovery = req.recovery.clone();
     let task_prompt_parts = prompt_parts.clone();
     let task_multimodal_explain = multimodal_explain.clone();
+    let task_verified_external_adapter_binding = verified_ingress
+        .as_ref()
+        .and_then(|verified| verified.external_adapter_binding.clone());
     let task_ingress = task_ingress_for_prompt(
         &session_id,
         &display_prompt_text,
         &req,
         &resolved_prompt,
-        verified_ingress,
+        verified_ingress
+            .as_ref()
+            .map(|verified| verified.ingress.clone()),
     )?;
     let live_web_ingress_stage =
         stage_live_web_ingress_batch(&state, &session_id, &task_ingress, &task_prompt_parts)
@@ -2113,6 +2151,7 @@ async fn session_prompt_inner(
         )));
     }
     let mut pending_command_cleared = false;
+    let mut persisted_external_adapter_binding = false;
     {
         let mut sessions = state.sessions.lock().await;
         if let Some(mut session) = sessions.get(&id).cloned() {
@@ -2123,11 +2162,18 @@ async fn session_prompt_inner(
                 &mut session,
                 task_autoresearch_override_record.as_ref(),
             );
+            if let Some(binding) = task_verified_external_adapter_binding.as_ref() {
+                persist_verified_external_adapter_binding(&mut session, binding);
+                persisted_external_adapter_binding = true;
+            }
             sessions.update(session);
         }
     }
     if pending_command_cleared {
         broadcast_session_updated(state.as_ref(), id.clone(), "prompt.command.accepted");
+        persist_sessions_if_enabled(&state).await;
+    }
+    if persisted_external_adapter_binding {
         persist_sessions_if_enabled(&state).await;
     }
     let output_block_hook: Option<rocode_session::prompt::OutputBlockHook> =
