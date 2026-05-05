@@ -20,6 +20,8 @@ impl Plugin for NativeDylibDemoPlugin {
         system: &'a PluginSystem,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
+            // Native dylib plugins use the HookEvent enum directly; this surface
+            // is broader than the TS string-hook interface documented elsewhere.
             system
                 .register(Hook::new(
                     "native:native-dylib-demo:session-start",

@@ -19,7 +19,7 @@
       ]
     },
     "server": {
-      "description": "Server configuration for opencode serve and web commands",
+      "description": "Server configuration for ROCode serve and web commands",
       "ref": "ServerConfig",
       "type": "object",
       "properties": {
@@ -38,7 +38,7 @@
           "type": "boolean"
         },
         "mdnsDomain": {
-          "description": "Custom domain name for mDNS service (default: opencode.local)",
+          "description": "Custom domain name for mDNS service (default: rocode.local)",
           "type": "string"
         },
         "cors": {
@@ -52,7 +52,7 @@
       "additionalProperties": false
     },
     "command": {
-      "description": "Command configuration, see https://opencode.ai/docs/commands",
+      "description": "Command configuration",
       "type": "object",
       "propertyNames": {
         "type": "string"
@@ -1722,7 +1722,7 @@
       }
     },
     "agent": {
-      "description": "Agent configuration, see https://opencode.ai/docs/agents",
+      "description": "Agent configuration",
       "type": "object",
       "properties": {
         "plan": {
