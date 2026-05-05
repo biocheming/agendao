@@ -1,20 +1,14 @@
 # plugins_example
 
-文档基线：v2026.4.30（更新日期：2026-04-30）
+文档基线：v2026.5.5（更新日期：2026-05-05）
 
-这个目录是示例合集，用来回答你这个问题：
+这个目录放三类扩展示例，但它们不是同一条加载链：
 
-- 可以放 `markdown skill` 示例
-- 可以放 `TypeScript plugin` 示例
-- 也可以放 `Rust` 扩展示例
+- `skill/`：提示与流程扩展
+- `ts/`：TypeScript 插件
+- `rust/`：原生 `dylib` 插件示例
 
-结论：这个做法是对的，但三者的加载方式不一样。
-
-## 本轮补充（v2026.4.30）
-
-- 对于会产生大输出的插件工具，建议把二进制 / 大文本放到 `attachments` 或外部引用，不要直接塞进 `output` 文本，避免请求体超限。
-- 对于批量工具调用，建议返回摘要文本 + 结构化 metadata，前端按 metadata 做可视化渲染。
-- 如果工具会向用户提问，推荐让前端保留结构化 question 能力，而不是把所有交互都退化成普通文本。
+不要把这三者混成“plugin 都一样”。
 
 ## 1) Skill (Markdown) 是提示词能力
 
@@ -27,7 +21,8 @@
 ## 2) TS Plugin 是运行时 Hook / Auth 扩展
 
 - 由 `rocode-plugin` 子进程桥接执行
-- 在配置文件里通过 `plugin` 映射或兼容列表声明（入口是 `rocode.jsonc`）
+- 在 `rocode.jsonc` 的 `plugin` 字段中声明
+- 当前真实 hook 面是字符串键，例如 `chat.headers`、`tool.definition`
 
 推荐配置（项目根 `rocode.jsonc`）：
 
@@ -42,15 +37,9 @@
 }
 ```
 
-兼容旧写法：
+示例配置文件见：`./rocode.jsonc.example`
 
-```json
-{
-  "plugin": [
-    "file://./docs/examples/plugins_example/ts/example-plugin.ts"
-  ]
-}
-```
+兼容列表写法仍然能读，但这里只保留当前推荐写法，不再继续扩散旧入口。
 
 本目录示例：`./ts/example-plugin.ts`
 
@@ -58,7 +47,8 @@
 
 - Rust 代码不会像 TS 插件那样被动态 `import`
 - 需要先编译成 `cdylib` / `dylib`，再通过 `plugin.type = "dylib"` 显式配置加载
-- 这个目录下的 Rust 代码是原生插件入口示例，不是“放进仓库就会自动生效”的插件目录
+- 原生插件 API 使用 `HookEvent` 枚举；它和 TS 字符串 hook 面不是一套接口
+- 这个目录下的 Rust 代码是入口示例，不是“放进仓库就会自动生效”的插件目录
 
 本目录示例：`./rust/src/lib.rs`
 
@@ -67,3 +57,4 @@
 - 只想增强提示和流程：优先用 Skill
 - 需要动态 hook / auth / custom fetch：用 TS Plugin
 - 需要深度性能 / 类型安全 / 核心能力扩展：改 Rust 代码并编译
+- 对于大输出插件工具，优先返回摘要文本 + 结构化 metadata，不要把全部结果塞进 `output`

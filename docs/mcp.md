@@ -73,7 +73,7 @@ MCP 服务器通过以下两种传输方式之一进行通信：
 
 ## 配置 MCP 服务器
 
-MCP 服务器在 `rocode.jsonc`（或 `opencode.jsonc`）配置文件的 `mcp` 字段中声明。这是一个从服务器名称到 `McpServerConfig` 的映射。
+MCP 服务器在 `rocode.jsonc` 配置文件的 `mcp` 字段中声明。这是一个从服务器名称到 `McpServerConfig` 的映射。
 
 ### 项目级配置
 

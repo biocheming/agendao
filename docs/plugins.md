@@ -1,57 +1,54 @@
 # ROCode 插件系统
 
-ROCode 的插件系统让你通过额外的工具、Hook、认证桥接、代理和技能来扩展代理能力。插件以独立目录或文件形式组织，通过配置文件声明加载。
+这份文档只描述当前代码里真实存在的插件加载面。历史兼容字段会标出来，但不再把它们包装成主路径。
 
 ---
 
-## 目录
+## 先钉死边界
 
-1. [插件类型概览](#插件类型概览)
-2. [插件配置](#插件配置)
-3. [Skill 插件（Markdown）](#skill-插件markdown)
-4. [TypeScript 插件](#typescript-插件)
-5. [Rust 原生插件（dylib）](#rust-原生插件dylib)
-6. [插件工具桥接](#插件工具桥接)
-7. [Hook 系统](#hook-系统)
-8. [认证桥接](#认证桥接)
-9. [创建自定义插件](#创建自定义插件)
-10. [推荐实践](#推荐实践)
+今天的 ROCode 里，`plugin` 和 `skills` 不是一回事：
+
+- `plugin`：代码插件，走运行时加载器
+- `skills`：提示与流程扩展，走独立的 skill 系统
+
+所以 `SKILL.md` 不属于 `plugin` 配置的一种。它应该看 [skills](skills)，不是往 `plugin` 里塞。
 
 ---
 
-## 插件类型概览
+## 当前会被真实加载的插件类型
 
-当前运行时自动引导三种插件入口：
+当前自动引导的代码插件只有三类：
 
-| 类型 | 格式 | 加载方式 | 适用场景 |
-|------|------|----------|----------|
-| **Skill** | `SKILL.md` | 直接加载 | 增强提示词和流程，不改运行时代码 |
-| **TypeScript** | `.ts` 文件 | 子进程桥接 | 动态 Hook、Auth、自定义 fetch |
-| **Rust 原生** | `.so` / `.dylib` | in-process `libloading` | 深度性能、类型安全、核心能力扩展 |
+| 类型 | 配置值 | 加载方式 | 说明 |
+|------|--------|----------|------|
+| TypeScript / JavaScript 文件 | `file` | 子进程插件宿主 | 本地 `.ts` / `.js` 文件 |
+| npm 插件 | `npm` | 子进程插件宿主 | npm 包名或 `pkg@version` |
+| Rust 原生插件 | `dylib` | 进程内动态库加载 | 本地 `.so` / `.dylib` / `.dll` |
 
-配置 schema 中还保留了 `pip` / `cargo` 类型字段，但当前 server 启动流程不会自动把它们交给插件加载器；真正会自动引导的是上表这三类入口。
+`PluginConfig` schema 里仍然保留了 `pip` / `cargo` 字段空间，但当前自动加载器不会把它们转成可执行 loader spec。也就是说：
+
+- `pip` / `cargo` 现在是配置空间
+- `file` / `npm` / `dylib` 才是当前真实运行面
 
 ---
 
 ## 插件配置
 
-插件在 `rocode.jsonc`（或 `opencode.jsonc`）的 `plugin` 字段中声明。`plugin` 字段支持两种格式：
-
-### 映射格式
+推荐使用映射格式：
 
 ```jsonc
 {
   "plugin": {
-    "my-plugin": {
-      "type": "npm",
-      "package": "my-rocode-plugin",
-      "version": "1.0.0"
-    },
-    "local-plugin": {
+    "local-example": {
       "type": "file",
-      "path": "./plugins/my-plugin.ts"
+      "path": "./plugins/example-plugin.ts"
     },
-    "native-plugin": {
+    "npm-example": {
+      "type": "npm",
+      "package": "@scope/my-plugin",
+      "version": "1.2.3"
+    },
+    "native-example": {
       "type": "dylib",
       "path": "./plugins/libmy_plugin.so"
     }
@@ -59,397 +56,235 @@ ROCode 的插件系统让你通过额外的工具、Hook、认证桥接、代理
 }
 ```
 
-### 列表格式（兼容旧写法）
+### 兼容的旧写法
+
+列表格式仍然能读，但只应该视为兼容面：
 
 ```jsonc
 {
   "plugin": [
-    "file://./plugins/my-plugin.ts",
-    "my-npm-plugin@latest"
+    "file://./plugins/example-plugin.ts",
+    "@scope/my-plugin@1.2.3"
   ]
 }
 ```
 
-列表格式自动转换：
-- `file://` 前缀 -> `file` 类型插件
-- `pkg@version` 格式 -> `npm` 类型插件
+这条兼容路径最终仍然只会落到：
 
-列表格式只覆盖历史兼容路径，本质上仍只会落到 `file` 或 `npm` 两种自动加载入口。新配置优先使用映射格式。
+- `file://...` -> `file`
+- `pkg@version` -> `npm`
 
-### PluginConfig 字段
+新配置不要再继续扩散这个写法。
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `type` | string | 当前自动引导的类型: `file`, `npm`, `dylib` |
-| `path` | string | 文件路径（`file` 和 `dylib` 类型） |
-| `package` | string | 包名（当前主要用于 `npm`） |
-| `version` | string | 版本约束（常用于 `npm`，可选） |
-| `runtime` | string | 运行时覆盖（例如 `bun`） |
-| `options` | object | 插件专用扩展参数 |
+### `PluginConfig` 关键字段
 
-`PluginConfig` 结构体里还定义了 `pip` / `cargo` 相关描述空间，但当前自动引导逻辑不会把它们转成 loader spec；如果文档或示例需要可执行插件，请继续使用 `npm` / `file` / `dylib`。
+| 字段 | 说明 |
+|------|------|
+| `type` | `file` / `npm` / `dylib` |
+| `path` | 本地文件或动态库路径 |
+| `package` | npm 包名 |
+| `version` | npm 版本约束 |
+| `runtime` | 运行时覆盖，例如 `bun` |
+| `options` | 插件自定义附加参数 |
 
-### 插件路径
+---
 
-通过 `pluginPaths` 配置额外的插件发现目录：
+## `pluginPaths` 是什么
+
+`pluginPaths` 不是死字段，也不是摆设。
+
+它是配置加载器的**发现根目录**，会参与自动扫描本地文件插件：
 
 ```jsonc
 {
   "pluginPaths": {
-    "custom": "./plugins"
+    "workspace": "./plugins",
+    "shared": "~/.rocode/plugins"
   }
 }
 ```
 
----
+这条路径的职责很窄：
 
-## Skill 插件（Markdown）
+- 提供额外扫描目录
+- 自动发现 `file` 类型插件
 
-Skill 是纯 Markdown 的提示词能力模块，不改运行时代码，主要给模型注入流程和约束。
-
-### 文件格式
-
-文件名：`SKILL.md`
-
-典型放置目录：`.rocode/skills/<skill-name>/SKILL.md`
-
-### 配置
-
-在 `rocode.jsonc` 中声明技能路径：
-
-```jsonc
-{
-  "skills": {
-    "paths": [
-      "./.rocode/skills"
-    ]
-  }
-}
-```
-
-### 管理
-
-通过 `skill_manage` 工具管理技能：
-
-| 操作 | 说明 |
-|------|------|
-| `create` | 创建新技能 |
-| `patch` | 修补技能 |
-| `edit` | 编辑技能 |
-| `write_file` | 写入技能支持文件 |
-| `remove_file` | 移除技能支持文件 |
-| `delete` | 删除技能 |
-
-通过 `skills_list` 工具列出可用技能，通过 `skill_view` 工具查看技能内容。
-
-### 示例
-
-```
-.rocode/skills/
-  code-review/
-    SKILL.md
-    references/
-      checklist.md
-```
+它不是一个“远程插件市场”配置，也不意味着这些目录里的任意内容都会被神奇解释成完整插件生态。
 
 ---
 
 ## TypeScript 插件
 
-TypeScript 插件通过子进程桥接执行。ROCode 使用检测到的 JS 运行时（bun、deno 或 node）启动插件宿主脚本。
+`file` 和 `npm` 两类插件都走同一个 TypeScript 子进程宿主。
 
-### 加载流程
+### 运行时要求
 
-1. ROCode 检测可用的 JS 运行时（优先级：bun > deno > node）
-2. 如果需要，执行 `npm install` 安装依赖
-3. 启动宿主脚本作为子进程
-4. 通过 JSON-RPC 协议进行双向通信
+当前运行时探测顺序是：
 
-### 宿主脚本
+1. `bun`
+2. `deno`
+3. `node`（要求 `>= 22.6`，因为要用 `--experimental-strip-types`）
 
-ROCode 内嵌了宿主脚本（`plugin-host.ts`），插件不需要自己提供宿主。
+也可以用 `ROCODE_PLUGIN_RUNTIME` 强制指定。
 
-### 配置
+### 安装行为
 
-```jsonc
-{
-  "plugin": {
-    "my-ts-plugin": {
-      "type": "file",
-      "path": "./plugins/my-plugin.ts"
-    }
-  }
+- `file` 插件：直接加载，不做依赖安装
+- `npm` 插件：加载前会执行安装步骤
+
+安装命令取决于选中的 JS runtime：
+
+- `bun` -> `bun install`
+- `deno` -> `deno install`
+- `node` -> `npm install`
+
+所以旧文档那种“如果需要，执行 npm install”的笼统说法不准确。只有 `npm` spec 会触发这条安装链，而且命令不一定是 `npm`。
+
+### 导出形状
+
+TS 插件应该导出一个默认的异步函数。这个函数返回一个对象；对象的键就是插件能力面。
+
+最小例子：
+
+```ts
+export default async function ExamplePlugin() {
+  return {
+    async "chat.headers"(_input: unknown, output: Record<string, unknown> = {}) {
+      const headers = (output.headers ?? {}) as Record<string, string>;
+      headers["x-rocode-plugin"] = "example";
+      return { ...output, headers };
+    },
+
+    async "tool.execute.before"(input: unknown, output: unknown) {
+      return output;
+    },
+  };
 }
 ```
 
-或使用列表格式：
-
-```jsonc
-{
-  "plugin": [
-    "file://./plugins/my-plugin.ts"
-  ]
-}
-```
-
-映射格式是当前推荐写法；列表格式主要用于兼容旧项目。
-
-### 插件能力
-
-TypeScript 插件可以注册：
-
-- **自定义工具** -- 暴露给模型的函数
-- **Hook** -- 生命周期事件处理器
-- **认证桥接** -- 处理 OAuth 或其他认证流程
-
----
-
-## Rust 原生插件（dylib）
-
-Rust 原生插件以动态库形式加载到 ROCode 进程内，提供最高性能和完整类型安全。
-
-### 入口点
-
-共享库必须导出名为 `rocode_plugin_create` 的函数：
-
-```rust
-#[no_mangle]
-pub fn rocode_plugin_create() -> Box<dyn rocode_plugin::Plugin> {
-    Box::new(MyPlugin)
-}
-```
-
-便捷宏：
-
-```rust
-rocode_plugin::declare_plugin!(MyPlugin);
-```
-
-### 安全注意事项
-
-- 共享库**必须**使用与 ROCode 相同的 Rust 编译器版本编译
-- Rust 不保证跨版本的稳定 ABI
-- 加载不受信任的动态库有任意代码执行风险
-
-### 配置
-
-```jsonc
-{
-  "plugin": {
-    "my-native-plugin": {
-      "type": "dylib",
-      "path": "./plugins/libmy_plugin.so"
-    }
-  }
-}
-```
-
-### Plugin trait
-
-每个 Rust 插件实现 `rocode_plugin::Plugin` trait，提供：
-
-- `name()` -- 插件名称
-- `version()` -- 插件版本
-- Hook 方法（见 Hook 系统）
-
----
-
-## 插件工具桥接
-
-每个插件注册的自定义工具通过 `PluginTool` 桥接到 ROCode 工具注册表。
-
-### PluginTool 结构
-
-`PluginTool` 持有：
-
-- 工具 ID
-- 插件 ID
-- 工具描述
-- 参数模式 (JSON Schema)
-- `PluginLoader` 引用（支持空闲关机后的透明恢复）
-
-### 工具定义
-
-插件通过 `PluginToolDef` 声明工具：
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `description` | string | 工具描述 |
-| `parameters` | JSON Value | 参数的 JSON Schema |
-
-### 执行流程
-
-1. 模型选择调用一个插件工具
-2. ROCode 通过 `PluginTool.execute()` 转发请求
-3. `PluginLoader` 确保子进程活跃（需要时自动重启）
-4. 请求通过 JSON-RPC 发送到插件子进程
-5. 结果返回给模型
-
-### 大输出处理
-
-对于会产生大输出的插件工具，建议：
-- 把二进制/大文本放到 `attachments` 或外部引用
-- 不要直接塞进 `output` 文本
-- 避免请求体超限
-
----
-
-## Hook 系统
-
-插件可以注册 Hook 以响应生命周期事件。Hook 接收 JSON payload 描述事件。
-
-### Hook 事件
-
-| 事件 | 触发时机 |
-|------|----------|
-| `PreToolUse` | 工具执行前 |
-| `PostToolUse` | 工具返回结果后 |
-| `PostToolUseFailure` | 工具调用出错后 |
-| `PermissionDenied` | 权限请求被拒绝时 |
-| `PermissionRequest` | 权限请求时（判定前） |
-| `Notification` | 代理通知 |
-| `UserPromptSubmit` | 用户提交提示词 |
-| `SessionStart` | 会话开始 |
-| `SessionEnd` | 会话结束 |
-| `Stop` | 模型完成回复 |
-| `StopFailure` | 停止序列失败 |
-| `SubagentStart` | 子代理启动 |
-| `SubagentStop` | 子代理完成 |
-| `PreCompact` | 上下文压缩前 |
-| `PostCompact` | 上下文压缩后 |
-
-### Hook 上下文
-
-每个 Hook 接收 `HookContext`，包含事件类型和 payload。Hook 返回 `HookOutput` 或 `HookError`。
-
-### Hook 输出
-
-`HookOutput` 可以包含：
-
-- `payload` -- 可选的 JSON 值，影响后续处理
-
-### 阻塞 vs 非阻塞
-
-- **阻塞 Hook**：返回错误时阻止操作
-- **非阻塞 Hook**：返回错误时仅记录警告
-
----
-
-## 认证桥接
-
-ROCode 内建了两个认证桥接插件：
-
-| 桥接 | 说明 |
-|------|------|
-| `codex-auth` | 处理 Codex 认证流程 |
-| `copilot-auth` | 处理 Copilot 认证流程 |
-
-这些桥接在 `rocode-plugin` crate 中内嵌，自动加载。
-
-TypeScript 插件可以通过 `PluginAuthBridge` 注册自定义认证处理器，处理 OAuth 或其他认证协议。
-
----
-
-## 创建自定义插件
-
-### 创建 Skill 插件
-
-1. 在 `.rocode/skills/` 下创建目录：
-
-```
-.rocode/skills/my-skill/
-  SKILL.md
-```
-
-2. 编写 `SKILL.md`：
-
-```markdown
----
-name: my-skill
-description: 我的自定义技能
-category: custom
----
-
-# My Skill
-
-指令和流程描述...
-```
-
-3. 在配置中声明技能路径（如尚未配置）：
-
-```jsonc
-{
-  "skills": {
-    "paths": ["./.rocode/skills"]
-  }
-}
-```
-
-也可以通过 `skill_manage` 工具的 `create` 操作创建。
-
-### 创建 TypeScript 插件
-
-1. 创建 `.ts` 文件：
-
-```typescript
-// my-plugin.ts
-export default {
-  name: "my-plugin",
-  version: "1.0.0",
-  tools: [
-    {
-      name: "my_tool",
-      description: "自定义工具描述",
-      parameters: {
-        type: "object",
-        properties: {
-          input: { type: "string", description: "输入参数" }
+也就是说，当前真实接口是这种风格：
+
+- 直接返回 hook name -> async handler
+- 可选返回 `tool`
+- 可选返回 `auth`
+
+不是旧文档里那种 `hooks: { ... }` 包装层，也不是旧的驼峰事件名和通知名接口。
+
+### 自定义工具
+
+如果插件要暴露工具，返回对象里放一个 `tool` 字段：
+
+```ts
+import { z } from "zod";
+
+export default async function ToolPlugin() {
+  return {
+    tool: {
+      echo: {
+        description: "Echo input text",
+        args: z.object({
+          text: z.string(),
+        }),
+        async execute(args: { text: string }) {
+          return { output: args.text };
         },
-        required: ["input"]
       },
-      execute: async (args) => {
-        return { output: `处理: ${args.input}` };
-      }
-    }
-  ],
-  hooks: {
-    PostToolUse: [
-      {
-        matcher: "Edit",
-        handler: async (context) => {
-          // 工具后处理逻辑
-          return {};
-        }
-      }
-    ]
-  }
-};
-```
-
-2. 在配置中声明：
-
-```jsonc
-{
-  "plugin": {
-    "my-plugin": {
-      "type": "file",
-      "path": "./plugins/my-plugin.ts"
-    }
-  }
+    },
+  };
 }
 ```
 
-### 创建 Rust 原生插件
+宿主会把 `args` 转成 JSON Schema，供工具注册与展示使用。
 
-1. 创建 Rust 库项目：
+---
+
+## 当前真实的 Hook 名
+
+TS 插件当前支持的 hook 名是下面这些精确字符串：
+
+### 请求与消息
+
+- `chat.headers`
+- `chat.params`
+- `chat.message`
+
+### 工具与权限
+
+- `tool.execute.before`
+- `tool.execute.after`
+- `tool.definition`
+- `permission.ask`
+
+### 命令与 shell
+
+- `command.execute.before`
+- `shell.env`
+
+### 实验性 hook
+
+- `experimental.chat.system.transform`
+- `experimental.chat.messages.transform`
+- `experimental.session.compacting`
+- `experimental.telemetry.snapshot.updated`
+- `experimental.telemetry.stage.summary.updated`
+- `experimental.text.complete`
+
+如果你写的是旧的驼峰事件名或通知式事件名，那不是“有点旧”，而是根本对不上当前宿主。
+
+---
+
+## 认证桥
+
+TS 插件还可以声明 `auth`，由宿主桥接成 provider 认证能力。
+
+这条路径支持的能力包括：
+
+- 列出认证方法
+- 发起授权
+- callback 回填
+- `auth.load()` 返回 `apiKey`
+- 可选自定义 `fetch` 代理
+
+简化例子：
+
+```ts
+export default async function AuthPlugin() {
+  return {
+    auth: {
+      provider: "github-copilot",
+      methods: [
+        { type: "oauth", label: "GitHub Copilot" },
+      ],
+      async loader() {
+        const apiKey = process.env.GITHUB_COPILOT_TOKEN?.trim();
+        return apiKey ? { apiKey } : {};
+      },
+    },
+  };
+}
+```
+
+当前内建的认证插件有两份：
+
+- `codex-auth`
+- `copilot-auth`
+
+---
+
+## Rust 原生插件
+
+`dylib` 插件走进程内加载，适合：
+
+- 需要更强类型边界的扩展
+- 高性能路径
+- 不想依赖 JS runtime 的场景
+
+最小导出形式：
 
 ```rust
-// src/lib.rs
-use rocode_plugin::{Plugin, PluginSystem, HookContext, HookOutput, HookResult};
-
 struct MyPlugin;
 
-impl Plugin for MyPlugin {
+impl rocode_plugin::Plugin for MyPlugin {
     fn name(&self) -> &str { "my-plugin" }
     fn version(&self) -> &str { "1.0.0" }
 }
@@ -457,17 +292,7 @@ impl Plugin for MyPlugin {
 rocode_plugin::declare_plugin!(MyPlugin);
 ```
 
-2. `Cargo.toml` 配置为 `cdylib`：
-
-```toml
-[lib]
-crate-type = ["cdylib"]
-
-[dependencies]
-rocode-plugin = { path = "../rocode/crates/rocode-plugin" }
-```
-
-3. 编译并配置：
+配置示例：
 
 ```jsonc
 {
@@ -480,29 +305,35 @@ rocode-plugin = { path = "../rocode/crates/rocode-plugin" }
 }
 ```
 
+这条路径要注意两件事：
+
+- 动态库和主程序 ABI 风险高
+- 不要加载不受信任的二进制
+
 ---
 
 ## 推荐实践
 
-| 需求 | 推荐方式 |
+### 什么时候用什么
+
+| 目标 | 推荐方式 |
 |------|----------|
-| 增强提示和流程 | **Skill** (SKILL.md) -- 最简单，不改代码 |
-| 动态 Hook / Auth / 自定义 fetch | **TypeScript 插件** -- 灵活，运行时加载 |
-| 深度性能 / 类型安全 / 核心能力扩展 | **Rust 原生插件** -- 编译期集成 |
+| 调整提示、流程、规范 | `skills` |
+| 改请求头、请求参数、消息形状 | TS 插件 hook |
+| 自定义 OAuth / fetch 代理 | TS 插件 `auth` |
+| 高性能或深度 runtime 集成 | `dylib` |
 
-### 批量工具调用
+### 现在不该做的事
 
-对于批量工具调用，建议：
-- 返回摘要文本 + 结构化 metadata
-- 前端按 metadata 做可视化渲染
-- 不要把所有输出都塞进纯文本
+- 不要再把 `skills` 写成 `plugin` 的一种
+- 不要再用旧的 TS hook 事件名
+- 不要把 `pip` / `cargo` 当成当前已接通的自动执行面
+- 不要继续扩散 `plugin` 列表格式
 
-### 用户交互
+---
 
-如果工具需要向用户提问：
-- 保留结构化 `question` 能力
-- 不要把所有交互退化为普通文本
+## 参见
 
-### 熔断器
-
-插件子系统内建熔断器（circuit breaker），当插件子进程反复失败时自动停止尝试，防止资源浪费。熔断器会在一段时间后自动尝试恢复。
+- [认证指南](auth)
+- [技能系统](skills)
+- [配置参考](configuration)
