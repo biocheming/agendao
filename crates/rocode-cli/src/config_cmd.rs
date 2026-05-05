@@ -101,6 +101,14 @@ async fn config_client(runtime_context: &FrontendRuntimeContext) -> anyhow::Resu
 }
 
 fn print_config_validation_snapshot(snapshot: &ConfigPolicyValidationSnapshot) {
+    println!("Config validation");
+    println!("  Source: /config/validation");
+    for line in config_validation_lines(snapshot) {
+        println!("{line}");
+    }
+}
+
+pub(crate) fn config_validation_lines(snapshot: &ConfigPolicyValidationSnapshot) -> Vec<String> {
     let error_count = snapshot
         .reports
         .iter()
@@ -112,23 +120,22 @@ fn print_config_validation_snapshot(snapshot: &ConfigPolicyValidationSnapshot) {
         .filter(|item| item.severity == ConfigPolicyValidationSeverity::Warning)
         .count();
 
-    println!("Config validation");
-    println!("  Revision: {}", snapshot.revision);
-    println!(
-        "  Generated: {}",
-        format_timestamp(snapshot.generated_at_ms)
-    );
-    println!(
-        "  Findings: {} ({} errors, {} warnings)",
-        snapshot.reports.len(),
-        error_count,
-        warning_count
-    );
-    println!("  Source: /config/validation");
+    let mut lines = vec![
+        format!("Revision: {}", snapshot.revision),
+        format!("Generated: {}", format_timestamp(snapshot.generated_at_ms)),
+        format!(
+            "Findings: {} ({} errors, {} warnings)",
+            snapshot.reports.len(),
+            error_count,
+            warning_count
+        ),
+    ];
 
     if snapshot.reports.is_empty() {
-        println!("\nNo validation findings are present in the current config snapshot.");
-        return;
+        lines.push(String::new());
+        lines
+            .push("No validation findings are present in the current config snapshot.".to_string());
+        return lines;
     }
 
     let mut grouped: BTreeMap<ConfigPolicyValidationOwner, Vec<&ConfigPolicyValidationItem>> =
@@ -138,25 +145,28 @@ fn print_config_validation_snapshot(snapshot: &ConfigPolicyValidationSnapshot) {
     }
 
     for (owner, items) in grouped {
-        println!("\n{} ({})", owner_label(owner), items.len());
+        lines.push(String::new());
+        lines.push(format!("{} ({})", owner_label(owner), items.len()));
         for item in items {
-            println!(
+            lines.push(format!(
                 "  - [{}] {} · {}",
                 severity_label(item.severity),
                 item.code,
                 item.path
-            );
-            println!(
+            ));
+            lines.push(format!(
                 "    Scope: {}",
                 scope_label(item.scope.kind, item.scope.subject_id.as_deref())
-            );
-            println!("    Effect: {}", effect_label(item.effect));
-            println!("    Message: {}", item.message);
+            ));
+            lines.push(format!("    Effect: {}", effect_label(item.effect)));
+            lines.push(format!("    Message: {}", item.message));
             if let Some(fallback) = item.fallback.as_deref() {
-                println!("    Fallback: {}", fallback);
+                lines.push(format!("    Fallback: {}", fallback));
             }
         }
     }
+
+    lines
 }
 
 fn owner_label(owner: ConfigPolicyValidationOwner) -> &'static str {

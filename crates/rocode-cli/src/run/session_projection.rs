@@ -1875,6 +1875,35 @@ async fn cli_print_memory_validation_report(
     }
 }
 
+async fn cli_print_config_validation(
+    runtime: &CliExecutionRuntime,
+    api_client: &CliApiClient,
+    style: &CliStyle,
+) {
+    match api_client.get_config_validation().await {
+        Ok(snapshot) => {
+            let lines = crate::config_cmd::config_validation_lines(&snapshot);
+            let _ = print_cli_list_on_surface(
+                Some(runtime),
+                "Config Validation",
+                Some("Source: /config/validation"),
+                &lines,
+                style,
+            );
+        }
+        Err(error) => {
+            let _ = print_block(
+                Some(runtime),
+                OutputBlock::Status(StatusBlock::error(format!(
+                    "Failed to load config validation snapshot: {}",
+                    error
+                ))),
+                style,
+            );
+        }
+    }
+}
+
 async fn cli_print_memory_conflicts(
     runtime: &CliExecutionRuntime,
     api_client: &CliApiClient,
@@ -2920,7 +2949,8 @@ fn cli_sidebar_lines(
 
     lines.push(String::new());
     lines.push("/help · /model · /preset".to_string());
-    lines.push("/runtime · /usage · /insights · /events".to_string());
+    lines.push("/runtime · /usage · /insights · /validation".to_string());
+    lines.push("/events".to_string());
     lines.push("/events next · /events prev · /events page <n>".to_string());
     lines.push("/events first · /events clear".to_string());
     lines.push("/child · /abort · /status".to_string());
