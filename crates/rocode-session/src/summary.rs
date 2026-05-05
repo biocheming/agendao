@@ -523,7 +523,7 @@ pub fn generate_title_from_messages(messages: &[String]) -> String {
 }
 
 // ============================================================================
-// Legacy compatibility
+// Session summary projection
 // ============================================================================
 
 pub struct SessionSummary;

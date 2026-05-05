@@ -24,14 +24,14 @@ const COPILOT_API_URL: &str = "https://api.githubcopilot.com/chat/completions";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CopilotRoute {
     Responses,
-    Legacy,
+    ChatCompletions,
 }
 
 fn select_copilot_route(model_id: &str) -> CopilotRoute {
     if should_use_copilot_responses_api(model_id) {
         CopilotRoute::Responses
     } else {
-        CopilotRoute::Legacy
+        CopilotRoute::ChatCompletions
     }
 }
 
@@ -296,7 +296,7 @@ impl GitHubCopilotCloseAiAdapter {
         }
     }
 
-    async fn chat_legacy(
+    async fn chat_completions_chat(
         client: &reqwest::Client,
         config: &ProviderConfig,
         request: ChatRequest,
@@ -338,7 +338,7 @@ impl GitHubCopilotCloseAiAdapter {
         Ok(convert_copilot_response(copilot_response))
     }
 
-    async fn chat_stream_legacy(
+    async fn chat_completions_stream(
         client: &reqwest::Client,
         config: &ProviderConfig,
         request: ChatRequest,
@@ -442,7 +442,7 @@ impl ProviderAdapter for GitHubCopilotCloseAiAdapter {
                         tracing::warn!(
                             model = %model_for_log,
                             error = %err,
-                            "Copilot responses generate failed while custom fetch proxy is active; skipping legacy fallback"
+                            "Copilot responses generate failed while custom fetch proxy is active; skipping chat-completions fallback"
                         );
                         return Err(err);
                     }
@@ -451,13 +451,18 @@ impl ProviderAdapter for GitHubCopilotCloseAiAdapter {
                         error = %err,
                         "Copilot responses generate failed, falling back to chat completions"
                     );
-                    Self::chat_legacy(&client_for_fallback, &config_for_fallback, request).await
+                    Self::chat_completions_chat(
+                        &client_for_fallback,
+                        &config_for_fallback,
+                        request,
+                    )
+                    .await
                 },
             )
             .await;
         }
 
-        Self::chat_legacy(client, config, request).await
+        Self::chat_completions_chat(client, config, request).await
     }
 
     async fn chat_stream(
@@ -482,7 +487,7 @@ impl ProviderAdapter for GitHubCopilotCloseAiAdapter {
                         tracing::warn!(
                             model = %model_for_log,
                             error = %err,
-                            "Copilot responses stream failed while custom fetch proxy is active; skipping legacy fallback"
+                            "Copilot responses stream failed while custom fetch proxy is active; skipping chat-completions fallback"
                         );
                         return Err(err);
                     }
@@ -491,7 +496,7 @@ impl ProviderAdapter for GitHubCopilotCloseAiAdapter {
                         error = %err,
                         "Copilot responses stream failed, falling back to chat completions"
                     );
-                    Self::chat_stream_legacy(
+                    Self::chat_completions_stream(
                         &client_for_fallback,
                         &config_for_fallback,
                         request,
@@ -503,7 +508,7 @@ impl ProviderAdapter for GitHubCopilotCloseAiAdapter {
             .await;
         }
 
-        Self::chat_stream_legacy(client, config, request, use_pipeline).await
+        Self::chat_completions_stream(client, config, request, use_pipeline).await
     }
 }
 
@@ -756,9 +761,15 @@ mod tests {
     }
 
     #[test]
-    fn select_route_keeps_legacy_for_non_gpt5_models() {
-        assert_eq!(select_copilot_route("gpt-4o"), CopilotRoute::Legacy);
-        assert_eq!(select_copilot_route("test-model-v2"), CopilotRoute::Legacy);
+    fn select_route_keeps_chat_completions_for_non_gpt5_models() {
+        assert_eq!(
+            select_copilot_route("gpt-4o"),
+            CopilotRoute::ChatCompletions
+        );
+        assert_eq!(
+            select_copilot_route("test-model-v2"),
+            CopilotRoute::ChatCompletions
+        );
     }
 
     #[tokio::test]
@@ -775,7 +786,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_with_fallback_skips_legacy_when_custom_fetch_active() {
+    async fn resolve_with_fallback_skips_chat_completions_when_custom_fetch_active() {
         register_custom_fetch_proxy("github-copilot", Arc::new(NoopProxy));
 
         let result = resolve_with_fallback(

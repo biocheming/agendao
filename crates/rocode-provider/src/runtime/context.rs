@@ -1,6 +1,6 @@
 #[derive(Debug, Clone)]
 pub enum ProtocolSource {
-    Legacy { npm: String },
+    BuiltinAdapter { npm: String },
     Manifest { path: String, version: String },
 }
 

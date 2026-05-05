@@ -334,7 +334,7 @@ fn provider_error_summary_from_anyhow_reads_wrapped_prompt_error() {
 }
 
 #[test]
-fn provider_failure_from_anyhow_reads_wrapped_legacy_provider_message() {
+fn provider_failure_from_anyhow_reads_wrapped_untyped_provider_message() {
     let error = anyhow::Error::new(PromptError::ProviderFailure(
         rocode_orchestrator::runtime::events::ModelFailure::Message(
             "provider `deepseek` rejected the request because thinking-mode reasoning replay was missing or incompatible: 400 Bad Request"
@@ -347,13 +347,13 @@ fn provider_failure_from_anyhow_reads_wrapped_legacy_provider_message() {
 
     assert_eq!(
         failure,
-        PromptProviderFailure::LegacyMessage(
+        PromptProviderFailure::UntypedMessage(
             "provider `deepseek` rejected the request because thinking-mode reasoning replay was missing or incompatible: 400 Bad Request"
                 .to_string()
         )
     );
     assert_eq!(
-        legacy_provider_error_text_from_anyhow(&error).as_deref(),
+        untyped_provider_error_text_from_anyhow(&error).as_deref(),
         Some(
             "provider `deepseek` rejected the request because thinking-mode reasoning replay was missing or incompatible: 400 Bad Request"
         )

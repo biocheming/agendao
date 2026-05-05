@@ -14,7 +14,7 @@ pub(super) fn attach_provider_diagnostic_from_error(
                 diagnostic.attach_to_metadata(&mut assistant.metadata);
             }
         }
-        Some(rocode_session::prompt::PromptProviderFailure::LegacyMessage(message)) => {
+        Some(rocode_session::prompt::PromptProviderFailure::UntypedMessage(message)) => {
             if let Some(summary) = rocode_provider::provider_diagnostic_from_error_text(
                 provider_id,
                 model_id,
@@ -73,7 +73,7 @@ mod tests {
     }
 
     #[test]
-    fn attach_provider_diagnostic_from_error_uses_legacy_provider_message_fallback() {
+    fn attach_provider_diagnostic_from_error_uses_untyped_provider_message_fallback() {
         let mut assistant = rocode_session::SessionMessage::assistant("session-1".to_string());
         let error = anyhow::Error::new(rocode_session::prompt::PromptError::ProviderFailure(
             rocode_orchestrator::runtime::events::ModelFailure::Message(
@@ -93,7 +93,7 @@ mod tests {
             rocode_provider::provider_error_summary_from_metadata(&assistant.metadata).is_none()
         );
         let diagnostic = rocode_provider::provider_diagnostic_from_metadata(&assistant.metadata)
-            .expect("legacy provider message should still attach fallback diagnostic");
+            .expect("untyped provider message should still attach fallback diagnostic");
         assert_eq!(diagnostic.code, "thinking_replay_rejected");
     }
 

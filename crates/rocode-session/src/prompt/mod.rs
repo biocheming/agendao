@@ -1560,7 +1560,7 @@ pub enum PromptError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromptProviderFailure {
     TypedSummary(rocode_provider::ProviderErrorSummary),
-    LegacyMessage(String),
+    UntypedMessage(String),
 }
 
 impl PromptError {
@@ -1573,7 +1573,7 @@ impl PromptError {
                 message,
             ))
             | Self::Provider(message) => {
-                Some(PromptProviderFailure::LegacyMessage(message.clone()))
+                Some(PromptProviderFailure::UntypedMessage(message.clone()))
             }
             Self::Busy(_) | Self::NoUserMessage | Self::Cancelled => None,
         }
@@ -1582,7 +1582,7 @@ impl PromptError {
     pub fn provider_error_summary(&self) -> Option<rocode_provider::ProviderErrorSummary> {
         match self.provider_failure()? {
             PromptProviderFailure::TypedSummary(summary) => Some(summary),
-            PromptProviderFailure::LegacyMessage(_) => None,
+            PromptProviderFailure::UntypedMessage(_) => None,
         }
     }
 }
@@ -1599,14 +1599,14 @@ pub fn provider_error_summary_from_anyhow(
 ) -> Option<rocode_provider::ProviderErrorSummary> {
     match provider_failure_from_anyhow(error)? {
         PromptProviderFailure::TypedSummary(summary) => Some(summary),
-        PromptProviderFailure::LegacyMessage(_) => None,
+        PromptProviderFailure::UntypedMessage(_) => None,
     }
 }
 
-pub fn legacy_provider_error_text_from_anyhow(error: &anyhow::Error) -> Option<String> {
+pub fn untyped_provider_error_text_from_anyhow(error: &anyhow::Error) -> Option<String> {
     match provider_failure_from_anyhow(error)? {
         PromptProviderFailure::TypedSummary(_) => None,
-        PromptProviderFailure::LegacyMessage(message) => Some(message),
+        PromptProviderFailure::UntypedMessage(message) => Some(message),
     }
 }
 
