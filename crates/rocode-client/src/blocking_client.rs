@@ -14,16 +14,16 @@ use crate::common::{
     FormatterStatusResponse, LspStatusResponse, RecentModelsPayload, HTTP_TIMEOUT,
 };
 use crate::{
-    AgentInfo, ApiDiffEntry, ApiTodoItem, CompactRequest, CompactResponse, ConnectProviderRequest,
-    CreateSessionRequest, ExecuteRecoveryRequest, ExecuteShellRequest, ExecutionModeInfo,
-    FullProviderListResponse, KnownProvidersResponse, McpAuthStartInfo, McpStatusInfo,
-    MemoryConflictResponse, MemoryConsolidationRequest, MemoryConsolidationResponse,
-    MemoryConsolidationRunListResponse, MemoryConsolidationRunQuery, MemoryDetailView,
-    MemoryListQuery, MemoryListResponse, MemoryRetrievalPreviewResponse, MemoryRetrievalQuery,
-    MemoryRuleHitListResponse, MemoryRuleHitQuery, MemoryRulePackListResponse,
-    MemoryValidationReportResponse, MessageInfo, MultimodalCapabilitiesResponse,
-    MultimodalPolicyResponse, MultimodalPreflightRequest, MultimodalPreflightResponse,
-    PermissionRequestInfo, PromptPart, PromptRequest, PromptResponse,
+    AgentInfo, ApiDiffEntry, ApiTodoItem, CompactRequest, CompactResponse,
+    ConfigPolicyValidationSnapshot, ConnectProviderRequest, CreateSessionRequest,
+    ExecuteRecoveryRequest, ExecuteShellRequest, ExecutionModeInfo, FullProviderListResponse,
+    KnownProvidersResponse, McpAuthStartInfo, McpStatusInfo, MemoryConflictResponse,
+    MemoryConsolidationRequest, MemoryConsolidationResponse, MemoryConsolidationRunListResponse,
+    MemoryConsolidationRunQuery, MemoryDetailView, MemoryListQuery, MemoryListResponse,
+    MemoryRetrievalPreviewResponse, MemoryRetrievalQuery, MemoryRuleHitListResponse,
+    MemoryRuleHitQuery, MemoryRulePackListResponse, MemoryValidationReportResponse, MessageInfo,
+    MultimodalCapabilitiesResponse, MultimodalPolicyResponse, MultimodalPreflightRequest,
+    MultimodalPreflightResponse, PermissionRequestInfo, PromptPart, PromptRequest, PromptResponse,
     ProviderConnectSchemaResponse, ProviderDescriptorResponse, ProviderListResponse, QuestionInfo,
     RecoveryActionKind, RefreshProviderCatalogResponse, ResolveProviderConnectRequest,
     ResolveProviderConnectResponse, RevertRequest, RevertResponse, SessionEventsQuery,
@@ -397,6 +397,10 @@ impl BlockingApiClient {
 
     pub fn get_config(&self) -> anyhow::Result<AppConfig> {
         self.get_json("/config", "get config")
+    }
+
+    pub fn get_config_validation(&self) -> anyhow::Result<ConfigPolicyValidationSnapshot> {
+        self.get_json("/config/validation", "get config validation")
     }
 
     pub fn get_workspace_context(&self) -> anyhow::Result<ResolvedWorkspaceContext> {

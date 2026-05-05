@@ -7,6 +7,7 @@ mod auth;
 mod branding;
 mod cli;
 mod clipboard;
+mod config_cmd;
 mod db;
 mod debug;
 mod event_stream;
@@ -26,6 +27,7 @@ mod util;
 use agent_cmd::handle_agent_command;
 use auth::handle_auth_command;
 use cli::*;
+use config_cmd::handle_config_command;
 use db::{handle_db_command, handle_stats_command};
 use debug::handle_debug_command;
 use generate::list_models;
@@ -37,7 +39,7 @@ use mcp_cmd::handle_mcp_command;
 use provider_cmd::handle_provider_command;
 use run::{run_non_interactive, RunNonInteractiveOptions};
 pub use server_lifecycle::{FrontendRuntimeContext, ServerDiscoveryRequest};
-use session_cmd::{handle_session_command, show_config};
+use session_cmd::handle_session_command;
 use skill_cmd::handle_skill_command;
 
 pub async fn run_frontend() -> anyhow::Result<()> {
@@ -139,8 +141,8 @@ where
         } => {
             handle_db_command(action, query, format).await?;
         }
-        Commands::Config => {
-            show_config().await?;
+        Commands::Config { action } => {
+            handle_config_command(action, &runtime_context).await?;
         }
         Commands::Auth { action } => {
             handle_auth_command(action).await?;

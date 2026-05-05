@@ -1,4 +1,3 @@
-use rocode_config::loader::load_config;
 use rocode_storage::{Database, MessageRepository, SessionRepository};
 
 use crate::cli::{SessionCommands, SessionListFormat};
@@ -97,61 +96,5 @@ pub(crate) async fn handle_session_command(action: SessionCommands) -> anyhow::R
             println!("Session {} deleted.", session_id);
         }
     }
-    Ok(())
-}
-
-pub(crate) async fn show_config() -> anyhow::Result<()> {
-    let current_dir = std::env::current_dir()?;
-    let config = load_config(&current_dir)?;
-
-    println!("\n╔══════════════════════════════════════════╗");
-    println!("║         Configuration                      ║");
-    println!("╚══════════════════════════════════════════╝\n");
-
-    if let Some(ref model) = config.model {
-        println!("Default model: {}", model);
-    }
-
-    if let Some(ref default_agent) = config.default_agent {
-        println!("Default agent: {}", default_agent);
-    }
-
-    if !config.instructions.is_empty() {
-        println!("\nInstructions:");
-        for inst in &config.instructions {
-            println!("  - {}", inst);
-        }
-    }
-
-    println!("\nWorking directory: {}", current_dir.display());
-
-    println!("\nEnvironment variables:");
-    let env_vars = [
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "OPENROUTER_API_KEY",
-        "GOOGLE_API_KEY",
-        "MISTRAL_API_KEY",
-        "GROQ_API_KEY",
-        "XAI_API_KEY",
-        "DEEPSEEK_API_KEY",
-        "COHERE_API_KEY",
-        "TOGETHER_API_KEY",
-        "PERPLEXITY_API_KEY",
-        "CEREBRAS_API_KEY",
-        "GOOGLE_VERTEX_API_KEY",
-        "AZURE_OPENAI_API_KEY",
-        "AWS_ACCESS_KEY_ID",
-    ];
-
-    for var in env_vars {
-        let status = if std::env::var(var).is_ok() {
-            "✓ set"
-        } else {
-            "✗ not set"
-        };
-        println!("  {}: {}", var, status);
-    }
-
     Ok(())
 }

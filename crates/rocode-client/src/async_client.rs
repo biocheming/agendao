@@ -11,13 +11,14 @@ use crate::common::{
     FormatterStatusResponse, LspStatusResponse, RecentModelsPayload, HTTP_TIMEOUT,
 };
 use crate::{
-    AgentInfo, ApiDiffEntry, ApiTodoItem, CompactRequest, CompactResponse, CreateSessionRequest,
-    ExecuteRecoveryRequest, ExecuteShellRequest, ExecutionModeInfo, FullProviderListResponse,
-    KnownProvidersResponse, McpAuthStartInfo, McpStatusInfo, MemoryConflictResponse,
-    MemoryConsolidationRequest, MemoryConsolidationResponse, MemoryConsolidationRunListResponse,
-    MemoryConsolidationRunQuery, MemoryDetailView, MemoryListQuery, MemoryListResponse,
-    MemoryRetrievalPreviewResponse, MemoryRetrievalQuery, MemoryRuleHitListResponse,
-    MemoryRuleHitQuery, MemoryRulePackListResponse, MemoryValidationReportResponse, MessageInfo,
+    AgentInfo, ApiDiffEntry, ApiTodoItem, CompactRequest, CompactResponse,
+    ConfigPolicyValidationSnapshot, CreateSessionRequest, ExecuteRecoveryRequest,
+    ExecuteShellRequest, ExecutionModeInfo, FullProviderListResponse, KnownProvidersResponse,
+    McpAuthStartInfo, McpStatusInfo, MemoryConflictResponse, MemoryConsolidationRequest,
+    MemoryConsolidationResponse, MemoryConsolidationRunListResponse, MemoryConsolidationRunQuery,
+    MemoryDetailView, MemoryListQuery, MemoryListResponse, MemoryRetrievalPreviewResponse,
+    MemoryRetrievalQuery, MemoryRuleHitListResponse, MemoryRuleHitQuery,
+    MemoryRulePackListResponse, MemoryValidationReportResponse, MessageInfo,
     MultimodalCapabilitiesResponse, MultimodalPolicyResponse, MultimodalPreflightRequest,
     MultimodalPreflightResponse, PermissionRequestInfo, PromptPart, PromptRequest, PromptResponse,
     ProviderConnectSchemaResponse, ProviderDescriptorResponse, ProviderListResponse, QuestionInfo,
@@ -501,6 +502,11 @@ impl AsyncApiClient {
         let url = server_url(&self.base_url, "/config");
         let resp = self.client.get(&url).send().await?;
         Self::json_ok(resp, "get config").await
+    }
+
+    pub async fn get_config_validation(&self) -> anyhow::Result<ConfigPolicyValidationSnapshot> {
+        self.get_json("/config/validation", "get config validation")
+            .await
     }
 
     pub async fn get_config_providers(&self) -> anyhow::Result<ProviderListResponse> {
