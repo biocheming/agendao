@@ -29,8 +29,12 @@ const SESSION_SANCTIONED_METADATA_KEYS: &[&str] = &[
     "runtime_skill_instructions",
 ];
 
-const SESSION_SANCTIONED_METADATA_PREFIXES: &[&str] =
-    &["last_ingress_", "last_recovery_", "scheduler_handoff_"];
+const SESSION_SANCTIONED_METADATA_PREFIXES: &[&str] = &[
+    "last_ingress_",
+    "last_recovery_",
+    "scheduler_handoff_",
+    "scheduler_selection_",
+];
 
 const MESSAGE_SANCTIONED_METADATA_KEYS: &[&str] = &[
     "agent",

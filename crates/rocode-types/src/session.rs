@@ -321,6 +321,28 @@ pub struct SessionEffectivePolicyView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionEffectiveSchedulerTraceStepKind {
+    RequestedProfile,
+    CommandWorkflowOverride,
+    SessionPinnedProfile,
+    LegacySessionPinnedProfile,
+    ConfigDefaultProfile,
+    AutoRoute,
+    SoftFallback,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionEffectiveSchedulerTraceStep {
+    pub kind: SessionEffectiveSchedulerTraceStepKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub applied: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionEffectiveSchedulerPolicy {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_profile: Option<String>,
@@ -334,6 +356,10 @@ pub struct SessionEffectiveSchedulerPolicy {
     pub root_agent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selection_trace: Vec<SessionEffectiveSchedulerTraceStep>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

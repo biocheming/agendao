@@ -45,6 +45,27 @@ function formatCompactTokenCount(value: number) {
   return String(Math.round(value));
 }
 
+function schedulerTraceLabel(kind?: string | null) {
+  switch (kind) {
+    case "requested_profile":
+      return "Requested profile";
+    case "command_workflow_override":
+      return "Command/workflow";
+    case "session_pinned_profile":
+      return "Session pinned";
+    case "legacy_session_pinned_profile":
+      return "Legacy session";
+    case "config_default_profile":
+      return "Config default";
+    case "auto_route":
+      return "Auto route";
+    case "soft_fallback":
+      return "Soft fallback";
+    default:
+      return kind || "Trace";
+  }
+}
+
 function totalUsageTokens(usage?: {
   input_tokens?: number;
   output_tokens?: number;
@@ -67,6 +88,8 @@ function totalUsageTokens(usage?: {
 export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanelProps) {
   const insights = activity.sessionInsights;
   const telemetry = insights?.telemetry ?? null;
+  const effectivePolicy = insights?.effective_policy ?? null;
+  const schedulerPolicy = effectivePolicy?.scheduler ?? null;
   const telemetryUsage = telemetry?.usage ?? null;
   const telemetryStages = telemetry?.stage_summaries ?? [];
   const memory = insights?.memory ?? null;
@@ -211,6 +234,71 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
               <p className="text-sm text-muted-foreground leading-relaxed">
                 Updated {formatDateTime(telemetry.updated_at)}
               </p>
+            </div>
+          ) : null}
+
+          {effectivePolicy ? (
+            <div className="roc-rail-section">
+              <div className="roc-rail-section-copy">
+                <p className="roc-section-label">Effective Policy</p>
+                <h4 className="roc-rail-section-title">Scheduler Selection</h4>
+              </div>
+              {schedulerPolicy ? (
+                <>
+                  <div className="roc-rail-meta-list">
+                    <span className="roc-badge px-3 py-1.5 text-xs">source {schedulerPolicy.source}</span>
+                    <span className="roc-badge px-3 py-1.5 text-xs">applied {schedulerPolicy.applied ? "yes" : "no"}</span>
+                    <span className="roc-badge px-3 py-1.5 text-xs">requested {schedulerPolicy.requested_profile || "--"}</span>
+                    <span className="roc-badge px-3 py-1.5 text-xs">effective {schedulerPolicy.effective_profile || "--"}</span>
+                  </div>
+                  <div className="grid gap-1 text-sm text-muted-foreground">
+                    <p>Mode kind: {schedulerPolicy.mode_kind || "--"}</p>
+                    <p>Root agent: {schedulerPolicy.root_agent || "--"}</p>
+                    <p>Resolved agent: {schedulerPolicy.resolved_agent || "--"}</p>
+                  </div>
+                  {(schedulerPolicy.selection_trace ?? []).length ? (
+                    <div className="grid gap-2">
+                      <p className="roc-section-label">Selection Trace</p>
+                      {(schedulerPolicy.selection_trace ?? []).map((step, index) => (
+                        <div
+                          key={`scheduler-trace:${index}:${step.kind}:${step.profile ?? "--"}`}
+                          className={detailTileClass}
+                        >
+                          <div className="flex flex-wrap items-center gap-2">
+                            <strong>{schedulerTraceLabel(step.kind)}</strong>
+                            {step.profile ? (
+                              <span className="roc-badge px-2.5 py-1 text-xs">{step.profile}</span>
+                            ) : null}
+                            <span className="text-xs text-muted-foreground">
+                              applied {step.applied ? "yes" : "no"}
+                            </span>
+                          </div>
+                          {step.detail ? (
+                            <p className="text-xs text-muted-foreground">{step.detail}</p>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  {schedulerPolicy.warning ? (
+                    <div className="roc-rail-item bg-card/45 text-sm text-muted-foreground">
+                      {schedulerPolicy.warning}
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground">No scheduler policy is currently active.</p>
+              )}
+              {(effectivePolicy.warnings ?? []).length ? (
+                <div className="grid gap-2">
+                  <p className="roc-section-label">Policy Warnings</p>
+                  {(effectivePolicy.warnings ?? []).map((warning, index) => (
+                    <div key={`effective-policy-warning:${index}`} className="roc-rail-item bg-card/45 text-sm text-muted-foreground">
+                      {warning}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </div>
           ) : null}
 

@@ -43,7 +43,8 @@ use rocode_session::{MessageRole, PartType as SessionPartType, SessionMessage};
 use rocode_types::{
     ConfigPolicyValidationEffect, ConfigPolicyValidationItem, ConfigPolicyValidationOwner,
     ConfigPolicyValidationScope, ConfigPolicyValidationScopeKind, ConfigPolicyValidationSeverity,
-    MemoryDetailView, MemoryEvidenceRef, MemoryRecordId,
+    MemoryDetailView, MemoryEvidenceRef, MemoryRecordId, SessionEffectiveSchedulerTraceStep,
+    SessionEffectiveSchedulerTraceStepKind,
 };
 
 use super::super::permission::request_permission;
@@ -387,16 +388,171 @@ pub(super) fn scheduler_mode_kind(profile_name: &str) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PromptRequestSchedulerProfileSource {
+    ExplicitRequest,
+    CommandWorkflow,
+    SessionPinnedProfile,
+    LegacySessionMetadata,
+}
+
 pub(crate) struct PromptRequestConfigInput<'a> {
     pub state: &'a Arc<ServerState>,
     pub config: &'a AppConfig,
     pub session_id: &'a str,
     pub requested_agent: Option<&'a str>,
     pub requested_scheduler_profile: Option<&'a str>,
+    pub requested_scheduler_profile_source: Option<PromptRequestSchedulerProfileSource>,
     pub scheduler_profile_override: Option<(String, SchedulerProfileConfig)>,
     pub request_model: Option<&'a str>,
     pub request_variant: Option<&'a str>,
     pub route: &'static str,
+}
+
+fn scheduler_selection_source_label(
+    requested_source: Option<PromptRequestSchedulerProfileSource>,
+    has_command_override: bool,
+    scheduler_applied: bool,
+) -> &'static str {
+    if has_command_override {
+        return "command_workflow";
+    }
+
+    match requested_source {
+        Some(PromptRequestSchedulerProfileSource::ExplicitRequest) => "explicit_request",
+        Some(PromptRequestSchedulerProfileSource::CommandWorkflow) => "command_workflow",
+        Some(PromptRequestSchedulerProfileSource::SessionPinnedProfile) => "session_pinned_profile",
+        Some(PromptRequestSchedulerProfileSource::LegacySessionMetadata) => {
+            "legacy_session_metadata"
+        }
+        None if scheduler_applied => "config_default",
+        None => "none",
+    }
+}
+
+fn scheduler_selection_warning(
+    config: &AppConfig,
+    requested_profile: Option<&str>,
+    requested_source: Option<PromptRequestSchedulerProfileSource>,
+    scheduler_profile_override: Option<&(String, SchedulerProfileConfig)>,
+    scheduler_applied: bool,
+) -> Option<String> {
+    if scheduler_applied {
+        return None;
+    }
+
+    if let Some((profile_name, _)) = scheduler_profile_override {
+        return Some(format!(
+            "command/workflow scheduler override `{profile_name}` could not be materialized; continuing without scheduler profile"
+        ));
+    }
+
+    if let Some(profile_name) = requested_profile {
+        return requested_source.and_then(|source| match source {
+            PromptRequestSchedulerProfileSource::CommandWorkflow => Some(format!(
+                "command/workflow requested scheduler profile `{profile_name}` did not resolve; continuing without scheduler profile"
+            )),
+            PromptRequestSchedulerProfileSource::SessionPinnedProfile => Some(format!(
+                "session-pinned scheduler profile `{profile_name}` did not resolve; continuing without scheduler profile"
+            )),
+            PromptRequestSchedulerProfileSource::LegacySessionMetadata => Some(format!(
+                "legacy session scheduler profile `{profile_name}` did not resolve; continuing without scheduler profile"
+            )),
+            PromptRequestSchedulerProfileSource::ExplicitRequest => None,
+        });
+    }
+
+    config
+        .scheduler_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|_| {
+            "configured scheduler defaults could not be resolved; continuing without scheduler profile".to_string()
+        })
+}
+
+fn scheduler_selection_trace(
+    requested_profile: Option<&str>,
+    requested_source: Option<PromptRequestSchedulerProfileSource>,
+    scheduler_profile_override: Option<&(String, SchedulerProfileConfig)>,
+    scheduler_profile_name: Option<&str>,
+    scheduler_applied: bool,
+    warning: Option<&str>,
+) -> Vec<SessionEffectiveSchedulerTraceStep> {
+    let mut trace = Vec::new();
+
+    if let Some((profile_name, _)) = scheduler_profile_override {
+        trace.push(SessionEffectiveSchedulerTraceStep {
+            kind: SessionEffectiveSchedulerTraceStepKind::CommandWorkflowOverride,
+            profile: Some(profile_name.clone()),
+            detail: Some(
+                "command/workflow supplied a typed scheduler override before request/config defaults"
+                    .to_string(),
+            ),
+            applied: scheduler_applied,
+        });
+    } else if let Some(profile_name) = requested_profile {
+        let (kind, detail) = match requested_source {
+            Some(PromptRequestSchedulerProfileSource::CommandWorkflow) => (
+                SessionEffectiveSchedulerTraceStepKind::CommandWorkflowOverride,
+                "command/workflow requested this scheduler profile",
+            ),
+            Some(PromptRequestSchedulerProfileSource::SessionPinnedProfile) => (
+                SessionEffectiveSchedulerTraceStepKind::SessionPinnedProfile,
+                "session metadata pinned this scheduler profile",
+            ),
+            Some(PromptRequestSchedulerProfileSource::LegacySessionMetadata) => (
+                SessionEffectiveSchedulerTraceStepKind::LegacySessionPinnedProfile,
+                "legacy session metadata supplied this scheduler profile",
+            ),
+            _ => (
+                SessionEffectiveSchedulerTraceStepKind::RequestedProfile,
+                "request explicitly selected this scheduler profile",
+            ),
+        };
+        trace.push(SessionEffectiveSchedulerTraceStep {
+            kind,
+            profile: Some(profile_name.to_string()),
+            detail: Some(detail.to_string()),
+            applied: scheduler_applied,
+        });
+    } else if let Some(profile_name) = scheduler_profile_name {
+        trace.push(SessionEffectiveSchedulerTraceStep {
+            kind: SessionEffectiveSchedulerTraceStepKind::ConfigDefaultProfile,
+            profile: Some(profile_name.to_string()),
+            detail: Some("scheduler defaults from config selected this profile".to_string()),
+            applied: true,
+        });
+    }
+
+    let auto_profile = scheduler_profile_override
+        .map(|(profile_name, _)| profile_name.as_str())
+        .or(requested_profile)
+        .or(scheduler_profile_name)
+        .filter(|profile_name| *profile_name == AUTO_SCHEDULER_PROFILE_NAME);
+    if let Some(profile_name) = auto_profile {
+        trace.push(SessionEffectiveSchedulerTraceStep {
+            kind: SessionEffectiveSchedulerTraceStepKind::AutoRoute,
+            profile: Some(profile_name.to_string()),
+            detail: Some(
+                "auto routing remained scheduler-owned; route layer only forwarded the auto preset"
+                    .to_string(),
+            ),
+            applied: scheduler_applied,
+        });
+    }
+
+    if let Some(warning) = warning {
+        trace.push(SessionEffectiveSchedulerTraceStep {
+            kind: SessionEffectiveSchedulerTraceStepKind::SoftFallback,
+            profile: scheduler_profile_name.map(str::to_string),
+            detail: Some(warning.to_string()),
+            applied: false,
+        });
+    }
+
+    trace
 }
 
 fn scheduler_request_defaults_from_override(
@@ -1543,6 +1699,9 @@ pub(crate) struct ResolvedPromptRequestConfig {
     pub scheduler_profile_config: Option<SchedulerProfileConfig>,
     pub scheduler_root_agent: Option<String>,
     pub scheduler_skill_tree_applied: bool,
+    pub scheduler_selection_source: String,
+    pub scheduler_selection_trace: Vec<SessionEffectiveSchedulerTraceStep>,
+    pub scheduler_selection_warning: Option<String>,
     pub request_skill_tree_plan: Option<SkillTreeRequestPlan>,
     pub resolved_agent: Option<AgentInfo>,
     pub provider: Arc<dyn rocode_provider::Provider>,
@@ -1550,6 +1709,26 @@ pub(crate) struct ResolvedPromptRequestConfig {
     pub model_id: String,
     pub agent_system_prompt: Option<String>,
     pub compiled_request: CompiledExecutionRequest,
+}
+
+pub(crate) fn apply_scheduler_selection_session_metadata(
+    session: &mut rocode_session::Session,
+    resolved: &ResolvedPromptRequestConfig,
+) {
+    session.insert_metadata(
+        "scheduler_selection_source",
+        serde_json::json!(&resolved.scheduler_selection_source),
+    );
+    session.insert_metadata(
+        "scheduler_selection_trace",
+        serde_json::to_value(&resolved.scheduler_selection_trace)
+            .unwrap_or_else(|_| serde_json::Value::Array(Vec::new())),
+    );
+    if let Some(warning) = resolved.scheduler_selection_warning.as_deref() {
+        session.insert_metadata("scheduler_selection_warning", serde_json::json!(warning));
+    } else {
+        session.remove_metadata("scheduler_selection_warning");
+    }
 }
 
 pub(super) fn resolve_request_model_inputs(
@@ -1615,6 +1794,7 @@ pub(crate) async fn resolve_prompt_request_config(
         session_id,
         requested_agent,
         requested_scheduler_profile,
+        requested_scheduler_profile_source,
         scheduler_profile_override,
         request_model,
         request_variant,
@@ -1649,6 +1829,27 @@ pub(crate) async fn resolve_prompt_request_config(
         .as_ref()
         .and_then(|defaults| defaults.skill_tree_plan.as_ref())
         .is_some();
+    let scheduler_selection_warning = scheduler_selection_warning(
+        config,
+        requested_scheduler_profile,
+        requested_scheduler_profile_source,
+        scheduler_profile_override.as_ref(),
+        scheduler_applied,
+    );
+    let scheduler_selection_source = scheduler_selection_source_label(
+        requested_scheduler_profile_source,
+        scheduler_profile_override.is_some(),
+        scheduler_applied,
+    )
+    .to_string();
+    let scheduler_selection_trace = scheduler_selection_trace(
+        requested_scheduler_profile,
+        requested_scheduler_profile_source,
+        scheduler_profile_override.as_ref(),
+        scheduler_profile_name.as_deref(),
+        scheduler_applied,
+        scheduler_selection_warning.as_deref(),
+    );
     let scheduler_agent_name = if requested_agent.is_none() {
         scheduler_root_agent.clone()
     } else {
@@ -1745,6 +1946,8 @@ pub(crate) async fn resolve_prompt_request_config(
         scheduler_profile = ?scheduler_profile_name,
         scheduler_root_agent = ?scheduler_root_agent,
         scheduler_skill_tree_applied,
+        scheduler_selection_source = %scheduler_selection_source,
+        scheduler_selection_warning = ?scheduler_selection_warning,
         request_skill_tree_applied = request_skill_tree_plan.is_some(),
         fallback_agent = ?fallback_agent_name,
         resolved_agent = ?resolved_agent.as_ref().map(|agent| agent.name.as_str()),
@@ -1763,6 +1966,9 @@ pub(crate) async fn resolve_prompt_request_config(
         scheduler_profile_config,
         scheduler_root_agent,
         scheduler_skill_tree_applied,
+        scheduler_selection_source,
+        scheduler_selection_trace,
+        scheduler_selection_warning,
         request_skill_tree_plan,
         resolved_agent,
         provider,
@@ -1901,6 +2107,9 @@ pub async fn run_local_scheduler_prompt(
         session_id: &session_id,
         requested_agent: None,
         requested_scheduler_profile: Some(req.scheduler_profile.as_str()),
+        requested_scheduler_profile_source: Some(
+            PromptRequestSchedulerProfileSource::ExplicitRequest,
+        ),
         scheduler_profile_override: None,
         request_model: req.model.as_deref(),
         request_variant: req.variant.as_deref(),
@@ -1969,6 +2178,7 @@ pub async fn run_local_scheduler_prompt(
     } else {
         session.remove_metadata("scheduler_root_agent");
     }
+    apply_scheduler_selection_session_metadata(&mut session, &request_config);
 
     let pre_compact_live_tokens = request_skill_tree_plan
         .as_ref()
@@ -2365,6 +2575,69 @@ pub async fn abort_local_session_execution(
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn scheduler_selection_labels_explicit_and_command_paths() {
+        assert_eq!(
+            scheduler_selection_source_label(
+                Some(PromptRequestSchedulerProfileSource::ExplicitRequest),
+                false,
+                true,
+            ),
+            "explicit_request"
+        );
+        assert_eq!(
+            scheduler_selection_source_label(
+                Some(PromptRequestSchedulerProfileSource::CommandWorkflow),
+                false,
+                true,
+            ),
+            "command_workflow"
+        );
+        assert_eq!(
+            scheduler_selection_source_label(None, true, true),
+            "command_workflow"
+        );
+    }
+
+    #[test]
+    fn scheduler_selection_warns_when_config_default_soft_falls_back() {
+        let config = AppConfig {
+            scheduler_path: Some("/tmp/missing.scheduler.jsonc".to_string()),
+            ..Default::default()
+        };
+
+        let warning = scheduler_selection_warning(&config, None, None, None, false);
+
+        assert_eq!(
+            warning.as_deref(),
+            Some(
+                "configured scheduler defaults could not be resolved; continuing without scheduler profile"
+            )
+        );
+    }
+
+    #[test]
+    fn scheduler_selection_trace_records_session_pin_and_auto_route() {
+        let trace = scheduler_selection_trace(
+            Some(AUTO_SCHEDULER_PROFILE_NAME),
+            Some(PromptRequestSchedulerProfileSource::SessionPinnedProfile),
+            None,
+            Some(AUTO_SCHEDULER_PROFILE_NAME),
+            true,
+            None,
+        );
+
+        assert_eq!(trace.len(), 2);
+        assert_eq!(
+            trace[0].kind,
+            SessionEffectiveSchedulerTraceStepKind::SessionPinnedProfile
+        );
+        assert_eq!(
+            trace[1].kind,
+            SessionEffectiveSchedulerTraceStepKind::AutoRoute
+        );
+    }
 
     #[test]
     fn scheduler_ingress_envelope_uses_internal_scheduler_contract() {

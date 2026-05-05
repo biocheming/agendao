@@ -1016,6 +1016,31 @@ fn cli_effective_policy_lines(
                 scheduler.resolved_agent.as_deref().unwrap_or("--")
             ));
         }
+        if !scheduler.selection_trace.is_empty() {
+            lines.push(format!(
+                "    Trace {}",
+                scheduler
+                    .selection_trace
+                    .iter()
+                    .map(|step| {
+                        let mut parts = vec![cli_scheduler_trace_step_kind_label(&step.kind)
+                            .to_string()];
+                        if let Some(profile) = step.profile.as_deref() {
+                            parts.push(profile.to_string());
+                        }
+                        if let Some(detail) = step.detail.as_deref() {
+                            parts.push(truncate_text(detail, 72));
+                        }
+                        parts.push(format!("applied {}", cli_yes_no(step.applied)));
+                        parts.join(" · ")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            ));
+        }
+        if let Some(warning) = scheduler.warning.as_deref() {
+            lines.push(format!("    Warning {}", truncate_text(warning, 108)));
+        }
     }
 
     if let Some(provider) = policy.provider.as_ref() {
@@ -1143,6 +1168,7 @@ fn cli_provider_profile_summary(
     profile: &rocode_types::ProviderProfileDescriptorView,
 ) -> String {
     let mut parts = vec![
+        format!("source {}", profile.source),
         format!("family {}", profile.api_family),
         format!("shape {}", profile.api_shape),
         format!("transport {}", profile.transport),
@@ -1153,6 +1179,30 @@ fn cli_provider_profile_summary(
         parts.push(format!("quirks {}", profile.quirks.join(", ")));
     }
     parts.join(" · ")
+}
+
+fn cli_scheduler_trace_step_kind_label(
+    kind: &rocode_types::SessionEffectiveSchedulerTraceStepKind,
+) -> &'static str {
+    match kind {
+        rocode_types::SessionEffectiveSchedulerTraceStepKind::RequestedProfile => {
+            "requested_profile"
+        }
+        rocode_types::SessionEffectiveSchedulerTraceStepKind::CommandWorkflowOverride => {
+            "command_workflow_override"
+        }
+        rocode_types::SessionEffectiveSchedulerTraceStepKind::SessionPinnedProfile => {
+            "session_pinned_profile"
+        }
+        rocode_types::SessionEffectiveSchedulerTraceStepKind::LegacySessionPinnedProfile => {
+            "legacy_session_pinned_profile"
+        }
+        rocode_types::SessionEffectiveSchedulerTraceStepKind::ConfigDefaultProfile => {
+            "config_default_profile"
+        }
+        rocode_types::SessionEffectiveSchedulerTraceStepKind::AutoRoute => "auto_route",
+        rocode_types::SessionEffectiveSchedulerTraceStepKind::SoftFallback => "soft_fallback",
+    }
 }
 
 fn cli_join_or_placeholder(values: &[String]) -> String {
@@ -3305,7 +3355,8 @@ mod session_projection_tests {
         SessionEffectiveCompactionPolicy, SessionEffectiveExternalAdapterPolicy,
         SessionEffectiveMemoryPolicy, SessionEffectivePolicyView,
         SessionEffectiveProviderPolicy, SessionEffectiveProviderRuntimeProfile,
-        SessionEffectiveSchedulerPolicy, SessionEffectiveSkillTreePolicy,
+        SessionEffectiveSchedulerPolicy, SessionEffectiveSchedulerTraceStep,
+        SessionEffectiveSchedulerTraceStepKind, SessionEffectiveSkillTreePolicy,
     };
 
     #[test]
@@ -3469,11 +3520,23 @@ mod session_projection_tests {
                 scheduler: Some(SessionEffectiveSchedulerPolicy {
                     requested_profile: Some("prometheus".to_string()),
                     effective_profile: Some("prometheus".to_string()),
-                    source: "session_metadata".to_string(),
+                    source: "session_pinned_profile".to_string(),
                     applied: true,
                     mode_kind: Some("orchestrator".to_string()),
                     root_agent: Some("planner".to_string()),
                     resolved_agent: Some("planner".to_string()),
+                    selection_trace: vec![SessionEffectiveSchedulerTraceStep {
+                        kind: SessionEffectiveSchedulerTraceStepKind::SessionPinnedProfile,
+                        profile: Some("prometheus".to_string()),
+                        detail: Some(
+                            "session metadata pinned this scheduler profile".to_string(),
+                        ),
+                        applied: true,
+                    }],
+                    warning: Some(
+                        "configured scheduler defaults could not be resolved; continuing without scheduler profile"
+                            .to_string(),
+                    ),
                 }),
                 provider: Some(SessionEffectiveProviderPolicy {
                     provider_id: "openai".to_string(),
@@ -3488,6 +3551,7 @@ mod session_projection_tests {
                         profile: Some(ProviderProfileDescriptorView {
                             provider_id: "openai".to_string(),
                             npm: "@ai-sdk/openai".to_string(),
+                            source: "bundled_default".to_string(),
                             api_family: "closeai-compatible".to_string(),
                             api_shape: "chat-completions".to_string(),
                             transport: "bearer".to_string(),
@@ -3501,6 +3565,7 @@ mod session_projection_tests {
                         profile: ProviderProfileDescriptorView {
                             provider_id: "openai".to_string(),
                             npm: "@ai-sdk/openai".to_string(),
+                            source: "runtime_fingerprint".to_string(),
                             api_family: "closeai-compatible".to_string(),
                             api_shape: "responses".to_string(),
                             transport: "bearer".to_string(),
@@ -3556,9 +3621,15 @@ mod session_projection_tests {
         );
         assert!(lines.iter().any(|line| {
             line.contains("Scheduler: requested prometheus")
-                && line.contains("source session_metadata")
+                && line.contains("source session_pinned_profile")
                 && line.contains("applied yes")
         }));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("Trace session_pinned_profile")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("Warning configured scheduler defaults could not be resolved")));
         assert!(lines
             .iter()
             .any(|line| line.contains("Provider: openai/gpt-4o · variant fast")));

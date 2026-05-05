@@ -28,8 +28,12 @@ pub fn provider_connection_descriptor_candidate_from_config_provider(
         name: trimmed_option(provider.name.as_deref()),
         base_url: trimmed_option(provider.api.as_deref()),
         env: sanitize_env_refs(provider.env.as_ref()),
-        profile: resolve_profile_candidate(provider_id, provider)?
-            .map(provider_profile_to_descriptor_view),
+        profile: resolve_profile_candidate(provider_id, provider)?.map(|profile| {
+            provider_profile_to_descriptor_view(
+                profile,
+                profile_descriptor_source(provider_id, provider),
+            )
+        }),
     })
 }
 
@@ -87,10 +91,41 @@ fn trimmed_option(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
-fn provider_profile_to_descriptor_view(profile: ProviderProfile) -> ProviderProfileDescriptorView {
+fn profile_descriptor_source(provider_id: &str, provider: &ConfigProvider) -> &'static str {
+    if has_explicit_profile_override(provider) {
+        "config_override"
+    } else if provider
+        .npm
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        "config_npm_inference"
+    } else if is_bundled_provider_id(provider_id) {
+        "bundled_default"
+    } else {
+        "inferred"
+    }
+}
+
+fn has_explicit_profile_override(provider: &ConfigProvider) -> bool {
+    provider.api_style.is_some()
+        || provider.api_shape.is_some()
+        || provider.transport.is_some()
+        || provider.usage_shape.is_some()
+        || provider
+            .quirks
+            .as_ref()
+            .is_some_and(|items| !items.is_empty())
+}
+
+fn provider_profile_to_descriptor_view(
+    profile: ProviderProfile,
+    source: &str,
+) -> ProviderProfileDescriptorView {
     ProviderProfileDescriptorView {
         provider_id: profile.provider_id,
         npm: profile.npm,
+        source: source.to_string(),
         api_family: provider_api_family_label(profile.api_family).to_string(),
         api_shape: provider_api_shape_label(profile.api_shape).to_string(),
         transport: provider_transport_label(profile.transport).to_string(),
@@ -196,6 +231,7 @@ mod tests {
             .profile
             .expect("bundled provider should project profile");
         assert_eq!(profile.provider_id, "openai");
+        assert_eq!(profile.source, "bundled_default");
         assert_eq!(profile.api_family, "closeai-compatible");
         assert_eq!(profile.api_shape, "chat-completions");
         assert_eq!(profile.transport, "bearer");
@@ -238,8 +274,35 @@ mod tests {
             serde_json::json!("responses")
         );
         assert_eq!(
+            value["profile"]["source"],
+            serde_json::json!("config_override")
+        );
+        assert_eq!(
             value["profile"]["quirks"],
             serde_json::json!(["raw-json-lines"])
+        );
+    }
+
+    #[test]
+    fn projects_npm_inferred_profile_source_for_custom_provider() {
+        let provider = ConfigProvider {
+            api: Some("https://example.invalid/v1".to_string()),
+            npm: Some("@ai-sdk/openai".to_string()),
+            ..Default::default()
+        };
+
+        let descriptor = provider_connection_descriptor_candidate_from_config_provider(
+            "custom-openai",
+            &provider,
+        )
+        .expect("descriptor should build");
+
+        assert_eq!(
+            descriptor
+                .profile
+                .as_ref()
+                .map(|profile| profile.source.as_str()),
+            Some("config_npm_inference")
         );
     }
 

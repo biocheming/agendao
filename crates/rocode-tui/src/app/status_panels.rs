@@ -40,6 +40,40 @@ impl App {
         }
     }
 
+    pub(super) fn open_config_validation_status_dialog(&mut self) -> bool {
+        let Some(client) = self.context.get_api_client() else {
+            self.toast.show(
+                ToastVariant::Error,
+                "API unavailable for /config/validation.",
+                2400,
+            );
+            return false;
+        };
+
+        match client.get_config_validation() {
+            Ok(snapshot) => {
+                self.context
+                    .set_status_dialog_view(StatusDialogView::ConfigValidation);
+                self.status_dialog.set_title("Config Validation");
+                self.status_dialog.set_footer_hint(Some(
+                    "Esc close · workspace-scoped read model from /config/validation".to_string(),
+                ));
+                self.status_dialog
+                    .set_status_lines(tui_config_validation_lines(&snapshot));
+                self.open_status_dialog_modal();
+                true
+            }
+            Err(error) => {
+                self.toast.show(
+                    ToastVariant::Error,
+                    &format!("Failed to load config validation snapshot: {}", error),
+                    3000,
+                );
+                false
+            }
+        }
+    }
+
     pub(super) fn open_events_status_dialog(&mut self, raw_filter: Option<&str>) -> bool {
         let Some(session_id) = self.current_session_id() else {
             self.toast.show(
@@ -595,6 +629,9 @@ impl App {
             }
             StatusDialogView::Insights => {
                 let _ = self.render_insights_status_dialog();
+            }
+            StatusDialogView::ConfigValidation => {
+                let _ = self.open_config_validation_status_dialog();
             }
             StatusDialogView::Events(_) => {
                 let _ = self.open_events_status_dialog(None);
@@ -2094,6 +2131,31 @@ fn tui_effective_policy_lines(
                 scheduler.resolved_agent.as_deref().unwrap_or("--")
             )));
         }
+        if !scheduler.selection_trace.is_empty() {
+            lines.push(StatusLine::muted(format!(
+                "Trace {}",
+                scheduler
+                    .selection_trace
+                    .iter()
+                    .map(|step| {
+                        let mut parts =
+                            vec![tui_scheduler_trace_step_kind_label(&step.kind).to_string()];
+                        if let Some(profile) = step.profile.as_deref() {
+                            parts.push(profile.to_string());
+                        }
+                        if let Some(detail) = step.detail.as_deref() {
+                            parts.push(detail.to_string());
+                        }
+                        parts.push(format!("applied {}", tui_yes_no(step.applied)));
+                        parts.join(" · ")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            )));
+        }
+        if let Some(warning) = scheduler.warning.as_deref() {
+            lines.push(StatusLine::warning(format!("Warning {}", warning)));
+        }
     }
 
     if let Some(provider) = policy.provider.as_ref() {
@@ -2216,6 +2278,7 @@ fn tui_effective_policy_lines(
 
 fn tui_provider_profile_summary(profile: &rocode_types::ProviderProfileDescriptorView) -> String {
     let mut parts = vec![
+        format!("source {}", profile.source),
         format!("family {}", profile.api_family),
         format!("shape {}", profile.api_shape),
         format!("transport {}", profile.transport),
@@ -2244,15 +2307,178 @@ fn tui_yes_no(value: bool) -> &'static str {
     }
 }
 
+fn tui_scheduler_trace_step_kind_label(
+    kind: &rocode_types::SessionEffectiveSchedulerTraceStepKind,
+) -> &'static str {
+    match kind {
+        rocode_types::SessionEffectiveSchedulerTraceStepKind::RequestedProfile => {
+            "requested_profile"
+        }
+        rocode_types::SessionEffectiveSchedulerTraceStepKind::CommandWorkflowOverride => {
+            "command_workflow_override"
+        }
+        rocode_types::SessionEffectiveSchedulerTraceStepKind::SessionPinnedProfile => {
+            "session_pinned_profile"
+        }
+        rocode_types::SessionEffectiveSchedulerTraceStepKind::LegacySessionPinnedProfile => {
+            "legacy_session_pinned_profile"
+        }
+        rocode_types::SessionEffectiveSchedulerTraceStepKind::ConfigDefaultProfile => {
+            "config_default_profile"
+        }
+        rocode_types::SessionEffectiveSchedulerTraceStepKind::AutoRoute => "auto_route",
+        rocode_types::SessionEffectiveSchedulerTraceStepKind::SoftFallback => "soft_fallback",
+    }
+}
+
+fn tui_config_validation_lines(
+    snapshot: &rocode_types::ConfigPolicyValidationSnapshot,
+) -> Vec<StatusLine> {
+    let error_count = snapshot
+        .reports
+        .iter()
+        .filter(|item| item.severity == rocode_types::ConfigPolicyValidationSeverity::Error)
+        .count();
+    let warning_count = snapshot
+        .reports
+        .iter()
+        .filter(|item| item.severity == rocode_types::ConfigPolicyValidationSeverity::Warning)
+        .count();
+
+    let mut lines = vec![
+        StatusLine::title("Workspace Config Validation"),
+        StatusLine::normal("Source: /config/validation"),
+        StatusLine::normal(format!("Revision: {}", snapshot.revision)),
+        StatusLine::normal(format!(
+            "Generated: {}",
+            tui_format_timestamp(snapshot.generated_at_ms)
+        )),
+        StatusLine::normal(format!(
+            "Findings: {} ({} errors, {} warnings)",
+            snapshot.reports.len(),
+            error_count,
+            warning_count
+        )),
+    ];
+
+    if snapshot.reports.is_empty() {
+        lines.push(StatusLine::muted(String::new()));
+        lines.push(StatusLine::muted(
+            "No validation findings are present in the current config snapshot.",
+        ));
+        return lines;
+    }
+
+    let mut grouped: std::collections::BTreeMap<
+        rocode_types::ConfigPolicyValidationOwner,
+        Vec<&rocode_types::ConfigPolicyValidationItem>,
+    > = std::collections::BTreeMap::new();
+    for item in &snapshot.reports {
+        grouped.entry(item.owner).or_default().push(item);
+    }
+
+    for (owner, items) in grouped {
+        lines.push(StatusLine::muted(String::new()));
+        lines.push(StatusLine::title(format!(
+            "{} ({})",
+            tui_config_validation_owner_label(owner),
+            items.len()
+        )));
+        for item in items {
+            let headline = format!(
+                "[{}] {} · {}",
+                tui_config_validation_severity_label(item.severity),
+                item.code,
+                item.path
+            );
+            lines.push(match item.severity {
+                rocode_types::ConfigPolicyValidationSeverity::Warning => {
+                    StatusLine::warning(headline)
+                }
+                rocode_types::ConfigPolicyValidationSeverity::Error => StatusLine::error(headline),
+            });
+            lines.push(StatusLine::muted(format!(
+                "  Scope: {}",
+                tui_config_validation_scope_label(
+                    item.scope.kind,
+                    item.scope.subject_id.as_deref()
+                )
+            )));
+            lines.push(StatusLine::muted(format!(
+                "  Effect: {}",
+                tui_config_validation_effect_label(item.effect)
+            )));
+            lines.push(StatusLine::muted(format!("  Message: {}", item.message)));
+            if let Some(fallback) = item.fallback.as_deref() {
+                lines.push(StatusLine::muted(format!("  Fallback: {}", fallback)));
+            }
+        }
+    }
+
+    lines
+}
+
+fn tui_config_validation_owner_label(
+    owner: rocode_types::ConfigPolicyValidationOwner,
+) -> &'static str {
+    match owner {
+        rocode_types::ConfigPolicyValidationOwner::Scheduler => "Scheduler",
+        rocode_types::ConfigPolicyValidationOwner::SkillTree => "Skill Tree",
+        rocode_types::ConfigPolicyValidationOwner::ProviderProfile => "Provider Profile",
+        rocode_types::ConfigPolicyValidationOwner::ExternalAdapter => "External Adapter",
+    }
+}
+
+fn tui_config_validation_severity_label(
+    severity: rocode_types::ConfigPolicyValidationSeverity,
+) -> &'static str {
+    match severity {
+        rocode_types::ConfigPolicyValidationSeverity::Warning => "warning",
+        rocode_types::ConfigPolicyValidationSeverity::Error => "error",
+    }
+}
+
+fn tui_config_validation_effect_label(
+    effect: rocode_types::ConfigPolicyValidationEffect,
+) -> &'static str {
+    match effect {
+        rocode_types::ConfigPolicyValidationEffect::SoftFallback => "soft fallback",
+        rocode_types::ConfigPolicyValidationEffect::FailClosedBootstrap => "fail-closed bootstrap",
+        rocode_types::ConfigPolicyValidationEffect::FailClosedRequestGate => {
+            "fail-closed request gate"
+        }
+    }
+}
+
+fn tui_config_validation_scope_label(
+    kind: rocode_types::ConfigPolicyValidationScopeKind,
+    subject_id: Option<&str>,
+) -> String {
+    let base = match kind {
+        rocode_types::ConfigPolicyValidationScopeKind::SchedulerPath => "scheduler path",
+        rocode_types::ConfigPolicyValidationScopeKind::SkillTree => "skill tree",
+        rocode_types::ConfigPolicyValidationScopeKind::Provider => "provider",
+        rocode_types::ConfigPolicyValidationScopeKind::ExternalAdapter => "external adapter",
+    };
+    match subject_id {
+        Some(id) if !id.is_empty() => format!("{base} · {id}"),
+        _ => base.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::api::SessionInsightsResponse;
     use rocode_types::{
-        MemoryScope, ProviderConnectionDescriptorCandidate, ProviderProfileDescriptorView,
+        ConfigPolicyValidationEffect, ConfigPolicyValidationItem, ConfigPolicyValidationOwner,
+        ConfigPolicyValidationScope, ConfigPolicyValidationScopeKind,
+        ConfigPolicyValidationSeverity, ConfigPolicyValidationSnapshot, MemoryScope,
+        ProviderConnectionDescriptorCandidate, ProviderProfileDescriptorView,
         SessionEffectiveCompactionPolicy, SessionEffectiveExternalAdapterPolicy,
         SessionEffectiveMemoryPolicy, SessionEffectivePolicyView, SessionEffectiveProviderPolicy,
         SessionEffectiveProviderRuntimeProfile, SessionEffectiveSchedulerPolicy,
+        SessionEffectiveSchedulerTraceStep, SessionEffectiveSchedulerTraceStepKind,
         SessionEffectiveSkillTreePolicy,
     };
 
@@ -2271,11 +2497,23 @@ mod tests {
                 scheduler: Some(SessionEffectiveSchedulerPolicy {
                     requested_profile: Some("prometheus".to_string()),
                     effective_profile: Some("prometheus".to_string()),
-                    source: "session_metadata".to_string(),
+                    source: "session_pinned_profile".to_string(),
                     applied: true,
                     mode_kind: Some("orchestrator".to_string()),
                     root_agent: Some("planner".to_string()),
                     resolved_agent: Some("planner".to_string()),
+                    selection_trace: vec![SessionEffectiveSchedulerTraceStep {
+                        kind: SessionEffectiveSchedulerTraceStepKind::SessionPinnedProfile,
+                        profile: Some("prometheus".to_string()),
+                        detail: Some(
+                            "session metadata pinned this scheduler profile".to_string(),
+                        ),
+                        applied: true,
+                    }],
+                    warning: Some(
+                        "configured scheduler defaults could not be resolved; continuing without scheduler profile"
+                            .to_string(),
+                    ),
                 }),
                 provider: Some(SessionEffectiveProviderPolicy {
                     provider_id: "openai".to_string(),
@@ -2290,6 +2528,7 @@ mod tests {
                         profile: Some(ProviderProfileDescriptorView {
                             provider_id: "openai".to_string(),
                             npm: "@ai-sdk/openai".to_string(),
+                            source: "bundled_default".to_string(),
                             api_family: "closeai-compatible".to_string(),
                             api_shape: "chat-completions".to_string(),
                             transport: "bearer".to_string(),
@@ -2303,6 +2542,7 @@ mod tests {
                         profile: ProviderProfileDescriptorView {
                             provider_id: "openai".to_string(),
                             npm: "@ai-sdk/openai".to_string(),
+                            source: "runtime_fingerprint".to_string(),
                             api_family: "closeai-compatible".to_string(),
                             api_shape: "responses".to_string(),
                             transport: "bearer".to_string(),
@@ -2359,9 +2599,15 @@ mod tests {
         assert!(texts.iter().any(|line| line == "Session: sess_123"));
         assert!(texts.iter().any(|line| {
             line.contains("Scheduler: requested prometheus")
-                && line.contains("source session_metadata")
+                && line.contains("source session_pinned_profile")
                 && line.contains("applied yes")
         }));
+        assert!(texts
+            .iter()
+            .any(|line| line.contains("Trace session_pinned_profile")));
+        assert!(texts.iter().any(
+            |line| line.contains("Warning configured scheduler defaults could not be resolved")
+        ));
         assert!(texts
             .iter()
             .any(|line| line.contains("Provider: openai/gpt-4o · variant fast")));
@@ -2396,6 +2642,77 @@ mod tests {
         assert!(texts
             .iter()
             .any(|line| { line.contains("provider descriptor projection failed") }));
+    }
+
+    #[test]
+    fn config_validation_surface_groups_findings() {
+        let snapshot = ConfigPolicyValidationSnapshot {
+            revision: 7,
+            generated_at_ms: 1_714_560_000_000,
+            reports: vec![
+                ConfigPolicyValidationItem {
+                    owner: ConfigPolicyValidationOwner::Scheduler,
+                    scope: ConfigPolicyValidationScope {
+                        kind: ConfigPolicyValidationScopeKind::SchedulerPath,
+                        subject_id: Some("auto".to_string()),
+                    },
+                    path: "scheduler.auto.default_profile".to_string(),
+                    severity: ConfigPolicyValidationSeverity::Error,
+                    effect: ConfigPolicyValidationEffect::SoftFallback,
+                    code: "scheduler_profile_missing".to_string(),
+                    message: "scheduler default profile could not be resolved".to_string(),
+                    fallback: Some(
+                        "scheduler auto route will continue without pinned profile".to_string(),
+                    ),
+                },
+                ConfigPolicyValidationItem {
+                    owner: ConfigPolicyValidationOwner::ProviderProfile,
+                    scope: ConfigPolicyValidationScope {
+                        kind: ConfigPolicyValidationScopeKind::Provider,
+                        subject_id: Some("openai".to_string()),
+                    },
+                    path: "providers.openai.profile.api_shape".to_string(),
+                    severity: ConfigPolicyValidationSeverity::Warning,
+                    effect: ConfigPolicyValidationEffect::FailClosedBootstrap,
+                    code: "provider_profile_shape_unknown".to_string(),
+                    message:
+                        "api_shape is unknown and the provider cannot bootstrap a typed profile"
+                            .to_string(),
+                    fallback: None,
+                },
+            ],
+        };
+
+        let texts = tui_config_validation_lines(&snapshot)
+            .into_iter()
+            .map(|line| line.text)
+            .collect::<Vec<_>>();
+
+        assert!(texts
+            .iter()
+            .any(|line| line == "Workspace Config Validation"));
+        assert!(texts
+            .iter()
+            .any(|line| line == "Source: /config/validation"));
+        assert!(texts
+            .iter()
+            .any(|line| line.contains("Findings: 2 (1 errors, 1 warnings)")));
+        assert!(texts.iter().any(|line| line == "Scheduler (1)"));
+        assert!(texts
+            .iter()
+            .any(|line| line.contains("[error] scheduler_profile_missing")));
+        assert!(texts
+            .iter()
+            .any(|line| line.contains("Scope: scheduler path · auto")));
+        assert!(texts.iter().any(|line| line
+            .contains("Fallback: scheduler auto route will continue without pinned profile")));
+        assert!(texts.iter().any(|line| line == "Provider Profile (1)"));
+        assert!(texts
+            .iter()
+            .any(|line| line.contains("[warning] provider_profile_shape_unknown")));
+        assert!(texts
+            .iter()
+            .any(|line| line.contains("Scope: provider · openai")));
     }
 }
 

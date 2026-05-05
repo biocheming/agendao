@@ -631,6 +631,9 @@ impl App {
             InteractiveCommand::ShowInsights => {
                 let _ = self.open_insights_status_dialog();
             }
+            InteractiveCommand::ShowConfigValidation => {
+                let _ = self.open_config_validation_status_dialog();
+            }
             InteractiveCommand::ShowEvents(raw_filter) => {
                 let _ = self.open_events_status_dialog(raw_filter.as_deref());
             }

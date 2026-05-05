@@ -2674,6 +2674,12 @@ export function SettingsDrawer({
                           </span>
                         </div>
                         <div className="grid gap-1">
+                          <span className={formLabelClass}>Profile Source</span>
+                          <span className="text-sm text-foreground">
+                            {selectedProviderProfile?.source || "--"}
+                          </span>
+                        </div>
+                        <div className="grid gap-1">
                           <span className={formLabelClass}>API Family</span>
                           <span className="text-sm text-foreground">
                             {selectedProviderProfile?.api_family || "--"}

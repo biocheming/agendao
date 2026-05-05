@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 pub struct ProviderProfileDescriptorView {
     pub provider_id: String,
     pub npm: String,
+    pub source: String,
     pub api_family: String,
     pub api_shape: String,
     pub transport: String,

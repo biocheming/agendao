@@ -218,6 +218,7 @@ pub enum StatusDialogView {
     Runtime,
     Usage,
     Insights,
+    ConfigValidation,
     Events(TuiEventsBrowserState),
     MemoryList(TuiMemoryListState),
     MemoryPreview(TuiMemoryPreviewState),
