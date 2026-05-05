@@ -258,10 +258,7 @@ impl ModelCatalogAuthority {
     }
 
     fn load_cached_snapshot_sync(&self) -> Option<CatalogSnapshot> {
-        let data = load_catalog_data_from_paths_sync(
-            &self.snapshot_path,
-            Some(&legacy_models_cache_path()),
-        );
+        let data = load_catalog_data_from_path_sync(&self.snapshot_path);
         if data.is_empty() {
             return None;
         }
@@ -328,13 +325,6 @@ pub fn default_catalog_metadata_path() -> PathBuf {
         .join("models.meta.json")
 }
 
-pub fn legacy_models_cache_path() -> PathBuf {
-    dirs::cache_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("rocode")
-        .join("models.json")
-}
-
 pub fn metadata_path_for_snapshot(snapshot_path: &Path) -> PathBuf {
     let parent = snapshot_path
         .parent()
@@ -348,27 +338,19 @@ pub fn metadata_path_for_snapshot(snapshot_path: &Path) -> PathBuf {
 }
 
 pub fn load_default_catalog_data_sync() -> ModelsData {
-    load_catalog_data_from_paths_sync(
-        &default_catalog_snapshot_path(),
-        Some(&legacy_models_cache_path()),
-    )
-}
-
-pub fn load_catalog_data_from_paths_sync(primary: &Path, fallback: Option<&Path>) -> ModelsData {
-    for path in [Some(primary), fallback].into_iter().flatten() {
-        let Ok(raw) = std::fs::read_to_string(path) else {
-            continue;
-        };
-        if let Some(data) = parse_models_data(&raw) {
-            return data;
-        }
-    }
-    HashMap::new()
+    load_catalog_data_from_path_sync(&default_catalog_snapshot_path())
 }
 
 fn read_metadata_sync(path: &Path) -> Option<CatalogMetadata> {
     let raw = std::fs::read_to_string(path).ok()?;
     serde_json::from_str::<CatalogMetadata>(&raw).ok()
+}
+
+pub fn load_catalog_data_from_path_sync(path: &Path) -> ModelsData {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return HashMap::new();
+    };
+    parse_models_data(&raw).unwrap_or_default()
 }
 
 fn parse_models_data(raw: &str) -> Option<ModelsData> {
@@ -399,4 +381,52 @@ fn parse_models_data(raw: &str) -> Option<ModelsData> {
     }
 
     Some(data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn temp_snapshot_path(filename: &str) -> PathBuf {
+        let unique = format!(
+            "rocode-provider-catalog-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time before epoch")
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir.join(filename)
+    }
+
+    #[test]
+    fn load_catalog_data_from_path_sync_returns_empty_for_missing_file() {
+        let path = temp_snapshot_path("missing.snapshot.json");
+        let data = load_catalog_data_from_path_sync(&path);
+        assert!(data.is_empty());
+    }
+
+    #[test]
+    fn load_catalog_data_from_path_sync_reads_snapshot_from_primary_path() {
+        let path = temp_snapshot_path("models.snapshot.json");
+        fs::write(
+            &path,
+            r#"{
+                "openai": {
+                    "id": "openai",
+                    "name": "OpenAI",
+                    "env": [],
+                    "models": {}
+                }
+            }"#,
+        )
+        .expect("write snapshot");
+
+        let data = load_catalog_data_from_path_sync(&path);
+        assert!(data.contains_key("openai"));
+    }
 }

@@ -14,8 +14,8 @@ use crate::responses::*;
 use crate::runtime::runtime_pipeline_enabled;
 use crate::tools::InputTool;
 use crate::{
-    ChatRequest, ChatResponse, Choice, Message, ProviderAdapter, ProviderConfig, ProviderError,
-    ProviderProfileResolver, ProviderQuirk, Role, StreamEvent, StreamResult, Usage,
+    ChatRequest, ChatResponse, Choice, Message, ProviderAdapter, ProviderApiShape, ProviderConfig,
+    ProviderError, ProviderProfileResolver, ProviderQuirk, Role, StreamEvent, StreamResult, Usage,
 };
 
 const OPENAI_API_URL: &str = "https://api.openai.com/v1/chat/completions";
@@ -32,15 +32,22 @@ fn organization_from_config(config: &ProviderConfig) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-fn is_legacy_only(config: &ProviderConfig) -> bool {
-    config
-        .options
-        .get("legacy_only")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
+fn provider_api_shape(config: &ProviderConfig) -> Result<ProviderApiShape, ProviderError> {
+    ProviderProfileResolver::try_resolve_with_options(&config.provider_id, &config.options)
+        .map(|profile| profile.api_shape)
+        .map_err(|error| {
+            ProviderError::ConfigError(format!(
+                "provider `{}` profile resolution failed while selecting api_shape: {error}",
+                config.provider_id
+            ))
+        })
 }
 
-fn legacy_base_url(config: &ProviderConfig) -> Result<Option<&str>, ProviderError> {
+fn uses_chat_completions_shape(config: &ProviderConfig) -> Result<bool, ProviderError> {
+    Ok(provider_api_shape(config)? == ProviderApiShape::ChatCompletions)
+}
+
+fn chat_completions_base_url(config: &ProviderConfig) -> Result<Option<&str>, ProviderError> {
     let base = config.base_url.trim();
     if base.is_empty() {
         if config.provider_id != "openai" {
@@ -423,21 +430,21 @@ where
 }
 
 // ===========================================================================
-// Layer 7a — Legacy HTTP Path (chat/completions)
+// Layer 7a — chat/completions HTTP path
 // ===========================================================================
 
-async fn chat_legacy(
+async fn chat_completions_chat(
     client: &Client,
     config: &ProviderConfig,
     request: ChatRequest,
 ) -> Result<ChatResponse, ProviderError> {
     validate_thinking_replay_request(config, &request)?;
-    let base = legacy_base_url(config)?;
+    let base = chat_completions_base_url(config)?;
     let url = chat_completions_url(base);
     let mut request_body = build_request_body(&request)?;
 
     // Ensure stream is disabled for non-streaming path. The caller may have
-    // set stream=true on the ChatRequest (e.g. prompt loop), but chat_legacy
+    // set stream=true on the ChatRequest (e.g. prompt loop), but this path
     // expects a single JSON response, not SSE chunks.
     if let Value::Object(obj) = &mut request_body {
         obj.remove("stream");
@@ -509,7 +516,7 @@ async fn chat_stream_openai_compatible(
     use_pipeline: bool,
 ) -> Result<StreamResult, ProviderError> {
     validate_thinking_replay_request(config, &request)?;
-    let base = legacy_base_url(config)?;
+    let base = chat_completions_base_url(config)?;
     let url = chat_completions_url(base);
     request.stream = Some(true);
     let mut request_body = build_request_body(&request)?;
@@ -571,7 +578,7 @@ async fn chat_stream_openai_compatible(
     Ok(crate::stream::assemble_tool_calls(Box::pin(stream)))
 }
 
-async fn chat_stream_legacy(
+async fn chat_completions_stream(
     client: &Client,
     config: &ProviderConfig,
     request: ChatRequest,
@@ -605,7 +612,7 @@ impl CloseAiCompatibleAdapter {
     }
 }
 
-// Phase 3: Full dual routing — Responses API with Legacy fallback.
+// Phase 3: Full dual routing — Responses API with chat-completions fallback.
 #[async_trait]
 impl ProviderAdapter for CloseAiCompatibleAdapter {
     async fn chat(
@@ -614,8 +621,8 @@ impl ProviderAdapter for CloseAiCompatibleAdapter {
         config: &ProviderConfig,
         request: ChatRequest,
     ) -> Result<ChatResponse, ProviderError> {
-        if is_legacy_only(config) {
-            return chat_legacy(client, config, request).await;
+        if uses_chat_completions_shape(config)? {
+            return chat_completions_chat(client, config, request).await;
         }
 
         let response_model = responses_model(client, config, &request.model);
@@ -636,16 +643,16 @@ impl ProviderAdapter for CloseAiCompatibleAdapter {
                     tracing::warn!(
                         model = %model_for_log,
                         error = %err,
-                        "Responses generate failed while custom fetch proxy is active; skipping legacy fallback"
+                        "Responses generate failed while custom fetch proxy is active; skipping chat-completions fallback"
                     );
                     return Err(err);
                 }
                 tracing::warn!(
                     model = %model_for_log,
                     error = %err,
-                    "Responses generate failed, falling back to chat completions"
+                    "Responses generate failed, falling back to chat-completions"
                 );
-                chat_legacy(&client_for_fallback, &config_for_fallback, request).await
+                chat_completions_chat(&client_for_fallback, &config_for_fallback, request).await
             },
         )
         .await
@@ -658,11 +665,11 @@ impl ProviderAdapter for CloseAiCompatibleAdapter {
         request: ChatRequest,
     ) -> Result<StreamResult, ProviderError> {
         let use_pipeline = runtime_pipeline_enabled(config);
-        if is_legacy_only(config) {
+        if uses_chat_completions_shape(config)? {
             return if use_pipeline {
                 chat_stream_runtime_pipeline(client, config, request).await
             } else {
-                chat_stream_legacy(client, config, request).await
+                chat_completions_stream(client, config, request).await
             };
         }
 
@@ -680,20 +687,21 @@ impl ProviderAdapter for CloseAiCompatibleAdapter {
                     tracing::warn!(
                         model = %model_for_log,
                         error = %err,
-                        "Responses stream failed while custom fetch proxy is active; skipping legacy fallback"
+                        "Responses stream failed while custom fetch proxy is active; skipping chat-completions fallback"
                     );
                     return Err(err);
                 }
                 tracing::warn!(
                     model = %model_for_log,
                     error = %err,
-                    "Responses stream failed, falling back to chat completions stream"
+                    "Responses stream failed, falling back to chat-completions stream"
                 );
                 if use_pipeline {
                     chat_stream_runtime_pipeline(&client_for_fallback, &config_for_fallback, request)
                         .await
                 } else {
-                    chat_stream_legacy(&client_for_fallback, &config_for_fallback, request).await
+                    chat_completions_stream(&client_for_fallback, &config_for_fallback, request)
+                        .await
                 }
             },
         )
@@ -773,7 +781,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_with_fallback_skips_legacy_when_custom_fetch_active() {
+    async fn resolve_with_fallback_skips_chat_completions_when_custom_fetch_active() {
         register_custom_fetch_proxy("openai", Arc::new(NoopProxy));
 
         let result = resolve_with_fallback(
@@ -794,28 +802,30 @@ mod tests {
     }
 
     #[test]
-    fn openai_native_provider_does_not_use_legacy_only() {
-        let config = ProviderConfig::new("openai", "https://example.com/v1", "test-key");
-        assert!(!is_legacy_only(&config));
+    fn openai_native_provider_defaults_to_chat_completions_shape() {
+        let config = ProviderConfig::new("openai", "https://example.com/v1", "test-key")
+            .with_option("npm", serde_json::json!("@ai-sdk/openai"));
+        assert!(uses_chat_completions_shape(&config).unwrap());
     }
 
     #[test]
-    fn openai_compatible_provider_uses_legacy_only() {
-        let config = ProviderConfig::new("deepseek", "", "test-key")
-            .with_option("legacy_only", serde_json::json!(true));
-        assert!(is_legacy_only(&config));
+    fn responses_shape_routes_away_from_chat_completions_path() {
+        let config = ProviderConfig::new("deepseek", "https://example.com/v1", "test-key")
+            .with_option("npm", serde_json::json!("@ai-sdk/openai-compatible"))
+            .with_option("useResponsesApi", serde_json::json!(true));
+        assert!(!uses_chat_completions_shape(&config).unwrap());
     }
 
     #[test]
-    fn legacy_base_url_allows_empty_for_openai_provider() {
+    fn chat_completions_base_url_allows_empty_for_openai_provider() {
         let config = ProviderConfig::new("openai", "   ", "test-key");
-        assert!(legacy_base_url(&config).unwrap().is_none());
+        assert!(chat_completions_base_url(&config).unwrap().is_none());
     }
 
     #[test]
-    fn legacy_base_url_rejects_empty_for_openai_compatible_provider() {
+    fn chat_completions_base_url_rejects_empty_for_openai_compatible_provider() {
         let config = ProviderConfig::new("deepseek", "   ", "test-key");
-        let err = legacy_base_url(&config).unwrap_err();
+        let err = chat_completions_base_url(&config).unwrap_err();
         assert!(matches!(
             err,
             ProviderError::ConfigError(msg)

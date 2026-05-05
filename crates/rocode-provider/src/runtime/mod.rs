@@ -35,7 +35,7 @@ impl ProviderRuntime {
 
     pub fn from_config(config: RuntimeConfig, provider_id: impl Into<String>) -> Self {
         let context = RuntimeContext {
-            protocol_source: ProtocolSource::Legacy {
+            protocol_source: ProtocolSource::BuiltinAdapter {
                 npm: "unknown".to_string(),
             },
             provider_id: provider_id.into(),

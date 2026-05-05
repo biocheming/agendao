@@ -1,9 +1,7 @@
 use crate::catalog::load_default_catalog_data_sync;
 use crate::instance::ProviderInstance;
 use crate::models::ModelsData;
-use crate::profile::{
-    resolve_npm_for_provider, ProviderApiShape, ProviderProfile, ProviderProfileResolver,
-};
+use crate::profile::{resolve_npm_for_provider, ProviderProfile, ProviderProfileResolver};
 use crate::protocol::{ProviderConfig, ProviderRuntimeAdapter};
 use crate::protocol_loader::{ProtocolLoader, ProtocolManifest};
 use crate::protocol_validator::ProtocolValidator;
@@ -106,7 +104,7 @@ fn default_secret_env_for_provider(
         ProviderRuntimeAdapter::GitLabCloseAi => vec!["GITLAB_TOKEN"],
         ProviderRuntimeAdapter::CloseAiCompatible => match provider_id {
             "openai" => vec!["OPENAI_API_KEY"],
-            "opencode" => vec!["ROCODE_API_KEY", "OPENCODE_API_KEY"],
+            "opencode" => vec!["ROCODE_API_KEY"],
             "openrouter" => vec!["OPENROUTER_API_KEY"],
             "mistral" => vec!["MISTRAL_API_KEY"],
             "groq" => vec!["GROQ_API_KEY"],
@@ -377,13 +375,6 @@ fn provider_config_for_adapter(
         serde_json::Value::String(adapter.to_string()),
     );
 
-    if matches!(adapter, ProviderRuntimeAdapter::CloseAiCompatible)
-        && provider_id != "openai"
-        && profile.api_shape != ProviderApiShape::Responses
-    {
-        options.insert("legacy_only".to_string(), serde_json::Value::Bool(true));
-    }
-
     let base_url = provider_base_url(provider).unwrap_or_default();
 
     let api_key = match adapter {
@@ -470,7 +461,7 @@ fn create_protocol_provider(
                 tracing::warn!(
                     provider = provider_id,
                     error = %err,
-                    "protocol manifest validation failed, using legacy protocol routing"
+                    "protocol manifest validation failed, using built-in adapter routing"
                 );
                 None
             }
@@ -510,21 +501,11 @@ fn create_protocol_provider(
     );
 
     let provider_adapter = create_provider_adapter_for_profile(&provider_profile);
-    let mut models: HashMap<String, RuntimeModelInfo> = provider
+    let models: HashMap<String, RuntimeModelInfo> = provider
         .models
         .values()
         .map(|model| (model.id.clone(), state_model_to_runtime(provider_id, model)))
         .collect();
-
-    if models.is_empty() {
-        if let Some(legacy) = create_legacy_provider(provider_id, provider) {
-            models = legacy
-                .models()
-                .into_iter()
-                .map(|model| (model.id.clone(), model))
-                .collect();
-        }
-    }
 
     let mut instance = ProviderInstance::new(
         provider_id.to_string(),
@@ -550,7 +531,7 @@ fn create_protocol_provider(
                     .unwrap_or_else(|| manifest.protocol_version.clone()),
             }
         } else {
-            ProtocolSource::Legacy { npm: npm.clone() }
+            ProtocolSource::BuiltinAdapter { npm: npm.clone() }
         };
 
         let context = RuntimeContext {
@@ -589,45 +570,6 @@ pub(super) fn create_concrete_provider(
     provider: &ProviderState,
 ) -> Option<Arc<dyn RuntimeProvider>> {
     create_protocol_provider(provider_id, provider)
-        .or_else(|| create_legacy_provider(provider_id, provider))
-}
-
-fn create_legacy_provider(
-    provider_id: &str,
-    provider: &ProviderState,
-) -> Option<Arc<dyn RuntimeProvider>> {
-    match provider_id {
-        _ => {
-            let is_openai_compatible = provider.models.values().any(|model| {
-                model
-                    .api
-                    .npm
-                    .to_ascii_lowercase()
-                    .contains("openai-compatible")
-            });
-            if !is_openai_compatible {
-                return None;
-            }
-            let api_key = provider_secret(provider, &[])?;
-            let base_url = provider_base_url(provider)?;
-            let config = ProviderConfig::new(provider_id, base_url, api_key)
-                .with_option("legacy_only", serde_json::json!(true));
-            let models: HashMap<String, RuntimeModelInfo> = provider
-                .models
-                .values()
-                .map(|model| (model.id.clone(), state_model_to_runtime(provider_id, model)))
-                .collect();
-            Some(Arc::new(crate::ProviderInstance::new(
-                provider_id.to_string(),
-                provider_id.to_string(),
-                config,
-                crate::protocols::create_provider_adapter(
-                    ProviderRuntimeAdapter::CloseAiCompatible,
-                ),
-                models,
-            )))
-        }
-    }
 }
 
 struct AliasedProvider {
@@ -805,6 +747,7 @@ pub(super) fn register_fallback_env_providers(registry: &mut ProviderRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ProviderApiShape;
 
     fn provider_state_with_profile(api_shape: &str) -> ProviderState {
         let mut options = HashMap::new();
@@ -830,7 +773,7 @@ mod tests {
     }
 
     #[test]
-    fn closeai_responses_profile_does_not_force_legacy_chat_completions() {
+    fn closeai_responses_profile_keeps_declared_api_shape() {
         let provider = provider_state_with_profile("responses");
         let profile = ProviderProfileResolver::try_resolve("my-custom", &provider)
             .expect("profile should resolve");
@@ -841,17 +784,17 @@ mod tests {
 
         assert_eq!(profile.api_shape, ProviderApiShape::Responses);
         assert_eq!(adapter, ProviderRuntimeAdapter::CloseAiCompatible);
-        assert_ne!(
+        assert_eq!(
             config
                 .options
-                .get("legacy_only")
-                .and_then(serde_json::Value::as_bool),
-            Some(true)
+                .get("npm")
+                .and_then(serde_json::Value::as_str),
+            Some("@ai-sdk/openai-compatible")
         );
     }
 
     #[test]
-    fn closeai_chat_completions_profile_still_uses_legacy_adapter() {
+    fn closeai_chat_completions_profile_keeps_declared_api_shape() {
         let provider = provider_state_with_profile("chat-completions");
         let profile = ProviderProfileResolver::try_resolve("my-custom", &provider)
             .expect("profile should resolve");
@@ -864,9 +807,9 @@ mod tests {
         assert_eq!(
             config
                 .options
-                .get("legacy_only")
-                .and_then(serde_json::Value::as_bool),
-            Some(true)
+                .get("runtime_adapter")
+                .and_then(serde_json::Value::as_str),
+            Some("closeai-compatible")
         );
     }
 }

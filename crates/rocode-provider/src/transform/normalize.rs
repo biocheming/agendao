@@ -66,8 +66,8 @@ pub struct ReasoningContent {
     pub signature: Option<String>,
 }
 
-/// The TS source uses `Flag.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX || 32_000`.
-/// We default to 32_000 to match the TS constant.
+/// The TypeScript source defaults to `32_000` when no explicit max is set.
+/// We keep the same default here.
 pub const OUTPUT_TOKEN_MAX: u64 = 32_000;
 
 pub(super) const WIDELY_SUPPORTED_EFFORTS: &[&str] = &["low", "medium", "high"];
