@@ -3672,6 +3672,7 @@ dependencies = [
  "once_cell",
  "portable-pty",
  "rocode-agent",
+ "rocode-api",
  "rocode-command",
  "rocode-config",
  "rocode-core",

@@ -21,7 +21,8 @@ use crate::{
     MemoryRulePackListResponse, MemoryValidationReportResponse, MessageInfo,
     MultimodalCapabilitiesResponse, MultimodalPolicyResponse, MultimodalPreflightRequest,
     MultimodalPreflightResponse, PermissionRequestInfo, PromptPart, PromptRequest, PromptResponse,
-    ProviderConnectSchemaResponse, ProviderDescriptorResponse, ProviderListResponse, QuestionInfo,
+    ProviderConnectSchemaResponse, ProviderDescriptorResponse, ProviderListResponse,
+    ProvisionExternalAdapterSessionRequest, ProvisionExternalAdapterSessionResponse, QuestionInfo,
     RecoveryActionKind, RefreshProviderCatalogResponse, ResolveProviderConnectRequest,
     ResolveProviderConnectResponse, RevertRequest, RevertResponse, SessionEventsQuery,
     SessionExecutionTopology, SessionInfo, SessionInsightsResponse, SessionListItem,
@@ -91,6 +92,18 @@ impl AsyncApiClient {
         };
         let resp = self.client.post(&url).json(&req).send().await?;
         Self::json_ok(resp, "create session").await
+    }
+
+    pub async fn provision_external_adapter_session(
+        &self,
+        request: &ProvisionExternalAdapterSessionRequest,
+    ) -> anyhow::Result<ProvisionExternalAdapterSessionResponse> {
+        self.post_json(
+            "/external-adapter/session/provision",
+            "provision external adapter session",
+            request,
+        )
+        .await
     }
 
     pub async fn get_session(&self, session_id: &str) -> anyhow::Result<SessionInfo> {

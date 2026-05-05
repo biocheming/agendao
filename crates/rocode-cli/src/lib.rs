@@ -110,7 +110,7 @@ where
             list_models(provider, refresh, verbose).await?;
         }
         Commands::Session { action } => {
-            handle_session_command(action).await?;
+            handle_session_command(action, &runtime_context).await?;
         }
         Commands::Memory { action } => match action {
             MemoryCommands::Export { output } => {

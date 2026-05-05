@@ -169,6 +169,12 @@ pub(crate) enum SessionListFormat {
 }
 
 #[derive(Clone, Debug, ValueEnum)]
+pub(crate) enum SessionProvisionFormat {
+    Text,
+    Json,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
 pub(crate) enum DbOutputFormat {
     Json,
     Tsv,
@@ -200,6 +206,27 @@ pub(crate) enum SessionCommands {
     Delete {
         #[arg(required = true)]
         session_id: String,
+    },
+    #[command(about = "Provision an owner-local external adapter session on the server")]
+    ProvisionExternalAdapter {
+        #[arg(long)]
+        adapter_id: String,
+        #[arg(long)]
+        actor_id: String,
+        #[arg(long)]
+        workspace_id: Option<String>,
+        #[arg(long)]
+        route_policy_id: Option<String>,
+        #[arg(long)]
+        scheduler_profile: Option<String>,
+        #[arg(long)]
+        directory: Option<PathBuf>,
+        #[arg(long)]
+        project_id: Option<String>,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long, default_value = "text")]
+        format: SessionProvisionFormat,
     },
 }
 

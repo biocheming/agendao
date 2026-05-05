@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 rocode-core = { path = "../rocode-core" }
+rocode-api = { path = "../rocode-api" }
 rocode-agent = { path = "../rocode-agent" }
 rocode-execution-types = { path = "../rocode-execution-types" }
 rocode-multimodal = { path = "../rocode-multimodal" }

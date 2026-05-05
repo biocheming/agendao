@@ -24,7 +24,8 @@ use crate::{
     MemoryRuleHitQuery, MemoryRulePackListResponse, MemoryValidationReportResponse, MessageInfo,
     MultimodalCapabilitiesResponse, MultimodalPolicyResponse, MultimodalPreflightRequest,
     MultimodalPreflightResponse, PermissionRequestInfo, PromptPart, PromptRequest, PromptResponse,
-    ProviderConnectSchemaResponse, ProviderDescriptorResponse, ProviderListResponse, QuestionInfo,
+    ProviderConnectSchemaResponse, ProviderDescriptorResponse, ProviderListResponse,
+    ProvisionExternalAdapterSessionRequest, ProvisionExternalAdapterSessionResponse, QuestionInfo,
     RecoveryActionKind, RefreshProviderCatalogResponse, ResolveProviderConnectRequest,
     ResolveProviderConnectResponse, RevertRequest, RevertResponse, SessionEventsQuery,
     SessionExecutionTopology, SessionInfo, SessionInsightsResponse, SessionListItem,
@@ -92,6 +93,17 @@ impl BlockingApiClient {
             title: None,
         };
         self.post_json("/session", "create session", &request)
+    }
+
+    pub fn provision_external_adapter_session(
+        &self,
+        request: &ProvisionExternalAdapterSessionRequest,
+    ) -> anyhow::Result<ProvisionExternalAdapterSessionResponse> {
+        self.post_json(
+            "/external-adapter/session/provision",
+            "provision external adapter session",
+            request,
+        )
     }
 
     pub fn get_session(&self, session_id: &str) -> anyhow::Result<SessionInfo> {
