@@ -121,6 +121,7 @@ impl RuntimeApiClient {
         fn cancel_tool_call(&self, session_id: &str, tool_call_id: &str) -> serde_json::Value;
         fn get_config_providers(&self) -> ProviderListResponse;
         fn get_config(&self) -> rocode_config::Config;
+        fn get_config_validation(&self) -> ConfigPolicyValidationSnapshot;
         fn get_workspace_context(&self) -> rocode_runtime_context::ResolvedWorkspaceContext;
         fn get_multimodal_policy(&self) -> MultimodalPolicyResponse;
         fn get_multimodal_capabilities(&self, model: Option<&str>) -> MultimodalCapabilitiesResponse;
@@ -515,6 +516,12 @@ impl ApiClient {
 
     pub fn get_config(&self) -> anyhow::Result<rocode_config::Config> {
         self.call("get config", |client| client.get_config())
+    }
+
+    pub fn get_config_validation(&self) -> anyhow::Result<ConfigPolicyValidationSnapshot> {
+        self.call("get config validation", |client| {
+            client.get_config_validation()
+        })
     }
 
     pub fn get_workspace_context(

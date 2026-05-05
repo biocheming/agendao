@@ -136,6 +136,7 @@ export interface ManagedProviderListResponseRecord {
 export interface ProviderProfileDescriptorViewRecord {
   provider_id: string;
   npm: string;
+  source: string;
   api_family: string;
   api_shape: string;
   transport: string;

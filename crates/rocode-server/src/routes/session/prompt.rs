@@ -68,10 +68,11 @@ use super::autoresearch_target::{
 use super::cancel::is_scheduler_cancellation_error;
 use super::messages::{prompt_display_text, prompt_text_from_parts};
 use super::scheduler::{
-    apply_skill_tree_telemetry_metadata, resolve_prompt_request_config,
-    resolve_scheduler_profile_config, scheduler_mode_kind, scheduler_system_prompt_preview,
-    to_task_agent_info, SchedulerAgentResolver, SchedulerRunCancelToken,
-    SessionSchedulerModelResolver, SessionSchedulerToolExecutor,
+    apply_scheduler_selection_session_metadata, apply_skill_tree_telemetry_metadata,
+    resolve_prompt_request_config, resolve_scheduler_profile_config, scheduler_mode_kind,
+    scheduler_system_prompt_preview, to_task_agent_info, PromptRequestSchedulerProfileSource,
+    SchedulerAgentResolver, SchedulerRunCancelToken, SessionSchedulerModelResolver,
+    SessionSchedulerToolExecutor,
 };
 use super::session_crud::{
     persist_sessions_if_enabled, resolved_session_directory, set_session_run_status, IdleGuard,
@@ -1985,6 +1986,16 @@ async fn session_prompt_inner(
         .scheduler_profile
         .clone()
         .or(req.scheduler_profile.clone());
+    let effective_scheduler_profile_source = if resolved_prompt.scheduler_profile_override.is_some()
+    {
+        Some(PromptRequestSchedulerProfileSource::CommandWorkflow)
+    } else if resolved_prompt.scheduler_profile.is_some() {
+        Some(PromptRequestSchedulerProfileSource::CommandWorkflow)
+    } else if req.scheduler_profile.is_some() {
+        Some(PromptRequestSchedulerProfileSource::ExplicitRequest)
+    } else {
+        None
+    };
 
     let request_config =
         resolve_prompt_request_config(super::scheduler::PromptRequestConfigInput {
@@ -1993,6 +2004,7 @@ async fn session_prompt_inner(
             session_id: &id,
             requested_agent: effective_agent.as_deref(),
             requested_scheduler_profile: effective_scheduler_profile.as_deref(),
+            requested_scheduler_profile_source: effective_scheduler_profile_source,
             scheduler_profile_override: resolved_prompt.scheduler_profile_override.clone(),
             request_model: req.model.as_deref(),
             request_variant: req.variant.as_deref(),
@@ -2215,6 +2227,7 @@ async fn session_prompt_inner(
         } else {
             session.remove_metadata("scheduler_root_agent");
         }
+        apply_scheduler_selection_session_metadata(&mut session, &request_config);
         if let Some(recovery) = task_recovery.as_ref() {
             if let Some(action) = recovery.action.as_ref() {
                 session.insert_metadata("last_recovery_action", serde_json::json!(action));

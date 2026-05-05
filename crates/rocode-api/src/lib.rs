@@ -25,6 +25,7 @@ pub use rocode_types::{
     SessionEffectiveCompactionPolicy, SessionEffectiveExternalAdapterPolicy,
     SessionEffectiveMemoryPolicy, SessionEffectivePolicyView, SessionEffectiveProviderPolicy,
     SessionEffectiveProviderRuntimeProfile, SessionEffectiveSchedulerPolicy,
+    SessionEffectiveSchedulerTraceStep, SessionEffectiveSchedulerTraceStepKind,
     SessionEffectiveSkillTreePolicy, SessionInsightsResponse, SessionMemoryTelemetrySummary,
     SessionStatusInfo, SkillArtifactCacheEntry, SkillAuditEvent, SkillDistributionRecord,
     SkillEvolutionProposal, SkillEvolutionProposalKind, SkillGovernanceTimelineEntry,

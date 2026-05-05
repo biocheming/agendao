@@ -79,12 +79,38 @@ export interface SessionInsightsMemoryRecord {
   recent_session_records: MemoryCardRecord[];
 }
 
+export interface SessionEffectiveSchedulerTraceStepRecord {
+  kind: string;
+  profile?: string | null;
+  detail?: string | null;
+  applied: boolean;
+}
+
+export interface SessionEffectiveSchedulerPolicyRecord {
+  requested_profile?: string | null;
+  effective_profile?: string | null;
+  source: string;
+  applied: boolean;
+  mode_kind?: string | null;
+  root_agent?: string | null;
+  resolved_agent?: string | null;
+  selection_trace: SessionEffectiveSchedulerTraceStepRecord[];
+  warning?: string | null;
+}
+
+export interface SessionEffectivePolicyViewRecord {
+  session_id: string;
+  scheduler?: SessionEffectiveSchedulerPolicyRecord | null;
+  warnings: string[];
+}
+
 export interface SessionInsightsRecord {
   id: string;
   title: string;
   directory: string;
   updated: number;
   telemetry?: PersistedSessionTelemetrySnapshot | null;
+  effective_policy?: SessionEffectivePolicyViewRecord | null;
   memory?: SessionInsightsMemoryRecord | null;
   multimodal?: SessionMultimodalInsight | null;
 }

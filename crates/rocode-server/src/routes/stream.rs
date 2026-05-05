@@ -21,7 +21,8 @@ use rocode_session::{MessageRole as SessionMessageRole, Session};
 use super::permission::request_permission;
 use super::provider_diagnostics::attach_provider_diagnostic_from_error;
 use super::session::{
-    resolve_prompt_request_config, resolved_session_directory, to_task_agent_info,
+    apply_scheduler_selection_session_metadata, resolve_prompt_request_config,
+    resolved_session_directory, to_task_agent_info, PromptRequestSchedulerProfileSource,
     SendMessageRequest,
 };
 use super::tui::{request_question_answers_with_hook, QuestionEventHook};
@@ -175,6 +176,10 @@ pub(crate) async fn stream_message(
         session_id: &session_id,
         requested_agent: req.agent.as_deref(),
         requested_scheduler_profile: req.scheduler_profile.as_deref(),
+        requested_scheduler_profile_source: req
+            .scheduler_profile
+            .as_deref()
+            .map(|_| PromptRequestSchedulerProfileSource::ExplicitRequest),
         scheduler_profile_override: None,
         request_model: req.model.as_deref(),
         request_variant: request_variant.as_deref(),
@@ -232,6 +237,7 @@ pub(crate) async fn stream_message(
         } else {
             session.remove_metadata("scheduler_root_agent");
         }
+        apply_scheduler_selection_session_metadata(session, &request_config);
         session.touch();
 
         (selected_variant, session.clone())
