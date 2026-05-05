@@ -240,6 +240,7 @@ pub enum InteractiveCommand {
     ShowRuntime,
     ShowUsage,
     ShowInsights,
+    ShowConfigValidation,
     ShowEvents(Option<String>),
     ShowMemory(Option<String>),
     ShowMemoryPreview(Option<String>),
@@ -343,9 +344,18 @@ pub fn parse_interactive_command(input: &str) -> Option<InteractiveCommand> {
         "runtime" => Some(InteractiveCommand::ShowRuntime),
         "usage" => Some(InteractiveCommand::ShowUsage),
         "insights" | "insight" => Some(InteractiveCommand::ShowInsights),
+        "validation" | "validate" => Some(InteractiveCommand::ShowConfigValidation),
         "events" | "event" => Some(InteractiveCommand::ShowEvents(
             (!arg.is_empty()).then_some(arg),
         )),
+        "config" => {
+            let mut sub_parts = arg.split_whitespace();
+            let sub_cmd = sub_parts.next().unwrap_or_default();
+            match sub_cmd {
+                "validation" | "validate" => Some(InteractiveCommand::ShowConfigValidation),
+                _ => Some(InteractiveCommand::Unknown("config".to_string())),
+            }
+        }
         "memory" | "memories" => {
             if arg.is_empty() {
                 Some(InteractiveCommand::ShowMemory(None))
@@ -591,6 +601,14 @@ mod tests {
         assert_eq!(
             parse_interactive_command("/insights"),
             Some(InteractiveCommand::ShowInsights)
+        );
+        assert_eq!(
+            parse_interactive_command("/validation"),
+            Some(InteractiveCommand::ShowConfigValidation)
+        );
+        assert_eq!(
+            parse_interactive_command("/config validation"),
+            Some(InteractiveCommand::ShowConfigValidation)
         );
         assert_eq!(
             parse_interactive_command("/events"),

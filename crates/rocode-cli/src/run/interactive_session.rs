@@ -506,6 +506,9 @@ pub(super) async fn run_chat_session(
                     InteractiveCommand::ShowInsights => {
                         cli_print_session_insights(&runtime, &api_client, &repl_style).await;
                     }
+                    InteractiveCommand::ShowConfigValidation => {
+                        cli_print_config_validation(&runtime, &api_client, &repl_style).await;
+                    }
                     InteractiveCommand::ShowEvents(raw_filter) => {
                         cli_print_session_events(
                             &runtime,

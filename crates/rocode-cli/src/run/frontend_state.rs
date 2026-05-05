@@ -82,6 +82,11 @@ const CLI_PROMPT_COMMANDS: &[CliPromptCommandSpec] = &[
         description: "show session usage",
     },
     CliPromptCommandSpec {
+        name: "validation",
+        takes_value: None,
+        description: "show config validation",
+    },
+    CliPromptCommandSpec {
         name: "events",
         takes_value: None,
         description: "browse runtime events",
@@ -1007,6 +1012,7 @@ impl CliFrontendProjection {
         parts.push("/help".to_string());
         parts.push("/runtime".to_string());
         parts.push("/insights".to_string());
+        parts.push("/validation".to_string());
         parts.push("/child".to_string());
         if !matches!(self.phase, CliFrontendPhase::Idle) {
             parts.push("/abort".to_string());

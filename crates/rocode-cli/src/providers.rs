@@ -385,6 +385,10 @@ pub(crate) fn render_help(style: &CliStyle) -> String {
             "/insights",
             "Show persisted runtime explain, multimodal explain, and memory insights",
         ),
+        fmt(
+            "/validation",
+            "Show workspace config validation aggregated from config owners",
+        ),
         fmt("/events [filters]", "Show runtime event log"),
         fmt("/memory [search]", "List workspace memory records"),
         fmt(
