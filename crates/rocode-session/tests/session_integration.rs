@@ -35,7 +35,8 @@ fn test_session_add_assistant_message() {
 #[test]
 fn test_session_attached_creation() {
     let parent = Session::new("test-project", "/test/directory");
-    let child = Session::child_with_context_kind(&parent, SessionContextKind::DelegatedSubsession);
+    let child =
+        Session::attached_with_context_kind(&parent, SessionContextKind::DelegatedSubsession);
 
     assert!(child.parent_id.is_some());
     assert_eq!(child.parent_id.clone().unwrap(), parent.id);

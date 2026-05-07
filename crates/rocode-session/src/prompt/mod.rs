@@ -1134,7 +1134,7 @@ mod cache_semantics_tests {
     #[test]
     fn compact_session_now_skips_stage_output_sinks() {
         let parent = Session::new("proj", ".");
-        let mut child = Session::child_with_context_kind(
+        let mut child = Session::attached_with_context_kind(
             &parent,
             rocode_types::SessionContextKind::SchedulerStageOutputSession,
         );

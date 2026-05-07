@@ -44,7 +44,6 @@ pub const FORK_HISTORY_MODE_METADATA_KEY: &str = "fork_history_mode";
 pub const FORK_HISTORY_MESSAGE_LIMIT_METADATA_KEY: &str = "fork_history_message_limit";
 pub const FORK_SOURCE_HISTORY_MESSAGE_COUNT_METADATA_KEY: &str =
     "fork_source_history_message_count";
-const LEGACY_UNCLASSIFIED_CHILD_CONTEXT_KIND: &str = "unclassified_child";
 const LEGACY_STAGE_ATTACHED_SESSION_TITLE_PREFIX: &str = "Stage: ";
 
 const FORK_POLICY_METADATA_ALLOWLIST: &[&str] = &[
@@ -416,14 +415,6 @@ impl Session {
         serde_json::to_value(kind).expect("session context kind should serialize")
     }
 
-    fn has_legacy_unclassified_context_kind(&self) -> bool {
-        self.inner
-            .metadata
-            .get(SESSION_CONTEXT_KIND_METADATA_KEY)
-            .and_then(|value| value.as_str())
-            == Some(LEGACY_UNCLASSIFIED_CHILD_CONTEXT_KIND)
-    }
-
     fn infer_legacy_context_kind(&self) -> SessionContextKind {
         if self.fork_origin_session_id().is_some()
             || self.fork_policy_frozen()
@@ -484,9 +475,9 @@ impl Session {
         }
     }
 
-    /// Create a attached session with an explicit context kind so attached-session
+    /// Create an attached session with an explicit context kind so attached-session
     /// ownership is never inferred from `parent_id` alone.
-    pub fn child_with_context_kind(parent: &Session, kind: SessionContextKind) -> Self {
+    pub fn attached_with_context_kind(parent: &Session, kind: SessionContextKind) -> Self {
         let now = Utc::now();
         let slug = Self::generate_slug();
         let parent_record = parent.record();
@@ -524,7 +515,6 @@ impl Session {
         self.inner
             .metadata
             .get(SESSION_CONTEXT_KIND_METADATA_KEY)
-            .filter(|_| !self.has_legacy_unclassified_context_kind())
             .and_then(|value| serde_json::from_value::<SessionContextKind>(value.clone()).ok())
             .unwrap_or_else(|| self.infer_legacy_context_kind())
     }
@@ -1280,8 +1270,10 @@ impl SessionManager {
             .ok_or(SessionForkError::SessionNotFound)?;
         let forked_title = original.get_forked_title();
 
-        let mut forked =
-            Session::child_with_context_kind(original, SessionContextKind::ExplicitFullHistoryFork);
+        let mut forked = Session::attached_with_context_kind(
+            original,
+            SessionContextKind::ExplicitFullHistoryFork,
+        );
         Session::copy_fork_policy_metadata_from(original, &mut forked);
 
         let forked_id = forked.record().id.clone();
@@ -1787,7 +1779,7 @@ mod tests {
     fn test_typed_attached_session() {
         let parent = Session::new("project-1", "/path/to/project");
         let child =
-            Session::child_with_context_kind(&parent, SessionContextKind::DelegatedSubsession);
+            Session::attached_with_context_kind(&parent, SessionContextKind::DelegatedSubsession);
 
         assert!(child.parent_id.is_some());
         assert_eq!(child.parent_id.clone().unwrap(), parent.id);
@@ -1801,7 +1793,7 @@ mod tests {
     #[test]
     fn test_explicit_attached_session_kind() {
         let parent = Session::new("project-1", "/path/to/project");
-        let child = Session::child_with_context_kind(
+        let child = Session::attached_with_context_kind(
             &parent,
             SessionContextKind::SchedulerStageOutputSession,
         );
@@ -1817,24 +1809,8 @@ mod tests {
     fn test_legacy_attached_session_without_context_kind_infers_delegated_subsession() {
         let parent = Session::new("project-1", "/path/to/project");
         let mut child =
-            Session::child_with_context_kind(&parent, SessionContextKind::DelegatedSubsession);
+            Session::attached_with_context_kind(&parent, SessionContextKind::DelegatedSubsession);
         child.remove_metadata(SESSION_CONTEXT_KIND_METADATA_KEY);
-
-        assert_eq!(
-            child.context_kind(),
-            SessionContextKind::DelegatedSubsession
-        );
-    }
-
-    #[test]
-    fn test_legacy_unclassified_child_metadata_infers_delegated_subsession() {
-        let parent = Session::new("project-1", "/path/to/project");
-        let mut child =
-            Session::child_with_context_kind(&parent, SessionContextKind::DelegatedSubsession);
-        child.insert_metadata(
-            SESSION_CONTEXT_KIND_METADATA_KEY,
-            serde_json::json!(LEGACY_UNCLASSIFIED_CHILD_CONTEXT_KIND),
-        );
 
         assert_eq!(
             child.context_kind(),
@@ -1845,7 +1821,7 @@ mod tests {
     #[test]
     fn test_legacy_stage_attached_session_without_context_kind_infers_stage_output_sink() {
         let parent = Session::new("project-1", "/path/to/project");
-        let mut child = Session::child_with_context_kind(
+        let mut child = Session::attached_with_context_kind(
             &parent,
             SessionContextKind::SchedulerStageOutputSession,
         );
@@ -1883,7 +1859,7 @@ mod tests {
     #[test]
     fn test_stage_output_sink_is_not_compact_owner() {
         let parent = Session::new("project-1", "/path/to/project");
-        let child = Session::child_with_context_kind(
+        let child = Session::attached_with_context_kind(
             &parent,
             SessionContextKind::SchedulerStageOutputSession,
         );
@@ -1918,7 +1894,7 @@ mod tests {
         assert_eq!(manager.count(), 1);
 
         let child =
-            Session::child_with_context_kind(&session, SessionContextKind::DelegatedSubsession);
+            Session::attached_with_context_kind(&session, SessionContextKind::DelegatedSubsession);
         manager.update(child.clone());
         assert!(child.parent_id.is_some());
 
