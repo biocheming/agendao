@@ -421,8 +421,6 @@ pub struct SessionTelemetrySnapshot {
     #[serde(default)]
     pub context_closure_contract: Option<SessionContextClosureContract>,
     #[serde(default)]
-    pub prompt_surface_runtime_snapshot: Option<serde_json::Value>,
-    #[serde(default)]
     pub prompt_surface_evidence: Option<PromptSurfaceEvidenceSummary>,
     #[serde(default)]
     pub ingress_stabilization: Option<serde_json::Value>,

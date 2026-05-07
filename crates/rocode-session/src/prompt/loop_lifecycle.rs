@@ -40,7 +40,7 @@ use super::{
     },
     tools_and_output, PromptHooks, PromptInput, PromptRequestContext, SessionPrompt,
     SessionStepShared, MAX_STEPS, PROMPT_SURFACE_EVIDENCE_METADATA_KEY,
-    PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY, STREAM_UPDATE_INTERVAL_MS,
+    PROMPT_SURFACE_STATE_SNAPSHOT_METADATA_KEY, STREAM_UPDATE_INTERVAL_MS,
 };
 
 #[derive(Clone)]
@@ -50,7 +50,7 @@ struct SessionStepCancelToken {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct PromptSurfaceRuntimeSnapshot {
+struct PromptSurfaceStateSnapshot {
     session_id: String,
     generation: u64,
     created_at_ms: i64,
@@ -273,9 +273,9 @@ mod cache_fingerprint_tests {
     }
 
     #[test]
-    fn latest_prompt_surface_snapshot_reads_previous_assistant_metadata() {
+    fn latest_prompt_surface_state_snapshot_reads_previous_assistant_metadata() {
         let mut session = Session::new("project", "/tmp");
-        let snapshot = PromptSurfaceRuntimeSnapshot {
+        let snapshot = PromptSurfaceStateSnapshot {
             session_id: session.id.clone(),
             generation: 4,
             created_at_ms: 100,
@@ -301,18 +301,18 @@ mod cache_fingerprint_tests {
         };
         let assistant = session.add_assistant_message();
         assistant.metadata.insert(
-            PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY.to_string(),
+            PROMPT_SURFACE_STATE_SNAPSHOT_METADATA_KEY.to_string(),
             serde_json::to_value(&snapshot).expect("snapshot serializes"),
         );
 
-        let loaded = SessionPrompt::latest_prompt_surface_runtime_snapshot(&session)
+        let loaded = SessionPrompt::latest_prompt_surface_state_snapshot(&session)
             .expect("snapshot should load");
 
         assert_eq!(loaded, snapshot);
     }
 
     #[test]
-    fn prompt_surface_snapshot_keeps_generation_when_stable_fields_match() {
+    fn prompt_surface_state_snapshot_keeps_generation_when_stable_fields_match() {
         let compiled = CompiledExecutionRequest::default();
         let session = Session::new("project", "/tmp");
         let first_fingerprint =
@@ -327,12 +327,8 @@ mod cache_fingerprint_tests {
             Some("system"),
             "tool-source-a".to_string(),
         );
-        let first = SessionPrompt::build_prompt_surface_runtime_snapshot(
-            "ses_test",
-            None,
-            first_stable,
-            100,
-        );
+        let first =
+            SessionPrompt::build_prompt_surface_state_snapshot("ses_test", None, first_stable, 100);
 
         let second_fingerprint =
             test_cache_fingerprint("system-a", "tools-a", "messages-changed", "params-a");
@@ -346,7 +342,7 @@ mod cache_fingerprint_tests {
             Some("system"),
             "tool-source-a".to_string(),
         );
-        let second = SessionPrompt::build_prompt_surface_runtime_snapshot(
+        let second = SessionPrompt::build_prompt_surface_state_snapshot(
             "ses_test",
             Some(&first),
             second_stable,
@@ -362,7 +358,7 @@ mod cache_fingerprint_tests {
     }
 
     #[test]
-    fn prompt_surface_snapshot_invalidates_on_tool_surface_change() {
+    fn prompt_surface_state_snapshot_invalidates_on_tool_surface_change() {
         let compiled = CompiledExecutionRequest::default();
         let session = Session::new("project", "/tmp");
         let first_fingerprint =
@@ -377,12 +373,8 @@ mod cache_fingerprint_tests {
             Some("system"),
             "tool-source-a".to_string(),
         );
-        let first = SessionPrompt::build_prompt_surface_runtime_snapshot(
-            "ses_test",
-            None,
-            first_stable,
-            100,
-        );
+        let first =
+            SessionPrompt::build_prompt_surface_state_snapshot("ses_test", None, first_stable, 100);
 
         let second_fingerprint =
             test_cache_fingerprint("system-a", "tools-b", "messages-a", "params-a");
@@ -396,7 +388,7 @@ mod cache_fingerprint_tests {
             Some("system"),
             "tool-source-a".to_string(),
         );
-        let second = SessionPrompt::build_prompt_surface_runtime_snapshot(
+        let second = SessionPrompt::build_prompt_surface_state_snapshot(
             "ses_test",
             Some(&first),
             second_stable,
@@ -418,7 +410,7 @@ mod cache_fingerprint_tests {
     }
 
     #[test]
-    fn prompt_surface_snapshot_reason_can_drive_cache_evidence() {
+    fn prompt_surface_state_snapshot_reason_can_drive_cache_evidence() {
         let summary = CacheEvidenceSummary {
             status: "stable".to_string(),
             severity: rocode_provider::cache::CacheEvidenceSeverity::Stable,
@@ -461,7 +453,7 @@ mod cache_fingerprint_tests {
     }
 
     #[test]
-    fn prompt_surface_snapshot_ignores_dynamic_system_tail_for_generation() {
+    fn prompt_surface_state_snapshot_ignores_dynamic_system_tail_for_generation() {
         let compiled = CompiledExecutionRequest::default();
         let session = Session::new("project", "/tmp");
         let first_system = "You are ROCode.\n\n## Exact Recent Tail\n- user `m1`:\nprevious output";
@@ -478,12 +470,8 @@ mod cache_fingerprint_tests {
             Some(first_system),
             "tool-source-a".to_string(),
         );
-        let first = SessionPrompt::build_prompt_surface_runtime_snapshot(
-            "ses_test",
-            None,
-            first_stable,
-            100,
-        );
+        let first =
+            SessionPrompt::build_prompt_surface_state_snapshot("ses_test", None, first_stable, 100);
 
         let second_fingerprint =
             test_cache_fingerprint("system-full-b", "tools-a", "messages-a", "params-a");
@@ -497,7 +485,7 @@ mod cache_fingerprint_tests {
             Some(second_system),
             "tool-source-a".to_string(),
         );
-        let second = SessionPrompt::build_prompt_surface_runtime_snapshot(
+        let second = SessionPrompt::build_prompt_surface_state_snapshot(
             "ses_test",
             Some(&first),
             second_stable,
@@ -514,7 +502,7 @@ mod cache_fingerprint_tests {
     }
 
     #[test]
-    fn prompt_surface_snapshot_records_ingress_policy_without_user_text() {
+    fn prompt_surface_state_snapshot_records_ingress_policy_without_user_text() {
         let compiled = CompiledExecutionRequest::default();
         let mut session = Session::new("project", "/tmp");
         session.insert_metadata("last_ingress_source".to_string(), serde_json::json!("web"));
@@ -535,7 +523,7 @@ mod cache_fingerprint_tests {
             "tool-source-a".to_string(),
         );
         let first =
-            SessionPrompt::build_prompt_surface_runtime_snapshot("ses_test", None, stable, 100);
+            SessionPrompt::build_prompt_surface_state_snapshot("ses_test", None, stable, 100);
 
         session.insert_metadata("last_ingress_source".to_string(), serde_json::json!("web"));
         session.insert_metadata(
@@ -552,7 +540,7 @@ mod cache_fingerprint_tests {
             Some("system"),
             "tool-source-a".to_string(),
         );
-        let second = SessionPrompt::build_prompt_surface_runtime_snapshot(
+        let second = SessionPrompt::build_prompt_surface_state_snapshot(
             "ses_test",
             Some(&first),
             stable_again,
@@ -565,7 +553,7 @@ mod cache_fingerprint_tests {
     }
 
     #[test]
-    fn prompt_surface_snapshot_soft_degrades_on_ingress_policy_change() {
+    fn prompt_surface_state_snapshot_soft_degrades_on_ingress_policy_change() {
         let compiled = CompiledExecutionRequest::default();
         let mut session = Session::new("project", "/tmp");
         session.insert_metadata("last_ingress_source".to_string(), serde_json::json!("web"));
@@ -585,12 +573,8 @@ mod cache_fingerprint_tests {
             Some("system"),
             "tool-source-a".to_string(),
         );
-        let first = SessionPrompt::build_prompt_surface_runtime_snapshot(
-            "ses_test",
-            None,
-            first_stable,
-            100,
-        );
+        let first =
+            SessionPrompt::build_prompt_surface_state_snapshot("ses_test", None, first_stable, 100);
 
         session.insert_metadata("last_ingress_source".to_string(), serde_json::json!("api"));
         session.insert_metadata(
@@ -607,7 +591,7 @@ mod cache_fingerprint_tests {
             Some("system"),
             "tool-source-a".to_string(),
         );
-        let second = SessionPrompt::build_prompt_surface_runtime_snapshot(
+        let second = SessionPrompt::build_prompt_surface_state_snapshot(
             "ses_test",
             Some(&first),
             second_stable,
@@ -657,7 +641,7 @@ mod cache_fingerprint_tests {
     }
 
     #[test]
-    fn prompt_surface_snapshot_invalidates_on_output_projection_policy_change() {
+    fn prompt_surface_state_snapshot_invalidates_on_output_projection_policy_change() {
         let compiled = CompiledExecutionRequest::default();
         let session = Session::new("project", "/tmp");
         let fingerprint = test_cache_fingerprint("system-a", "tools-a", "messages-a", "params-a");
@@ -688,12 +672,8 @@ mod cache_fingerprint_tests {
             Some("system"),
             "tool-source-a".to_string(),
         );
-        let first = SessionPrompt::build_prompt_surface_runtime_snapshot(
-            "ses_test",
-            None,
-            first_stable,
-            100,
-        );
+        let first =
+            SessionPrompt::build_prompt_surface_state_snapshot("ses_test", None, first_stable, 100);
 
         let mut full = SessionMessage::assistant(session.id.clone());
         full.add_text("large assistant delivery");
@@ -708,7 +688,7 @@ mod cache_fingerprint_tests {
             Some("system"),
             "tool-source-a".to_string(),
         );
-        let second = SessionPrompt::build_prompt_surface_runtime_snapshot(
+        let second = SessionPrompt::build_prompt_surface_state_snapshot(
             "ses_test",
             Some(&first),
             second_stable,
@@ -730,7 +710,7 @@ mod cache_fingerprint_tests {
     }
 
     #[test]
-    fn prompt_surface_snapshot_ignores_provider_diagnostic_metadata() {
+    fn prompt_surface_state_snapshot_ignores_provider_diagnostic_metadata() {
         let compiled = CompiledExecutionRequest::default();
         let session = Session::new("project", "/tmp");
         let fingerprint = test_cache_fingerprint("system-a", "tools-a", "messages-a", "params-a");
@@ -747,12 +727,8 @@ mod cache_fingerprint_tests {
             Some("system"),
             "tool-source-a".to_string(),
         );
-        let first = SessionPrompt::build_prompt_surface_runtime_snapshot(
-            "ses_test",
-            None,
-            first_stable,
-            100,
-        );
+        let first =
+            SessionPrompt::build_prompt_surface_state_snapshot("ses_test", None, first_stable, 100);
 
         let summary = rocode_provider::ProviderDiagnosticSummary {
             severity: rocode_provider::ProviderDiagnosticSeverity::HardFail,
@@ -774,7 +750,7 @@ mod cache_fingerprint_tests {
             Some("system"),
             "tool-source-a".to_string(),
         );
-        let second = SessionPrompt::build_prompt_surface_runtime_snapshot(
+        let second = SessionPrompt::build_prompt_surface_state_snapshot(
             "ses_test",
             Some(&first),
             second_stable,
@@ -1574,19 +1550,19 @@ impl SessionPrompt {
         })
     }
 
-    fn latest_prompt_surface_runtime_snapshot(
+    fn latest_prompt_surface_state_snapshot(
         session: &Session,
-    ) -> Option<PromptSurfaceRuntimeSnapshot> {
+    ) -> Option<PromptSurfaceStateSnapshot> {
         session
             .metadata
-            .get(PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY)
+            .get(PROMPT_SURFACE_STATE_SNAPSHOT_METADATA_KEY)
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok())
             .or_else(|| {
                 session.messages.iter().rev().find_map(|message| {
                     message
                         .metadata
-                        .get(PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY)
+                        .get(PROMPT_SURFACE_STATE_SNAPSHOT_METADATA_KEY)
                         .cloned()
                         .and_then(|value| serde_json::from_value(value).ok())
                 })
@@ -1785,12 +1761,12 @@ impl SessionPrompt {
         }))
     }
 
-    fn build_prompt_surface_runtime_snapshot(
+    fn build_prompt_surface_state_snapshot(
         session_id: &str,
-        previous: Option<&PromptSurfaceRuntimeSnapshot>,
+        previous: Option<&PromptSurfaceStateSnapshot>,
         stable: PromptSurfaceStableFields,
         now_ms: i64,
-    ) -> PromptSurfaceRuntimeSnapshot {
+    ) -> PromptSurfaceStateSnapshot {
         let evidence =
             previous.and_then(|snapshot| Self::prompt_surface_evidence(snapshot, &stable));
         let generation = match previous {
@@ -1803,7 +1779,7 @@ impl SessionPrompt {
             .map(|snapshot| snapshot.created_at_ms)
             .unwrap_or(now_ms);
 
-        PromptSurfaceRuntimeSnapshot {
+        PromptSurfaceStateSnapshot {
             session_id: session_id.to_string(),
             generation,
             created_at_ms,
@@ -1830,7 +1806,7 @@ impl SessionPrompt {
     }
 
     fn prompt_surface_evidence(
-        previous: &PromptSurfaceRuntimeSnapshot,
+        previous: &PromptSurfaceStateSnapshot,
         current: &PromptSurfaceStableFields,
     ) -> Option<PromptSurfaceEvidence> {
         let mut changed_fields = Vec::new();
@@ -2330,8 +2306,8 @@ impl SessionPrompt {
                 previous_cache_fingerprint.as_ref(),
                 &cache_fingerprint,
             );
-            let previous_prompt_surface_snapshot =
-                Self::latest_prompt_surface_runtime_snapshot(session);
+            let previous_prompt_surface_state_snapshot =
+                Self::latest_prompt_surface_state_snapshot(session);
             let prompt_surface_stable_fields = Self::prompt_surface_stable_fields(
                 session,
                 &prompt_messages,
@@ -2342,14 +2318,14 @@ impl SessionPrompt {
                 prompt_ctx.system_prompt.as_deref(),
                 tool_source_surface_hash,
             );
-            let prompt_surface_snapshot = Self::build_prompt_surface_runtime_snapshot(
+            let prompt_surface_state_snapshot = Self::build_prompt_surface_state_snapshot(
                 &session_id,
-                previous_prompt_surface_snapshot.as_ref(),
+                previous_prompt_surface_state_snapshot.as_ref(),
                 prompt_surface_stable_fields,
                 chrono::Utc::now().timestamp_millis(),
             );
-            if let Ok(value) = serde_json::to_value(&prompt_surface_snapshot) {
-                session.insert_metadata(PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY, value);
+            if let Ok(value) = serde_json::to_value(&prompt_surface_state_snapshot) {
+                session.insert_metadata(PROMPT_SURFACE_STATE_SNAPSHOT_METADATA_KEY, value);
             }
 
             let tool_registry = Arc::new(rocode_tool::create_default_registry().await);
@@ -2378,13 +2354,13 @@ impl SessionPrompt {
                 assistant_metadata
                     .insert(CACHE_EVIDENCE_INSPECTION_METADATA_KEY.to_string(), value);
             }
-            if let Ok(value) = serde_json::to_value(&prompt_surface_snapshot) {
+            if let Ok(value) = serde_json::to_value(&prompt_surface_state_snapshot) {
                 assistant_metadata.insert(
-                    PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY.to_string(),
+                    PROMPT_SURFACE_STATE_SNAPSHOT_METADATA_KEY.to_string(),
                     value,
                 );
             }
-            if let Some(evidence) = prompt_surface_snapshot.evidence.as_ref() {
+            if let Some(evidence) = prompt_surface_state_snapshot.evidence.as_ref() {
                 if let Ok(value) = serde_json::to_value(evidence) {
                     assistant_metadata
                         .insert(PROMPT_SURFACE_EVIDENCE_METADATA_KEY.to_string(), value);
@@ -2392,7 +2368,7 @@ impl SessionPrompt {
             }
             let cache_evidence = Self::merge_snapshot_evidence_into_summary(
                 CacheEvidenceSummary::from(&cache_evidence_inspection),
-                prompt_surface_snapshot.evidence.as_ref(),
+                prompt_surface_state_snapshot.evidence.as_ref(),
             );
             if let Ok(value) = serde_json::to_value(cache_evidence) {
                 assistant_metadata.insert(CACHE_EVIDENCE_METADATA_KEY.to_string(), value);

@@ -16,7 +16,7 @@ mod tool_calls;
 mod tool_execution;
 pub mod tools_and_output;
 
-pub const PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY: &str = "prompt_surface_runtime_snapshot";
+pub const PROMPT_SURFACE_STATE_SNAPSHOT_METADATA_KEY: &str = "prompt_surface_state_snapshot";
 pub const PROMPT_SURFACE_EVIDENCE_METADATA_KEY: &str = "prompt_surface_evidence";
 pub const CONTEXT_COMPACTION_RECORD_METADATA_KEY: &str = "context_compaction_record";
 pub const CONTEXT_PRESSURE_GOVERNANCE_SUMMARY_METADATA_KEY: &str =

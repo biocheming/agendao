@@ -24,7 +24,7 @@ const SESSION_SANCTIONED_METADATA_KEYS: &[&str] = &[
     "model_provider",
     "model_variant",
     "pending_command_invocation",
-    "prompt_surface_runtime_snapshot",
+    "prompt_surface_state_snapshot",
     "scheduler_applied",
     "scheduler_profile",
     "scheduler_root_agent",
@@ -65,7 +65,7 @@ const MESSAGE_SANCTIONED_METADATA_KEYS: &[&str] = &[
     "model_variant",
     "multimodal_preflight",
     "preflight",
-    "prompt_surface_runtime_snapshot",
+    "prompt_surface_state_snapshot",
     "prompt_surface_evidence",
     "provider_diagnostic",
     "provider_error_summary",
@@ -263,7 +263,7 @@ pub struct SessionDiagnosticsSidecar {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<SessionTelemetrySnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt_surface_runtime_snapshot: Option<serde_json::Value>,
+    pub prompt_surface_state_snapshot: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_pressure_governance_summary: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -285,8 +285,8 @@ impl SessionDiagnosticsSidecar {
         Self::derive(session, messages)
     }
 
-    pub fn prompt_surface_runtime_snapshot_value(&self) -> Option<serde_json::Value> {
-        self.prompt_surface_runtime_snapshot.clone()
+    pub fn prompt_surface_state_snapshot_value(&self) -> Option<serde_json::Value> {
+        self.prompt_surface_state_snapshot.clone()
     }
 
     pub fn context_pressure_governance_summary_value(&self) -> Option<serde_json::Value> {
@@ -326,7 +326,7 @@ impl SessionDiagnosticsSidecar {
             .filter(|message| matches!(message.role, MessageRole::Assistant))
             .find_map(|message| message.prompt_surface_evidence.clone())
             .or_else(|| {
-                self.prompt_surface_runtime_snapshot
+                self.prompt_surface_state_snapshot
                     .as_ref()
                     .and_then(|snapshot| snapshot.get("evidence").cloned())
             })
@@ -422,11 +422,11 @@ impl SessionDiagnosticsSidecar {
             .get("telemetry")
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok());
-        let prompt_surface_runtime_snapshot = session
+        let prompt_surface_state_snapshot = session
             .metadata
-            .get("prompt_surface_runtime_snapshot")
+            .get("prompt_surface_state_snapshot")
             .cloned()
-            .or_else(|| latest_message_metadata_value(messages, "prompt_surface_runtime_snapshot"));
+            .or_else(|| latest_message_metadata_value(messages, "prompt_surface_state_snapshot"));
         let context_pressure_governance_summary = session
             .metadata
             .get("context_pressure_governance_summary")
@@ -444,7 +444,7 @@ impl SessionDiagnosticsSidecar {
         let sidecar = Self {
             version: SessionDiagnosticsSidecarVersion::RocodeRustDiagnosticsV1,
             telemetry,
-            prompt_surface_runtime_snapshot,
+            prompt_surface_state_snapshot,
             context_pressure_governance_summary,
             ingress_stabilization,
             memory_frozen_snapshot,
@@ -457,7 +457,7 @@ impl SessionDiagnosticsSidecar {
 
     fn is_empty(&self) -> bool {
         self.telemetry.is_none()
-            && self.prompt_surface_runtime_snapshot.is_none()
+            && self.prompt_surface_state_snapshot.is_none()
             && self.context_pressure_governance_summary.is_none()
             && self.ingress_stabilization.is_none()
             && self.memory_frozen_snapshot.is_none()
@@ -954,7 +954,7 @@ mod tests {
             serde_json::to_value(sample_telemetry_snapshot()).expect("snapshot should serialize"),
         );
         session.metadata.insert(
-            "prompt_surface_runtime_snapshot".to_string(),
+            "prompt_surface_state_snapshot".to_string(),
             serde_json::json!({"stable_prefix_hash": "abc123"}),
         );
         session
@@ -1045,7 +1045,7 @@ mod tests {
             serde_json::json!("completed")
         );
         assert_eq!(
-            value["diagnostics_sidecar"]["prompt_surface_runtime_snapshot"]["stable_prefix_hash"],
+            value["diagnostics_sidecar"]["prompt_surface_state_snapshot"]["stable_prefix_hash"],
             serde_json::json!("abc123")
         );
         assert_eq!(
