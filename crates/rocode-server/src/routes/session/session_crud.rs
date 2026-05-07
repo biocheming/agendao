@@ -33,6 +33,7 @@ pub struct ListSessionsQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateSessionRequest {
+    #[serde(default)]
     pub parent_id: Option<String>,
     pub scheduler_profile: Option<String>,
     pub directory: Option<String>,
@@ -42,7 +43,6 @@ pub struct CreateSessionRequest {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct CreateSessionSpec {
-    pub parent_id: Option<String>,
     pub scheduler_profile: Option<String>,
     pub directory: Option<String>,
     pub project_id: Option<String>,
@@ -517,10 +517,15 @@ pub(super) async fn create_session(
     State(state): State<Arc<ServerState>>,
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<Json<SessionInfo>> {
+    if req.parent_id.is_some() {
+        return Err(ApiError::BadRequest(
+            "Creating a child session via /session is no longer supported; use a typed owner-local session path instead."
+                .to_string(),
+        ));
+    }
     let session = create_session_from_spec(
         &state,
         CreateSessionSpec {
-            parent_id: req.parent_id,
             scheduler_profile: req.scheduler_profile,
             directory: req.directory,
             project_id: req.project_id,
@@ -570,22 +575,16 @@ pub(crate) async fn create_session_from_spec(
         .map(ToString::to_string);
 
     let mut sessions = state.sessions.lock().await;
-    let mut session = if let Some(parent_id) = spec.parent_id.as_ref() {
-        sessions
-            .create_child(parent_id)
-            .ok_or_else(|| ApiError::SessionNotFound(parent_id.clone()))?
-    } else {
-        let directory = requested_directory
-            .unwrap_or_else(|| resolved_session_directory(".", &state.project_root()));
-        let project_id = requested_project_id.unwrap_or_else(|| {
-            PathBuf::from(&directory)
-                .file_name()
-                .map(|value| value.to_string_lossy().to_string())
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "default".to_string())
-        });
-        sessions.create(project_id, directory)
-    };
+    let directory = requested_directory
+        .unwrap_or_else(|| resolved_session_directory(".", &state.project_root()));
+    let project_id = requested_project_id.unwrap_or_else(|| {
+        PathBuf::from(&directory)
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "default".to_string())
+    });
+    let mut session = sessions.create(project_id, directory);
     let normalized_directory =
         resolved_session_directory(session.record().directory.as_str(), &state.project_root());
     if session.record().directory != normalized_directory {
@@ -861,11 +860,15 @@ pub(super) async fn get_session_summary(
 mod tests {
     use super::collect_session_tree_ids;
     use super::{
-        get_session_children, session_list_contract, session_to_info, session_to_list_item,
-        start_compaction, CompactRequest,
+        create_session, get_session_children, session_list_contract, session_to_info,
+        session_to_list_item, start_compaction, CompactRequest, CreateSessionRequest,
     };
+    use crate::ApiError;
     use crate::ServerState;
-    use axum::extract::{Path, Query, State};
+    use axum::{
+        extract::{Path, Query, State},
+        Json,
+    };
     use rocode_command::stage_protocol::StageStatus;
     use rocode_session::{
         persist_session_telemetry_snapshot, MessageRole, PartType, PersistedStageTelemetrySummary,
@@ -877,12 +880,16 @@ mod tests {
     fn collect_session_tree_ids_includes_descendants() {
         let mut sessions = rocode_session::SessionManager::new();
         let root = sessions.create("project", "/tmp/project");
-        let child = sessions
-            .create_child(&root.id)
-            .expect("child session should exist");
-        let grandchild = sessions
-            .create_child(&child.id)
-            .expect("grandchild session should exist");
+        let child = Session::child_with_context_kind(
+            &root,
+            rocode_types::SessionContextKind::DelegatedSubsession,
+        );
+        sessions.update(child.clone());
+        let grandchild = Session::child_with_context_kind(
+            &child,
+            rocode_types::SessionContextKind::DelegatedSubsession,
+        );
+        sessions.update(grandchild.clone());
 
         let ids = collect_session_tree_ids(&sessions, &root.id).expect("root subtree");
 
@@ -1010,9 +1017,10 @@ mod tests {
         let parent_id = {
             let mut sessions = state.sessions.lock().await;
             let parent = sessions.create("project", "/tmp/project");
-            let child = sessions
-                .create_child(&parent.id)
-                .expect("child session should exist");
+            let child = Session::child_with_context_kind(
+                &parent,
+                rocode_types::SessionContextKind::DelegatedSubsession,
+            );
             sessions.update(child);
             parent.id.clone()
         };
@@ -1027,6 +1035,30 @@ mod tests {
             .contract
             .non_search_fields
             .contains(&"hints".to_string()));
+    }
+
+    #[tokio::test]
+    async fn create_session_route_rejects_legacy_parent_id_child_creation() {
+        let state = Arc::new(ServerState::new());
+        let parent_id = {
+            let mut sessions = state.sessions.lock().await;
+            sessions.create("project", "/tmp/project").id.clone()
+        };
+
+        let error = create_session(
+            State(state),
+            Json(CreateSessionRequest {
+                parent_id: Some(parent_id),
+                scheduler_profile: None,
+                directory: None,
+                project_id: None,
+                title: None,
+            }),
+        )
+        .await
+        .expect_err("legacy parent-based child creation must fail");
+
+        assert!(matches!(error, ApiError::BadRequest(_)));
     }
 
     #[tokio::test]

@@ -1,14 +1,18 @@
 use async_trait::async_trait;
+use rocode_types::{
+    SessionContextKind, SubsessionHandoffFieldKind, SubsessionHandoffPacket,
+    SubsessionResultAbsorbMode,
+};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
 
 use rocode_core::agent_task_registry::{global_task_registry, AgentTaskStatus};
 
-use crate::skill_support::load_skills_prompt_context;
+use crate::skill_support::{load_skills_prompt_context, LoadedSkillsPromptContext};
 use crate::{
-    Metadata, PermissionRequest, TaskAgentInfo, TaskAgentModel, Tool, ToolContext, ToolError,
-    ToolResult,
+    append_subsession_handoff_recent_tail_from_extra, Metadata, PermissionRequest, TaskAgentInfo,
+    TaskAgentModel, Tool, ToolContext, ToolError, ToolResult,
 };
 
 pub struct TaskTool;
@@ -184,6 +188,37 @@ fn format_task_output(session_id: &str, result_text: &str) -> (String, bool) {
     )
 }
 
+fn build_task_handoff_packet(
+    input: &NormalizedTaskInput,
+    loaded_skills_context: &LoadedSkillsPromptContext,
+    prompt_suffix: Option<&str>,
+    ctx: &ToolContext,
+) -> SubsessionHandoffPacket {
+    let mut packet = SubsessionHandoffPacket::bounded_goal(input.prompt.clone());
+
+    if !loaded_skills_context.is_empty() {
+        packet.push_titled_text(
+            SubsessionHandoffFieldKind::SupportingContext,
+            "loaded skills context",
+            loaded_skills_context.prompt_context.clone(),
+        );
+    }
+
+    if let Some(suffix) = prompt_suffix
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        packet.push_titled_text(
+            SubsessionHandoffFieldKind::Constraint,
+            "dispatch guidance",
+            suffix.to_string(),
+        );
+    }
+
+    append_subsession_handoff_recent_tail_from_extra(&mut packet, &ctx.extra);
+    packet
+}
+
 #[async_trait]
 impl Tool for TaskTool {
     fn id(&self) -> &str {
@@ -357,21 +392,12 @@ impl Tool for TaskTool {
             Some(&ctx.extra),
         )?;
         let loaded_skill_names = loaded_skills_context.loaded_skill_names();
-        let subtask_prompt = if loaded_skills_context.is_empty() {
-            match prompt_suffix {
-                Some(ref suffix) => format!("{}\n\n{}", input.prompt, suffix),
-                None => input.prompt.clone(),
-            }
-        } else {
-            let base = format!(
-                "{}\n\n## Delegated Task\n\n{}",
-                loaded_skills_context.prompt_context, input.prompt
-            );
-            match prompt_suffix {
-                Some(ref suffix) => format!("{}\n\n{}", base, suffix),
-                None => base,
-            }
-        };
+        let handoff = build_task_handoff_packet(
+            &input,
+            &loaded_skills_context,
+            prompt_suffix.as_deref(),
+            &ctx,
+        );
 
         // Clone the abort token so the cancel callback can trigger it.
         let cancel_token = ctx.abort.clone();
@@ -399,10 +425,10 @@ impl Tool for TaskTool {
         .await;
 
         let result_text = match ctx
-            .do_prompt_subsession(session_id.clone(), subtask_prompt)
+            .do_prompt_subsession(session_id.clone(), handoff.clone())
             .await
         {
-            Ok(text) => {
+            Ok(result) => {
                 global_task_registry()
                     .complete(&agent_task_id, AgentTaskStatus::Completed { steps: 0 });
                 ctx.do_publish_bus(
@@ -410,7 +436,7 @@ impl Tool for TaskTool {
                     serde_json::json!({ "task_id": agent_task_id }),
                 )
                 .await;
-                text
+                result.text
             }
             Err(e) => {
                 let status = if ctx.abort.is_cancelled() {
@@ -437,8 +463,23 @@ impl Tool for TaskTool {
         metadata.insert("agentTaskId".into(), serde_json::json!(agent_task_id));
         metadata.insert("sessionId".into(), serde_json::json!(session_id));
         metadata.insert(
+            "sessionContextKind".into(),
+            serde_json::to_value(SessionContextKind::DelegatedSubsession)
+                .unwrap_or_else(|_| serde_json::json!("delegated_subsession")),
+        );
+        metadata.insert(
             "taskStatus".into(),
             serde_json::json!(TASK_STATUS_COMPLETED),
+        );
+        metadata.insert(
+            "sessionHandoffRichness".into(),
+            serde_json::to_value(handoff.effective_richness())
+                .unwrap_or_else(|_| serde_json::json!("bounded")),
+        );
+        metadata.insert(
+            "resultAbsorbMode".into(),
+            serde_json::to_value(SubsessionResultAbsorbMode::SummaryOnly)
+                .unwrap_or_else(|_| serde_json::json!("summary_only")),
         );
         metadata.insert("hasTextOutput".into(), serde_json::json!(has_text_output));
         metadata.insert(
@@ -508,10 +549,34 @@ fn parse_model_ref(raw: Option<&str>) -> TaskAgentModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rocode_types::{SubsessionHandoffPacket, SubsessionResultEnvelope};
     use std::fs;
     use std::sync::Arc;
     use tempfile::tempdir;
     use tokio::sync::Mutex;
+
+    fn summary(text: &str) -> SubsessionResultEnvelope {
+        SubsessionResultEnvelope::summary(text.to_string())
+    }
+
+    fn goal_text(packet: &SubsessionHandoffPacket) -> Option<&str> {
+        packet
+            .fields
+            .iter()
+            .find(|field| field.kind == SubsessionHandoffFieldKind::Goal)
+            .map(|field| field.text.as_str())
+    }
+
+    fn has_field_containing(
+        packet: &SubsessionHandoffPacket,
+        kind: SubsessionHandoffFieldKind,
+        needle: &str,
+    ) -> bool {
+        packet
+            .fields
+            .iter()
+            .any(|field| field.kind == kind && field.text.contains(needle))
+    }
 
     #[test]
     fn task_description_directs_lifecycle_semantics_to_task_flow() {
@@ -528,7 +593,7 @@ mod tests {
             Option<String>,
             Vec<String>,
         )>::new()));
-        let prompt_calls = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let prompt_calls = Arc::new(Mutex::new(Vec::<(String, SubsessionHandoffPacket)>::new()));
 
         let ctx = ToolContext::new("session-1".into(), "message-1".into(), ".".into())
             .with_get_agent_info(|name| async move {
@@ -568,7 +633,7 @@ mod tests {
                     let prompt_calls = prompt_calls.clone();
                     async move {
                         prompt_calls.lock().await.push((session_id, prompt));
-                        Ok("subagent output".to_string())
+                        Ok(summary("subagent output"))
                     }
                 }
             });
@@ -591,6 +656,18 @@ mod tests {
         assert_eq!(
             result.metadata.get("sessionId"),
             Some(&serde_json::json!("task_build_123"))
+        );
+        assert_eq!(
+            result.metadata.get("sessionContextKind"),
+            Some(&serde_json::json!("delegated_subsession"))
+        );
+        assert_eq!(
+            result.metadata.get("sessionHandoffRichness"),
+            Some(&serde_json::json!("bounded"))
+        );
+        assert_eq!(
+            result.metadata.get("resultAbsorbMode"),
+            Some(&serde_json::json!("summary_only"))
         );
         assert!(result
             .metadata
@@ -618,13 +695,16 @@ mod tests {
         let prompt_calls = prompt_calls.lock().await.clone();
         assert_eq!(prompt_calls.len(), 1);
         assert_eq!(prompt_calls[0].0, "task_build_123");
-        assert_eq!(prompt_calls[0].1, "Please inspect runtime behavior");
+        assert_eq!(
+            goal_text(&prompt_calls[0].1),
+            Some("Please inspect runtime behavior")
+        );
     }
 
     #[tokio::test]
     async fn task_reuses_existing_task_id_without_creating_subsession() {
         let created = Arc::new(Mutex::new(false));
-        let prompted = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let prompted = Arc::new(Mutex::new(Vec::<(String, SubsessionHandoffPacket)>::new()));
 
         let ctx = ToolContext::new("session-1".into(), "message-1".into(), ".".into())
             .with_get_agent_info(|name| async move {
@@ -661,7 +741,7 @@ mod tests {
                     let prompted = prompted.clone();
                     async move {
                         prompted.lock().await.push((session_id, prompt));
-                        Ok("continued output".to_string())
+                        Ok(summary("continued output"))
                     }
                 }
             });
@@ -684,7 +764,10 @@ mod tests {
         let prompted = prompted.lock().await.clone();
         assert_eq!(prompted.len(), 1);
         assert_eq!(prompted[0].0, "task_existing_42");
-        assert_eq!(prompted[0].1, "Continue where you left off");
+        assert_eq!(
+            goal_text(&prompted[0].1),
+            Some("Continue where you left off")
+        );
         assert!(result
             .output
             .contains("task_id: task_existing_42 (for resuming to continue this task if needed)"));
@@ -737,7 +820,7 @@ mod tests {
                 }
             })
             .with_prompt_subsession(|_session_id, _prompt| async move {
-                Ok("librarian result".to_string())
+                Ok(summary("librarian result"))
             });
 
         let args = serde_json::json!({
@@ -796,7 +879,7 @@ mod tests {
                 }
             })
             .with_prompt_subsession(|_session_id, _prompt| async move {
-                Ok("fallback result".to_string())
+                Ok(summary("fallback result"))
             });
 
         let args = serde_json::json!({
@@ -851,7 +934,7 @@ mod tests {
                 }
             })
             .with_prompt_subsession(|_session_id, _prompt| async move {
-                Ok("no callback result".to_string())
+                Ok(summary("no callback result"))
             });
 
         let args = serde_json::json!({
@@ -892,7 +975,7 @@ mod tests {
                     }
                 }
             })
-            .with_prompt_subsession(|_session_id, _prompt| async move { Ok("ok".to_string()) });
+            .with_prompt_subsession(|_session_id, _prompt| async move { Ok(summary("ok")) });
 
         let args = serde_json::json!({
             "prompt": "Inspect HTML structure and report key sections",
@@ -936,7 +1019,7 @@ mod tests {
                     }
                 }
             })
-            .with_prompt_subsession(|_session_id, _prompt| async move { Ok("ok".to_string()) });
+            .with_prompt_subsession(|_session_id, _prompt| async move { Ok(summary("ok")) });
 
         let args = serde_json::json!({
             "prompt": "Inspect HTML structure and report key sections",
@@ -975,7 +1058,7 @@ mod tests {
                     }
                 }
             })
-            .with_prompt_subsession(|_session_id, _prompt| async move { Ok("ok".to_string()) });
+            .with_prompt_subsession(|_session_id, _prompt| async move { Ok(summary("ok")) });
 
         let args = serde_json::json!({
             "prompt": "Inspect HTML structure and report key sections",
@@ -1028,7 +1111,7 @@ mod tests {
             .with_create_subsession(|_agent, _title, _model, _disabled_tools| async move {
                 Ok("task_build_empty".to_string())
             })
-            .with_prompt_subsession(|_session_id, _prompt| async move { Ok("   \n".to_string()) });
+            .with_prompt_subsession(|_session_id, _prompt| async move { Ok(summary("   \n")) });
 
         let args = serde_json::json!({
             "description": "Investigate issue",
@@ -1075,7 +1158,7 @@ Use clear visual hierarchy.
         )
         .unwrap();
 
-        let prompted = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let prompted = Arc::new(Mutex::new(Vec::<(String, SubsessionHandoffPacket)>::new()));
         let ctx = ToolContext::new(
             "session-1".into(),
             "message-1".into(),
@@ -1108,7 +1191,7 @@ Use clear visual hierarchy.
                 let prompted = prompted.clone();
                 async move {
                     prompted.lock().await.push((session_id, prompt));
-                    Ok("skill result".to_string())
+                    Ok(summary("skill result"))
                 }
             }
         });
@@ -1123,10 +1206,26 @@ Use clear visual hierarchy.
         let result = TaskTool::new().execute(args, ctx).await.unwrap();
         let prompted = prompted.lock().await.clone();
         assert_eq!(prompted.len(), 1);
-        assert!(prompted[0].1.contains("<loaded_skills>"));
-        assert!(prompted[0].1.contains("frontend-ui-ux"));
-        assert!(prompted[0].1.contains("Use clear visual hierarchy."));
-        assert!(prompted[0].1.contains("Redesign dashboard layout"));
+        assert_eq!(goal_text(&prompted[0].1), Some("Redesign dashboard layout"));
+        assert_eq!(
+            prompted[0].1.effective_richness(),
+            rocode_types::SubsessionHandoffRichness::Enriched
+        );
+        assert!(has_field_containing(
+            &prompted[0].1,
+            SubsessionHandoffFieldKind::SupportingContext,
+            "<loaded_skills>"
+        ));
+        assert!(has_field_containing(
+            &prompted[0].1,
+            SubsessionHandoffFieldKind::SupportingContext,
+            "frontend-ui-ux"
+        ));
+        assert!(has_field_containing(
+            &prompted[0].1,
+            SubsessionHandoffFieldKind::SupportingContext,
+            "Use clear visual hierarchy."
+        ));
         assert_eq!(
             result.metadata.get("loadedSkillCount"),
             Some(&serde_json::json!(1))
@@ -1149,7 +1248,7 @@ Use clear visual hierarchy.
             Option<String>,
             Vec<String>,
         )>::new()));
-        let prompt_calls = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let prompt_calls = Arc::new(Mutex::new(Vec::<(String, SubsessionHandoffPacket)>::new()));
 
         let ctx = ToolContext::new("session-1".into(), "message-1".into(), ".".into())
             // No with_get_agent_info — "custom-reviewer" is not a known agent
@@ -1188,7 +1287,7 @@ Use clear visual hierarchy.
                     let prompt_calls = prompt_calls.clone();
                     async move {
                         prompt_calls.lock().await.push((session_id, prompt));
-                        Ok("custom reviewer output".to_string())
+                        Ok(summary("custom reviewer output"))
                     }
                 }
             });
@@ -1212,7 +1311,10 @@ Use clear visual hierarchy.
 
         let prompt_calls = prompt_calls.lock().await.clone();
         assert_eq!(prompt_calls.len(), 1);
-        assert_eq!(prompt_calls[0].1, "Review the code for security issues");
+        assert_eq!(
+            goal_text(&prompt_calls[0].1),
+            Some("Review the code for security issues")
+        );
     }
 
     #[tokio::test]
@@ -1224,7 +1326,7 @@ Use clear visual hierarchy.
                 Ok("task_fallback_1".to_string())
             })
             .with_prompt_subsession(|_session_id, _prompt| async move {
-                Ok("fallback output".to_string())
+                Ok(summary("fallback output"))
             });
 
         let args = serde_json::json!({

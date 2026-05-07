@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use crate::request_execution::CompiledExecutionRequest;
 use crate::runtime::events::{LoopError as RuntimeLoopError, LoopRequest, ModelFailure};
+use crate::runtime::policy::ModelContextLimits;
 use crate::runtime::traits::ModelCaller;
 use rocode_provider::{summarize_provider_error, Provider, ProviderError, StreamResult};
 
@@ -46,5 +47,11 @@ impl ModelCaller for SimpleModelCaller {
             Some(self.config.request.model_id.as_str()),
             error,
         ))
+    }
+
+    fn context_limits(&self) -> Option<ModelContextLimits> {
+        self.provider
+            .get_model(self.config.request.model_id.as_str())
+            .map(ModelContextLimits::from_model_info)
     }
 }

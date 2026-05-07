@@ -10,6 +10,7 @@ use rocode_config::{Config as AppConfig, SkillTreeNodeConfig};
 use rocode_execution_types::{CompiledExecutionRequest, ExecutionRequestContext};
 use rocode_orchestrator::output_metadata::output_usage;
 use rocode_orchestrator::{
+    runtime::policy::ModelContextLimits,
     resolve_skill_markdown_repo, scheduler_auto_profile_config, scheduler_orchestrator_from_plan,
     scheduler_plan_from_profile, scheduler_request_defaults_from_file,
     scheduler_request_defaults_from_plan, stage_policy_available_tools, stage_policy_from_label,
@@ -37,13 +38,15 @@ use crate::session_runtime::{
 use crate::{ApiError, Result, ServerState};
 use rocode_provider::transform::{apply_caching, ProviderType};
 use rocode_session::prompt::{
-    auto_compact_session_with_focus_if_needed, OutputBlockEvent, OutputBlockHook,
+    auto_compact_session_with_focus_if_needed, govern_pre_dispatch_session_context,
+    ContextPressureGovernanceOutcome, OutputBlockEvent, OutputBlockHook,
 };
 use rocode_session::{MessageRole, PartType as SessionPartType, SessionMessage};
 use rocode_types::{
     ConfigPolicyValidationEffect, ConfigPolicyValidationItem, ConfigPolicyValidationOwner,
     ConfigPolicyValidationScope, ConfigPolicyValidationScopeKind, ConfigPolicyValidationSeverity,
-    MemoryDetailView, MemoryEvidenceRef, MemoryRecordId, SessionEffectiveSchedulerTraceStep,
+    ContextPressureGovernanceSummary, MemoryDetailView, MemoryEvidenceRef, MemoryRecordId,
+    SessionContinuityPacket, SessionEffectiveSchedulerTraceStep,
     SessionEffectiveSchedulerTraceStepKind,
 };
 
@@ -59,8 +62,7 @@ use super::prompt::{
     build_scheduler_session_context_packet, create_scheduler_user_message,
     merge_scheduler_prompt_with_memory, move_scheduler_final_answer_after_stage_messages,
     propagate_output_projection_metadata, resolve_prompt_memory_context,
-    SchedulerUserMessageContext, SCHEDULER_SESSION_CONTEXT_METADATA_KEY,
-    SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY,
+    SchedulerUserMessageContext, SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY,
 };
 use super::session_crud::{resolved_session_directory, set_session_run_status};
 use super::telemetry::persist_session_telemetry_metadata;
@@ -71,7 +73,6 @@ const BUILTIN_AUTORESEARCH_SCHEDULER_JSONC: &str =
     include_str!("../../../assets/autoresearch.scheduler.jsonc");
 const SCHEDULER_CONTEXT_HYDRATE_TOOL: &str = "scheduler_context_hydrate";
 const SCHEDULER_MEMORY_HYDRATE_TOOL: &str = "scheduler_memory_hydrate";
-const SCHEDULER_CONTEXT_PACKET_VERSION: u64 = 1;
 const SCHEDULER_CONTEXT_HYDRATE_DEFAULT_MESSAGE_LIMIT: usize = 2_000;
 const SCHEDULER_CONTEXT_HYDRATE_MAX_MESSAGE_LIMIT: usize = 8_000;
 const SCHEDULER_CONTEXT_HYDRATE_MAX_MESSAGES: usize = 12;
@@ -736,6 +737,26 @@ impl ModelResolver for SessionSchedulerModelResolver {
             OrchestratorError::from_provider_error(&provider_id, Some(&model_id), &error)
         })
     }
+
+    async fn context_limits(
+        &self,
+        model: Option<&OrchestratorModelRef>,
+        _exec_ctx: &OrchestratorExecutionContext,
+    ) -> Option<ModelContextLimits> {
+        let (provider_id, model_id) = model
+            .map(|model| (model.provider_id.clone(), model.model_id.clone()))
+            .unwrap_or_else(|| {
+                (
+                    self.fallback_provider_id.clone(),
+                    self.fallback_model_id.clone(),
+                )
+            });
+
+        let providers = self.state.providers.read().await;
+        providers
+            .get(&provider_id)
+            .and_then(|provider| provider.get_model(&model_id).map(ModelContextLimits::from_model_info))
+    }
 }
 
 fn merge_verifier_logprob_options(
@@ -1182,35 +1203,12 @@ fn scheduler_context_hydrate_message_limit(arguments: &serde_json::Value) -> usi
 }
 
 fn scheduler_context_allowed_message_ids(exec_ctx: &OrchestratorExecutionContext) -> Vec<String> {
-    let Some(packet) = exec_ctx
+    exec_ctx
         .metadata
         .get(SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY)
-    else {
-        return Vec::new();
-    };
-    if packet.get("version").and_then(|value| value.as_u64())
-        != Some(SCHEDULER_CONTEXT_PACKET_VERSION)
-    {
-        return Vec::new();
-    }
-    let mut ids = packet
-        .get("exact_recent_tail")
-        .and_then(|value| value.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(|anchor| anchor.get("message_id").and_then(|value| value.as_str()))
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    if let Some(id) = packet
-        .get("latest_compaction_summary")
-        .and_then(|value| value.get("message_id"))
-        .and_then(|value| value.as_str())
-    {
-        ids.push(id.to_string());
-    }
-    ids.sort();
-    ids.dedup();
-    ids
+        .and_then(SessionContinuityPacket::from_value)
+        .map(|packet| packet.allowed_message_ids())
+        .unwrap_or_default()
 }
 
 fn scheduler_memory_hydrate_record_ids(
@@ -1265,28 +1263,12 @@ fn scheduler_memory_hydrate_include_evidence(arguments: &serde_json::Value) -> b
 }
 
 fn scheduler_memory_allowed_record_ids(exec_ctx: &OrchestratorExecutionContext) -> Vec<String> {
-    let Some(packet) = exec_ctx
+    exec_ctx
         .metadata
         .get(SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY)
-    else {
-        return Vec::new();
-    };
-    if packet.get("version").and_then(|value| value.as_u64())
-        != Some(SCHEDULER_CONTEXT_PACKET_VERSION)
-    {
-        return Vec::new();
-    }
-    let mut ids = packet
-        .get("memory_anchors")
-        .and_then(|value| value.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(|anchor| anchor.get("record_id").and_then(|value| value.as_str()))
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    ids.sort();
-    ids.dedup();
-    ids
+        .and_then(SessionContinuityPacket::from_value)
+        .map(|packet| packet.allowed_memory_record_ids())
+        .unwrap_or_default()
 }
 
 fn render_scheduler_context_hydrated_message(
@@ -2001,7 +1983,7 @@ fn maybe_auto_compact_scheduler_session(
     model_id: &str,
     max_output_tokens: Option<u64>,
     config_store: Option<&rocode_config::ConfigStore>,
-    live_context_tokens: Option<u64>,
+    request_context_tokens: Option<u64>,
     focus: Option<&str>,
     phase: &str,
 ) -> bool {
@@ -2011,8 +1993,11 @@ fn maybe_auto_compact_scheduler_session(
         model_id,
         max_output_tokens,
         config_store,
-        live_context_tokens,
+        None,
+        request_context_tokens,
         focus,
+        "auto_preflight",
+        Some(phase),
     ) else {
         return false;
     };
@@ -2030,6 +2015,134 @@ fn maybe_auto_compact_scheduler_session(
 
     tracing::info!(phase, summary, "scheduler context compacted");
     true
+}
+
+fn format_pre_dispatch_context_pressure_error(
+    summary: &ContextPressureGovernanceSummary,
+) -> String {
+    let reason = summary
+        .reason
+        .as_deref()
+        .unwrap_or("context pressure remained above the safe dispatch limit");
+    let mut details = Vec::new();
+    if let Some(request_context_tokens) = summary.request_context_tokens {
+        details.push(format!("request={request_context_tokens}"));
+    }
+    if let Some(live_context_tokens) = summary.live_context_tokens {
+        details.push(format!("live={live_context_tokens}"));
+    }
+    if let Some(limit_tokens) = summary.limit_tokens {
+        details.push(format!("limit={limit_tokens}"));
+    }
+    if let Some(body_chars) = summary.body_chars {
+        details.push(format!("body_chars={body_chars}"));
+    }
+
+    if details.is_empty() {
+        format!("Context pressure gate blocked the scheduler request before dispatch ({reason}).")
+    } else {
+        format!(
+            "Context pressure gate blocked the scheduler request before dispatch ({reason}; {}).",
+            details.join(", ")
+        )
+    }
+}
+
+struct SchedulerPreparedRequestView {
+    session_context_packet: Option<SessionContinuityPacket>,
+    execution_prompt: String,
+}
+
+fn estimate_scheduler_pre_dispatch_request_view(
+    execution_prompt: &str,
+    session_context_packet: Option<&SessionContinuityPacket>,
+    system_prompt: Option<&str>,
+) -> (Option<u64>, Option<usize>) {
+    let mut body_chars = execution_prompt.chars().count();
+    if let Some(system_prompt) = system_prompt
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        body_chars += system_prompt.chars().count();
+    }
+    if let Some(packet) = session_context_packet {
+        body_chars += packet.render().chars().count();
+    }
+    let request_context_tokens = (body_chars > 0).then_some((body_chars as u64) / 4);
+    let body_chars = (body_chars > 0).then_some(body_chars);
+    (request_context_tokens, body_chars)
+}
+
+async fn prepare_scheduler_pre_dispatch_request_view(
+    state: &Arc<ServerState>,
+    session: &mut rocode_session::Session,
+    prompt_text: &str,
+    resolved_system_prompt: Option<&str>,
+    provider: &dyn rocode_provider::Provider,
+    model_id: &str,
+    max_output_tokens: Option<u64>,
+) -> std::result::Result<SchedulerPreparedRequestView, ContextPressureGovernanceSummary> {
+    for attempt in 0..2 {
+        let (memory_frozen_snapshot_block, _memory_prefetch_packet, memory_prefetch_block) =
+            resolve_prompt_memory_context(state, session, prompt_text).await;
+        let session_context_packet = build_scheduler_session_context_packet(session);
+        let execution_prompt = merge_scheduler_prompt_with_memory(
+            prompt_text,
+            memory_frozen_snapshot_block.as_deref(),
+            memory_prefetch_block.as_deref(),
+        );
+        let (request_context_tokens, request_body_chars) =
+            estimate_scheduler_pre_dispatch_request_view(
+                &execution_prompt,
+                session_context_packet.as_ref(),
+                resolved_system_prompt,
+            );
+
+        match govern_pre_dispatch_session_context(
+            session,
+            provider,
+            model_id,
+            max_output_tokens,
+            Some(state.config_store.as_ref()),
+            None,
+            request_context_tokens,
+            request_body_chars,
+            Some(prompt_text),
+            "pre_dispatch_hard_gate",
+            if attempt == 0 {
+                "scheduler.pre_dispatch"
+            } else {
+                "scheduler.pre_dispatch_retry"
+            },
+        ) {
+            ContextPressureGovernanceOutcome::Blocked(summary) => return Err(summary),
+            ContextPressureGovernanceOutcome::Proceed(summary) => {
+                if matches!(
+                    summary.status,
+                    rocode_types::ContextPressureGovernanceStatus::Compacted
+                ) {
+                    continue;
+                }
+                return Ok(SchedulerPreparedRequestView {
+                    session_context_packet,
+                    execution_prompt,
+                });
+            }
+        }
+    }
+
+    let (memory_frozen_snapshot_block, _memory_prefetch_packet, memory_prefetch_block) =
+        resolve_prompt_memory_context(state, session, prompt_text).await;
+    let session_context_packet = build_scheduler_session_context_packet(session);
+    let execution_prompt = merge_scheduler_prompt_with_memory(
+        prompt_text,
+        memory_frozen_snapshot_block.as_deref(),
+        memory_prefetch_block.as_deref(),
+    );
+    Ok(SchedulerPreparedRequestView {
+        session_context_packet,
+        execution_prompt,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -2186,18 +2299,6 @@ pub async fn run_local_scheduler_prompt(
         sessions.update(session.clone());
     }
 
-    let (memory_frozen_snapshot_block, _memory_prefetch_packet, memory_prefetch_block) =
-        resolve_prompt_memory_context(&state, &mut session, &req.prompt_text).await;
-    let scheduler_session_context_packet = build_scheduler_session_context_packet(&session);
-    let scheduler_session_context_block = scheduler_session_context_packet
-        .as_ref()
-        .map(|packet| packet.render());
-    let scheduler_execution_prompt = merge_scheduler_prompt_with_memory(
-        &req.prompt_text,
-        memory_frozen_snapshot_block.as_deref(),
-        memory_prefetch_block.as_deref(),
-    );
-
     let mode_kind = scheduler_mode_kind(&profile_name);
     let resolved_system_prompt = scheduler_system_prompt_preview(&profile_name, &profile_config);
     let prompt_parts = resolve_local_scheduler_prompt_parts(
@@ -2237,7 +2338,6 @@ pub async fn run_local_scheduler_prompt(
     )
     .await
     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    let assistant_message_id = session.add_assistant_message().id.clone();
 
     if session.is_default_title() {
         if let Some(first_text) = first_user_message_text(&session) {
@@ -2247,6 +2347,99 @@ pub async fn run_local_scheduler_prompt(
             }
         }
     }
+
+    let SchedulerPreparedRequestView {
+        session_context_packet: scheduler_session_context_packet,
+        execution_prompt: scheduler_execution_prompt,
+    } = match prepare_scheduler_pre_dispatch_request_view(
+        &state,
+        &mut session,
+        &req.prompt_text,
+        Some(&resolved_system_prompt),
+        provider.as_ref(),
+        &model_id,
+        request_config.compiled_request.max_tokens,
+    )
+    .await
+    {
+        Ok(view) => view,
+        Err(summary) => {
+            let error_message = format_pre_dispatch_context_pressure_error(&summary);
+            let assistant_message_id = {
+                let assistant = session.add_assistant_message();
+                assistant.finish = Some("error".to_string());
+                assistant
+                    .metadata
+                    .insert("finish_reason".to_string(), serde_json::json!("error"));
+                assistant.metadata.insert(
+                    "error".to_string(),
+                    serde_json::json!(error_message.clone()),
+                );
+                assistant.metadata.insert(
+                    "model_provider".to_string(),
+                    serde_json::json!(&provider_id),
+                );
+                assistant
+                    .metadata
+                    .insert("model_id".to_string(), serde_json::json!(&model_id));
+                assistant.metadata.insert(
+                    "scheduler_profile".to_string(),
+                    serde_json::json!(profile_name.clone()),
+                );
+                assistant.metadata.insert(
+                    "scheduler_applied".to_string(),
+                    serde_json::json!(scheduler_applied),
+                );
+                assistant.add_text(format!("Scheduler error: {}", error_message));
+                assistant.id.clone()
+            };
+            ensure_default_session_title(&mut session, provider.clone(), &model_id).await;
+            let assistant_text = session
+                .get_message(&assistant_message_id)
+                .map(assistant_visible_text)
+                .unwrap_or_default();
+
+            persist_session_telemetry_metadata(&state, &mut session).await;
+            {
+                let mut sessions = state.sessions.lock().await;
+                sessions.update(session.clone());
+            }
+            broadcast_session_updated(
+                state.as_ref(),
+                session_id.clone(),
+                "scheduler.pre_dispatch_blocked",
+            );
+            set_session_run_status(&state, &session_id, SessionRunStatus::Idle).await;
+
+            if let Some(output_hook) = output_hook {
+                if !assistant_text.trim().is_empty() {
+                    emit_output_block_via_hook(
+                        Some(&output_hook),
+                        OutputBlockEvent {
+                            session_id: session_id.clone(),
+                            block: OutputBlock::Message(MessageBlock::full(
+                                OutputMessageRole::Assistant,
+                                assistant_text.clone(),
+                            )),
+                            id: Some(assistant_message_id),
+                        },
+                    )
+                    .await;
+                }
+            }
+
+            return Ok(LocalSchedulerPromptOutcome {
+                session_id,
+                assistant_text,
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                context_tokens: 0,
+                cancelled: false,
+            });
+        }
+    };
+
+    let assistant_message_id = session.add_assistant_message().id.clone();
 
     {
         let mut sessions = state.sessions.lock().await;
@@ -2325,12 +2518,6 @@ pub async fn run_local_scheduler_prompt(
             serde_json::json!(profile_name.clone()),
         ),
     ]);
-    if let Some(session_context) = scheduler_session_context_block.as_deref() {
-        exec_metadata.insert(
-            SCHEDULER_SESSION_CONTEXT_METADATA_KEY.to_string(),
-            serde_json::json!(session_context),
-        );
-    }
     if let Some(session_context_packet) = scheduler_session_context_packet.as_ref() {
         exec_metadata.insert(
             SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY.to_string(),

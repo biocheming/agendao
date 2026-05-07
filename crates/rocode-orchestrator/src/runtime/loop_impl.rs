@@ -1,6 +1,7 @@
 use crate::runtime::events::{
-    CancelToken, FinishReason, LoopError, LoopEvent, LoopOutcome, LoopRequest, StepBoundary,
-    StepUsage, ToolCallReady, ToolResult,
+    CancelToken, FinishReason, LoopError, LoopEvent, LoopOutcome, LoopRequest,
+    RequestViewMetrics, RequestViewMutation, RequestViewMutationKind, StepBoundary,
+    StepCheckpointDirective, StepCheckpointSnapshot, StepUsage, ToolCallReady, ToolResult,
 };
 use crate::runtime::normalizer;
 use crate::runtime::policy::{LoopPolicy, ToolDedupScope, ToolErrorStrategy};
@@ -13,17 +14,25 @@ use tracing::Instrument;
 // Internal conversation state – uses only rocode_provider types.
 // ---------------------------------------------------------------------------
 
-struct LoopConversation {
-    messages: Vec<rocode_provider::Message>,
+const CHECKPOINT_COMPACTION_MAX_SUMMARY_CHARS: usize = 500;
+const CHECKPOINT_COMPACTION_MAX_PART_CHARS: usize = 160;
+
+struct LoopConversation<'a> {
+    messages: &'a mut Vec<rocode_provider::Message>,
 }
 
-impl LoopConversation {
-    fn from_messages(messages: Vec<rocode_provider::Message>) -> Self {
+struct CheckpointCompactionResult {
+    summary: String,
+    compacted_message_count: usize,
+}
+
+impl<'a> LoopConversation<'a> {
+    fn from_messages(messages: &'a mut Vec<rocode_provider::Message>) -> Self {
         Self { messages }
     }
 
     fn messages(&self) -> &[rocode_provider::Message] {
-        &self.messages
+        self.messages.as_slice()
     }
 
     fn add_assistant_turn(&mut self, reasoning: &str, text: &str, tool_calls: &[ToolCallReady]) {
@@ -55,6 +64,314 @@ impl LoopConversation {
                 ),
             ]));
     }
+
+    fn replace_messages(&mut self, messages: Vec<rocode_provider::Message>) {
+        *self.messages = messages;
+    }
+
+    fn compact_for_checkpoint(
+        &mut self,
+        focus: Option<&str>,
+        min_compactable_messages: usize,
+    ) -> Option<CheckpointCompactionResult> {
+        let system_prefix_len = self
+            .messages()
+            .iter()
+            .take_while(|message| matches!(message.role, rocode_provider::Role::System))
+            .count();
+        let compactable = &self.messages()[system_prefix_len..];
+        if compactable.len() < min_compactable_messages {
+            return None;
+        }
+
+        let keep_count = compactable.len() / 2;
+        let compacted_count = compactable.len().saturating_sub(keep_count);
+        let summary = build_checkpoint_compaction_summary(&compactable[..compacted_count], focus);
+
+        let mut rewritten = self.messages()[..system_prefix_len].to_vec();
+        rewritten.push(rocode_provider::Message::assistant(summary.clone()));
+        rewritten.extend_from_slice(&compactable[compacted_count..]);
+        self.replace_messages(rewritten);
+        Some(CheckpointCompactionResult {
+            summary,
+            compacted_message_count: compacted_count,
+        })
+    }
+}
+
+fn truncate_chars(value: &str, limit: usize) -> String {
+    let mut truncated = value.chars().take(limit).collect::<String>();
+    if value.chars().count() > limit {
+        truncated.push_str("...");
+    }
+    truncated
+}
+
+fn compact_json_preview(value: &serde_json::Value) -> String {
+    truncate_chars(&value.to_string(), CHECKPOINT_COMPACTION_MAX_PART_CHARS)
+}
+
+fn provider_message_summary_fragments(message: &rocode_provider::Message) -> Vec<String> {
+    match &message.content {
+        rocode_provider::Content::Text(text) => {
+            if text.trim().is_empty() {
+                Vec::new()
+            } else {
+                vec![text.trim().to_string()]
+            }
+        }
+        rocode_provider::Content::Parts(parts) => parts
+            .iter()
+            .filter_map(|part| match part.content_type.as_str() {
+                "text" | "reasoning" => part
+                    .text
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_string),
+                "tool_use" => part.tool_use.as_ref().map(|tool_use| {
+                    format!(
+                        "tool_use {} {}",
+                        tool_use.name,
+                        compact_json_preview(&tool_use.input)
+                    )
+                }),
+                "tool_result" => part.tool_result.as_ref().map(|tool_result| {
+                    format!(
+                        "tool_result {} {}",
+                        tool_result.tool_use_id,
+                        truncate_chars(&tool_result.content, CHECKPOINT_COMPACTION_MAX_PART_CHARS)
+                    )
+                }),
+                "image_url" | "file" => part
+                    .filename
+                    .as_deref()
+                    .map(str::to_string)
+                    .or_else(|| part.image_url.as_ref().map(|image| image.url.clone()))
+                    .map(|value| format!("attachment {value}")),
+                _ => part
+                    .text
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_string),
+            })
+            .collect(),
+    }
+}
+
+fn build_checkpoint_compaction_summary(
+    messages: &[rocode_provider::Message],
+    focus: Option<&str>,
+) -> String {
+    let focus = focus.map(str::trim).filter(|value| !value.is_empty());
+    let focus_terms: Vec<String> = focus
+        .map(|value| {
+            value
+                .split_whitespace()
+                .map(|term| term.trim().to_ascii_lowercase())
+                .filter(|term| !term.is_empty())
+                .take(8)
+                .collect()
+        })
+        .unwrap_or_default();
+    let fragments: Vec<String> = messages
+        .iter()
+        .flat_map(provider_message_summary_fragments)
+        .collect();
+    let selected = if focus_terms.is_empty() {
+        fragments
+    } else {
+        let focused: Vec<String> = fragments
+            .iter()
+            .filter(|fragment| {
+                let lowercase = fragment.to_ascii_lowercase();
+                focus_terms.iter().any(|term| lowercase.contains(term))
+            })
+            .cloned()
+            .collect();
+        if focused.is_empty() {
+            fragments
+        } else {
+            focused
+        }
+    };
+    let summary_body = truncate_chars(&selected.join(" "), CHECKPOINT_COMPACTION_MAX_SUMMARY_CHARS);
+    if let Some(focus) = focus {
+        format!(
+            "Checkpoint context summary of {} earlier messages. Focused on `{focus}`. Summary: {}",
+            messages.len(),
+            summary_body
+        )
+    } else {
+        format!(
+            "Checkpoint context summary of {} earlier messages. Summary: {}",
+            messages.len(),
+            summary_body
+        )
+    }
+}
+
+fn provider_message_context_char_len(message: &rocode_provider::Message) -> usize {
+    match &message.content {
+        rocode_provider::Content::Text(text) => text.chars().count(),
+        rocode_provider::Content::Parts(parts) => parts
+            .iter()
+            .map(|part| {
+                part.text
+                    .as_ref()
+                    .map(|text| text.chars().count())
+                    .unwrap_or(0)
+                    + part
+                        .tool_use
+                        .as_ref()
+                        .map(|tool_use| {
+                            tool_use.name.chars().count()
+                                + tool_use.input.to_string().chars().count()
+                        })
+                        .unwrap_or(0)
+                    + part
+                        .tool_result
+                        .as_ref()
+                        .map(|tool_result| {
+                            tool_result.tool_use_id.chars().count()
+                                + tool_result.content.chars().count()
+                        })
+                        .unwrap_or(0)
+                    + part
+                        .image_url
+                        .as_ref()
+                        .map(|image| image.url.chars().count())
+                        .unwrap_or(0)
+                    + part
+                        .filename
+                        .as_ref()
+                        .map(|filename| filename.chars().count())
+                        .unwrap_or(0)
+                    + part
+                        .media_type
+                        .as_ref()
+                        .map(|media_type| media_type.chars().count())
+                        .unwrap_or(0)
+            })
+            .sum(),
+    }
+}
+
+fn is_checkpoint_summary_message(message: &rocode_provider::Message) -> bool {
+    matches!(
+        (&message.role, &message.content),
+        (rocode_provider::Role::Assistant, rocode_provider::Content::Text(text))
+            if text.starts_with("Checkpoint context summary of")
+    )
+}
+
+fn request_view_metrics(messages: &[rocode_provider::Message]) -> RequestViewMetrics {
+    let body_chars: usize = messages.iter().map(provider_message_context_char_len).sum();
+    let system_prefix_messages = messages
+        .iter()
+        .take_while(|message| matches!(message.role, rocode_provider::Role::System))
+        .count();
+    let compactable_messages = messages.len().saturating_sub(system_prefix_messages);
+    let mut user_messages = 0usize;
+    let mut assistant_messages = 0usize;
+    let mut tool_messages = 0usize;
+    let mut checkpoint_summary_messages = 0usize;
+    for message in messages {
+        match message.role {
+            rocode_provider::Role::System => {}
+            rocode_provider::Role::User => user_messages += 1,
+            rocode_provider::Role::Assistant => {
+                assistant_messages += 1;
+                if is_checkpoint_summary_message(message) {
+                    checkpoint_summary_messages += 1;
+                }
+            }
+            rocode_provider::Role::Tool => tool_messages += 1,
+        }
+    }
+
+    RequestViewMetrics {
+        message_count: messages.len(),
+        system_prefix_messages,
+        compactable_messages,
+        user_messages,
+        assistant_messages,
+        tool_messages,
+        checkpoint_summary_messages,
+        estimated_context_tokens: (body_chars > 0).then_some((body_chars as u64) / 4),
+        estimated_body_chars: (body_chars > 0).then_some(body_chars),
+    }
+}
+
+#[derive(Default)]
+struct StepCheckpointCollector {
+    max_assessments: usize,
+    assessments: Vec<RequestViewMetrics>,
+    prior_mutations: Vec<RequestViewMutation>,
+}
+
+impl StepCheckpointCollector {
+    fn new(max_assessments: usize) -> Self {
+        Self {
+            max_assessments,
+            assessments: Vec::new(),
+            prior_mutations: Vec::new(),
+        }
+    }
+
+    fn snapshot(&mut self, messages: &[rocode_provider::Message]) -> StepCheckpointSnapshot {
+        let current_view = request_view_metrics(messages);
+        let previous_view = self.assessments.last().cloned();
+        self.assessments.push(current_view.clone());
+        StepCheckpointSnapshot {
+            assessment_index: self.assessments.len(),
+            max_assessments: self.max_assessments,
+            current_view,
+            previous_view,
+            prior_mutations: self.prior_mutations.clone(),
+        }
+    }
+
+    fn can_mutate_after_current_assessment(&self) -> bool {
+        self.assessments.len() < self.max_assessments
+    }
+
+    fn record_compaction(
+        &mut self,
+        before: RequestViewMetrics,
+        after: RequestViewMetrics,
+        focus: Option<String>,
+        reason: Option<String>,
+        result: &CheckpointCompactionResult,
+    ) {
+        self.prior_mutations.push(RequestViewMutation {
+            kind: RequestViewMutationKind::Compacted,
+            reason,
+            focus,
+            before,
+            after,
+            compacted_message_count: Some(result.compacted_message_count),
+            summary_chars: Some(result.summary.chars().count()),
+        });
+    }
+
+    fn record_replacement(
+        &mut self,
+        before: RequestViewMetrics,
+        after: RequestViewMetrics,
+        reason: Option<String>,
+    ) {
+        self.prior_mutations.push(RequestViewMutation {
+            kind: RequestViewMutationKind::Replaced,
+            reason,
+            focus: None,
+            before,
+            after,
+            compacted_message_count: None,
+            summary_chars: None,
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -77,12 +394,13 @@ pub async fn run_loop<S: LoopSink>(
     sink: &mut S,
     policy: &LoopPolicy,
     cancel: &dyn CancelToken,
-    messages: Vec<rocode_provider::Message>,
+    messages: &mut Vec<rocode_provider::Message>,
 ) -> Result<LoopOutcome, LoopError> {
     let mut conversation = LoopConversation::from_messages(messages);
     let mut step: u32 = 0;
     let mut total_tool_calls: u32 = 0;
     let mut content = String::new();
+    let model_context_limits = model.context_limits();
 
     // Global dedup set (only used when policy.tool_dedup == Global).
     let mut global_executed_ids: HashSet<String> = HashSet::new();
@@ -204,15 +522,16 @@ pub async fn run_loop<S: LoopSink>(
         // ── No tool calls → model finished ───────────────────────────
         if step_tool_calls.is_empty() {
             conversation.add_assistant_turn(&step_reasoning, &step_content, &[]);
-            sink.on_step_boundary(&StepBoundary::End {
+            let end_boundary = StepBoundary::End {
                 step,
                 finish_reason: FinishReason::EndTurn,
                 tool_calls_count: 0,
                 had_error,
                 usage: step_usage,
-            })
-            .await
-            .map_err(|e| LoopError::SinkError(e.to_string()))?;
+            };
+            sink.on_step_boundary(&end_boundary)
+                .await
+                .map_err(|e| LoopError::SinkError(e.to_string()))?;
 
             return Ok(LoopOutcome {
                 content,
@@ -344,15 +663,81 @@ pub async fn run_loop<S: LoopSink>(
         }
 
         // ── Step end ─────────────────────────────────────────────────
-        sink.on_step_boundary(&StepBoundary::End {
+        let end_boundary = StepBoundary::End {
             step,
             finish_reason: FinishReason::ToolUse,
             tool_calls_count: step_tc_count,
             had_error,
-            usage: step_usage,
-        })
-        .await
-        .map_err(|e| LoopError::SinkError(e.to_string()))?;
+            usage: step_usage.clone(),
+        };
+        sink.on_step_boundary(&end_boundary)
+            .await
+            .map_err(|e| LoopError::SinkError(e.to_string()))?;
+
+        let mut checkpoint_collector =
+            StepCheckpointCollector::new(policy.checkpoint_governance.max_assessments);
+        loop {
+            let checkpoint = checkpoint_collector.snapshot(conversation.messages());
+            let default_directive = policy.checkpoint_governance.default_directive(
+                model_context_limits,
+                step_usage.as_ref(),
+                &checkpoint,
+            );
+            let directive = sink
+                .on_step_checkpoint(
+                    &end_boundary,
+                    conversation.messages(),
+                    &checkpoint,
+                    &default_directive,
+                )
+                .await
+                .map_err(|e| LoopError::SinkError(e.to_string()))?
+                .unwrap_or(default_directive);
+            match directive {
+                StepCheckpointDirective::Continue => break,
+                StepCheckpointDirective::Block { reason } => {
+                    return Err(LoopError::Other(reason));
+                }
+                StepCheckpointDirective::CompactRequestView { focus, reason } => {
+                    if !checkpoint_collector.can_mutate_after_current_assessment() {
+                        return Err(LoopError::Other(reason.unwrap_or_else(|| {
+                            "step checkpoint exceeded the request-view compaction retry budget"
+                                .to_string()
+                        })));
+                    }
+                    let before = checkpoint.current_view.clone();
+                    let compacted = conversation.compact_for_checkpoint(
+                        focus.as_deref(),
+                        policy.checkpoint_governance.min_compactable_messages,
+                    );
+                    let Some(compacted) = compacted else {
+                        return Err(LoopError::Other(reason.unwrap_or_else(|| {
+                            "step checkpoint requested request-view compaction, but no compactable history was available".to_string()
+                        })));
+                    };
+                    let after = request_view_metrics(conversation.messages());
+                    checkpoint_collector.record_compaction(
+                        before,
+                        after,
+                        focus,
+                        reason,
+                        &compacted,
+                    );
+                }
+                StepCheckpointDirective::ReplaceRequestView { messages, reason } => {
+                    if !checkpoint_collector.can_mutate_after_current_assessment() {
+                        return Err(LoopError::Other(reason.unwrap_or_else(|| {
+                            "step checkpoint exceeded the request-view replacement retry budget"
+                                .to_string()
+                        })));
+                    }
+                    let before = checkpoint.current_view.clone();
+                    conversation.replace_messages(messages);
+                    let after = request_view_metrics(conversation.messages());
+                    checkpoint_collector.record_replacement(before, after, reason);
+                }
+            }
+        }
     }
 
     // ── Max steps exceeded ────────────────────────────────────────────

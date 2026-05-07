@@ -21,6 +21,7 @@ use rocode_provider::StreamEvent;
 #[cfg(test)]
 use rocode_tool::ToolError;
 use rocode_tool::ToolRegistry;
+use rocode_types::SessionContextKind;
 use tokio_util::sync::CancellationToken;
 
 mod executor_adapters;
@@ -137,6 +138,7 @@ pub struct AgentExecutor {
 
 #[derive(Debug, Clone)]
 struct SubsessionState {
+    kind: SessionContextKind,
     agent: AgentInfo,
     conversation: Conversation,
     disabled_tools: HashSet<String>,
@@ -155,10 +157,16 @@ impl RuntimeCancelToken for AgentSubsessionCancelToken {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PersistedSubsessionState {
+    #[serde(default = "default_persisted_subsession_kind")]
+    pub kind: SessionContextKind,
     pub agent: AgentInfo,
     pub conversation: Conversation,
     #[serde(default)]
     pub disabled_tools: Vec<String>,
+}
+
+fn default_persisted_subsession_kind() -> SessionContextKind {
+    SessionContextKind::DelegatedSubsession
 }
 
 impl AgentExecutor {
@@ -223,6 +231,7 @@ impl AgentExecutor {
                 (
                     id,
                     SubsessionState {
+                        kind: state.kind,
                         agent: state.agent,
                         conversation: state.conversation,
                         disabled_tools: state.disabled_tools.into_iter().collect(),
@@ -294,11 +303,49 @@ impl AgentExecutor {
         (executor, runner)
     }
 
-    fn append_runtime_messages(&mut self, messages: Vec<rocode_provider::Message>) {
-        let mut tool_name_by_id = collect_tool_names(&self.conversation);
-        for message in &messages {
+    fn load_runtime_messages(&mut self, messages: &[rocode_provider::Message]) {
+        self.conversation.messages.clear();
+        let mut tool_name_by_id = std::collections::HashMap::new();
+        for message in messages {
             append_provider_message(&mut self.conversation, message, &mut tool_name_by_id);
         }
+    }
+
+    fn persisted_runtime_messages(
+        &self,
+        persisted_messages: &[rocode_provider::Message],
+        mut runtime_messages: Vec<rocode_provider::Message>,
+    ) -> Vec<rocode_provider::Message> {
+        let Some(plan) = self.request_skill_tree_plan.as_ref() else {
+            return runtime_messages;
+        };
+
+        let prepared_messages = plan.apply_to_messages(persisted_messages.to_vec());
+        let prepared_first_text = prepared_messages.first().and_then(system_message_text);
+        let persisted_first_text = persisted_messages.first().and_then(system_message_text);
+        let runtime_first_text = runtime_messages.first().and_then(system_message_text);
+
+        let overlay_changed_leading_system = match (persisted_first_text, prepared_first_text) {
+            (Some(persisted), Some(prepared)) => persisted != prepared,
+            (None, Some(_)) => true,
+            _ => false,
+        };
+        if !overlay_changed_leading_system || runtime_first_text != prepared_first_text {
+            return runtime_messages;
+        }
+
+        match persisted_messages.first() {
+            Some(first) if matches!(first.role, rocode_provider::Role::System) => {
+                if let Some(runtime_first) = runtime_messages.first_mut() {
+                    *runtime_first = first.clone();
+                }
+            }
+            _ => {
+                runtime_messages.remove(0);
+            }
+        }
+
+        runtime_messages
     }
 
     fn apply_request_skill_tree_plan(
@@ -320,6 +367,7 @@ impl AgentExecutor {
                 (
                     id.clone(),
                     PersistedSubsessionState {
+                        kind: state.kind,
                         agent: state.agent.clone(),
                         conversation: state.conversation.clone(),
                         disabled_tools: state.disabled_tools.iter().cloned().collect(),
@@ -335,8 +383,9 @@ impl AgentExecutor {
         cancel_token: CancellationToken,
     ) -> Result<String, AgentError> {
         self.conversation.add_user_message(user_message);
-        let base_messages =
-            self.apply_request_skill_tree_plan(self.conversation.to_provider_messages());
+        let persisted_messages = self.conversation.to_provider_messages();
+        let mut request_messages =
+            self.apply_request_skill_tree_plan(persisted_messages.clone());
 
         let (tool_executor, tool_runner) = self.build_tooling();
         let execution = agent_execution_context(&self.agent);
@@ -353,7 +402,8 @@ impl AgentExecutor {
             }),
             model_ref,
             exec_ctx.clone(),
-        );
+        )
+        .await;
         let tools = ToolDispatcherBridge::new(tool_runner, tool_executor, exec_ctx);
         let policy = LoopPolicy {
             max_steps: Some(self.max_steps),
@@ -365,11 +415,20 @@ impl AgentExecutor {
         };
         let mut sink = AgentLoopSink::default();
 
-        let outcome = run_loop(&model, &tools, &mut sink, &policy, &cancel, base_messages)
-            .await
-            .map_err(map_runtime_loop_error)?;
+        let outcome = run_loop(
+            &model,
+            &tools,
+            &mut sink,
+            &policy,
+            &cancel,
+            &mut request_messages,
+        )
+        .await
+        .map_err(map_runtime_loop_error)?;
 
-        self.append_runtime_messages(sink.into_messages());
+        let runtime_messages =
+            self.persisted_runtime_messages(&persisted_messages, request_messages);
+        self.load_runtime_messages(&runtime_messages);
 
         if matches!(outcome.finish_reason, RuntimeFinishReason::MaxSteps) {
             return Err(AgentError::MaxStepsExceeded);
@@ -389,8 +448,9 @@ impl AgentExecutor {
         cancel_token: Option<CancellationToken>,
     ) -> Result<AgentExecutionReport, AgentError> {
         self.conversation.add_user_message(user_message);
-        let base_messages =
-            self.apply_request_skill_tree_plan(self.conversation.to_provider_messages());
+        let persisted_messages = self.conversation.to_provider_messages();
+        let mut request_messages =
+            self.apply_request_skill_tree_plan(persisted_messages.clone());
 
         let (tool_executor, tool_runner) = self.build_tooling();
         let execution = agent_execution_context(&self.agent);
@@ -408,7 +468,8 @@ impl AgentExecutor {
             }),
             model_ref,
             exec_ctx.clone(),
-        );
+        )
+        .await;
         let tools = ToolDispatcherBridge::new(tool_runner, tool_executor, exec_ctx);
         let policy = LoopPolicy {
             max_steps: Some(self.max_steps),
@@ -423,11 +484,20 @@ impl AgentExecutor {
         };
         let mut sink = AgentStreamingLoopSink::default();
 
-        let outcome = run_loop(&model, &tools, &mut sink, &policy, cancel, base_messages)
-            .await
-            .map_err(map_runtime_loop_error)?;
-        let (messages, rendered, sink_diag) = sink.into_output();
-        self.append_runtime_messages(messages);
+        let outcome = run_loop(
+            &model,
+            &tools,
+            &mut sink,
+            &policy,
+            cancel,
+            &mut request_messages,
+        )
+        .await
+        .map_err(map_runtime_loop_error)?;
+        let (_messages, rendered, sink_diag) = sink.into_output();
+        let runtime_messages =
+            self.persisted_runtime_messages(&persisted_messages, request_messages);
+        self.load_runtime_messages(&runtime_messages);
 
         if matches!(outcome.finish_reason, RuntimeFinishReason::MaxSteps) {
             return Err(AgentError::MaxStepsExceeded);
@@ -536,6 +606,15 @@ impl AgentExecutor {
     }
 }
 
+fn system_message_text(message: &rocode_provider::Message) -> Option<&str> {
+    match (&message.role, &message.content) {
+        (rocode_provider::Role::System, rocode_provider::Content::Text(text)) => {
+            Some(text.as_str())
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,6 +646,7 @@ mod tests {
         persisted.insert(
             "task_explore_1".to_string(),
             PersistedSubsessionState {
+                kind: SessionContextKind::DelegatedSubsession,
                 agent: AgentInfo::explore().with_model("gpt-4.1-mini", "openai"),
                 conversation: conversation.clone(),
                 disabled_tools: vec!["write".to_string(), "edit".to_string()],
@@ -579,6 +659,7 @@ mod tests {
             .get("task_explore_1")
             .expect("expected persisted subsession");
 
+        assert_eq!(state.kind, SessionContextKind::DelegatedSubsession);
         assert_eq!(state.agent.name, "explore");
         assert_eq!(
             state.conversation.messages.len(),
@@ -588,6 +669,63 @@ mod tests {
         let mut disabled = state.disabled_tools.clone();
         disabled.sort();
         assert_eq!(disabled, vec!["edit".to_string(), "write".to_string()]);
+    }
+
+    #[test]
+    fn persisted_runtime_messages_restore_original_system_prompt() {
+        let plan = SkillTreeRequestPlan {
+            context_markdown: "Read docs/index.md before answering.".to_string(),
+            token_budget: None,
+            truncation_strategy: Default::default(),
+        };
+        let executor = build_executor(AgentInfo::general())
+            .with_system_prompt("Base system prompt")
+            .with_request_skill_tree_plan(plan);
+
+        let persisted_messages = executor.conversation().to_provider_messages();
+        let mut runtime_messages =
+            executor.apply_request_skill_tree_plan(persisted_messages.clone());
+        runtime_messages.push(rocode_provider::Message::assistant("done"));
+
+        let persisted_runtime =
+            executor.persisted_runtime_messages(&persisted_messages, runtime_messages);
+
+        assert_eq!(
+            persisted_runtime.first().and_then(system_message_text),
+            Some("Base system prompt")
+        );
+        assert_eq!(persisted_runtime.len(), persisted_messages.len() + 1);
+        assert!(persisted_runtime
+            .last()
+            .is_some_and(|message| matches!(message.role, rocode_provider::Role::Assistant)));
+    }
+
+    #[test]
+    fn persisted_runtime_messages_drop_inserted_request_scope_system_prompt() {
+        let plan = SkillTreeRequestPlan {
+            context_markdown: "Use the local checklist first.".to_string(),
+            token_budget: None,
+            truncation_strategy: Default::default(),
+        };
+        let executor = build_executor(AgentInfo::general()).with_request_skill_tree_plan(plan);
+
+        let mut persisted_messages = executor.conversation().to_provider_messages();
+        persisted_messages.push(rocode_provider::Message::user("hello"));
+        let mut runtime_messages =
+            executor.apply_request_skill_tree_plan(persisted_messages.clone());
+        runtime_messages.push(rocode_provider::Message::assistant("done"));
+
+        let persisted_runtime =
+            executor.persisted_runtime_messages(&persisted_messages, runtime_messages);
+
+        assert!(persisted_runtime
+            .first()
+            .is_some_and(|message| matches!(message.role, rocode_provider::Role::User)));
+        assert_eq!(
+            persisted_runtime.len(),
+            persisted_messages.len() + 1,
+            "request-scope system overlay should not persist into conversation history"
+        );
     }
 
     #[tokio::test]

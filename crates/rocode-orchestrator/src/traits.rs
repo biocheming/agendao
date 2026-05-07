@@ -1,5 +1,6 @@
 use crate::error::{OrchestratorError, ToolExecError};
-use crate::runtime::events::StepUsage;
+use crate::runtime::events::{StepCheckpointDirective, StepCheckpointSnapshot, StepUsage};
+use crate::runtime::policy::ModelContextLimits;
 use crate::scheduler::SchedulerStageCapabilities;
 use crate::types::{
     AgentDescriptor, ExecutionContext, ModelRef, OrchestratorContext, OrchestratorOutput,
@@ -21,6 +22,14 @@ pub trait ModelResolver: Send + Sync {
         tools: Vec<rocode_provider::ToolDefinition>,
         exec_ctx: &ExecutionContext,
     ) -> Result<rocode_provider::StreamResult, OrchestratorError>;
+
+    async fn context_limits(
+        &self,
+        _model: Option<&ModelRef>,
+        _exec_ctx: &ExecutionContext,
+    ) -> Option<ModelContextLimits> {
+        None
+    }
 }
 
 #[async_trait]
@@ -140,6 +149,24 @@ pub trait LifecycleHook: Send + Sync {
     ) {
         // Optional usage hook. The default no-op keeps the trait ergonomic for
         // callers that do not collect per-stage token accounting.
+    }
+
+    async fn on_step_checkpoint(
+        &self,
+        _agent_name: &str,
+        _model_id: &str,
+        _step: u32,
+        _stage_name: Option<&str>,
+        _stage_index: Option<u32>,
+        _usage: &StepUsage,
+        _request_view: &[rocode_provider::Message],
+        _checkpoint: &StepCheckpointSnapshot,
+        _default_directive: &StepCheckpointDirective,
+        _exec_ctx: &ExecutionContext,
+    ) -> Result<Option<StepCheckpointDirective>, OrchestratorError> {
+        // Optional governance hook that runs after a step has fully completed
+        // and before the next provider request is allowed to start.
+        Ok(None)
     }
 }
 

@@ -11,6 +11,10 @@ use crate::{
 const SESSION_SANCTIONED_METADATA_KEYS: &[&str] = &[
     "agent",
     "auto_title_pending_refine",
+    "context_pressure_governance_summary",
+    "fork_origin_message_id",
+    "fork_origin_session_id",
+    "fork_policy_frozen",
     "memory_frozen_snapshot",
     "memory_last_prefetch_packet",
     "model_id",
@@ -23,6 +27,7 @@ const SESSION_SANCTIONED_METADATA_KEYS: &[&str] = &[
     "scheduler_root_agent",
     "scheduler_session_context_packet",
     "scheduler_skill_tree_applied",
+    "session_context_kind",
     "skill_reflection",
     "subsessions",
     "telemetry",
@@ -41,9 +46,13 @@ const MESSAGE_SANCTIONED_METADATA_KEYS: &[&str] = &[
     "cache_bust_inspection",
     "cache_bust_summary",
     "cache_request_fingerprint",
+    "context_compaction_record",
     "continuationTargets",
     "cost",
     "finish_reason",
+    "fork_imported_history",
+    "fork_origin_message_id",
+    "fork_origin_session_id",
     "memory_prefetch_packet",
     "mode",
     "model_id",
@@ -222,6 +231,8 @@ pub struct SessionArtifactMessageDiagnosticsSidecar {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_surface_snapshot_invalidation: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_compaction_record: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_diagnostic: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_error_summary: Option<serde_json::Value>,
@@ -234,6 +245,7 @@ impl SessionArtifactMessageDiagnosticsSidecar {
         self.cache_bust_inspection.is_none()
             && self.cache_bust_summary.is_none()
             && self.prompt_surface_snapshot_invalidation.is_none()
+            && self.context_compaction_record.is_none()
             && self.provider_diagnostic.is_none()
             && self.provider_error_summary.is_none()
             && self.execution_preflights.is_empty()
@@ -247,6 +259,8 @@ pub struct SessionDiagnosticsSidecar {
     pub telemetry: Option<SessionTelemetrySnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_surface_runtime_snapshot: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_pressure_governance_summary: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ingress_stabilization: Option<SessionIngressStabilizationSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -268,6 +282,10 @@ impl SessionDiagnosticsSidecar {
 
     pub fn prompt_surface_runtime_snapshot_value(&self) -> Option<serde_json::Value> {
         self.prompt_surface_runtime_snapshot.clone()
+    }
+
+    pub fn context_pressure_governance_summary_value(&self) -> Option<serde_json::Value> {
+        self.context_pressure_governance_summary.clone()
     }
 
     pub fn ingress_stabilization_value(&self) -> Option<serde_json::Value> {
@@ -307,6 +325,14 @@ impl SessionDiagnosticsSidecar {
                     .as_ref()
                     .and_then(|snapshot| snapshot.get("invalidation").cloned())
             })
+    }
+
+    pub fn latest_context_compaction_record_value(&self) -> Option<serde_json::Value> {
+        self.messages
+            .iter()
+            .rev()
+            .filter(|message| matches!(message.role, MessageRole::Assistant))
+            .find_map(|message| message.context_compaction_record.clone())
     }
 
     pub fn latest_provider_error_summary_value(&self) -> Option<serde_json::Value> {
@@ -396,6 +422,10 @@ impl SessionDiagnosticsSidecar {
             .get("prompt_surface_runtime_snapshot")
             .cloned()
             .or_else(|| latest_message_metadata_value(messages, "prompt_surface_runtime_snapshot"));
+        let context_pressure_governance_summary = session
+            .metadata
+            .get("context_pressure_governance_summary")
+            .cloned();
         let ingress_stabilization = ingress_stabilization_from_session(session);
         let memory_frozen_snapshot = session.metadata.get("memory_frozen_snapshot").cloned();
         let memory_last_prefetch_packet =
@@ -410,6 +440,7 @@ impl SessionDiagnosticsSidecar {
             version: SessionDiagnosticsSidecarVersion::RocodeRustDiagnosticsV1,
             telemetry,
             prompt_surface_runtime_snapshot,
+            context_pressure_governance_summary,
             ingress_stabilization,
             memory_frozen_snapshot,
             memory_last_prefetch_packet,
@@ -422,6 +453,7 @@ impl SessionDiagnosticsSidecar {
     fn is_empty(&self) -> bool {
         self.telemetry.is_none()
             && self.prompt_surface_runtime_snapshot.is_none()
+            && self.context_pressure_governance_summary.is_none()
             && self.ingress_stabilization.is_none()
             && self.memory_frozen_snapshot.is_none()
             && self.memory_last_prefetch_packet.is_none()
@@ -657,6 +689,7 @@ fn message_diagnostics_sidecar(
             .metadata
             .get("prompt_surface_snapshot_invalidation")
             .cloned(),
+        context_compaction_record: message.metadata.get("context_compaction_record").cloned(),
         provider_diagnostic: message.metadata.get("provider_diagnostic").cloned(),
         provider_error_summary: message.metadata.get("provider_error_summary").cloned(),
         execution_preflights: execution_preflights_from_message(message, tool_names),
@@ -870,6 +903,10 @@ mod tests {
             "provider_diagnostic".to_string(),
             serde_json::json!({"code": "thinking_replay_rejected"}),
         );
+        message.metadata.insert(
+            "context_compaction_record".to_string(),
+            serde_json::json!({"trigger": "auto_preflight"}),
+        );
         message
             .metadata
             .insert("custom_message_key".to_string(), serde_json::json!(1));
@@ -891,7 +928,7 @@ mod tests {
         );
         assert_eq!(
             value["metadata_authority"]["messages"][0]["keys"]["sanctioned_keys"],
-            serde_json::json!(["provider_diagnostic"])
+            serde_json::json!(["context_compaction_record", "provider_diagnostic"])
         );
         assert_eq!(
             value["metadata_authority"]["messages"][0]["keys"]["passthrough_keys"],
@@ -949,6 +986,14 @@ mod tests {
         message.metadata.insert(
             "prompt_surface_snapshot_invalidation".to_string(),
             serde_json::json!({"reason": "tool_surface_changed"}),
+        );
+        message.metadata.insert(
+            "context_compaction_record".to_string(),
+            serde_json::json!({
+                "trigger": "auto_preflight",
+                "reason": "request_view_threshold",
+                "compacted_message_count": 4
+            }),
         );
         message.metadata.insert(
             "provider_diagnostic".to_string(),
@@ -1014,6 +1059,10 @@ mod tests {
             serde_json::json!("thinking_replay_rejected")
         );
         assert_eq!(
+            value["diagnostics_sidecar"]["messages"][0]["context_compaction_record"]["reason"],
+            serde_json::json!("request_view_threshold")
+        );
+        assert_eq!(
             value["diagnostics_sidecar"]["messages"][0]["execution_preflights"][0]["tool_name"],
             serde_json::json!("read")
         );
@@ -1050,6 +1099,30 @@ mod tests {
 
         assert_eq!(diagnostic["code"], serde_json::json!("nested_diagnostic"));
         assert_eq!(diagnostic["provider_id"], serde_json::json!("deepseek"));
+    }
+
+    #[test]
+    fn diagnostics_sidecar_helper_reads_latest_context_compaction_record() {
+        let session = sample_session();
+        let mut message = sample_message();
+        message.metadata.insert(
+            "context_compaction_record".to_string(),
+            serde_json::json!({
+                "trigger": "overflow_recovery",
+                "forced": true,
+                "compacted_message_count": 3
+            }),
+        );
+
+        let sidecar = SessionDiagnosticsSidecar::derive_from_parts(&session, &[message])
+            .expect("sidecar should exist");
+        let record = sidecar
+            .latest_context_compaction_record_value()
+            .expect("compaction record should exist");
+
+        assert_eq!(record["trigger"], serde_json::json!("overflow_recovery"));
+        assert_eq!(record["forced"], serde_json::json!(true));
+        assert_eq!(record["compacted_message_count"], serde_json::json!(3));
     }
 
     #[test]
@@ -1142,7 +1215,7 @@ mod tests {
     fn classifier_demotes_narrow_or_noncanonical_metadata_keys() {
         let mut session = sample_session();
         session.metadata.insert(
-            "scheduler_session_context".to_string(),
+            "legacy_session_banner".to_string(),
             serde_json::json!("recent turns"),
         );
 
@@ -1164,7 +1237,7 @@ mod tests {
             .is_none());
         assert_eq!(
             value["metadata_authority"]["session"]["passthrough_keys"],
-            serde_json::json!(["scheduler_session_context"])
+            serde_json::json!(["legacy_session_banner"])
         );
         assert!(value["metadata_authority"]["messages"][0]["keys"]
             .get("sanctioned_keys")

@@ -816,7 +816,6 @@ async fn provision_generic_webhook_session(
     let session = create_session_from_spec(
         &state,
         CreateSessionSpec {
-            parent_id: None,
             scheduler_profile: request.scheduler_profile.clone(),
             directory: request.directory.clone(),
             project_id: request.project_id.clone(),

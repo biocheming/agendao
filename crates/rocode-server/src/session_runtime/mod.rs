@@ -16,6 +16,7 @@ use rocode_command::output_blocks::{
     SchedulerDecisionBlock, SchedulerDecisionField, SchedulerDecisionRenderSpec,
     SchedulerDecisionSection, SchedulerStageBlock,
 };
+use rocode_orchestrator::runtime::StepCheckpointDirective;
 use rocode_orchestrator::{
     parse_execution_gate_decision, parse_route_decision, scheduler_stage_observability,
     ExecutionContext as OrchestratorExecutionContext, LifecycleHook, RouteDecision,
@@ -25,7 +26,9 @@ use rocode_orchestrator::{
 use rocode_provider::Provider;
 use rocode_session::prompt::{OutputBlockEvent, OutputBlockHook};
 use rocode_session::snapshot::Snapshot;
-use rocode_session::{MessageRole, MessageUsage, PartType, Session, SessionMessage};
+use rocode_session::{
+    MessageRole, MessageUsage, PartType, Session, SessionContextKind, SessionMessage,
+};
 
 const SCHEDULER_CONTEXT_HYDRATE_TOOL: &str = "scheduler_context_hydrate";
 const SCHEDULER_MEMORY_HYDRATE_TOOL: &str = "scheduler_memory_hydrate";
@@ -260,6 +263,86 @@ impl SessionSchedulerLifecycleHook {
         .await;
     }
 
+    async fn resolve_step_checkpoint_provider(
+        &self,
+    ) -> Result<Option<(Arc<dyn Provider>, String)>, rocode_orchestrator::OrchestratorError> {
+        let (provider_id, model_id) = {
+            let sessions = self.state.sessions.lock().await;
+            let Some(session) = sessions.get(&self.session_id) else {
+                return Ok(None);
+            };
+            let provider_id = session
+                .record()
+                .metadata
+                .get("model_provider")
+                .and_then(|value| value.as_str())
+                .map(str::to_string);
+            let model_id = session
+                .record()
+                .metadata
+                .get("model_id")
+                .and_then(|value| value.as_str())
+                .map(str::to_string);
+            match provider_id.zip(model_id) {
+                Some(value) => value,
+                None => return Ok(None),
+            }
+        };
+
+        let providers = self.state.providers.read().await;
+        let provider = providers.get_provider(&provider_id).map_err(|error| {
+            rocode_orchestrator::OrchestratorError::from_provider_error(
+                &provider_id,
+                Some(&model_id),
+                &error,
+            )
+        })?;
+        Ok(Some((provider, model_id)))
+    }
+
+    async fn govern_step_checkpoint(
+        &self,
+        request_context_tokens: Option<u64>,
+        request_body_chars: Option<usize>,
+        compaction_attempted: bool,
+        compaction_succeeded: bool,
+    ) -> Result<
+        Option<rocode_types::ContextPressureGovernanceSummary>,
+        rocode_orchestrator::OrchestratorError,
+    > {
+        let Some((provider, model_id)) = self.resolve_step_checkpoint_provider().await? else {
+            return Ok(None);
+        };
+
+        let summary = {
+            let mut sessions = self.state.sessions.lock().await;
+            let Some(mut session) = sessions.get(&self.session_id).cloned() else {
+                return Ok(None);
+            };
+            let summary = rocode_session::prompt::assess_request_view_context_governance(
+                provider.as_ref(),
+                &model_id,
+                None,
+                Some(self.state.config_store.as_ref()),
+                None,
+                request_context_tokens,
+                request_body_chars,
+                "step_checkpoint_gate",
+                "scheduler.step_checkpoint",
+                compaction_attempted,
+                compaction_succeeded,
+            );
+            rocode_session::prompt::record_context_pressure_governance_summary(
+                &mut session,
+                &summary,
+            );
+            sessions.update(session);
+            summary
+        };
+
+        Ok(Some(summary))
+    }
+
     /// Capture a git worktree snapshot and store its hash in the active stage
     /// message metadata under the given key.
     ///
@@ -300,6 +383,102 @@ impl SessionSchedulerLifecycleHook {
             "prompt.scheduler.snapshot",
         )
         .await;
+    }
+}
+
+fn format_step_checkpoint_context_pressure_error(
+    summary: &rocode_types::ContextPressureGovernanceSummary,
+) -> String {
+    let reason = summary
+        .reason
+        .as_deref()
+        .unwrap_or("context pressure remained above the safe step checkpoint limit");
+    let mut details = Vec::new();
+    if let Some(request_context_tokens) = summary.request_context_tokens {
+        details.push(format!("request={request_context_tokens}"));
+    }
+    if let Some(live_context_tokens) = summary.live_context_tokens {
+        details.push(format!("live={live_context_tokens}"));
+    }
+    if let Some(limit_tokens) = summary.limit_tokens {
+        details.push(format!("limit={limit_tokens}"));
+    }
+    if let Some(body_chars) = summary.body_chars {
+        details.push(format!("body_chars={body_chars}"));
+    }
+
+    if details.is_empty() {
+        format!("Context pressure gate blocked the next scheduler step ({reason}).")
+    } else {
+        format!(
+            "Context pressure gate blocked the next scheduler step ({reason}; {}).",
+            details.join(", ")
+        )
+    }
+}
+
+fn directive_from_context_pressure_summary(
+    summary: &rocode_types::ContextPressureGovernanceSummary,
+    stage_name: Option<&str>,
+    checkpoint: &rocode_orchestrator::runtime::events::StepCheckpointSnapshot,
+) -> StepCheckpointDirective {
+    if !checkpoint.compaction_attempted()
+        && matches!(
+            summary.status,
+            rocode_types::ContextPressureGovernanceStatus::Deferred
+        )
+    {
+        return StepCheckpointDirective::CompactRequestView {
+            focus: stage_name.map(str::to_string),
+            reason: summary.reason.clone(),
+        };
+    }
+
+    if summary.blocking {
+        return StepCheckpointDirective::Block {
+            reason: format_step_checkpoint_context_pressure_error(summary),
+        };
+    }
+
+    StepCheckpointDirective::Continue
+}
+
+fn same_step_checkpoint_directive(
+    left: &StepCheckpointDirective,
+    right: &StepCheckpointDirective,
+) -> bool {
+    match (left, right) {
+        (StepCheckpointDirective::Continue, StepCheckpointDirective::Continue) => true,
+        (
+            StepCheckpointDirective::Block { reason: left_reason },
+            StepCheckpointDirective::Block {
+                reason: right_reason,
+            },
+        ) => left_reason == right_reason,
+        (
+            StepCheckpointDirective::CompactRequestView {
+                focus: left_focus,
+                reason: left_reason,
+            },
+            StepCheckpointDirective::CompactRequestView {
+                focus: right_focus,
+                reason: right_reason,
+            },
+        ) => left_focus == right_focus && left_reason == right_reason,
+        (
+            StepCheckpointDirective::ReplaceRequestView {
+                messages: left_messages,
+                reason: left_reason,
+            },
+            StepCheckpointDirective::ReplaceRequestView {
+                messages: right_messages,
+                reason: right_reason,
+            },
+        ) => {
+            serde_json::to_value(left_messages).ok() == serde_json::to_value(right_messages).ok()
+                && left_reason == right_reason
+        }
+        _ => false,
     }
 }
 
@@ -977,7 +1156,10 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
 
         // ── Create child session if requested ──
         let (child_session_id, child_message_id) = if wants_child_session {
-            let mut child = Session::child(&session);
+            let mut child = Session::child_with_context_kind(
+                &session,
+                SessionContextKind::SchedulerStageOutputSession,
+            );
             child.set_title(format!(
                 "Stage: {} — {}",
                 pretty_scheduler_stage_name(stage_name),
@@ -998,7 +1180,11 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
         {
             self.state
                 .runtime_telemetry
-                .child_attached(&self.session_id, child_sid)
+                .child_attached(
+                    &self.session_id,
+                    child_sid,
+                    SessionContextKind::SchedulerStageOutputSession,
+                )
                 .await;
             self.emit_output_block(
                 child_sid.clone(),
@@ -1104,6 +1290,11 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
             message.metadata.insert(
                 "scheduler_stage_child_session_id".to_string(),
                 serde_json::json!(child_id),
+            );
+            message.metadata.insert(
+                "scheduler_stage_child_session_kind".to_string(),
+                serde_json::to_value(SessionContextKind::SchedulerStageOutputSession)
+                    .unwrap_or_else(|_| serde_json::json!("scheduler_stage_output_session")),
             );
         }
 
@@ -1380,6 +1571,109 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
             "prompt.scheduler.stage.usage",
         )
         .await;
+    }
+
+    async fn on_step_checkpoint(
+        &self,
+        _agent_name: &str,
+        _model_id: &str,
+        _step: u32,
+        stage_name: Option<&str>,
+        _stage_index: Option<u32>,
+        usage: &rocode_orchestrator::runtime::events::StepUsage,
+        _request_view: &[rocode_provider::Message],
+        checkpoint: &rocode_orchestrator::runtime::events::StepCheckpointSnapshot,
+        default_directive: &StepCheckpointDirective,
+        _exec_ctx: &OrchestratorExecutionContext,
+    ) -> Result<Option<StepCheckpointDirective>, rocode_orchestrator::OrchestratorError> {
+        let request_context_tokens = checkpoint.current_view.estimated_context_tokens.or_else(|| {
+            Some(usage.context_tokens.max(usage.prompt_tokens)).filter(|tokens| *tokens > 0)
+        });
+        let request_body_chars = checkpoint.current_view.estimated_body_chars;
+        let compaction_attempted = checkpoint.compaction_attempted();
+        let compaction_succeeded = checkpoint.compaction_succeeded();
+        let Some(summary) = self
+            .govern_step_checkpoint(
+                request_context_tokens,
+                request_body_chars,
+                compaction_attempted,
+                compaction_succeeded,
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        let preferred_directive =
+            directive_from_context_pressure_summary(&summary, stage_name, checkpoint);
+
+        if matches!(
+            preferred_directive,
+            StepCheckpointDirective::CompactRequestView { .. }
+        ) {
+            self.update_active_stage_message(
+                |message, _active| {
+                    message.metadata.insert(
+                        "scheduler_stage_last_event".to_string(),
+                        serde_json::json!(
+                            "Context pressure checkpoint requested request-view compaction"
+                        ),
+                    );
+                },
+                "prompt.scheduler.stage.step_checkpoint.compact",
+            )
+            .await;
+            return if same_step_checkpoint_directive(&preferred_directive, default_directive) {
+                Ok(None)
+            } else {
+                Ok(Some(preferred_directive))
+            };
+        }
+
+        if matches!(preferred_directive, StepCheckpointDirective::Continue) {
+            if compaction_attempted && compaction_succeeded {
+                self.update_active_stage_message(
+                    |message, _active| {
+                        message.metadata.insert(
+                            "scheduler_stage_last_event".to_string(),
+                            serde_json::json!("Context pressure checkpoint compacted request view"),
+                        );
+                    },
+                    "prompt.scheduler.stage.step_checkpoint.compacted",
+                )
+                .await;
+            }
+            return if same_step_checkpoint_directive(&preferred_directive, default_directive) {
+                Ok(None)
+            } else {
+                Ok(Some(preferred_directive))
+            };
+        }
+
+        self.update_active_stage_message(
+            |message, _active| {
+                message.metadata.insert(
+                    "scheduler_stage_status".to_string(),
+                    serde_json::json!("blocked"),
+                );
+                message.metadata.insert(
+                    "scheduler_stage_waiting_on".to_string(),
+                    serde_json::json!("none"),
+                );
+                message.metadata.insert(
+                    "scheduler_stage_last_event".to_string(),
+                    serde_json::json!("Context pressure gate blocked next step"),
+                );
+            },
+            "prompt.scheduler.stage.step_checkpoint.blocked",
+        )
+        .await;
+
+        if same_step_checkpoint_directive(&preferred_directive, default_directive) {
+            Ok(None)
+        } else {
+            Ok(Some(preferred_directive))
+        }
     }
 
     async fn on_scheduler_stage_end(
@@ -3172,6 +3466,11 @@ mod tests {
         title: String,
     }
 
+    #[derive(Debug)]
+    struct StaticModelProvider {
+        model: ModelInfo,
+    }
+
     #[test]
     fn scheduler_context_hydration_event_persists_stage_metadata() {
         let mut message = SessionMessage::assistant("session");
@@ -3304,6 +3603,37 @@ mod tests {
                 }],
                 usage: None,
             })
+        }
+
+        async fn chat_stream(&self, _request: ChatRequest) -> Result<StreamResult, ProviderError> {
+            Ok(Box::pin(stream::iter(Vec::<
+                Result<rocode_provider::StreamEvent, ProviderError>,
+            >::new())))
+        }
+    }
+
+    #[async_trait]
+    impl Provider for StaticModelProvider {
+        fn id(&self) -> &str {
+            "mock"
+        }
+
+        fn name(&self) -> &str {
+            "Mock"
+        }
+
+        fn models(&self) -> Vec<ModelInfo> {
+            vec![self.model.clone()]
+        }
+
+        fn get_model(&self, id: &str) -> Option<&ModelInfo> {
+            (self.model.id == id).then_some(&self.model)
+        }
+
+        async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, ProviderError> {
+            Err(ProviderError::InvalidRequest(
+                "chat() not used in this test".to_string(),
+            ))
         }
 
         async fn chat_stream(&self, _request: ChatRequest) -> Result<StreamResult, ProviderError> {
@@ -3859,6 +4189,354 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lifecycle_hook_step_checkpoint_records_compaction_and_continues() {
+        let state = Arc::new(ServerState::new());
+        {
+            let mut providers = state.providers.write().await;
+            providers.register(StaticModelProvider {
+                model: ModelInfo {
+                    id: "ctx-model".to_string(),
+                    name: "Context Model".to_string(),
+                    provider: "mock".to_string(),
+                    context_window: 100,
+                    max_input_tokens: None,
+                    max_output_tokens: 20,
+                    supports_vision: false,
+                    supports_tools: true,
+                    cost_per_million_input: 0.0,
+                    cost_per_million_output: 0.0,
+                    cost_per_million_cache_read: None,
+                    cost_per_million_cache_write: None,
+                },
+            });
+        }
+        let session_id = {
+            let mut sessions = state.sessions.lock().await;
+            let mut session = sessions.create("project", ".");
+            session.insert_metadata("model_provider", serde_json::json!("mock"));
+            session.insert_metadata("model_id", serde_json::json!("ctx-model"));
+            for index in 0..10 {
+                session.add_user_message(format!("message {index}"));
+            }
+            let id = session.id.clone();
+            sessions.update(session);
+            id
+        };
+        let exec_ctx = OrchestratorExecutionContext {
+            session_id: session_id.clone(),
+            workdir: ".".to_string(),
+            agent_name: "prometheus".to_string(),
+            metadata: HashMap::new(),
+        };
+        let hook = SessionSchedulerLifecycleHook::new(
+            state.clone(),
+            session_id.clone(),
+            "prometheus".to_string(),
+        );
+        let request_view = vec![rocode_provider::Message::user("message 9".to_string()); 10];
+        let initial_checkpoint = rocode_orchestrator::runtime::events::StepCheckpointSnapshot {
+            assessment_index: 1,
+            max_assessments: 2,
+            current_view: rocode_orchestrator::runtime::events::RequestViewMetrics {
+                message_count: 10,
+                system_prefix_messages: 0,
+                compactable_messages: 10,
+                user_messages: 10,
+                assistant_messages: 0,
+                tool_messages: 0,
+                checkpoint_summary_messages: 0,
+                estimated_context_tokens: Some(95),
+                estimated_body_chars: Some(380),
+            },
+            previous_view: None,
+            prior_mutations: Vec::new(),
+        };
+
+        hook.on_scheduler_stage_start("prometheus", "plan", 1, None, &exec_ctx)
+            .await;
+        let default_compact = StepCheckpointDirective::CompactRequestView {
+            focus: Some("plan".to_string()),
+            reason: Some("request_view_overflow".to_string()),
+        };
+        let directive = hook
+            .on_step_checkpoint(
+                "prometheus",
+                "ctx-model",
+                1,
+                Some("plan"),
+                Some(1),
+                &rocode_orchestrator::runtime::events::StepUsage {
+                    prompt_tokens: 95,
+                    completion_tokens: 12,
+                    context_tokens: 95,
+                    reasoning_tokens: 0,
+                    cache_read_tokens: 0,
+                    cache_miss_tokens: 0,
+                    cache_write_tokens: 0,
+                },
+                &request_view,
+                &initial_checkpoint,
+                &default_compact,
+                &exec_ctx,
+            )
+            .await
+            .expect("checkpoint governance should observe matching runtime compaction");
+
+        assert!(directive.is_none());
+
+        let compacted_checkpoint = rocode_orchestrator::runtime::events::StepCheckpointSnapshot {
+            assessment_index: 2,
+            max_assessments: 2,
+            current_view: rocode_orchestrator::runtime::events::RequestViewMetrics {
+                message_count: 6,
+                system_prefix_messages: 0,
+                compactable_messages: 6,
+                user_messages: 5,
+                assistant_messages: 1,
+                tool_messages: 0,
+                checkpoint_summary_messages: 1,
+                estimated_context_tokens: Some(60),
+                estimated_body_chars: Some(240),
+            },
+            previous_view: Some(initial_checkpoint.current_view.clone()),
+            prior_mutations: vec![rocode_orchestrator::runtime::events::RequestViewMutation {
+                kind: rocode_orchestrator::runtime::events::RequestViewMutationKind::Compacted,
+                reason: Some("request_view_overflow".to_string()),
+                focus: Some("plan".to_string()),
+                before: initial_checkpoint.current_view.clone(),
+                after: rocode_orchestrator::runtime::events::RequestViewMetrics {
+                    message_count: 6,
+                    system_prefix_messages: 0,
+                    compactable_messages: 6,
+                    user_messages: 5,
+                    assistant_messages: 1,
+                    tool_messages: 0,
+                    checkpoint_summary_messages: 1,
+                    estimated_context_tokens: Some(60),
+                    estimated_body_chars: Some(240),
+                },
+                compacted_message_count: Some(5),
+                summary_chars: Some(96),
+            }],
+        };
+
+        let directive = hook
+            .on_step_checkpoint(
+                "prometheus",
+                "ctx-model",
+                1,
+                Some("plan"),
+                Some(1),
+                &rocode_orchestrator::runtime::events::StepUsage {
+                    prompt_tokens: 60,
+                    completion_tokens: 12,
+                    context_tokens: 60,
+                    reasoning_tokens: 0,
+                    cache_read_tokens: 0,
+                    cache_miss_tokens: 0,
+                    cache_write_tokens: 0,
+                },
+                &request_view,
+                &compacted_checkpoint,
+                &StepCheckpointDirective::Continue,
+                &exec_ctx,
+            )
+            .await
+            .expect("checkpoint governance should continue after request-view compaction");
+
+        assert!(directive.is_none());
+        let sessions = state.sessions.lock().await;
+        let session = sessions.get(&session_id).expect("session should exist");
+        let summary = session
+            .record()
+            .metadata
+            .get(rocode_session::prompt::CONTEXT_PRESSURE_GOVERNANCE_SUMMARY_METADATA_KEY)
+            .cloned()
+            .expect("summary should persist");
+        let summary: rocode_types::ContextPressureGovernanceSummary =
+            serde_json::from_value(summary).expect("summary should parse");
+        assert_eq!(
+            summary.status,
+            rocode_types::ContextPressureGovernanceStatus::Compacted
+        );
+        assert_eq!(summary.phase, "scheduler.step_checkpoint");
+        assert!(summary.compaction_attempted);
+        assert!(summary.compaction_succeeded);
+        assert!(!summary.blocking);
+        let stage_message = session
+            .record()
+            .messages
+            .last()
+            .expect("stage message should exist");
+        assert_eq!(
+            stage_message
+                .metadata
+                .get("scheduler_stage_last_event")
+                .and_then(|value| value.as_str()),
+            Some("Context pressure checkpoint compacted request view")
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_hook_step_checkpoint_blocks_next_step_when_context_remains_unsafe() {
+        let state = Arc::new(ServerState::new());
+        {
+            let mut providers = state.providers.write().await;
+            providers.register(StaticModelProvider {
+                model: ModelInfo {
+                    id: "ctx-model".to_string(),
+                    name: "Context Model".to_string(),
+                    provider: "mock".to_string(),
+                    context_window: 100,
+                    max_input_tokens: None,
+                    max_output_tokens: 20,
+                    supports_vision: false,
+                    supports_tools: true,
+                    cost_per_million_input: 0.0,
+                    cost_per_million_output: 0.0,
+                    cost_per_million_cache_read: None,
+                    cost_per_million_cache_write: None,
+                },
+            });
+        }
+        let session_id = {
+            let mut sessions = state.sessions.lock().await;
+            let mut session = sessions.create("project", ".");
+            session.insert_metadata("model_provider", serde_json::json!("mock"));
+            session.insert_metadata("model_id", serde_json::json!("ctx-model"));
+            session.add_user_message("first");
+            session.add_user_message("second");
+            let id = session.id.clone();
+            sessions.update(session);
+            id
+        };
+        let exec_ctx = OrchestratorExecutionContext {
+            session_id: session_id.clone(),
+            workdir: ".".to_string(),
+            agent_name: "prometheus".to_string(),
+            metadata: HashMap::new(),
+        };
+        let hook = SessionSchedulerLifecycleHook::new(
+            state.clone(),
+            session_id.clone(),
+            "prometheus".to_string(),
+        );
+        let request_view = vec![rocode_provider::Message::user("second".to_string()); 2];
+        let blocked_checkpoint = rocode_orchestrator::runtime::events::StepCheckpointSnapshot {
+            assessment_index: 2,
+            max_assessments: 2,
+            current_view: rocode_orchestrator::runtime::events::RequestViewMetrics {
+                message_count: 2,
+                system_prefix_messages: 0,
+                compactable_messages: 2,
+                user_messages: 2,
+                assistant_messages: 0,
+                tool_messages: 0,
+                checkpoint_summary_messages: 0,
+                estimated_context_tokens: Some(120),
+                estimated_body_chars: Some(480),
+            },
+            previous_view: None,
+            prior_mutations: vec![rocode_orchestrator::runtime::events::RequestViewMutation {
+                kind: rocode_orchestrator::runtime::events::RequestViewMutationKind::Compacted,
+                reason: Some("request_view_overflow".to_string()),
+                focus: Some("plan".to_string()),
+                before: rocode_orchestrator::runtime::events::RequestViewMetrics {
+                    message_count: 10,
+                    system_prefix_messages: 0,
+                    compactable_messages: 10,
+                    user_messages: 10,
+                    assistant_messages: 0,
+                    tool_messages: 0,
+                    checkpoint_summary_messages: 0,
+                    estimated_context_tokens: Some(160),
+                    estimated_body_chars: Some(640),
+                },
+                after: rocode_orchestrator::runtime::events::RequestViewMetrics {
+                    message_count: 2,
+                    system_prefix_messages: 0,
+                    compactable_messages: 2,
+                    user_messages: 2,
+                    assistant_messages: 0,
+                    tool_messages: 0,
+                    checkpoint_summary_messages: 0,
+                    estimated_context_tokens: Some(120),
+                    estimated_body_chars: Some(480),
+                },
+                compacted_message_count: Some(8),
+                summary_chars: Some(80),
+            }],
+        };
+
+        hook.on_scheduler_stage_start("prometheus", "plan", 1, None, &exec_ctx)
+            .await;
+        let directive = hook
+            .on_step_checkpoint(
+                "prometheus",
+                "ctx-model",
+                1,
+                Some("plan"),
+                Some(1),
+                &rocode_orchestrator::runtime::events::StepUsage {
+                    prompt_tokens: 120,
+                    completion_tokens: 12,
+                    context_tokens: 120,
+                    reasoning_tokens: 0,
+                    cache_read_tokens: 0,
+                    cache_miss_tokens: 0,
+                    cache_write_tokens: 0,
+                },
+                &request_view,
+                &blocked_checkpoint,
+                &StepCheckpointDirective::Continue,
+                &exec_ctx,
+            )
+            .await
+            .expect("checkpoint governance should return a block directive");
+
+        let Some(StepCheckpointDirective::Block { reason }) = directive else {
+            panic!("checkpoint governance should block the next step");
+        };
+        assert!(reason.contains("Context pressure gate blocked the next scheduler step"));
+
+        let sessions = state.sessions.lock().await;
+        let session = sessions.get(&session_id).expect("session should exist");
+        let summary = session
+            .record()
+            .metadata
+            .get(rocode_session::prompt::CONTEXT_PRESSURE_GOVERNANCE_SUMMARY_METADATA_KEY)
+            .cloned()
+            .expect("summary should persist");
+        let summary: rocode_types::ContextPressureGovernanceSummary =
+            serde_json::from_value(summary).expect("summary should parse");
+        assert_eq!(
+            summary.status,
+            rocode_types::ContextPressureGovernanceStatus::Blocked
+        );
+        assert!(summary.blocking);
+
+        let stage_message = session
+            .record()
+            .messages
+            .last()
+            .expect("stage message should exist");
+        assert_eq!(
+            stage_message
+                .metadata
+                .get("scheduler_stage_status")
+                .and_then(|value| value.as_str()),
+            Some("blocked")
+        );
+        assert_eq!(
+            stage_message
+                .metadata
+                .get("scheduler_stage_last_event")
+                .and_then(|value| value.as_str()),
+            Some("Context pressure gate blocked next step")
+        );
+    }
+
+    #[tokio::test]
     async fn lifecycle_hook_tracks_active_stage_capabilities_from_tool_args() {
         let state = Arc::new(ServerState::new());
         let session_id = {
@@ -4059,6 +4737,16 @@ mod tests {
         assert_eq!(child_message.get_text(), "child session streamed content");
         assert_eq!(child_message.finish.as_deref(), Some("end_turn"));
         assert_eq!(child.parent_id.as_deref(), Some(session_id.as_str()));
+        assert_eq!(
+            child.context_kind(),
+            SessionContextKind::SchedulerStageOutputSession
+        );
+        assert_eq!(
+            parent_stage_message
+                .metadata
+                .get("scheduler_stage_child_session_kind"),
+            Some(&serde_json::json!("scheduler_stage_output_session"))
+        );
         drop(sessions);
 
         let emitted = emitted

@@ -1,6 +1,8 @@
 use crate::runtime::events::{
-    LoopError, LoopEvent, LoopRequest, ModelFailure, StepBoundary, ToolCallReady, ToolResult,
+    LoopError, LoopEvent, LoopRequest, ModelFailure, StepBoundary, StepCheckpointDirective,
+    StepCheckpointSnapshot, ToolCallReady, ToolResult,
 };
+use crate::runtime::policy::ModelContextLimits;
 use async_trait::async_trait;
 
 // ---------------------------------------------------------------------------
@@ -24,6 +26,10 @@ pub trait ModelCaller: Send + Sync {
             None,
             error,
         ))
+    }
+
+    fn context_limits(&self) -> Option<ModelContextLimits> {
+        None
     }
 }
 
@@ -63,4 +69,16 @@ pub trait LoopSink: Send {
     /// tool_calls_count, and had_error so the Sink does not need to
     /// infer these from the event stream.
     async fn on_step_boundary(&mut self, ctx: &StepBoundary) -> Result<(), LoopError>;
+
+    /// Called after a step boundary has finalized and before the next request
+    /// is allowed to reuse the in-flight request view.
+    async fn on_step_checkpoint(
+        &mut self,
+        _ctx: &StepBoundary,
+        _request_view: &[rocode_provider::Message],
+        _checkpoint: &StepCheckpointSnapshot,
+        _default_directive: &StepCheckpointDirective,
+    ) -> Result<Option<StepCheckpointDirective>, LoopError> {
+        Ok(None)
+    }
 }

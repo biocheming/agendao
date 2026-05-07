@@ -2,7 +2,7 @@
 mod tests {
     use crate::runtime::events::*;
     use crate::runtime::policy::*;
-    use crate::runtime::run_loop;
+    use crate::runtime::run_loop as raw_run_loop;
     use crate::runtime::traits::*;
     use async_trait::async_trait;
     use futures::{stream, StreamExt};
@@ -17,6 +17,7 @@ mod tests {
     /// FakeModelCaller returns pre-configured streams in sequence.
     struct FakeModelCaller {
         streams: Mutex<Vec<Vec<StreamEvent>>>,
+        context_limits: Option<ModelContextLimits>,
     }
 
     impl FakeModelCaller {
@@ -26,7 +27,13 @@ mod tests {
             s.reverse();
             Self {
                 streams: Mutex::new(s),
+                context_limits: None,
             }
+        }
+
+        fn with_context_limits(mut self, context_limits: ModelContextLimits) -> Self {
+            self.context_limits = Some(context_limits);
+            self
         }
     }
 
@@ -42,8 +49,12 @@ mod tests {
             Ok(Box::pin(stream::iter(
                 events
                     .into_iter()
-                    .map(Ok::<_, rocode_provider::ProviderError>),
+                .map(Ok::<_, rocode_provider::ProviderError>),
             )))
+        }
+
+        fn context_limits(&self) -> Option<ModelContextLimits> {
+            self.context_limits
         }
     }
 
@@ -156,11 +167,28 @@ mod tests {
             max_steps: Some(10),
             tool_dedup: ToolDedupScope::Global,
             on_tool_error: ToolErrorStrategy::ReportAndContinue,
+            checkpoint_governance: Default::default(),
         }
     }
 
     fn user_msg(text: &str) -> rocode_provider::Message {
         rocode_provider::Message::user(text.to_string())
+    }
+
+    fn repeated_user_messages(count: usize, text: &str) -> Vec<rocode_provider::Message> {
+        (0..count).map(|_| user_msg(text)).collect()
+    }
+
+    async fn run_loop(
+        model: &dyn ModelCaller,
+        tools: &dyn ToolDispatcher,
+        sink: &mut impl LoopSink,
+        policy: &LoopPolicy,
+        cancel: &dyn CancelToken,
+        messages: Vec<rocode_provider::Message>,
+    ) -> Result<LoopOutcome, LoopError> {
+        let mut messages = messages;
+        raw_run_loop(model, tools, sink, policy, cancel, &mut messages).await
     }
 
     // =====================================================================
@@ -666,6 +694,294 @@ mod tests {
             }
             other => panic!("expected assistant parts in second request, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn golden_step_checkpoint_can_compact_inflight_request_view() {
+        struct CapturingModelCaller {
+            streams: Mutex<Vec<Vec<StreamEvent>>>,
+            requests: Mutex<Vec<LoopRequest>>,
+        }
+
+        impl CapturingModelCaller {
+            fn new(streams: Vec<Vec<StreamEvent>>) -> Self {
+                let mut reversed = streams;
+                reversed.reverse();
+                Self {
+                    streams: Mutex::new(reversed),
+                    requests: Mutex::new(Vec::new()),
+                }
+            }
+        }
+
+        #[async_trait]
+        impl ModelCaller for CapturingModelCaller {
+            async fn call_stream(&self, req: LoopRequest) -> Result<StreamResult, LoopError> {
+                self.requests.lock().unwrap().push(req);
+                let events = self
+                    .streams
+                    .lock()
+                    .unwrap()
+                    .pop()
+                    .ok_or_else(|| LoopError::Other("no more fake streams".into()))?;
+                Ok(Box::pin(stream::iter(
+                    events
+                        .into_iter()
+                        .map(Ok::<_, rocode_provider::ProviderError>),
+                )))
+            }
+        }
+
+        #[derive(Default)]
+        struct CheckpointCompactingSink {
+            checkpoint_calls: usize,
+            checkpoints: Vec<StepCheckpointSnapshot>,
+        }
+
+        #[async_trait]
+        impl LoopSink for CheckpointCompactingSink {
+            async fn on_event(&mut self, _ev: &LoopEvent) -> Result<(), LoopError> {
+                Ok(())
+            }
+
+            async fn on_tool_result(
+                &mut self,
+                _call: &ToolCallReady,
+                _result: &ToolResult,
+            ) -> Result<(), LoopError> {
+                Ok(())
+            }
+
+            async fn on_step_boundary(&mut self, _ctx: &StepBoundary) -> Result<(), LoopError> {
+                Ok(())
+            }
+
+            async fn on_step_checkpoint(
+                &mut self,
+                _ctx: &StepBoundary,
+                _request_view: &[rocode_provider::Message],
+                checkpoint: &StepCheckpointSnapshot,
+                _default_directive: &StepCheckpointDirective,
+            ) -> Result<Option<StepCheckpointDirective>, LoopError> {
+                self.checkpoint_calls += 1;
+                self.checkpoints.push(checkpoint.clone());
+                if checkpoint.compaction_attempted() {
+                    Ok(None)
+                } else {
+                    Ok(Some(StepCheckpointDirective::CompactRequestView {
+                        focus: Some("inspect".to_string()),
+                        reason: Some("request_view_threshold".to_string()),
+                    }))
+                }
+            }
+        }
+
+        let model = CapturingModelCaller::new(vec![
+            vec![
+                StreamEvent::ToolCallEnd {
+                    id: "tc-1".into(),
+                    name: "read".into(),
+                    input: json!({"path": "/tmp/x"}),
+                },
+                StreamEvent::Done,
+            ],
+            vec![StreamEvent::TextDelta("done".into()), StreamEvent::Done],
+        ]);
+        let tools = FakeToolDispatcher::new().with_result("read", "file data", false);
+        let mut sink = CheckpointCompactingSink::default();
+        let mut messages = Vec::new();
+        for index in 0..10 {
+            messages.push(user_msg(&format!("history message {index}")));
+        }
+
+        let outcome = run_loop(
+            &model,
+            &tools,
+            &mut sink,
+            &default_policy(),
+            &NeverCancel,
+            messages,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.finish_reason, FinishReason::EndTurn);
+        assert_eq!(sink.checkpoint_calls, 2);
+        assert_eq!(sink.checkpoints.len(), 2);
+        assert_eq!(sink.checkpoints[0].assessment_index, 1);
+        assert!(sink.checkpoints[0].prior_mutations.is_empty());
+        assert_eq!(sink.checkpoints[1].assessment_index, 2);
+        assert_eq!(sink.checkpoints[1].prior_mutations.len(), 1);
+        assert!(matches!(
+            sink.checkpoints[1].prior_mutations[0].kind,
+            RequestViewMutationKind::Compacted
+        ));
+        assert!(sink.checkpoints[1]
+            .previous_view
+            .as_ref()
+            .is_some_and(|metrics| metrics.message_count == sink.checkpoints[0].current_view.message_count));
+        assert!(
+            sink.checkpoints[1].current_view.message_count
+                < sink.checkpoints[0].current_view.message_count
+        );
+        assert_eq!(sink.checkpoints[1].current_view.checkpoint_summary_messages, 1);
+
+        let requests = model.requests.lock().unwrap().clone();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[1].messages.len() < requests[0].messages.len() + 2);
+        assert!(requests[1]
+            .messages
+            .iter()
+            .any(|message| match &message.content {
+                rocode_provider::Content::Text(text) => {
+                    text.starts_with("Checkpoint context summary of")
+                }
+                _ => false,
+            }));
+    }
+
+    #[tokio::test]
+    async fn golden_default_step_checkpoint_policy_compacts_without_hook_override() {
+        struct CapturingModelCaller {
+            streams: Mutex<Vec<Vec<StreamEvent>>>,
+            requests: Mutex<Vec<LoopRequest>>,
+            context_limits: ModelContextLimits,
+        }
+
+        #[async_trait]
+        impl ModelCaller for CapturingModelCaller {
+            async fn call_stream(&self, req: LoopRequest) -> Result<StreamResult, LoopError> {
+                self.requests.lock().unwrap().push(req);
+                let events = self
+                    .streams
+                    .lock()
+                    .unwrap()
+                    .pop()
+                    .ok_or_else(|| LoopError::Other("no more fake streams".into()))?;
+                Ok(Box::pin(stream::iter(
+                    events
+                        .into_iter()
+                        .map(Ok::<_, rocode_provider::ProviderError>),
+                )))
+            }
+
+            fn context_limits(&self) -> Option<ModelContextLimits> {
+                Some(self.context_limits)
+            }
+        }
+
+        let mut streams = vec![
+            vec![
+                StreamEvent::ToolCallEnd {
+                    id: "tc-1".into(),
+                    name: "read".into(),
+                    input: json!({"path": "/tmp/x"}),
+                },
+                StreamEvent::FinishStep {
+                    finish_reason: Some("tool_calls".to_string()),
+                    usage: rocode_provider::StreamUsage {
+                        prompt_tokens: 80,
+                        completion_tokens: 12,
+                        context_tokens: 80,
+                        reasoning_tokens: 0,
+                        cache_read_tokens: 0,
+                        cache_miss_tokens: 0,
+                        cache_write_tokens: 0,
+                    },
+                    provider_metadata: None,
+                },
+                StreamEvent::Done,
+            ],
+            vec![StreamEvent::TextDelta("done".into()), StreamEvent::Done],
+        ];
+        streams.reverse();
+        let model = CapturingModelCaller {
+            streams: Mutex::new(streams),
+            requests: Mutex::new(Vec::new()),
+            context_limits: ModelContextLimits {
+                context_window_tokens: Some(260),
+                max_input_tokens: Some(220),
+                max_output_tokens: Some(20),
+            },
+        };
+        let tools = FakeToolDispatcher::new().with_result("read", "file data", false);
+        let mut sink = RecordingSink::default();
+
+        let outcome = run_loop(
+            &model,
+            &tools,
+            &mut sink,
+            &default_policy(),
+            &NeverCancel,
+            (0..10)
+                .map(|index| {
+                    if index < 5 {
+                        user_msg(&"x".repeat(160))
+                    } else {
+                        user_msg("tail-note")
+                    }
+                })
+                .collect(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.finish_reason, FinishReason::EndTurn);
+        let requests = model.requests.lock().unwrap().clone();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[1].messages.iter().any(|message| {
+            matches!(
+                &message.content,
+                rocode_provider::Content::Text(text)
+                    if text.starts_with("Checkpoint context summary of")
+            )
+        }));
+    }
+
+    #[tokio::test]
+    async fn golden_default_step_checkpoint_policy_blocks_after_failed_compaction() {
+        let model = FakeModelCaller::new(vec![vec![
+            StreamEvent::ToolCallEnd {
+                id: "tc-1".into(),
+                name: "read".into(),
+                input: json!({"path": "/tmp/x"}),
+            },
+            StreamEvent::FinishStep {
+                finish_reason: Some("tool_calls".to_string()),
+                usage: rocode_provider::StreamUsage {
+                    prompt_tokens: 80,
+                    completion_tokens: 12,
+                    context_tokens: 80,
+                    reasoning_tokens: 0,
+                    cache_read_tokens: 0,
+                    cache_miss_tokens: 0,
+                    cache_write_tokens: 0,
+                },
+                provider_metadata: None,
+            },
+            StreamEvent::Done,
+        ]])
+        .with_context_limits(ModelContextLimits {
+            context_window_tokens: Some(120),
+            max_input_tokens: Some(100),
+            max_output_tokens: Some(20),
+        });
+        let tools = FakeToolDispatcher::new().with_result("read", "file data", false);
+        let mut sink = RecordingSink::default();
+
+        let error = run_loop(
+            &model,
+            &tools,
+            &mut sink,
+            &default_policy(),
+            &NeverCancel,
+            repeated_user_messages(10, &"y".repeat(200)),
+        )
+        .await
+        .expect_err("runtime default checkpoint policy should block the next model call");
+
+        assert!(matches!(error, LoopError::Other(message) if message.contains("runtime checkpoint blocked the next model call")));
+        assert_eq!(sink.tool_results.len(), 1);
     }
 
     /// Fixture 8: Cancellation at checkpoint 1 (before model call).

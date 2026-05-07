@@ -10,6 +10,7 @@ rocode-core = { path = "../rocode-core" }
 rocode-config = { path = "../rocode-config" }
 rocode-execution-types = { path = "../rocode-execution-types" }
 rocode-provider = { path = "../rocode-provider" }
+rocode-types = { path = "../rocode-types" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }

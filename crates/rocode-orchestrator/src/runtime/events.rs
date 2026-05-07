@@ -78,6 +78,81 @@ pub enum StepBoundary {
     },
 }
 
+#[derive(Debug, Clone)]
+pub enum StepCheckpointDirective {
+    Continue,
+    CompactRequestView {
+        focus: Option<String>,
+        reason: Option<String>,
+    },
+    ReplaceRequestView {
+        messages: Vec<rocode_provider::Message>,
+        reason: Option<String>,
+    },
+    Block {
+        reason: String,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RequestViewMetrics {
+    pub message_count: usize,
+    pub system_prefix_messages: usize,
+    pub compactable_messages: usize,
+    pub user_messages: usize,
+    pub assistant_messages: usize,
+    pub tool_messages: usize,
+    pub checkpoint_summary_messages: usize,
+    pub estimated_context_tokens: Option<u64>,
+    pub estimated_body_chars: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestViewMutationKind {
+    Compacted,
+    Replaced,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestViewMutation {
+    pub kind: RequestViewMutationKind,
+    pub reason: Option<String>,
+    pub focus: Option<String>,
+    pub before: RequestViewMetrics,
+    pub after: RequestViewMetrics,
+    pub compacted_message_count: Option<usize>,
+    pub summary_chars: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StepCheckpointSnapshot {
+    pub assessment_index: usize,
+    pub max_assessments: usize,
+    pub current_view: RequestViewMetrics,
+    pub previous_view: Option<RequestViewMetrics>,
+    pub prior_mutations: Vec<RequestViewMutation>,
+}
+
+impl StepCheckpointSnapshot {
+    pub fn remaining_assessments(&self) -> usize {
+        self.max_assessments.saturating_sub(self.assessment_index)
+    }
+
+    pub fn rewrite_attempted(&self) -> bool {
+        !self.prior_mutations.is_empty()
+    }
+
+    pub fn compaction_attempted(&self) -> bool {
+        self.prior_mutations
+            .iter()
+            .any(|mutation| matches!(mutation.kind, RequestViewMutationKind::Compacted))
+    }
+
+    pub fn compaction_succeeded(&self) -> bool {
+        self.compaction_attempted()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // FinishReason – why a step or the entire loop ended.
 // ---------------------------------------------------------------------------

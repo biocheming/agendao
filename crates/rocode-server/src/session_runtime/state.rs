@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 
 use rocode_session::SessionUsage;
+use rocode_types::SessionContextKind;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
@@ -108,6 +109,7 @@ pub struct PendingPermissionSummary {
 pub struct ChildSessionSummary {
     pub child_id: String,
     pub parent_id: String,
+    pub context_kind: SessionContextKind,
 }
 
 // ── Store ───────────────────────────────────────────────────────────────────
@@ -293,13 +295,19 @@ impl RuntimeStateStore {
     }
 
     /// Register a child session attachment.
-    pub async fn child_attached(&self, parent_id: &str, child_id: &str) {
+    pub async fn child_attached(
+        &self,
+        parent_id: &str,
+        child_id: &str,
+        context_kind: SessionContextKind,
+    ) {
         self.update(parent_id, |s| {
             // Avoid duplicates.
             if !s.child_sessions.iter().any(|c| c.child_id == child_id) {
                 s.child_sessions.push(ChildSessionSummary {
                     child_id: child_id.to_string(),
                     parent_id: parent_id.to_string(),
+                    context_kind,
                 });
             }
         })
@@ -417,13 +425,31 @@ mod tests {
         let store = RuntimeStateStore::new();
         store.mark_running("parent", None).await;
 
-        store.child_attached("parent", "child_1").await;
-        store.child_attached("parent", "child_2").await;
+        store
+            .child_attached(
+                "parent",
+                "child_1",
+                SessionContextKind::SchedulerStageOutputSession,
+            )
+            .await;
+        store
+            .child_attached("parent", "child_2", SessionContextKind::DelegatedSubsession)
+            .await;
         let state = store.get("parent").await.unwrap();
         assert_eq!(state.child_sessions.len(), 2);
+        assert_eq!(
+            state.child_sessions[0].context_kind,
+            SessionContextKind::SchedulerStageOutputSession
+        );
 
         // Duplicate attach is idempotent.
-        store.child_attached("parent", "child_1").await;
+        store
+            .child_attached(
+                "parent",
+                "child_1",
+                SessionContextKind::SchedulerStageOutputSession,
+            )
+            .await;
         assert_eq!(store.get("parent").await.unwrap().child_sessions.len(), 2);
 
         store.child_detached("parent", "child_1").await;

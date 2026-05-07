@@ -1,4 +1,8 @@
 use async_trait::async_trait;
+use rocode_types::{
+    SessionContextKind, SubsessionHandoffFieldKind, SubsessionHandoffPacket,
+    SubsessionResultAbsorbMode,
+};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -7,7 +11,10 @@ use crate::execution_preflight::{
     execute_registry_tool_execution_preflight, ExecutionPreflightReport, ExecutionPreflightRunner,
 };
 use crate::path_guard::{resolve_user_path, RootPathFallbackPolicy};
-use crate::{Metadata, PermissionRequest, Tool, ToolContext, ToolError, ToolResult};
+use crate::{
+    append_subsession_handoff_recent_tail_from_extra, Metadata, PermissionRequest, Tool,
+    ToolContext, ToolError, ToolResult,
+};
 
 const DEFAULT_QUESTION: &str =
     "Describe the relevant contents of this media file and answer the user's need concisely.";
@@ -70,15 +77,34 @@ impl MediaInspectTool {
                 Vec::new(),
             )
             .await?;
-        let prompt = build_media_prompt(&resolved_path, input.question.as_deref(), &preflight);
-        let result_text = ctx.do_prompt_subsession(session_id.clone(), prompt).await?;
+        let handoff =
+            build_media_handoff(&resolved_path, input.question.as_deref(), &preflight, ctx);
+        let result = ctx
+            .do_prompt_subsession(session_id.clone(), handoff.clone())
+            .await?;
+        let result_text = result.text;
 
         let mut metadata = Metadata::new();
         metadata.insert("agent".to_string(), serde_json::json!("media-reader"));
         metadata.insert("sessionId".to_string(), serde_json::json!(session_id));
         metadata.insert(
+            "sessionContextKind".to_string(),
+            serde_json::to_value(SessionContextKind::DelegatedSubsession)
+                .unwrap_or_else(|_| serde_json::json!("delegated_subsession")),
+        );
+        metadata.insert(
             "filePath".to_string(),
             serde_json::json!(resolved_path.to_string_lossy().to_string()),
+        );
+        metadata.insert(
+            "sessionHandoffRichness".to_string(),
+            serde_json::to_value(handoff.effective_richness())
+                .unwrap_or_else(|_| serde_json::json!("bounded")),
+        );
+        metadata.insert(
+            "resultAbsorbMode".to_string(),
+            serde_json::to_value(SubsessionResultAbsorbMode::SummaryOnly)
+                .unwrap_or_else(|_| serde_json::json!("summary_only")),
         );
         if let Some(model) = preferred_model {
             metadata.insert("model".to_string(), serde_json::json!(model));
@@ -199,48 +225,69 @@ async fn run_media_preflight(
     .await
 }
 
-fn build_media_prompt(
+fn build_media_handoff(
     path: &Path,
     question: Option<&str>,
     preflight: &ExecutionPreflightReport,
-) -> String {
+    ctx: &ToolContext,
+) -> SubsessionHandoffPacket {
     let question = question
         .map(str::trim)
         .filter(|q| !q.is_empty())
         .unwrap_or(DEFAULT_QUESTION);
 
-    let mut prompt = format!(
-        "Inspect the local media file at `{}`. First call the `read` tool on this exact path. Then answer this question:\n\n{}",
+    let mut packet = SubsessionHandoffPacket::bounded_goal(format!(
+        "Inspect the local media file at `{}` and answer this question:\n\n{}",
         path.display(),
         question
+    ));
+    packet.push_titled_text(
+        SubsessionHandoffFieldKind::RequiredPath,
+        "media file path",
+        path.display().to_string(),
+    );
+    packet.push_titled_text(
+        SubsessionHandoffFieldKind::Constraint,
+        "required tool action",
+        format!(
+            "First call the `read` tool on this exact path before answering:\n{}",
+            path.display()
+        ),
     );
 
     if preflight.has_guidance() {
         let attachment_summary = summarize_attachment_payloads(&preflight.attachments);
-        prompt.push_str("\n\nPreflight media context from the authoritative `read` tool:\n");
-        prompt.push_str(&format!(
+        let mut guidance = format!(
             "- read output: {}\n",
             sanitize_prompt_line(&preflight.output)
-        ));
+        );
         if let Some(mime) = preflight.metadata.get("mime").and_then(|v| v.as_str()) {
-            prompt.push_str(&format!("- mime: {}\n", mime));
+            guidance.push_str(&format!("- mime: {}\n", mime));
         }
         if let Some(size) = preflight.metadata.get("size") {
-            prompt.push_str(&format!("- size: {}\n", size));
+            guidance.push_str(&format!("- size: {}\n", size));
         }
         if let Some(summary) = attachment_summary {
-            prompt.push_str(&format!("- attachment summary: {}\n", summary));
+            guidance.push_str(&format!("- attachment summary: {}\n", summary));
         }
-        prompt.push_str(
+        guidance.push_str(
             "Use this preflight only as guidance. You must still call `read` on the exact same file path so the session can obtain the attachment payload for interpretation.",
         );
+        packet.push_titled_text(
+            SubsessionHandoffFieldKind::PreflightContext,
+            "authoritative read preflight",
+            guidance,
+        );
     } else {
-        prompt.push_str(
+        packet.push_titled_text(
+            SubsessionHandoffFieldKind::Constraint,
+            "attachment handling",
             " If the read result includes an image or PDF attachment payload, use that attachment to interpret the file.",
         );
     }
 
-    prompt
+    append_subsession_handoff_recent_tail_from_extra(&mut packet, &ctx.extra);
+    packet
 }
 
 #[async_trait]
@@ -339,10 +386,28 @@ fn format_media_title(path: &Path) -> String {
 mod tests {
     use super::*;
     use crate::{read::ReadTool, TaskAgentInfo, ToolContext, ToolRegistry};
+    use rocode_types::{
+        SubsessionHandoffFieldKind, SubsessionHandoffPacket, SubsessionResultEnvelope,
+    };
     use std::fs;
     use std::sync::Arc;
     use tempfile::tempdir;
     use tokio::sync::Mutex;
+
+    fn summary(text: &str) -> SubsessionResultEnvelope {
+        SubsessionResultEnvelope::summary(text.to_string())
+    }
+
+    fn has_field_containing(
+        packet: &SubsessionHandoffPacket,
+        kind: SubsessionHandoffFieldKind,
+        needle: &str,
+    ) -> bool {
+        packet
+            .fields
+            .iter()
+            .any(|field| field.kind == kind && field.text.contains(needle))
+    }
 
     #[test]
     fn schema_requires_file_path() {
@@ -365,29 +430,49 @@ mod tests {
             "filename": "sample.pdf",
             "url": "data:application/pdf;base64,AA=="
         }));
-        let prompt = build_media_prompt(
+        let prompt = build_media_handoff(
             Path::new("/tmp/sample.pdf"),
             Some("Summarize the first page"),
             &preflight,
+            &ToolContext::new("session".into(), "message".into(), ".".into()),
         );
-        assert!(prompt.contains("Preflight media context"));
-        assert!(prompt.contains("mime: application/pdf"));
-        assert!(prompt.contains("attachment summary"));
-        assert!(prompt.contains("Summarize the first page"));
+        assert!(has_field_containing(
+            &prompt,
+            SubsessionHandoffFieldKind::PreflightContext,
+            "mime: application/pdf"
+        ));
+        assert!(has_field_containing(
+            &prompt,
+            SubsessionHandoffFieldKind::PreflightContext,
+            "attachment summary"
+        ));
+        assert!(has_field_containing(
+            &prompt,
+            SubsessionHandoffFieldKind::Goal,
+            "Summarize the first page"
+        ));
     }
 
     #[test]
     fn advisory_only_preflight_does_not_render_guidance_block() {
         let preflight = ExecutionPreflightReport::new("read", "/tmp/sample.pdf")
             .advisory("registry_unavailable", "tool registry unavailable");
-        let prompt = build_media_prompt(
+        let prompt = build_media_handoff(
             Path::new("/tmp/sample.pdf"),
             Some("Summarize the first page"),
             &preflight,
+            &ToolContext::new("session".into(), "message".into(), ".".into()),
         );
 
-        assert!(!prompt.contains("Preflight media context"));
-        assert!(prompt.contains("First call the `read` tool on this exact path."));
+        assert!(!prompt
+            .fields
+            .iter()
+            .any(|field| field.kind == SubsessionHandoffFieldKind::PreflightContext));
+        assert!(has_field_containing(
+            &prompt,
+            SubsessionHandoffFieldKind::Constraint,
+            "First call the `read` tool on this exact path."
+        ));
     }
 
     #[test]
@@ -423,7 +508,7 @@ mod tests {
             Option<String>,
             Vec<String>,
         )>::new()));
-        let prompt_calls = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let prompt_calls = Arc::new(Mutex::new(Vec::<(String, SubsessionHandoffPacket)>::new()));
 
         let ctx = ToolContext::new(
             "session-1".into(),
@@ -468,7 +553,7 @@ mod tests {
                 let prompt_calls = prompt_calls.clone();
                 async move {
                     prompt_calls.lock().await.push((session_id, prompt));
-                    Ok("media findings".to_string())
+                    Ok(summary("media findings"))
                 }
             }
         });
@@ -489,6 +574,18 @@ mod tests {
         assert_eq!(
             result.metadata["sessionId"],
             serde_json::json!("media_reader_session")
+        );
+        assert_eq!(
+            result.metadata["sessionContextKind"],
+            serde_json::json!("delegated_subsession")
+        );
+        assert_eq!(
+            result.metadata["sessionHandoffRichness"],
+            serde_json::json!("enriched")
+        );
+        assert_eq!(
+            result.metadata["resultAbsorbMode"],
+            serde_json::json!("summary_only")
         );
         assert!(result.metadata.contains_key("preflight"));
         assert_eq!(
@@ -511,11 +608,20 @@ mod tests {
         let prompt_calls = prompt_calls.lock().await.clone();
         assert_eq!(prompt_calls.len(), 1);
         assert_eq!(prompt_calls[0].0, "media_reader_session");
-        assert!(prompt_calls[0].1.contains("sample.pdf"));
-        assert!(prompt_calls[0]
-            .1
-            .contains("What does this document contain?"));
-        assert!(prompt_calls[0].1.contains("Preflight media context"));
-        assert!(prompt_calls[0].1.contains("attachment summary"));
+        assert!(has_field_containing(
+            &prompt_calls[0].1,
+            SubsessionHandoffFieldKind::RequiredPath,
+            "sample.pdf"
+        ));
+        assert!(has_field_containing(
+            &prompt_calls[0].1,
+            SubsessionHandoffFieldKind::Goal,
+            "What does this document contain?"
+        ));
+        assert!(has_field_containing(
+            &prompt_calls[0].1,
+            SubsessionHandoffFieldKind::PreflightContext,
+            "attachment summary"
+        ));
     }
 }

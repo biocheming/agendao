@@ -4,8 +4,9 @@ use tokio::sync::Mutex;
 
 use rocode_execution_types::ExecutionRequestContext;
 use rocode_orchestrator::{
-    ExecutionContext, ModelRef as OrchestratorModelRef, ModelResolver as OrchestratorModelResolver,
-    OrchestratorError, ToolExecError as OrchestratorToolExecError,
+    runtime::policy::ModelContextLimits, ExecutionContext,
+    ModelRef as OrchestratorModelRef, ModelResolver as OrchestratorModelResolver, OrchestratorError,
+    ToolExecError as OrchestratorToolExecError,
     ToolExecutor as OrchestratorToolExecutor, ToolOutput as OrchestratorToolOutput,
 };
 use rocode_provider::ProviderRegistry;
@@ -254,6 +255,32 @@ impl OrchestratorModelResolver for ProviderModelResolver {
         provider.chat_stream(request).await.map_err(|error| {
             OrchestratorError::from_provider_error(provider.id(), Some(&model_id), &error)
         })
+    }
+
+    async fn context_limits(
+        &self,
+        model: Option<&OrchestratorModelRef>,
+        _exec_ctx: &ExecutionContext,
+    ) -> Option<ModelContextLimits> {
+        let (provider_id, model_id) = if let Some(model) = model {
+            (model.provider_id.as_str(), model.model_id.as_str())
+        } else {
+            let model = self.execution.model_ref()?;
+            let model_id = model.model_id;
+            let provider_id = model.provider_id;
+            return self
+                .providers
+                .get(provider_id.as_str())
+                .and_then(|provider| {
+                    provider
+                        .get_model(model_id.as_str())
+                        .map(ModelContextLimits::from_model_info)
+                });
+        };
+
+        self.providers
+            .get(provider_id)
+            .and_then(|provider| provider.get_model(model_id).map(ModelContextLimits::from_model_info))
     }
 }
 

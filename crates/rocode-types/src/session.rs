@@ -90,6 +90,240 @@ pub struct SessionUsage {
     pub total_cost: f64,
 }
 
+impl SessionUsage {
+    /// Owner-local cumulative usage for this session only.
+    pub fn session_cumulative_tokens(&self) -> u64 {
+        self.input_tokens + self.output_tokens + self.reasoning_tokens
+    }
+
+    /// Session-owned live context for the next request on this session.
+    pub fn live_context_tokens(&self) -> Option<u64> {
+        (self.context_tokens > 0).then_some(self.context_tokens)
+    }
+
+    pub fn workflow_usage_summary(&self) -> WorkflowUsageSummary {
+        WorkflowUsageSummary {
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+            reasoning_tokens: self.reasoning_tokens,
+            cache_write_tokens: self.cache_write_tokens,
+            cache_read_tokens: self.cache_read_tokens,
+            cache_miss_tokens: self.cache_miss_tokens,
+            total_cost: self.total_cost,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct WorkflowUsageSummary {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub cache_read_tokens: u64,
+    #[serde(default)]
+    pub cache_miss_tokens: u64,
+    pub total_cost: f64,
+}
+
+impl WorkflowUsageSummary {
+    pub fn total_tokens(&self) -> u64 {
+        self.input_tokens + self.output_tokens + self.reasoning_tokens
+    }
+
+    pub fn accumulate_session_usage(&mut self, usage: &SessionUsage) {
+        self.input_tokens += usage.input_tokens;
+        self.output_tokens += usage.output_tokens;
+        self.reasoning_tokens += usage.reasoning_tokens;
+        self.cache_write_tokens += usage.cache_write_tokens;
+        self.cache_read_tokens += usage.cache_read_tokens;
+        self.cache_miss_tokens += usage.cache_miss_tokens;
+        self.total_cost += usage.total_cost;
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SessionUsageBooks {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_context_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_context_tokens: Option<u64>,
+    #[serde(default)]
+    pub workflow_cumulative: WorkflowUsageSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextCompactionSummary {
+    pub trigger: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub forced: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_context_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_context_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_chars: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_count_before: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compacted_message_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept_message_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextPressureGovernanceStatus {
+    Ready,
+    Compacted,
+    Deferred,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextPressureGovernanceSummary {
+    pub trigger: String,
+    pub phase: String,
+    pub status: ContextPressureGovernanceStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_context_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_context_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_chars: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_pressure_percent: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_pressure_percent: Option<u64>,
+    #[serde(default)]
+    pub compaction_attempted: bool,
+    #[serde(default)]
+    pub compaction_succeeded: bool,
+    #[serde(default)]
+    pub blocking: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SessionCacheSeverity {
+    Stable,
+    SoftDegradation,
+    LikelyBust,
+    HardBust,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionCacheSemanticsBasis {
+    #[default]
+    ApiView,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionCacheBoundaryKind {
+    Compaction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromptSurfaceSnapshotInvalidationSummary {
+    pub severity: SessionCacheSeverity,
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionCacheBustExplain {
+    pub status: String,
+    pub severity: SessionCacheSeverity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_cause: Option<String>,
+    #[serde(default)]
+    pub change_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionCacheBoundarySummary {
+    pub kind: SessionCacheBoundaryKind,
+    pub trigger: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_count_before: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compacted_message_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept_message_count: Option<usize>,
+    #[serde(default)]
+    pub trimmed_model_visible_messages: usize,
+    #[serde(default)]
+    pub likely_changed_prefix: bool,
+    #[serde(default)]
+    pub possible_cache_bust: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionCacheSemanticsSummary {
+    pub basis: SessionCacheSemanticsBasis,
+    pub api_view_messages: usize,
+    #[serde(default)]
+    pub trimmed_model_visible_messages: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boundary: Option<SessionCacheBoundarySummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_bust: Option<SessionCacheBustExplain>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_surface_invalidation: Option<PromptSurfaceSnapshotInvalidationSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionContextExplain {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork: Option<SessionForkExplain>,
+    pub raw_history_messages: usize,
+    pub raw_model_visible_messages: usize,
+    pub api_view_messages: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_view_estimated_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_view_body_chars: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_context_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_request_context_tokens: Option<u64>,
+    pub owner_session_cumulative_tokens: u64,
+    pub workflow_cumulative_tokens: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionForkExplain {
+    pub origin_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_message_id: Option<String>,
+    #[serde(default)]
+    pub imported_history_messages: usize,
+    #[serde(default)]
+    pub policy_frozen: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum SessionStatus {
     #[default]
@@ -97,6 +331,598 @@ pub enum SessionStatus {
     Completed,
     Archived,
     Compacting,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionContextKind {
+    #[default]
+    RootSessionContinuity,
+    DelegatedSubsession,
+    SchedulerStageOutputSession,
+    ExplicitFullHistoryFork,
+    UnclassifiedChild,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionHandoffMode {
+    SelfContinuity,
+    BoundedHandoff,
+    StageOutputSink,
+    FullHistoryFork,
+    UnclassifiedChild,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionProviderModelRole {
+    RequestShapeOnly,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionWorkflowUsageRole {
+    ObservationOnly,
+}
+
+pub const SESSION_CONTINUITY_PACKET_VERSION: u64 = 1;
+
+fn default_session_continuity_packet_version() -> u64 {
+    SESSION_CONTINUITY_PACKET_VERSION
+}
+
+fn string_is_empty(value: &str) -> bool {
+    value.is_empty()
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionContinuityLedgerKind {
+    SessionTitle,
+    SessionDiff,
+    LatestUserTurn,
+    LatestAssistantOutcome,
+    SourcePolicy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionContinuityLedgerEntry {
+    pub kind: SessionContinuityLedgerKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    pub text: String,
+}
+
+impl SessionContinuityLedgerEntry {
+    pub fn new(kind: SessionContinuityLedgerKind, text: impl Into<String>) -> Self {
+        Self {
+            kind,
+            source_id: None,
+            text: text.into(),
+        }
+    }
+
+    pub fn with_source_id(
+        kind: SessionContinuityLedgerKind,
+        source_id: impl Into<String>,
+        text: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind,
+            source_id: Some(source_id.into()),
+            text: text.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionContinuityTurn {
+    pub message_id: String,
+    pub role: String,
+    #[serde(default, skip_serializing_if = "string_is_empty")]
+    pub text: String,
+    #[serde(default)]
+    pub projected: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionContinuityCompactionSummary {
+    pub message_id: String,
+    #[serde(default, skip_serializing_if = "string_is_empty")]
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionContinuityMemoryAnchor {
+    pub record_id: String,
+    #[serde(default, skip_serializing_if = "string_is_empty")]
+    pub title: String,
+    pub kind: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "string_is_empty")]
+    pub why_recalled: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionContinuityLimits {
+    #[serde(default)]
+    pub recent_tail_messages: usize,
+    #[serde(default)]
+    pub context_text_chars: usize,
+    #[serde(default)]
+    pub turn_text_chars: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionContinuityPacket {
+    #[serde(default = "default_session_continuity_packet_version")]
+    pub version: u64,
+    #[serde(default)]
+    pub eligible_message_count: usize,
+    #[serde(default)]
+    pub exact_recent_tail_count: usize,
+    #[serde(default)]
+    pub omitted_older_turns: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exact_recent_tail: Vec<SessionContinuityTurn>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub memory_anchors: Vec<SessionContinuityMemoryAnchor>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub working_ledger: Vec<SessionContinuityLedgerEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_compaction_summary: Option<SessionContinuityCompactionSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<SessionContinuityLimits>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recall_policy: Option<String>,
+}
+
+impl Default for SessionContinuityPacket {
+    fn default() -> Self {
+        Self {
+            version: SESSION_CONTINUITY_PACKET_VERSION,
+            eligible_message_count: 0,
+            exact_recent_tail_count: 0,
+            omitted_older_turns: 0,
+            exact_recent_tail: Vec::new(),
+            memory_anchors: Vec::new(),
+            working_ledger: Vec::new(),
+            latest_compaction_summary: None,
+            limits: None,
+            recall_policy: None,
+        }
+    }
+}
+
+impl SessionContinuityPacket {
+    pub fn from_value(value: &serde_json::Value) -> Option<Self> {
+        let packet = serde_json::from_value::<Self>(value.clone()).ok()?;
+        (packet.version == SESSION_CONTINUITY_PACKET_VERSION).then_some(packet)
+    }
+
+    pub fn metadata_value(&self) -> serde_json::Value {
+        serde_json::to_value(self).expect("session continuity packet should serialize")
+    }
+
+    pub fn allowed_message_ids(&self) -> Vec<String> {
+        let mut ids = self
+            .exact_recent_tail
+            .iter()
+            .map(|turn| turn.message_id.clone())
+            .collect::<Vec<_>>();
+        if let Some(compaction) = self.latest_compaction_summary.as_ref() {
+            ids.push(compaction.message_id.clone());
+        }
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    pub fn allowed_memory_record_ids(&self) -> Vec<String> {
+        let mut ids = self
+            .memory_anchors
+            .iter()
+            .map(|anchor| anchor.record_id.clone())
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    pub fn stable_refs_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "version": self.version,
+            "eligible_message_count": self.eligible_message_count,
+            "exact_recent_tail": self
+                .exact_recent_tail
+                .iter()
+                .map(|turn| {
+                    serde_json::json!({
+                        "message_id": turn.message_id,
+                        "role": turn.role,
+                        "projected": turn.projected,
+                    })
+                })
+                .collect::<Vec<_>>(),
+            "memory_anchors": self
+                .memory_anchors
+                .iter()
+                .map(|anchor| {
+                    serde_json::json!({
+                        "record_id": anchor.record_id,
+                        "kind": anchor.kind,
+                        "status": anchor.status,
+                    })
+                })
+                .collect::<Vec<_>>(),
+            "latest_compaction_summary": self
+                .latest_compaction_summary
+                .as_ref()
+                .map(|summary| summary.message_id.clone()),
+        })
+    }
+
+    pub fn render(&self) -> String {
+        let mut sections = vec!["## Session Continuity Context\n\
+This is same-session continuity context for resolving follow-up references such as \
+`previous`, `above`, `继续`, `前面`, `刚才`, or `把结果写入`. Treat it as task context, \
+not as a replacement for checking live files or rerunning verification when exact state matters."
+            .to_string()];
+
+        sections.push(self.render_context_coverage());
+
+        let source_anchors = self.render_source_anchors();
+        if !source_anchors.is_empty() {
+            sections.push(format!("## Source Anchors\n{source_anchors}"));
+        }
+        let memory_anchors = self.render_memory_anchors();
+        if !memory_anchors.is_empty() {
+            sections.push(format!("## Memory Anchors\n{memory_anchors}"));
+        }
+
+        sections.push(self.render_hydration_guidance());
+
+        if !self.working_ledger.is_empty() {
+            sections.push(format!(
+                "## Working Ledger\n{}",
+                self.working_ledger
+                    .iter()
+                    .map(|entry| format!("- {}", entry.text))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+
+        if let Some(compaction) = self.latest_compaction_summary.as_ref() {
+            sections.push(format!(
+                "## Latest Compaction Summary\nsource: assistant `{}`\n{}",
+                compaction.message_id,
+                self.truncate_turn_text(&compaction.summary)
+            ));
+        }
+
+        if !self.exact_recent_tail.is_empty() {
+            let turns = self
+                .exact_recent_tail
+                .iter()
+                .map(|turn| {
+                    let source_kind = if turn.projected { "projected" } else { "exact" };
+                    format!(
+                        "- {} `{}` ({source_kind}):\n{}",
+                        turn.role,
+                        turn.message_id,
+                        self.indent_block(&self.truncate_turn_text(&turn.text))
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            sections.push(format!("## Exact Recent Tail\n{turns}"));
+        }
+
+        self.truncate_context_text(&sections.join("\n\n"))
+    }
+
+    fn render_context_coverage(&self) -> String {
+        let exact_count = self
+            .exact_recent_tail_count
+            .max(self.exact_recent_tail.len());
+        let omitted_count = self.omitted_older_turns.max(
+            self.eligible_message_count
+                .saturating_sub(self.exact_recent_tail.len()),
+        );
+        let mut rows = vec![
+            format!(
+                "- exact_recent_tail: last {exact_count} of {} eligible user/assistant messages",
+                self.eligible_message_count
+            ),
+            format!("- omitted_older_turns: {omitted_count}"),
+        ];
+        if let Some(compaction) = self.latest_compaction_summary.as_ref() {
+            rows.push(format!(
+                "- latest_compaction_summary: assistant `{}`",
+                compaction.message_id
+            ));
+        } else {
+            rows.push("- latest_compaction_summary: none".to_string());
+        }
+        rows.push(format!(
+            "- memory_anchors: {} recalled records",
+            self.memory_anchors.len()
+        ));
+        rows.push(format!(
+            "- recall_policy: {}",
+            self.recall_policy.as_deref().unwrap_or(
+                "use exact tail for recent follow-up references; treat ledger and compaction as lossy summaries; use `scheduler_context_hydrate` for authorized Source Anchors when prior exact text is needed; use `scheduler_memory_hydrate` for authorized Memory Anchors when exact memory detail is needed; use memory, artifacts, or other tools for facts outside the anchors."
+            )
+        ));
+        format!("## Context Coverage\n{}", rows.join("\n"))
+    }
+
+    fn render_hydration_guidance(&self) -> String {
+        let omitted_count = self.omitted_older_turns.max(
+            self.eligible_message_count
+                .saturating_sub(self.exact_recent_tail.len()),
+        );
+        let mut rows = vec![
+            "- Use `scheduler_context_hydrate({\"message_ids\":[...]})` only with ids listed in Source Anchors when the current task needs exact prior text that is truncated, ambiguous, or summarized.".to_string(),
+            "- Do not invent message ids. The runtime rejects ids that are not authorized by the scheduler continuity packet.".to_string(),
+            "- Prefer the visible Exact Recent Tail when it already contains the needed prior output.".to_string(),
+            "- Use `scheduler_memory_hydrate({\"record_ids\":[...]})` only with ids listed in Memory Anchors when exact recalled memory details matter.".to_string(),
+        ];
+        if omitted_count > 0 {
+            rows.push(format!(
+                "- omitted_older_turns is {omitted_count}; if the user refers to older context outside Source Anchors, recover it through memory, artifacts, or other tools before acting."
+            ));
+        }
+        format!("## Hydration Guidance\n{}", rows.join("\n"))
+    }
+
+    fn render_source_anchors(&self) -> String {
+        let mut anchors = Vec::new();
+        if !self.exact_recent_tail.is_empty() {
+            anchors.push(format!(
+                "- exact_tail_message_ids: {}",
+                self.exact_recent_tail
+                    .iter()
+                    .map(|turn| format!("`{}`", turn.message_id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if let Some(compaction) = self.latest_compaction_summary.as_ref() {
+            anchors.push(format!(
+                "- compaction_summary_message_id: `{}`",
+                compaction.message_id
+            ));
+        }
+        anchors.join("\n")
+    }
+
+    fn render_memory_anchors(&self) -> String {
+        self.memory_anchors
+            .iter()
+            .map(|anchor| {
+                format!(
+                    "- memory `{}` [{} / {}]: {}\n  why: {}",
+                    anchor.record_id, anchor.kind, anchor.status, anchor.title, anchor.why_recalled
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn limits_or_default(&self) -> SessionContinuityLimits {
+        self.limits.clone().unwrap_or(SessionContinuityLimits {
+            recent_tail_messages: 0,
+            context_text_chars: 4000,
+            turn_text_chars: 1200,
+        })
+    }
+
+    fn truncate_turn_text(&self, value: &str) -> String {
+        truncate_chars(value, self.limits_or_default().turn_text_chars.max(1))
+    }
+
+    fn truncate_context_text(&self, value: &str) -> String {
+        truncate_chars(value, self.limits_or_default().context_text_chars.max(1))
+    }
+
+    fn indent_block(&self, text: &str) -> String {
+        text.lines()
+            .map(|line| format!("  {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+fn truncate_chars(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        return value.to_string();
+    }
+    let mut truncated = value
+        .chars()
+        .take(limit.saturating_sub(24))
+        .collect::<String>();
+    truncated.push_str("\n...[truncated]...");
+    truncated
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SubsessionHandoffRichness {
+    #[default]
+    Bounded,
+    Enriched,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubsessionHandoffFieldKind {
+    Goal,
+    Constraint,
+    Fact,
+    RequiredPath,
+    SupportingContext,
+    PreflightContext,
+    RecentConclusion,
+    SanctionedRecentTail,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SubsessionHandoffField {
+    pub kind: SubsessionHandoffFieldKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub text: String,
+}
+
+impl SubsessionHandoffField {
+    pub fn new(kind: SubsessionHandoffFieldKind, text: impl Into<String>) -> Self {
+        Self {
+            kind,
+            title: None,
+            text: text.into(),
+        }
+    }
+
+    pub fn titled(
+        kind: SubsessionHandoffFieldKind,
+        title: impl Into<String>,
+        text: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind,
+            title: Some(title.into()),
+            text: text.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct SubsessionHandoffPacket {
+    #[serde(default)]
+    pub richness: SubsessionHandoffRichness,
+    #[serde(default)]
+    pub fields: Vec<SubsessionHandoffField>,
+}
+
+impl SubsessionHandoffPacket {
+    pub fn bounded_goal(goal: impl Into<String>) -> Self {
+        let mut packet = Self::default();
+        packet.push_text(SubsessionHandoffFieldKind::Goal, goal);
+        packet
+    }
+
+    pub fn push_field(&mut self, field: SubsessionHandoffField) {
+        self.fields.push(field);
+    }
+
+    pub fn push_text(&mut self, kind: SubsessionHandoffFieldKind, text: impl Into<String>) {
+        self.push_field(SubsessionHandoffField::new(kind, text));
+    }
+
+    pub fn push_titled_text(
+        &mut self,
+        kind: SubsessionHandoffFieldKind,
+        title: impl Into<String>,
+        text: impl Into<String>,
+    ) {
+        self.push_field(SubsessionHandoffField::titled(kind, title, text));
+    }
+
+    pub fn effective_richness(&self) -> SubsessionHandoffRichness {
+        if self.fields.iter().any(|field| {
+            matches!(
+                field.kind,
+                SubsessionHandoffFieldKind::SupportingContext
+                    | SubsessionHandoffFieldKind::PreflightContext
+                    | SubsessionHandoffFieldKind::RecentConclusion
+                    | SubsessionHandoffFieldKind::SanctionedRecentTail
+            )
+        }) {
+            SubsessionHandoffRichness::Enriched
+        } else {
+            self.richness
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.fields.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubsessionResultAbsorbMode {
+    SummaryOnly,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SubsessionResultEnvelope {
+    pub absorb_mode: SubsessionResultAbsorbMode,
+    pub text: String,
+}
+
+impl SubsessionResultEnvelope {
+    pub fn summary(text: impl Into<String>) -> Self {
+        Self {
+            absorb_mode: SubsessionResultAbsorbMode::SummaryOnly,
+            text: text.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionOwnershipSummary {
+    pub context_kind: SessionContextKind,
+    pub handoff_mode: SessionHandoffMode,
+    #[serde(default)]
+    pub owns_prompt_continuity: bool,
+    #[serde(default)]
+    pub compact_owner: bool,
+    pub provider_model_role: SessionProviderModelRole,
+    pub workflow_usage_role: SessionWorkflowUsageRole,
+}
+
+impl SessionContextKind {
+    /// Whether this session kind is expected to own an ongoing prompt surface
+    /// that can accumulate context pressure and may need compaction.
+    pub fn owns_prompt_continuity(self) -> bool {
+        !matches!(self, Self::SchedulerStageOutputSession)
+    }
+
+    pub fn handoff_mode(self) -> SessionHandoffMode {
+        match self {
+            Self::RootSessionContinuity => SessionHandoffMode::SelfContinuity,
+            Self::DelegatedSubsession => SessionHandoffMode::BoundedHandoff,
+            Self::SchedulerStageOutputSession => SessionHandoffMode::StageOutputSink,
+            Self::ExplicitFullHistoryFork => SessionHandoffMode::FullHistoryFork,
+            Self::UnclassifiedChild => SessionHandoffMode::UnclassifiedChild,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::RootSessionContinuity => "root continuity",
+            Self::DelegatedSubsession => "delegated subsession",
+            Self::SchedulerStageOutputSession => "stage output sink",
+            Self::ExplicitFullHistoryFork => "full-history fork",
+            Self::UnclassifiedChild => "unclassified child",
+        }
+    }
+
+    pub fn ownership_summary(self) -> SessionOwnershipSummary {
+        let owns_prompt_continuity = self.owns_prompt_continuity();
+        SessionOwnershipSummary {
+            context_kind: self,
+            handoff_mode: self.handoff_mode(),
+            owns_prompt_continuity,
+            compact_owner: owns_prompt_continuity,
+            provider_model_role: SessionProviderModelRole::RequestShapeOnly,
+            workflow_usage_role: SessionWorkflowUsageRole::ObservationOnly,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

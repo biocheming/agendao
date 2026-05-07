@@ -14,6 +14,7 @@ use rocode_provider::{
 };
 use rocode_skill::RuntimeInstructionSource;
 use rocode_tool::{Tool, ToolContext, ToolError, ToolResult};
+use rocode_types::ContextPressureGovernanceStatus;
 use std::fs;
 use std::sync::Mutex as StdMutex;
 use tempfile::tempdir;
@@ -128,6 +129,112 @@ impl Provider for ScriptedStreamProvider {
                 .map(Result::<StreamEvent, ProviderError>::Ok),
         )))
     }
+}
+
+#[test]
+fn pre_dispatch_governance_is_ready_when_context_is_within_budget() {
+    let provider = StaticModelProvider::with_model("ctx-model", 100, 20);
+    let mut session = Session::new("proj", ".");
+    session.insert_metadata("model_provider", serde_json::json!("mock"));
+    session.insert_metadata("model_id", serde_json::json!("ctx-model"));
+    session.add_user_message("short request");
+
+    let outcome = govern_pre_dispatch_session_context(
+        &mut session,
+        &provider,
+        "ctx-model",
+        Some(20),
+        None,
+        None,
+        Some(24),
+        Some(96),
+        Some("short request"),
+        "pre_dispatch_hard_gate",
+        "scheduler.pre_dispatch",
+    );
+
+    let ContextPressureGovernanceOutcome::Proceed(summary) = outcome else {
+        panic!("governance should proceed when context is within budget");
+    };
+    assert_eq!(summary.status, ContextPressureGovernanceStatus::Ready);
+    assert!(!summary.compaction_attempted);
+    assert!(!summary.blocking);
+}
+
+#[test]
+fn pre_dispatch_governance_blocks_when_request_view_remains_over_limit() {
+    let provider = StaticModelProvider::with_model("ctx-model", 100, 20);
+    let mut session = Session::new("proj", ".");
+    session.insert_metadata("model_provider", serde_json::json!("mock"));
+    session.insert_metadata("model_id", serde_json::json!("ctx-model"));
+    session.add_user_message("first");
+    session.add_user_message("second");
+
+    let outcome = govern_pre_dispatch_session_context(
+        &mut session,
+        &provider,
+        "ctx-model",
+        Some(20),
+        None,
+        None,
+        Some(120),
+        Some(480),
+        Some("second"),
+        "pre_dispatch_hard_gate",
+        "scheduler.pre_dispatch",
+    );
+
+    let ContextPressureGovernanceOutcome::Blocked(summary) = outcome else {
+        panic!("governance should block when context remains over limit");
+    };
+    assert_eq!(summary.status, ContextPressureGovernanceStatus::Blocked);
+    assert_eq!(summary.reason.as_deref(), Some("request_view_overflow"));
+    assert!(summary.compaction_attempted);
+    assert!(!summary.compaction_succeeded);
+    assert!(summary.blocking);
+
+    let persisted = session
+        .record()
+        .metadata
+        .get(CONTEXT_PRESSURE_GOVERNANCE_SUMMARY_METADATA_KEY)
+        .cloned()
+        .expect("summary should persist into session metadata");
+    let persisted: rocode_types::ContextPressureGovernanceSummary =
+        serde_json::from_value(persisted).expect("persisted summary should parse");
+    assert_eq!(persisted.status, ContextPressureGovernanceStatus::Blocked);
+}
+
+#[test]
+fn pre_dispatch_governance_records_compaction_when_reduction_succeeds() {
+    let provider = StaticModelProvider::with_model("ctx-model", 100, 20);
+    let mut session = Session::new("proj", ".");
+    session.insert_metadata("model_provider", serde_json::json!("mock"));
+    session.insert_metadata("model_id", serde_json::json!("ctx-model"));
+    for index in 0..10 {
+        session.add_user_message(format!("message {index}"));
+    }
+
+    let outcome = govern_pre_dispatch_session_context(
+        &mut session,
+        &provider,
+        "ctx-model",
+        Some(20),
+        None,
+        None,
+        Some(95),
+        Some(380),
+        Some("message 9"),
+        "pre_dispatch_hard_gate",
+        "scheduler.pre_dispatch",
+    );
+
+    let ContextPressureGovernanceOutcome::Proceed(summary) = outcome else {
+        panic!("compaction should allow the dispatch to proceed");
+    };
+    assert_eq!(summary.status, ContextPressureGovernanceStatus::Compacted);
+    assert!(summary.compaction_attempted);
+    assert!(summary.compaction_succeeded);
+    assert!(!summary.blocking);
 }
 
 struct MultiTurnScriptedProvider {

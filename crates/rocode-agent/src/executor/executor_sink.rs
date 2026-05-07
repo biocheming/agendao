@@ -51,10 +51,6 @@ pub(super) struct AgentLoopSink {
 }
 
 impl AgentLoopSink {
-    pub(super) fn into_messages(self) -> Vec<rocode_provider::Message> {
-        self.messages
-    }
-
     fn flush_assistant_with_tools(&mut self) {
         if self.assistant_flushed {
             return;
