@@ -250,11 +250,11 @@ mod tests {
         dialog.set_options(vec![
             ThemeOption {
                 id: "opencode@dark".to_string(),
-                name: "OpenCode Dark".to_string(),
+                name: "RockyCode Dark".to_string(),
             },
             ThemeOption {
                 id: "opencode@light".to_string(),
-                name: "OpenCode Light".to_string(),
+                name: "RockyCode Light".to_string(),
             },
         ]);
         dialog.open("opencode@dark");

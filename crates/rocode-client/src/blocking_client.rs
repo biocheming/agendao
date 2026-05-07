@@ -81,12 +81,10 @@ impl BlockingApiClient {
 
     pub fn create_session(
         &self,
-        parent_id: Option<String>,
         scheduler_profile: Option<String>,
         directory: Option<String>,
     ) -> anyhow::Result<SessionInfo> {
         let request = CreateSessionRequest {
-            parent_id,
             scheduler_profile,
             directory,
             project_id: None,
@@ -974,15 +972,10 @@ impl BlockingApiClient {
         message_id: Option<&str>,
     ) -> anyhow::Result<SessionInfo> {
         let url = server_url(&self.base_url, &format!("/session/{}/fork", session_id));
-        let mut params: Vec<(&str, String)> = Vec::new();
-        if let Some(msg_id) = message_id {
-            params.push(("message_id", msg_id.to_string()));
-        }
-        let request = if params.is_empty() {
-            self.client.post(&url)
-        } else {
-            self.client.post(&url).query(&params)
-        };
+        let request = self
+            .client
+            .post(&url)
+            .json(&serde_json::json!({ "message_id": message_id }));
         Self::json_ok(request.send()?, &format!("fork session `{}`", session_id))
     }
 

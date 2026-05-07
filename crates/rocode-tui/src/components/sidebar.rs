@@ -665,9 +665,15 @@ impl Sidebar {
 
             let total_cost = self
                 .context
-                .session_usage()
+                .session_usage_books()
                 .as_ref()
-                .map(|usage| usage.total_cost)
+                .map(|books| books.workflow_cumulative.total_cost)
+                .or_else(|| {
+                    self.context
+                        .session_usage()
+                        .as_ref()
+                        .map(|usage| usage.total_cost)
+                })
                 .unwrap_or_else(|| {
                     messages
                         .iter()
@@ -677,9 +683,15 @@ impl Sidebar {
                 });
             let total_tokens = self
                 .context
-                .session_usage()
+                .session_usage_books()
                 .as_ref()
-                .map(total_session_tokens)
+                .map(|books| books.workflow_cumulative.total_tokens())
+                .or_else(|| {
+                    self.context
+                        .session_usage()
+                        .as_ref()
+                        .map(total_session_tokens)
+                })
                 .unwrap_or_else(|| {
                     messages
                         .iter()
@@ -689,14 +701,23 @@ impl Sidebar {
                 });
             let (session_cache_read_tokens, session_cache_miss_tokens, session_cache_write_tokens) =
                 self.context
-                    .session_usage()
+                    .session_usage_books()
                     .as_ref()
-                    .map(|usage| {
+                    .map(|books| {
                         (
-                            usage.cache_read_tokens,
-                            usage.cache_miss_tokens,
-                            usage.cache_write_tokens,
+                            books.workflow_cumulative.cache_read_tokens,
+                            books.workflow_cumulative.cache_miss_tokens,
+                            books.workflow_cumulative.cache_write_tokens,
                         )
+                    })
+                    .or_else(|| {
+                        self.context.session_usage().as_ref().map(|usage| {
+                            (
+                                usage.cache_read_tokens,
+                                usage.cache_miss_tokens,
+                                usage.cache_write_tokens,
+                            )
+                        })
                     })
                     .unwrap_or_else(|| {
                         messages
@@ -751,7 +772,7 @@ impl Sidebar {
                     }
                     if total_tokens > 0 {
                         lines.push(Line::from(vec![
-                            Span::styled("Session ", Style::default().fg(theme.text_muted)),
+                            Span::styled("Workflow ", Style::default().fg(theme.text_muted)),
                             Span::styled(
                                 format!("{} cumulative", format_compact_number(total_tokens)),
                                 Style::default().fg(theme.text),
@@ -835,9 +856,15 @@ impl Sidebar {
                             ]));
                         }
                     }
-                    if let Some(cache_diagnostic) =
-                        last_assistant.and_then(|message| cache_diagnostic_label(&message.metadata))
-                    {
+                    let cache_diagnostic = self
+                        .context
+                        .session_cache_semantics()
+                        .and_then(|summary| summary.label)
+                        .or_else(|| {
+                            last_assistant
+                                .and_then(|message| cache_diagnostic_label(&message.metadata))
+                        });
+                    if let Some(cache_diagnostic) = cache_diagnostic {
                         lines.push(Line::from(vec![
                             Span::styled("Cache  ", Style::default().fg(theme.text_muted)),
                             Span::styled(

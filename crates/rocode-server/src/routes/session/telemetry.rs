@@ -4,15 +4,19 @@ use axum::extract::{Path, State};
 use axum::Json;
 use rocode_command::stage_protocol::StageSummary;
 use rocode_multimodal::PersistedMultimodalExplain;
+use rocode_session::prompt::{explain_session_cache_semantics, explain_session_context};
 use rocode_session::{
     load_session_telemetry_snapshot, persist_session_telemetry_snapshot,
     session_last_run_status_label, Session, SessionUsage,
 };
 use rocode_types::{
+    ContextCompactionSummary, ContextPressureGovernanceSummary,
+    PromptSurfaceSnapshotInvalidationSummary, SessionCacheSemanticsSummary, SessionContextExplain,
     SessionDiagnosticsSidecar, SessionInsightsResponse, SessionMemoryTelemetrySummary,
-    SessionMultimodalAttachmentInfo, SessionMultimodalInsight,
+    SessionMultimodalAttachmentInfo, SessionMultimodalInsight, SessionOwnershipSummary,
+    SessionUsageBooks, WorkflowUsageSummary,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::runtime_control::SessionExecutionTopology;
 use crate::session_runtime::state::SessionRuntimeState;
@@ -29,10 +33,21 @@ pub struct SessionTelemetrySnapshot {
     pub stages: Vec<StageSummary>,
     pub topology: SessionExecutionTopology,
     pub usage: SessionUsage,
+    pub usage_books: SessionUsageBooks,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<SessionMemoryTelemetrySummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_bust_summary: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_explain: Option<SessionContextExplain>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ownership: Option<SessionOwnershipSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_compaction_summary: Option<ContextCompactionSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_pressure_governance_summary: Option<ContextPressureGovernanceSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_semantics: Option<SessionCacheSemanticsSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_surface_runtime_snapshot: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -65,13 +80,6 @@ pub struct SessionExecutionPreflightSummary {
     pub issues: Vec<rocode_tool::ExecutionPreflightIssue>,
     #[serde(default)]
     pub attachment_count: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PromptSurfaceSnapshotInvalidationSummary {
-    pub severity: rocode_provider::cache::CacheBustSeverity,
-    pub reason: String,
-    pub changed_fields: Vec<String>,
 }
 
 pub(super) async fn get_session_telemetry(
@@ -142,6 +150,15 @@ pub(super) async fn build_session_telemetry_snapshot(
     let mut runtime = runtime_snapshot_or_default(state, session_id).await?;
     let usage = runtime.usage.clone().unwrap_or_else(|| session.get_usage());
     runtime.usage = Some(usage.clone());
+    let workflow_cumulative = {
+        let sessions = state.sessions.lock().await;
+        workflow_usage_summary_for_session_tree(&sessions, session_id)
+    };
+    let usage_books = SessionUsageBooks {
+        request_context_tokens: session.latest_request_context_tokens(),
+        live_context_tokens: usage.live_context_tokens(),
+        workflow_cumulative,
+    };
 
     let stages = state
         .runtime_telemetry
@@ -153,6 +170,22 @@ pub(super) async fn build_session_telemetry_snapshot(
     let cache_bust_summary = diagnostics
         .as_ref()
         .and_then(SessionDiagnosticsSidecar::latest_cache_bust_summary_value);
+    let typed_cache_bust_summary = cache_bust_summary.clone().and_then(|value| {
+        serde_json::from_value::<rocode_provider::cache::CacheBustSummary>(value).ok()
+    });
+    let context_explain = Some(explain_session_context(
+        session,
+        Some(usage_books.workflow_cumulative.total_tokens()),
+    ));
+    let ownership = Some(session.ownership_summary());
+    let context_compaction_summary = diagnostics
+        .as_ref()
+        .and_then(SessionDiagnosticsSidecar::latest_context_compaction_record_value)
+        .and_then(|value| serde_json::from_value(value).ok());
+    let context_pressure_governance_summary = diagnostics
+        .as_ref()
+        .and_then(SessionDiagnosticsSidecar::context_pressure_governance_summary_value)
+        .and_then(|value| serde_json::from_value(value).ok());
     let prompt_surface_runtime_snapshot = diagnostics
         .as_ref()
         .and_then(SessionDiagnosticsSidecar::prompt_surface_runtime_snapshot_value);
@@ -160,6 +193,14 @@ pub(super) async fn build_session_telemetry_snapshot(
         .as_ref()
         .and_then(SessionDiagnosticsSidecar::latest_prompt_surface_snapshot_invalidation_value)
         .and_then(|value| serde_json::from_value(value).ok());
+    let cache_semantics = context_explain.as_ref().map(|context_explain| {
+        explain_session_cache_semantics(
+            context_explain,
+            context_compaction_summary.as_ref(),
+            typed_cache_bust_summary.as_ref(),
+            prompt_surface_snapshot_invalidation.as_ref(),
+        )
+    });
     let ingress_stabilization = diagnostics
         .as_ref()
         .and_then(SessionDiagnosticsSidecar::ingress_stabilization_value);
@@ -176,8 +217,14 @@ pub(super) async fn build_session_telemetry_snapshot(
         stages,
         topology,
         usage,
+        usage_books,
         memory,
         cache_bust_summary,
+        context_explain,
+        ownership,
+        context_compaction_summary,
+        context_pressure_governance_summary,
+        cache_semantics,
         prompt_surface_runtime_snapshot,
         prompt_surface_snapshot_invalidation,
         ingress_stabilization,
@@ -186,9 +233,39 @@ pub(super) async fn build_session_telemetry_snapshot(
     })
 }
 
+fn workflow_usage_summary_for_session_tree(
+    sessions: &rocode_session::SessionManager,
+    root_session_id: &str,
+) -> WorkflowUsageSummary {
+    let mut aggregate = WorkflowUsageSummary::default();
+    let mut pending = vec![root_session_id.to_string()];
+
+    while let Some(session_id) = pending.pop() {
+        let Some(session) = sessions.get(&session_id) else {
+            continue;
+        };
+        aggregate.accumulate_session_usage(&session.get_usage());
+        pending.extend(
+            sessions
+                .children(&session_id)
+                .into_iter()
+                .map(|child| child.record().id.clone()),
+        );
+    }
+
+    aggregate
+}
+
 #[cfg(test)]
 fn latest_cache_bust_summary(session: &Session) -> Option<serde_json::Value> {
     diagnostics_sidecar(session).and_then(|sidecar| sidecar.latest_cache_bust_summary_value())
+}
+
+#[cfg(test)]
+fn latest_context_compaction_summary(session: &Session) -> Option<ContextCompactionSummary> {
+    diagnostics_sidecar(session)
+        .and_then(|sidecar| sidecar.latest_context_compaction_record_value())
+        .and_then(|value| serde_json::from_value(value).ok())
 }
 
 #[cfg(test)]
@@ -503,7 +580,7 @@ mod tests {
 
         assert_eq!(
             invalidation.severity,
-            rocode_provider::cache::CacheBustSeverity::LikelyBust
+            rocode_types::SessionCacheSeverity::LikelyBust
         );
         assert_eq!(
             invalidation.reason,
@@ -535,12 +612,43 @@ mod tests {
 
         assert_eq!(
             invalidation.severity,
-            rocode_provider::cache::CacheBustSeverity::SoftDegradation
+            rocode_types::SessionCacheSeverity::SoftDegradation
         );
         assert_eq!(
             invalidation.changed_fields,
             vec!["ingressPolicyHash".to_string()]
         );
+    }
+
+    #[test]
+    fn latest_context_compaction_summary_reads_assistant_metadata() {
+        let mut session = Session::new("session-1".to_string(), ".".to_string());
+        let assistant = session.add_assistant_message();
+        assistant.metadata.insert(
+            rocode_session::prompt::CONTEXT_COMPACTION_RECORD_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "trigger": "overflow_recovery",
+                "phase": "prompt.provider_overflow",
+                "reason": "provider_overflow",
+                "forced": true,
+                "request_context_tokens": 120000_u64,
+                "limit_tokens": 100000_u64,
+                "body_chars": 480000,
+                "message_count_before": 6,
+                "compacted_message_count": 3,
+                "kept_message_count": 3,
+                "summary": "Compacted 3 messages."
+            }),
+        );
+
+        let summary = latest_context_compaction_summary(&session).expect("summary");
+
+        assert_eq!(summary.trigger, "overflow_recovery");
+        assert_eq!(summary.phase.as_deref(), Some("prompt.provider_overflow"));
+        assert_eq!(summary.reason.as_deref(), Some("provider_overflow"));
+        assert!(summary.forced);
+        assert_eq!(summary.compacted_message_count, Some(3));
+        assert_eq!(summary.summary.as_deref(), Some("Compacted 3 messages."));
     }
 
     #[test]
@@ -663,7 +771,7 @@ mod tests {
         let mut runtime = SessionRuntimeState::new("session-1");
         runtime.active_stage_id = Some("stage-1".to_string());
         runtime.active_stage_count = 1;
-        runtime.usage = Some(SessionUsage {
+        let runtime_usage = SessionUsage {
             input_tokens: 10,
             output_tokens: 20,
             reasoning_tokens: 3,
@@ -672,7 +780,8 @@ mod tests {
             cache_miss_tokens: 0,
             context_tokens: 0,
             total_cost: 0.12,
-        });
+        };
+        runtime.usage = Some(runtime_usage.clone());
 
         let snapshot = SessionTelemetrySnapshot {
             runtime,
@@ -725,8 +834,84 @@ mod tests {
                 context_tokens: 0,
                 total_cost: 0.12,
             },
+            usage_books: SessionUsageBooks {
+                request_context_tokens: Some(10),
+                live_context_tokens: None,
+                workflow_cumulative: runtime_usage.workflow_usage_summary(),
+            },
             memory: None,
             cache_bust_summary: None,
+            context_explain: Some(SessionContextExplain {
+                resolved_model: Some("openai/gpt-4o".to_string()),
+                fork: None,
+                raw_history_messages: 18,
+                raw_model_visible_messages: 15,
+                api_view_messages: 8,
+                api_view_estimated_input_tokens: Some(92_000),
+                api_view_body_chars: Some(360_000),
+                live_context_tokens: None,
+                last_request_context_tokens: Some(10),
+                owner_session_cumulative_tokens: runtime_usage.session_cumulative_tokens(),
+                workflow_cumulative_tokens: runtime_usage.workflow_usage_summary().total_tokens(),
+            }),
+            ownership: Some(SessionOwnershipSummary {
+                context_kind: rocode_types::SessionContextKind::RootSessionContinuity,
+                handoff_mode: rocode_types::SessionHandoffMode::SelfContinuity,
+                owns_prompt_continuity: true,
+                compact_owner: true,
+                provider_model_role: rocode_types::SessionProviderModelRole::RequestShapeOnly,
+                workflow_usage_role: rocode_types::SessionWorkflowUsageRole::ObservationOnly,
+            }),
+            context_compaction_summary: Some(ContextCompactionSummary {
+                trigger: "auto_preflight".to_string(),
+                phase: Some("prompt.pre_request".to_string()),
+                reason: Some("request_view_threshold".to_string()),
+                forced: false,
+                request_context_tokens: Some(92_000),
+                live_context_tokens: None,
+                limit_tokens: Some(100_000),
+                body_chars: Some(360_000),
+                message_count_before: Some(14),
+                compacted_message_count: Some(7),
+                kept_message_count: Some(7),
+                summary: Some("Compacted 7 messages.".to_string()),
+            }),
+            context_pressure_governance_summary: None,
+            cache_semantics: Some(SessionCacheSemanticsSummary {
+                basis: rocode_types::SessionCacheSemanticsBasis::ApiView,
+                api_view_messages: 8,
+                trimmed_model_visible_messages: 7,
+                boundary: Some(rocode_types::SessionCacheBoundarySummary {
+                    kind: rocode_types::SessionCacheBoundaryKind::Compaction,
+                    trigger: "auto_preflight".to_string(),
+                    phase: Some("prompt.pre_request".to_string()),
+                    reason: Some("request_view_threshold".to_string()),
+                    message_count_before: Some(14),
+                    compacted_message_count: Some(7),
+                    kept_message_count: Some(7),
+                    trimmed_model_visible_messages: 7,
+                    likely_changed_prefix: true,
+                    possible_cache_bust: true,
+                }),
+                cache_bust: Some(rocode_types::SessionCacheBustExplain {
+                    status: "degraded".to_string(),
+                    severity: rocode_types::SessionCacheSeverity::LikelyBust,
+                    primary_cause: Some(
+                        "messagePrefixHash changed: message prefix changed before the stable boundary"
+                            .to_string(),
+                    ),
+                    change_count: 1,
+                }),
+                prompt_surface_invalidation: Some(PromptSurfaceSnapshotInvalidationSummary {
+                    severity: rocode_types::SessionCacheSeverity::HardBust,
+                    reason: "prompt surface runtime changed: toolSurfaceHash".to_string(),
+                    changed_fields: vec!["toolSurfaceHash".to_string()],
+                }),
+                label: Some(
+                    "likely bust · compact boundary likely changed the API-view prefix"
+                        .to_string(),
+                ),
+            }),
             prompt_surface_runtime_snapshot: Some(serde_json::json!({
                 "generation": 7,
                 "invalidation": {
@@ -734,7 +919,7 @@ mod tests {
                 },
             })),
             prompt_surface_snapshot_invalidation: Some(PromptSurfaceSnapshotInvalidationSummary {
-                severity: rocode_provider::cache::CacheBustSeverity::HardBust,
+                severity: rocode_types::SessionCacheSeverity::HardBust,
                 reason: "prompt surface runtime changed: toolSurfaceHash".to_string(),
                 changed_fields: vec!["toolSurfaceHash".to_string()],
             }),
@@ -774,6 +959,29 @@ mod tests {
         assert_eq!(value["stages"][0]["skill_tree_truncated"], true);
         assert_eq!(value["topology"]["waiting_count"], 1);
         assert_eq!(value["usage"]["total_cost"], 0.12);
+        assert_eq!(value["context_explain"]["api_view_messages"], 8);
+        assert_eq!(
+            value["ownership"]["context_kind"],
+            "root_session_continuity"
+        );
+        assert_eq!(value["ownership"]["compact_owner"], true);
+        assert_eq!(
+            value["context_explain"]["workflow_cumulative_tokens"],
+            runtime_usage.workflow_usage_summary().total_tokens()
+        );
+        assert_eq!(
+            value["context_compaction_summary"]["reason"],
+            "request_view_threshold"
+        );
+        assert_eq!(
+            value["context_compaction_summary"]["compacted_message_count"],
+            7
+        );
+        assert_eq!(value["cache_semantics"]["basis"], "api_view");
+        assert_eq!(
+            value["cache_semantics"]["label"],
+            "likely bust · compact boundary likely changed the API-view prefix"
+        );
         assert_eq!(value["prompt_surface_runtime_snapshot"]["generation"], 7);
         assert_eq!(
             value["prompt_surface_snapshot_invalidation"]["changed_fields"][0],
@@ -1140,5 +1348,121 @@ mod tests {
         let _ = global()
             .remove(&HookEvent::TelemetrySnapshotUpdated, &hook_name)
             .await;
+    }
+
+    #[tokio::test]
+    async fn telemetry_snapshot_usage_books_keep_owner_local_context_and_subtree_cumulative() {
+        let state = Arc::new(ServerState::new());
+
+        let (root_id, root_session, root_usage, child_usage) = {
+            let mut sessions = state.sessions.lock().await;
+
+            let mut root = sessions.create("project", "/tmp/project");
+            let root_usage = MessageUsage {
+                input_tokens: 120,
+                output_tokens: 30,
+                reasoning_tokens: 9,
+                cache_write_tokens: 7,
+                cache_read_tokens: 40,
+                cache_miss_tokens: 5,
+                context_tokens: 180,
+                total_cost: 0.75,
+            };
+            let assistant = root.add_assistant_message();
+            assistant.usage = Some(root_usage.clone());
+            sessions.update(root.clone());
+
+            let mut child = rocode_session::Session::child_with_context_kind(
+                &root,
+                rocode_types::SessionContextKind::DelegatedSubsession,
+            );
+            let child_usage = MessageUsage {
+                input_tokens: 60,
+                output_tokens: 15,
+                reasoning_tokens: 4,
+                cache_write_tokens: 3,
+                cache_read_tokens: 12,
+                cache_miss_tokens: 2,
+                context_tokens: 90,
+                total_cost: 0.33,
+            };
+            let child_assistant = child.add_assistant_message();
+            child_assistant.usage = Some(child_usage.clone());
+            sessions.update(child);
+
+            (root.id.clone(), root, root_usage, child_usage)
+        };
+
+        let snapshot = build_session_telemetry_snapshot(&state, &root_id, &root_session)
+            .await
+            .expect("snapshot should build");
+
+        assert_eq!(
+            snapshot.usage_books.request_context_tokens,
+            root_usage.request_context_tokens()
+        );
+        assert_eq!(
+            snapshot.usage_books.live_context_tokens,
+            root_usage.live_context_tokens()
+        );
+        assert_eq!(
+            snapshot.usage_books.workflow_cumulative.input_tokens,
+            root_usage.input_tokens + child_usage.input_tokens
+        );
+        assert_eq!(
+            snapshot.usage_books.workflow_cumulative.output_tokens,
+            root_usage.output_tokens + child_usage.output_tokens
+        );
+        assert_eq!(
+            snapshot.usage_books.workflow_cumulative.reasoning_tokens,
+            root_usage.reasoning_tokens + child_usage.reasoning_tokens
+        );
+        assert_eq!(
+            snapshot.usage_books.workflow_cumulative.cache_read_tokens,
+            root_usage.cache_read_tokens + child_usage.cache_read_tokens
+        );
+        assert_eq!(
+            snapshot.usage_books.workflow_cumulative.cache_miss_tokens,
+            root_usage.cache_miss_tokens + child_usage.cache_miss_tokens
+        );
+        assert_eq!(
+            snapshot.usage_books.workflow_cumulative.total_tokens(),
+            root_usage.input_tokens
+                + root_usage.output_tokens
+                + root_usage.reasoning_tokens
+                + child_usage.input_tokens
+                + child_usage.output_tokens
+                + child_usage.reasoning_tokens
+        );
+        assert!(
+            (snapshot.usage_books.workflow_cumulative.total_cost
+                - (root_usage.total_cost + child_usage.total_cost))
+                .abs()
+                < f64::EPSILON
+        );
+        let explain = snapshot
+            .context_explain
+            .as_ref()
+            .expect("context explain should be present");
+        assert_eq!(explain.raw_history_messages, 1);
+        assert_eq!(explain.raw_model_visible_messages, 1);
+        assert_eq!(explain.api_view_messages, 0);
+        assert_eq!(explain.api_view_estimated_input_tokens, None);
+        assert_eq!(
+            explain.live_context_tokens,
+            root_usage.live_context_tokens()
+        );
+        assert_eq!(
+            explain.last_request_context_tokens,
+            root_usage.request_context_tokens()
+        );
+        assert_eq!(
+            explain.owner_session_cumulative_tokens,
+            root_usage.input_tokens + root_usage.output_tokens + root_usage.reasoning_tokens
+        );
+        assert_eq!(
+            explain.workflow_cumulative_tokens,
+            snapshot.usage_books.workflow_cumulative.total_tokens()
+        );
     }
 }

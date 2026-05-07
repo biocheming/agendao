@@ -63,7 +63,7 @@ impl HelpDialog {
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from("  Ctrl+X  Open command list"),
-            Line::from("  Alt+Right  Open child session"),
+            Line::from("  Alt+Right  Open attached session"),
             Line::from("  Alt+Left   Return to parent session"),
             Line::from("  Ctrl+P  Open command palette"),
             Line::from("  F1      Open help"),

@@ -19,7 +19,7 @@ const HOME_TIPS: &[&str] = &[
     "Type {highlight}/help{/highlight} to browse all commands",
     "Use {highlight}/themes{/highlight} to switch visual themes",
     "Use {highlight}/sessions{/highlight} to resume older work",
-    "Use {highlight}Alt+Left{/highlight} to leave a child session",
+    "Use {highlight}Alt+Left{/highlight} to leave an attached session",
     "Use {highlight}/timeline{/highlight} to jump to any message",
     "Use {highlight}/status{/highlight} to inspect runtime status",
     "Use {highlight}/mcps{/highlight} to inspect MCP connections",

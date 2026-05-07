@@ -104,7 +104,6 @@ pub(super) async fn run_chat_session(
 
     let session_info = api_client
         .create_session(
-            None,
             selection.requested_scheduler_profile.clone(),
             Some(cli_session_directory(&working_dir)),
         )
@@ -329,7 +328,7 @@ pub(super) async fn run_chat_session(
                                 let _ = print_block(
                                     Some(&runtime),
                                     OutputBlock::Status(StatusBlock::title(format!(
-                                        "Focused child session: {}",
+                                        "Focused attached session: {}",
                                         session_id
                                     ))),
                                     &repl_style,
@@ -339,7 +338,7 @@ pub(super) async fn run_chat_session(
                                 let _ = print_block(
                                     Some(&runtime),
                                     OutputBlock::Status(StatusBlock::warning(format!(
-                                        "Unknown child session: {}. Use /child list first.",
+                                        "Unknown attached session: {}. Use /child list first.",
                                         session_id
                                     ))),
                                     &repl_style,
@@ -349,7 +348,7 @@ pub(super) async fn run_chat_session(
                                 let _ = print_block(
                                     Some(&runtime),
                                     OutputBlock::Status(StatusBlock::error(format!(
-                                        "Failed to focus child session: {}",
+                                        "Failed to focus attached session: {}",
                                         error
                                     ))),
                                     &repl_style,
@@ -363,7 +362,7 @@ pub(super) async fn run_chat_session(
                                 let _ = print_block(
                                     Some(&runtime),
                                     OutputBlock::Status(StatusBlock::title(format!(
-                                        "Focused child session [{}/{}]: {}",
+                                        "Focused attached session [{}/{}]: {}",
                                         index, total, session_id
                                     ))),
                                     &repl_style,
@@ -373,7 +372,7 @@ pub(super) async fn run_chat_session(
                                 let _ = print_block(
                             Some(&runtime),
                             OutputBlock::Status(StatusBlock::warning(
-                                "No child sessions available. Use /child list to inspect the cache.",
+                                "No attached sessions available. Use /child list to inspect the cache.",
                             )),
                             &repl_style,
                         );
@@ -382,7 +381,7 @@ pub(super) async fn run_chat_session(
                                 let _ = print_block(
                                     Some(&runtime),
                                     OutputBlock::Status(StatusBlock::error(format!(
-                                        "Failed to switch to next child session: {}",
+                                        "Failed to switch to next attached session: {}",
                                         error
                                     ))),
                                     &repl_style,
@@ -396,7 +395,7 @@ pub(super) async fn run_chat_session(
                                 let _ = print_block(
                                     Some(&runtime),
                                     OutputBlock::Status(StatusBlock::title(format!(
-                                        "Focused child session [{}/{}]: {}",
+                                        "Focused attached session [{}/{}]: {}",
                                         index, total, session_id
                                     ))),
                                     &repl_style,
@@ -406,7 +405,7 @@ pub(super) async fn run_chat_session(
                                 let _ = print_block(
                             Some(&runtime),
                             OutputBlock::Status(StatusBlock::warning(
-                                "No child sessions available. Use /child list to inspect the cache.",
+                                "No attached sessions available. Use /child list to inspect the cache.",
                             )),
                             &repl_style,
                         );
@@ -415,7 +414,7 @@ pub(super) async fn run_chat_session(
                                 let _ = print_block(
                                     Some(&runtime),
                                     OutputBlock::Status(StatusBlock::error(format!(
-                                        "Failed to switch to previous child session: {}",
+                                        "Failed to switch to previous attached session: {}",
                                         error
                                     ))),
                                     &repl_style,

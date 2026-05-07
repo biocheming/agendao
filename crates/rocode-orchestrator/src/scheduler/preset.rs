@@ -304,7 +304,9 @@ mod tests {
     }
 
     fn checked_in_scheduler_example_path(relative_path: &str) -> PathBuf {
-        repo_root().join("docs/examples/scheduler").join(relative_path)
+        repo_root()
+            .join("docs/examples/scheduler")
+            .join(relative_path)
     }
 
     fn assert_checked_in_public_scheduler_example(

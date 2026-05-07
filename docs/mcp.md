@@ -1,6 +1,6 @@
 # Model Context Protocol (MCP)
 
-Model Context Protocol 是一个基于 JSON-RPC 2.0 的协议，用于将 ROCode 连接到外部工具、资源和提示词服务器。MCP 服务器扩展了代理的能力范围 -- 无需修改 ROCode 本身即可暴露文件系统、数据库、API、浏览器自动化等能力。
+Model Context Protocol 是一个基于 JSON-RPC 2.0 的协议，用于将 ROCode 连接到外部工具、资源和提示词服务器。MCP 服务器扩展了智能体的能力范围 -- 无需修改 ROCode 本身即可暴露文件系统、数据库、API、浏览器自动化等能力。
 
 ---
 

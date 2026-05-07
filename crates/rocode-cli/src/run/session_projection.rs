@@ -288,7 +288,7 @@ fn cli_list_child_sessions(runtime: &CliExecutionRuntime) {
     let mut lines = Vec::new();
     let child_ids = cli_ordered_child_session_ids(runtime);
     if child_ids.is_empty() {
-        lines.push("No child sessions have been observed for this run yet.".to_string());
+        lines.push("No attached sessions have been observed for this run yet.".to_string());
         lines.push("When scheduler agents fork, they will appear here.".to_string());
     } else {
         for session_id in child_ids {
@@ -324,7 +324,7 @@ fn cli_list_child_sessions(runtime: &CliExecutionRuntime) {
     };
     let _ = print_cli_list_on_surface(
         Some(runtime),
-        "Child Sessions",
+        "Attached Sessions",
         Some(&footer),
         &lines,
         &style,
@@ -578,12 +578,22 @@ fn cli_runtime_snapshot_lines(
 
     if runtime.child_sessions.is_empty() {
         lines.push(String::new());
-        lines.push("Child sessions: none".to_string());
+        lines.push("Attached sessions: none".to_string());
     } else {
         lines.push(String::new());
-        lines.push(format!("Child sessions ({})", runtime.child_sessions.len()));
+        lines.push(format!(
+            "Attached sessions ({})",
+            runtime.child_sessions.len()
+        ));
         for child in &runtime.child_sessions {
-            lines.push(format!("  {} ← {}", child.child_id, child.parent_id));
+            let kind = child
+                .context_kind
+                .map(cli_session_context_kind_label)
+                .unwrap_or("attached session");
+            lines.push(format!(
+                "  {} · {} ← {}",
+                kind, child.child_id, child.parent_id
+            ));
         }
     }
 
@@ -664,12 +674,128 @@ fn cli_usage_snapshot_lines(
     projection: Option<&CliFrontendProjection>,
 ) -> Vec<String> {
     let usage = &telemetry.usage;
+    let usage_books = &telemetry.usage_books;
+    let workflow = &usage_books.workflow_cumulative;
     let mut lines = vec![format!("Session: {}", session_id)];
+
+    if let Some(explain) = telemetry.context_explain.as_ref() {
+        lines.push(String::new());
+        lines.push("Surface Views".to_string());
+        if let Some(model) = explain.resolved_model.as_deref() {
+            lines.push(format!("  Model: {}", model));
+        }
+        lines.push(format!(
+            "  Raw history: {} persisted messages",
+            explain.raw_history_messages
+        ));
+        if explain.raw_history_messages > explain.raw_model_visible_messages {
+            lines.push(format!(
+                "  Model-visible history: {} messages ({} runtime-only hidden)",
+                explain.raw_model_visible_messages,
+                explain
+                    .raw_history_messages
+                    .saturating_sub(explain.raw_model_visible_messages)
+            ));
+        } else {
+            lines.push(format!(
+                "  Model-visible history: {} messages",
+                explain.raw_model_visible_messages
+            ));
+        }
+        let mut api_view_line = format!("  API view: {} messages", explain.api_view_messages);
+        if let Some(tokens) = explain.api_view_estimated_input_tokens {
+            api_view_line.push_str(&format!(" · ~{} tokens", format_token_count(tokens)));
+        }
+        if let Some(chars) = explain.api_view_body_chars {
+            api_view_line.push_str(&format!(" · {} chars", format_token_count(chars as u64)));
+        }
+        lines.push(api_view_line);
+        if explain.raw_model_visible_messages > explain.api_view_messages {
+            lines.push(format!(
+                "  Boundary: {} earlier model-visible messages trimmed before the next request",
+                explain
+                    .raw_model_visible_messages
+                    .saturating_sub(explain.api_view_messages)
+            ));
+        }
+    }
+
+    if let Some(ownership) = telemetry.ownership.as_ref() {
+        lines.push(String::new());
+        lines.push("Ownership".to_string());
+        lines.push(format!(
+            "  Kind: {}",
+            cli_session_context_kind_label(ownership.context_kind)
+        ));
+        lines.push(format!(
+            "  Handoff: {}",
+            cli_session_handoff_mode_label(ownership.handoff_mode)
+        ));
+        lines.push(format!(
+            "  Prompt continuity: {}",
+            if ownership.owns_prompt_continuity {
+                "owned by this session"
+            } else {
+                "not owned by this session"
+            }
+        ));
+        lines.push(format!(
+            "  Compact owner: {}",
+            if ownership.compact_owner {
+                "this session"
+            } else {
+                "not eligible"
+            }
+        ));
+        lines.push("  Provider/model: request shape only".to_string());
+        lines.push("  Workflow cumulative: observation only".to_string());
+    }
+
+    if let Some(cache_semantics) = telemetry.cache_semantics.as_ref() {
+        lines.push(String::new());
+        lines.push("Cache semantics".to_string());
+        lines.push(format!(
+            "  Basis: API view ({} messages)",
+            cache_semantics.api_view_messages
+        ));
+        if cache_semantics.trimmed_model_visible_messages > 0 {
+            lines.push(format!(
+                "  Boundary: {} earlier model-visible messages trimmed before the next request",
+                cache_semantics.trimmed_model_visible_messages
+            ));
+        }
+        if let Some(boundary) = cache_semantics.boundary.as_ref() {
+            let trigger = boundary.trigger.replace('_', " ");
+            let reason = boundary
+                .reason
+                .as_deref()
+                .map(|value| value.replace('_', " "));
+            let mut detail = format!("  Compact: {}", trigger);
+            if let Some(reason) = reason.as_deref() {
+                detail.push_str(&format!(" · {}", reason));
+            }
+            if boundary.possible_cache_bust {
+                detail.push_str(" · may have shifted the cache prefix");
+            }
+            lines.push(detail);
+        }
+        if let Some(label) = cache_semantics.label.as_deref() {
+            lines.push(format!("  Impact: {}", label));
+        }
+        if let Some(invalidation) = cache_semantics.prompt_surface_invalidation.as_ref() {
+            if !invalidation.changed_fields.is_empty() {
+                lines.push(format!(
+                    "  Prompt surface: {}",
+                    invalidation.changed_fields.join(", ")
+                ));
+            }
+        }
+    }
 
     if let Some(projection) = projection {
         if let Some(current_tokens) = projection.current_context_tokens() {
             lines.push(String::new());
-            lines.push("Current context".to_string());
+            lines.push("Live context".to_string());
             if let Some(model) = cli_lookup_model_catalog_entry(projection)
                 .filter(|model| model.context_window.unwrap_or(0) > 0)
             {
@@ -691,9 +817,18 @@ fn cli_usage_snapshot_lines(
         }
 
         let last_turn = &projection.last_turn_tokens;
-        if last_turn.input_tokens > 0 || last_turn.output_tokens > 0 {
+        if last_turn.input_tokens > 0
+            || last_turn.output_tokens > 0
+            || usage_books.request_context_tokens.is_some()
+        {
             lines.push(String::new());
-            lines.push("Last turn".to_string());
+            lines.push("Last request".to_string());
+            if let Some(request_context_tokens) = usage_books.request_context_tokens {
+                lines.push(format!(
+                    "  Context: {}",
+                    format_token_count(request_context_tokens)
+                ));
+            }
             lines.push(format!(
                 "  Input {} · Output {}",
                 format_token_count(last_turn.input_tokens),
@@ -703,36 +838,58 @@ fn cli_usage_snapshot_lines(
     }
 
     lines.push(String::new());
-    lines.push("Session cumulative".to_string());
+    lines.push("Workflow cumulative".to_string());
     lines.push(format!(
         "  Total: {}",
-        format_token_count(usage.input_tokens + usage.output_tokens + usage.reasoning_tokens)
+        format_token_count(workflow.total_tokens())
     ));
     lines.push(format!(
         "  Input: {}",
-        format_token_count(usage.input_tokens)
+        format_token_count(workflow.input_tokens)
     ));
     lines.push(format!(
         "  Output: {}",
-        format_token_count(usage.output_tokens)
+        format_token_count(workflow.output_tokens)
     ));
     lines.push(format!(
         "  Reasoning: {}",
-        format_token_count(usage.reasoning_tokens)
+        format_token_count(workflow.reasoning_tokens)
     ));
     lines.push(format!(
         "  Cache read: {}",
-        format_token_count(usage.cache_read_tokens)
+        format_token_count(workflow.cache_read_tokens)
     ));
     lines.push(format!(
         "  Cache miss: {}",
-        format_token_count(usage.cache_miss_tokens)
+        format_token_count(workflow.cache_miss_tokens)
     ));
     lines.push(format!(
         "  Cache write: {}",
-        format_token_count(usage.cache_write_tokens)
+        format_token_count(workflow.cache_write_tokens)
     ));
-    lines.push(format!("  Cost: ${:.4}", usage.total_cost));
+    lines.push(format!("  Cost: ${:.4}", workflow.total_cost));
+
+    if workflow.total_tokens() != usage.session_cumulative_tokens() {
+        lines.push(String::new());
+        lines.push("Owner session cumulative".to_string());
+        lines.push(format!(
+            "  Total: {}",
+            format_token_count(usage.session_cumulative_tokens())
+        ));
+        lines.push(format!(
+            "  Input: {}",
+            format_token_count(usage.input_tokens)
+        ));
+        lines.push(format!(
+            "  Output: {}",
+            format_token_count(usage.output_tokens)
+        ));
+        lines.push(format!(
+            "  Reasoning: {}",
+            format_token_count(usage.reasoning_tokens)
+        ));
+        lines.push(format!("  Cost: ${:.4}", usage.total_cost));
+    }
 
     if !telemetry.stages.is_empty() {
         lines.push(String::new());
@@ -743,6 +900,20 @@ fn cli_usage_snapshot_lines(
     }
 
     lines
+}
+
+fn cli_session_context_kind_label(kind: crate::api_client::SessionContextKind) -> &'static str {
+    kind.label()
+}
+
+fn cli_session_handoff_mode_label(mode: rocode_types::SessionHandoffMode) -> &'static str {
+    match mode {
+        rocode_types::SessionHandoffMode::SelfContinuity => "self continuity",
+        rocode_types::SessionHandoffMode::BoundedHandoff => "bounded handoff",
+        rocode_types::SessionHandoffMode::StageOutputSink => "stage output sink",
+        rocode_types::SessionHandoffMode::FullHistoryFork => "full-history fork",
+        rocode_types::SessionHandoffMode::UnclassifiedChild => "unclassified child",
+    }
 }
 
 fn cli_session_insights_lines(
@@ -2447,7 +2618,6 @@ async fn cli_execute_new_session_action(
 ) {
     match api_client
         .create_session(
-            None,
             runtime.scheduler_profile_name.clone(),
             Some(cli_session_directory(&runtime.working_dir)),
         )
@@ -2898,7 +3068,7 @@ fn cli_sidebar_lines(
         }
         if ts.total_tokens > 0 {
             lines.push(format!(
-                "Session: {} cumulative",
+                "Workflow: {} cumulative",
                 format_token_count(ts.total_tokens)
             ));
         }
@@ -3137,7 +3307,7 @@ fn cli_active_stage_panel_lines(
         ));
     }
     if let Some(ref child_id) = stage.child_session_id {
-        lines.push(format!("→ Child session: {}", child_id));
+        lines.push(format!("→ Attached session: {}", child_id));
     }
     lines
 }
@@ -3334,17 +3504,19 @@ mod session_projection_tests {
     use super::{
         cli_context_usage_bar, cli_current_context_tokens, cli_default_events_query_input,
         cli_format_context_meter, cli_parse_events_command_input, cli_parse_events_query_input,
-        cli_session_insights_lines, cli_sidebar_lines, CliEventsCommandInput, CliEventsQueryInput,
-        CliFrontendProjection, CliObservedExecutionTopology, CLI_EVENTS_DEFAULT_PAGE_SIZE,
+        cli_session_insights_lines, cli_sidebar_lines, cli_usage_snapshot_lines,
+        CliEventsCommandInput, CliEventsQueryInput, CliFrontendProjection,
+        CliObservedExecutionTopology, CLI_EVENTS_DEFAULT_PAGE_SIZE,
     };
     use crate::api_client::SessionInsightsResponse;
     use rocode_types::{
         MemoryScope, ProviderConnectionDescriptorCandidate, ProviderProfileDescriptorView,
-        SessionEffectiveCompactionPolicy, SessionEffectiveExternalAdapterPolicy,
-        SessionEffectiveMemoryPolicy, SessionEffectivePolicyView, SessionEffectiveProviderPolicy,
+        SessionContextExplain, SessionEffectiveCompactionPolicy,
+        SessionEffectiveExternalAdapterPolicy, SessionEffectiveMemoryPolicy,
+        SessionEffectivePolicyView, SessionEffectiveProviderPolicy,
         SessionEffectiveProviderRuntimeProfile, SessionEffectiveSchedulerPolicy,
         SessionEffectiveSchedulerTraceStep, SessionEffectiveSchedulerTraceStepKind,
-        SessionEffectiveSkillTreePolicy,
+        SessionEffectiveSkillTreePolicy, SessionUsageBooks, WorkflowUsageSummary,
     };
 
     #[test]
@@ -3491,6 +3663,181 @@ mod session_projection_tests {
         assert!(lines
             .iter()
             .any(|line| line.contains("Provider:") && line.contains("thinking replay rejected")));
+    }
+
+    #[test]
+    fn usage_surface_explains_raw_history_and_api_view() {
+        let mut projection = CliFrontendProjection::default();
+        projection.token_stats.context_tokens = 82_000;
+        projection.last_turn_tokens.input_tokens = 88_000;
+        projection.last_turn_tokens.output_tokens = 2_400;
+
+        let telemetry = crate::api_client::SessionTelemetrySnapshot {
+            runtime: crate::api_client::SessionRuntimeState {
+                session_id: "sess_123".to_string(),
+                run_status: crate::api_client::SessionRunStatusKind::Idle,
+                current_message_id: None,
+                usage: None,
+                active_stage_id: None,
+                active_stage_count: 0,
+                active_tools: Vec::new(),
+                pending_question: None,
+                pending_permission: None,
+                child_sessions: Vec::new(),
+            },
+            stages: Vec::new(),
+            topology: crate::api_client::SessionExecutionTopology {
+                session_id: "sess_123".to_string(),
+                active_count: 0,
+                done_count: 0,
+                running_count: 0,
+                waiting_count: 0,
+                cancelling_count: 0,
+                retry_count: 0,
+                updated_at: None,
+                roots: Vec::new(),
+            },
+            usage: rocode_session::SessionUsage {
+                input_tokens: 90_000,
+                output_tokens: 10_000,
+                reasoning_tokens: 4_000,
+                cache_write_tokens: 2_000,
+                cache_read_tokens: 30_000,
+                cache_miss_tokens: 6_000,
+                context_tokens: 82_000,
+                total_cost: 1.25,
+            },
+            usage_books: SessionUsageBooks {
+                request_context_tokens: Some(88_000),
+                live_context_tokens: Some(82_000),
+                workflow_cumulative: WorkflowUsageSummary {
+                    input_tokens: 120_000,
+                    output_tokens: 18_000,
+                    reasoning_tokens: 5_000,
+                    cache_write_tokens: 2_000,
+                    cache_read_tokens: 34_000,
+                    cache_miss_tokens: 7_000,
+                    total_cost: 1.60,
+                },
+            },
+            memory: None,
+            cache_bust_summary: None,
+            context_explain: Some(SessionContextExplain {
+                resolved_model: Some("openai/gpt-4o".to_string()),
+                fork: None,
+                raw_history_messages: 18,
+                raw_model_visible_messages: 15,
+                api_view_messages: 8,
+                api_view_estimated_input_tokens: Some(92_000),
+                api_view_body_chars: Some(360_000),
+                live_context_tokens: Some(82_000),
+                last_request_context_tokens: Some(88_000),
+                owner_session_cumulative_tokens: 104_000,
+                workflow_cumulative_tokens: 143_000,
+            }),
+            ownership: Some(rocode_types::SessionOwnershipSummary {
+                context_kind: rocode_types::SessionContextKind::RootSessionContinuity,
+                handoff_mode: rocode_types::SessionHandoffMode::SelfContinuity,
+                owns_prompt_continuity: true,
+                compact_owner: true,
+                provider_model_role: rocode_types::SessionProviderModelRole::RequestShapeOnly,
+                workflow_usage_role: rocode_types::SessionWorkflowUsageRole::ObservationOnly,
+            }),
+            context_compaction_summary: Some(rocode_types::ContextCompactionSummary {
+                trigger: "auto_preflight".to_string(),
+                phase: Some("prompt.pre_request".to_string()),
+                reason: Some("request_view_threshold".to_string()),
+                forced: false,
+                request_context_tokens: Some(92_000),
+                live_context_tokens: Some(82_000),
+                limit_tokens: Some(100_000),
+                body_chars: Some(360_000),
+                message_count_before: Some(15),
+                compacted_message_count: Some(7),
+                kept_message_count: Some(8),
+                summary: Some("Compacted 7 messages.".to_string()),
+            }),
+            context_pressure_governance_summary: None,
+            cache_semantics: Some(rocode_types::SessionCacheSemanticsSummary {
+                basis: rocode_types::SessionCacheSemanticsBasis::ApiView,
+                api_view_messages: 8,
+                trimmed_model_visible_messages: 7,
+                boundary: Some(rocode_types::SessionCacheBoundarySummary {
+                    kind: rocode_types::SessionCacheBoundaryKind::Compaction,
+                    trigger: "auto_preflight".to_string(),
+                    phase: Some("prompt.pre_request".to_string()),
+                    reason: Some("request_view_threshold".to_string()),
+                    message_count_before: Some(15),
+                    compacted_message_count: Some(7),
+                    kept_message_count: Some(8),
+                    trimmed_model_visible_messages: 7,
+                    likely_changed_prefix: true,
+                    possible_cache_bust: true,
+                }),
+                cache_bust: Some(rocode_types::SessionCacheBustExplain {
+                    status: "degraded".to_string(),
+                    severity: rocode_types::SessionCacheSeverity::LikelyBust,
+                    primary_cause: Some(
+                        "messagePrefixHash changed: message prefix changed before the stable boundary"
+                            .to_string(),
+                    ),
+                    change_count: 1,
+                }),
+                prompt_surface_invalidation: Some(
+                    rocode_types::PromptSurfaceSnapshotInvalidationSummary {
+                        severity: rocode_types::SessionCacheSeverity::SoftDegradation,
+                        reason: "prompt surface runtime changed: ingressPolicyHash".to_string(),
+                        changed_fields: vec!["ingressPolicyHash".to_string()],
+                    },
+                ),
+                label: Some(
+                    "likely bust · compact boundary likely changed the API-view prefix"
+                        .to_string(),
+                ),
+            }),
+            prompt_surface_runtime_snapshot: None,
+            prompt_surface_snapshot_invalidation: Some(
+                rocode_types::PromptSurfaceSnapshotInvalidationSummary {
+                    severity: rocode_types::SessionCacheSeverity::SoftDegradation,
+                    reason: "prompt surface runtime changed: ingressPolicyHash".to_string(),
+                    changed_fields: vec!["ingressPolicyHash".to_string()],
+                },
+            ),
+            ingress_stabilization: None,
+            execution_preflight_summary: None,
+            provider_diagnostic_summary: None,
+        };
+
+        let lines = cli_usage_snapshot_lines("sess_123", &telemetry, Some(&projection));
+
+        assert!(lines.iter().any(|line| line == "Surface Views"));
+        assert!(lines
+            .iter()
+            .any(|line| line == "  Raw history: 18 persisted messages"));
+        assert!(lines.iter().any(|line| {
+            line == "  Model-visible history: 15 messages (3 runtime-only hidden)"
+        }));
+        assert!(lines
+            .iter()
+            .any(|line| { line == "  API view: 8 messages · ~92K tokens · 360K chars" }));
+        assert!(lines.iter().any(|line| {
+            line == "  Boundary: 7 earlier model-visible messages trimmed before the next request"
+        }));
+        assert!(lines.iter().any(|line| line == "Ownership"));
+        assert!(lines.iter().any(|line| line == "  Kind: root continuity"));
+        assert!(lines
+            .iter()
+            .any(|line| line == "  Compact owner: this session"));
+        assert!(lines.iter().any(|line| line == "Cache semantics"));
+        assert!(lines.iter().any(|line| {
+            line == "  Compact: auto preflight · request view threshold · may have shifted the cache prefix"
+        }));
+        assert!(lines.iter().any(|line| {
+            line == "  Impact: likely bust · compact boundary likely changed the API-view prefix"
+        }));
+        assert!(lines.iter().any(|line| line == "Live context"));
+        assert!(lines.iter().any(|line| line == "Last request"));
+        assert!(lines.iter().any(|line| line == "Workflow cumulative"));
     }
 
     #[test]

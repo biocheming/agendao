@@ -11,6 +11,10 @@ export interface PromptSurfaceInvalidationRecord {
   changed_fields?: string[] | null;
 }
 
+export interface CacheSemanticsRecord {
+  label?: string | null;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
@@ -62,9 +66,10 @@ export function cacheBustSummaryLabel(summary: CacheBustSummaryRecord | null | u
 }
 
 export function promptSurfaceInvalidationFromTelemetry(
-  telemetry: Record<string, unknown> | null | undefined,
+  telemetry: unknown,
 ): PromptSurfaceInvalidationRecord | null {
-  const invalidation = telemetry?.prompt_surface_snapshot_invalidation;
+  if (!isRecord(telemetry)) return null;
+  const invalidation = telemetry.prompt_surface_snapshot_invalidation;
   if (!isRecord(invalidation)) return null;
   return {
     severity:
@@ -75,5 +80,16 @@ export function promptSurfaceInvalidationFromTelemetry(
           (value): value is string => typeof value === "string",
         )
       : null,
+  };
+}
+
+export function cacheSemanticsFromTelemetry(
+  telemetry: unknown,
+): CacheSemanticsRecord | null {
+  if (!isRecord(telemetry)) return null;
+  const summary = telemetry.cache_semantics;
+  if (!isRecord(summary)) return null;
+  return {
+    label: typeof summary.label === "string" ? summary.label : null,
   };
 }

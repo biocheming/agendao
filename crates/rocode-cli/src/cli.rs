@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "rocode")]
-#[command(about = "ROCode - A Rusted OpenCode Version", long_about = None)]
+#[command(about = "RockyCode", long_about = None)]
 pub(crate) struct Cli {
     #[command(subcommand)]
     pub(crate) command: Commands,

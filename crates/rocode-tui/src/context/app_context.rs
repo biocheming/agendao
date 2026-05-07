@@ -2,6 +2,7 @@ use parking_lot::RwLock;
 use rocode_command::interactive::InteractiveEventsQuery;
 use rocode_command::stage_protocol::StageSummary;
 use rocode_session::SessionUsage;
+use rocode_types::SessionUsageBooks;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
@@ -244,6 +245,8 @@ pub struct SessionState {
     pub execution_topology: Option<SessionExecutionTopology>,
     pub stage_summaries: Vec<StageSummary>,
     pub session_usage: Option<SessionUsage>,
+    pub session_usage_books: Option<SessionUsageBooks>,
+    pub session_cache_semantics: Option<crate::api::SessionCacheSemanticsSummary>,
     pub session_runtime: Option<crate::api::SessionRuntimeState>,
 }
 
@@ -379,6 +382,8 @@ impl AppContext {
         session.execution_topology = Some(telemetry.topology);
         session.stage_summaries = telemetry.stages;
         session.session_usage = Some(telemetry.usage);
+        session.session_usage_books = Some(telemetry.usage_books);
+        session.session_cache_semantics = telemetry.cache_semantics;
         session.session_runtime = Some(telemetry.runtime);
     }
 
@@ -454,6 +459,14 @@ impl AppContext {
 
     pub fn session_usage(&self) -> Option<SessionUsage> {
         self.session.read().session_usage.clone()
+    }
+
+    pub fn session_usage_books(&self) -> Option<SessionUsageBooks> {
+        self.session.read().session_usage_books.clone()
+    }
+
+    pub fn session_cache_semantics(&self) -> Option<crate::api::SessionCacheSemanticsSummary> {
+        self.session.read().session_cache_semantics.clone()
     }
 
     pub fn session_runtime(&self) -> Option<crate::api::SessionRuntimeState> {
@@ -1059,9 +1072,15 @@ impl AppContext {
 
 fn current_context_tokens_from_state(state: &SessionState) -> Option<u64> {
     let usage_context_tokens = state
-        .session_usage
+        .session_usage_books
         .as_ref()
-        .map(|usage| usage.context_tokens)
+        .and_then(|books| books.live_context_tokens)
+        .or_else(|| {
+            state
+                .session_usage
+                .as_ref()
+                .and_then(|usage| usage.live_context_tokens())
+        })
         .filter(|tokens| *tokens > 0);
     let active_stage_id = state
         .session_runtime

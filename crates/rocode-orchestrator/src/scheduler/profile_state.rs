@@ -5,71 +5,20 @@ use super::{
 use crate::agent_tree::AgentTreeNode;
 use crate::output_metadata::OutputUsage;
 use crate::OrchestratorOutput;
-use serde::Deserialize;
+use rocode_types::SessionContinuityPacket;
 use serde_json::Value;
 use std::collections::HashMap;
 
-pub(super) const SCHEDULER_SESSION_CONTEXT_METADATA_KEY: &str = "scheduler_session_context";
 pub(super) const SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY: &str =
     "scheduler_session_context_packet";
-const SCHEDULER_SESSION_CONTEXT_PACKET_VERSION: u64 = 1;
+pub(super) type SchedulerSessionContextPacketMetadata = SessionContinuityPacket;
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub(super) struct SchedulerSessionContextPacketMetadata {
-    version: u64,
-    #[serde(default)]
-    eligible_message_count: usize,
-    #[serde(default)]
-    exact_recent_tail_count: usize,
-    #[serde(default)]
-    omitted_older_turns: usize,
-    #[serde(default)]
-    exact_recent_tail: Vec<SchedulerSessionContextMessageAnchor>,
-    #[serde(default)]
-    memory_anchors: Vec<SchedulerSessionContextMemoryAnchor>,
-    #[serde(default)]
-    latest_compaction_summary: Option<SchedulerSessionContextCompactionAnchor>,
-    #[serde(default)]
-    limits: Option<SchedulerSessionContextLimits>,
-    #[serde(default)]
-    recall_policy: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub(super) struct SchedulerSessionContextMessageAnchor {
-    message_id: String,
-    role: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub(super) struct SchedulerSessionContextCompactionAnchor {
-    message_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub(super) struct SchedulerSessionContextMemoryAnchor {
-    record_id: String,
-    title: String,
-    kind: String,
-    status: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub(super) struct SchedulerSessionContextLimits {
-    #[serde(default)]
-    recent_tail_messages: usize,
-    #[serde(default)]
-    context_text_chars: usize,
-    #[serde(default)]
-    turn_text_chars: usize,
-}
-
-impl SchedulerSessionContextPacketMetadata {
-    pub(super) fn from_exec_metadata(metadata: &HashMap<String, Value>) -> Option<Self> {
-        let value = metadata.get(SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY)?;
-        let packet = serde_json::from_value::<Self>(value.clone()).ok()?;
-        (packet.version == SCHEDULER_SESSION_CONTEXT_PACKET_VERSION).then_some(packet)
-    }
+fn scheduler_session_context_packet_from_metadata(
+    metadata: &HashMap<String, Value>,
+) -> Option<SchedulerSessionContextPacketMetadata> {
+    metadata
+        .get(SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY)
+        .and_then(SchedulerSessionContextPacketMetadata::from_value)
 }
 
 #[derive(Default)]
@@ -127,12 +76,11 @@ pub(super) struct SchedulerProfileState {
 
 impl SchedulerProfileState {
     pub(super) fn apply_session_context_metadata(&mut self, metadata: &HashMap<String, Value>) {
-        self.session_context = metadata
-            .get(SCHEDULER_SESSION_CONTEXT_METADATA_KEY)
-            .and_then(|value| value.as_str())
-            .map(str::to_string);
-        self.session_context_packet =
-            SchedulerSessionContextPacketMetadata::from_exec_metadata(metadata);
+        self.session_context_packet = scheduler_session_context_packet_from_metadata(metadata);
+        self.session_context = self
+            .session_context_packet
+            .as_ref()
+            .map(SchedulerSessionContextPacketMetadata::render);
     }
 
     pub(super) fn place_execution_output(
@@ -274,7 +222,7 @@ mod tests {
             }),
         )]);
 
-        let packet = SchedulerSessionContextPacketMetadata::from_exec_metadata(&metadata)
+        let packet = scheduler_session_context_packet_from_metadata(&metadata)
             .expect("version 1 packet should parse");
 
         assert_eq!(packet.omitted_older_turns, 2);
@@ -302,34 +250,31 @@ mod tests {
             }),
         )]);
 
-        assert!(SchedulerSessionContextPacketMetadata::from_exec_metadata(&metadata).is_none());
+        assert!(scheduler_session_context_packet_from_metadata(&metadata).is_none());
     }
 
     #[test]
     fn scheduler_profile_state_loads_session_context_contract_from_metadata() {
-        let metadata = HashMap::from([
-            (
-                SCHEDULER_SESSION_CONTEXT_METADATA_KEY.to_string(),
-                serde_json::json!("## Session Continuity Context\nprior context"),
-            ),
-            (
-                SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY.to_string(),
-                serde_json::json!({
-                    "version": 1,
-                    "eligible_message_count": 1,
-                    "exact_recent_tail_count": 1,
-                    "exact_recent_tail": [{"message_id": "msg_1", "role": "user"}]
-                }),
-            ),
-        ]);
+        let metadata = HashMap::from([(
+            SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "version": 1,
+                "eligible_message_count": 1,
+                "exact_recent_tail_count": 1,
+                "exact_recent_tail": [{"message_id": "msg_1", "role": "user", "text": "prior context"}]
+            }),
+        )]);
         let mut state = SchedulerProfileState::default();
 
         state.apply_session_context_metadata(&metadata);
 
-        assert_eq!(
-            state.session_context.as_deref(),
-            Some("## Session Continuity Context\nprior context")
-        );
+        let rendered = state
+            .session_context
+            .as_deref()
+            .expect("rendered continuity should derive from packet");
+        assert!(rendered.contains("## Session Continuity Context"));
+        assert!(rendered.contains("prior context"));
+        assert!(rendered.contains("msg_1"));
         assert_eq!(
             state
                 .session_context_packet
