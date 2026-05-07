@@ -666,9 +666,11 @@ pub struct KeybindsConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub history_next: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_child_cycle: Option<String>,
+    pub session_attached_focus: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_child_cycle_reverse: Option<String>,
+    pub session_workspace_focus: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_attached_open: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_parent: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

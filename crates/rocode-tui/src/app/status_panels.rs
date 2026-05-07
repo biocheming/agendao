@@ -1626,7 +1626,135 @@ fn tui_session_handoff_mode_label(mode: rocode_types::SessionHandoffMode) -> &'s
         rocode_types::SessionHandoffMode::BoundedHandoff => "bounded handoff",
         rocode_types::SessionHandoffMode::StageOutputSink => "stage output sink",
         rocode_types::SessionHandoffMode::FullHistoryFork => "full-history fork",
-        rocode_types::SessionHandoffMode::UnclassifiedChild => "unclassified child",
+    }
+}
+
+fn tui_context_pressure_governance_status_label(
+    status: rocode_types::ContextPressureGovernanceStatus,
+) -> &'static str {
+    match status {
+        rocode_types::ContextPressureGovernanceStatus::Ready => "ready",
+        rocode_types::ContextPressureGovernanceStatus::Compacted => "compacted",
+        rocode_types::ContextPressureGovernanceStatus::Deferred => "deferred",
+        rocode_types::ContextPressureGovernanceStatus::Blocked => "blocked",
+    }
+}
+
+fn tui_context_closure_prefix_status_label(
+    prefix: &rocode_types::SessionPrefixStabilityContract,
+) -> &'static str {
+    if prefix.prefix_change_detected {
+        "prefix changed"
+    } else {
+        "stable prefix"
+    }
+}
+
+fn tui_context_closure_boundary_status_label(
+    boundary: &rocode_types::SessionCompactionBoundaryContract,
+) -> &'static str {
+    if boundary.boundary_recorded {
+        "boundary recorded"
+    } else {
+        "boundary clear"
+    }
+}
+
+fn tui_context_closure_cache_status_label(
+    cache: &rocode_types::SessionCacheExplainabilityContract,
+) -> &'static str {
+    if !cache.issue_present {
+        "cache stable"
+    } else if cache.explained {
+        "cache explained"
+    } else {
+        "cache unexplained"
+    }
+}
+
+fn tui_context_closure_isolation_status_label(
+    isolation: &rocode_types::SessionChildHistoryIsolationContract,
+) -> &'static str {
+    if isolation.child_history_in_live_prefix_detected {
+        "leak detected"
+    } else if isolation.owner_local_live_prefix {
+        "isolated"
+    } else {
+        "not owner-local"
+    }
+}
+
+fn tui_context_closure_evidence_impact_label(
+    severity: rocode_types::SessionCacheSeverity,
+) -> &'static str {
+    match severity {
+        rocode_types::SessionCacheSeverity::Stable => "stable",
+        rocode_types::SessionCacheSeverity::LowChange => "low change",
+        rocode_types::SessionCacheSeverity::MediumChange => "medium change",
+        rocode_types::SessionCacheSeverity::HighChange => "high change",
+    }
+}
+
+fn tui_context_closure_evidence_source_label(
+    source: rocode_types::SessionCacheExplainabilitySource,
+) -> &'static str {
+    match source {
+        rocode_types::SessionCacheExplainabilitySource::None => "no evidence",
+        rocode_types::SessionCacheExplainabilitySource::CacheEvidence => "cache evidence",
+        rocode_types::SessionCacheExplainabilitySource::SurfaceEvidence => "surface evidence",
+        rocode_types::SessionCacheExplainabilitySource::BoundaryEvidence => "boundary evidence",
+    }
+}
+
+fn tui_context_closure_evidence_detail_label(detail: &str) -> String {
+    let normalized = detail.trim();
+    if normalized.is_empty() {
+        return "--".to_string();
+    }
+
+    if normalized.contains("boundary recorded · prefix changed") {
+        return "boundary recorded · prefix changed".to_string();
+    }
+    if normalized.contains("prefix changed before the stable boundary") {
+        return "prefix changed before the stable boundary".to_string();
+    }
+    if normalized.contains("tool surface changed") {
+        return "tool surface changed".to_string();
+    }
+    if normalized.contains("request shape changed") {
+        return "request shape changed".to_string();
+    }
+    if normalized.contains("systemHash changed: system prompt changed") {
+        return "system prompt changed".to_string();
+    }
+    if normalized.contains("family changed: protocol family changed") {
+        return "request family changed".to_string();
+    }
+    if normalized.contains("surface changed:") {
+        let field = normalized
+            .split_once(':')
+            .map(|(_, suffix)| suffix.trim())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("runtime fields");
+        return format!("surface changed · {}", field);
+    }
+
+    normalized.to_string()
+}
+
+fn tui_prompt_surface_evidence_label(fields: &[String]) -> String {
+    if fields.is_empty() {
+        "surface changed".to_string()
+    } else {
+        format!("surface {}", fields.join(", "))
+    }
+}
+
+fn tui_yes_no(value: bool) -> &'static str {
+    if value {
+        "yes"
+    } else {
+        "no"
     }
 }
 
@@ -1737,20 +1865,20 @@ fn tui_runtime_status_lines(
         )));
     }
 
-    if !runtime.child_sessions.is_empty() {
+    if !runtime.attached_sessions.is_empty() {
         lines.push(StatusLine::muted(String::new()));
         lines.push(StatusLine::title(format!(
             "Attached Sessions ({})",
-            runtime.child_sessions.len()
+            runtime.attached_sessions.len()
         )));
-        for child in &runtime.child_sessions {
+        for child in &runtime.attached_sessions {
             let kind = child
                 .context_kind
                 .map(tui_session_context_kind_label)
                 .unwrap_or("attached session");
             lines.push(StatusLine::normal(format!(
                 "- {} · {} ← {}",
-                kind, child.child_id, child.parent_id
+                kind, child.attached_id, child.parent_id
             )));
         }
     }
@@ -1916,44 +2044,178 @@ fn tui_usage_status_lines(
         lines.push(StatusLine::muted("Workflow cumulative: observation only"));
     }
 
-    if let Some(cache_semantics) = telemetry.cache_semantics.as_ref() {
-        lines.push(StatusLine::muted(String::new()));
-        lines.push(StatusLine::title("Cache semantics"));
-        lines.push(StatusLine::normal(format!(
-            "Basis: API view ({} messages)",
-            cache_semantics.api_view_messages
-        )));
-        if cache_semantics.trimmed_model_visible_messages > 0 {
-            lines.push(StatusLine::muted(format!(
-                "Boundary: {} earlier model-visible messages trimmed before the next request",
-                cache_semantics.trimmed_model_visible_messages
+    if telemetry.context_closure_contract.is_none() {
+        if let Some(cache_semantics) = telemetry.cache_semantics.as_ref() {
+            lines.push(StatusLine::muted(String::new()));
+            lines.push(StatusLine::title("Cache semantics"));
+            lines.push(StatusLine::normal(format!(
+                "Basis: API view ({} messages)",
+                cache_semantics.api_view_messages
             )));
-        }
-        if let Some(boundary) = cache_semantics.boundary.as_ref() {
-            let trigger = boundary.trigger.replace('_', " ");
-            let reason = boundary
-                .reason
-                .as_deref()
-                .map(|value| value.replace('_', " "));
-            let mut detail = format!("Compact: {}", trigger);
-            if let Some(reason) = reason.as_deref() {
-                detail.push_str(&format!(" · {}", reason));
-            }
-            if boundary.possible_cache_bust {
-                detail.push_str(" · may have shifted the cache prefix");
-            }
-            lines.push(StatusLine::normal(detail));
-        }
-        if let Some(label) = cache_semantics.label.as_deref() {
-            lines.push(StatusLine::warning(format!("Impact: {}", label)));
-        }
-        if let Some(invalidation) = cache_semantics.prompt_surface_invalidation.as_ref() {
-            if !invalidation.changed_fields.is_empty() {
+            if cache_semantics.trimmed_model_visible_messages > 0 {
                 lines.push(StatusLine::muted(format!(
-                    "Prompt surface: {}",
-                    invalidation.changed_fields.join(", ")
+                    "Boundary: {} earlier model-visible messages trimmed before the next request",
+                    cache_semantics.trimmed_model_visible_messages
                 )));
             }
+            if let Some(boundary) = cache_semantics.boundary.as_ref() {
+                let trigger = boundary.trigger.replace('_', " ");
+                let reason = boundary
+                    .reason
+                    .as_deref()
+                    .map(|value| value.replace('_', " "));
+                let mut detail = format!("Compact: {}", trigger);
+                if let Some(reason) = reason.as_deref() {
+                    detail.push_str(&format!(" · {}", reason));
+                }
+                if boundary.possible_cache_evidence {
+                    detail.push_str(" · may have shifted the cache prefix");
+                }
+                lines.push(StatusLine::normal(detail));
+            }
+            if let Some(label) = cache_semantics.label.as_deref() {
+                lines.push(StatusLine::warning(format!("Impact: {}", label)));
+            }
+            if let Some(evidence) = cache_semantics.prompt_surface_evidence.as_ref() {
+                if !evidence.changed_fields.is_empty() {
+                    lines.push(StatusLine::muted(format!(
+                        "Prompt surface: {}",
+                        evidence.changed_fields.join(", ")
+                    )));
+                }
+            }
+        }
+    }
+
+    if let Some(contract) = telemetry.context_closure_contract.as_ref() {
+        lines.push(StatusLine::muted(String::new()));
+        lines.push(StatusLine::title("Context Closure"));
+        lines.push(StatusLine::normal(format!(
+            "Prefix: {}",
+            tui_context_closure_prefix_status_label(&contract.prefix_stability)
+        )));
+        lines.push(StatusLine::muted(format!(
+            "Basis: API view · {} messages · trimmed {}",
+            contract.prefix_stability.api_view_messages,
+            contract.prefix_stability.trimmed_model_visible_messages
+        )));
+        if let Some(explanation) = contract.prefix_stability.explanation.as_deref() {
+            lines.push(StatusLine::muted(format!(
+                "Prefix explain: {}",
+                tui_context_closure_evidence_detail_label(explanation)
+            )));
+        }
+
+        let boundary = &contract.compaction_boundary;
+        if boundary.boundary_recorded {
+            let mut summary = format!(
+                "Boundary: {}",
+                tui_context_closure_boundary_status_label(boundary)
+            );
+            if let Some(request_pressure_percent) = boundary.request_pressure_percent {
+                summary.push_str(&format!(" · request {}%", request_pressure_percent));
+            }
+            if let Some(live_pressure_percent) = boundary.live_pressure_percent {
+                summary.push_str(&format!(" · live {}%", live_pressure_percent));
+            }
+            lines.push(StatusLine::normal(summary));
+
+            let mut detail = Vec::new();
+            if let Some(status) = boundary.governance_status {
+                detail.push(tui_context_pressure_governance_status_label(status).to_string());
+            }
+            if let Some(phase) = boundary.phase.as_deref() {
+                detail.push(phase.to_string());
+            }
+            if let Some(trigger) = boundary.trigger.as_deref() {
+                detail.push(trigger.replace('_', " "));
+            }
+            if let Some(reason) = boundary.reason.as_deref() {
+                detail.push(reason.replace('_', " "));
+            }
+            if !detail.is_empty() {
+                lines.push(StatusLine::muted(format!("Detail: {}", detail.join(" · "))));
+            }
+            lines.push(StatusLine::muted(format!(
+                "Action: attempted {} · succeeded {} · blocking {}",
+                tui_yes_no(boundary.compaction_attempted),
+                tui_yes_no(boundary.compaction_succeeded),
+                tui_yes_no(boundary.blocking)
+            )));
+        } else {
+            lines.push(StatusLine::muted(format!(
+                "Boundary: {}",
+                tui_context_closure_boundary_status_label(boundary)
+            )));
+        }
+
+        let cache_explainability = &contract.cache_explainability;
+        let mut cache_line = format!(
+            "Cache: {}",
+            tui_context_closure_cache_status_label(cache_explainability)
+        );
+        if cache_explainability.issue_present && !cache_explainability.explained {
+            cache_line.push_str(" · explanation missing");
+        }
+        lines.push(if cache_explainability.issue_present {
+            StatusLine::warning(cache_line)
+        } else {
+            StatusLine::normal(cache_line)
+        });
+        if cache_explainability.issue_present {
+            lines.push(StatusLine::muted(format!(
+                "Source: {} · impact {}",
+                tui_context_closure_evidence_source_label(cache_explainability.source),
+                cache_explainability
+                    .severity
+                    .map(tui_context_closure_evidence_impact_label)
+                    .unwrap_or("--")
+            )));
+        }
+        if let Some(explanation) = cache_explainability.explanation.as_deref() {
+            lines.push(StatusLine::muted(format!(
+                "Cache explain: {}",
+                tui_context_closure_evidence_detail_label(explanation)
+            )));
+        }
+        if let Some(cache_semantics) = telemetry.cache_semantics.as_ref() {
+            if let Some(evidence) = cache_semantics.prompt_surface_evidence.as_ref() {
+                if !evidence.changed_fields.is_empty() {
+                    lines.push(StatusLine::muted(format!(
+                        "Evidence: {}",
+                        tui_prompt_surface_evidence_label(&evidence.changed_fields)
+                    )));
+                }
+            }
+        }
+
+        let child_isolation = &contract.child_history_isolation;
+        lines.push(StatusLine::normal(format!(
+            "Isolation: {}",
+            tui_context_closure_isolation_status_label(child_isolation)
+        )));
+        lines.push(StatusLine::muted(format!(
+            "Usage: attached subtree {} · subtree cumulative {} · owner live {}",
+            child_isolation.attached_subtree_session_count,
+            tui_format_token_count(child_isolation.attached_subtree_cumulative_tokens),
+            child_isolation
+                .owner_live_context_tokens
+                .map(tui_format_token_count)
+                .unwrap_or_else(|| "--".to_string())
+        )));
+        lines.push(StatusLine::muted(format!(
+            "Scope: owner-local live prefix {} · workflow cumulative {}",
+            tui_yes_no(child_isolation.owner_local_live_prefix),
+            tui_format_token_count(child_isolation.workflow_cumulative_tokens)
+        )));
+        lines.push(StatusLine::muted(format!(
+            "Isolation explain: {}",
+            child_isolation.explanation
+        )));
+        if child_isolation.child_history_in_live_prefix_detected {
+            lines.push(StatusLine::warning(
+                "Leak: child history appeared in the owner live prefix",
+            ));
         }
     }
 
@@ -2469,14 +2731,6 @@ fn tui_join_or_placeholder(values: &[String]) -> String {
     }
 }
 
-fn tui_yes_no(value: bool) -> &'static str {
-    if value {
-        "yes"
-    } else {
-        "no"
-    }
-}
-
 fn tui_scheduler_trace_step_kind_label(
     kind: &rocode_types::SessionEffectiveSchedulerTraceStepKind,
 ) -> &'static str {
@@ -2899,7 +3153,7 @@ mod tests {
                 active_tools: Vec::new(),
                 pending_question: None,
                 pending_permission: None,
-                child_sessions: Vec::new(),
+                attached_sessions: Vec::new(),
             },
             stages: Vec::new(),
             topology: crate::api::SessionExecutionTopology {
@@ -2937,7 +3191,7 @@ mod tests {
                 },
             },
             memory: None,
-            cache_bust_summary: None,
+            cache_evidence: None,
             context_explain: Some(SessionContextExplain {
                 resolved_model: Some("openai/gpt-4o".to_string()),
                 fork: None,
@@ -2988,34 +3242,78 @@ mod tests {
                     kept_message_count: Some(8),
                     trimmed_model_visible_messages: 7,
                     likely_changed_prefix: true,
-                    possible_cache_bust: true,
+                    possible_cache_evidence: true,
                 }),
-                cache_bust: Some(rocode_types::SessionCacheBustExplain {
+                cache_evidence: Some(rocode_types::SessionCacheEvidenceExplain {
                     status: "degraded".to_string(),
-                    severity: rocode_types::SessionCacheSeverity::LikelyBust,
+                    severity: rocode_types::SessionCacheSeverity::MediumChange,
                     primary_cause: Some(
-                        "messagePrefixHash changed: message prefix changed before the stable boundary"
-                            .to_string(),
+                        "prefix changed before the stable boundary".to_string(),
                     ),
                     change_count: 1,
                 }),
-                prompt_surface_invalidation: Some(
-                    rocode_types::PromptSurfaceSnapshotInvalidationSummary {
-                        severity: rocode_types::SessionCacheSeverity::SoftDegradation,
-                        reason: "prompt surface runtime changed: ingressPolicyHash".to_string(),
+                prompt_surface_evidence: Some(
+                    rocode_types::PromptSurfaceEvidenceSummary {
+                        severity: rocode_types::SessionCacheSeverity::LowChange,
+                        reason: "surface changed: ingressPolicyHash".to_string(),
                         changed_fields: vec!["ingressPolicyHash".to_string()],
                     },
                 ),
                 label: Some(
-                    "likely bust · compact boundary likely changed the API-view prefix"
-                        .to_string(),
+                    "boundary recorded · prefix changed".to_string(),
                 ),
             }),
+            context_closure_contract: Some(rocode_types::SessionContextClosureContract {
+                prefix_stability: rocode_types::SessionPrefixStabilityContract {
+                    basis: rocode_types::SessionCacheSemanticsBasis::ApiView,
+                    tracked_on_api_view: true,
+                    api_view_messages: 8,
+                    trimmed_model_visible_messages: 7,
+                    prefix_change_detected: true,
+                    explanation: Some(
+                        "boundary recorded · prefix changed".to_string(),
+                    ),
+                },
+                compaction_boundary: rocode_types::SessionCompactionBoundaryContract {
+                    boundary_recorded: true,
+                    phase: Some("prompt.pre_request".to_string()),
+                    trigger: Some("auto_preflight".to_string()),
+                    reason: Some("request_view_threshold".to_string()),
+                    governance_status: Some(
+                        rocode_types::ContextPressureGovernanceStatus::Compacted,
+                    ),
+                    request_pressure_percent: Some(92),
+                    live_pressure_percent: Some(82),
+                    compaction_attempted: true,
+                    compaction_succeeded: true,
+                    blocking: false,
+                },
+                cache_explainability: rocode_types::SessionCacheExplainabilityContract {
+                    issue_present: true,
+                    explained: true,
+                    source:
+                        rocode_types::SessionCacheExplainabilitySource::CacheEvidence,
+                    severity: Some(rocode_types::SessionCacheSeverity::MediumChange),
+                    explanation: Some("boundary recorded · prefix changed".to_string()),
+                },
+                child_history_isolation: rocode_types::SessionChildHistoryIsolationContract {
+                    attached_subtree_session_count: 0,
+                    owner_session_cumulative_tokens: 104_000,
+                    workflow_cumulative_tokens: 143_000,
+                    attached_subtree_cumulative_tokens: 0,
+                    owner_live_context_tokens: Some(82_000),
+                    owner_local_live_prefix: true,
+                    child_history_in_live_prefix_detected: false,
+                    explanation:
+                        "No attached subtree sessions were observed; the live prefix remains owner-local."
+                            .to_string(),
+                },
+            }),
             prompt_surface_runtime_snapshot: None,
-            prompt_surface_snapshot_invalidation: Some(
-                rocode_types::PromptSurfaceSnapshotInvalidationSummary {
-                    severity: rocode_types::SessionCacheSeverity::SoftDegradation,
-                    reason: "prompt surface runtime changed: ingressPolicyHash".to_string(),
+            prompt_surface_evidence: Some(
+                rocode_types::PromptSurfaceEvidenceSummary {
+                    severity: rocode_types::SessionCacheSeverity::LowChange,
+                    reason: "surface changed: ingressPolicyHash".to_string(),
                     changed_fields: vec!["ingressPolicyHash".to_string()],
                 },
             ),
@@ -3055,16 +3353,31 @@ mod tests {
         assert!(texts
             .iter()
             .any(|line| line == "Compact owner: this session"));
-        assert!(texts.iter().any(|line| line == "Cache semantics"));
-        assert!(texts.iter().any(|line| {
-            line == "Compact: auto preflight · request view threshold · may have shifted the cache prefix"
-        }));
-        assert!(texts.iter().any(|line| {
-            line == "Impact: likely bust · compact boundary likely changed the API-view prefix"
-        }));
+        assert!(!texts.iter().any(|line| line == "Cache semantics"));
         assert!(texts.iter().any(|line| {
             line == "Boundary: 7 earlier model-visible messages trimmed before the next request"
         }));
+        assert!(texts.iter().any(|line| line == "Context Closure"));
+        assert!(texts
+            .iter()
+            .any(|line| { line == "Prefix: prefix changed" }));
+        assert!(texts
+            .iter()
+            .any(|line| { line == "Prefix explain: boundary recorded · prefix changed" }));
+        assert!(texts
+            .iter()
+            .any(|line| { line == "Cache: cache explained" }));
+        assert!(texts
+            .iter()
+            .any(|line| { line == "Source: cache evidence · impact medium change" }));
+        assert!(texts
+            .iter()
+            .any(|line| { line == "Cache explain: boundary recorded · prefix changed" }));
+        assert!(texts
+            .iter()
+            .any(|line| { line == "Evidence: surface ingressPolicyHash" }));
+        assert!(texts.iter().all(|line| !line.contains("bust")));
+        assert!(texts.iter().any(|line| { line == "Isolation: isolated" }));
         assert!(texts.iter().any(|line| line == "Live Context"));
         assert!(texts.iter().any(|line| line == "Last Request"));
         assert!(texts.iter().any(|line| line == "Workflow Cumulative"));
@@ -3229,8 +3542,8 @@ fn format_stage_runtime_line(stage: &rocode_command::stage_protocol::StageSummar
     if stage.active_tool_count > 0 {
         parts.push(format!("tools {}", stage.active_tool_count));
     }
-    if stage.child_session_count > 0 {
-        parts.push(format!("child {}", stage.child_session_count));
+    if stage.attached_session_count > 0 {
+        parts.push(format!("attached {}", stage.attached_session_count));
     }
     if let Some(budget) = stage.skill_tree_budget {
         parts.push(format!(

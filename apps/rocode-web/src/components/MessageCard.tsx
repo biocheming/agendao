@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import {
   cacheBustSummaryFromMetadata,
   cacheBustSummaryLabel,
+  cacheBustSummaryStatusLabel,
 } from "@/lib/cacheDiagnostics";
 import {
   ActivityIcon,
@@ -37,7 +38,7 @@ interface MessageCardProps {
   onCopyMessageLink?: (message: FeedMessage) => Promise<void> | void;
   onToggleSelected?: (message: FeedMessage) => void;
   onNavigateStage: (stageId: string) => void;
-  onNavigateChildSession: (
+  onNavigateAttachedSession: (
     sessionId: string,
     context?: { stageId?: string | null; toolCallId?: string | null; label?: string | null },
   ) => void;
@@ -480,7 +481,7 @@ export function MessageCard({
   onCopyMessageLink,
   onToggleSelected,
   onNavigateStage,
-  onNavigateChildSession,
+  onNavigateAttachedSession,
 }: MessageCardProps) {
   const [copied, setCopied] = useState(false);
   const displayText = sanitizeDisplayedMessageText(message);
@@ -497,7 +498,7 @@ export function MessageCard({
         message={message}
         highlighted={highlighted || Boolean(activeStageId && message.stage_id === activeStageId)}
         onNavigateStage={onNavigateStage}
-        onNavigateChildSession={onNavigateChildSession}
+        onNavigateAttachedSession={onNavigateAttachedSession}
       />
     );
   }
@@ -529,9 +530,9 @@ export function MessageCard({
   const roleLabel = isUser ? "You" : "ROCode";
   const clock = formatClock(message.ts);
   const summary = readableSummary(message);
-  const cacheDiagnosticLabel = cacheBustSummaryLabel(
-    cacheBustSummaryFromMetadata(message.metadata),
-  );
+  const cacheSummary = cacheBustSummaryFromMetadata(message.metadata);
+  const cacheDiagnosticLabel = cacheBustSummaryStatusLabel(cacheSummary);
+  const cacheDiagnosticDetail = cacheBustSummaryLabel(cacheSummary);
   const active =
     Boolean(activeStageId && message.stage_id === activeStageId) ||
     Boolean(activeToolCallId && message.tool_call_id === activeToolCallId);
@@ -567,7 +568,10 @@ export function MessageCard({
               <span className="roc-section-label">{roleLabel}</span>
               {clock ? <span className="roc-badge">{clock}</span> : null}
               {cacheDiagnosticLabel ? (
-                <span className="roc-badge border-amber-500/30 text-amber-700 dark:text-amber-300">
+                <span
+                  className="roc-badge border-amber-500/30 text-amber-700 dark:text-amber-300"
+                  title={cacheDiagnosticDetail || "Prompt cache diagnostic"}
+                >
                   cache {cacheDiagnosticLabel}
                 </span>
               ) : null}
@@ -654,20 +658,20 @@ export function MessageCard({
           ) : null}
         </section>
       </div>
-      {!isUser && message.child_session_id ? (
+      {!isUser && message.attached_session_id ? (
         <div className="pl-1">
           <MetaActionButton
             className="roc-action roc-action-pill justify-center px-3.5 py-1.5 text-xs text-foreground no-underline"
             onClick={() =>
-              onNavigateChildSession(message.child_session_id!, {
+              onNavigateAttachedSession(message.attached_session_id!, {
                 stageId: message.stage_id ?? null,
                 toolCallId: message.tool_call_id ?? null,
-                label: message.title || message.stage || message.child_session_id,
+                label: message.title || message.stage || message.attached_session_id,
               })
             }
           >
             <SparklesIcon className="mr-1 size-3.5" />
-            Open child session {message.title || message.child_session_id}
+            Open attached session {message.title || message.attached_session_id}
           </MetaActionButton>
         </div>
       ) : null}

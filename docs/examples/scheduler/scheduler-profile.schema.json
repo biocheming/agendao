@@ -144,7 +144,7 @@
         },
         "childSession": {
           "type": "boolean",
-          "description": "Whether this stage creates an isolated child session."
+          "description": "Whether this stage creates an isolated attached session."
         },
         "agentTree": {
           "$ref": "#/$defs/agentTreeRef",

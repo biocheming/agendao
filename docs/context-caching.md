@@ -68,15 +68,15 @@ CLI、TUI 和 Web 都会显示缓存相关 usage：
 ROCode 还会为每轮请求记录 cache fingerprint，并在检测到明显前缀退化时通过前端显示 cache diagnostic，例如：
 
 ```text
-Cache hard bust · toolsHash changed: tool schema or order changed
-Cache likely bust · messagePrefixHash changed: message prefix changed before the stable boundary
+Cache high change · tool surface changed
+Cache medium change · prefix changed before the stable boundary
 ```
 
 诊断分级：
 
-- **hard bust**：model、system、tools、cache control、cache-key-sensitive params 改变。
-- **likely bust**：message prefix、prompt cache affinity、continuation 状态改变。
-- **soft degradation**：冷启动、provider fallback、请求过短、能力未启用。
+- **high change**：model、system、tools、cache control、cache-key-sensitive params 改变。
+- **medium change**：message prefix、prompt cache affinity、continuation 状态改变。
+- **low change**：冷启动、provider fallback、请求过短、能力未启用。
 
 ## 开发约束
 

@@ -23,8 +23,8 @@ pub mod telemetry_event_names {
     pub const TOOL_COMPLETED: &str = "tool.completed";
     pub const EXECUTION_TOPOLOGY_CHANGED: &str = "execution.topology.changed";
     pub const DIFF_UPDATED: &str = "diff.updated";
-    pub const CHILD_SESSION_ATTACHED: &str = "child_session.attached";
-    pub const CHILD_SESSION_DETACHED: &str = "child_session.detached";
+    pub const ATTACHED_SESSION_ATTACHED: &str = "attached_session.attached";
+    pub const ATTACHED_SESSION_DETACHED: &str = "attached_session.detached";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,9 +72,9 @@ pub struct StageSummary {
     pub retry_attempt: Option<u64>,
     pub active_agent_count: u32,
     pub active_tool_count: u32,
-    pub child_session_count: u32,
+    pub attached_session_count: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub primary_child_session_id: Option<String>,
+    pub primary_attached_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,7 +121,7 @@ pub struct ExecutionNode {
     pub updated_at: i64,
     pub session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub child_session_id: Option<String>,
+    pub attached_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

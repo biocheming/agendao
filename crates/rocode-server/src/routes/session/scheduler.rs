@@ -10,17 +10,16 @@ use rocode_config::{Config as AppConfig, SkillTreeNodeConfig};
 use rocode_execution_types::{CompiledExecutionRequest, ExecutionRequestContext};
 use rocode_orchestrator::output_metadata::output_usage;
 use rocode_orchestrator::{
-    runtime::policy::ModelContextLimits,
-    resolve_skill_markdown_repo, scheduler_auto_profile_config, scheduler_orchestrator_from_plan,
-    scheduler_plan_from_profile, scheduler_request_defaults_from_file,
-    scheduler_request_defaults_from_plan, stage_policy_available_tools, stage_policy_from_label,
-    AgentResolver, AvailableAgentMeta, AvailableCategoryMeta,
-    ExecutionContext as OrchestratorExecutionContext, ModelRef as OrchestratorModelRef,
-    ModelResolver, Orchestrator, OrchestratorContext, OrchestratorError, SchedulerConfig,
-    SchedulerPresetKind, SchedulerProfileConfig, SchedulerRequestDefaults, SkillTreeNode,
-    SkillTreeRequestPlan, SkillTreeTruncationStrategy, ToolExecError as OrchestratorToolExecError,
-    ToolExecutor as OrchestratorToolExecutor, ToolOutput as OrchestratorToolOutput, ToolRunner,
-    AUTO_SCHEDULER_PROFILE_NAME,
+    resolve_skill_markdown_repo, runtime::policy::ModelContextLimits,
+    scheduler_auto_profile_config, scheduler_orchestrator_from_plan, scheduler_plan_from_profile,
+    scheduler_request_defaults_from_file, scheduler_request_defaults_from_plan,
+    stage_policy_available_tools, stage_policy_from_label, AgentResolver, AvailableAgentMeta,
+    AvailableCategoryMeta, ExecutionContext as OrchestratorExecutionContext,
+    ModelRef as OrchestratorModelRef, ModelResolver, Orchestrator, OrchestratorContext,
+    OrchestratorError, SchedulerConfig, SchedulerPresetKind, SchedulerProfileConfig,
+    SchedulerRequestDefaults, SkillTreeNode, SkillTreeRequestPlan, SkillTreeTruncationStrategy,
+    ToolExecError as OrchestratorToolExecError, ToolExecutor as OrchestratorToolExecutor,
+    ToolOutput as OrchestratorToolOutput, ToolRunner, AUTO_SCHEDULER_PROFILE_NAME,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -753,9 +752,11 @@ impl ModelResolver for SessionSchedulerModelResolver {
             });
 
         let providers = self.state.providers.read().await;
-        providers
-            .get(&provider_id)
-            .and_then(|provider| provider.get_model(&model_id).map(ModelContextLimits::from_model_info))
+        providers.get(&provider_id).and_then(|provider| {
+            provider
+                .get_model(&model_id)
+                .map(ModelContextLimits::from_model_info)
+        })
     }
 }
 

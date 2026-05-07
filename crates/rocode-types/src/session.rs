@@ -218,9 +218,9 @@ pub struct ContextPressureGovernanceSummary {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SessionCacheSeverity {
     Stable,
-    SoftDegradation,
-    LikelyBust,
-    HardBust,
+    LowChange,
+    MediumChange,
+    HighChange,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -237,7 +237,7 @@ pub enum SessionCacheBoundaryKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PromptSurfaceSnapshotInvalidationSummary {
+pub struct PromptSurfaceEvidenceSummary {
     pub severity: SessionCacheSeverity,
     pub reason: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -245,7 +245,7 @@ pub struct PromptSurfaceSnapshotInvalidationSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SessionCacheBustExplain {
+pub struct SessionCacheEvidenceExplain {
     pub status: String,
     pub severity: SessionCacheSeverity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -273,7 +273,7 @@ pub struct SessionCacheBoundarySummary {
     #[serde(default)]
     pub likely_changed_prefix: bool,
     #[serde(default)]
-    pub possible_cache_bust: bool,
+    pub possible_cache_evidence: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -285,11 +285,98 @@ pub struct SessionCacheSemanticsSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boundary: Option<SessionCacheBoundarySummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_bust: Option<SessionCacheBustExplain>,
+    pub cache_evidence: Option<SessionCacheEvidenceExplain>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt_surface_invalidation: Option<PromptSurfaceSnapshotInvalidationSummary>,
+    pub prompt_surface_evidence: Option<PromptSurfaceEvidenceSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionContextClosureContract {
+    pub prefix_stability: SessionPrefixStabilityContract,
+    pub compaction_boundary: SessionCompactionBoundaryContract,
+    pub cache_explainability: SessionCacheExplainabilityContract,
+    pub child_history_isolation: SessionChildHistoryIsolationContract,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionPrefixStabilityContract {
+    pub basis: SessionCacheSemanticsBasis,
+    #[serde(default)]
+    pub tracked_on_api_view: bool,
+    #[serde(default)]
+    pub api_view_messages: usize,
+    #[serde(default)]
+    pub trimmed_model_visible_messages: usize,
+    #[serde(default)]
+    pub prefix_change_detected: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionCompactionBoundaryContract {
+    #[serde(default)]
+    pub boundary_recorded: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub governance_status: Option<ContextPressureGovernanceStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_pressure_percent: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_pressure_percent: Option<u64>,
+    #[serde(default)]
+    pub compaction_attempted: bool,
+    #[serde(default)]
+    pub compaction_succeeded: bool,
+    #[serde(default)]
+    pub blocking: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionCacheExplainabilitySource {
+    #[default]
+    None,
+    CacheEvidence,
+    SurfaceEvidence,
+    BoundaryEvidence,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionCacheExplainabilityContract {
+    #[serde(default)]
+    pub issue_present: bool,
+    #[serde(default)]
+    pub explained: bool,
+    #[serde(default)]
+    pub source: SessionCacheExplainabilitySource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub severity: Option<SessionCacheSeverity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionChildHistoryIsolationContract {
+    #[serde(default)]
+    pub attached_subtree_session_count: usize,
+    pub owner_session_cumulative_tokens: u64,
+    pub workflow_cumulative_tokens: u64,
+    pub attached_subtree_cumulative_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_live_context_tokens: Option<u64>,
+    #[serde(default)]
+    pub owner_local_live_prefix: bool,
+    #[serde(default)]
+    pub child_history_in_live_prefix_detected: bool,
+    pub explanation: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -319,9 +406,44 @@ pub struct SessionForkExplain {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_message_id: Option<String>,
     #[serde(default)]
+    pub history_mode: SessionForkHistoryMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_message_limit: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_history_messages: Option<usize>,
+    #[serde(default)]
     pub imported_history_messages: usize,
     #[serde(default)]
     pub policy_frozen: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frozen_policy_keys: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cache_stability_keys: Vec<String>,
+    pub lifecycle: SessionForkLifecycleExplain,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionForkLifecycleExplain {
+    pub usage_replay_scope: SessionForkLifecycleScope,
+    pub revert_scope: SessionForkLifecycleScope,
+    pub recovery_scope: SessionForkLifecycleScope,
+    pub compaction_scope: SessionForkLifecycleScope,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionForkLifecycleScope {
+    LocalOnly,
+    ForkPromptSurface,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionForkHistoryMode {
+    None,
+    #[default]
+    All,
+    LastN,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -341,7 +463,6 @@ pub enum SessionContextKind {
     DelegatedSubsession,
     SchedulerStageOutputSession,
     ExplicitFullHistoryFork,
-    UnclassifiedChild,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -351,7 +472,6 @@ pub enum SessionHandoffMode {
     BoundedHandoff,
     StageOutputSink,
     FullHistoryFork,
-    UnclassifiedChild,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -898,7 +1018,6 @@ impl SessionContextKind {
             Self::DelegatedSubsession => SessionHandoffMode::BoundedHandoff,
             Self::SchedulerStageOutputSession => SessionHandoffMode::StageOutputSink,
             Self::ExplicitFullHistoryFork => SessionHandoffMode::FullHistoryFork,
-            Self::UnclassifiedChild => SessionHandoffMode::UnclassifiedChild,
         }
     }
 
@@ -908,7 +1027,6 @@ impl SessionContextKind {
             Self::DelegatedSubsession => "delegated subsession",
             Self::SchedulerStageOutputSession => "stage output sink",
             Self::ExplicitFullHistoryFork => "full-history fork",
-            Self::UnclassifiedChild => "unclassified child",
         }
     }
 
@@ -1271,6 +1389,8 @@ pub struct SessionInfo {
     #[serde(default)]
     pub permission: Option<PermissionRulesetInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork: Option<SessionForkExplain>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<SessionTelemetrySnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<HashMap<String, serde_json::Value>>,
@@ -1330,9 +1450,9 @@ pub struct PersistedStageTelemetrySummary {
     pub retry_attempt: Option<u64>,
     pub active_agent_count: u32,
     pub active_tool_count: u32,
-    pub child_session_count: u32,
+    pub attached_session_count: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub primary_child_session_id: Option<String>,
+    pub primary_attached_session_id: Option<String>,
 }
 
 impl From<rocode_content::stage_protocol::StageSummary> for PersistedStageTelemetrySummary {
@@ -1360,8 +1480,8 @@ impl From<rocode_content::stage_protocol::StageSummary> for PersistedStageTeleme
             retry_attempt: value.retry_attempt,
             active_agent_count: value.active_agent_count,
             active_tool_count: value.active_tool_count,
-            child_session_count: value.child_session_count,
-            primary_child_session_id: value.primary_child_session_id,
+            attached_session_count: value.attached_session_count,
+            primary_attached_session_id: value.primary_attached_session_id,
         }
     }
 }

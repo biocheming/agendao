@@ -29,7 +29,7 @@ interface ConversationFeedPanelProps {
   onCopyMessageLink?: (message: FeedMessage) => Promise<void> | void;
   onToggleMessageSelected?: (message: FeedMessage) => void;
   onNavigateStage: (stageId: string) => void;
-  onNavigateChildSession: (
+  onNavigateAttachedSession: (
     sessionId: string,
     context?: { stageId?: string | null; toolCallId?: string | null; label?: string | null },
   ) => void;
@@ -129,7 +129,7 @@ export function ConversationFeedPanel({
   onCopyMessageLink,
   onToggleMessageSelected,
   onNavigateStage,
-  onNavigateChildSession,
+  onNavigateAttachedSession,
 }: ConversationFeedPanelProps) {
   const [visibleCount, setVisibleCount] = useState(0);
   const revealAnchorHeightRef = useRef<number | null>(null);
@@ -266,7 +266,7 @@ export function ConversationFeedPanel({
                 onCopyMessageLink={onCopyMessageLink}
                 onToggleSelected={onToggleMessageSelected}
                 onNavigateStage={onNavigateStage}
-                onNavigateChildSession={onNavigateChildSession}
+                onNavigateAttachedSession={onNavigateAttachedSession}
               />
             ))}
             {streaming ? (

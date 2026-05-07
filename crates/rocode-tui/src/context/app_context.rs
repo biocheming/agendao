@@ -10,7 +10,9 @@ use std::sync::Arc;
 use crate::api::{ApiClient, SessionExecutionTopology, SessionTelemetrySnapshot};
 use crate::bridge::{UiBridge, UiBridgeSnapshot};
 use crate::components::SessionView;
-use crate::context::{ChildSessionInfo, KeybindRegistry, MessageRole, SessionContext, TokenUsage};
+use crate::context::{
+    AttachedSessionInfo, KeybindRegistry, MessageRole, SessionContext, TokenUsage,
+};
 use crate::event::{CustomEvent, Event};
 use crate::router::Router;
 use crate::theme::Theme;
@@ -89,8 +91,8 @@ pub struct SidebarLifecycleState {
     pub active_tab: SidebarTab,
     pub process_selected: usize,
     pub process_focus: bool,
-    pub child_session_selected: usize,
-    pub child_session_focus: bool,
+    pub attached_session_selected: usize,
+    pub attached_session_focus: bool,
     pub workspace_selected: usize,
     pub workspace_focus: bool,
 }
@@ -103,8 +105,8 @@ impl Default for SidebarLifecycleState {
             active_tab: SidebarTab::Session,
             process_selected: 0,
             process_focus: false,
-            child_session_selected: 0,
-            child_session_focus: false,
+            attached_session_selected: 0,
+            attached_session_focus: false,
             workspace_selected: 0,
             workspace_focus: false,
         }
@@ -241,12 +243,13 @@ pub struct DialogLifecycleState {
 #[derive(Clone, Debug, Default)]
 pub struct SessionState {
     pub data: SessionContext,
-    pub child_sessions: Vec<ChildSessionInfo>,
+    pub attached_sessions: Vec<AttachedSessionInfo>,
     pub execution_topology: Option<SessionExecutionTopology>,
     pub stage_summaries: Vec<StageSummary>,
     pub session_usage: Option<SessionUsage>,
     pub session_usage_books: Option<SessionUsageBooks>,
     pub session_cache_semantics: Option<crate::api::SessionCacheSemanticsSummary>,
+    pub session_context_closure_contract: Option<crate::api::SessionContextClosureContract>,
     pub session_runtime: Option<crate::api::SessionRuntimeState>,
 }
 
@@ -384,6 +387,7 @@ impl AppContext {
         session.session_usage = Some(telemetry.usage);
         session.session_usage_books = Some(telemetry.usage_books);
         session.session_cache_semantics = telemetry.cache_semantics;
+        session.session_context_closure_contract = telemetry.context_closure_contract;
         session.session_runtime = Some(telemetry.runtime);
     }
 
@@ -441,12 +445,12 @@ impl AppContext {
         self.router.read().session_id().map(str::to_string)
     }
 
-    pub fn child_sessions(&self) -> Vec<ChildSessionInfo> {
-        self.session.read().child_sessions.clone()
+    pub fn attached_sessions(&self) -> Vec<AttachedSessionInfo> {
+        self.session.read().attached_sessions.clone()
     }
 
-    pub fn set_child_sessions(&self, child_sessions: Vec<ChildSessionInfo>) {
-        self.session.write().child_sessions = child_sessions;
+    pub fn set_attached_sessions(&self, attached_sessions: Vec<AttachedSessionInfo>) {
+        self.session.write().attached_sessions = attached_sessions;
     }
 
     pub fn execution_topology(&self) -> Option<SessionExecutionTopology> {
@@ -467,6 +471,12 @@ impl AppContext {
 
     pub fn session_cache_semantics(&self) -> Option<crate::api::SessionCacheSemanticsSummary> {
         self.session.read().session_cache_semantics.clone()
+    }
+
+    pub fn session_context_closure_contract(
+        &self,
+    ) -> Option<crate::api::SessionContextClosureContract> {
+        self.session.read().session_context_closure_contract.clone()
     }
 
     pub fn session_runtime(&self) -> Option<crate::api::SessionRuntimeState> {

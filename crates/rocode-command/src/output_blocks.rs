@@ -160,8 +160,8 @@ fn render_scheduler_stage_block(stage: &SchedulerStageBlock) -> String {
     if let Some(detail) = scheduler_stage_skill_tree_summary(stage) {
         out.push_str(&format!("  skill tree: {detail}\n"));
     }
-    if let Some(ref child_id) = stage.child_session_id {
-        out.push_str(&format!("  child session: {child_id}\n"));
+    if let Some(ref attached_id) = stage.attached_session_id {
+        out.push_str(&format!("  attached session: {attached_id}\n"));
     }
     if let Some(focus) = stage.focus.as_deref().filter(|value| !value.is_empty()) {
         out.push_str(&format!("  focus: {focus}\n"));
@@ -764,11 +764,11 @@ fn render_scheduler_stage_rich(stage: &SchedulerStageBlock, style: &CliStyle) ->
             style.dim(text)
         }));
     }
-    if let Some(ref child_id) = stage.child_session_id {
+    if let Some(ref attached_id) = stage.attached_session_id {
         out.push_str(&stage_tree_field(
             style,
-            "Child Session",
-            child_id,
+            "Attached Session",
+            attached_id,
             |text| style.cyan(text),
         ));
     }
@@ -1389,7 +1389,7 @@ mod tests {
                 cache_miss_tokens: Some(0),
                 cache_write_tokens: Some(0),
                 decision: None,
-                child_session_id: None,
+                attached_session_id: None,
             },
         )));
         assert!(line.contains("[scheduler_stage] Prometheus · Plan [2/5]"));
@@ -1667,7 +1667,7 @@ mod tests {
                     ],
                     sections: Vec::new(),
                 }),
-                child_session_id: None,
+                attached_session_id: None,
             })),
             &style,
         );
@@ -1724,7 +1724,7 @@ mod tests {
                 cache_miss_tokens: None,
                 cache_write_tokens: None,
                 decision: None,
-                child_session_id: None,
+                attached_session_id: None,
             })),
             &style,
         );
@@ -1764,7 +1764,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_scheduler_stage_renders_child_session_id() {
+    fn plain_scheduler_stage_renders_attached_session_id() {
         let stage = SchedulerStageBlock {
             stage_id: None,
             profile: None,
@@ -1801,14 +1801,14 @@ mod tests {
             cache_miss_tokens: None,
             cache_write_tokens: None,
             decision: None,
-            child_session_id: Some("child-abc-123".to_string()),
+            attached_session_id: Some("child-abc-123".to_string()),
         };
         let out = render_cli_block(&OutputBlock::SchedulerStage(Box::new(stage)));
-        assert!(out.contains("child session: child-abc-123"));
+        assert!(out.contains("attached session: child-abc-123"));
     }
 
     #[test]
-    fn rich_scheduler_stage_renders_child_session_id() {
+    fn rich_scheduler_stage_renders_attached_session_id() {
         let style = CliStyle {
             color: true,
             width: 80,
@@ -1849,10 +1849,10 @@ mod tests {
             cache_miss_tokens: None,
             cache_write_tokens: None,
             decision: None,
-            child_session_id: Some("child-xyz-789".to_string()),
+            attached_session_id: Some("child-xyz-789".to_string()),
         };
         let out = render_cli_block_rich(&OutputBlock::SchedulerStage(Box::new(stage)), &style);
-        assert!(out.contains("Child Session"));
+        assert!(out.contains("Attached Session"));
         assert!(out.contains("child-xyz-789"));
     }
 
@@ -1896,7 +1896,7 @@ mod tests {
             cache_miss_tokens: None,
             cache_write_tokens: None,
             decision: None,
-            child_session_id: Some("child_001".to_string()),
+            attached_session_id: Some("child_001".to_string()),
         };
 
         let summary = stage.to_summary();
@@ -1914,9 +1914,9 @@ mod tests {
         assert_eq!(summary.last_event, Some("tool_call".to_string()));
         assert_eq!(summary.active_agent_count, 2); // two active agents
         assert_eq!(summary.active_tool_count, 0); // always 0 from presentation layer
-        assert_eq!(summary.child_session_count, 1);
+        assert_eq!(summary.attached_session_count, 1);
         assert_eq!(
-            summary.primary_child_session_id,
+            summary.primary_attached_session_id,
             Some("child_001".to_string())
         );
     }
@@ -1961,14 +1961,14 @@ mod tests {
             cache_miss_tokens: None,
             cache_write_tokens: None,
             decision: None,
-            child_session_id: None,
+            attached_session_id: None,
         };
 
         let summary = stage.to_summary();
         assert_eq!(summary.stage_id, ""); // defaults to empty
         assert_eq!(summary.status, StageStatus::Running); // None → Running
         assert_eq!(summary.step_total, None); // "unbounded" → None
-        assert_eq!(summary.child_session_count, 0);
-        assert_eq!(summary.primary_child_session_id, None);
+        assert_eq!(summary.attached_session_count, 0);
+        assert_eq!(summary.primary_attached_session_id, None);
     }
 }

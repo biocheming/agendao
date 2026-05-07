@@ -10,8 +10,8 @@ use crate::{
 };
 
 pub const CACHE_REQUEST_FINGERPRINT_METADATA_KEY: &str = "cache_request_fingerprint";
-pub const CACHE_BUST_INSPECTION_METADATA_KEY: &str = "cache_bust_inspection";
-pub const CACHE_BUST_SUMMARY_METADATA_KEY: &str = "cache_bust_summary";
+pub const CACHE_EVIDENCE_INSPECTION_METADATA_KEY: &str = "cache_evidence_inspection";
+pub const CACHE_EVIDENCE_METADATA_KEY: &str = "cache_evidence";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CacheProtocolFamily {
@@ -292,7 +292,7 @@ fn push_diff<T: PartialEq>(
     field: &str,
     previous: T,
     current: T,
-    severity: CacheBustSeverity,
+    severity: CacheEvidenceSeverity,
     reason: &str,
 ) {
     if previous != current {
@@ -568,38 +568,38 @@ pub struct CacheRequestFingerprint {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum CacheBustSeverity {
+pub enum CacheEvidenceSeverity {
     Stable,
-    SoftDegradation,
-    LikelyBust,
-    HardBust,
+    LowChange,
+    MediumChange,
+    HighChange,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CacheFingerprintDiff {
     pub field: String,
-    pub severity: CacheBustSeverity,
+    pub severity: CacheEvidenceSeverity,
     pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CacheBustInspection {
+pub struct CacheEvidenceInspection {
     pub status: String,
-    pub severity: CacheBustSeverity,
+    pub severity: CacheEvidenceSeverity,
     pub primary_cause: Option<String>,
     pub changes: Vec<CacheFingerprintDiff>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CacheBustSummary {
+pub struct CacheEvidenceSummary {
     pub status: String,
-    pub severity: CacheBustSeverity,
+    pub severity: CacheEvidenceSeverity,
     pub primary_cause: Option<String>,
     pub change_count: usize,
 }
 
-impl From<&CacheBustInspection> for CacheBustSummary {
-    fn from(value: &CacheBustInspection) -> Self {
+impl From<&CacheEvidenceInspection> for CacheEvidenceSummary {
+    fn from(value: &CacheEvidenceInspection) -> Self {
         Self {
             status: value.status.clone(),
             severity: value.severity,
@@ -609,39 +609,39 @@ impl From<&CacheBustInspection> for CacheBustSummary {
     }
 }
 
-impl CacheBustSummary {
+impl CacheEvidenceSummary {
     pub fn should_surface(&self) -> bool {
         !matches!(self.status.as_str(), "stable" | "cold_start")
-            && self.severity > CacheBustSeverity::Stable
+            && self.severity > CacheEvidenceSeverity::Stable
     }
 }
 
-pub fn cache_bust_summary_from_metadata(
+pub fn cache_evidence_from_metadata(
     metadata: &HashMap<String, Value>,
-) -> Option<CacheBustSummary> {
+) -> Option<CacheEvidenceSummary> {
     metadata
-        .get(CACHE_BUST_SUMMARY_METADATA_KEY)
+        .get(CACHE_EVIDENCE_METADATA_KEY)
         .cloned()
         .and_then(|value| serde_json::from_value(value).ok())
 }
 
-pub fn cache_bust_summary_label(summary: &CacheBustSummary) -> Option<String> {
+pub fn cache_evidence_label(summary: &CacheEvidenceSummary) -> Option<String> {
     if !summary.should_surface() {
         return None;
     }
 
     let severity = match summary.severity {
-        CacheBustSeverity::Stable => "stable",
-        CacheBustSeverity::SoftDegradation => "soft degradation",
-        CacheBustSeverity::LikelyBust => "likely bust",
-        CacheBustSeverity::HardBust => "hard bust",
+        CacheEvidenceSeverity::Stable => "stable",
+        CacheEvidenceSeverity::LowChange => "low change",
+        CacheEvidenceSeverity::MediumChange => "medium change",
+        CacheEvidenceSeverity::HighChange => "high change",
     };
     let cause = summary
         .primary_cause
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or("prompt surface changed");
+        .unwrap_or("surface changed");
 
     Some(format!("{} · {}", severity, cause))
 }
@@ -667,15 +667,15 @@ impl PromptSurfaceFingerprint {
 pub fn inspect_cache_fingerprint_change(
     previous: Option<&CacheRequestFingerprint>,
     current: &CacheRequestFingerprint,
-) -> CacheBustInspection {
+) -> CacheEvidenceInspection {
     let Some(previous) = previous else {
-        return CacheBustInspection {
+        return CacheEvidenceInspection {
             status: "cold_start".to_string(),
-            severity: CacheBustSeverity::SoftDegradation,
+            severity: CacheEvidenceSeverity::LowChange,
             primary_cause: Some("no previous cache fingerprint".to_string()),
             changes: vec![CacheFingerprintDiff {
                 field: "previousFingerprint".to_string(),
-                severity: CacheBustSeverity::SoftDegradation,
+                severity: CacheEvidenceSeverity::LowChange,
                 reason: "no previous request fingerprint is available for comparison".to_string(),
             }],
         };
@@ -687,15 +687,15 @@ pub fn inspect_cache_fingerprint_change(
         "family",
         previous.family,
         current.family,
-        CacheBustSeverity::HardBust,
-        "protocol family changed",
+        CacheEvidenceSeverity::HighChange,
+        "request family changed",
     );
     push_diff(
         &mut changes,
         "model",
         previous.surface.model.as_str(),
         current.surface.model.as_str(),
-        CacheBustSeverity::HardBust,
+        CacheEvidenceSeverity::HighChange,
         "model changed",
     );
     push_diff(
@@ -703,7 +703,7 @@ pub fn inspect_cache_fingerprint_change(
         "systemHash",
         previous.surface.system_hash.as_str(),
         current.surface.system_hash.as_str(),
-        CacheBustSeverity::HardBust,
+        CacheEvidenceSeverity::HighChange,
         "system prompt changed",
     );
     push_diff(
@@ -711,24 +711,24 @@ pub fn inspect_cache_fingerprint_change(
         "toolsHash",
         previous.surface.tools_hash.as_str(),
         current.surface.tools_hash.as_str(),
-        CacheBustSeverity::HardBust,
-        "tool schema or order changed",
+        CacheEvidenceSeverity::HighChange,
+        "tool surface changed",
     );
     push_diff(
         &mut changes,
         "apiParamsHash",
         previous.surface.api_params_hash.as_str(),
         current.surface.api_params_hash.as_str(),
-        CacheBustSeverity::HardBust,
-        "cache-key-sensitive API params changed",
+        CacheEvidenceSeverity::HighChange,
+        "request shape changed",
     );
     push_diff(
         &mut changes,
         "messagePrefixHash",
         previous.surface.message_prefix_hash.as_str(),
         current.surface.message_prefix_hash.as_str(),
-        CacheBustSeverity::LikelyBust,
-        "message prefix changed before the stable boundary",
+        CacheEvidenceSeverity::MediumChange,
+        "prefix changed before the stable boundary",
     );
     inspect_closeai_fingerprint(previous, current, &mut changes);
     inspect_ethnopic_fingerprint(previous, current, &mut changes);
@@ -738,14 +738,14 @@ pub fn inspect_cache_fingerprint_change(
         .iter()
         .map(|change| change.severity)
         .max()
-        .unwrap_or(CacheBustSeverity::Stable);
+        .unwrap_or(CacheEvidenceSeverity::Stable);
     let primary_cause = changes
         .iter()
         .max_by_key(|change| change.severity)
-        .map(|change| format!("{} changed: {}", change.field, change.reason));
+        .map(|change| change.reason.clone());
 
-    CacheBustInspection {
-        status: if severity == CacheBustSeverity::Stable {
+    CacheEvidenceInspection {
+        status: if severity == CacheEvidenceSeverity::Stable {
             "stable".to_string()
         } else {
             "degraded".to_string()
@@ -772,7 +772,7 @@ fn inspect_provider_profile_fingerprint(
         "providerProfileHash",
         previous.profile_hash.as_str(),
         current.profile_hash.as_str(),
-        CacheBustSeverity::LikelyBust,
+        CacheEvidenceSeverity::MediumChange,
         "provider profile changed",
     );
     push_diff(
@@ -780,32 +780,32 @@ fn inspect_provider_profile_fingerprint(
         "providerApiFamily",
         previous.api_family,
         current.api_family,
-        CacheBustSeverity::HardBust,
-        "provider API family changed",
+        CacheEvidenceSeverity::HighChange,
+        "provider family changed",
     );
     push_diff(
         changes,
         "providerApiShape",
         previous.api_shape,
         current.api_shape,
-        CacheBustSeverity::LikelyBust,
-        "provider API shape changed",
+        CacheEvidenceSeverity::MediumChange,
+        "provider shape changed",
     );
     push_diff(
         changes,
         "providerUsageShape",
         previous.usage_shape,
         current.usage_shape,
-        CacheBustSeverity::SoftDegradation,
-        "provider usage normalization shape changed",
+        CacheEvidenceSeverity::LowChange,
+        "usage normalization changed",
     );
     push_diff(
         changes,
         "providerTransport",
         previous.transport,
         current.transport,
-        CacheBustSeverity::LikelyBust,
-        "provider transport profile changed",
+        CacheEvidenceSeverity::MediumChange,
+        "transport profile changed",
     );
 }
 
@@ -823,29 +823,29 @@ fn inspect_closeai_fingerprint(
         "promptCacheKey",
         previous.prompt_cache_key.as_deref(),
         current.prompt_cache_key.as_deref(),
-        CacheBustSeverity::LikelyBust,
-        "prompt cache affinity key changed",
+        CacheEvidenceSeverity::MediumChange,
+        "cache affinity changed",
     );
     push_diff(
         changes,
         "promptCacheRetention",
         previous.prompt_cache_retention.as_deref(),
         current.prompt_cache_retention.as_deref(),
-        CacheBustSeverity::SoftDegradation,
-        "prompt cache retention changed",
+        CacheEvidenceSeverity::LowChange,
+        "cache retention changed",
     );
     if previous.previous_response_id_used && !current.previous_response_id_used {
         changes.push(CacheFingerprintDiff {
             field: "previousResponseIdUsed".to_string(),
-            severity: CacheBustSeverity::LikelyBust,
-            reason: "Responses continuation was not used on the current request".to_string(),
+            severity: CacheEvidenceSeverity::MediumChange,
+            reason: "continuation not reused".to_string(),
         });
     }
     if previous.incremental_input_used && !current.incremental_input_used {
         changes.push(CacheFingerprintDiff {
             field: "incrementalInputUsed".to_string(),
-            severity: CacheBustSeverity::SoftDegradation,
-            reason: "incremental Responses input was not used on the current request".to_string(),
+            severity: CacheEvidenceSeverity::LowChange,
+            reason: "incremental input not reused".to_string(),
         });
     }
 }
@@ -864,23 +864,23 @@ fn inspect_ethnopic_fingerprint(
         "cacheControlHash",
         previous.cache_control_hash.as_str(),
         current.cache_control_hash.as_str(),
-        CacheBustSeverity::HardBust,
-        "cache_control shape changed",
+        CacheEvidenceSeverity::HighChange,
+        "cache control changed",
     );
     push_diff(
         changes,
         "breakpointPlacement",
         previous.breakpoint_placement.as_slice(),
         current.breakpoint_placement.as_slice(),
-        CacheBustSeverity::LikelyBust,
-        "cache breakpoint placement changed",
+        CacheEvidenceSeverity::MediumChange,
+        "breakpoint placement changed",
     );
     push_diff(
         changes,
         "ttl",
         previous.ttl.as_deref(),
         current.ttl.as_deref(),
-        CacheBustSeverity::SoftDegradation,
+        CacheEvidenceSeverity::LowChange,
         "cache ttl changed",
     );
     push_diff(
@@ -888,7 +888,7 @@ fn inspect_ethnopic_fingerprint(
         "scope",
         previous.scope.as_deref(),
         current.scope.as_deref(),
-        CacheBustSeverity::SoftDegradation,
+        CacheEvidenceSeverity::LowChange,
         "cache scope changed",
     );
 }
@@ -1538,7 +1538,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_bust_inspector_marks_tools_change_as_hard_bust() {
+    fn cache_evidence_inspector_marks_tools_change_as_hard_bust() {
         let previous = test_cache_request_fingerprint("tools-a", "messages-a");
         let mut current = previous.clone();
         current.surface.tools_hash = "tools-b".to_string();
@@ -1546,15 +1546,15 @@ mod tests {
         let inspection = inspect_cache_fingerprint_change(Some(&previous), &current);
 
         assert_eq!(inspection.status, "degraded");
-        assert_eq!(inspection.severity, CacheBustSeverity::HardBust);
+        assert_eq!(inspection.severity, CacheEvidenceSeverity::HighChange);
         assert!(inspection
             .primary_cause
             .as_deref()
-            .is_some_and(|cause| cause.contains("toolsHash")));
+            .is_some_and(|cause| cause.contains("tool surface changed")));
     }
 
     #[test]
-    fn cache_bust_inspector_marks_message_change_as_likely_bust() {
+    fn cache_evidence_inspector_marks_message_change_as_likely_bust() {
         let previous = test_cache_request_fingerprint("tools-a", "messages-a");
         let mut current = previous.clone();
         current.surface.message_prefix_hash = "messages-b".to_string();
@@ -1562,18 +1562,18 @@ mod tests {
         let inspection = inspect_cache_fingerprint_change(Some(&previous), &current);
 
         assert_eq!(inspection.status, "degraded");
-        assert_eq!(inspection.severity, CacheBustSeverity::LikelyBust);
+        assert_eq!(inspection.severity, CacheEvidenceSeverity::MediumChange);
         assert_eq!(inspection.changes[0].field, "messagePrefixHash");
     }
 
     #[test]
-    fn cache_bust_inspector_marks_closeai_key_change_as_likely_bust() {
+    fn cache_evidence_inspector_marks_closeai_key_change_as_likely_bust() {
         let previous = test_closeai_cache_request_fingerprint(Some("key-a"));
         let current = test_closeai_cache_request_fingerprint(Some("key-b"));
 
         let inspection = inspect_cache_fingerprint_change(Some(&previous), &current);
 
-        assert_eq!(inspection.severity, CacheBustSeverity::LikelyBust);
+        assert_eq!(inspection.severity, CacheEvidenceSeverity::MediumChange);
         assert!(inspection
             .changes
             .iter()
@@ -1581,13 +1581,13 @@ mod tests {
     }
 
     #[test]
-    fn cache_bust_inspector_marks_ethnopic_cache_control_change_as_hard_bust() {
+    fn cache_evidence_inspector_marks_ethnopic_cache_control_change_as_hard_bust() {
         let previous = test_ethnopic_cache_request_fingerprint("cache-a", vec![0, 2]);
         let current = test_ethnopic_cache_request_fingerprint("cache-b", vec![0, 2]);
 
         let inspection = inspect_cache_fingerprint_change(Some(&previous), &current);
 
-        assert_eq!(inspection.severity, CacheBustSeverity::HardBust);
+        assert_eq!(inspection.severity, CacheEvidenceSeverity::HighChange);
         assert!(inspection
             .changes
             .iter()
@@ -1595,7 +1595,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_bust_inspector_reports_provider_profile_changes() {
+    fn cache_evidence_inspector_reports_provider_profile_changes() {
         let mut previous = test_cache_request_fingerprint("tools-a", "messages-a");
         previous.provider_profile = Some(ProviderProfileFingerprint::from_profile(
             &crate::ProviderProfileResolver::resolve_with_npm(
@@ -1626,71 +1626,71 @@ mod tests {
     }
 
     #[test]
-    fn cache_bust_inspector_reports_cold_start() {
+    fn cache_evidence_inspector_reports_cold_start() {
         let current = test_cache_request_fingerprint("tools-a", "messages-a");
 
         let inspection = inspect_cache_fingerprint_change(None, &current);
 
         assert_eq!(inspection.status, "cold_start");
-        assert_eq!(inspection.severity, CacheBustSeverity::SoftDegradation);
+        assert_eq!(inspection.severity, CacheEvidenceSeverity::LowChange);
     }
 
     #[test]
-    fn cache_bust_summary_is_ui_friendly_projection() {
+    fn cache_evidence_is_ui_friendly_projection() {
         let previous = test_cache_request_fingerprint("tools-a", "messages-a");
         let mut current = previous.clone();
         current.surface.tools_hash = "tools-b".to_string();
         current.surface.message_prefix_hash = "messages-b".to_string();
 
         let inspection = inspect_cache_fingerprint_change(Some(&previous), &current);
-        let summary = CacheBustSummary::from(&inspection);
+        let summary = CacheEvidenceSummary::from(&inspection);
 
         assert_eq!(summary.status, "degraded");
-        assert_eq!(summary.severity, CacheBustSeverity::HardBust);
+        assert_eq!(summary.severity, CacheEvidenceSeverity::HighChange);
         assert_eq!(summary.change_count, 2);
         assert!(summary
             .primary_cause
             .as_deref()
-            .is_some_and(|cause| cause.contains("toolsHash")));
+            .is_some_and(|cause| cause.contains("tool surface changed")));
     }
 
     #[test]
-    fn cache_bust_summary_label_hides_stable_and_cold_start() {
-        let stable = CacheBustSummary {
+    fn cache_evidence_label_hides_stable_and_cold_start() {
+        let stable = CacheEvidenceSummary {
             status: "stable".to_string(),
-            severity: CacheBustSeverity::Stable,
+            severity: CacheEvidenceSeverity::Stable,
             primary_cause: None,
             change_count: 0,
         };
-        let cold_start = CacheBustSummary {
+        let cold_start = CacheEvidenceSummary {
             status: "cold_start".to_string(),
-            severity: CacheBustSeverity::SoftDegradation,
+            severity: CacheEvidenceSeverity::LowChange,
             primary_cause: Some("no previous cache fingerprint".to_string()),
             change_count: 1,
         };
 
-        assert_eq!(cache_bust_summary_label(&stable), None);
-        assert_eq!(cache_bust_summary_label(&cold_start), None);
+        assert_eq!(cache_evidence_label(&stable), None);
+        assert_eq!(cache_evidence_label(&cold_start), None);
     }
 
     #[test]
-    fn cache_bust_summary_reads_from_message_metadata() {
+    fn cache_evidence_reads_from_message_metadata() {
         let mut metadata = HashMap::new();
         metadata.insert(
-            CACHE_BUST_SUMMARY_METADATA_KEY.to_string(),
+            CACHE_EVIDENCE_METADATA_KEY.to_string(),
             serde_json::json!({
                 "status": "degraded",
-                "severity": "HardBust",
-                "primary_cause": "toolsHash changed: tool schema or order changed",
+                "severity": "HighChange",
+                "primary_cause": "tool surface changed",
                 "change_count": 1,
             }),
         );
 
-        let summary = cache_bust_summary_from_metadata(&metadata).expect("summary");
-        assert_eq!(summary.severity, CacheBustSeverity::HardBust);
+        let summary = cache_evidence_from_metadata(&metadata).expect("summary");
+        assert_eq!(summary.severity, CacheEvidenceSeverity::HighChange);
         assert_eq!(
-            cache_bust_summary_label(&summary).as_deref(),
-            Some("hard bust · toolsHash changed: tool schema or order changed")
+            cache_evidence_label(&summary).as_deref(),
+            Some("high change · tool surface changed")
         );
     }
 

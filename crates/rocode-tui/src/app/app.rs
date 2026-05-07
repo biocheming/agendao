@@ -63,7 +63,7 @@ use crate::components::{
 };
 use crate::context::keybind::{is_primary_key_event, normalize_key_event, LeaderKeyState};
 use crate::context::{
-    collect_child_sessions, AppContext, McpConnectionStatus, McpServerStatus, Message,
+    collect_attached_sessions, AppContext, McpConnectionStatus, McpServerStatus, Message,
     MessagePart as ContextMessagePart, MessageRole, RevertInfo, Session, SessionStatus,
     StatusDialogView, TokenUsage, TuiEventsBrowserState, TuiMemoryConsolidationState,
     TuiMemoryDetailState, TuiMemoryListState, TuiMemoryPreviewState, TuiMemoryRuleHitsState,
@@ -914,29 +914,31 @@ impl App {
                     }
                 }
 
-                // Child session panel keyboard handling (when focused)
+                // Attached-session panel keyboard handling (when focused)
                 if let Some(sv) = self
                     .context
                     .session_view_handle()
-                    .filter(|sv| sv.sidebar_child_session_focus())
+                    .filter(|sv| sv.sidebar_attached_session_focus())
                 {
                     match key.code {
                         KeyCode::Up => {
-                            sv.move_sidebar_child_session_selection_up();
+                            sv.move_sidebar_attached_session_selection_up();
                             return Ok(());
                         }
                         KeyCode::Down => {
-                            let count = self.context.child_sessions().len();
-                            sv.move_sidebar_child_session_selection_down(count);
+                            let count = self.context.attached_sessions().len();
+                            sv.move_sidebar_attached_session_selection_down(count);
                             return Ok(());
                         }
                         KeyCode::Enter => {
-                            let sessions = self.context.child_sessions();
-                            if let Some(child) = sessions.get(sv.sidebar_child_session_selected()) {
-                                let child_id = child.session_id.clone();
-                                self.context.navigate_session(child_id.clone());
-                                self.ensure_session_view(&child_id);
-                                let _ = self.sync_session_from_server(&child_id);
+                            let sessions = self.context.attached_sessions();
+                            if let Some(child) =
+                                sessions.get(sv.sidebar_attached_session_selected())
+                            {
+                                let attached_id = child.session_id.clone();
+                                self.context.navigate_session(attached_id.clone());
+                                self.ensure_session_view(&attached_id);
+                                let _ = self.sync_session_from_server(&attached_id);
                             }
                             return Ok(());
                         }
@@ -1049,17 +1051,17 @@ impl App {
                     self.navigate_to_parent_session();
                     return Ok(());
                 }
-                if self.matches_keybind("session_child_open", key) {
-                    self.navigate_to_child_session();
+                if self.matches_keybind("session_attached_open", key) {
+                    self.navigate_to_attached_session();
                     return Ok(());
                 }
-                if self.matches_keybind("session_child_cycle", key) {
+                if self.matches_keybind("session_attached_focus", key) {
                     if let Some(sv) = self.context.session_view_handle() {
-                        let _ = sv.toggle_sidebar_child_session_focus(self.terminal_width());
+                        let _ = sv.toggle_sidebar_attached_session_focus(self.terminal_width());
                     }
                     return Ok(());
                 }
-                if self.matches_keybind("session_child_cycle_reverse", key) {
+                if self.matches_keybind("session_workspace_focus", key) {
                     if let Some(sv) = self.context.session_view_handle() {
                         let _ = sv.toggle_sidebar_workspace_focus(self.terminal_width());
                     }
@@ -1196,14 +1198,14 @@ impl App {
                             if let Route::Session { .. } = self.context.current_route() {
                                 if let Some(sv) = self.context.session_view_handle() {
                                     if sv.handle_sidebar_click(&self.context, col, row) {
-                                        // Check if the click triggered a child session navigation
-                                        if let Some(cs_idx) = sv.take_pending_navigate_child() {
-                                            let sessions = self.context.child_sessions();
+                                        // Check if the click triggered attached-session navigation
+                                        if let Some(cs_idx) = sv.take_pending_navigate_attached() {
+                                            let sessions = self.context.attached_sessions();
                                             if let Some(child) = sessions.get(cs_idx) {
-                                                let child_id = child.session_id.clone();
-                                                self.context.navigate_session(child_id.clone());
-                                                self.ensure_session_view(&child_id);
-                                                let _ = self.sync_session_from_server(&child_id);
+                                                let attached_id = child.session_id.clone();
+                                                self.context.navigate_session(attached_id.clone());
+                                                self.ensure_session_view(&attached_id);
+                                                let _ = self.sync_session_from_server(&attached_id);
                                             }
                                         }
                                         if sv.take_pending_navigate_parent() {
@@ -1526,14 +1528,14 @@ impl App {
                             if payload.get("kind").and_then(|value| value.as_str())
                                 == Some("scheduler_stage")
                             {
-                                self.refresh_child_sessions();
+                                self.refresh_attached_sessions();
                             }
                             self.event_caused_change = true;
                         }
                     }
 
                     if current_is_parent_of_target {
-                        self.refresh_child_sessions();
+                        self.refresh_attached_sessions();
                         self.event_caused_change = true;
                     }
 
@@ -1581,7 +1583,7 @@ impl App {
                         if sync_result.is_ok() {
                             tick_changed = true;
                             self.check_scheduler_handoff(session_id);
-                            self.refresh_child_sessions();
+                            self.refresh_attached_sessions();
                             if self.status_dialog.is_open() {
                                 self.refresh_active_status_dialog();
                             }
@@ -1596,7 +1598,7 @@ impl App {
                             .is_ok()
                     {
                         tick_changed = true;
-                        self.refresh_child_sessions();
+                        self.refresh_attached_sessions();
                         if self.status_dialog.is_open() {
                             self.refresh_active_status_dialog();
                         }
@@ -1754,6 +1756,7 @@ mod tests {
                 snapshot: Some("snapshot".to_string()),
                 diff: None,
             }),
+            fork: None,
             telemetry: None,
             metadata: None,
         };
@@ -1972,16 +1975,16 @@ mod tests {
     }
 
     #[test]
-    fn refresh_child_sessions_uses_parent_graph_for_child_route() {
+    fn refresh_attached_sessions_uses_parent_graph_for_child_route() {
         let app = App::new().expect("app should initialize");
         let now = Utc::now();
         let parent_id = "parent-session";
-        let child_id = "child-session";
+        let attached_id = "attached-session";
 
         let mut metadata = HashMap::new();
         metadata.insert(
-            "scheduler_stage_child_session_id".to_string(),
-            serde_json::json!(child_id),
+            "scheduler_stage_attached_session_id".to_string(),
+            serde_json::json!(attached_id),
         );
         metadata.insert("scheduler_stage".to_string(), serde_json::json!("review"));
         metadata.insert(
@@ -2005,7 +2008,7 @@ mod tests {
                 metadata: None,
             });
             session_ctx.upsert_session(Session {
-                id: child_id.to_string(),
+                id: attached_id.to_string(),
                 title: "Child".to_string(),
                 created_at: now,
                 updated_at: now,
@@ -2035,14 +2038,14 @@ mod tests {
                     }],
                 }],
             );
-            session_ctx.set_messages(child_id, Vec::new());
+            session_ctx.set_messages(attached_id, Vec::new());
         }
 
-        app.context.navigate_session(child_id);
-        app.refresh_child_sessions();
+        app.context.navigate_session(attached_id);
+        app.refresh_attached_sessions();
 
-        let children = app.context.child_sessions();
+        let children = app.context.attached_sessions();
         assert_eq!(children.len(), 1);
-        assert_eq!(children[0].session_id, child_id);
+        assert_eq!(children[0].session_id, attached_id);
     }
 }

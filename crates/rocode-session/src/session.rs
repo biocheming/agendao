@@ -9,9 +9,9 @@ use rocode_core::bus::{Bus, BusEventDef};
 use rocode_plugin::{HookContext, HookEvent};
 use rocode_types::Session as SessionRecord;
 pub use rocode_types::{
-    FileDiff, PermissionRuleset, SessionContextKind, SessionForkExplain, SessionOwnershipSummary,
-    SessionRevert, SessionShare, SessionStatus, SessionSummary, SessionTime, SessionUsage,
-    SessionUsageBooks,
+    FileDiff, PermissionRuleset, SessionContextKind, SessionForkExplain, SessionForkHistoryMode,
+    SessionForkLifecycleExplain, SessionForkLifecycleScope, SessionOwnershipSummary, SessionRevert,
+    SessionShare, SessionStatus, SessionSummary, SessionTime, SessionUsage, SessionUsageBooks,
 };
 
 #[cfg(test)]
@@ -40,6 +40,12 @@ pub const FORK_ORIGIN_SESSION_ID_METADATA_KEY: &str = "fork_origin_session_id";
 pub const FORK_ORIGIN_MESSAGE_ID_METADATA_KEY: &str = "fork_origin_message_id";
 pub const FORK_POLICY_FROZEN_METADATA_KEY: &str = "fork_policy_frozen";
 pub const FORK_IMPORTED_HISTORY_METADATA_KEY: &str = "fork_imported_history";
+pub const FORK_HISTORY_MODE_METADATA_KEY: &str = "fork_history_mode";
+pub const FORK_HISTORY_MESSAGE_LIMIT_METADATA_KEY: &str = "fork_history_message_limit";
+pub const FORK_SOURCE_HISTORY_MESSAGE_COUNT_METADATA_KEY: &str =
+    "fork_source_history_message_count";
+const LEGACY_UNCLASSIFIED_CHILD_CONTEXT_KIND: &str = "unclassified_child";
+const LEGACY_STAGE_ATTACHED_SESSION_TITLE_PREFIX: &str = "Stage: ";
 
 const FORK_POLICY_METADATA_ALLOWLIST: &[&str] = &[
     "agent",
@@ -54,6 +60,31 @@ const FORK_POLICY_METADATA_ALLOWLIST: &[&str] = &[
     "scheduler_selection_warning",
     "scheduler_skill_tree_applied",
 ];
+
+const FORK_CACHE_STABILITY_METADATA_KEYS: &[&str] = &[
+    "agent",
+    "model_id",
+    "model_provider",
+    "model_variant",
+    "scheduler_applied",
+    "scheduler_profile",
+    "scheduler_root_agent",
+    "scheduler_skill_tree_applied",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionForkSpec<'a> {
+    pub message_id: Option<&'a str>,
+    pub history_mode: SessionForkHistoryMode,
+    pub history_message_limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionForkError {
+    SessionNotFound,
+    OriginMessageNotFound(String),
+    InvalidRequest(String),
+}
 
 /// Canonical allowlist for server-side session list search.
 ///
@@ -381,6 +412,44 @@ impl Session {
     const VERSION: &'static str = "1.0.0";
     const AUTO_TITLE_PENDING_REFINE_KEY: &'static str = "auto_title_pending_refine";
 
+    fn serialize_context_kind(kind: SessionContextKind) -> serde_json::Value {
+        serde_json::to_value(kind).expect("session context kind should serialize")
+    }
+
+    fn has_legacy_unclassified_context_kind(&self) -> bool {
+        self.inner
+            .metadata
+            .get(SESSION_CONTEXT_KIND_METADATA_KEY)
+            .and_then(|value| value.as_str())
+            == Some(LEGACY_UNCLASSIFIED_CHILD_CONTEXT_KIND)
+    }
+
+    fn infer_legacy_context_kind(&self) -> SessionContextKind {
+        if self.fork_origin_session_id().is_some()
+            || self.fork_policy_frozen()
+            || self
+                .inner
+                .messages
+                .iter()
+                .any(Self::is_imported_fork_history_message)
+        {
+            return SessionContextKind::ExplicitFullHistoryFork;
+        }
+
+        if self.inner.parent_id.is_some() {
+            if self
+                .inner
+                .title
+                .starts_with(LEGACY_STAGE_ATTACHED_SESSION_TITLE_PREFIX)
+            {
+                return SessionContextKind::SchedulerStageOutputSession;
+            }
+            return SessionContextKind::DelegatedSubsession;
+        }
+
+        SessionContextKind::RootSessionContinuity
+    }
+
     /// Create a new session
     pub fn new(project_id: impl Into<String>, directory: impl Into<String>) -> Self {
         let now = Utc::now();
@@ -388,9 +457,7 @@ impl Session {
         let mut metadata = HashMap::new();
         metadata.insert(
             SESSION_CONTEXT_KIND_METADATA_KEY.to_string(),
-            serde_json::to_value(SessionContextKind::RootSessionContinuity).unwrap_or(
-                serde_json::Value::String("root_session_continuity".to_string()),
-            ),
+            Self::serialize_context_kind(SessionContextKind::RootSessionContinuity),
         );
 
         Self {
@@ -417,7 +484,7 @@ impl Session {
         }
     }
 
-    /// Create a child session with an explicit context kind so child-session
+    /// Create a attached session with an explicit context kind so attached-session
     /// ownership is never inferred from `parent_id` alone.
     pub fn child_with_context_kind(parent: &Session, kind: SessionContextKind) -> Self {
         let now = Utc::now();
@@ -426,8 +493,7 @@ impl Session {
         let mut metadata = HashMap::new();
         metadata.insert(
             SESSION_CONTEXT_KIND_METADATA_KEY.to_string(),
-            serde_json::to_value(kind)
-                .unwrap_or(serde_json::Value::String("unclassified_child".to_string())),
+            Self::serialize_context_kind(kind),
         );
 
         Self {
@@ -437,7 +503,7 @@ impl Session {
                 project_id: parent_record.project_id.clone(),
                 directory: parent_record.directory.clone(),
                 parent_id: Some(parent_record.id.clone()),
-                title: format!("Child session - {}", now.to_rfc3339()),
+                title: format!("Attached session - {}", now.to_rfc3339()),
                 version: Self::VERSION.to_string(),
                 time: SessionTime::default(),
                 messages: Vec::new(),
@@ -458,14 +524,9 @@ impl Session {
         self.inner
             .metadata
             .get(SESSION_CONTEXT_KIND_METADATA_KEY)
+            .filter(|_| !self.has_legacy_unclassified_context_kind())
             .and_then(|value| serde_json::from_value::<SessionContextKind>(value.clone()).ok())
-            .unwrap_or_else(|| {
-                if self.inner.parent_id.is_some() {
-                    SessionContextKind::UnclassifiedChild
-                } else {
-                    SessionContextKind::RootSessionContinuity
-                }
-            })
+            .unwrap_or_else(|| self.infer_legacy_context_kind())
     }
 
     pub fn ownership_summary(&self) -> SessionOwnershipSummary {
@@ -475,8 +536,7 @@ impl Session {
     pub fn set_context_kind(&mut self, kind: SessionContextKind) {
         self.inner.metadata.insert(
             SESSION_CONTEXT_KIND_METADATA_KEY.to_string(),
-            serde_json::to_value(kind)
-                .unwrap_or(serde_json::Value::String("unclassified_child".to_string())),
+            Self::serialize_context_kind(kind),
         );
         self.touch();
     }
@@ -503,12 +563,40 @@ impl Session {
             .unwrap_or(false)
     }
 
+    pub fn fork_history_mode(&self) -> SessionForkHistoryMode {
+        self.inner
+            .metadata
+            .get(FORK_HISTORY_MODE_METADATA_KEY)
+            .and_then(|value| serde_json::from_value::<SessionForkHistoryMode>(value.clone()).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn fork_history_message_limit(&self) -> Option<usize> {
+        self.inner
+            .metadata
+            .get(FORK_HISTORY_MESSAGE_LIMIT_METADATA_KEY)
+            .and_then(|value| serde_json::from_value::<usize>(value.clone()).ok())
+    }
+
+    pub fn fork_source_history_message_count(&self) -> Option<usize> {
+        self.inner
+            .metadata
+            .get(FORK_SOURCE_HISTORY_MESSAGE_COUNT_METADATA_KEY)
+            .and_then(|value| serde_json::from_value::<usize>(value.clone()).ok())
+    }
+
     pub fn imported_history_message_count(&self) -> usize {
         self.inner
             .messages
             .iter()
             .filter(|message| Self::is_imported_fork_history_message(message))
             .count()
+    }
+
+    pub fn is_imported_fork_history_message_id(&self, message_id: &str) -> bool {
+        self.get_message(message_id)
+            .map(Self::is_imported_fork_history_message)
+            .unwrap_or(false)
     }
 
     pub fn fork_explain(&self) -> Option<SessionForkExplain> {
@@ -520,12 +608,23 @@ impl Session {
         Some(SessionForkExplain {
             origin_session_id,
             origin_message_id: self.fork_origin_message_id().map(str::to_string),
+            history_mode: self.fork_history_mode(),
+            history_message_limit: self.fork_history_message_limit(),
+            source_history_messages: self.fork_source_history_message_count(),
             imported_history_messages: self.imported_history_message_count(),
             policy_frozen: self.fork_policy_frozen(),
+            frozen_policy_keys: self.fork_frozen_policy_keys(),
+            cache_stability_keys: self.fork_cache_stability_keys(),
+            lifecycle: SessionForkLifecycleExplain {
+                usage_replay_scope: SessionForkLifecycleScope::LocalOnly,
+                revert_scope: SessionForkLifecycleScope::LocalOnly,
+                recovery_scope: SessionForkLifecycleScope::LocalOnly,
+                compaction_scope: SessionForkLifecycleScope::ForkPromptSurface,
+            },
         })
     }
 
-    fn is_imported_fork_history_message(message: &SessionMessage) -> bool {
+    pub fn is_imported_fork_history_message(message: &SessionMessage) -> bool {
         message
             .metadata
             .get(FORK_IMPORTED_HISTORY_METADATA_KEY)
@@ -540,6 +639,22 @@ impl Session {
             }
         }
         target.insert_metadata(FORK_POLICY_FROZEN_METADATA_KEY, serde_json::json!(true));
+    }
+
+    fn fork_frozen_policy_keys(&self) -> Vec<String> {
+        FORK_POLICY_METADATA_ALLOWLIST
+            .iter()
+            .filter(|key| self.inner.metadata.contains_key(**key))
+            .map(|key| (*key).to_string())
+            .collect()
+    }
+
+    fn fork_cache_stability_keys(&self) -> Vec<String> {
+        FORK_CACHE_STABILITY_METADATA_KEYS
+            .iter()
+            .filter(|key| self.inner.metadata.contains_key(**key))
+            .map(|key| (*key).to_string())
+            .collect()
     }
 
     fn imported_fork_history_message(
@@ -572,7 +687,12 @@ impl Session {
     /// Check if title is a default generated title
     pub fn is_default_title(&self) -> bool {
         let prefix = if self.inner.parent_id.is_some() {
-            "Child session - "
+            if self.inner.title.starts_with("Attached session - ") {
+                "Attached session - "
+            } else {
+                // Read old generated titles without reintroducing the legacy label.
+                "Child session - "
+            }
         } else {
             "New session - "
         };
@@ -671,6 +791,13 @@ impl Session {
             .find(|m| matches!(m.role, MessageRole::User))
     }
 
+    pub fn last_owner_local_user_message(&self) -> Option<&SessionMessage> {
+        self.inner.messages.iter().rev().find(|message| {
+            matches!(message.role, MessageRole::User)
+                && !Self::is_imported_fork_history_message(message)
+        })
+    }
+
     /// Get the last assistant message
     pub fn last_assistant_message(&self) -> Option<&SessionMessage> {
         self.inner
@@ -678,6 +805,13 @@ impl Session {
             .iter()
             .rev()
             .find(|m| matches!(m.role, MessageRole::Assistant))
+    }
+
+    pub fn last_owner_local_assistant_message(&self) -> Option<&SessionMessage> {
+        self.inner.messages.iter().rev().find(|message| {
+            matches!(message.role, MessageRole::Assistant)
+                && !Self::is_imported_fork_history_message(message)
+        })
     }
 
     /// Get message count
@@ -1134,9 +1268,16 @@ impl SessionManager {
         session
     }
 
-    /// Fork a session at a specific message
-    pub fn fork(&mut self, session_id: &str, message_id: Option<&str>) -> Option<Session> {
-        let original = self.sessions.get(session_id)?;
+    /// Fork a session from a source snapshot with an explicit history import mode.
+    pub fn fork(
+        &mut self,
+        session_id: &str,
+        spec: SessionForkSpec<'_>,
+    ) -> Result<Session, SessionForkError> {
+        let original = self
+            .sessions
+            .get(session_id)
+            .ok_or(SessionForkError::SessionNotFound)?;
         let forked_title = original.get_forked_title();
 
         let mut forked =
@@ -1144,27 +1285,61 @@ impl SessionManager {
         Session::copy_fork_policy_metadata_from(original, &mut forked);
 
         let forked_id = forked.record().id.clone();
-        let imported_messages = if let Some(msg_id) = message_id {
+        let source_messages = if let Some(msg_id) = spec.message_id {
             let cutoff = original
                 .record()
                 .messages
                 .iter()
-                .position(|message| message.id == msg_id)?;
-            original.record().messages[..=cutoff]
-                .iter()
-                .map(|message| {
-                    Session::imported_fork_history_message(session_id, &forked_id, message)
-                })
-                .collect::<Vec<_>>()
+                .position(|message| message.id == msg_id)
+                .ok_or_else(|| SessionForkError::OriginMessageNotFound(msg_id.to_string()))?;
+            &original.record().messages[..=cutoff]
         } else {
-            original
-                .record()
-                .messages
-                .iter()
-                .map(|message| {
-                    Session::imported_fork_history_message(session_id, &forked_id, message)
-                })
-                .collect::<Vec<_>>()
+            original.record().messages.as_slice()
+        };
+        let imported_messages = match spec.history_mode {
+            SessionForkHistoryMode::None => {
+                if spec.history_message_limit.is_some() {
+                    return Err(SessionForkError::InvalidRequest(
+                        "`history_message_limit` is only valid when `history_mode=last_n`"
+                            .to_string(),
+                    ));
+                }
+                Vec::new()
+            }
+            SessionForkHistoryMode::All => {
+                if spec.history_message_limit.is_some() {
+                    return Err(SessionForkError::InvalidRequest(
+                        "`history_message_limit` is only valid when `history_mode=last_n`"
+                            .to_string(),
+                    ));
+                }
+                source_messages
+                    .iter()
+                    .map(|message| {
+                        Session::imported_fork_history_message(session_id, &forked_id, message)
+                    })
+                    .collect::<Vec<_>>()
+            }
+            SessionForkHistoryMode::LastN => {
+                let limit = spec.history_message_limit.ok_or_else(|| {
+                    SessionForkError::InvalidRequest(
+                        "`history_mode=last_n` requires a positive `history_message_limit`"
+                            .to_string(),
+                    )
+                })?;
+                if limit == 0 {
+                    return Err(SessionForkError::InvalidRequest(
+                        "`history_message_limit` must be greater than 0".to_string(),
+                    ));
+                }
+                let start = source_messages.len().saturating_sub(limit);
+                source_messages[start..]
+                    .iter()
+                    .map(|message| {
+                        Session::imported_fork_history_message(session_id, &forked_id, message)
+                    })
+                    .collect::<Vec<_>>()
+            }
         };
 
         {
@@ -1176,7 +1351,22 @@ impl SessionManager {
                 FORK_ORIGIN_SESSION_ID_METADATA_KEY.to_string(),
                 serde_json::json!(session_id),
             );
-            if let Some(msg_id) = message_id {
+            forked_record.metadata.insert(
+                FORK_HISTORY_MODE_METADATA_KEY.to_string(),
+                serde_json::to_value(spec.history_mode)
+                    .expect("fork history mode should serialize"),
+            );
+            forked_record.metadata.insert(
+                FORK_SOURCE_HISTORY_MESSAGE_COUNT_METADATA_KEY.to_string(),
+                serde_json::json!(source_messages.len()),
+            );
+            if let Some(limit) = spec.history_message_limit {
+                forked_record.metadata.insert(
+                    FORK_HISTORY_MESSAGE_LIMIT_METADATA_KEY.to_string(),
+                    serde_json::json!(limit),
+                );
+            }
+            if let Some(msg_id) = spec.message_id {
                 forked_record.metadata.insert(
                     FORK_ORIGIN_MESSAGE_ID_METADATA_KEY.to_string(),
                     serde_json::json!(msg_id),
@@ -1189,7 +1379,7 @@ impl SessionManager {
             info: forked.clone(),
         });
         self.publish_session_event(&SESSION_CREATED_EVENT, &forked);
-        Some(forked)
+        Ok(forked)
     }
 
     /// Set share info and publish session.updated.
@@ -1356,8 +1546,8 @@ impl SessionManager {
             .collect()
     }
 
-    /// Get children of a session
-    pub fn children(&self, parent_id: &str) -> Vec<&Session> {
+    /// Get attached sessions of a session.
+    pub fn attached_sessions(&self, parent_id: &str) -> Vec<&Session> {
         self.sessions
             .values()
             .filter(|s| s.record().parent_id.as_deref() == Some(parent_id))
@@ -1366,13 +1556,13 @@ impl SessionManager {
 
     /// Delete a session
     pub fn delete(&mut self, id: &str) -> Option<Session> {
-        let children: Vec<String> = self
-            .children(id)
+        let attached_sessions: Vec<String> = self
+            .attached_sessions(id)
             .iter()
             .map(|s| s.record().id.clone())
             .collect();
-        for child_id in children {
-            self.delete(&child_id);
+        for attached_id in attached_sessions {
+            self.delete(&attached_id);
         }
 
         let session = self.sessions.remove(id)?;
@@ -1568,6 +1758,18 @@ mod tests {
     use std::sync::Arc;
     use tokio::time::{timeout, Duration};
 
+    fn fork_spec<'a>(
+        message_id: Option<&'a str>,
+        history_mode: SessionForkHistoryMode,
+        history_message_limit: Option<usize>,
+    ) -> SessionForkSpec<'a> {
+        SessionForkSpec {
+            message_id,
+            history_mode,
+            history_message_limit,
+        }
+    }
+
     #[test]
     fn test_session_creation() {
         let session = Session::new("project-1", "/path/to/project");
@@ -1582,14 +1784,14 @@ mod tests {
     }
 
     #[test]
-    fn test_typed_child_session() {
+    fn test_typed_attached_session() {
         let parent = Session::new("project-1", "/path/to/project");
         let child =
             Session::child_with_context_kind(&parent, SessionContextKind::DelegatedSubsession);
 
         assert!(child.parent_id.is_some());
         assert_eq!(child.parent_id.clone().unwrap(), parent.id);
-        assert!(child.title.starts_with("Child session"));
+        assert!(child.title.starts_with("Attached session"));
         assert_eq!(
             child.context_kind(),
             SessionContextKind::DelegatedSubsession
@@ -1597,7 +1799,7 @@ mod tests {
     }
 
     #[test]
-    fn test_explicit_child_session_kind() {
+    fn test_explicit_attached_session_kind() {
         let parent = Session::new("project-1", "/path/to/project");
         let child = Session::child_with_context_kind(
             &parent,
@@ -1609,6 +1811,51 @@ mod tests {
             SessionContextKind::SchedulerStageOutputSession
         );
         assert!(!child.context_kind().owns_prompt_continuity());
+    }
+
+    #[test]
+    fn test_legacy_attached_session_without_context_kind_infers_delegated_subsession() {
+        let parent = Session::new("project-1", "/path/to/project");
+        let mut child =
+            Session::child_with_context_kind(&parent, SessionContextKind::DelegatedSubsession);
+        child.remove_metadata(SESSION_CONTEXT_KIND_METADATA_KEY);
+
+        assert_eq!(
+            child.context_kind(),
+            SessionContextKind::DelegatedSubsession
+        );
+    }
+
+    #[test]
+    fn test_legacy_unclassified_child_metadata_infers_delegated_subsession() {
+        let parent = Session::new("project-1", "/path/to/project");
+        let mut child =
+            Session::child_with_context_kind(&parent, SessionContextKind::DelegatedSubsession);
+        child.insert_metadata(
+            SESSION_CONTEXT_KIND_METADATA_KEY,
+            serde_json::json!(LEGACY_UNCLASSIFIED_CHILD_CONTEXT_KIND),
+        );
+
+        assert_eq!(
+            child.context_kind(),
+            SessionContextKind::DelegatedSubsession
+        );
+    }
+
+    #[test]
+    fn test_legacy_stage_attached_session_without_context_kind_infers_stage_output_sink() {
+        let parent = Session::new("project-1", "/path/to/project");
+        let mut child = Session::child_with_context_kind(
+            &parent,
+            SessionContextKind::SchedulerStageOutputSession,
+        );
+        child.remove_metadata(SESSION_CONTEXT_KIND_METADATA_KEY);
+        child.set_title("Stage: Execution Orchestration - atlas");
+
+        assert_eq!(
+            child.context_kind(),
+            SessionContextKind::SchedulerStageOutputSession
+        );
     }
 
     #[test]
@@ -1696,7 +1943,10 @@ mod tests {
         let mut manager = SessionManager::new();
         let session = manager.create("project-1", "/path/to/project");
         let forked = manager
-            .fork(&session.id, None)
+            .fork(
+                &session.id,
+                fork_spec(None, SessionForkHistoryMode::All, None),
+            )
             .expect("expected forked session");
 
         assert_eq!(
@@ -1704,6 +1954,24 @@ mod tests {
             SessionContextKind::ExplicitFullHistoryFork
         );
         assert!(forked.parent_id.is_none());
+    }
+
+    #[test]
+    fn test_legacy_fork_without_context_kind_infers_full_history_fork() {
+        let mut manager = SessionManager::new();
+        let session = manager.create("project-1", "/path/to/project");
+        let mut forked = manager
+            .fork(
+                &session.id,
+                fork_spec(None, SessionForkHistoryMode::All, None),
+            )
+            .expect("expected forked session");
+        forked.remove_metadata(SESSION_CONTEXT_KIND_METADATA_KEY);
+
+        assert_eq!(
+            forked.context_kind(),
+            SessionContextKind::ExplicitFullHistoryFork
+        );
     }
 
     #[test]
@@ -1734,7 +2002,14 @@ mod tests {
         manager.update(session.clone());
 
         let forked = manager
-            .fork(&session.id, Some(&selected_message_id))
+            .fork(
+                &session.id,
+                fork_spec(
+                    Some(&selected_message_id),
+                    SessionForkHistoryMode::All,
+                    None,
+                ),
+            )
             .expect("expected forked session");
 
         assert_eq!(
@@ -1762,6 +2037,9 @@ mod tests {
         );
         assert!(!forked.metadata.contains_key("last_ingress_source"));
         assert!(!forked.metadata.contains_key("custom_session_key"));
+        assert_eq!(forked.fork_history_mode(), SessionForkHistoryMode::All);
+        assert_eq!(forked.fork_history_message_limit(), None);
+        assert_eq!(forked.fork_source_history_message_count(), Some(2));
         assert_eq!(forked.record().messages.len(), 2);
         assert_eq!(forked.imported_history_message_count(), 2);
         assert!(forked.record().messages.iter().all(|message| {
@@ -1800,7 +2078,10 @@ mod tests {
         manager.update(session.clone());
 
         let mut forked = manager
-            .fork(&session.id, None)
+            .fork(
+                &session.id,
+                fork_spec(None, SessionForkHistoryMode::All, None),
+            )
             .expect("expected forked session");
 
         let inherited_usage = forked.get_usage();
@@ -1837,8 +2118,124 @@ mod tests {
 
         let fork_explain = forked.fork_explain().expect("fork explain should exist");
         assert_eq!(fork_explain.origin_session_id, session.id);
+        assert_eq!(fork_explain.history_mode, SessionForkHistoryMode::All);
+        assert_eq!(fork_explain.history_message_limit, None);
+        assert_eq!(fork_explain.source_history_messages, Some(2));
         assert_eq!(fork_explain.imported_history_messages, 2);
         assert!(fork_explain.policy_frozen);
+        assert!(fork_explain.frozen_policy_keys.is_empty());
+        assert!(fork_explain.cache_stability_keys.is_empty());
+        assert_eq!(
+            fork_explain.lifecycle.usage_replay_scope,
+            SessionForkLifecycleScope::LocalOnly
+        );
+        assert_eq!(
+            fork_explain.lifecycle.revert_scope,
+            SessionForkLifecycleScope::LocalOnly
+        );
+        assert_eq!(
+            fork_explain.lifecycle.recovery_scope,
+            SessionForkLifecycleScope::LocalOnly
+        );
+        assert_eq!(
+            fork_explain.lifecycle.compaction_scope,
+            SessionForkLifecycleScope::ForkPromptSurface
+        );
+        assert!(forked.is_imported_fork_history_message_id(&forked.record().messages[0].id));
+        assert!(forked.last_owner_local_user_message().is_none());
+        assert_eq!(
+            forked
+                .last_owner_local_assistant_message()
+                .and_then(|message| message.usage.as_ref())
+                .and_then(MessageUsage::request_context_tokens),
+            Some(70)
+        );
+    }
+
+    #[test]
+    fn test_session_manager_fork_last_n_imports_tail_and_records_mode() {
+        let mut manager = SessionManager::new();
+        let mut session = manager.create("project-1", "/path/to/project");
+        session.insert_metadata("model_provider".to_string(), serde_json::json!("openai"));
+        session.insert_metadata("model_id".to_string(), serde_json::json!("gpt-4.1"));
+        session.add_user_message("one");
+        session.add_user_message("two");
+        session.add_user_message("three");
+        manager.update(session.clone());
+
+        let forked = manager
+            .fork(
+                &session.id,
+                fork_spec(None, SessionForkHistoryMode::LastN, Some(2)),
+            )
+            .expect("expected forked session");
+
+        assert_eq!(forked.record().messages.len(), 2);
+        assert_eq!(forked.fork_history_mode(), SessionForkHistoryMode::LastN);
+        assert_eq!(forked.fork_history_message_limit(), Some(2));
+        assert_eq!(forked.fork_source_history_message_count(), Some(3));
+
+        let fork_explain = forked.fork_explain().expect("fork explain should exist");
+        assert_eq!(fork_explain.history_mode, SessionForkHistoryMode::LastN);
+        assert_eq!(fork_explain.history_message_limit, Some(2));
+        assert_eq!(fork_explain.source_history_messages, Some(3));
+        assert_eq!(fork_explain.imported_history_messages, 2);
+        assert_eq!(
+            fork_explain.lifecycle.compaction_scope,
+            SessionForkLifecycleScope::ForkPromptSurface
+        );
+    }
+
+    #[test]
+    fn test_session_manager_fork_none_records_lineage_without_imported_history() {
+        let mut manager = SessionManager::new();
+        let mut session = manager.create("project-1", "/path/to/project");
+        session.insert_metadata("model_provider".to_string(), serde_json::json!("openai"));
+        session.insert_metadata("model_id".to_string(), serde_json::json!("gpt-4.1"));
+        session.add_user_message("hello");
+        manager.update(session.clone());
+
+        let forked = manager
+            .fork(
+                &session.id,
+                fork_spec(None, SessionForkHistoryMode::None, None),
+            )
+            .expect("expected forked session");
+
+        assert_eq!(forked.record().messages.len(), 0);
+        assert_eq!(forked.fork_history_mode(), SessionForkHistoryMode::None);
+        assert_eq!(forked.fork_source_history_message_count(), Some(1));
+
+        let fork_explain = forked.fork_explain().expect("fork explain should exist");
+        assert_eq!(fork_explain.history_mode, SessionForkHistoryMode::None);
+        assert_eq!(fork_explain.imported_history_messages, 0);
+        assert_eq!(fork_explain.source_history_messages, Some(1));
+        assert_eq!(
+            fork_explain.lifecycle.recovery_scope,
+            SessionForkLifecycleScope::LocalOnly
+        );
+    }
+
+    #[test]
+    fn test_session_manager_fork_rejects_invalid_history_mode_contract() {
+        let mut manager = SessionManager::new();
+        let session = manager.create("project-1", "/path/to/project");
+
+        let error = manager
+            .fork(
+                &session.id,
+                fork_spec(None, SessionForkHistoryMode::LastN, None),
+            )
+            .expect_err("expected invalid fork contract");
+        assert!(matches!(error, SessionForkError::InvalidRequest(_)));
+
+        let error = manager
+            .fork(
+                &session.id,
+                fork_spec(None, SessionForkHistoryMode::All, Some(2)),
+            )
+            .expect_err("expected invalid fork contract");
+        assert!(matches!(error, SessionForkError::InvalidRequest(_)));
     }
 
     #[test]

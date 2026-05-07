@@ -45,7 +45,7 @@ interface StageFocusOptions {
   sessionId?: string | null;
 }
 
-interface ChildSessionNavigateContext {
+interface AttachedSessionNavigateContext {
   stageId?: string | null;
   toolCallId?: string | null;
   label?: string | null;
@@ -217,8 +217,8 @@ export function useSchedulerNavigation({
     [focusStage, jumpToConversationTarget],
   );
 
-  const navigateToChildSession = useCallback(
-    async (sessionId: string, context?: ChildSessionNavigateContext) => {
+  const navigateToAttachedSession = useCallback(
+    async (sessionId: string, context?: AttachedSessionNavigateContext) => {
       if (!sessionId.trim()) return;
 
       let nextSession = sessions.find((session) => session.id === sessionId) ?? null;
@@ -228,7 +228,7 @@ export function useSchedulerNavigation({
           setSessions((current) => upsertSession(current, nextSession!));
         } catch (error) {
           setBanner(
-            `Failed to open child session ${sessionId}: ${error instanceof Error ? error.message : "Unknown error"}`,
+            `Failed to open attached session ${sessionId}: ${error instanceof Error ? error.message : "Unknown error"}`,
           );
           return;
         }
@@ -399,7 +399,7 @@ export function useSchedulerNavigation({
     previewStage,
     navigateToStage,
     navigateToToolCall,
-    navigateToChildSession,
+    navigateToAttachedSession,
     navigateToSession,
     navigateToBreadcrumb,
     navigateToProvenanceSession,

@@ -86,8 +86,8 @@ mod tests {
             retry_attempt: None,
             active_agent_count: 0,
             active_tool_count: 0,
-            child_session_count: 0,
-            primary_child_session_id: None,
+            attached_session_count: 0,
+            primary_attached_session_id: None,
         }
     }
 

@@ -27,7 +27,9 @@ impl ModelCallerBridge {
         model: Option<ModelRef>,
         exec_ctx: ExecutionContext,
     ) -> Self {
-        let context_limits = model_resolver.context_limits(model.as_ref(), &exec_ctx).await;
+        let context_limits = model_resolver
+            .context_limits(model.as_ref(), &exec_ctx)
+            .await;
         Self {
             model_resolver,
             model,
@@ -199,7 +201,9 @@ mod tests {
             max_output_tokens: Some(32_000),
         };
         let bridge = ModelCallerBridge::new(
-            Arc::new(LimitsOnlyResolver { limits: Some(exact) }),
+            Arc::new(LimitsOnlyResolver {
+                limits: Some(exact),
+            }),
             Some(ModelRef {
                 provider_id: "mock".to_string(),
                 model_id: "tiny-model".to_string(),

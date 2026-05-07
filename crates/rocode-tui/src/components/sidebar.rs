@@ -64,8 +64,8 @@ pub struct SidebarRenderState {
     toggle_hits: Vec<SidebarToggleHit>,
     /// Maps rendered line index → process list index (for click selection).
     process_line_hits: Vec<(usize, usize)>,
-    /// Maps rendered line index → child session list index (for click selection).
-    child_session_line_hits: Vec<(usize, usize)>,
+    /// Maps rendered line index → attached session list index (for click selection).
+    attached_session_line_hits: Vec<(usize, usize)>,
     /// Maps rendered line index → workspace visible node index.
     workspace_line_hits: Vec<(usize, usize)>,
     workspace_index: FileIndex,
@@ -74,9 +74,9 @@ pub struct SidebarRenderState {
     workspace_selected_path: Option<String>,
     workspace_tooltip: Option<String>,
     workspace_seeded_root: Option<String>,
-    /// Pending navigation target set by click-to-activate on an already-selected child session.
+    /// Pending navigation target set by click-to-activate on an already-selected attached session.
     /// Consumed (taken) by the app after `handle_click` returns.
-    pending_navigate_child: Option<usize>,
+    pending_navigate_attached: Option<usize>,
     /// Set when the root session node is double-clicked (navigate back to parent).
     pending_navigate_parent: bool,
 }
@@ -132,7 +132,7 @@ impl SidebarRenderState {
         {
             lifecycle.active_tab = hit.tab;
             lifecycle.process_focus = false;
-            lifecycle.child_session_focus = false;
+            lifecycle.attached_session_focus = false;
             lifecycle.workspace_focus = hit.tab == SidebarTab::Workspace;
             if hit.tab != SidebarTab::Workspace {
                 self.workspace_tooltip = None;
@@ -160,15 +160,15 @@ impl SidebarRenderState {
             lifecycle.process_selected = *proc_idx;
             lifecycle.active_tab = SidebarTab::Session;
             lifecycle.process_focus = true;
-            lifecycle.child_session_focus = false;
+            lifecycle.attached_session_focus = false;
             lifecycle.workspace_focus = false;
             self.workspace_tooltip = None;
             return true;
         }
 
-        // Check if the click is on a child session item
+        // Check if the click is on a attached session item
         if let Some((_line_idx, cs_idx)) = self
-            .child_session_line_hits
+            .attached_session_line_hits
             .iter()
             .find(|(li, _)| *li == line_index)
         {
@@ -178,14 +178,14 @@ impl SidebarRenderState {
                 self.workspace_tooltip = None;
                 return true;
             }
-            if lifecycle.child_session_focus && lifecycle.child_session_selected == *cs_idx {
+            if lifecycle.attached_session_focus && lifecycle.attached_session_selected == *cs_idx {
                 // Already selected and focused — treat as activation (navigate)
-                self.pending_navigate_child = Some(*cs_idx);
+                self.pending_navigate_attached = Some(*cs_idx);
             } else {
                 // First click — select and focus
                 lifecycle.active_tab = SidebarTab::Session;
-                lifecycle.child_session_selected = *cs_idx;
-                lifecycle.child_session_focus = true;
+                lifecycle.attached_session_selected = *cs_idx;
+                lifecycle.attached_session_focus = true;
                 lifecycle.process_focus = false;
                 lifecycle.workspace_focus = false;
             }
@@ -204,7 +204,7 @@ impl SidebarRenderState {
             lifecycle.workspace_selected = *node_idx;
             lifecycle.workspace_focus = true;
             lifecycle.process_focus = false;
-            lifecycle.child_session_focus = false;
+            lifecycle.attached_session_focus = false;
             if let Some(node) = self.workspace_visible_nodes.get(*node_idx) {
                 let tooltip = workspace_popup_text(self.sections_area, node);
                 let node_path = node.path.clone();
@@ -279,10 +279,10 @@ impl SidebarRenderState {
         }
     }
 
-    /// Take the pending child session navigation index, if any.
-    /// Returns the index into the child_sessions list that was clicked for activation.
-    pub fn take_pending_navigate_child(&mut self) -> Option<usize> {
-        self.pending_navigate_child.take()
+    /// Take the pending attached session navigation index, if any.
+    /// Returns the index into the attached_sessions list that was clicked for activation.
+    pub fn take_pending_navigate_attached(&mut self) -> Option<usize> {
+        self.pending_navigate_attached.take()
     }
 
     /// Take the pending parent/root session navigation flag.
@@ -415,11 +415,11 @@ fn clamp_sidebar_process_selection(lifecycle: &mut SidebarLifecycleState, count:
     }
 }
 
-fn clamp_sidebar_child_session_selection(lifecycle: &mut SidebarLifecycleState, count: usize) {
+fn clamp_sidebar_attached_session_selection(lifecycle: &mut SidebarLifecycleState, count: usize) {
     if count == 0 {
-        lifecycle.child_session_selected = 0;
-    } else if lifecycle.child_session_selected >= count {
-        lifecycle.child_session_selected = count - 1;
+        lifecycle.attached_session_selected = 0;
+    } else if lifecycle.attached_session_selected >= count {
+        lifecycle.attached_session_selected = count - 1;
     }
 }
 
@@ -435,7 +435,7 @@ struct SidebarSection {
     key: &'static str,
     title: &'static str,
     lines: Vec<Line<'static>>,
-    child_session_hit_rows: Option<Vec<Option<usize>>>,
+    attached_session_hit_rows: Option<Vec<Option<usize>>>,
     workspace_hit_rows: Option<Vec<Option<usize>>>,
     summary: Option<String>,
     collapsible: bool,
@@ -642,7 +642,7 @@ impl Sidebar {
                 key: "session",
                 title: "Session",
                 lines: session_lines,
-                child_session_hit_rows: None,
+                attached_session_hit_rows: None,
                 workspace_hit_rows: None,
                 summary: None,
                 collapsible: false,
@@ -656,7 +656,7 @@ impl Sidebar {
                         truncate_text(&share.url, area.width as usize),
                         Style::default().fg(theme.info),
                     ))],
-                    child_session_hit_rows: None,
+                    attached_session_hit_rows: None,
                     workspace_hit_rows: None,
                     summary: None,
                     collapsible: false,
@@ -858,8 +858,9 @@ impl Sidebar {
                     }
                     let cache_diagnostic = self
                         .context
-                        .session_cache_semantics()
-                        .and_then(|summary| summary.label)
+                        .session_context_closure_contract()
+                        .as_ref()
+                        .and_then(context_closure_cache_diagnostic_label)
                         .or_else(|| {
                             last_assistant
                                 .and_then(|message| cache_diagnostic_label(&message.metadata))
@@ -923,7 +924,7 @@ impl Sidebar {
                     ]));
                     lines
                 },
-                child_session_hit_rows: None,
+                attached_session_hit_rows: None,
                 workspace_hit_rows: None,
                 summary: None,
                 collapsible: false,
@@ -977,7 +978,7 @@ impl Sidebar {
                 key: "mcp",
                 title: "MCP",
                 lines: mcp_lines,
-                child_session_hit_rows: None,
+                attached_session_hit_rows: None,
                 workspace_hit_rows: None,
                 summary: Some(format!(
                     "{} active, {} errors",
@@ -1023,7 +1024,7 @@ impl Sidebar {
                 key: "lsp",
                 title: "LSP",
                 lines: lsp_lines,
-                child_session_hit_rows: None,
+                attached_session_hit_rows: None,
                 workspace_hit_rows: None,
                 summary: Some(format!(
                     "{} connected, {} errors",
@@ -1054,7 +1055,7 @@ impl Sidebar {
                         key: "todo",
                         title: "Todo",
                         lines: todo_lines,
-                        child_session_hit_rows: None,
+                        attached_session_hit_rows: None,
                         workspace_hit_rows: None,
                         summary: Some(format!("{} pending", pending.len())),
                         collapsible: pending.len() > 2,
@@ -1087,7 +1088,7 @@ impl Sidebar {
                         key: "diff",
                         title: "Modified Files",
                         lines: file_lines,
-                        child_session_hit_rows: None,
+                        attached_session_hit_rows: None,
                         workspace_hit_rows: None,
                         summary: Some(format!("{} files changed", entries.len())),
                         collapsible: entries.len() > 2,
@@ -1153,7 +1154,7 @@ impl Sidebar {
                     key: "processes",
                     title: "Processes",
                     lines: proc_lines,
-                    child_session_hit_rows: None,
+                    attached_session_hit_rows: None,
                     workspace_hit_rows: None,
                     summary: Some(format!("{} running", proc_list.len())),
                     collapsible: proc_list.len() > 2,
@@ -1201,7 +1202,7 @@ impl Sidebar {
                         key: "agents",
                         title: "Agents",
                         lines: agent_lines,
-                        child_session_hit_rows: None,
+                        attached_session_hit_rows: None,
                         workspace_hit_rows: None,
                         summary: Some(summary),
                         collapsible: agent_nodes.len() > 3,
@@ -1210,19 +1211,23 @@ impl Sidebar {
             }
 
             // Session Graph section
-            let child_list = self.context.child_sessions();
-            clamp_sidebar_child_session_selection(lifecycle, child_list.len());
+            let child_list = self.context.attached_sessions();
+            clamp_sidebar_attached_session_selection(lifecycle, child_list.len());
             if !child_list.is_empty() {
                 let current_child_index = child_list
                     .iter()
                     .position(|child| child.session_id == self.session_id);
-                let selected_child_index = if lifecycle.child_session_focus {
-                    Some(lifecycle.child_session_selected.min(child_list.len() - 1))
+                let selected_child_index = if lifecycle.attached_session_focus {
+                    Some(
+                        lifecycle
+                            .attached_session_selected
+                            .min(child_list.len() - 1),
+                    )
                 } else {
                     current_child_index
                 };
                 let selected_child = selected_child_index.and_then(|index| child_list.get(index));
-                let (cs_lines, child_session_hit_rows) = build_session_graph_lines(
+                let (cs_lines, attached_session_hit_rows) = build_session_graph_lines(
                     theme,
                     area.width,
                     graph_root_title,
@@ -1238,7 +1243,7 @@ impl Sidebar {
                     key: "session_graph",
                     title: "Session Graph",
                     lines: cs_lines,
-                    child_session_hit_rows: Some(child_session_hit_rows),
+                    attached_session_hit_rows: Some(attached_session_hit_rows),
                     workspace_hit_rows: None,
                     summary: Some(format!("{} sessions", child_list.len())),
                     collapsible: child_list.len() > 2,
@@ -1252,7 +1257,7 @@ impl Sidebar {
         let mut line_index = 0usize;
         let mut toggle_hits: Vec<SidebarToggleHit> = Vec::new();
         let mut process_line_hits: Vec<(usize, usize)> = Vec::new();
-        let mut child_session_line_hits: Vec<(usize, usize)> = Vec::new();
+        let mut attached_session_line_hits: Vec<(usize, usize)> = Vec::new();
         let mut workspace_line_hits: Vec<(usize, usize)> = Vec::new();
         for section in sections {
             if !lines.is_empty() {
@@ -1287,7 +1292,7 @@ impl Sidebar {
 
             if !collapsed {
                 let is_processes = section.key == "processes";
-                let child_hit_rows = section.child_session_hit_rows.as_ref();
+                let child_hit_rows = section.attached_session_hit_rows.as_ref();
                 let workspace_hit_rows = section.workspace_hit_rows.as_ref();
                 for (row_idx, row) in section.lines.into_iter().enumerate() {
                     if is_processes {
@@ -1295,7 +1300,7 @@ impl Sidebar {
                     }
                     if let Some(hit_rows) = child_hit_rows {
                         if let Some(Some(child_index)) = hit_rows.get(row_idx) {
-                            child_session_line_hits.push((line_index, *child_index));
+                            attached_session_line_hits.push((line_index, *child_index));
                         }
                     }
                     if let Some(hit_rows) = workspace_hit_rows {
@@ -1333,7 +1338,7 @@ impl Sidebar {
 
         state.set_sections_layout(sections_text_area, lines.len(), toggle_hits);
         state.process_line_hits = process_line_hits;
-        state.child_session_line_hits = child_session_line_hits;
+        state.attached_session_line_hits = attached_session_line_hits;
         state.workspace_line_hits = workspace_line_hits;
 
         let mut paragraph = Paragraph::new(lines)
@@ -1434,7 +1439,7 @@ impl Sidebar {
                     Style::default().fg(theme.text_muted),
                 )]),
             ],
-            child_session_hit_rows: None,
+            attached_session_hit_rows: None,
             workspace_hit_rows: None,
             summary: None,
             collapsible: false,
@@ -1449,7 +1454,7 @@ impl Sidebar {
             key: "workspace_tree",
             title: "Files",
             lines: tree_lines,
-            child_session_hit_rows: None,
+            attached_session_hit_rows: None,
             workspace_hit_rows: Some(workspace_hit_rows),
             summary: Some(tree_summary),
             collapsible: false,
@@ -1869,8 +1874,68 @@ fn sidebar_metadata_bool(metadata: &HashMap<String, serde_json::Value>, key: &st
 fn cache_diagnostic_label(metadata: &Option<HashMap<String, serde_json::Value>>) -> Option<String> {
     metadata
         .as_ref()
-        .and_then(rocode_provider::cache::cache_bust_summary_from_metadata)
-        .and_then(|summary| rocode_provider::cache::cache_bust_summary_label(&summary))
+        .and_then(rocode_provider::cache::cache_evidence_from_metadata)
+        .and_then(|summary| cache_evidence_status_label(&summary))
+}
+
+fn context_closure_cache_diagnostic_label(
+    contract: &rocode_types::SessionContextClosureContract,
+) -> Option<String> {
+    let mut parts = Vec::new();
+    let cache_status = if !contract.cache_explainability.issue_present {
+        "cache stable"
+    } else if contract.cache_explainability.explained {
+        "cache explained"
+    } else {
+        "cache unexplained"
+    };
+    let prefix_status = if contract.prefix_stability.prefix_change_detected {
+        "prefix changed"
+    } else {
+        "stable prefix"
+    };
+    let boundary_status = if contract.compaction_boundary.boundary_recorded {
+        "boundary recorded"
+    } else {
+        "boundary clear"
+    };
+
+    if contract.cache_explainability.issue_present {
+        parts.push(cache_status);
+    }
+    if contract.prefix_stability.prefix_change_detected {
+        parts.push(prefix_status);
+    } else if contract.compaction_boundary.boundary_recorded {
+        parts.push(boundary_status);
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" · "))
+    }
+}
+
+fn cache_evidence_status_label(
+    summary: &rocode_provider::cache::CacheEvidenceSummary,
+) -> Option<String> {
+    if !summary.should_surface() {
+        return None;
+    }
+
+    let has_cause = summary
+        .primary_cause
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty());
+    Some(
+        if has_cause {
+            "cache explained"
+        } else {
+            "cache unexplained"
+        }
+        .to_string(),
+    )
 }
 
 fn provider_diagnostic_label(
@@ -1962,11 +2027,11 @@ fn build_session_graph_lines(
     current_title: &str,
     current_session_id: &str,
     active_session_id: &str,
-    child_list: &[crate::context::ChildSessionInfo],
+    child_list: &[crate::context::AttachedSessionInfo],
     sessions: &std::collections::HashMap<String, crate::context::Session>,
     session_diff: &std::collections::HashMap<String, Vec<crate::context::DiffEntry>>,
     lifecycle: &SidebarLifecycleState,
-    selected_child: Option<&crate::context::ChildSessionInfo>,
+    selected_child: Option<&crate::context::AttachedSessionInfo>,
 ) -> (Vec<Line<'static>>, Vec<Option<usize>>) {
     let mut lines = Vec::new();
     let mut hit_rows = Vec::new();
@@ -1990,7 +2055,8 @@ fn build_session_graph_lines(
     hit_rows.push(None);
 
     for (idx, child) in child_list.iter().enumerate() {
-        let selected = (lifecycle.child_session_focus && idx == lifecycle.child_session_selected)
+        let selected = (lifecycle.attached_session_focus
+            && idx == lifecycle.attached_session_selected)
             || child.session_id == active_session_id;
         let branch = if idx + 1 == child_list.len() {
             "╰"
@@ -2128,7 +2194,7 @@ fn build_session_graph_lines(
 }
 
 fn child_graph_label(
-    child: &crate::context::ChildSessionInfo,
+    child: &crate::context::AttachedSessionInfo,
     session: Option<&crate::context::Session>,
     width: u16,
 ) -> String {
@@ -2146,7 +2212,7 @@ fn child_graph_label(
     format!("{}{}", truncate_text(&label, max_label_chars), suffix)
 }
 
-fn format_stage_badge(child: &crate::context::ChildSessionInfo) -> String {
+fn format_stage_badge(child: &crate::context::AttachedSessionInfo) -> String {
     match (child.stage_index, child.stage_total) {
         (Some(index), Some(total)) => format!("{index}/{total}"),
         (Some(index), None) => index.to_string(),
@@ -2310,13 +2376,13 @@ fn collect_agent_nodes_from_topology(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::{ChildSessionInfo, Session};
+    use crate::context::{AttachedSessionInfo, Session};
     use chrono::Utc;
 
     #[test]
     fn session_graph_hit_rows_only_map_to_child_nodes() {
-        let child = ChildSessionInfo {
-            session_id: "child-session-1".to_string(),
+        let child = AttachedSessionInfo {
+            session_id: "attached-session-1".to_string(),
             stage_name: "review".to_string(),
             stage_title: "Review".to_string(),
             stage_id: Some("stg_1".to_string()),
@@ -2347,8 +2413,8 @@ mod tests {
             }],
         );
         let lifecycle = SidebarLifecycleState {
-            child_session_selected: 0,
-            child_session_focus: true,
+            attached_session_selected: 0,
+            attached_session_focus: true,
             ..Default::default()
         };
 
@@ -2357,7 +2423,7 @@ mod tests {
             42,
             "Root Session",
             "root-session",
-            "child-session-1",
+            "attached-session-1",
             &[child.clone()],
             &sessions,
             &diffs,
@@ -2520,19 +2586,66 @@ mod tests {
     fn cache_diagnostic_label_reads_message_metadata() {
         let mut metadata = HashMap::new();
         metadata.insert(
-            rocode_provider::cache::CACHE_BUST_SUMMARY_METADATA_KEY.to_string(),
+            rocode_provider::cache::CACHE_EVIDENCE_METADATA_KEY.to_string(),
             serde_json::json!({
                 "status": "degraded",
-                "severity": "LikelyBust",
-                "primary_cause": "messagePrefixHash changed: message prefix changed before the stable boundary",
+                "severity": "MediumChange",
+                "primary_cause": "prefix changed before the stable boundary",
                 "change_count": 1,
             }),
         );
 
         let label = cache_diagnostic_label(&Some(metadata)).expect("label");
 
-        assert!(label.contains("likely bust"));
-        assert!(label.contains("messagePrefixHash"));
+        assert_eq!(label, "cache explained");
+    }
+
+    #[test]
+    fn context_closure_cache_diagnostic_uses_narrow_status_words() {
+        let contract = rocode_types::SessionContextClosureContract {
+            prefix_stability: rocode_types::SessionPrefixStabilityContract {
+                basis: rocode_types::SessionCacheSemanticsBasis::ApiView,
+                tracked_on_api_view: true,
+                api_view_messages: 9,
+                trimmed_model_visible_messages: 2,
+                prefix_change_detected: true,
+                explanation: None,
+            },
+            compaction_boundary: rocode_types::SessionCompactionBoundaryContract {
+                boundary_recorded: true,
+                phase: None,
+                trigger: None,
+                reason: None,
+                governance_status: None,
+                request_pressure_percent: None,
+                live_pressure_percent: None,
+                compaction_attempted: true,
+                compaction_succeeded: true,
+                blocking: false,
+            },
+            cache_explainability: rocode_types::SessionCacheExplainabilityContract {
+                issue_present: true,
+                explained: true,
+                source: rocode_types::SessionCacheExplainabilitySource::BoundaryEvidence,
+                severity: Some(rocode_types::SessionCacheSeverity::MediumChange),
+                explanation: None,
+            },
+            child_history_isolation: rocode_types::SessionChildHistoryIsolationContract {
+                attached_subtree_session_count: 0,
+                owner_session_cumulative_tokens: 0,
+                workflow_cumulative_tokens: 0,
+                attached_subtree_cumulative_tokens: 0,
+                owner_live_context_tokens: Some(0),
+                owner_local_live_prefix: true,
+                child_history_in_live_prefix_detected: false,
+                explanation: "isolated".to_string(),
+            },
+        };
+
+        assert_eq!(
+            context_closure_cache_diagnostic_label(&contract).as_deref(),
+            Some("cache explained · prefix changed")
+        );
     }
 
     #[test]

@@ -59,7 +59,7 @@ pub struct ExpectedAggregates {
     pub distinct_agent_labels: Vec<String>,
     pub distinct_tool_labels: Vec<String>,
     pub question_count: usize,
-    pub stages_with_child_sessions: usize,
+    pub stages_with_attached_sessions: usize,
     pub aggregate_prompt_tokens: u64,
     pub aggregate_completion_tokens: u64,
     pub aggregate_reasoning_tokens: u64,

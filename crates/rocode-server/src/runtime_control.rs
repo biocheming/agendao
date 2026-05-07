@@ -103,10 +103,10 @@ impl ExecutionRecord {
             started_at: self.started_at,
             updated_at: self.updated_at,
             session_id: self.session_id.clone(),
-            child_session_id: self
+            attached_session_id: self
                 .metadata
                 .as_ref()
-                .and_then(|m| m.get("child_session_id"))
+                .and_then(|m| m.get("attached_session_id"))
                 .and_then(|v| v.as_str())
                 .map(String::from),
         }
@@ -1709,7 +1709,7 @@ mod tests {
             updated_at: 1710000001000,
             metadata: Some(serde_json::json!({
                 "scheduler_stage_id": "stage_xyz",
-                "child_session_id": "child_001"
+                "attached_session_id": "child_001"
             })),
         };
 
@@ -1721,7 +1721,7 @@ mod tests {
         assert_eq!(node.status, ExecutionNodeStatus::Running);
         assert_eq!(node.label, Some("planner".to_string()));
         assert_eq!(node.session_id, "sess_abc");
-        assert_eq!(node.child_session_id, Some("child_001".to_string()));
+        assert_eq!(node.attached_session_id, Some("child_001".to_string()));
         assert_eq!(node.started_at, 1710000000000);
         assert_eq!(node.updated_at, 1710000001000);
     }
@@ -1750,7 +1750,7 @@ mod tests {
         assert_eq!(node.kind, ExecutionNodeKind::Tool);
         assert_eq!(node.status, ExecutionNodeStatus::Waiting);
         assert_eq!(node.waiting_on, Some("user_approval".to_string()));
-        assert_eq!(node.child_session_id, None);
+        assert_eq!(node.attached_session_id, None);
     }
 
     #[test]

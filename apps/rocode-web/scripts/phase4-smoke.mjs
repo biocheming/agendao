@@ -661,11 +661,11 @@ async function run() {
         id: "smoke-stage-block",
         stage_id: "stage-smoke",
         tool_call_id: "call_smoke_tool",
-        title: "Smoke Child Session Stage",
+        title: "Smoke Attached Session Stage",
         status: "running",
         profile: "smoke",
-        child_session_id: childSession.id,
-        focus: "Validate child-session jump from the message feed",
+        attached_session_id: childSession.id,
+        focus: "Validate attached-session jump from the message feed",
         text: "synthetic scheduler stage for frontend smoke",
       },
     });
@@ -683,7 +683,7 @@ async function run() {
     });
     await waitForExpression(
       client,
-      `Boolean(document.querySelector('[data-testid="scheduler-stage-card"][data-child-session-id="${childSession.id}"]'))`,
+      `Boolean(document.querySelector('[data-testid="scheduler-stage-card"][data-attached-session-id="${childSession.id}"]'))`,
     );
     await clickLast(client, "[data-testid='scheduler-stage-open-child']");
     await waitForExpression(
@@ -694,7 +694,7 @@ async function run() {
       client,
       "document.querySelectorAll('[data-testid=\"session-breadcrumb\"]').length >= 2",
     );
-    record("child-session-jump", "scheduler stage card opened the real child session and preserved breadcrumbs");
+    record("attached-session-jump", "scheduler stage card opened the real attached session and preserved breadcrumbs");
 
     await waitForExpression(client, "Boolean(document.querySelector('[data-testid=\"provenance-tool\"]'))");
     await click(client, "[data-testid='provenance-tool']");
@@ -706,7 +706,7 @@ async function run() {
       client,
       "document.querySelector('[data-testid=\"message-card\"][data-block-id=\"call_smoke_tool\"]')?.classList.contains('focused') === true",
     );
-    record("provenance-tool-jump", "child-session provenance tool link returned to the parent tool block and highlighted it");
+    record("provenance-tool-jump", "attached-session provenance tool link returned to the parent tool block and highlighted it");
 
     await maybeRunProviderSoak(client, record);
 

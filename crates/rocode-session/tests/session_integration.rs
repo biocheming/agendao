@@ -33,7 +33,7 @@ fn test_session_add_assistant_message() {
 }
 
 #[test]
-fn test_session_child_creation() {
+fn test_session_attached_creation() {
     let parent = Session::new("test-project", "/test/directory");
     let child = Session::child_with_context_kind(&parent, SessionContextKind::DelegatedSubsession);
 

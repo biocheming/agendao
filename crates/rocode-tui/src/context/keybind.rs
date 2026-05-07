@@ -190,13 +190,10 @@ impl KeybindRegistry {
         self.register("model_cycle", Keybind::ctrl(KeyCode::Char('m')));
         self.register("variant_cycle", Keybind::ctrl(KeyCode::Char('v')));
 
-        self.register("session_child_cycle", Keybind::ctrl(KeyCode::Char('j')));
-        self.register(
-            "session_child_cycle_reverse",
-            Keybind::ctrl(KeyCode::Char('k')),
-        );
+        self.register("session_attached_focus", Keybind::ctrl(KeyCode::Char('j')));
+        self.register("session_workspace_focus", Keybind::ctrl(KeyCode::Char('k')));
         self.register("session_parent", Keybind::alt(KeyCode::Left));
-        self.register("session_child_open", Keybind::alt(KeyCode::Right));
+        self.register("session_attached_open", Keybind::alt(KeyCode::Right));
         self.register("session_rename", Keybind::ctrl(KeyCode::Char('r')));
         self.register("session_delete", Keybind::ctrl(KeyCode::Char('d')));
         self.register("session_interrupt", Keybind::key(KeyCode::Esc));

@@ -55,7 +55,7 @@ export interface OutputBlock {
   last_event?: string;
   waiting_on?: string;
   activity?: string;
-  child_session_id?: string;
+  attached_session_id?: string;
   active_skills?: string[];
   active_agents?: string[];
   active_categories?: string[];

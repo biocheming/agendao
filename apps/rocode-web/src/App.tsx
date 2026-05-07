@@ -35,8 +35,12 @@ import {
   cacheBustSummaryFromMetadata,
   cacheBustSummaryLabel,
   cacheSemanticsFromTelemetry,
-  type CacheBustSummaryRecord,
+  type CacheEvidenceSummaryRecord,
 } from "./lib/cacheDiagnostics";
+import {
+  contextClosureCacheDiagnosticLabel,
+  contextClosureContractFromTelemetry,
+} from "./lib/contextClosureDiagnostics";
 import {
   providerDiagnosticFromMetadata,
   providerDiagnosticLabel,
@@ -504,7 +508,7 @@ function schedulerStageBlockFromHistoryMessage(message: MessageRecord): OutputBl
     last_event: metadataString(metadata, "scheduler_stage_last_event"),
     waiting_on: metadataString(metadata, "scheduler_stage_waiting_on"),
     activity: metadataString(metadata, "scheduler_stage_activity"),
-    child_session_id: metadataString(metadata, "scheduler_stage_child_session_id"),
+    attached_session_id: metadataString(metadata, "scheduler_stage_attached_session_id"),
     active_skills: metadataStringArray(metadata, "scheduler_stage_active_skills"),
     active_agents: metadataStringArray(metadata, "scheduler_stage_active_agents"),
     active_categories: metadataStringArray(metadata, "scheduler_stage_active_categories"),
@@ -1404,13 +1408,18 @@ export default function App() {
     return null;
   }, [messageHistory]);
   const latestCacheDiagnostic = useMemo(() => {
+    const contextClosure = contextClosureContractFromTelemetry(executionActivity.telemetry);
+    if (contextClosure) {
+      return contextClosureCacheDiagnosticLabel(contextClosure);
+    }
+
     const semanticsLabel = cacheSemanticsFromTelemetry(executionActivity.telemetry)?.label;
     if (semanticsLabel) return semanticsLabel;
 
     const telemetrySummary =
-      executionActivity.telemetry?.cache_bust_summary &&
-      typeof executionActivity.telemetry.cache_bust_summary === "object"
-        ? (executionActivity.telemetry.cache_bust_summary as CacheBustSummaryRecord)
+      executionActivity.telemetry?.cache_evidence &&
+      typeof executionActivity.telemetry.cache_evidence === "object"
+        ? (executionActivity.telemetry.cache_evidence as CacheEvidenceSummaryRecord)
         : null;
     const telemetryLabel = cacheBustSummaryLabel(telemetrySummary);
     if (telemetryLabel) return telemetryLabel;
@@ -1423,7 +1432,8 @@ export default function App() {
     }
     return null;
   }, [
-    executionActivity.telemetry?.cache_bust_summary,
+    executionActivity.telemetry?.cache_evidence,
+    executionActivity.telemetry?.context_closure_contract,
     executionActivity.telemetry?.cache_semantics,
     messageHistory,
   ]);
@@ -3072,7 +3082,7 @@ export default function App() {
             onCopyMessageLink={copyMessageLink}
             onToggleMessageSelected={toggleMessageSelected}
             onNavigateStage={schedulerNavigation.navigateToStage}
-            onNavigateChildSession={schedulerNavigation.navigateToChildSession}
+            onNavigateAttachedSession={schedulerNavigation.navigateToAttachedSession}
           />
 
           <div className="shrink-0 px-4 pb-5 pt-2 md:px-5">

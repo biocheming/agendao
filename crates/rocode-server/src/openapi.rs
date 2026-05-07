@@ -20,7 +20,7 @@ pub async fn print_openapi_spec() -> anyhow::Result<()> {
         ("/session/{id}", "get", "sessionGet"),
         ("/session/{id}", "patch", "sessionUpdate"),
         ("/session/{id}", "delete", "sessionDelete"),
-        ("/session/{id}/children", "get", "sessionChildren"),
+        ("/session/{id}/attached", "get", "sessionAttachedSessions"),
         ("/session/{id}/executions", "get", "sessionExecutions"),
         ("/session/{id}/recovery", "get", "sessionRecovery"),
         (

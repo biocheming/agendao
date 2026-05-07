@@ -49,11 +49,11 @@ use self::prompt::session_prompt;
 use self::recovery::{execute_session_recovery, get_session_recovery};
 use self::session_crud::{
     archive_session, cancel_tool_call, clear_session_revert, create_session, delete_session,
-    execute_command, execute_shell, fork_session, get_message, get_session, get_session_children,
-    get_session_diff, get_session_runtime, get_session_summary, get_session_todos, list_sessions,
-    prompt_async, session_revert, session_status, session_unrevert, set_session_permission,
-    set_session_summary, set_session_title, share_session, start_compaction, unshare_session,
-    update_part, update_session,
+    execute_command, execute_shell, fork_session, get_message, get_session,
+    get_session_attached_sessions, get_session_diff, get_session_runtime, get_session_summary,
+    get_session_todos, list_sessions, prompt_async, session_revert, session_status,
+    session_unrevert, set_session_permission, set_session_summary, set_session_title,
+    share_session, start_compaction, unshare_session, update_part, update_session,
 };
 pub(crate) use self::session_crud::{create_session_from_spec, session_to_info, CreateSessionSpec};
 use self::stages::get_session_stages;
@@ -72,7 +72,7 @@ pub(crate) fn session_routes() -> Router<Arc<ServerState>> {
                 .patch(update_session)
                 .delete(delete_session),
         )
-        .route("/{id}/children", get(get_session_children))
+        .route("/{id}/attached", get(get_session_attached_sessions))
         .route("/{id}/runtime", get(get_session_runtime))
         .route("/{id}/telemetry", get(get_session_telemetry))
         .route("/{id}/insights", get(get_session_insights))

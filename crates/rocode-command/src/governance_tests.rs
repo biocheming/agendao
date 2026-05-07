@@ -117,19 +117,19 @@ mod tests {
     }
 
     #[test]
-    fn summary_child_session_count_matches_block() {
+    fn summary_attached_session_count_matches_block() {
         let fixture = load_fixture();
         for entry in &fixture.stages {
             let summary = entry.block.to_summary();
-            let expected_count = if entry.block.child_session_id.is_some() {
+            let expected_count = if entry.block.attached_session_id.is_some() {
                 1
             } else {
                 0
             };
-            assert_eq!(summary.child_session_count, expected_count);
+            assert_eq!(summary.attached_session_count, expected_count);
             assert_eq!(
-                summary.primary_child_session_id,
-                entry.block.child_session_id
+                summary.primary_attached_session_id,
+                entry.block.attached_session_id
             );
         }
     }
@@ -222,7 +222,10 @@ mod tests {
             assert_eq!(direct.prompt_tokens, via_metadata.prompt_tokens);
             assert_eq!(direct.completion_tokens, via_metadata.completion_tokens);
             assert_eq!(direct.active_agent_count, via_metadata.active_agent_count);
-            assert_eq!(direct.child_session_count, via_metadata.child_session_count);
+            assert_eq!(
+                direct.attached_session_count,
+                via_metadata.attached_session_count
+            );
         }
     }
 
@@ -449,14 +452,14 @@ mod tests {
     }
 
     #[test]
-    fn child_session_count_matches_expected() {
+    fn attached_session_count_matches_expected() {
         let fixture = load_fixture();
         let count = fixture
             .stages
             .iter()
-            .filter(|s| s.block.child_session_id.is_some())
+            .filter(|s| s.block.attached_session_id.is_some())
             .count();
-        assert_eq!(count, fixture.expected.stages_with_child_sessions);
+        assert_eq!(count, fixture.expected.stages_with_attached_sessions);
     }
 
     // ── 9. StageEvent filtering simulation ───────────────────────────

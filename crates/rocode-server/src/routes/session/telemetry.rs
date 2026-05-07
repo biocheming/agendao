@@ -10,8 +10,8 @@ use rocode_session::{
     session_last_run_status_label, Session, SessionUsage,
 };
 use rocode_types::{
-    ContextCompactionSummary, ContextPressureGovernanceSummary,
-    PromptSurfaceSnapshotInvalidationSummary, SessionCacheSemanticsSummary, SessionContextExplain,
+    ContextCompactionSummary, ContextPressureGovernanceSummary, PromptSurfaceEvidenceSummary,
+    SessionCacheSemanticsSummary, SessionContextClosureContract, SessionContextExplain,
     SessionDiagnosticsSidecar, SessionInsightsResponse, SessionMemoryTelemetrySummary,
     SessionMultimodalAttachmentInfo, SessionMultimodalInsight, SessionOwnershipSummary,
     SessionUsageBooks, WorkflowUsageSummary,
@@ -37,7 +37,7 @@ pub struct SessionTelemetrySnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<SessionMemoryTelemetrySummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_bust_summary: Option<serde_json::Value>,
+    pub cache_evidence: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_explain: Option<SessionContextExplain>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -49,9 +49,11 @@ pub struct SessionTelemetrySnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_semantics: Option<SessionCacheSemanticsSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_closure_contract: Option<SessionContextClosureContract>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_surface_runtime_snapshot: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt_surface_snapshot_invalidation: Option<PromptSurfaceSnapshotInvalidationSummary>,
+    pub prompt_surface_evidence: Option<PromptSurfaceEvidenceSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ingress_stabilization: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -150,14 +152,14 @@ pub(super) async fn build_session_telemetry_snapshot(
     let mut runtime = runtime_snapshot_or_default(state, session_id).await?;
     let usage = runtime.usage.clone().unwrap_or_else(|| session.get_usage());
     runtime.usage = Some(usage.clone());
-    let workflow_cumulative = {
+    let tree_observation = {
         let sessions = state.sessions.lock().await;
-        workflow_usage_summary_for_session_tree(&sessions, session_id)
+        session_tree_observation_for_session(&sessions, session_id)
     };
     let usage_books = SessionUsageBooks {
         request_context_tokens: session.latest_request_context_tokens(),
         live_context_tokens: usage.live_context_tokens(),
-        workflow_cumulative,
+        workflow_cumulative: tree_observation.workflow_cumulative.clone(),
     };
 
     let stages = state
@@ -167,11 +169,11 @@ pub(super) async fn build_session_telemetry_snapshot(
     let topology = build_session_execution_topology_snapshot(state, session_id, session).await;
     let memory = build_session_memory_telemetry(state, session).await;
     let diagnostics = SessionDiagnosticsSidecar::derive_from_session(session);
-    let cache_bust_summary = diagnostics
+    let cache_evidence = diagnostics
         .as_ref()
-        .and_then(SessionDiagnosticsSidecar::latest_cache_bust_summary_value);
-    let typed_cache_bust_summary = cache_bust_summary.clone().and_then(|value| {
-        serde_json::from_value::<rocode_provider::cache::CacheBustSummary>(value).ok()
+        .and_then(SessionDiagnosticsSidecar::latest_cache_evidence_value);
+    let typed_cache_evidence = cache_evidence.clone().and_then(|value| {
+        serde_json::from_value::<rocode_provider::cache::CacheEvidenceSummary>(value).ok()
     });
     let context_explain = Some(explain_session_context(
         session,
@@ -189,18 +191,26 @@ pub(super) async fn build_session_telemetry_snapshot(
     let prompt_surface_runtime_snapshot = diagnostics
         .as_ref()
         .and_then(SessionDiagnosticsSidecar::prompt_surface_runtime_snapshot_value);
-    let prompt_surface_snapshot_invalidation = diagnostics
+    let prompt_surface_evidence = diagnostics
         .as_ref()
-        .and_then(SessionDiagnosticsSidecar::latest_prompt_surface_snapshot_invalidation_value)
+        .and_then(SessionDiagnosticsSidecar::latest_prompt_surface_evidence_value)
         .and_then(|value| serde_json::from_value(value).ok());
     let cache_semantics = context_explain.as_ref().map(|context_explain| {
         explain_session_cache_semantics(
             context_explain,
             context_compaction_summary.as_ref(),
-            typed_cache_bust_summary.as_ref(),
-            prompt_surface_snapshot_invalidation.as_ref(),
+            typed_cache_evidence.as_ref(),
+            prompt_surface_evidence.as_ref(),
         )
     });
+    let context_closure_contract = build_context_closure_contract(
+        context_explain.as_ref(),
+        &usage_books,
+        cache_semantics.as_ref(),
+        context_compaction_summary.as_ref(),
+        context_pressure_governance_summary.as_ref(),
+        tree_observation.attached_subtree_session_count,
+    );
     let ingress_stabilization = diagnostics
         .as_ref()
         .and_then(SessionDiagnosticsSidecar::ingress_stabilization_value);
@@ -219,46 +229,243 @@ pub(super) async fn build_session_telemetry_snapshot(
         usage,
         usage_books,
         memory,
-        cache_bust_summary,
+        cache_evidence,
         context_explain,
         ownership,
         context_compaction_summary,
         context_pressure_governance_summary,
         cache_semantics,
+        context_closure_contract,
         prompt_surface_runtime_snapshot,
-        prompt_surface_snapshot_invalidation,
+        prompt_surface_evidence,
         ingress_stabilization,
         execution_preflight_summary,
         provider_diagnostic_summary,
     })
 }
 
-fn workflow_usage_summary_for_session_tree(
+#[derive(Debug, Clone, Default)]
+struct SessionTreeObservation {
+    workflow_cumulative: WorkflowUsageSummary,
+    attached_subtree_session_count: usize,
+}
+
+fn session_tree_observation_for_session(
     sessions: &rocode_session::SessionManager,
     root_session_id: &str,
-) -> WorkflowUsageSummary {
-    let mut aggregate = WorkflowUsageSummary::default();
-    let mut pending = vec![root_session_id.to_string()];
+) -> SessionTreeObservation {
+    let mut observation = SessionTreeObservation::default();
+    let mut pending = vec![(root_session_id.to_string(), true)];
 
-    while let Some(session_id) = pending.pop() {
+    while let Some((session_id, is_root)) = pending.pop() {
         let Some(session) = sessions.get(&session_id) else {
             continue;
         };
-        aggregate.accumulate_session_usage(&session.get_usage());
+        observation
+            .workflow_cumulative
+            .accumulate_session_usage(&session.get_usage());
+        let attached_children = sessions
+            .attached_sessions(&session_id)
+            .into_iter()
+            .map(|child| child.record().id.clone())
+            .collect::<Vec<_>>();
+        if !is_root {
+            observation.attached_subtree_session_count += 1;
+        }
         pending.extend(
-            sessions
-                .children(&session_id)
+            attached_children
                 .into_iter()
-                .map(|child| child.record().id.clone()),
+                .map(|child_id| (child_id, false)),
         );
     }
 
-    aggregate
+    observation
+}
+
+fn pressure_percent(tokens: Option<u64>, limit_tokens: Option<u64>) -> Option<u64> {
+    let tokens = tokens?;
+    let limit = limit_tokens?;
+    (limit > 0).then_some(tokens.saturating_mul(100) / limit)
+}
+
+fn build_context_closure_contract(
+    context_explain: Option<&SessionContextExplain>,
+    usage_books: &SessionUsageBooks,
+    cache_semantics: Option<&SessionCacheSemanticsSummary>,
+    context_compaction_summary: Option<&ContextCompactionSummary>,
+    context_pressure_governance_summary: Option<&ContextPressureGovernanceSummary>,
+    attached_subtree_session_count: usize,
+) -> Option<SessionContextClosureContract> {
+    let context_explain = context_explain?;
+    let cache_semantics = cache_semantics
+        .cloned()
+        .unwrap_or(SessionCacheSemanticsSummary {
+            basis: rocode_types::SessionCacheSemanticsBasis::ApiView,
+            api_view_messages: context_explain.api_view_messages,
+            trimmed_model_visible_messages: context_explain
+                .raw_model_visible_messages
+                .saturating_sub(context_explain.api_view_messages),
+            boundary: None,
+            cache_evidence: None,
+            prompt_surface_evidence: None,
+            label: None,
+        });
+
+    let prefix_change_detected = cache_semantics
+        .boundary
+        .as_ref()
+        .is_some_and(|boundary| boundary.likely_changed_prefix)
+        || cache_semantics
+            .cache_evidence
+            .as_ref()
+            .is_some_and(|summary| summary.severity > rocode_types::SessionCacheSeverity::Stable)
+        || cache_semantics
+            .prompt_surface_evidence
+            .as_ref()
+            .is_some_and(|summary| summary.severity > rocode_types::SessionCacheSeverity::Stable);
+
+    let (request_pressure_percent, live_pressure_percent) =
+        if let Some(summary) = context_pressure_governance_summary {
+            (
+                summary.request_pressure_percent.or_else(|| {
+                    pressure_percent(summary.request_context_tokens, summary.limit_tokens)
+                }),
+                summary.live_pressure_percent.or_else(|| {
+                    pressure_percent(summary.live_context_tokens, summary.limit_tokens)
+                }),
+            )
+        } else if let Some(summary) = context_compaction_summary {
+            (
+                pressure_percent(summary.request_context_tokens, summary.limit_tokens),
+                pressure_percent(summary.live_context_tokens, summary.limit_tokens),
+            )
+        } else {
+            (None, None)
+        };
+
+    let (cache_explainability_source, cache_explainability_severity, cache_explainability_text) =
+        if let Some(summary) = cache_semantics.cache_evidence.as_ref().filter(|summary| {
+            summary.severity > rocode_types::SessionCacheSeverity::Stable
+                && !matches!(summary.status.as_str(), "stable" | "cold_start")
+        }) {
+            (
+                rocode_types::SessionCacheExplainabilitySource::CacheEvidence,
+                Some(summary.severity),
+                cache_semantics
+                    .label
+                    .clone()
+                    .or_else(|| summary.primary_cause.clone()),
+            )
+        } else if let Some(summary) = cache_semantics
+            .prompt_surface_evidence
+            .as_ref()
+            .filter(|summary| summary.severity > rocode_types::SessionCacheSeverity::Stable)
+        {
+            (
+                rocode_types::SessionCacheExplainabilitySource::SurfaceEvidence,
+                Some(summary.severity),
+                cache_semantics
+                    .label
+                    .clone()
+                    .or_else(|| Some(summary.reason.clone())),
+            )
+        } else if cache_semantics
+            .boundary
+            .as_ref()
+            .is_some_and(|boundary| boundary.possible_cache_evidence)
+        {
+            (
+                rocode_types::SessionCacheExplainabilitySource::BoundaryEvidence,
+                Some(rocode_types::SessionCacheSeverity::MediumChange),
+                cache_semantics.label.clone().or_else(|| {
+                    cache_semantics
+                        .boundary
+                        .as_ref()
+                        .and_then(|boundary| boundary.reason.clone())
+                }),
+            )
+        } else {
+            (
+                rocode_types::SessionCacheExplainabilitySource::None,
+                None,
+                cache_semantics.label.clone(),
+            )
+        };
+    let cache_issue_present = !matches!(
+        cache_explainability_source,
+        rocode_types::SessionCacheExplainabilitySource::None
+    );
+    let owner_session_cumulative_tokens = context_explain.owner_session_cumulative_tokens;
+    let workflow_cumulative_tokens = usage_books.workflow_cumulative.total_tokens();
+    let attached_subtree_cumulative_tokens =
+        workflow_cumulative_tokens.saturating_sub(owner_session_cumulative_tokens);
+
+    Some(SessionContextClosureContract {
+        prefix_stability: rocode_types::SessionPrefixStabilityContract {
+            basis: cache_semantics.basis,
+            tracked_on_api_view: matches!(
+                cache_semantics.basis,
+                rocode_types::SessionCacheSemanticsBasis::ApiView
+            ),
+            api_view_messages: cache_semantics.api_view_messages,
+            trimmed_model_visible_messages: cache_semantics.trimmed_model_visible_messages,
+            prefix_change_detected,
+            explanation: cache_semantics.label.clone(),
+        },
+        compaction_boundary: rocode_types::SessionCompactionBoundaryContract {
+            boundary_recorded: context_compaction_summary.is_some()
+                || context_pressure_governance_summary.is_some(),
+            phase: context_pressure_governance_summary
+                .map(|summary| summary.phase.clone())
+                .or_else(|| context_compaction_summary.and_then(|summary| summary.phase.clone())),
+            trigger: context_pressure_governance_summary
+                .map(|summary| summary.trigger.clone())
+                .or_else(|| context_compaction_summary.map(|summary| summary.trigger.clone())),
+            reason: context_pressure_governance_summary
+                .and_then(|summary| summary.reason.clone())
+                .or_else(|| context_compaction_summary.and_then(|summary| summary.reason.clone())),
+            governance_status: context_pressure_governance_summary.map(|summary| summary.status),
+            request_pressure_percent,
+            live_pressure_percent,
+            compaction_attempted: context_pressure_governance_summary
+                .map(|summary| summary.compaction_attempted)
+                .unwrap_or_else(|| context_compaction_summary.is_some()),
+            compaction_succeeded: context_pressure_governance_summary
+                .map(|summary| summary.compaction_succeeded)
+                .unwrap_or_else(|| context_compaction_summary.is_some()),
+            blocking: context_pressure_governance_summary
+                .map(|summary| summary.blocking)
+                .unwrap_or(false),
+        },
+        cache_explainability: rocode_types::SessionCacheExplainabilityContract {
+            issue_present: cache_issue_present,
+            explained: !cache_issue_present || cache_explainability_text.is_some(),
+            source: cache_explainability_source,
+            severity: cache_explainability_severity,
+            explanation: cache_explainability_text,
+        },
+        child_history_isolation: rocode_types::SessionChildHistoryIsolationContract {
+            attached_subtree_session_count,
+            owner_session_cumulative_tokens,
+            workflow_cumulative_tokens,
+            attached_subtree_cumulative_tokens,
+            owner_live_context_tokens: usage_books.live_context_tokens,
+            owner_local_live_prefix: true,
+            child_history_in_live_prefix_detected: false,
+            explanation: if attached_subtree_session_count > 0 {
+                "Attached subtree usage contributes to workflow cumulative only; API view and live prefix remain owner-local."
+                    .to_string()
+            } else {
+                "No attached subtree sessions were observed; the live prefix remains owner-local."
+                    .to_string()
+            },
+        },
+    })
 }
 
 #[cfg(test)]
-fn latest_cache_bust_summary(session: &Session) -> Option<serde_json::Value> {
-    diagnostics_sidecar(session).and_then(|sidecar| sidecar.latest_cache_bust_summary_value())
+fn latest_cache_evidence(session: &Session) -> Option<serde_json::Value> {
+    diagnostics_sidecar(session).and_then(|sidecar| sidecar.latest_cache_evidence_value())
 }
 
 #[cfg(test)]
@@ -274,11 +481,9 @@ fn prompt_surface_runtime_snapshot(session: &Session) -> Option<serde_json::Valu
 }
 
 #[cfg(test)]
-fn latest_prompt_surface_snapshot_invalidation(
-    session: &Session,
-) -> Option<PromptSurfaceSnapshotInvalidationSummary> {
+fn latest_prompt_surface_evidence(session: &Session) -> Option<PromptSurfaceEvidenceSummary> {
     diagnostics_sidecar(session)
-        .and_then(|sidecar| sidecar.latest_prompt_surface_snapshot_invalidation_value())
+        .and_then(|sidecar| sidecar.latest_prompt_surface_evidence_value())
         .and_then(|value| serde_json::from_value(value).ok())
 }
 
@@ -479,23 +684,23 @@ mod tests {
     }
 
     #[test]
-    fn latest_cache_bust_summary_reads_assistant_metadata() {
+    fn latest_cache_evidence_reads_assistant_metadata() {
         let mut session = Session::new("session-1".to_string(), ".".to_string());
         let assistant = session.add_assistant_message();
         assistant.metadata.insert(
-            rocode_provider::cache::CACHE_BUST_SUMMARY_METADATA_KEY.to_string(),
+            rocode_provider::cache::CACHE_EVIDENCE_METADATA_KEY.to_string(),
             serde_json::json!({
                 "status": "degraded",
-                "severity": "LikelyBust",
-                "primary_cause": "messagePrefixHash changed: message prefix changed before the stable boundary",
+                "severity": "MediumChange",
+                "primary_cause": "prefix changed before the stable boundary",
                 "change_count": 1,
             }),
         );
 
-        let summary = latest_cache_bust_summary(&session).expect("summary");
+        let summary = latest_cache_evidence(&session).expect("summary");
 
         assert_eq!(summary["status"], "degraded");
-        assert_eq!(summary["severity"], "LikelyBust");
+        assert_eq!(summary["severity"], "MediumChange");
     }
 
     #[test]
@@ -563,60 +768,204 @@ mod tests {
     }
 
     #[test]
-    fn latest_prompt_surface_snapshot_invalidation_reads_assistant_metadata() {
+    fn latest_prompt_surface_evidence_reads_assistant_metadata() {
         let mut session = Session::new("session-1".to_string(), ".".to_string());
         let assistant = session.add_assistant_message();
         assistant.metadata.insert(
-            rocode_session::prompt::PROMPT_SURFACE_SNAPSHOT_INVALIDATION_METADATA_KEY.to_string(),
+            rocode_session::prompt::PROMPT_SURFACE_EVIDENCE_METADATA_KEY.to_string(),
             serde_json::json!({
-                "severity": "LikelyBust",
-                "reason": "prompt surface runtime changed: outputProjectionPolicyHash",
+                "severity": "MediumChange",
+                "reason": "surface changed: outputProjectionPolicyHash",
                 "changed_fields": ["outputProjectionPolicyHash"],
             }),
         );
 
-        let invalidation =
-            latest_prompt_surface_snapshot_invalidation(&session).expect("invalidation");
+        let evidence = latest_prompt_surface_evidence(&session).expect("evidence");
 
         assert_eq!(
-            invalidation.severity,
-            rocode_types::SessionCacheSeverity::LikelyBust
+            evidence.severity,
+            rocode_types::SessionCacheSeverity::MediumChange
         );
         assert_eq!(
-            invalidation.reason,
-            "prompt surface runtime changed: outputProjectionPolicyHash"
+            evidence.reason,
+            "surface changed: outputProjectionPolicyHash"
         );
         assert_eq!(
-            invalidation.changed_fields,
+            evidence.changed_fields,
             vec!["outputProjectionPolicyHash".to_string()]
         );
     }
 
     #[test]
-    fn latest_prompt_surface_snapshot_invalidation_falls_back_to_snapshot_payload() {
+    fn latest_prompt_surface_evidence_falls_back_to_snapshot_payload() {
         let mut session = Session::new("session-1".to_string(), ".".to_string());
         session.insert_metadata(
             rocode_session::prompt::PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY.to_string(),
             serde_json::json!({
                 "generation": 7,
-                "invalidation": {
-                    "severity": "SoftDegradation",
-                    "reason": "prompt surface runtime changed: ingressPolicyHash",
+                "evidence": {
+                    "severity": "LowChange",
+                    "reason": "surface changed: ingressPolicyHash",
                     "changed_fields": ["ingressPolicyHash"]
                 }
             }),
         );
 
-        let invalidation =
-            latest_prompt_surface_snapshot_invalidation(&session).expect("invalidation");
+        let evidence = latest_prompt_surface_evidence(&session).expect("evidence");
 
         assert_eq!(
-            invalidation.severity,
-            rocode_types::SessionCacheSeverity::SoftDegradation
+            evidence.severity,
+            rocode_types::SessionCacheSeverity::LowChange
         );
         assert_eq!(
-            invalidation.changed_fields,
+            evidence.changed_fields,
             vec!["ingressPolicyHash".to_string()]
+        );
+    }
+
+    #[test]
+    fn context_closure_contract_tracks_compaction_and_cache_explainability() {
+        let usage_books = SessionUsageBooks {
+            request_context_tokens: Some(88_000),
+            live_context_tokens: Some(82_000),
+            workflow_cumulative: WorkflowUsageSummary {
+                input_tokens: 120_000,
+                output_tokens: 18_000,
+                reasoning_tokens: 5_000,
+                cache_write_tokens: 2_000,
+                cache_read_tokens: 34_000,
+                cache_miss_tokens: 7_000,
+                total_cost: 1.60,
+            },
+        };
+        let context_explain = SessionContextExplain {
+            resolved_model: Some("openai/gpt-4o".to_string()),
+            fork: None,
+            raw_history_messages: 18,
+            raw_model_visible_messages: 15,
+            api_view_messages: 8,
+            api_view_estimated_input_tokens: Some(92_000),
+            api_view_body_chars: Some(360_000),
+            live_context_tokens: Some(82_000),
+            last_request_context_tokens: Some(88_000),
+            owner_session_cumulative_tokens: 104_000,
+            workflow_cumulative_tokens: usage_books.workflow_cumulative.total_tokens(),
+        };
+        let context_compaction_summary = ContextCompactionSummary {
+            trigger: "auto_preflight".to_string(),
+            phase: Some("prompt.pre_request".to_string()),
+            reason: Some("request_view_threshold".to_string()),
+            forced: false,
+            request_context_tokens: Some(92_000),
+            live_context_tokens: Some(82_000),
+            limit_tokens: Some(100_000),
+            body_chars: Some(360_000),
+            message_count_before: Some(15),
+            compacted_message_count: Some(7),
+            kept_message_count: Some(8),
+            summary: Some("Compacted 7 messages.".to_string()),
+        };
+        let cache_semantics = SessionCacheSemanticsSummary {
+            basis: rocode_types::SessionCacheSemanticsBasis::ApiView,
+            api_view_messages: 8,
+            trimmed_model_visible_messages: 7,
+            boundary: Some(rocode_types::SessionCacheBoundarySummary {
+                kind: rocode_types::SessionCacheBoundaryKind::Compaction,
+                trigger: "auto_preflight".to_string(),
+                phase: Some("prompt.pre_request".to_string()),
+                reason: Some("request_view_threshold".to_string()),
+                message_count_before: Some(15),
+                compacted_message_count: Some(7),
+                kept_message_count: Some(8),
+                trimmed_model_visible_messages: 7,
+                likely_changed_prefix: true,
+                possible_cache_evidence: true,
+            }),
+            cache_evidence: Some(rocode_types::SessionCacheEvidenceExplain {
+                status: "degraded".to_string(),
+                severity: rocode_types::SessionCacheSeverity::MediumChange,
+                primary_cause: Some("prefix changed before the stable boundary".to_string()),
+                change_count: 1,
+            }),
+            prompt_surface_evidence: Some(PromptSurfaceEvidenceSummary {
+                severity: rocode_types::SessionCacheSeverity::LowChange,
+                reason: "surface changed: ingressPolicyHash".to_string(),
+                changed_fields: vec!["ingressPolicyHash".to_string()],
+            }),
+            label: Some("boundary recorded · prefix changed".to_string()),
+        };
+        let governance_summary = ContextPressureGovernanceSummary {
+            trigger: "step_checkpoint_gate".to_string(),
+            phase: "scheduler.step_checkpoint".to_string(),
+            status: rocode_types::ContextPressureGovernanceStatus::Compacted,
+            reason: Some("request view exceeded safe checkpoint limit".to_string()),
+            request_context_tokens: Some(95_000),
+            live_context_tokens: Some(82_000),
+            limit_tokens: Some(100_000),
+            body_chars: Some(360_000),
+            request_pressure_percent: Some(95),
+            live_pressure_percent: Some(82),
+            compaction_attempted: true,
+            compaction_succeeded: true,
+            blocking: false,
+        };
+
+        let contract = build_context_closure_contract(
+            Some(&context_explain),
+            &usage_books,
+            Some(&cache_semantics),
+            Some(&context_compaction_summary),
+            Some(&governance_summary),
+            2,
+        )
+        .expect("contract should build");
+
+        assert!(contract.prefix_stability.tracked_on_api_view);
+        assert!(contract.prefix_stability.prefix_change_detected);
+        assert_eq!(
+            contract.prefix_stability.explanation.as_deref(),
+            Some("boundary recorded · prefix changed")
+        );
+        assert!(contract.compaction_boundary.boundary_recorded);
+        assert_eq!(
+            contract.compaction_boundary.phase.as_deref(),
+            Some("scheduler.step_checkpoint")
+        );
+        assert_eq!(
+            contract.compaction_boundary.request_pressure_percent,
+            Some(95)
+        );
+        assert!(contract.compaction_boundary.compaction_attempted);
+        assert!(contract.compaction_boundary.compaction_succeeded);
+        assert!(!contract.compaction_boundary.blocking);
+        assert!(contract.cache_explainability.issue_present);
+        assert!(contract.cache_explainability.explained);
+        assert_eq!(
+            contract.cache_explainability.source,
+            rocode_types::SessionCacheExplainabilitySource::CacheEvidence
+        );
+        assert_eq!(
+            contract.cache_explainability.severity,
+            Some(rocode_types::SessionCacheSeverity::MediumChange)
+        );
+        assert_eq!(
+            contract
+                .child_history_isolation
+                .attached_subtree_session_count,
+            2
+        );
+        assert_eq!(
+            contract
+                .child_history_isolation
+                .attached_subtree_cumulative_tokens,
+            usage_books.workflow_cumulative.total_tokens()
+                - context_explain.owner_session_cumulative_tokens
+        );
+        assert!(contract.child_history_isolation.owner_local_live_prefix);
+        assert!(
+            !contract
+                .child_history_isolation
+                .child_history_in_live_prefix_detected
         );
     }
 
@@ -810,8 +1159,8 @@ mod tests {
                 retry_attempt: Some(2),
                 active_agent_count: 1,
                 active_tool_count: 2,
-                child_session_count: 0,
-                primary_child_session_id: None,
+                attached_session_count: 0,
+                primary_attached_session_id: None,
             }],
             topology: SessionExecutionTopology {
                 session_id: "session-1".to_string(),
@@ -840,7 +1189,7 @@ mod tests {
                 workflow_cumulative: runtime_usage.workflow_usage_summary(),
             },
             memory: None,
-            cache_bust_summary: None,
+            cache_evidence: None,
             context_explain: Some(SessionContextExplain {
                 resolved_model: Some("openai/gpt-4o".to_string()),
                 fork: None,
@@ -891,36 +1240,85 @@ mod tests {
                     kept_message_count: Some(7),
                     trimmed_model_visible_messages: 7,
                     likely_changed_prefix: true,
-                    possible_cache_bust: true,
+                    possible_cache_evidence: true,
                 }),
-                cache_bust: Some(rocode_types::SessionCacheBustExplain {
+                cache_evidence: Some(rocode_types::SessionCacheEvidenceExplain {
                     status: "degraded".to_string(),
-                    severity: rocode_types::SessionCacheSeverity::LikelyBust,
+                    severity: rocode_types::SessionCacheSeverity::MediumChange,
                     primary_cause: Some(
-                        "messagePrefixHash changed: message prefix changed before the stable boundary"
+                        "prefix changed before the stable boundary"
                             .to_string(),
                     ),
                     change_count: 1,
                 }),
-                prompt_surface_invalidation: Some(PromptSurfaceSnapshotInvalidationSummary {
-                    severity: rocode_types::SessionCacheSeverity::HardBust,
-                    reason: "prompt surface runtime changed: toolSurfaceHash".to_string(),
+                prompt_surface_evidence: Some(PromptSurfaceEvidenceSummary {
+                    severity: rocode_types::SessionCacheSeverity::HighChange,
+                    reason: "surface changed: toolSurfaceHash".to_string(),
                     changed_fields: vec!["toolSurfaceHash".to_string()],
                 }),
                 label: Some(
-                    "likely bust · compact boundary likely changed the API-view prefix"
+                    "boundary recorded · prefix changed"
                         .to_string(),
                 ),
             }),
+            context_closure_contract: Some(rocode_types::SessionContextClosureContract {
+                prefix_stability: rocode_types::SessionPrefixStabilityContract {
+                    basis: rocode_types::SessionCacheSemanticsBasis::ApiView,
+                    tracked_on_api_view: true,
+                    api_view_messages: 8,
+                    trimmed_model_visible_messages: 7,
+                    prefix_change_detected: true,
+                    explanation: Some(
+                        "boundary recorded · prefix changed"
+                            .to_string(),
+                    ),
+                },
+                compaction_boundary: rocode_types::SessionCompactionBoundaryContract {
+                    boundary_recorded: true,
+                    phase: Some("prompt.pre_request".to_string()),
+                    trigger: Some("auto_preflight".to_string()),
+                    reason: Some("request_view_threshold".to_string()),
+                    governance_status: None,
+                    request_pressure_percent: Some(92),
+                    live_pressure_percent: None,
+                    compaction_attempted: true,
+                    compaction_succeeded: true,
+                    blocking: false,
+                },
+                cache_explainability: rocode_types::SessionCacheExplainabilityContract {
+                    issue_present: true,
+                    explained: true,
+                    source: rocode_types::SessionCacheExplainabilitySource::CacheEvidence,
+                    severity: Some(rocode_types::SessionCacheSeverity::MediumChange),
+                    explanation: Some(
+                        "boundary recorded · prefix changed"
+                            .to_string(),
+                    ),
+                },
+                child_history_isolation: rocode_types::SessionChildHistoryIsolationContract {
+                    attached_subtree_session_count: 0,
+                    owner_session_cumulative_tokens: runtime_usage.session_cumulative_tokens(),
+                    workflow_cumulative_tokens: runtime_usage
+                        .workflow_usage_summary()
+                        .total_tokens(),
+                    attached_subtree_cumulative_tokens: 0,
+                    owner_live_context_tokens: None,
+                    owner_local_live_prefix: true,
+                    child_history_in_live_prefix_detected: false,
+                    explanation:
+                        "No attached subtree sessions were observed; the live prefix remains owner-local."
+                            .to_string(),
+                },
+            }),
             prompt_surface_runtime_snapshot: Some(serde_json::json!({
                 "generation": 7,
-                "invalidation": {
-                    "reason": "prompt surface runtime changed: toolSurfaceHash"
+                "evidence": {
+                    "reason": "surface changed: toolSurfaceHash"
                 },
             })),
-            prompt_surface_snapshot_invalidation: Some(PromptSurfaceSnapshotInvalidationSummary {
-                severity: rocode_types::SessionCacheSeverity::HardBust,
-                reason: "prompt surface runtime changed: toolSurfaceHash".to_string(),
+            prompt_surface_evidence: Some(PromptSurfaceEvidenceSummary {
+                severity: rocode_types::SessionCacheSeverity::HighChange,
+                reason: "surface changed: toolSurfaceHash".to_string(),
                 changed_fields: vec!["toolSurfaceHash".to_string()],
             }),
             ingress_stabilization: Some(serde_json::json!({
@@ -980,11 +1378,27 @@ mod tests {
         assert_eq!(value["cache_semantics"]["basis"], "api_view");
         assert_eq!(
             value["cache_semantics"]["label"],
-            "likely bust · compact boundary likely changed the API-view prefix"
+            "boundary recorded · prefix changed"
+        );
+        assert_eq!(
+            value["context_closure_contract"]["prefix_stability"]["prefix_change_detected"],
+            true
+        );
+        assert_eq!(
+            value["context_closure_contract"]["compaction_boundary"]["request_pressure_percent"],
+            92
+        );
+        assert_eq!(
+            value["context_closure_contract"]["cache_explainability"]["source"],
+            "cache_evidence"
+        );
+        assert_eq!(
+            value["context_closure_contract"]["child_history_isolation"]["owner_local_live_prefix"],
+            true
         );
         assert_eq!(value["prompt_surface_runtime_snapshot"]["generation"], 7);
         assert_eq!(
-            value["prompt_surface_snapshot_invalidation"]["changed_fields"][0],
+            value["prompt_surface_evidence"]["changed_fields"][0],
             "toolSurfaceHash"
         );
         assert_eq!(
@@ -1464,5 +1878,28 @@ mod tests {
             explain.workflow_cumulative_tokens,
             snapshot.usage_books.workflow_cumulative.total_tokens()
         );
+        let contract = snapshot
+            .context_closure_contract
+            .as_ref()
+            .expect("context closure contract should be present");
+        assert_eq!(
+            contract
+                .child_history_isolation
+                .attached_subtree_session_count,
+            1
+        );
+        assert_eq!(
+            contract
+                .child_history_isolation
+                .attached_subtree_cumulative_tokens,
+            child_usage.input_tokens + child_usage.output_tokens + child_usage.reasoning_tokens
+        );
+        assert!(contract.child_history_isolation.owner_local_live_prefix);
+        assert!(
+            !contract
+                .child_history_isolation
+                .child_history_in_live_prefix_detected
+        );
+        assert!(!contract.prefix_stability.prefix_change_detected);
     }
 }

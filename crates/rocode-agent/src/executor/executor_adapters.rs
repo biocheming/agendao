@@ -4,10 +4,10 @@ use tokio::sync::Mutex;
 
 use rocode_execution_types::ExecutionRequestContext;
 use rocode_orchestrator::{
-    runtime::policy::ModelContextLimits, ExecutionContext,
-    ModelRef as OrchestratorModelRef, ModelResolver as OrchestratorModelResolver, OrchestratorError,
-    ToolExecError as OrchestratorToolExecError,
-    ToolExecutor as OrchestratorToolExecutor, ToolOutput as OrchestratorToolOutput,
+    runtime::policy::ModelContextLimits, ExecutionContext, ModelRef as OrchestratorModelRef,
+    ModelResolver as OrchestratorModelResolver, OrchestratorError,
+    ToolExecError as OrchestratorToolExecError, ToolExecutor as OrchestratorToolExecutor,
+    ToolOutput as OrchestratorToolOutput,
 };
 use rocode_provider::ProviderRegistry;
 use rocode_tool::{ToolContext, ToolRegistry};
@@ -278,9 +278,11 @@ impl OrchestratorModelResolver for ProviderModelResolver {
                 });
         };
 
-        self.providers
-            .get(provider_id)
-            .and_then(|provider| provider.get_model(model_id).map(ModelContextLimits::from_model_info))
+        self.providers.get(provider_id).and_then(|provider| {
+            provider
+                .get_model(model_id)
+                .map(ModelContextLimits::from_model_info)
+        })
     }
 }
 
