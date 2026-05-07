@@ -22,29 +22,30 @@ pub use rocode_types::{
     MemoryConsolidationRunListResponse, MemoryConsolidationRunQuery, MemoryDetailView,
     MemoryListQuery, MemoryListResponse, MemoryRetrievalPreviewResponse, MemoryRetrievalQuery,
     MemoryRuleHitListResponse, MemoryRuleHitQuery, MemoryRulePackListResponse, MemoryScope,
-    MemoryValidationReportResponse, PromptSurfaceSnapshotInvalidationSummary, ProposalStatus,
+    MemoryValidationReportResponse, PromptSurfaceEvidenceSummary, ProposalStatus,
     ProviderConnectionDescriptorCandidate, ProviderProfileDescriptorView,
-    SessionCacheSemanticsSummary, SessionContextExplain, SessionContextKind,
-    SessionEffectiveCompactionPolicy, SessionEffectiveExternalAdapterPolicy,
+    SessionCacheSemanticsSummary, SessionContextClosureContract, SessionContextExplain,
+    SessionContextKind, SessionEffectiveCompactionPolicy, SessionEffectiveExternalAdapterPolicy,
     SessionEffectiveMemoryPolicy, SessionEffectivePolicyView, SessionEffectiveProviderPolicy,
     SessionEffectiveProviderRuntimeProfile, SessionEffectiveSchedulerPolicy,
     SessionEffectiveSchedulerTraceStep, SessionEffectiveSchedulerTraceStepKind,
-    SessionEffectiveSkillTreePolicy, SessionForkExplain, SessionInsightsResponse,
-    SessionMemoryTelemetrySummary, SessionOwnershipSummary, SessionStatusInfo, SessionUsageBooks,
-    SkillArtifactCacheEntry, SkillAuditEvent, SkillDistributionRecord, SkillEvolutionProposal,
-    SkillEvolutionProposalKind, SkillGovernanceTimelineEntry, SkillGovernanceTimelineStatus,
-    SkillGovernanceWriteResult, SkillGuardReport, SkillGuardStatus, SkillHubArtifactCacheResponse,
-    SkillHubAuditResponse, SkillHubDistributionResponse, SkillHubGuardRunRequest,
-    SkillHubGuardRunResponse, SkillHubIndexRefreshRequest, SkillHubIndexRefreshResponse,
-    SkillHubIndexResponse, SkillHubLifecycleResponse, SkillHubManagedDetachRequest,
-    SkillHubManagedDetachResponse, SkillHubManagedRemoveRequest, SkillHubManagedRemoveResponse,
-    SkillHubManagedResponse, SkillHubPolicy, SkillHubPolicyResponse,
-    SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
-    SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest, SkillHubSyncApplyRequest,
-    SkillHubSyncPlanRequest, SkillHubSyncPlanResponse, SkillHubTimelineQuery,
-    SkillHubTimelineResponse, SkillManagedLifecycleRecord, SkillRemoteInstallAction,
-    SkillRemoteInstallEntry, SkillRemoteInstallPlan, SkillRemoteInstallResponse,
-    SkillSourceIndexSnapshot, SkillSourceKind, SkillSourceRef, SkillSyncPlan,
+    SessionEffectiveSkillTreePolicy, SessionForkExplain, SessionForkHistoryMode,
+    SessionInsightsResponse, SessionMemoryTelemetrySummary, SessionOwnershipSummary,
+    SessionStatusInfo, SessionUsageBooks, SkillArtifactCacheEntry, SkillAuditEvent,
+    SkillDistributionRecord, SkillEvolutionProposal, SkillEvolutionProposalKind,
+    SkillGovernanceTimelineEntry, SkillGovernanceTimelineStatus, SkillGovernanceWriteResult,
+    SkillGuardReport, SkillGuardStatus, SkillHubArtifactCacheResponse, SkillHubAuditResponse,
+    SkillHubDistributionResponse, SkillHubGuardRunRequest, SkillHubGuardRunResponse,
+    SkillHubIndexRefreshRequest, SkillHubIndexRefreshResponse, SkillHubIndexResponse,
+    SkillHubLifecycleResponse, SkillHubManagedDetachRequest, SkillHubManagedDetachResponse,
+    SkillHubManagedRemoveRequest, SkillHubManagedRemoveResponse, SkillHubManagedResponse,
+    SkillHubPolicy, SkillHubPolicyResponse, SkillHubRemoteInstallApplyRequest,
+    SkillHubRemoteInstallPlanRequest, SkillHubRemoteUpdateApplyRequest,
+    SkillHubRemoteUpdatePlanRequest, SkillHubSyncApplyRequest, SkillHubSyncPlanRequest,
+    SkillHubSyncPlanResponse, SkillHubTimelineQuery, SkillHubTimelineResponse,
+    SkillManagedLifecycleRecord, SkillRemoteInstallAction, SkillRemoteInstallEntry,
+    SkillRemoteInstallPlan, SkillRemoteInstallResponse, SkillSourceIndexSnapshot, SkillSourceKind,
+    SkillSourceRef, SkillSyncPlan,
 };
 
 pub type PromptPart = rocode_session::prompt::PartInput;
@@ -283,7 +284,7 @@ pub struct SessionRuntimeState {
     #[serde(default)]
     pub pending_permission: Option<PendingPermissionSummary>,
     #[serde(default)]
-    pub child_sessions: Vec<ChildSessionSummary>,
+    pub attached_sessions: Vec<AttachedSessionSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -316,8 +317,8 @@ pub struct PendingPermissionSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChildSessionSummary {
-    pub child_id: String,
+pub struct AttachedSessionSummary {
+    pub attached_id: String,
     pub parent_id: String,
     #[serde(default)]
     pub context_kind: Option<SessionContextKind>,
@@ -406,7 +407,7 @@ pub struct SessionTelemetrySnapshot {
     #[serde(default)]
     pub memory: Option<SessionMemoryTelemetrySummary>,
     #[serde(default)]
-    pub cache_bust_summary: Option<serde_json::Value>,
+    pub cache_evidence: Option<serde_json::Value>,
     #[serde(default)]
     pub context_explain: Option<SessionContextExplain>,
     #[serde(default)]
@@ -418,9 +419,11 @@ pub struct SessionTelemetrySnapshot {
     #[serde(default)]
     pub cache_semantics: Option<SessionCacheSemanticsSummary>,
     #[serde(default)]
+    pub context_closure_contract: Option<SessionContextClosureContract>,
+    #[serde(default)]
     pub prompt_surface_runtime_snapshot: Option<serde_json::Value>,
     #[serde(default)]
-    pub prompt_surface_snapshot_invalidation: Option<PromptSurfaceSnapshotInvalidationSummary>,
+    pub prompt_surface_evidence: Option<PromptSurfaceEvidenceSummary>,
     #[serde(default)]
     pub ingress_stabilization: Option<serde_json::Value>,
     #[serde(default)]

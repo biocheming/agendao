@@ -8,7 +8,7 @@ struct SessionViewState {
     viewport_dirty: bool,
     reasoning_dirty: bool,
     sidebar_dirty: bool,
-    pending_navigate_child: Option<usize>,
+    pending_navigate_attached: Option<usize>,
     pending_navigate_parent: bool,
 }
 
@@ -349,10 +349,10 @@ impl SessionView {
         let mut state = self.state.lock();
         let mut next_sidebar = state.sidebar.clone();
         let had_focus = next_sidebar.lifecycle.process_focus
-            || next_sidebar.lifecycle.child_session_focus
+            || next_sidebar.lifecycle.attached_session_focus
             || next_sidebar.lifecycle.workspace_focus;
         next_sidebar.lifecycle.process_focus = false;
-        next_sidebar.lifecycle.child_session_focus = false;
+        next_sidebar.lifecycle.attached_session_focus = false;
         next_sidebar.lifecycle.workspace_focus = false;
         if had_focus {
             state.update_sidebar_state(next_sidebar);
@@ -364,8 +364,8 @@ impl SessionView {
         self.state.lock().sidebar.lifecycle.process_focus
     }
 
-    pub fn sidebar_child_session_focus(&self) -> bool {
-        self.state.lock().sidebar.lifecycle.child_session_focus
+    pub fn sidebar_attached_session_focus(&self) -> bool {
+        self.state.lock().sidebar.lifecycle.attached_session_focus
     }
 
     pub fn sidebar_workspace_focus(&self) -> bool {
@@ -376,8 +376,8 @@ impl SessionView {
         self.state.lock().sidebar.lifecycle.process_selected
     }
 
-    pub fn sidebar_child_session_selected(&self) -> usize {
-        self.state.lock().sidebar.lifecycle.child_session_selected
+    pub fn sidebar_attached_session_selected(&self) -> usize {
+        self.state.lock().sidebar.lifecycle.attached_session_selected
     }
 
     pub fn sidebar_workspace_node_count(&self) -> usize {
@@ -417,33 +417,33 @@ impl SessionView {
         state.update_sidebar_state(next_sidebar);
     }
 
-    pub fn move_sidebar_child_session_selection_up(&self) {
+    pub fn move_sidebar_attached_session_selection_up(&self) {
         let mut state = self.state.lock();
         let mut next_sidebar = state.sidebar.clone();
-        next_sidebar.lifecycle.child_session_selected = next_sidebar
+        next_sidebar.lifecycle.attached_session_selected = next_sidebar
             .lifecycle
-            .child_session_selected
+            .attached_session_selected
             .saturating_sub(1);
         state.update_sidebar_state(next_sidebar);
     }
 
-    pub fn move_sidebar_child_session_selection_down(&self, count: usize) {
+    pub fn move_sidebar_attached_session_selection_down(&self, count: usize) {
         let mut state = self.state.lock();
         let mut next_sidebar = state.sidebar.clone();
         if count > 0 {
-            next_sidebar.lifecycle.child_session_selected =
-                (next_sidebar.lifecycle.child_session_selected + 1).min(count - 1);
+            next_sidebar.lifecycle.attached_session_selected =
+                (next_sidebar.lifecycle.attached_session_selected + 1).min(count - 1);
         }
         state.update_sidebar_state(next_sidebar);
     }
 
-    pub fn clamp_sidebar_child_session_selection(&self, count: usize) {
+    pub fn clamp_sidebar_attached_session_selection(&self, count: usize) {
         let mut state = self.state.lock();
         let mut next_sidebar = state.sidebar.clone();
         if count == 0 {
-            next_sidebar.lifecycle.child_session_selected = 0;
-        } else if next_sidebar.lifecycle.child_session_selected >= count {
-            next_sidebar.lifecycle.child_session_selected = count - 1;
+            next_sidebar.lifecycle.attached_session_selected = 0;
+        } else if next_sidebar.lifecycle.attached_session_selected >= count {
+            next_sidebar.lifecycle.attached_session_selected = count - 1;
         }
         state.update_sidebar_state(next_sidebar);
     }
@@ -503,22 +503,22 @@ impl SessionView {
         next_sidebar.lifecycle.active_tab = crate::context::SidebarTab::Session;
         next_sidebar.lifecycle.process_focus = !next_sidebar.lifecycle.process_focus;
         if next_sidebar.lifecycle.process_focus {
-            next_sidebar.lifecycle.child_session_focus = false;
+            next_sidebar.lifecycle.attached_session_focus = false;
             next_sidebar.lifecycle.workspace_focus = false;
         }
         state.update_sidebar_state(next_sidebar);
         true
     }
 
-    pub fn toggle_sidebar_child_session_focus(&self, terminal_width: u16) -> bool {
+    pub fn toggle_sidebar_attached_session_focus(&self, terminal_width: u16) -> bool {
         let mut state = self.state.lock();
         if !session_sidebar_visible(&state.sidebar.lifecycle, terminal_width) {
             return false;
         }
         let mut next_sidebar = state.sidebar.clone();
         next_sidebar.lifecycle.active_tab = crate::context::SidebarTab::Session;
-        next_sidebar.lifecycle.child_session_focus = !next_sidebar.lifecycle.child_session_focus;
-        if next_sidebar.lifecycle.child_session_focus {
+        next_sidebar.lifecycle.attached_session_focus = !next_sidebar.lifecycle.attached_session_focus;
+        if next_sidebar.lifecycle.attached_session_focus {
             next_sidebar.lifecycle.process_focus = false;
             next_sidebar.lifecycle.workspace_focus = false;
         }
@@ -536,7 +536,7 @@ impl SessionView {
         next_sidebar.lifecycle.workspace_focus = !next_sidebar.lifecycle.workspace_focus;
         if next_sidebar.lifecycle.workspace_focus {
             next_sidebar.lifecycle.process_focus = false;
-            next_sidebar.lifecycle.child_session_focus = false;
+            next_sidebar.lifecycle.attached_session_focus = false;
         }
         state.update_sidebar_state(next_sidebar);
         true
@@ -555,7 +555,7 @@ impl SessionView {
             }
             next_sidebar.lifecycle.visible = false;
             next_sidebar.lifecycle.process_focus = false;
-            next_sidebar.lifecycle.child_session_focus = false;
+            next_sidebar.lifecycle.attached_session_focus = false;
             next_sidebar.lifecycle.workspace_focus = false;
         } else {
             next_sidebar.lifecycle.mode = SidebarMode::Auto;
@@ -1019,7 +1019,7 @@ impl SessionView {
             }
             next_sidebar.lifecycle.visible = false;
             next_sidebar.lifecycle.process_focus = false;
-            next_sidebar.lifecycle.child_session_focus = false;
+            next_sidebar.lifecycle.attached_session_focus = false;
             next_sidebar.lifecycle.workspace_focus = false;
             next_sidebar.close_button_area = None;
             state.update_sidebar_state(next_sidebar);
@@ -1030,7 +1030,7 @@ impl SessionView {
         {
             next_sidebar.lifecycle.visible = false;
             next_sidebar.lifecycle.process_focus = false;
-            next_sidebar.lifecycle.child_session_focus = false;
+            next_sidebar.lifecycle.attached_session_focus = false;
             next_sidebar.lifecycle.workspace_focus = false;
             next_sidebar.backdrop_area = None;
             next_sidebar.close_button_area = None;
@@ -1043,7 +1043,7 @@ impl SessionView {
         {
             return false;
         }
-        state.pending_navigate_child = next_sidebar.render_state.take_pending_navigate_child();
+        state.pending_navigate_attached = next_sidebar.render_state.take_pending_navigate_attached();
         state.pending_navigate_parent = next_sidebar.render_state.take_pending_navigate_parent();
         state.update_sidebar_state(next_sidebar);
         true
@@ -1077,8 +1077,8 @@ impl SessionView {
         changed
     }
 
-    pub fn take_pending_navigate_child(&self) -> Option<usize> {
-        self.state.lock().pending_navigate_child.take()
+    pub fn take_pending_navigate_attached(&self) -> Option<usize> {
+        self.state.lock().pending_navigate_attached.take()
     }
 
     pub fn take_pending_navigate_parent(&self) -> bool {

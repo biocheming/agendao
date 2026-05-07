@@ -42,7 +42,7 @@ pub struct SessionRuntimeState {
     pub pending_question: Option<PendingQuestionSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending_permission: Option<PendingPermissionSummary>,
-    pub child_sessions: Vec<ChildSessionSummary>,
+    pub attached_sessions: Vec<AttachedSessionSummary>,
 }
 
 impl SessionRuntimeState {
@@ -57,7 +57,7 @@ impl SessionRuntimeState {
             active_tools: Vec::new(),
             pending_question: None,
             pending_permission: None,
-            child_sessions: Vec::new(),
+            attached_sessions: Vec::new(),
         }
     }
 }
@@ -104,10 +104,10 @@ pub struct PendingPermissionSummary {
     pub info: serde_json::Value,
 }
 
-/// Summary of an attached child session.
+/// Summary of an attached session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChildSessionSummary {
-    pub child_id: String,
+pub struct AttachedSessionSummary {
+    pub attached_id: String,
     pub parent_id: String,
     pub context_kind: SessionContextKind,
 }
@@ -178,7 +178,7 @@ impl RuntimeStateStore {
             s.active_stage_count = 0;
             s.pending_question = None;
             s.pending_permission = None;
-            // child_sessions are NOT cleared here — they persist until
+            // attached_sessions are NOT cleared here — they persist until
             // explicit detach events.
         })
         .await;
@@ -294,18 +294,22 @@ impl RuntimeStateStore {
         .await;
     }
 
-    /// Register a child session attachment.
-    pub async fn child_attached(
+    /// Register an attached session.
+    pub async fn attached_session_registered(
         &self,
         parent_id: &str,
-        child_id: &str,
+        attached_id: &str,
         context_kind: SessionContextKind,
     ) {
         self.update(parent_id, |s| {
             // Avoid duplicates.
-            if !s.child_sessions.iter().any(|c| c.child_id == child_id) {
-                s.child_sessions.push(ChildSessionSummary {
-                    child_id: child_id.to_string(),
+            if !s
+                .attached_sessions
+                .iter()
+                .any(|c| c.attached_id == attached_id)
+            {
+                s.attached_sessions.push(AttachedSessionSummary {
+                    attached_id: attached_id.to_string(),
                     parent_id: parent_id.to_string(),
                     context_kind,
                 });
@@ -314,10 +318,10 @@ impl RuntimeStateStore {
         .await;
     }
 
-    /// Unregister a child session detachment.
-    pub async fn child_detached(&self, parent_id: &str, child_id: &str) {
+    /// Unregister an attached session.
+    pub async fn attached_session_unregistered(&self, parent_id: &str, attached_id: &str) {
         self.update(parent_id, |s| {
-            s.child_sessions.retain(|c| c.child_id != child_id);
+            s.attached_sessions.retain(|c| c.attached_id != attached_id);
         })
         .await;
     }
@@ -421,41 +425,50 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn child_session_attach_detach() {
+    async fn attached_session_register_unregister() {
         let store = RuntimeStateStore::new();
         store.mark_running("parent", None).await;
 
         store
-            .child_attached(
+            .attached_session_registered(
                 "parent",
                 "child_1",
                 SessionContextKind::SchedulerStageOutputSession,
             )
             .await;
         store
-            .child_attached("parent", "child_2", SessionContextKind::DelegatedSubsession)
+            .attached_session_registered(
+                "parent",
+                "child_2",
+                SessionContextKind::DelegatedSubsession,
+            )
             .await;
         let state = store.get("parent").await.unwrap();
-        assert_eq!(state.child_sessions.len(), 2);
+        assert_eq!(state.attached_sessions.len(), 2);
         assert_eq!(
-            state.child_sessions[0].context_kind,
+            state.attached_sessions[0].context_kind,
             SessionContextKind::SchedulerStageOutputSession
         );
 
         // Duplicate attach is idempotent.
         store
-            .child_attached(
+            .attached_session_registered(
                 "parent",
                 "child_1",
                 SessionContextKind::SchedulerStageOutputSession,
             )
             .await;
-        assert_eq!(store.get("parent").await.unwrap().child_sessions.len(), 2);
+        assert_eq!(
+            store.get("parent").await.unwrap().attached_sessions.len(),
+            2
+        );
 
-        store.child_detached("parent", "child_1").await;
+        store
+            .attached_session_unregistered("parent", "child_1")
+            .await;
         let state = store.get("parent").await.unwrap();
-        assert_eq!(state.child_sessions.len(), 1);
-        assert_eq!(state.child_sessions[0].child_id, "child_2");
+        assert_eq!(state.attached_sessions.len(), 1);
+        assert_eq!(state.attached_sessions[0].attached_id, "child_2");
     }
 
     #[tokio::test]

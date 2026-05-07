@@ -139,19 +139,19 @@ pub enum ServerEvent {
         #[serde(rename = "stageID", skip_serializing_if = "Option::is_none")]
         stage_id: Option<String>,
     },
-    #[serde(rename = "child_session.attached")]
-    ChildSessionAttached {
+    #[serde(rename = "attached_session.attached")]
+    AttachedSessionAttached {
         #[serde(rename = "parentID")]
         parent_id: String,
-        #[serde(rename = "childID")]
-        child_id: String,
+        #[serde(rename = "attachedID")]
+        attached_id: String,
     },
-    #[serde(rename = "child_session.detached")]
-    ChildSessionDetached {
+    #[serde(rename = "attached_session.detached")]
+    AttachedSessionDetached {
         #[serde(rename = "parentID")]
         parent_id: String,
-        #[serde(rename = "childID")]
-        child_id: String,
+        #[serde(rename = "attachedID")]
+        attached_id: String,
     },
     #[serde(rename = "diff.updated", alias = "session.diff")]
     DiffUpdated {
@@ -199,8 +199,8 @@ impl ServerEvent {
             | Self::ToolCallLifecycle { session_id, .. }
             | Self::TopologyChanged { session_id, .. }
             | Self::DiffUpdated { session_id, .. } => Some(session_id),
-            Self::ChildSessionAttached { parent_id, .. }
-            | Self::ChildSessionDetached { parent_id, .. } => Some(parent_id),
+            Self::AttachedSessionAttached { parent_id, .. }
+            | Self::AttachedSessionDetached { parent_id, .. } => Some(parent_id),
             Self::Usage {
                 session_id: None, ..
             }
@@ -225,8 +225,8 @@ impl ServerEvent {
             Self::ConfigUpdated => "config.updated",
             Self::ToolCallLifecycle { .. } => "tool_call.lifecycle",
             Self::TopologyChanged { .. } => "execution.topology.changed",
-            Self::ChildSessionAttached { .. } => "child_session.attached",
-            Self::ChildSessionDetached { .. } => "child_session.detached",
+            Self::AttachedSessionAttached { .. } => "attached_session.attached",
+            Self::AttachedSessionDetached { .. } => "attached_session.detached",
             Self::DiffUpdated { .. } => "diff.updated",
         }
     }
@@ -356,14 +356,18 @@ impl ServerEvent {
                 session_id: event.payload.get("sessionID")?.as_str()?.to_string(),
                 diff: serde_json::from_value(event.payload.get("diff")?.clone()).ok()?,
             }),
-            telemetry_event_names::CHILD_SESSION_ATTACHED => Some(Self::ChildSessionAttached {
-                parent_id: event.payload.get("parentID")?.as_str()?.to_string(),
-                child_id: event.payload.get("childID")?.as_str()?.to_string(),
-            }),
-            telemetry_event_names::CHILD_SESSION_DETACHED => Some(Self::ChildSessionDetached {
-                parent_id: event.payload.get("parentID")?.as_str()?.to_string(),
-                child_id: event.payload.get("childID")?.as_str()?.to_string(),
-            }),
+            telemetry_event_names::ATTACHED_SESSION_ATTACHED => {
+                Some(Self::AttachedSessionAttached {
+                    parent_id: event.payload.get("parentID")?.as_str()?.to_string(),
+                    attached_id: event.payload.get("attachedID")?.as_str()?.to_string(),
+                })
+            }
+            telemetry_event_names::ATTACHED_SESSION_DETACHED => {
+                Some(Self::AttachedSessionDetached {
+                    parent_id: event.payload.get("parentID")?.as_str()?.to_string(),
+                    attached_id: event.payload.get("attachedID")?.as_str()?.to_string(),
+                })
+            }
             _ => None,
         }
     }
@@ -478,16 +482,16 @@ mod tests {
     }
 
     #[test]
-    fn child_session_attached_serializes_with_parent_and_child_ids() {
-        let value = ServerEvent::ChildSessionAttached {
+    fn attached_session_attached_serializes_with_parent_and_attached_ids() {
+        let value = ServerEvent::AttachedSessionAttached {
             parent_id: "parent-1".to_string(),
-            child_id: "child-1".to_string(),
+            attached_id: "child-1".to_string(),
         }
         .to_json_value()
         .expect("event json");
-        assert_eq!(value["type"], "child_session.attached");
+        assert_eq!(value["type"], "attached_session.attached");
         assert_eq!(value["parentID"], "parent-1");
-        assert_eq!(value["childID"], "child-1");
+        assert_eq!(value["attachedID"], "child-1");
     }
 
     #[test]

@@ -583,20 +583,20 @@ fn handle_sse_event(runtime: &CliExecutionRuntime, event: CliServerEvent, style:
             }
             tracing::debug!(tool_call_id, "tool call completed");
         }
-        CliServerEvent::ChildSessionAttached {
+        CliServerEvent::AttachedSessionAttached {
             parent_id,
-            child_id,
+            attached_id,
         } => {
-            if cli_track_child_session(runtime, &parent_id, &child_id) {
-                tracing::debug!(parent_id, child_id, "tracked child session");
+            if cli_track_attached_session(runtime, &parent_id, &attached_id) {
+                tracing::debug!(parent_id, attached_id, "tracked attached session");
             }
         }
-        CliServerEvent::ChildSessionDetached {
+        CliServerEvent::AttachedSessionDetached {
             parent_id,
-            child_id,
+            attached_id,
         } => {
-            if cli_untrack_child_session(runtime, &parent_id, &child_id) {
-                tracing::debug!(parent_id, child_id, "untracked child session");
+            if cli_untrack_attached_session(runtime, &parent_id, &attached_id) {
+                tracing::debug!(parent_id, attached_id, "untracked attached session");
             }
         }
         CliServerEvent::OutputBlock {
@@ -622,14 +622,14 @@ fn handle_sse_event(runtime: &CliExecutionRuntime, event: CliServerEvent, style:
                 topology.observe_block(&block);
             }
             if let OutputBlock::SchedulerStage(stage) = &block {
-                if let Some(child_id) = stage.child_session_id.as_deref() {
-                    let _ = cli_track_child_session(runtime, &session_id, child_id);
+                if let Some(attached_id) = stage.attached_session_id.as_deref() {
+                    let _ = cli_track_attached_session(runtime, &session_id, attached_id);
                 }
             }
             cli_frontend_observe_block(&runtime.frontend_projection, &block);
             if !is_root_session(&session_id) {
                 let rendered = cli_render_session_block(runtime, &session_id, &block, style);
-                cli_cache_child_session_rendered(runtime, &session_id, &rendered);
+                cli_cache_attached_session_rendered(runtime, &session_id, &rendered);
                 if focused_session_id.as_deref() == Some(session_id.as_str()) {
                     let _ = print_rendered(runtime.terminal_surface.as_deref(), &rendered);
                 }
@@ -681,7 +681,7 @@ fn handle_sse_event(runtime: &CliExecutionRuntime, event: CliServerEvent, style:
                 return;
             }
             if !is_root_session(&session_id) {
-                tracing::error!(session_id, error, ?message_id, ?done, "child session error");
+                tracing::error!(session_id, error, ?message_id, ?done, "attached session error");
                 return;
             }
             tracing::error!(error, ?message_id, ?done, "server error");
@@ -982,19 +982,23 @@ async fn cli_refresh_server_info(
                     projection
                         .token_stats
                         .sync_from_snapshot(&telemetry.usage, Some(&telemetry.usage_books));
-                    projection.cache_diagnostic = telemetry
-                        .cache_semantics
-                        .as_ref()
-                        .and_then(|summary| summary.label.clone())
+                    projection.cache_diagnostic =
+                        cli_context_closure_cache_diagnostic_label(
+                            telemetry.context_closure_contract.as_ref(),
+                        )
                         .or_else(|| {
                             telemetry
-                                .cache_bust_summary
+                                .cache_evidence
                                 .as_ref()
                                 .cloned()
                                 .and_then(|value| serde_json::from_value(value).ok())
-                                .and_then(|summary| {
-                                    rocode_provider::cache::cache_bust_summary_label(&summary)
-                                })
+                                .and_then(|summary| cli_cache_evidence_status_label(&summary))
+                        })
+                        .or_else(|| {
+                            telemetry
+                                .cache_semantics
+                                .as_ref()
+                                .and_then(|summary| summary.label.clone())
                         });
                     projection.ingress_diagnostic =
                         ingress_stabilization_label(telemetry.ingress_stabilization.as_ref());

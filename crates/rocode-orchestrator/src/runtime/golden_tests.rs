@@ -49,7 +49,7 @@ mod tests {
             Ok(Box::pin(stream::iter(
                 events
                     .into_iter()
-                .map(Ok::<_, rocode_provider::ProviderError>),
+                    .map(Ok::<_, rocode_provider::ProviderError>),
             )))
         }
 
@@ -819,12 +819,17 @@ mod tests {
         assert!(sink.checkpoints[1]
             .previous_view
             .as_ref()
-            .is_some_and(|metrics| metrics.message_count == sink.checkpoints[0].current_view.message_count));
+            .is_some_and(
+                |metrics| metrics.message_count == sink.checkpoints[0].current_view.message_count
+            ));
         assert!(
             sink.checkpoints[1].current_view.message_count
                 < sink.checkpoints[0].current_view.message_count
         );
-        assert_eq!(sink.checkpoints[1].current_view.checkpoint_summary_messages, 1);
+        assert_eq!(
+            sink.checkpoints[1].current_view.checkpoint_summary_messages,
+            1
+        );
 
         let requests = model.requests.lock().unwrap().clone();
         assert_eq!(requests.len(), 2);
@@ -980,7 +985,9 @@ mod tests {
         .await
         .expect_err("runtime default checkpoint policy should block the next model call");
 
-        assert!(matches!(error, LoopError::Other(message) if message.contains("runtime checkpoint blocked the next model call")));
+        assert!(
+            matches!(error, LoopError::Other(message) if message.contains("runtime checkpoint blocked the next model call"))
+        );
         assert_eq!(sink.tool_results.len(), 1);
     }
 

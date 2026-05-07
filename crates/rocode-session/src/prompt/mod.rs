@@ -17,8 +17,7 @@ mod tool_execution;
 pub mod tools_and_output;
 
 pub const PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY: &str = "prompt_surface_runtime_snapshot";
-pub const PROMPT_SURFACE_SNAPSHOT_INVALIDATION_METADATA_KEY: &str =
-    "prompt_surface_snapshot_invalidation";
+pub const PROMPT_SURFACE_EVIDENCE_METADATA_KEY: &str = "prompt_surface_evidence";
 pub const CONTEXT_COMPACTION_RECORD_METADATA_KEY: &str = "context_compaction_record";
 pub const CONTEXT_PRESSURE_GOVERNANCE_SUMMARY_METADATA_KEY: &str =
     "context_pressure_governance_summary";
@@ -63,15 +62,14 @@ use tokio_util::sync::CancellationToken;
 
 use rocode_content::output_blocks::OutputBlock;
 use rocode_execution_types::CompiledExecutionRequest;
-use rocode_provider::{cache::CacheBustSummary, Provider, ToolDefinition};
+use rocode_provider::{cache::CacheEvidenceSummary, Provider, ToolDefinition};
 use rocode_skill::RuntimeInstructionSource;
 use rocode_types::{
     context_usage_percent, ContextCompactionSummary, ContextPressureGovernanceStatus,
-    ContextPressureGovernanceSummary, MemoryRetrievalPacket,
-    PromptSurfaceSnapshotInvalidationSummary, SessionCacheBoundaryKind,
-    SessionCacheBoundarySummary, SessionCacheBustExplain, SessionCacheSemanticsBasis,
-    SessionCacheSemanticsSummary, SessionCacheSeverity, SessionContextExplain, SessionContextKind,
-    SubsessionHandoffPacket, SubsessionResultEnvelope,
+    ContextPressureGovernanceSummary, MemoryRetrievalPacket, PromptSurfaceEvidenceSummary,
+    SessionCacheBoundaryKind, SessionCacheBoundarySummary, SessionCacheEvidenceExplain,
+    SessionCacheSemanticsBasis, SessionCacheSemanticsSummary, SessionCacheSeverity,
+    SessionContextExplain, SessionContextKind, SubsessionHandoffPacket, SubsessionResultEnvelope,
 };
 
 use crate::instruction::{InstructionLoader, InstructionSource};
@@ -890,8 +888,8 @@ pub fn explain_session_context(
 pub fn explain_session_cache_semantics(
     context_explain: &SessionContextExplain,
     context_compaction_summary: Option<&ContextCompactionSummary>,
-    cache_bust_summary: Option<&CacheBustSummary>,
-    prompt_surface_snapshot_invalidation: Option<&PromptSurfaceSnapshotInvalidationSummary>,
+    cache_evidence: Option<&CacheEvidenceSummary>,
+    prompt_surface_evidence: Option<&PromptSurfaceEvidenceSummary>,
 ) -> SessionCacheSemanticsSummary {
     let trimmed_model_visible_messages = context_explain
         .raw_model_visible_messages
@@ -899,15 +897,14 @@ pub fn explain_session_cache_semantics(
     let boundary = context_compaction_summary.map(|summary| {
         let likely_changed_prefix =
             trimmed_model_visible_messages > 0 || summary.compacted_message_count.unwrap_or(0) > 0;
-        let possible_cache_bust = likely_changed_prefix
-            && cache_bust_summary
+        let possible_cache_evidence = likely_changed_prefix
+            && cache_evidence
                 .map(|summary| {
                     session_cache_severity_from_provider(summary.severity)
-                        >= SessionCacheSeverity::LikelyBust
-                        && summary
-                            .primary_cause
-                            .as_deref()
-                            .is_some_and(|cause| cause.contains("messagePrefixHash"))
+                        >= SessionCacheSeverity::MediumChange
+                        && summary.primary_cause.as_deref().is_some_and(|cause| {
+                            cause.contains("prefix changed before the stable boundary")
+                        })
                 })
                 .unwrap_or(false);
 
@@ -921,20 +918,20 @@ pub fn explain_session_cache_semantics(
             kept_message_count: summary.kept_message_count,
             trimmed_model_visible_messages,
             likely_changed_prefix,
-            possible_cache_bust,
+            possible_cache_evidence,
         }
     });
-    let cache_bust = cache_bust_summary.map(|summary| SessionCacheBustExplain {
+    let cache_evidence = cache_evidence.map(|summary| SessionCacheEvidenceExplain {
         status: summary.status.clone(),
         severity: session_cache_severity_from_provider(summary.severity),
         primary_cause: summary.primary_cause.clone(),
         change_count: summary.change_count,
     });
-    let prompt_surface_invalidation = prompt_surface_snapshot_invalidation.cloned();
+    let prompt_surface_evidence = prompt_surface_evidence.cloned();
     let label = cache_semantics_label(
         boundary.as_ref(),
-        cache_bust.as_ref(),
-        prompt_surface_invalidation.as_ref(),
+        cache_evidence.as_ref(),
+        prompt_surface_evidence.as_ref(),
     );
 
     SessionCacheSemanticsSummary {
@@ -942,54 +939,52 @@ pub fn explain_session_cache_semantics(
         api_view_messages: context_explain.api_view_messages,
         trimmed_model_visible_messages,
         boundary,
-        cache_bust,
-        prompt_surface_invalidation,
+        cache_evidence,
+        prompt_surface_evidence,
         label,
     }
 }
 
 fn session_cache_severity_from_provider(
-    value: rocode_provider::cache::CacheBustSeverity,
+    value: rocode_provider::cache::CacheEvidenceSeverity,
 ) -> SessionCacheSeverity {
     match value {
-        rocode_provider::cache::CacheBustSeverity::Stable => SessionCacheSeverity::Stable,
-        rocode_provider::cache::CacheBustSeverity::SoftDegradation => {
-            SessionCacheSeverity::SoftDegradation
+        rocode_provider::cache::CacheEvidenceSeverity::Stable => SessionCacheSeverity::Stable,
+        rocode_provider::cache::CacheEvidenceSeverity::LowChange => SessionCacheSeverity::LowChange,
+        rocode_provider::cache::CacheEvidenceSeverity::MediumChange => {
+            SessionCacheSeverity::MediumChange
         }
-        rocode_provider::cache::CacheBustSeverity::LikelyBust => SessionCacheSeverity::LikelyBust,
-        rocode_provider::cache::CacheBustSeverity::HardBust => SessionCacheSeverity::HardBust,
+        rocode_provider::cache::CacheEvidenceSeverity::HighChange => {
+            SessionCacheSeverity::HighChange
+        }
     }
 }
 
 fn cache_semantics_label(
     boundary: Option<&SessionCacheBoundarySummary>,
-    cache_bust: Option<&SessionCacheBustExplain>,
-    prompt_surface_invalidation: Option<&PromptSurfaceSnapshotInvalidationSummary>,
+    cache_evidence: Option<&SessionCacheEvidenceExplain>,
+    prompt_surface_evidence: Option<&PromptSurfaceEvidenceSummary>,
 ) -> Option<String> {
-    if let Some(cache_bust) = cache_bust {
-        if should_surface_cache_bust(cache_bust) {
-            let severity = session_cache_severity_label(cache_bust.severity);
-            let cause = if boundary.is_some_and(|boundary| boundary.possible_cache_bust) {
-                "compact boundary likely changed the API-view prefix".to_string()
+    if let Some(cache_evidence) = cache_evidence {
+        if should_surface_cache_evidence(cache_evidence) {
+            let cause = if boundary.is_some_and(|boundary| boundary.possible_cache_evidence) {
+                "boundary recorded · prefix changed".to_string()
             } else {
-                cache_bust
+                cache_evidence
                     .primary_cause
                     .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .unwrap_or("prompt surface changed")
-                    .to_string()
+                    .map(cache_semantics_evidence_detail_label)
+                    .unwrap_or_else(|| "surface changed".to_string())
             };
-            return Some(format!("{severity} · {cause}"));
+            return Some(cause);
         }
     }
 
-    if let Some(invalidation) = prompt_surface_invalidation {
-        if invalidation.severity > SessionCacheSeverity::Stable {
-            let severity = session_cache_severity_label(invalidation.severity);
-            let reason = invalidation.reason.trim();
+    if let Some(evidence) = prompt_surface_evidence {
+        if evidence.severity > SessionCacheSeverity::Stable {
+            let reason = cache_semantics_evidence_detail_label(&evidence.reason);
             if !reason.is_empty() {
-                return Some(format!("{severity} · {reason}"));
+                return Some(reason);
             }
         }
     }
@@ -998,38 +993,47 @@ fn cache_semantics_label(
     if boundary.likely_changed_prefix {
         if boundary.trimmed_model_visible_messages > 0 {
             return Some(format!(
-                "compact boundary · {} earlier messages trimmed from the API view",
+                "boundary recorded · {} earlier messages trimmed from the API view",
                 boundary.trimmed_model_visible_messages
             ));
         }
 
-        return Some("compact boundary · session compacted before the next request".to_string());
+        return Some("boundary recorded · session compacted before the next request".to_string());
     }
 
     None
 }
 
-fn should_surface_cache_bust(summary: &SessionCacheBustExplain) -> bool {
+fn should_surface_cache_evidence(summary: &SessionCacheEvidenceExplain) -> bool {
     !matches!(summary.status.as_str(), "stable" | "cold_start")
         && summary.severity > SessionCacheSeverity::Stable
 }
 
-fn session_cache_severity_label(value: SessionCacheSeverity) -> &'static str {
-    match value {
-        SessionCacheSeverity::Stable => "stable",
-        SessionCacheSeverity::SoftDegradation => "soft degradation",
-        SessionCacheSeverity::LikelyBust => "likely bust",
-        SessionCacheSeverity::HardBust => "hard bust",
+fn cache_semantics_evidence_detail_label(detail: &str) -> String {
+    let normalized = detail.trim();
+    if normalized.is_empty() {
+        return "surface changed".to_string();
     }
+
+    if let Some(field_list) = normalized.strip_prefix("surface changed:") {
+        let fields = field_list.trim();
+        return if fields.is_empty() {
+            "surface changed".to_string()
+        } else {
+            format!("surface changed · {}", fields)
+        };
+    }
+
+    normalized.to_string()
 }
 
 #[cfg(test)]
 mod cache_semantics_tests {
     use super::{compact_session_now, explain_session_cache_semantics};
     use crate::Session;
-    use rocode_provider::cache::{CacheBustSeverity, CacheBustSummary};
+    use rocode_provider::cache::{CacheEvidenceSeverity, CacheEvidenceSummary};
     use rocode_types::{
-        ContextCompactionSummary, PromptSurfaceSnapshotInvalidationSummary, SessionCacheSeverity,
+        ContextCompactionSummary, PromptSurfaceEvidenceSummary, SessionCacheSeverity,
         SessionContextExplain,
     };
 
@@ -1062,18 +1066,19 @@ mod cache_semantics_tests {
             kept_message_count: Some(8),
             summary: Some("Compacted 7 messages.".to_string()),
         };
-        let cache_bust = CacheBustSummary {
+        let cache_evidence = CacheEvidenceSummary {
             status: "degraded".to_string(),
-            severity: CacheBustSeverity::LikelyBust,
-            primary_cause: Some(
-                "messagePrefixHash changed: message prefix changed before the stable boundary"
-                    .to_string(),
-            ),
+            severity: CacheEvidenceSeverity::MediumChange,
+            primary_cause: Some("prefix changed before the stable boundary".to_string()),
             change_count: 1,
         };
 
-        let summary =
-            explain_session_cache_semantics(&explain, Some(&compaction), Some(&cache_bust), None);
+        let summary = explain_session_cache_semantics(
+            &explain,
+            Some(&compaction),
+            Some(&cache_evidence),
+            None,
+        );
 
         assert_eq!(
             summary.basis,
@@ -1083,15 +1088,15 @@ mod cache_semantics_tests {
         assert!(summary
             .boundary
             .as_ref()
-            .is_some_and(|boundary| boundary.possible_cache_bust));
+            .is_some_and(|boundary| boundary.possible_cache_evidence));
         assert_eq!(
             summary.label.as_deref(),
-            Some("likely bust · compact boundary likely changed the API-view prefix")
+            Some("boundary recorded · prefix changed")
         );
     }
 
     #[test]
-    fn cache_semantics_falls_back_to_prompt_surface_invalidation() {
+    fn cache_semantics_falls_back_to_prompt_surface_evidence() {
         let explain = SessionContextExplain {
             resolved_model: None,
             fork: None,
@@ -1105,21 +1110,21 @@ mod cache_semantics_tests {
             owner_session_cumulative_tokens: 9_000,
             workflow_cumulative_tokens: 9_000,
         };
-        let invalidation = PromptSurfaceSnapshotInvalidationSummary {
-            severity: SessionCacheSeverity::SoftDegradation,
-            reason: "prompt surface runtime changed: ingressPolicyHash".to_string(),
+        let evidence = PromptSurfaceEvidenceSummary {
+            severity: SessionCacheSeverity::LowChange,
+            reason: "surface changed: ingressPolicyHash".to_string(),
             changed_fields: vec!["ingressPolicyHash".to_string()],
         };
 
-        let summary = explain_session_cache_semantics(&explain, None, None, Some(&invalidation));
+        let summary = explain_session_cache_semantics(&explain, None, None, Some(&evidence));
 
         assert_eq!(
             summary.label.as_deref(),
-            Some("soft degradation · prompt surface runtime changed: ingressPolicyHash")
+            Some("surface changed · ingressPolicyHash")
         );
         assert_eq!(
             summary
-                .prompt_surface_invalidation
+                .prompt_surface_evidence
                 .as_ref()
                 .map(|value| value.changed_fields.clone()),
             Some(vec!["ingressPolicyHash".to_string()])

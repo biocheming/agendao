@@ -272,7 +272,7 @@ impl SchedulerProfilePlan {
                 .iter()
                 .map(|c| c.name.clone())
                 .collect(),
-            child_session: false,
+            attached_session: false,
         }
     }
 
@@ -688,17 +688,17 @@ impl SchedulerProfileOrchestrator {
                 }
             });
 
-        // Propagate child_session policy into capabilities so the lifecycle hook
-        // can create an isolated child session for this stage.
-        let child_session = plan
+        // Propagate attached_session policy into capabilities so the lifecycle hook
+        // can create an isolated attached session for this stage.
+        let attached_session = plan
             .stage_graph()
             .stage(stage)
-            .map(|spec| spec.policy.child_session)
+            .map(|spec| spec.policy.attached_session)
             .unwrap_or(false);
-        if child_session {
+        if attached_session {
             capabilities
                 .get_or_insert_with(SchedulerStageCapabilities::default)
-                .child_session = true;
+                .attached_session = true;
         }
 
         ctx.lifecycle_hook

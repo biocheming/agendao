@@ -64,9 +64,8 @@ impl ModelContextLimits {
 
     pub fn request_limit_tokens(self) -> Option<u64> {
         self.max_input_tokens.or_else(|| {
-            self.context_window_tokens.map(|window| {
-                window.saturating_sub(self.max_output_tokens.unwrap_or_default())
-            })
+            self.context_window_tokens
+                .map(|window| window.saturating_sub(self.max_output_tokens.unwrap_or_default()))
         })
     }
 }
@@ -124,8 +123,8 @@ impl CheckpointGovernancePolicy {
                 .map(|percent| percent >= self.threshold_percent)
                 .unwrap_or(false);
 
-        let compactable_history = checkpoint.current_view.compactable_messages
-            >= self.min_compactable_messages;
+        let compactable_history =
+            checkpoint.current_view.compactable_messages >= self.min_compactable_messages;
         let can_attempt_rewrite = checkpoint.remaining_assessments() > 0 && compactable_history;
 
         if !checkpoint.rewrite_attempted() {

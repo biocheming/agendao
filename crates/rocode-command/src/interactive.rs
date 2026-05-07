@@ -220,10 +220,10 @@ pub enum InteractiveCommand {
     SelectPreset(String),
     ListSessions,
     ParentSession,
-    ListChildSessions,
-    FocusChildSession(String),
-    FocusNextChildSession,
-    FocusPreviousChildSession,
+    ListAttachedSessions,
+    FocusAttachedSession(String),
+    FocusNextAttachedSession,
+    FocusPreviousAttachedSession,
     BackToRootSession,
     ListTasks,
     ShowTask(String),
@@ -414,23 +414,23 @@ pub fn parse_interactive_command(input: &str) -> Option<InteractiveCommand> {
         }
         "session" | "sessions" | "resume" | "continue" => Some(InteractiveCommand::ListSessions),
         "parent" | "back" => Some(InteractiveCommand::ParentSession),
-        "child" | "children" => {
+        "attached" | "attachments" => {
             if arg.is_empty() {
-                Some(InteractiveCommand::ListChildSessions)
+                Some(InteractiveCommand::ListAttachedSessions)
             } else {
                 let mut sub_parts = arg.split_whitespace();
                 let sub_cmd = sub_parts.next().unwrap_or("");
                 let sub_arg = sub_parts.collect::<Vec<_>>().join(" ");
                 match sub_cmd {
-                    "list" => Some(InteractiveCommand::ListChildSessions),
+                    "list" => Some(InteractiveCommand::ListAttachedSessions),
                     "focus" if !sub_arg.is_empty() => {
-                        Some(InteractiveCommand::FocusChildSession(sub_arg))
+                        Some(InteractiveCommand::FocusAttachedSession(sub_arg))
                     }
-                    "focus" => Some(InteractiveCommand::ListChildSessions),
-                    "next" => Some(InteractiveCommand::FocusNextChildSession),
-                    "prev" | "previous" => Some(InteractiveCommand::FocusPreviousChildSession),
+                    "focus" => Some(InteractiveCommand::ListAttachedSessions),
+                    "next" => Some(InteractiveCommand::FocusNextAttachedSession),
+                    "prev" | "previous" => Some(InteractiveCommand::FocusPreviousAttachedSession),
                     "back" | "root" => Some(InteractiveCommand::BackToRootSession),
-                    _ => Some(InteractiveCommand::ListChildSessions),
+                    _ => Some(InteractiveCommand::ListAttachedSessions),
                 }
             }
         }
@@ -561,12 +561,12 @@ mod tests {
             Some(InteractiveCommand::ParentSession)
         );
         assert_eq!(
-            parse_interactive_command("/child"),
-            Some(InteractiveCommand::ListChildSessions)
+            parse_interactive_command("/attached"),
+            Some(InteractiveCommand::ListAttachedSessions)
         );
         assert_eq!(
-            parse_interactive_command("/children"),
-            Some(InteractiveCommand::ListChildSessions)
+            parse_interactive_command("/attachments"),
+            Some(InteractiveCommand::ListAttachedSessions)
         );
         assert_eq!(
             parse_interactive_command("/compact"),
@@ -783,39 +783,39 @@ mod tests {
     }
 
     #[test]
-    fn parses_child_session_commands() {
+    fn parses_attached_session_commands() {
         assert_eq!(
-            parse_interactive_command("/child list"),
-            Some(InteractiveCommand::ListChildSessions)
+            parse_interactive_command("/attached list"),
+            Some(InteractiveCommand::ListAttachedSessions)
         );
         assert_eq!(
-            parse_interactive_command("/child focus child-42"),
-            Some(InteractiveCommand::FocusChildSession(
-                "child-42".to_string()
+            parse_interactive_command("/attached focus attached-42"),
+            Some(InteractiveCommand::FocusAttachedSession(
+                "attached-42".to_string()
             ))
         );
         assert_eq!(
-            parse_interactive_command("/child focus"),
-            Some(InteractiveCommand::ListChildSessions)
+            parse_interactive_command("/attached focus"),
+            Some(InteractiveCommand::ListAttachedSessions)
         );
         assert_eq!(
-            parse_interactive_command("/child next"),
-            Some(InteractiveCommand::FocusNextChildSession)
+            parse_interactive_command("/attached next"),
+            Some(InteractiveCommand::FocusNextAttachedSession)
         );
         assert_eq!(
-            parse_interactive_command("/child prev"),
-            Some(InteractiveCommand::FocusPreviousChildSession)
+            parse_interactive_command("/attached prev"),
+            Some(InteractiveCommand::FocusPreviousAttachedSession)
         );
         assert_eq!(
-            parse_interactive_command("/child previous"),
-            Some(InteractiveCommand::FocusPreviousChildSession)
+            parse_interactive_command("/attached previous"),
+            Some(InteractiveCommand::FocusPreviousAttachedSession)
         );
         assert_eq!(
-            parse_interactive_command("/child back"),
+            parse_interactive_command("/attached back"),
             Some(InteractiveCommand::BackToRootSession)
         );
         assert_eq!(
-            parse_interactive_command("/child root"),
+            parse_interactive_command("/attached root"),
             Some(InteractiveCommand::BackToRootSession)
         );
     }
@@ -950,7 +950,10 @@ mod tests {
             InteractiveCommand::Copy.ui_action_id(),
             Some(UiActionId::CopySession)
         );
-        assert_eq!(InteractiveCommand::ListChildSessions.ui_action_id(), None);
+        assert_eq!(
+            InteractiveCommand::ListAttachedSessions.ui_action_id(),
+            None
+        );
         assert_eq!(
             InteractiveCommand::Abort.ui_action_id(),
             Some(UiActionId::AbortExecution)

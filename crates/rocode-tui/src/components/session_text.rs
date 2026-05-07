@@ -606,15 +606,15 @@ fn render_stage_runtime_lines(block: &SchedulerStageBlock, theme: &Theme) -> Vec
         }
     }
 
-    let child_session_id = block
-        .child_session_id
+    let attached_session_id = block
+        .attached_session_id
         .as_deref()
         .filter(|v| !v.trim().is_empty());
-    if let Some(child_id) = child_session_id {
+    if let Some(attached_id) = attached_session_id {
         lines.push(Line::from(vec![
             Span::styled("  → Session ", label_style),
             Span::styled(
-                child_id.to_string(),
+                attached_id.to_string(),
                 Style::default()
                     .fg(theme.info)
                     .add_modifier(Modifier::UNDERLINED),
@@ -1812,7 +1812,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_runtime_lines_render_child_session_id() {
+    fn stage_runtime_lines_render_attached_session_id() {
         let mut message = message_with_stage_runtime_meta(
             "execution",
             Some("prometheus"),
@@ -1829,8 +1829,8 @@ mod tests {
             },
         );
         message.metadata.as_mut().unwrap().insert(
-            "scheduler_stage_child_session_id".to_string(),
-            json!("child-session-abc-123"),
+            "scheduler_stage_attached_session_id".to_string(),
+            json!("attached-session-abc-123"),
         );
         let rendered =
             render_message_text_part(&message, "stage content", &Theme::default(), Color::Blue);
@@ -1840,8 +1840,8 @@ mod tests {
             "should show navigation arrow"
         );
         assert!(
-            all_text.contains("child-session-abc-123"),
-            "should show child session ID"
+            all_text.contains("attached-session-abc-123"),
+            "should show attached session ID"
         );
         assert!(
             all_text.contains("Ctrl+J to view"),

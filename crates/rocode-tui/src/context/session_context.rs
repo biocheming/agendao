@@ -144,7 +144,7 @@ pub enum TodoStatus {
 }
 
 #[derive(Clone, Debug)]
-pub struct ChildSessionInfo {
+pub struct AttachedSessionInfo {
     pub session_id: String,
     pub stage_name: String,
     pub stage_title: String,
@@ -154,15 +154,15 @@ pub struct ChildSessionInfo {
     pub status: String,
 }
 
-pub fn collect_child_sessions(messages: &[Message]) -> Vec<ChildSessionInfo> {
+pub fn collect_attached_sessions(messages: &[Message]) -> Vec<AttachedSessionInfo> {
     let mut seen = HashMap::new();
     for msg in messages {
         let meta = match msg.metadata.as_ref() {
             Some(m) => m,
             None => continue,
         };
-        let child_id = match meta
-            .get("scheduler_stage_child_session_id")
+        let attached_id = match meta
+            .get("scheduler_stage_attached_session_id")
             .and_then(|v| v.as_str())
         {
             Some(id) => id.to_string(),
@@ -190,8 +190,8 @@ pub fn collect_child_sessions(messages: &[Message]) -> Vec<ChildSessionInfo> {
             .and_then(|v| v.as_str())
             .map(String::from);
 
-        let info = ChildSessionInfo {
-            session_id: child_id.clone(),
+        let info = AttachedSessionInfo {
+            session_id: attached_id.clone(),
             stage_name,
             stage_title,
             stage_id,
@@ -199,10 +199,10 @@ pub fn collect_child_sessions(messages: &[Message]) -> Vec<ChildSessionInfo> {
             stage_total,
             status,
         };
-        seen.insert(child_id, info);
+        seen.insert(attached_id, info);
     }
 
-    let mut result: Vec<ChildSessionInfo> = seen.into_values().collect();
+    let mut result: Vec<AttachedSessionInfo> = seen.into_values().collect();
     result.sort_by(|a, b| {
         a.stage_index
             .unwrap_or(u64::MAX)
@@ -659,10 +659,10 @@ impl SessionContext {
         message.metadata = Some(Self::scheduler_stage_metadata_from_block(&block));
         Self::refresh_message_content(message);
 
-        if let Some(child_session_id) = block.child_session_id.as_deref() {
+        if let Some(attached_session_id) = block.attached_session_id.as_deref() {
             let child_title = format!("Stage: {}", block.title);
             self.ensure_streaming_session(
-                child_session_id,
+                attached_session_id,
                 Some(session_id.to_string()),
                 Some(child_title),
             );
@@ -1008,9 +1008,9 @@ impl SessionContext {
                 serde_json::json!(value),
             );
         }
-        if let Some(value) = block.child_session_id.clone() {
+        if let Some(value) = block.attached_session_id.clone() {
             metadata.insert(
-                "scheduler_stage_child_session_id".to_string(),
+                "scheduler_stage_attached_session_id".to_string(),
                 serde_json::json!(value),
             );
         }
@@ -1030,7 +1030,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn scheduler_stage_output_block_updates_parent_metadata_and_child_session() {
+    fn scheduler_stage_output_block_updates_parent_metadata_and_attached_session() {
         let mut ctx = SessionContext::new();
         ctx.upsert_session(Session {
             id: "parent".to_string(),
@@ -1055,7 +1055,7 @@ mod tests {
                 "stage_index": 2,
                 "stage_total": 5,
                 "status": "running",
-                "child_session_id": "child-1",
+                "attached_session_id": "child-1",
                 "active_agents": [],
                 "active_skills": [],
                 "active_categories": [],
@@ -1072,12 +1072,15 @@ mod tests {
         let metadata = stage_message.metadata.as_ref().expect("stage metadata");
         assert_eq!(
             metadata
-                .get("scheduler_stage_child_session_id")
+                .get("scheduler_stage_attached_session_id")
                 .and_then(|value| value.as_str()),
             Some("child-1")
         );
 
-        let child = ctx.sessions.get("child-1").expect("child session created");
+        let child = ctx
+            .sessions
+            .get("child-1")
+            .expect("attached session created");
         assert_eq!(child.parent_id.as_deref(), Some("parent"));
         assert_eq!(child.title, "Stage: Execution Orchestration");
     }
@@ -1176,7 +1179,7 @@ mod tests {
         let child = ctx
             .sessions
             .get("child-1")
-            .expect("child session placeholder");
+            .expect("attached session placeholder");
         assert_eq!(child.id, "child-1");
 
         let message = ctx

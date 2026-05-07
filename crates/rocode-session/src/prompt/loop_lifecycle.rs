@@ -16,10 +16,10 @@ use rocode_orchestrator::runtime::run_loop;
 use rocode_orchestrator::runtime::{SimpleModelCaller, SimpleModelCallerConfig};
 use rocode_plugin::{HookContext, HookEvent};
 use rocode_provider::cache::{
-    inspect_cache_fingerprint_change, CacheBustSummary, CacheProtocolFamily,
+    inspect_cache_fingerprint_change, CacheEvidenceSummary, CacheProtocolFamily,
     CacheRequestFingerprint, CloseAiCacheFingerprint, EthnopicCacheFingerprint,
     EthnopicCachePolicy, PromptSurfaceFingerprint, ProviderProfileFingerprint,
-    CACHE_BUST_INSPECTION_METADATA_KEY, CACHE_BUST_SUMMARY_METADATA_KEY,
+    CACHE_EVIDENCE_INSPECTION_METADATA_KEY, CACHE_EVIDENCE_METADATA_KEY,
     CACHE_REQUEST_FINGERPRINT_METADATA_KEY,
 };
 use rocode_provider::error_code::StandardErrorCode;
@@ -39,8 +39,8 @@ use super::{
         PromptSurfaceProviderOptionGroup,
     },
     tools_and_output, PromptHooks, PromptInput, PromptRequestContext, SessionPrompt,
-    SessionStepShared, MAX_STEPS, PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY,
-    PROMPT_SURFACE_SNAPSHOT_INVALIDATION_METADATA_KEY, STREAM_UPDATE_INTERVAL_MS,
+    SessionStepShared, MAX_STEPS, PROMPT_SURFACE_EVIDENCE_METADATA_KEY,
+    PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY, STREAM_UPDATE_INTERVAL_MS,
 };
 
 #[derive(Clone)]
@@ -73,12 +73,12 @@ struct PromptSurfaceRuntimeSnapshot {
     ethnopic_breakpoint_plan_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ingress_policy_hash: Option<String>,
-    invalidation: Option<PromptSurfaceInvalidation>,
+    evidence: Option<PromptSurfaceEvidence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct PromptSurfaceInvalidation {
-    severity: rocode_provider::cache::CacheBustSeverity,
+struct PromptSurfaceEvidence {
+    severity: rocode_provider::cache::CacheEvidenceSeverity,
     reason: String,
     changed_fields: Vec<String>,
 }
@@ -297,7 +297,7 @@ mod cache_fingerprint_tests {
             ethnopic_policy_hash: None,
             ethnopic_breakpoint_plan_hash: None,
             ingress_policy_hash: None,
-            invalidation: None,
+            evidence: None,
         };
         let assistant = session.add_assistant_message();
         assistant.metadata.insert(
@@ -354,10 +354,10 @@ mod cache_fingerprint_tests {
         );
 
         assert_eq!(second.generation, first.generation);
-        assert!(second.invalidation.is_none());
+        assert!(second.evidence.is_none());
         assert_eq!(
             second.created_at_ms, first.created_at_ms,
-            "message-prefix changes are request fingerprint diagnostics, not stable snapshot invalidations"
+            "message-prefix changes are request fingerprint diagnostics, not stable snapshot evidence changes"
         );
     }
 
@@ -403,45 +403,44 @@ mod cache_fingerprint_tests {
             200,
         );
 
-        let invalidation = second
-            .invalidation
+        let evidence = second
+            .evidence
             .as_ref()
             .expect("tool surface changes should invalidate stable snapshot");
         assert_eq!(second.generation, first.generation + 1);
         assert_eq!(
-            invalidation.severity,
-            rocode_provider::cache::CacheBustSeverity::HardBust
+            evidence.severity,
+            rocode_provider::cache::CacheEvidenceSeverity::HighChange
         );
-        assert!(invalidation
+        assert!(evidence
             .changed_fields
             .contains(&"toolSurfaceHash".to_string()));
     }
 
     #[test]
-    fn prompt_surface_snapshot_reason_can_drive_cache_bust_summary() {
-        let summary = CacheBustSummary {
+    fn prompt_surface_snapshot_reason_can_drive_cache_evidence() {
+        let summary = CacheEvidenceSummary {
             status: "stable".to_string(),
-            severity: rocode_provider::cache::CacheBustSeverity::Stable,
+            severity: rocode_provider::cache::CacheEvidenceSeverity::Stable,
             primary_cause: None,
             change_count: 0,
         };
-        let invalidation = PromptSurfaceInvalidation {
-            severity: rocode_provider::cache::CacheBustSeverity::HardBust,
-            reason: "prompt surface runtime changed: toolSurfaceHash".to_string(),
+        let evidence = PromptSurfaceEvidence {
+            severity: rocode_provider::cache::CacheEvidenceSeverity::HighChange,
+            reason: "surface changed: toolSurfaceHash".to_string(),
             changed_fields: vec!["toolSurfaceHash".to_string()],
         };
 
-        let merged =
-            SessionPrompt::merge_snapshot_invalidation_into_summary(summary, Some(&invalidation));
+        let merged = SessionPrompt::merge_snapshot_evidence_into_summary(summary, Some(&evidence));
 
         assert_eq!(merged.status, "degraded");
         assert_eq!(
             merged.severity,
-            rocode_provider::cache::CacheBustSeverity::HardBust
+            rocode_provider::cache::CacheEvidenceSeverity::HighChange
         );
         assert_eq!(
             merged.primary_cause.as_deref(),
-            Some(invalidation.reason.as_str())
+            Some(evidence.reason.as_str())
         );
     }
 
@@ -506,7 +505,7 @@ mod cache_fingerprint_tests {
         );
 
         assert_eq!(second.generation, first.generation);
-        assert!(second.invalidation.is_none());
+        assert!(second.evidence.is_none());
         assert_ne!(second.system_hash, first.system_hash);
         assert_eq!(
             second.stable_system_surface_hash,
@@ -562,7 +561,7 @@ mod cache_fingerprint_tests {
 
         assert!(first.ingress_policy_hash.is_some());
         assert_eq!(second.generation, first.generation);
-        assert!(second.invalidation.is_none());
+        assert!(second.evidence.is_none());
     }
 
     #[test]
@@ -615,16 +614,16 @@ mod cache_fingerprint_tests {
             200,
         );
 
-        let invalidation = second
-            .invalidation
+        let evidence = second
+            .evidence
             .as_ref()
             .expect("ingress policy changes should be tracked");
         assert_eq!(second.generation, first.generation + 1);
         assert_eq!(
-            invalidation.severity,
-            rocode_provider::cache::CacheBustSeverity::SoftDegradation
+            evidence.severity,
+            rocode_provider::cache::CacheEvidenceSeverity::LowChange
         );
-        assert!(invalidation
+        assert!(evidence
             .changed_fields
             .contains(&"ingressPolicyHash".to_string()));
     }
@@ -716,16 +715,16 @@ mod cache_fingerprint_tests {
             200,
         );
 
-        let invalidation = second
-            .invalidation
+        let evidence = second
+            .evidence
             .as_ref()
             .expect("projection policy changes should invalidate stable snapshot");
         assert_eq!(second.generation, first.generation + 1);
         assert_eq!(
-            invalidation.severity,
-            rocode_provider::cache::CacheBustSeverity::LikelyBust
+            evidence.severity,
+            rocode_provider::cache::CacheEvidenceSeverity::MediumChange
         );
-        assert!(invalidation
+        assert!(evidence
             .changed_fields
             .contains(&"outputProjectionPolicyHash".to_string()));
     }
@@ -787,7 +786,7 @@ mod cache_fingerprint_tests {
             second.output_projection_policy_hash
         );
         assert_eq!(second.generation, first.generation);
-        assert!(second.invalidation.is_none());
+        assert!(second.evidence.is_none());
     }
 
     #[test]
@@ -1792,15 +1791,15 @@ impl SessionPrompt {
         stable: PromptSurfaceStableFields,
         now_ms: i64,
     ) -> PromptSurfaceRuntimeSnapshot {
-        let invalidation =
-            previous.and_then(|snapshot| Self::prompt_surface_invalidation(snapshot, &stable));
+        let evidence =
+            previous.and_then(|snapshot| Self::prompt_surface_evidence(snapshot, &stable));
         let generation = match previous {
-            Some(snapshot) if invalidation.is_none() => snapshot.generation,
+            Some(snapshot) if evidence.is_none() => snapshot.generation,
             Some(snapshot) => snapshot.generation.saturating_add(1),
             None => 1,
         };
         let created_at_ms = previous
-            .filter(|_| invalidation.is_none())
+            .filter(|_| evidence.is_none())
             .map(|snapshot| snapshot.created_at_ms)
             .unwrap_or(now_ms);
 
@@ -1826,16 +1825,16 @@ impl SessionPrompt {
             ethnopic_policy_hash: stable.ethnopic_policy_hash,
             ethnopic_breakpoint_plan_hash: stable.ethnopic_breakpoint_plan_hash,
             ingress_policy_hash: stable.ingress_policy_hash,
-            invalidation,
+            evidence,
         }
     }
 
-    fn prompt_surface_invalidation(
+    fn prompt_surface_evidence(
         previous: &PromptSurfaceRuntimeSnapshot,
         current: &PromptSurfaceStableFields,
-    ) -> Option<PromptSurfaceInvalidation> {
+    ) -> Option<PromptSurfaceEvidence> {
         let mut changed_fields = Vec::new();
-        let mut severity = rocode_provider::cache::CacheBustSeverity::Stable;
+        let mut severity = rocode_provider::cache::CacheEvidenceSeverity::Stable;
 
         macro_rules! compare_field {
             ($field:literal, $prev:expr, $current:expr, $field_severity:expr) => {
@@ -1850,125 +1849,122 @@ impl SessionPrompt {
             "protocolFamily",
             previous.protocol_family,
             current.protocol_family,
-            rocode_provider::cache::CacheBustSeverity::HardBust
+            rocode_provider::cache::CacheEvidenceSeverity::HighChange
         );
         compare_field!(
             "providerId",
             previous.provider_id.as_str(),
             current.provider_id.as_str(),
-            rocode_provider::cache::CacheBustSeverity::HardBust
+            rocode_provider::cache::CacheEvidenceSeverity::HighChange
         );
         compare_field!(
             "modelId",
             previous.model_id.as_str(),
             current.model_id.as_str(),
-            rocode_provider::cache::CacheBustSeverity::HardBust
+            rocode_provider::cache::CacheEvidenceSeverity::HighChange
         );
         compare_field!(
             "apiShape",
             previous.api_shape,
             current.api_shape,
-            rocode_provider::cache::CacheBustSeverity::HardBust
+            rocode_provider::cache::CacheEvidenceSeverity::HighChange
         );
         compare_field!(
             "stableSystemSurfaceHash",
             previous.stable_system_surface_hash.as_str(),
             current.stable_system_surface_hash.as_str(),
-            rocode_provider::cache::CacheBustSeverity::HardBust
+            rocode_provider::cache::CacheEvidenceSeverity::HighChange
         );
         compare_field!(
             "toolSurfaceHash",
             previous.tool_surface_hash.as_str(),
             current.tool_surface_hash.as_str(),
-            rocode_provider::cache::CacheBustSeverity::HardBust
+            rocode_provider::cache::CacheEvidenceSeverity::HighChange
         );
         compare_field!(
             "toolSourceSurfaceHash",
             previous.tool_source_surface_hash.as_str(),
             current.tool_source_surface_hash.as_str(),
-            rocode_provider::cache::CacheBustSeverity::HardBust
+            rocode_provider::cache::CacheEvidenceSeverity::HighChange
         );
         compare_field!(
             "providerParamsHash",
             previous.provider_params_hash.as_str(),
             current.provider_params_hash.as_str(),
-            rocode_provider::cache::CacheBustSeverity::HardBust
+            rocode_provider::cache::CacheEvidenceSeverity::HighChange
         );
         compare_field!(
             "toolPolicyHash",
             previous.tool_policy_hash.as_deref(),
             current.tool_policy_hash.as_deref(),
-            rocode_provider::cache::CacheBustSeverity::LikelyBust
+            rocode_provider::cache::CacheEvidenceSeverity::MediumChange
         );
         compare_field!(
             "reasoningModeHash",
             previous.reasoning_mode_hash.as_deref(),
             current.reasoning_mode_hash.as_deref(),
-            rocode_provider::cache::CacheBustSeverity::LikelyBust
+            rocode_provider::cache::CacheEvidenceSeverity::MediumChange
         );
         compare_field!(
             "outputProjectionPolicyHash",
             previous.output_projection_policy_hash.as_str(),
             current.output_projection_policy_hash.as_str(),
-            rocode_provider::cache::CacheBustSeverity::LikelyBust
+            rocode_provider::cache::CacheEvidenceSeverity::MediumChange
         );
         compare_field!(
             "sccStableRefsHash",
             previous.scc_stable_refs_hash.as_deref(),
             current.scc_stable_refs_hash.as_deref(),
-            rocode_provider::cache::CacheBustSeverity::LikelyBust
+            rocode_provider::cache::CacheEvidenceSeverity::MediumChange
         );
         compare_field!(
             "closeaiPromptCacheKey",
             previous.closeai_prompt_cache_key.as_deref(),
             current.closeai_prompt_cache_key.as_deref(),
-            rocode_provider::cache::CacheBustSeverity::LikelyBust
+            rocode_provider::cache::CacheEvidenceSeverity::MediumChange
         );
         compare_field!(
             "ethnopicPolicyHash",
             previous.ethnopic_policy_hash.as_deref(),
             current.ethnopic_policy_hash.as_deref(),
-            rocode_provider::cache::CacheBustSeverity::LikelyBust
+            rocode_provider::cache::CacheEvidenceSeverity::MediumChange
         );
         compare_field!(
             "ethnopicBreakpointPlanHash",
             previous.ethnopic_breakpoint_plan_hash.as_deref(),
             current.ethnopic_breakpoint_plan_hash.as_deref(),
-            rocode_provider::cache::CacheBustSeverity::LikelyBust
+            rocode_provider::cache::CacheEvidenceSeverity::MediumChange
         );
         compare_field!(
             "ingressPolicyHash",
             previous.ingress_policy_hash.as_deref(),
             current.ingress_policy_hash.as_deref(),
-            rocode_provider::cache::CacheBustSeverity::SoftDegradation
+            rocode_provider::cache::CacheEvidenceSeverity::LowChange
         );
 
         if changed_fields.is_empty() {
             return None;
         }
 
-        let reason = format!(
-            "prompt surface runtime changed: {}",
-            changed_fields.join(", ")
-        );
-        Some(PromptSurfaceInvalidation {
+        let reason = format!("surface changed: {}", changed_fields.join(", "));
+        Some(PromptSurfaceEvidence {
             severity,
             reason,
             changed_fields,
         })
     }
 
-    fn merge_snapshot_invalidation_into_summary(
-        mut summary: CacheBustSummary,
-        invalidation: Option<&PromptSurfaceInvalidation>,
-    ) -> CacheBustSummary {
-        let Some(invalidation) = invalidation else {
+    fn merge_snapshot_evidence_into_summary(
+        mut summary: CacheEvidenceSummary,
+        evidence: Option<&PromptSurfaceEvidence>,
+    ) -> CacheEvidenceSummary {
+        let Some(evidence) = evidence else {
             return summary;
         };
-        if invalidation.severity >= summary.severity {
+        if evidence.severity >= summary.severity {
             summary.status = "degraded".to_string();
-            summary.severity = invalidation.severity;
-            summary.primary_cause = Some(invalidation.reason.clone());
+            summary.severity = evidence.severity;
+            summary.primary_cause = Some(evidence.reason.clone());
         }
         summary
     }
@@ -2330,7 +2326,7 @@ impl SessionPrompt {
                 provider_profile,
             );
             let previous_cache_fingerprint = Self::latest_cache_request_fingerprint(session);
-            let cache_bust_inspection = inspect_cache_fingerprint_change(
+            let cache_evidence_inspection = inspect_cache_fingerprint_change(
                 previous_cache_fingerprint.as_ref(),
                 &cache_fingerprint,
             );
@@ -2378,8 +2374,9 @@ impl SessionPrompt {
                 assistant_metadata
                     .insert(CACHE_REQUEST_FINGERPRINT_METADATA_KEY.to_string(), value);
             }
-            if let Ok(value) = serde_json::to_value(&cache_bust_inspection) {
-                assistant_metadata.insert(CACHE_BUST_INSPECTION_METADATA_KEY.to_string(), value);
+            if let Ok(value) = serde_json::to_value(&cache_evidence_inspection) {
+                assistant_metadata
+                    .insert(CACHE_EVIDENCE_INSPECTION_METADATA_KEY.to_string(), value);
             }
             if let Ok(value) = serde_json::to_value(&prompt_surface_snapshot) {
                 assistant_metadata.insert(
@@ -2387,20 +2384,18 @@ impl SessionPrompt {
                     value,
                 );
             }
-            if let Some(invalidation) = prompt_surface_snapshot.invalidation.as_ref() {
-                if let Ok(value) = serde_json::to_value(invalidation) {
-                    assistant_metadata.insert(
-                        PROMPT_SURFACE_SNAPSHOT_INVALIDATION_METADATA_KEY.to_string(),
-                        value,
-                    );
+            if let Some(evidence) = prompt_surface_snapshot.evidence.as_ref() {
+                if let Ok(value) = serde_json::to_value(evidence) {
+                    assistant_metadata
+                        .insert(PROMPT_SURFACE_EVIDENCE_METADATA_KEY.to_string(), value);
                 }
             }
-            let cache_bust_summary = Self::merge_snapshot_invalidation_into_summary(
-                CacheBustSummary::from(&cache_bust_inspection),
-                prompt_surface_snapshot.invalidation.as_ref(),
+            let cache_evidence = Self::merge_snapshot_evidence_into_summary(
+                CacheEvidenceSummary::from(&cache_evidence_inspection),
+                prompt_surface_snapshot.evidence.as_ref(),
             );
-            if let Ok(value) = serde_json::to_value(cache_bust_summary) {
-                assistant_metadata.insert(CACHE_BUST_SUMMARY_METADATA_KEY.to_string(), value);
+            if let Ok(value) = serde_json::to_value(cache_evidence) {
+                assistant_metadata.insert(CACHE_EVIDENCE_METADATA_KEY.to_string(), value);
             }
             session.messages_mut().push(SessionMessage {
                 id: assistant_message_id.clone(),

@@ -723,16 +723,16 @@ rocode generate
 | `/session` | `/sessions`, `/resume`, `/continue` | 列出/恢复会话 |
 | `/parent` | `/back` | 返回父会话 |
 
-### 子会话管理
+### 附着会话管理
 
 | 命令 | 说明 |
 |------|------|
-| `/child` | 列出子会话 |
-| `/child list` | 列出子会话 |
-| `/child focus <ID>` | 聚焦到子会话 |
-| `/child next` | 聚焦下一个子会话 |
-| `/child prev` | 聚焦上一个子会话 |
-| `/child back` / `/child root` | 返回根会话 |
+| `/attached` | 列出附着会话 |
+| `/attached list` | 列出附着会话 |
+| `/attached focus <ID>` | 聚焦到附着会话 |
+| `/attached next` | 聚焦下一个附着会话 |
+| `/attached prev` | 聚焦上一个附着会话 |
+| `/attached back` / `/attached root` | 返回根会话 |
 
 ### 模型与提供商
 

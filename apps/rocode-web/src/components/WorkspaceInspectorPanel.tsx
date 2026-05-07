@@ -312,7 +312,7 @@ export function WorkspaceInspectorPanel({
             previewStageId={previewStageId}
             onJumpToConversation={conversationJump.jumpOrQueueConversationTarget}
             onNavigateStage={schedulerNavigation.navigateToStage}
-            onNavigateChildSession={schedulerNavigation.navigateToChildSession}
+            onNavigateAttachedSession={schedulerNavigation.navigateToAttachedSession}
             onNavigateToolCall={schedulerNavigation.navigateToToolCall}
           />
         </Suspense>

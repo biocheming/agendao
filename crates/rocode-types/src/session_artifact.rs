@@ -14,6 +14,9 @@ const SESSION_SANCTIONED_METADATA_KEYS: &[&str] = &[
     "context_pressure_governance_summary",
     "fork_origin_message_id",
     "fork_origin_session_id",
+    "fork_history_mode",
+    "fork_history_message_limit",
+    "fork_source_history_message_count",
     "fork_policy_frozen",
     "memory_frozen_snapshot",
     "memory_last_prefetch_packet",
@@ -43,14 +46,16 @@ const SESSION_SANCTIONED_METADATA_PREFIXES: &[&str] = &[
 
 const MESSAGE_SANCTIONED_METADATA_KEYS: &[&str] = &[
     "agent",
-    "cache_bust_inspection",
-    "cache_bust_summary",
+    "cache_evidence_inspection",
+    "cache_evidence",
     "cache_request_fingerprint",
     "context_compaction_record",
     "continuationTargets",
     "cost",
     "finish_reason",
     "fork_imported_history",
+    "fork_history_mode",
+    "fork_history_message_limit",
     "fork_origin_message_id",
     "fork_origin_session_id",
     "memory_prefetch_packet",
@@ -61,7 +66,7 @@ const MESSAGE_SANCTIONED_METADATA_KEYS: &[&str] = &[
     "multimodal_preflight",
     "preflight",
     "prompt_surface_runtime_snapshot",
-    "prompt_surface_snapshot_invalidation",
+    "prompt_surface_evidence",
     "provider_diagnostic",
     "provider_error_summary",
     "resolved_agent",
@@ -225,11 +230,11 @@ pub struct SessionArtifactMessageDiagnosticsSidecar {
     pub message_id: String,
     pub role: MessageRole,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_bust_inspection: Option<serde_json::Value>,
+    pub cache_evidence_inspection: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_bust_summary: Option<serde_json::Value>,
+    pub cache_evidence: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt_surface_snapshot_invalidation: Option<serde_json::Value>,
+    pub prompt_surface_evidence: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_compaction_record: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -242,9 +247,9 @@ pub struct SessionArtifactMessageDiagnosticsSidecar {
 
 impl SessionArtifactMessageDiagnosticsSidecar {
     fn is_empty(&self) -> bool {
-        self.cache_bust_inspection.is_none()
-            && self.cache_bust_summary.is_none()
-            && self.prompt_surface_snapshot_invalidation.is_none()
+        self.cache_evidence_inspection.is_none()
+            && self.cache_evidence.is_none()
+            && self.prompt_surface_evidence.is_none()
             && self.context_compaction_record.is_none()
             && self.provider_diagnostic.is_none()
             && self.provider_error_summary.is_none()
@@ -298,32 +303,32 @@ impl SessionDiagnosticsSidecar {
         })
     }
 
-    pub fn latest_cache_bust_inspection_value(&self) -> Option<serde_json::Value> {
+    pub fn latest_cache_evidence_inspection_value(&self) -> Option<serde_json::Value> {
         self.messages
             .iter()
             .rev()
             .filter(|message| matches!(message.role, MessageRole::Assistant))
-            .find_map(|message| message.cache_bust_inspection.clone())
+            .find_map(|message| message.cache_evidence_inspection.clone())
     }
 
-    pub fn latest_cache_bust_summary_value(&self) -> Option<serde_json::Value> {
+    pub fn latest_cache_evidence_value(&self) -> Option<serde_json::Value> {
         self.messages
             .iter()
             .rev()
             .filter(|message| matches!(message.role, MessageRole::Assistant))
-            .find_map(|message| message.cache_bust_summary.clone())
+            .find_map(|message| message.cache_evidence.clone())
     }
 
-    pub fn latest_prompt_surface_snapshot_invalidation_value(&self) -> Option<serde_json::Value> {
+    pub fn latest_prompt_surface_evidence_value(&self) -> Option<serde_json::Value> {
         self.messages
             .iter()
             .rev()
             .filter(|message| matches!(message.role, MessageRole::Assistant))
-            .find_map(|message| message.prompt_surface_snapshot_invalidation.clone())
+            .find_map(|message| message.prompt_surface_evidence.clone())
             .or_else(|| {
                 self.prompt_surface_runtime_snapshot
                     .as_ref()
-                    .and_then(|snapshot| snapshot.get("invalidation").cloned())
+                    .and_then(|snapshot| snapshot.get("evidence").cloned())
             })
     }
 
@@ -683,12 +688,9 @@ fn message_diagnostics_sidecar(
     let sidecar = SessionArtifactMessageDiagnosticsSidecar {
         message_id: message.id.clone(),
         role: message.role.clone(),
-        cache_bust_inspection: message.metadata.get("cache_bust_inspection").cloned(),
-        cache_bust_summary: message.metadata.get("cache_bust_summary").cloned(),
-        prompt_surface_snapshot_invalidation: message
-            .metadata
-            .get("prompt_surface_snapshot_invalidation")
-            .cloned(),
+        cache_evidence_inspection: message.metadata.get("cache_evidence_inspection").cloned(),
+        cache_evidence: message.metadata.get("cache_evidence").cloned(),
+        prompt_surface_evidence: message.metadata.get("prompt_surface_evidence").cloned(),
         context_compaction_record: message.metadata.get("context_compaction_record").cloned(),
         provider_diagnostic: message.metadata.get("provider_diagnostic").cloned(),
         provider_error_summary: message.metadata.get("provider_error_summary").cloned(),
@@ -976,15 +978,15 @@ mod tests {
 
         let mut message = sample_message();
         message.metadata.insert(
-            "cache_bust_inspection".to_string(),
+            "cache_evidence_inspection".to_string(),
             serde_json::json!({"reason": "system_prompt_changed"}),
         );
         message.metadata.insert(
-            "cache_bust_summary".to_string(),
+            "cache_evidence".to_string(),
             serde_json::json!({"severity": "soft_warn"}),
         );
         message.metadata.insert(
-            "prompt_surface_snapshot_invalidation".to_string(),
+            "prompt_surface_evidence".to_string(),
             serde_json::json!({"reason": "tool_surface_changed"}),
         );
         message.metadata.insert(

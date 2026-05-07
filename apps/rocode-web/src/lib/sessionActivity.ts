@@ -68,8 +68,8 @@ export interface StageSummaryRecord {
   retry_attempt?: number | null;
   active_agent_count: number;
   active_tool_count: number;
-  child_session_count: number;
-  primary_child_session_id?: string | null;
+  attached_session_count: number;
+  primary_attached_session_id?: string | null;
 }
 
 export interface SessionInsightsMemoryRecord {
@@ -124,16 +124,65 @@ export interface SessionRuntimeRecord {
   active_stage_count?: number;
 }
 
+export interface SessionPrefixStabilityContractRecord {
+  basis: string;
+  tracked_on_api_view: boolean;
+  api_view_messages: number;
+  trimmed_model_visible_messages: number;
+  prefix_change_detected: boolean;
+  explanation?: string | null;
+}
+
+export interface SessionCompactionBoundaryContractRecord {
+  boundary_recorded: boolean;
+  phase?: string | null;
+  trigger?: string | null;
+  reason?: string | null;
+  governance_status?: string | null;
+  request_pressure_percent?: number | null;
+  live_pressure_percent?: number | null;
+  compaction_attempted: boolean;
+  compaction_succeeded: boolean;
+  blocking: boolean;
+}
+
+export interface SessionCacheExplainabilityContractRecord {
+  issue_present: boolean;
+  explained: boolean;
+  source: string;
+  severity?: string | null;
+  explanation?: string | null;
+}
+
+export interface SessionChildHistoryIsolationContractRecord {
+  attached_subtree_session_count: number;
+  owner_session_cumulative_tokens: number;
+  workflow_cumulative_tokens: number;
+  attached_subtree_cumulative_tokens: number;
+  owner_live_context_tokens?: number | null;
+  owner_local_live_prefix: boolean;
+  child_history_in_live_prefix_detected: boolean;
+  explanation: string;
+}
+
+export interface SessionContextClosureContractRecord {
+  prefix_stability: SessionPrefixStabilityContractRecord;
+  compaction_boundary: SessionCompactionBoundaryContractRecord;
+  cache_explainability: SessionCacheExplainabilityContractRecord;
+  child_history_isolation: SessionChildHistoryIsolationContractRecord;
+}
+
 export interface SessionTelemetrySnapshotRecord {
   runtime: SessionRuntimeRecord;
   stages: StageSummaryRecord[];
   topology: SessionExecutionTopologyRecord;
   usage: SessionUsageRecord;
   memory?: SessionMemoryTelemetryRecord | null;
-  cache_bust_summary?: Record<string, unknown> | null;
+  cache_evidence?: Record<string, unknown> | null;
   cache_semantics?: Record<string, unknown> | null;
+  context_closure_contract?: SessionContextClosureContractRecord | null;
   prompt_surface_runtime_snapshot?: Record<string, unknown> | null;
-  prompt_surface_snapshot_invalidation?: Record<string, unknown> | null;
+  prompt_surface_evidence?: Record<string, unknown> | null;
   ingress_stabilization?: Record<string, unknown> | null;
   provider_diagnostic_summary?: Record<string, unknown> | null;
 }

@@ -57,31 +57,31 @@ impl App {
         }
     }
 
-    /// Navigate to the child session of the currently active scheduler stage.
+    /// Navigate to the attached session of the currently active scheduler stage.
     ///
     /// Scans the current session's messages (most recent first) for one that
-    /// carries `scheduler_stage_child_session_id` metadata and navigates to it.
-    pub(super) fn navigate_to_child_session(&mut self) {
+    /// carries `scheduler_stage_attached_session_id` metadata and navigates to it.
+    pub(super) fn navigate_to_attached_session(&mut self) {
         let session_id = match self.current_session_id() {
             Some(id) => id,
             None => return,
         };
-        let child_id = {
+        let attached_id = {
             let session_ctx = self.context.session.read();
             session_ctx.messages.get(&session_id).and_then(|msgs| {
                 msgs.iter().rev().find_map(|msg| {
                     msg.metadata
                         .as_ref()
-                        .and_then(|m| m.get("scheduler_stage_child_session_id"))
+                        .and_then(|m| m.get("scheduler_stage_attached_session_id"))
                         .and_then(serde_json::Value::as_str)
                         .map(String::from)
                 })
             })
         };
-        if let Some(child_id) = child_id {
-            self.context.navigate_session(child_id.clone());
-            self.ensure_session_view(&child_id);
-            let _ = self.sync_session_from_server(&child_id);
+        if let Some(attached_id) = attached_id {
+            self.context.navigate_session(attached_id.clone());
+            self.ensure_session_view(&attached_id);
+            let _ = self.sync_session_from_server(&attached_id);
         }
     }
 
@@ -120,7 +120,7 @@ impl App {
         }
     }
 
-    pub(super) fn refresh_child_sessions(&self) {
+    pub(super) fn refresh_attached_sessions(&self) {
         let session_id = match self.current_session_id() {
             Some(id) => id,
             None => return,
@@ -132,11 +132,11 @@ impl App {
             .and_then(|session| session.parent_id.clone())
             .unwrap_or(session_id);
         let children = match session_ctx.messages.get(&graph_root_id) {
-            Some(msgs) => collect_child_sessions(msgs),
+            Some(msgs) => collect_attached_sessions(msgs),
             None => return,
         };
         drop(session_ctx);
-        self.context.set_child_sessions(children);
+        self.context.set_attached_sessions(children);
     }
 
     pub(super) fn cache_session_from_api(&self, session: &SessionInfo) {

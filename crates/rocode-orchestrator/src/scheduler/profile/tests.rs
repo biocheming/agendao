@@ -2763,10 +2763,10 @@ fn stage_policy_without_overrides_uses_preset_defaults() {
     assert_eq!(plan_policy.tool_policy, StageToolPolicy::AllowReadOnly);
     assert_eq!(plan_policy.loop_budget, SchedulerLoopBudget::Unbounded);
 
-    // ExecutionOrchestration default: AllowAll, Unbounded, Transcript, child_session=true
+    // ExecutionOrchestration default: AllowAll, Unbounded, Transcript, attached_session=true
     let exec_policy = plan.stage_policy(SchedulerStageKind::ExecutionOrchestration);
     assert_eq!(exec_policy.tool_policy, StageToolPolicy::AllowAll);
-    assert!(exec_policy.child_session);
+    assert!(exec_policy.attached_session);
 }
 
 #[test]
@@ -3054,13 +3054,13 @@ fn stage_agent_from_policy_respects_loop_budget() {
         tool_policy: StageToolPolicy::AllowAll,
         loop_budget: SchedulerLoopBudget::Unbounded,
         session_projection: SchedulerSessionProjection::Transcript,
-        child_session: false,
+        attached_session: false,
     };
     let bounded_policy = SchedulerStagePolicy {
         tool_policy: StageToolPolicy::AllowReadOnly,
         loop_budget: SchedulerLoopBudget::StepLimit(5),
         session_projection: SchedulerSessionProjection::Hidden,
-        child_session: true,
+        attached_session: true,
     };
 
     let unbounded_agent = SchedulerProfileOrchestrator::stage_agent_from_policy(

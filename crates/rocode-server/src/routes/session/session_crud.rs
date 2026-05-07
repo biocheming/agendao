@@ -6,11 +6,11 @@ use axum::{
     extract::{Path, Query, State},
     Json,
 };
-use rocode_session::load_session_telemetry_snapshot;
+use rocode_session::{load_session_telemetry_snapshot, SessionForkError, SessionForkSpec};
 use rocode_types::{
-    FileDiff, PermissionRulesetInfo, SessionInfo, SessionListContract, SessionListHints,
-    SessionListItem, SessionListResponse, SessionListSummary, SessionRevertInfo, SessionShareInfo,
-    SessionStatusInfo, SessionSummaryInfo, SessionTimeInfo, SessionTodoInfo,
+    FileDiff, PermissionRulesetInfo, SessionForkHistoryMode, SessionInfo, SessionListContract,
+    SessionListHints, SessionListItem, SessionListResponse, SessionListSummary, SessionRevertInfo,
+    SessionShareInfo, SessionStatusInfo, SessionSummaryInfo, SessionTimeInfo, SessionTodoInfo,
 };
 use serde::{Deserialize, Serialize};
 
@@ -70,6 +70,10 @@ pub struct UpdateSessionRequest {
 #[derive(Debug, Deserialize)]
 pub struct ForkSessionRequest {
     pub message_id: Option<String>,
+    #[serde(default)]
+    pub history_mode: Option<SessionForkHistoryMode>,
+    #[serde(default)]
+    pub history_message_limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -136,6 +140,34 @@ pub(super) struct CompactRequest {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────
+
+fn validate_session_revert_target(
+    session: &rocode_session::Session,
+    message_id: &str,
+    part_id: Option<&str>,
+) -> Result<()> {
+    let Some(message) = session.get_message(message_id) else {
+        return Err(ApiError::NotFound(format!(
+            "Message not found: {}",
+            message_id
+        )));
+    };
+
+    if rocode_session::Session::is_imported_fork_history_message(message) {
+        return Err(ApiError::BadRequest(
+            "Revert only applies to fork-local history; imported fork history is read-only."
+                .to_string(),
+        ));
+    }
+
+    if let Some(part_id) = part_id {
+        if !message.parts.iter().any(|part| part.id == part_id) {
+            return Err(ApiError::NotFound(format!("Part not found: {}", part_id)));
+        }
+    }
+
+    Ok(())
+}
 
 fn session_time_info(session: &rocode_session::Session) -> SessionTimeInfo {
     let session = session.record();
@@ -303,6 +335,7 @@ pub(crate) fn session_to_info(session: &rocode_session::Session) -> SessionInfo 
                 deny: p.deny.clone(),
                 mode: p.mode.clone(),
             }),
+        fork: session.fork_explain(),
         telemetry: load_session_telemetry_snapshot(session),
         metadata: if session_record.metadata.is_empty() {
             None
@@ -323,12 +356,12 @@ fn collect_session_tree_ids(
     fn visit(sessions: &rocode_session::SessionManager, session_id: &str, out: &mut Vec<String>) {
         out.push(session_id.to_string());
         let child_ids: Vec<String> = sessions
-            .children(session_id)
+            .attached_sessions(session_id)
             .into_iter()
             .map(|session| session.id.clone())
             .collect();
-        for child_id in child_ids {
-            visit(sessions, &child_id, out);
+        for attached_id in child_ids {
+            visit(sessions, &attached_id, out);
         }
     }
 
@@ -519,7 +552,7 @@ pub(super) async fn create_session(
 ) -> Result<Json<SessionInfo>> {
     if req.parent_id.is_some() {
         return Err(ApiError::BadRequest(
-            "Creating a child session via /session is no longer supported; use a typed owner-local session path instead."
+            "Creating an attached session via /session is no longer supported; use a typed owner-local session path instead."
                 .to_string(),
         ));
     }
@@ -700,13 +733,16 @@ pub(super) async fn runtime_snapshot_or_default(
     }
 }
 
-pub(super) async fn get_session_children(
+pub(super) async fn get_session_attached_sessions(
     State(state): State<Arc<ServerState>>,
     Path(id): Path<String>,
 ) -> Result<Json<SessionListResponse>> {
     let manager = state.sessions.lock().await;
-    let children = manager.children(&id);
-    let items = children.into_iter().map(session_to_list_item).collect();
+    let attached_sessions = manager.attached_sessions(&id);
+    let items = attached_sessions
+        .into_iter()
+        .map(session_to_list_item)
+        .collect();
     Ok(Json(session_list_response(items)))
 }
 
@@ -739,12 +775,23 @@ pub(super) async fn fork_session(
     Path(id): Path<String>,
     Json(req): Json<ForkSessionRequest>,
 ) -> Result<Json<SessionInfo>> {
+    let spec = SessionForkSpec {
+        message_id: req.message_id.as_deref(),
+        history_mode: req.history_mode.unwrap_or_default(),
+        history_message_limit: req.history_message_limit,
+    };
     let forked = state
         .sessions
         .lock()
         .await
-        .fork(&id, req.message_id.as_deref())
-        .ok_or(ApiError::SessionNotFound(id))?;
+        .fork(&id, spec)
+        .map_err(|error| match error {
+            SessionForkError::SessionNotFound => ApiError::SessionNotFound(id.clone()),
+            SessionForkError::OriginMessageNotFound(message_id) => ApiError::BadRequest(format!(
+                "Fork origin message not found in session `{id}`: {message_id}"
+            )),
+            SessionForkError::InvalidRequest(message) => ApiError::BadRequest(message),
+        })?;
     persist_sessions_if_enabled(&state).await;
     Ok(Json(session_to_info(&forked)))
 }
@@ -860,8 +907,9 @@ pub(super) async fn get_session_summary(
 mod tests {
     use super::collect_session_tree_ids;
     use super::{
-        create_session, get_session_children, session_list_contract, session_to_info,
-        session_to_list_item, start_compaction, CompactRequest, CreateSessionRequest,
+        create_session, fork_session, get_session_attached_sessions, session_list_contract,
+        session_revert, session_to_info, session_to_list_item, start_compaction, CompactRequest,
+        CreateSessionRequest, ForkSessionRequest, RevertRequest,
     };
     use crate::ApiError;
     use crate::ServerState;
@@ -872,8 +920,10 @@ mod tests {
     use rocode_command::stage_protocol::StageStatus;
     use rocode_session::{
         persist_session_telemetry_snapshot, MessageRole, PartType, PersistedStageTelemetrySummary,
-        Session, SessionMessage, SessionTelemetrySnapshot, SessionTelemetrySnapshotVersion,
+        Session, SessionForkSpec, SessionMessage, SessionTelemetrySnapshot,
+        SessionTelemetrySnapshotVersion,
     };
+    use rocode_types::SessionForkHistoryMode;
     use std::sync::Arc;
 
     #[test]
@@ -937,8 +987,8 @@ mod tests {
                 retry_attempt: None,
                 active_agent_count: 1,
                 active_tool_count: 2,
-                child_session_count: 0,
-                primary_child_session_id: None,
+                attached_session_count: 0,
+                primary_attached_session_id: None,
             }],
             memory: None,
             last_run_status: "completed".to_string(),
@@ -950,6 +1000,41 @@ mod tests {
         let info = session_to_info(&session);
 
         assert_eq!(info.telemetry, Some(snapshot));
+    }
+
+    #[test]
+    fn session_to_info_surfaces_typed_fork_contract() {
+        let mut sessions = rocode_session::SessionManager::new();
+        let mut root = sessions.create("project", "/tmp/project");
+        root.insert_metadata("model_provider".to_string(), serde_json::json!("openai"));
+        root.insert_metadata("model_id".to_string(), serde_json::json!("gpt-4.1"));
+        root.add_user_message("one");
+        root.add_user_message("two");
+        root.add_user_message("three");
+        sessions.update(root.clone());
+
+        let forked = sessions
+            .fork(
+                &root.id,
+                SessionForkSpec {
+                    message_id: None,
+                    history_mode: SessionForkHistoryMode::LastN,
+                    history_message_limit: Some(2),
+                },
+            )
+            .expect("fork should succeed");
+
+        let info = session_to_info(&forked);
+        let explain = info.fork.expect("fork explain should be present");
+        assert_eq!(explain.history_mode, SessionForkHistoryMode::LastN);
+        assert_eq!(explain.history_message_limit, Some(2));
+        assert_eq!(explain.source_history_messages, Some(3));
+        assert_eq!(explain.imported_history_messages, 2);
+        assert!(explain.policy_frozen);
+        assert_eq!(
+            explain.lifecycle.compaction_scope,
+            rocode_types::SessionForkLifecycleScope::ForkPromptSurface
+        );
     }
 
     #[test]
@@ -1012,7 +1097,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_children_route_returns_list_wrapper_contract() {
+    async fn session_attached_route_returns_list_wrapper_contract() {
         let state = Arc::new(ServerState::new());
         let parent_id = {
             let mut sessions = state.sessions.lock().await;
@@ -1025,9 +1110,9 @@ mod tests {
             parent.id.clone()
         };
 
-        let axum::Json(response) = get_session_children(State(state), Path(parent_id))
+        let axum::Json(response) = get_session_attached_sessions(State(state), Path(parent_id))
             .await
-            .expect("children route should succeed");
+            .expect("attached route should succeed");
 
         assert_eq!(response.items.len(), 1);
         assert_eq!(response.contract.search_fields, vec!["title".to_string()]);
@@ -1038,7 +1123,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_session_route_rejects_legacy_parent_id_child_creation() {
+    async fn create_session_route_rejects_legacy_parent_id_attached_creation() {
         let state = Arc::new(ServerState::new());
         let parent_id = {
             let mut sessions = state.sessions.lock().await;
@@ -1056,9 +1141,119 @@ mod tests {
             }),
         )
         .await
-        .expect_err("legacy parent-based child creation must fail");
+        .expect_err("legacy parent-based attached creation must fail");
 
         assert!(matches!(error, ApiError::BadRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn fork_session_route_rejects_invalid_last_n_contract() {
+        let state = Arc::new(ServerState::new());
+        let session_id = {
+            let mut sessions = state.sessions.lock().await;
+            sessions.create("project", "/tmp/project").id.clone()
+        };
+
+        let error = fork_session(
+            State(state),
+            Path(session_id),
+            Json(ForkSessionRequest {
+                message_id: None,
+                history_mode: Some(SessionForkHistoryMode::LastN),
+                history_message_limit: None,
+            }),
+        )
+        .await
+        .expect_err("invalid last_n contract must fail closed");
+
+        assert!(matches!(error, ApiError::BadRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn session_revert_route_rejects_imported_fork_history_targets() {
+        let state = Arc::new(ServerState::new());
+        let (forked_id, imported_message_id) = {
+            let mut sessions = state.sessions.lock().await;
+            let mut root = sessions.create("project", "/tmp/project");
+            let imported_message_id = root.add_user_message("origin prompt").id.clone();
+            sessions.update(root.clone());
+            let forked = sessions
+                .fork(
+                    &root.id,
+                    SessionForkSpec {
+                        message_id: Some(imported_message_id.as_str()),
+                        history_mode: SessionForkHistoryMode::All,
+                        history_message_limit: None,
+                    },
+                )
+                .expect("fork should succeed");
+            (forked.id.clone(), imported_message_id)
+        };
+
+        let error = session_revert(
+            State(state),
+            Path(forked_id),
+            Json(RevertRequest {
+                message_id: imported_message_id,
+                part_id: None,
+                snapshot: None,
+                diff: None,
+            }),
+        )
+        .await
+        .expect_err("imported fork history must be read-only for revert");
+
+        match error {
+            ApiError::BadRequest(message) => {
+                assert!(message.contains("fork-local history"));
+            }
+            other => panic!("expected bad request, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn session_revert_route_accepts_fork_local_targets() {
+        let state = Arc::new(ServerState::new());
+        let (forked_id, local_message_id) = {
+            let mut sessions = state.sessions.lock().await;
+            let mut root = sessions.create("project", "/tmp/project");
+            root.add_user_message("origin prompt");
+            sessions.update(root.clone());
+            let mut forked = sessions
+                .fork(
+                    &root.id,
+                    SessionForkSpec {
+                        message_id: None,
+                        history_mode: SessionForkHistoryMode::All,
+                        history_message_limit: None,
+                    },
+                )
+                .expect("fork should succeed");
+            let local_message_id = forked.add_user_message("local follow-up").id.clone();
+            let forked_id = forked.id.clone();
+            sessions.update(forked);
+            (forked_id, local_message_id)
+        };
+
+        let axum::Json(info) = session_revert(
+            State(state),
+            Path(forked_id),
+            Json(RevertRequest {
+                message_id: local_message_id.clone(),
+                part_id: None,
+                snapshot: None,
+                diff: None,
+            }),
+        )
+        .await
+        .expect("fork-local revert target should succeed");
+
+        assert_eq!(
+            info.revert
+                .as_ref()
+                .map(|revert| revert.message_id.as_str()),
+            Some(local_message_id.as_str())
+        );
     }
 
     #[tokio::test]
@@ -1195,6 +1390,10 @@ pub(super) async fn session_revert(
     Json(req): Json<RevertRequest>,
 ) -> Result<Json<SessionInfo>> {
     let mut sessions = state.sessions.lock().await;
+    let session = sessions
+        .get(&id)
+        .ok_or_else(|| ApiError::SessionNotFound(id.clone()))?;
+    validate_session_revert_target(session, &req.message_id, req.part_id.as_deref())?;
     let updated = sessions
         .set_revert(
             &id,

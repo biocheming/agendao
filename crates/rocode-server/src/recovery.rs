@@ -160,11 +160,7 @@ fn assistant_visible_text_from_message(message: &rocode_session::SessionMessage)
 }
 
 pub(crate) fn latest_user_prompt(session: &rocode_session::Session) -> Option<String> {
-    let record = session.record();
-    record.messages.iter().rev().find_map(|message| {
-        if !matches!(message.role, rocode_session::MessageRole::User) {
-            return None;
-        }
+    session.last_owner_local_user_message().and_then(|message| {
         message
             .metadata
             .get("resolved_user_prompt")
@@ -184,11 +180,7 @@ pub(crate) fn latest_user_prompt(session: &rocode_session::Session) -> Option<St
 
 fn latest_assistant_finish(session: &rocode_session::Session) -> Option<String> {
     session
-        .record()
-        .messages
-        .iter()
-        .rev()
-        .find(|message| matches!(message.role, rocode_session::MessageRole::Assistant))
+        .last_owner_local_assistant_message()
         .and_then(|message| message.finish.clone())
 }
 
@@ -205,6 +197,9 @@ pub(crate) fn collect_stage_recovery_targets(
         .iter()
         .rev()
         .filter_map(|message| {
+            if rocode_session::Session::is_imported_fork_history_message(message) {
+                return None;
+            }
             let metadata = &message.metadata;
             let stage = metadata.get("scheduler_stage")?.as_str()?.to_string();
             let profile = metadata
@@ -257,6 +252,9 @@ pub(crate) fn collect_subtask_recovery_targets(
 ) -> Vec<SubtaskRecoveryTarget> {
     let mut targets = Vec::new();
     for message in session.record().messages.iter().rev() {
+        if rocode_session::Session::is_imported_fork_history_message(message) {
+            continue;
+        }
         if !matches!(message.role, rocode_session::MessageRole::User) {
             continue;
         }
@@ -632,6 +630,21 @@ pub(crate) fn compose_subtask_recovery_prompt(
 mod tests {
     use super::*;
     use crate::runtime_control::SessionExecutionTopology;
+    use rocode_session::{SessionForkHistoryMode, SessionForkSpec, SessionManager};
+
+    fn empty_topology(session_id: &str) -> SessionExecutionTopology {
+        SessionExecutionTopology {
+            session_id: session_id.to_string(),
+            active_count: 0,
+            done_count: 0,
+            running_count: 0,
+            waiting_count: 0,
+            cancelling_count: 0,
+            retry_count: 0,
+            updated_at: None,
+            roots: Vec::new(),
+        }
+    }
 
     #[test]
     fn short_recovery_text_truncates_at_limit() {
@@ -876,5 +889,120 @@ mod tests {
         let prompt = compose_subtask_recovery_prompt("Do the thing", &target);
         assert!(prompt.contains("Verify stage recovery"));
         assert!(prompt.contains("restart subtask"));
+    }
+
+    #[test]
+    fn full_history_fork_recovery_ignores_imported_history() {
+        let mut sessions = SessionManager::new();
+        let mut root = sessions.create("default", ".");
+        root.add_user_message("Refactor the scheduler runtime");
+        let assistant = root.add_assistant_message();
+        assistant.finish = Some("error".to_string());
+        assistant.metadata.insert(
+            "scheduler_stage".to_string(),
+            serde_json::json!("coordination-gate"),
+        );
+        assistant.metadata.insert(
+            "scheduler_stage_status".to_string(),
+            serde_json::json!("blocked"),
+        );
+        assistant.add_text("Imported stage failure");
+        sessions.update(root.clone());
+
+        let forked = sessions
+            .fork(
+                &root.id,
+                SessionForkSpec {
+                    message_id: None,
+                    history_mode: SessionForkHistoryMode::All,
+                    history_message_limit: None,
+                },
+            )
+            .expect("fork should succeed");
+
+        assert_eq!(
+            latest_user_prompt(&forked),
+            None,
+            "recovery should ignore imported user prompts in a full-history fork"
+        );
+        assert!(collect_stage_recovery_targets(&forked).is_empty());
+        assert!(collect_subtask_recovery_targets(&forked).is_empty());
+
+        let protocol =
+            build_session_recovery_protocol(&forked.id, &forked, &empty_topology(&forked.id), 0);
+        assert_eq!(protocol.status, RecoveryProtocolStatus::Idle);
+        assert!(protocol.actions.is_empty());
+        assert!(protocol.checkpoints.is_empty());
+    }
+
+    #[test]
+    fn full_history_fork_recovery_only_surfaces_local_boundaries() {
+        let mut sessions = SessionManager::new();
+        let mut root = sessions.create("default", ".");
+        root.add_user_message("Imported origin prompt");
+        let imported_assistant = root.add_assistant_message();
+        imported_assistant.finish = Some("error".to_string());
+        imported_assistant.metadata.insert(
+            "scheduler_stage".to_string(),
+            serde_json::json!("imported-stage"),
+        );
+        imported_assistant.metadata.insert(
+            "scheduler_stage_status".to_string(),
+            serde_json::json!("blocked"),
+        );
+        imported_assistant.add_text("Imported failure");
+        sessions.update(root.clone());
+
+        let mut forked = sessions
+            .fork(
+                &root.id,
+                SessionForkSpec {
+                    message_id: None,
+                    history_mode: SessionForkHistoryMode::All,
+                    history_message_limit: None,
+                },
+            )
+            .expect("fork should succeed");
+
+        let local_user = forked.add_user_message("Fork-local prompt");
+        local_user.add_subtask("sub_local", "Check local fork path");
+        let local_assistant = forked.add_assistant_message();
+        local_assistant.finish = Some("error".to_string());
+        local_assistant.metadata.insert(
+            "scheduler_stage".to_string(),
+            serde_json::json!("local-stage"),
+        );
+        local_assistant.metadata.insert(
+            "scheduler_stage_status".to_string(),
+            serde_json::json!("blocked"),
+        );
+        local_assistant.add_text("Local failure");
+
+        let stage_targets = collect_stage_recovery_targets(&forked);
+        assert_eq!(stage_targets.len(), 1);
+        assert_eq!(
+            stage_targets[0].checkpoint.stage.as_deref(),
+            Some("local-stage")
+        );
+
+        let subtask_targets = collect_subtask_recovery_targets(&forked);
+        assert_eq!(subtask_targets.len(), 1);
+        assert_eq!(subtask_targets[0].checkpoint.id, "sub_local");
+
+        let protocol =
+            build_session_recovery_protocol(&forked.id, &forked, &empty_topology(&forked.id), 0);
+        assert_eq!(protocol.status, RecoveryProtocolStatus::Recoverable);
+        assert_eq!(
+            protocol.last_user_prompt.as_deref(),
+            Some("Fork-local prompt")
+        );
+        assert!(protocol
+            .checkpoints
+            .iter()
+            .any(|checkpoint| checkpoint.stage.as_deref() == Some("local-stage")));
+        assert!(!protocol
+            .checkpoints
+            .iter()
+            .any(|checkpoint| checkpoint.stage.as_deref() == Some("imported-stage")));
     }
 }

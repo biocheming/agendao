@@ -1,11 +1,11 @@
-export interface CacheBustSummaryRecord {
+export interface CacheEvidenceSummaryRecord {
   status?: string | null;
   severity?: string | null;
   primary_cause?: string | null;
   change_count?: number | null;
 }
 
-export interface PromptSurfaceInvalidationRecord {
+export interface PromptSurfaceEvidenceRecord {
   severity?: string | null;
   reason?: string | null;
   changed_fields?: string[] | null;
@@ -21,18 +21,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function severityLabel(value: string | null | undefined) {
   switch (value) {
-    case "HardBust":
+    case "HighChange":
     case "hard_bust":
     case "hardBust":
-      return "hard bust";
-    case "LikelyBust":
+      return "high change";
+    case "MediumChange":
     case "likely_bust":
     case "likelyBust":
-      return "likely bust";
-    case "SoftDegradation":
+      return "medium change";
+    case "LowChange":
     case "soft_degradation":
     case "softDegradation":
-      return "soft degradation";
+      return "low change";
     case "Stable":
     case "stable":
       return "stable";
@@ -43,8 +43,8 @@ function severityLabel(value: string | null | undefined) {
 
 export function cacheBustSummaryFromMetadata(
   metadata: Record<string, unknown> | null | undefined,
-): CacheBustSummaryRecord | null {
-  const summary = metadata?.cache_bust_summary;
+): CacheEvidenceSummaryRecord | null {
+  const summary = metadata?.cache_evidence;
   if (!isRecord(summary)) return null;
   return {
     status: typeof summary.status === "string" ? summary.status : null,
@@ -54,29 +54,37 @@ export function cacheBustSummaryFromMetadata(
   };
 }
 
-export function cacheBustSummaryLabel(summary: CacheBustSummaryRecord | null | undefined) {
+export function cacheBustSummaryLabel(summary: CacheEvidenceSummaryRecord | null | undefined) {
   if (!summary) return null;
   if (summary.status === "stable" || summary.status === "cold_start") return null;
 
   const severity = severityLabel(summary.severity);
   if (!severity || severity === "stable") return null;
 
-  const cause = summary.primary_cause?.replace(/\s+/g, " ").trim() || "prompt surface changed";
+  const cause = summary.primary_cause?.replace(/\s+/g, " ").trim() || "surface changed";
   return `${severity} · ${cause}`;
 }
 
-export function promptSurfaceInvalidationFromTelemetry(
+export function cacheBustSummaryStatusLabel(
+  summary: CacheEvidenceSummaryRecord | null | undefined,
+) {
+  if (!summary) return null;
+  if (summary.status === "stable" || summary.status === "cold_start") return null;
+  return summary.primary_cause?.trim() ? "cache explained" : "cache unexplained";
+}
+
+export function promptSurfaceEvidenceFromTelemetry(
   telemetry: unknown,
-): PromptSurfaceInvalidationRecord | null {
+): PromptSurfaceEvidenceRecord | null {
   if (!isRecord(telemetry)) return null;
-  const invalidation = telemetry.prompt_surface_snapshot_invalidation;
-  if (!isRecord(invalidation)) return null;
+  const evidence = telemetry.prompt_surface_evidence;
+  if (!isRecord(evidence)) return null;
   return {
     severity:
-      typeof invalidation.severity === "string" ? invalidation.severity : null,
-    reason: typeof invalidation.reason === "string" ? invalidation.reason : null,
-    changed_fields: Array.isArray(invalidation.changed_fields)
-      ? invalidation.changed_fields.filter(
+      typeof evidence.severity === "string" ? evidence.severity : null,
+    reason: typeof evidence.reason === "string" ? evidence.reason : null,
+    changed_fields: Array.isArray(evidence.changed_fields)
+      ? evidence.changed_fields.filter(
           (value): value is string => typeof value === "string",
         )
       : null,

@@ -384,8 +384,7 @@ impl AgentExecutor {
     ) -> Result<String, AgentError> {
         self.conversation.add_user_message(user_message);
         let persisted_messages = self.conversation.to_provider_messages();
-        let mut request_messages =
-            self.apply_request_skill_tree_plan(persisted_messages.clone());
+        let mut request_messages = self.apply_request_skill_tree_plan(persisted_messages.clone());
 
         let (tool_executor, tool_runner) = self.build_tooling();
         let execution = agent_execution_context(&self.agent);
@@ -449,8 +448,7 @@ impl AgentExecutor {
     ) -> Result<AgentExecutionReport, AgentError> {
         self.conversation.add_user_message(user_message);
         let persisted_messages = self.conversation.to_provider_messages();
-        let mut request_messages =
-            self.apply_request_skill_tree_plan(persisted_messages.clone());
+        let mut request_messages = self.apply_request_skill_tree_plan(persisted_messages.clone());
 
         let (tool_executor, tool_runner) = self.build_tooling();
         let execution = agent_execution_context(&self.agent);

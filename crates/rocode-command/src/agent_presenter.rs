@@ -786,7 +786,7 @@ pub fn output_block_to_web(block: &OutputBlock) -> serde_json::Value {
             "reasoning_tokens": stage.reasoning_tokens,
             "cache_read_tokens": stage.cache_read_tokens,
             "cache_write_tokens": stage.cache_write_tokens,
-            "child_session_id": stage.child_session_id,
+            "attached_session_id": stage.attached_session_id,
             "decision": stage.decision.as_ref().map(|decision| json!({
                 "kind": decision.kind,
                 "title": decision.title,
@@ -1150,7 +1150,7 @@ mod tests {
                         body: "Done.".to_string(),
                     }],
                 }),
-                child_session_id: None,
+                attached_session_id: None,
             },
         )));
         assert_eq!(

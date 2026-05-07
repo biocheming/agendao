@@ -346,7 +346,7 @@ impl SchedulerPresetDefinition {
             session_projection,
             tool_policy,
             loop_budget,
-            child_session: default_stage_child_session(stage),
+            attached_session: default_stage_attached_session(stage),
         }
     }
 
@@ -1303,7 +1303,7 @@ fn default_stage_loop_budget(stage: SchedulerStageKind) -> SchedulerLoopBudget {
     }
 }
 
-fn default_stage_child_session(stage: SchedulerStageKind) -> bool {
+fn default_stage_attached_session(stage: SchedulerStageKind) -> bool {
     matches!(
         stage,
         SchedulerStageKind::ExecutionOrchestration | SchedulerStageKind::Delegation

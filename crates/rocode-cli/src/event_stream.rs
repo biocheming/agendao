@@ -56,10 +56,16 @@ pub enum CliServerEvent {
         session_id: String,
         tool_call_id: String,
     },
-    /// A child session was attached under a parent session in the active tree.
-    ChildSessionAttached { parent_id: String, child_id: String },
-    /// A child session was detached from a parent session in the active tree.
-    ChildSessionDetached { parent_id: String, child_id: String },
+    /// An attached session was attached under a parent session in the active tree.
+    AttachedSessionAttached {
+        parent_id: String,
+        attached_id: String,
+    },
+    /// An attached session was detached from a parent session in the active tree.
+    AttachedSessionDetached {
+        parent_id: String,
+        attached_id: String,
+    },
     /// An output block was emitted (message, tool result, etc.).
     OutputBlock {
         session_id: String,
@@ -418,7 +424,7 @@ fn parse_event(
                 tool_call_id,
             })
         }
-        "child_session.attached" => {
+        "attached_session.attached" => {
             let parent_id = json
                 .get("parentID")
                 .or_else(|| json.get("parentId"))
@@ -426,19 +432,19 @@ fn parse_event(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let child_id = json
-                .get("childID")
+            let attached_id = json
+                .get("attachedID")
                 .or_else(|| json.get("childId"))
-                .or_else(|| json.get("child_id"))
+                .or_else(|| json.get("attached_id"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            Some(CliServerEvent::ChildSessionAttached {
+            Some(CliServerEvent::AttachedSessionAttached {
                 parent_id,
-                child_id,
+                attached_id,
             })
         }
-        "child_session.detached" => {
+        "attached_session.detached" => {
             let parent_id = json
                 .get("parentID")
                 .or_else(|| json.get("parentId"))
@@ -446,16 +452,16 @@ fn parse_event(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let child_id = json
-                .get("childID")
+            let attached_id = json
+                .get("attachedID")
                 .or_else(|| json.get("childId"))
-                .or_else(|| json.get("child_id"))
+                .or_else(|| json.get("attached_id"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            Some(CliServerEvent::ChildSessionDetached {
+            Some(CliServerEvent::AttachedSessionDetached {
                 parent_id,
-                child_id,
+                attached_id,
             })
         }
         "output_block" => {
@@ -567,10 +573,10 @@ mod tests {
     }
 
     #[test]
-    fn question_created_from_child_session_is_not_filtered() {
+    fn question_created_from_attached_session_is_not_filtered() {
         let payload = serde_json::json!({
             "type": "question.created",
-            "sessionID": "child-session-1",
+            "sessionID": "attached-session-1",
             "requestID": "question-1",
             "questions": [{
                 "header": "Scope",
@@ -584,24 +590,24 @@ mod tests {
         assert!(matches!(
             event,
             Some(CliServerEvent::QuestionCreated { session_id, request_id, .. })
-                if session_id == "child-session-1" && request_id == "question-1"
+                if session_id == "attached-session-1" && request_id == "question-1"
         ));
     }
 
     #[test]
-    fn child_session_attach_event_is_parsed() {
+    fn attached_session_attach_event_is_parsed() {
         let payload = serde_json::json!({
-            "type": "child_session.attached",
+            "type": "attached_session.attached",
             "parentID": "parent-session-1",
-            "childID": "child-session-1"
+            "attachedID": "attached-session-1"
         });
 
         let event = parse_event("", &payload, "parent-session-1");
 
         assert!(matches!(
             event,
-            Some(CliServerEvent::ChildSessionAttached { parent_id, child_id })
-                if parent_id == "parent-session-1" && child_id == "child-session-1"
+            Some(CliServerEvent::AttachedSessionAttached { parent_id, attached_id })
+                if parent_id == "parent-session-1" && attached_id == "attached-session-1"
         ));
     }
 

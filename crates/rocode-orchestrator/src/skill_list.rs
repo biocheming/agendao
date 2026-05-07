@@ -977,10 +977,12 @@ mod tests {
                 if checkpoint.compaction_attempted() {
                     Ok(None)
                 } else {
-                    Ok(Some(crate::runtime::events::StepCheckpointDirective::CompactRequestView {
-                        focus: Some("echo".to_string()),
-                        reason: Some("request_view_threshold".to_string()),
-                    }))
+                    Ok(Some(
+                        crate::runtime::events::StepCheckpointDirective::CompactRequestView {
+                            focus: Some("echo".to_string()),
+                            reason: Some("request_view_threshold".to_string()),
+                        },
+                    ))
                 }
             }
         }
@@ -1055,13 +1057,17 @@ mod tests {
 
         let first = orchestrator.execute("first run", &context).await.unwrap();
         assert_eq!(first.tool_calls_count, 1);
-        assert!(orchestrator.conversation().messages().iter().any(|message| {
-            matches!(
-                &message.content,
-                rocode_provider::Content::Text(text)
-                    if text.starts_with("Checkpoint context summary of")
-            )
-        }));
+        assert!(orchestrator
+            .conversation()
+            .messages()
+            .iter()
+            .any(|message| {
+                matches!(
+                    &message.content,
+                    rocode_provider::Content::Text(text)
+                        if text.starts_with("Checkpoint context summary of")
+                )
+            }));
 
         let _second = orchestrator.execute("second run", &context).await.unwrap();
 
@@ -1145,9 +1151,11 @@ mod tests {
                 _exec_ctx: &ExecutionContext,
             ) -> Result<Option<crate::runtime::events::StepCheckpointDirective>, OrchestratorError>
             {
-                Ok(Some(crate::runtime::events::StepCheckpointDirective::Block {
-                    reason: "context pressure gate blocked the next scheduler step".to_string(),
-                }))
+                Ok(Some(
+                    crate::runtime::events::StepCheckpointDirective::Block {
+                        reason: "context pressure gate blocked the next scheduler step".to_string(),
+                    },
+                ))
             }
         }
 

@@ -1,7 +1,7 @@
 use crate::runtime::events::{
-    CancelToken, FinishReason, LoopError, LoopEvent, LoopOutcome, LoopRequest,
-    RequestViewMetrics, RequestViewMutation, RequestViewMutationKind, StepBoundary,
-    StepCheckpointDirective, StepCheckpointSnapshot, StepUsage, ToolCallReady, ToolResult,
+    CancelToken, FinishReason, LoopError, LoopEvent, LoopOutcome, LoopRequest, RequestViewMetrics,
+    RequestViewMutation, RequestViewMutationKind, StepBoundary, StepCheckpointDirective,
+    StepCheckpointSnapshot, StepUsage, ToolCallReady, ToolResult,
 };
 use crate::runtime::normalizer;
 use crate::runtime::policy::{LoopPolicy, ToolDedupScope, ToolErrorStrategy};
@@ -716,13 +716,8 @@ pub async fn run_loop<S: LoopSink>(
                         })));
                     };
                     let after = request_view_metrics(conversation.messages());
-                    checkpoint_collector.record_compaction(
-                        before,
-                        after,
-                        focus,
-                        reason,
-                        &compacted,
-                    );
+                    checkpoint_collector
+                        .record_compaction(before, after, focus, reason, &compacted);
                 }
                 StepCheckpointDirective::ReplaceRequestView { messages, reason } => {
                     if !checkpoint_collector.can_mutate_after_current_assessment() {

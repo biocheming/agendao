@@ -17,7 +17,7 @@ interface SchedulerStageCardProps {
   message: FeedMessage;
   highlighted?: boolean;
   onNavigateStage: (stageId: string) => void;
-  onNavigateChildSession: (
+  onNavigateAttachedSession: (
     sessionId: string,
     context?: { stageId?: string | null; toolCallId?: string | null; label?: string | null },
   ) => void;
@@ -173,7 +173,7 @@ export function SchedulerStageCard({
   message,
   highlighted = false,
   onNavigateStage,
-  onNavigateChildSession,
+  onNavigateAttachedSession,
 }: SchedulerStageCardProps) {
   const chips = [
     message.profile,
@@ -215,7 +215,7 @@ export function SchedulerStageCard({
       data-testid="scheduler-stage-card"
       data-feed-id={message.feedId}
       data-stage-id={message.stage_id}
-      data-child-session-id={message.child_session_id}
+      data-attached-session-id={message.attached_session_id}
     >
       <div className="roc-message-meta-row">
         <div className="roc-message-meta-group">
@@ -266,7 +266,7 @@ export function SchedulerStageCard({
               stage {message.stage_id}
             </Button>
           ) : null}
-          {message.child_session_id ? (
+          {message.attached_session_id ? (
             <Button
               type="button"
               variant="ghost"
@@ -274,15 +274,15 @@ export function SchedulerStageCard({
               className="roc-action roc-action-compact gap-1.5 px-3"
               data-testid="scheduler-stage-open-child"
               onClick={() =>
-                onNavigateChildSession(message.child_session_id!, {
+                onNavigateAttachedSession(message.attached_session_id!, {
                   stageId: message.stage_id ?? null,
                   toolCallId: message.tool_call_id ?? null,
-                  label: message.title || message.stage || message.stage_id || message.child_session_id,
+                  label: message.title || message.stage || message.stage_id || message.attached_session_id,
                 })
               }
             >
               <GitBranchPlusIcon className="size-3.5" />
-              child {message.child_session_id}
+              attached {message.attached_session_id}
             </Button>
           ) : null}
         </div>

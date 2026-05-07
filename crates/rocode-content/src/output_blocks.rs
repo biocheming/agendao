@@ -358,7 +358,7 @@ pub struct SchedulerStageBlock {
     pub cache_miss_tokens: Option<u64>,
     pub cache_write_tokens: Option<u64>,
     pub decision: Option<SchedulerDecisionBlock>,
-    pub child_session_id: Option<String>,
+    pub attached_session_id: Option<String>,
 }
 
 impl SchedulerStageBlock {
@@ -449,8 +449,8 @@ impl SchedulerStageBlock {
         let cache_write_tokens = metadata
             .get("scheduler_stage_cache_write_tokens")
             .and_then(|v| v.as_u64());
-        let child_session_id = metadata
-            .get("scheduler_stage_child_session_id")
+        let attached_session_id = metadata
+            .get("scheduler_stage_attached_session_id")
             .and_then(|v| v.as_str())
             .filter(|s| !s.trim().is_empty())
             .map(String::from);
@@ -534,7 +534,7 @@ impl SchedulerStageBlock {
             cache_miss_tokens,
             cache_write_tokens,
             decision: None,
-            child_session_id,
+            attached_session_id,
         })
     }
 
@@ -564,12 +564,12 @@ impl SchedulerStageBlock {
             retry_attempt: self.retry_attempt,
             active_agent_count: self.active_agents.len() as u32,
             active_tool_count: 0,
-            child_session_count: if self.child_session_id.is_some() {
+            attached_session_count: if self.attached_session_id.is_some() {
                 1
             } else {
                 0
             },
-            primary_child_session_id: self.child_session_id.clone(),
+            primary_attached_session_id: self.attached_session_id.clone(),
         }
     }
 }

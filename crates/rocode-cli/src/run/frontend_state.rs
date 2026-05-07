@@ -142,7 +142,7 @@ const CLI_PROMPT_COMMANDS: &[CliPromptCommandSpec] = &[
         description: "return to parent session",
     },
     CliPromptCommandSpec {
-        name: "child",
+        name: "attached",
         takes_value: None,
         description: "list or focus attached sessions",
     },
@@ -1020,7 +1020,7 @@ impl CliFrontendProjection {
         parts.push("/runtime".to_string());
         parts.push("/insights".to_string());
         parts.push("/validation".to_string());
-        parts.push("/child".to_string());
+        parts.push("/attached".to_string());
         if !matches!(self.phase, CliFrontendPhase::Idle) {
             parts.push("/abort".to_string());
         }
@@ -1217,10 +1217,10 @@ impl CliObservedExecutionTopology {
         }
     }
 
-    fn attach_child(&mut self, parent_id: &str, child_id: &str) {
+    fn attach_child(&mut self, parent_id: &str, attached_id: &str) {
         if let Some(parent) = self.nodes.get_mut(parent_id) {
-            if !parent.children.iter().any(|id| id == child_id) {
-                parent.children.push(child_id.to_string());
+            if !parent.children.iter().any(|id| id == attached_id) {
+                parent.children.push(attached_id.to_string());
             }
         }
     }
@@ -1295,10 +1295,10 @@ fn cli_collect_execution_node(
     } else {
         format!("{}│  ", prefix)
     };
-    for (index, child_id) in node.children.iter().enumerate() {
+    for (index, attached_id) in node.children.iter().enumerate() {
         cli_collect_execution_node(
             topology,
-            child_id,
+            attached_id,
             &child_prefix,
             index + 1 == node.children.len(),
             lines,
@@ -1517,7 +1517,7 @@ async fn build_cli_execution_runtime(
         server_session_id: None,
         related_session_ids: Arc::new(Mutex::new(BTreeSet::new())),
         root_session_transcript: Arc::new(Mutex::new(CliRetainedTranscript::default())),
-        child_session_transcripts: Arc::new(Mutex::new(HashMap::new())),
+        attached_session_transcripts: Arc::new(Mutex::new(HashMap::new())),
         stream_accumulators: Arc::new(Mutex::new(HashMap::new())),
         render_states: Arc::new(Mutex::new(HashMap::new())),
         focused_session_id: Arc::new(Mutex::new(None)),
@@ -1572,7 +1572,7 @@ fn cli_list_presets(
 fn cli_copy_target_transcript(runtime: &CliExecutionRuntime) -> Option<String> {
     if let Some(focused_session_id) = cli_focused_session_id(runtime) {
         return runtime
-            .child_session_transcripts
+            .attached_session_transcripts
             .lock()
             .ok()
             .and_then(|transcripts| {

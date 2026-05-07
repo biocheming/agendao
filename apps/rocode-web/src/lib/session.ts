@@ -22,8 +22,8 @@ export interface PersistedStageTelemetrySummary {
   retry_attempt?: number | null;
   active_agent_count?: number;
   active_tool_count?: number;
-  child_session_count?: number;
-  primary_child_session_id?: string | null;
+  attached_session_count?: number;
+  primary_attached_session_id?: string | null;
 }
 
 export interface PersistedSessionTelemetrySnapshot {

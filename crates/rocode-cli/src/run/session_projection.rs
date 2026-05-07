@@ -11,7 +11,7 @@ fn cli_set_root_server_session(runtime: &mut CliExecutionRuntime, session_id: St
     if let Ok(mut root) = runtime.root_session_transcript.lock() {
         root.clear();
     }
-    if let Ok(mut transcripts) = runtime.child_session_transcripts.lock() {
+    if let Ok(mut transcripts) = runtime.attached_session_transcripts.lock() {
         transcripts.clear();
     }
     if let Ok(mut accumulators) = runtime.stream_accumulators.lock() {
@@ -95,45 +95,49 @@ fn cli_tracks_related_session(runtime: &CliExecutionRuntime, session_id: &str) -
         .unwrap_or(false)
 }
 
-fn cli_track_child_session(runtime: &CliExecutionRuntime, parent_id: &str, child_id: &str) -> bool {
-    if parent_id.is_empty() || child_id.is_empty() {
+fn cli_track_attached_session(
+    runtime: &CliExecutionRuntime,
+    parent_id: &str,
+    attached_id: &str,
+) -> bool {
+    if parent_id.is_empty() || attached_id.is_empty() {
         return false;
     }
     let mut inserted = false;
     if let Ok(mut related) = runtime.related_session_ids.lock() {
         if related.contains(parent_id) {
-            inserted = related.insert(child_id.to_string());
+            inserted = related.insert(attached_id.to_string());
         }
     }
     if inserted {
-        if let Ok(mut transcripts) = runtime.child_session_transcripts.lock() {
-            transcripts.entry(child_id.to_string()).or_default();
+        if let Ok(mut transcripts) = runtime.attached_session_transcripts.lock() {
+            transcripts.entry(attached_id.to_string()).or_default();
         }
     }
     inserted
 }
 
-fn cli_untrack_child_session(
+fn cli_untrack_attached_session(
     runtime: &CliExecutionRuntime,
     parent_id: &str,
-    child_id: &str,
+    attached_id: &str,
 ) -> bool {
-    if parent_id.is_empty() || child_id.is_empty() {
+    if parent_id.is_empty() || attached_id.is_empty() {
         return false;
     }
     runtime
         .related_session_ids
         .lock()
-        .map(|mut related| related.contains(parent_id) && related.remove(child_id))
+        .map(|mut related| related.contains(parent_id) && related.remove(attached_id))
         .unwrap_or(false)
 }
 
-fn cli_cache_child_session_rendered(
+fn cli_cache_attached_session_rendered(
     runtime: &CliExecutionRuntime,
     session_id: &str,
     rendered: &str,
 ) {
-    if let Ok(mut transcripts) = runtime.child_session_transcripts.lock() {
+    if let Ok(mut transcripts) = runtime.attached_session_transcripts.lock() {
         transcripts
             .entry(session_id.to_string())
             .or_default()
@@ -245,7 +249,7 @@ fn cli_set_view_label(runtime: &CliExecutionRuntime, label: Option<String>) {
     cli_refresh_prompt(runtime);
 }
 
-fn cli_ordered_child_session_ids(runtime: &CliExecutionRuntime) -> Vec<String> {
+fn cli_ordered_attached_session_ids(runtime: &CliExecutionRuntime) -> Vec<String> {
     let root_session_id = runtime.server_session_id.as_deref();
     let attached_ids = runtime
         .related_session_ids
@@ -253,7 +257,7 @@ fn cli_ordered_child_session_ids(runtime: &CliExecutionRuntime) -> Vec<String> {
         .map(|ids| ids.clone())
         .unwrap_or_default();
     let transcripts = runtime
-        .child_session_transcripts
+        .attached_session_transcripts
         .lock()
         .map(|map| map.clone())
         .unwrap_or_default();
@@ -271,7 +275,7 @@ fn cli_ordered_child_session_ids(runtime: &CliExecutionRuntime) -> Vec<String> {
     child_ids.into_iter().collect()
 }
 
-fn cli_list_child_sessions(runtime: &CliExecutionRuntime) {
+fn cli_list_attached_sessions(runtime: &CliExecutionRuntime) {
     let style = CliStyle::detect();
     let attached_ids = runtime
         .related_session_ids
@@ -279,14 +283,14 @@ fn cli_list_child_sessions(runtime: &CliExecutionRuntime) {
         .map(|ids| ids.clone())
         .unwrap_or_default();
     let transcripts = runtime
-        .child_session_transcripts
+        .attached_session_transcripts
         .lock()
         .map(|map| map.clone())
         .unwrap_or_default();
     let focused = cli_focused_session_id(runtime);
 
     let mut lines = Vec::new();
-    let child_ids = cli_ordered_child_session_ids(runtime);
+    let child_ids = cli_ordered_attached_session_ids(runtime);
     if child_ids.is_empty() {
         lines.push("No attached sessions have been observed for this run yet.".to_string());
         lines.push("When scheduler agents fork, they will appear here.".to_string());
@@ -316,11 +320,12 @@ fn cli_list_child_sessions(runtime: &CliExecutionRuntime) {
     }
 
     let footer = match focused {
-        Some(child_id) => format!(
-            "/child next · /child prev · /child focus <id> · /child back · now viewing {}",
-            child_id
+        Some(attached_id) => format!(
+            "/attached next · /attached prev · /attached focus <id> · /attached back · now viewing {}",
+            attached_id
         ),
-        None => "/child next · /child prev · /child focus <id> · /child back".to_string(),
+        None => "/attached next · /attached prev · /attached focus <id> · /attached back"
+            .to_string(),
     };
     let _ = print_cli_list_on_surface(
         Some(runtime),
@@ -373,8 +378,8 @@ fn cli_stage_runtime_line(stage: &rocode_command::stage_protocol::StageSummary) 
     if stage.active_tool_count > 0 {
         parts.push(format!("tools {}", stage.active_tool_count));
     }
-    if stage.child_session_count > 0 {
-        parts.push(format!("child {}", stage.child_session_count));
+    if stage.attached_session_count > 0 {
+        parts.push(format!("attached {}", stage.attached_session_count));
     }
     if let Some(budget) = stage.skill_tree_budget {
         let truncated = if stage.skill_tree_truncated.unwrap_or(false) {
@@ -576,23 +581,23 @@ fn cli_runtime_snapshot_lines(
         lines.push(format!("Pending permission: {}", permission.permission_id));
     }
 
-    if runtime.child_sessions.is_empty() {
+    if runtime.attached_sessions.is_empty() {
         lines.push(String::new());
         lines.push("Attached sessions: none".to_string());
     } else {
         lines.push(String::new());
         lines.push(format!(
             "Attached sessions ({})",
-            runtime.child_sessions.len()
+            runtime.attached_sessions.len()
         ));
-        for child in &runtime.child_sessions {
+        for child in &runtime.attached_sessions {
             let kind = child
                 .context_kind
                 .map(cli_session_context_kind_label)
                 .unwrap_or("attached session");
             lines.push(format!(
                 "  {} · {} ← {}",
-                kind, child.child_id, child.parent_id
+                kind, child.attached_id, child.parent_id
             ));
         }
     }
@@ -751,44 +756,172 @@ fn cli_usage_snapshot_lines(
         lines.push("  Workflow cumulative: observation only".to_string());
     }
 
-    if let Some(cache_semantics) = telemetry.cache_semantics.as_ref() {
-        lines.push(String::new());
-        lines.push("Cache semantics".to_string());
-        lines.push(format!(
-            "  Basis: API view ({} messages)",
-            cache_semantics.api_view_messages
-        ));
-        if cache_semantics.trimmed_model_visible_messages > 0 {
+    if telemetry.context_closure_contract.is_none() {
+        if let Some(cache_semantics) = telemetry.cache_semantics.as_ref() {
+            lines.push(String::new());
+            lines.push("Cache semantics".to_string());
             lines.push(format!(
-                "  Boundary: {} earlier model-visible messages trimmed before the next request",
-                cache_semantics.trimmed_model_visible_messages
+                "  Basis: API view ({} messages)",
+                cache_semantics.api_view_messages
             ));
-        }
-        if let Some(boundary) = cache_semantics.boundary.as_ref() {
-            let trigger = boundary.trigger.replace('_', " ");
-            let reason = boundary
-                .reason
-                .as_deref()
-                .map(|value| value.replace('_', " "));
-            let mut detail = format!("  Compact: {}", trigger);
-            if let Some(reason) = reason.as_deref() {
-                detail.push_str(&format!(" · {}", reason));
-            }
-            if boundary.possible_cache_bust {
-                detail.push_str(" · may have shifted the cache prefix");
-            }
-            lines.push(detail);
-        }
-        if let Some(label) = cache_semantics.label.as_deref() {
-            lines.push(format!("  Impact: {}", label));
-        }
-        if let Some(invalidation) = cache_semantics.prompt_surface_invalidation.as_ref() {
-            if !invalidation.changed_fields.is_empty() {
+            if cache_semantics.trimmed_model_visible_messages > 0 {
                 lines.push(format!(
-                    "  Prompt surface: {}",
-                    invalidation.changed_fields.join(", ")
+                    "  Boundary: {} earlier model-visible messages trimmed before the next request",
+                    cache_semantics.trimmed_model_visible_messages
                 ));
             }
+            if let Some(boundary) = cache_semantics.boundary.as_ref() {
+                let trigger = boundary.trigger.replace('_', " ");
+                let reason = boundary
+                    .reason
+                    .as_deref()
+                    .map(|value| value.replace('_', " "));
+                let mut detail = format!("  Compact: {}", trigger);
+                if let Some(reason) = reason.as_deref() {
+                    detail.push_str(&format!(" · {}", reason));
+                }
+                if boundary.possible_cache_evidence {
+                    detail.push_str(" · may have shifted the cache prefix");
+                }
+                lines.push(detail);
+            }
+            if let Some(label) = cache_semantics.label.as_deref() {
+                lines.push(format!("  Impact: {}", label));
+            }
+            if let Some(evidence) = cache_semantics.prompt_surface_evidence.as_ref() {
+                if !evidence.changed_fields.is_empty() {
+                    lines.push(format!(
+                        "  Prompt surface: {}",
+                        evidence.changed_fields.join(", ")
+                    ));
+                }
+            }
+        }
+    }
+
+    if let Some(contract) = telemetry.context_closure_contract.as_ref() {
+        lines.push(String::new());
+        lines.push("Context Closure".to_string());
+        lines.push(format!(
+            "  Prefix: {}",
+            cli_context_closure_prefix_status_label(&contract.prefix_stability)
+        ));
+        lines.push(format!(
+            "  Basis: API view · {} messages · trimmed {}",
+            contract.prefix_stability.api_view_messages,
+            contract.prefix_stability.trimmed_model_visible_messages
+        ));
+        if let Some(explanation) = contract.prefix_stability.explanation.as_deref() {
+            lines.push(format!(
+                "  Prefix explain: {}",
+                cli_context_closure_evidence_detail_label(explanation)
+            ));
+        }
+
+        let boundary = &contract.compaction_boundary;
+        if boundary.boundary_recorded {
+            let mut summary = format!(
+                "  Boundary: {}",
+                cli_context_closure_boundary_status_label(boundary)
+            );
+            if let Some(request_pressure_percent) = boundary.request_pressure_percent {
+                summary.push_str(&format!(" · request {}%", request_pressure_percent));
+            }
+            if let Some(live_pressure_percent) = boundary.live_pressure_percent {
+                summary.push_str(&format!(" · live {}%", live_pressure_percent));
+            }
+            lines.push(summary);
+
+            let mut detail = Vec::new();
+            if let Some(status) = boundary.governance_status {
+                detail.push(cli_context_pressure_governance_status_label(status).to_string());
+            }
+            if let Some(phase) = boundary.phase.as_deref() {
+                detail.push(phase.to_string());
+            }
+            if let Some(trigger) = boundary.trigger.as_deref() {
+                detail.push(trigger.replace('_', " "));
+            }
+            if let Some(reason) = boundary.reason.as_deref() {
+                detail.push(reason.replace('_', " "));
+            }
+            if !detail.is_empty() {
+                lines.push(format!("  Detail: {}", detail.join(" · ")));
+            }
+            lines.push(format!(
+                "  Action: attempted {} · succeeded {} · blocking {}",
+                cli_yes_no(boundary.compaction_attempted),
+                cli_yes_no(boundary.compaction_succeeded),
+                cli_yes_no(boundary.blocking)
+            ));
+        } else {
+            lines.push(format!(
+                "  Boundary: {}",
+                cli_context_closure_boundary_status_label(boundary)
+            ));
+        }
+
+        let cache_explainability = &contract.cache_explainability;
+        let mut cache_line = format!(
+            "  Cache: {}",
+            cli_context_closure_cache_status_label(cache_explainability)
+        );
+        if cache_explainability.issue_present && !cache_explainability.explained {
+            cache_line.push_str(" · explanation missing");
+        }
+        lines.push(cache_line);
+        if cache_explainability.issue_present {
+            lines.push(format!(
+                "  Source: {} · impact {}",
+                cli_context_closure_evidence_source_label(cache_explainability.source),
+                cache_explainability
+                    .severity
+                    .map(cli_context_closure_evidence_impact_label)
+                    .unwrap_or("--")
+            ));
+        }
+        if let Some(explanation) = cache_explainability.explanation.as_deref() {
+            lines.push(format!(
+                "  Cache explain: {}",
+                cli_context_closure_evidence_detail_label(explanation)
+            ));
+        }
+        if let Some(cache_semantics) = telemetry.cache_semantics.as_ref() {
+            if let Some(evidence) = cache_semantics.prompt_surface_evidence.as_ref() {
+                if !evidence.changed_fields.is_empty() {
+                    lines.push(format!(
+                        "  Evidence: {}",
+                        cli_prompt_surface_evidence_label(&evidence.changed_fields)
+                    ));
+                }
+            }
+        }
+
+        let child_isolation = &contract.child_history_isolation;
+        lines.push(format!(
+            "  Isolation: {}",
+            cli_context_closure_isolation_status_label(child_isolation)
+        ));
+        lines.push(format!(
+            "  Usage: attached subtree {} · subtree cumulative {} · owner live {}",
+            child_isolation.attached_subtree_session_count,
+            format_token_count(child_isolation.attached_subtree_cumulative_tokens),
+            child_isolation
+                .owner_live_context_tokens
+                .map(format_token_count)
+                .unwrap_or_else(|| "--".to_string())
+        ));
+        lines.push(format!(
+            "  Scope: owner-local live prefix {} · workflow cumulative {}",
+            cli_yes_no(child_isolation.owner_local_live_prefix),
+            format_token_count(child_isolation.workflow_cumulative_tokens)
+        ));
+        lines.push(format!(
+            "  Isolation explain: {}",
+            child_isolation.explanation
+        ));
+        if child_isolation.child_history_in_live_prefix_detected {
+            lines.push("  Leak: child history appeared in the owner live prefix".to_string());
         }
     }
 
@@ -912,7 +1045,182 @@ fn cli_session_handoff_mode_label(mode: rocode_types::SessionHandoffMode) -> &'s
         rocode_types::SessionHandoffMode::BoundedHandoff => "bounded handoff",
         rocode_types::SessionHandoffMode::StageOutputSink => "stage output sink",
         rocode_types::SessionHandoffMode::FullHistoryFork => "full-history fork",
-        rocode_types::SessionHandoffMode::UnclassifiedChild => "unclassified child",
+    }
+}
+
+fn cli_context_pressure_governance_status_label(
+    status: rocode_types::ContextPressureGovernanceStatus,
+) -> &'static str {
+    match status {
+        rocode_types::ContextPressureGovernanceStatus::Ready => "ready",
+        rocode_types::ContextPressureGovernanceStatus::Compacted => "compacted",
+        rocode_types::ContextPressureGovernanceStatus::Deferred => "deferred",
+        rocode_types::ContextPressureGovernanceStatus::Blocked => "blocked",
+    }
+}
+
+fn cli_context_closure_prefix_status_label(
+    prefix: &rocode_types::SessionPrefixStabilityContract,
+) -> &'static str {
+    if prefix.prefix_change_detected {
+        "prefix changed"
+    } else {
+        "stable prefix"
+    }
+}
+
+fn cli_context_closure_boundary_status_label(
+    boundary: &rocode_types::SessionCompactionBoundaryContract,
+) -> &'static str {
+    if boundary.boundary_recorded {
+        "boundary recorded"
+    } else {
+        "boundary clear"
+    }
+}
+
+fn cli_context_closure_cache_status_label(
+    cache: &rocode_types::SessionCacheExplainabilityContract,
+) -> &'static str {
+    if !cache.issue_present {
+        "cache stable"
+    } else if cache.explained {
+        "cache explained"
+    } else {
+        "cache unexplained"
+    }
+}
+
+pub(crate) fn cli_context_closure_cache_diagnostic_label(
+    contract: Option<&rocode_types::SessionContextClosureContract>,
+) -> Option<String> {
+    let contract = contract?;
+    let mut parts = Vec::new();
+    let cache_status = cli_context_closure_cache_status_label(&contract.cache_explainability);
+    let prefix_status = cli_context_closure_prefix_status_label(&contract.prefix_stability);
+    let boundary_status = cli_context_closure_boundary_status_label(&contract.compaction_boundary);
+
+    if contract.cache_explainability.issue_present {
+        parts.push(cache_status);
+    }
+    if contract.prefix_stability.prefix_change_detected {
+        parts.push(prefix_status);
+    } else if contract.compaction_boundary.boundary_recorded {
+        parts.push(boundary_status);
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" · "))
+    }
+}
+
+fn cli_context_closure_isolation_status_label(
+    isolation: &rocode_types::SessionChildHistoryIsolationContract,
+) -> &'static str {
+    if isolation.child_history_in_live_prefix_detected {
+        "leak detected"
+    } else if isolation.owner_local_live_prefix {
+        "isolated"
+    } else {
+        "not owner-local"
+    }
+}
+
+pub(crate) fn cli_cache_evidence_status_label(
+    summary: &rocode_provider::cache::CacheEvidenceSummary,
+) -> Option<String> {
+    if !summary.should_surface() {
+        return None;
+    }
+
+    let has_cause = summary
+        .primary_cause
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty());
+    Some(
+        if has_cause {
+            "cache explained"
+        } else {
+            "cache unexplained"
+        }
+        .to_string(),
+    )
+}
+
+fn cli_context_closure_evidence_impact_label(
+    severity: rocode_types::SessionCacheSeverity,
+) -> &'static str {
+    match severity {
+        rocode_types::SessionCacheSeverity::Stable => "stable",
+        rocode_types::SessionCacheSeverity::LowChange => "low change",
+        rocode_types::SessionCacheSeverity::MediumChange => "medium change",
+        rocode_types::SessionCacheSeverity::HighChange => "high change",
+    }
+}
+
+fn cli_context_closure_evidence_source_label(
+    source: rocode_types::SessionCacheExplainabilitySource,
+) -> &'static str {
+    match source {
+        rocode_types::SessionCacheExplainabilitySource::None => "no evidence",
+        rocode_types::SessionCacheExplainabilitySource::CacheEvidence => "cache evidence",
+        rocode_types::SessionCacheExplainabilitySource::SurfaceEvidence => "surface evidence",
+        rocode_types::SessionCacheExplainabilitySource::BoundaryEvidence => "boundary evidence",
+    }
+}
+
+fn cli_context_closure_evidence_detail_label(detail: &str) -> String {
+    let normalized = detail.trim();
+    if normalized.is_empty() {
+        return "--".to_string();
+    }
+
+    if normalized.contains("boundary recorded · prefix changed") {
+        return "boundary recorded · prefix changed".to_string();
+    }
+    if normalized.contains("prefix changed before the stable boundary") {
+        return "prefix changed before the stable boundary".to_string();
+    }
+    if normalized.contains("tool surface changed") {
+        return "tool surface changed".to_string();
+    }
+    if normalized.contains("request shape changed") {
+        return "request shape changed".to_string();
+    }
+    if normalized.contains("systemHash changed: system prompt changed") {
+        return "system prompt changed".to_string();
+    }
+    if normalized.contains("family changed: protocol family changed") {
+        return "request family changed".to_string();
+    }
+    if normalized.contains("surface changed:") {
+        let field = normalized
+            .split_once(':')
+            .map(|(_, suffix)| suffix.trim())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("runtime fields");
+        return format!("surface changed · {}", field);
+    }
+
+    normalized.to_string()
+}
+
+fn cli_prompt_surface_evidence_label(fields: &[String]) -> String {
+    if fields.is_empty() {
+        "surface changed".to_string()
+    } else {
+        format!("surface {}", fields.join(", "))
+    }
+}
+
+fn cli_yes_no(value: bool) -> &'static str {
+    if value {
+        "yes"
+    } else {
+        "no"
     }
 }
 
@@ -1368,14 +1676,6 @@ fn cli_join_or_placeholder(values: &[String]) -> String {
         "--".to_string()
     } else {
         values.join(", ")
-    }
-}
-
-fn cli_yes_no(value: bool) -> &'static str {
-    if value {
-        "yes"
-    } else {
-        "no"
     }
 }
 
@@ -2393,14 +2693,17 @@ async fn cli_run_memory_consolidation(
     }
 }
 
-fn cli_focus_child_session(runtime: &CliExecutionRuntime, requested_id: &str) -> io::Result<bool> {
+fn cli_focus_attached_session(
+    runtime: &CliExecutionRuntime,
+    requested_id: &str,
+) -> io::Result<bool> {
     let requested_id = requested_id.trim();
     if requested_id.is_empty() {
         return Ok(false);
     }
 
     let transcripts = runtime
-        .child_session_transcripts
+        .attached_session_transcripts
         .lock()
         .map(|map| map.clone())
         .unwrap_or_default();
@@ -2451,17 +2754,20 @@ fn cli_focus_child_session(runtime: &CliExecutionRuntime, requested_id: &str) ->
     }
     cli_set_view_label(
         runtime,
-        Some(format!("view child {}", cli_short_session_id(&target_id))),
+        Some(format!(
+            "view attached {}",
+            cli_short_session_id(&target_id)
+        )),
     );
     cli_replace_visible_transcript(runtime, transcript)?;
     Ok(true)
 }
 
-fn cli_cycle_child_session(
+fn cli_cycle_attached_session(
     runtime: &CliExecutionRuntime,
     forward: bool,
 ) -> io::Result<Option<(String, usize, usize)>> {
-    let child_ids = cli_ordered_child_session_ids(runtime);
+    let child_ids = cli_ordered_attached_session_ids(runtime);
     if child_ids.is_empty() {
         return Ok(None);
     }
@@ -2477,7 +2783,7 @@ fn cli_cycle_child_session(
         None => child_ids.len() - 1,
     };
     let target_id = child_ids[next_index].clone();
-    if !cli_focus_child_session(runtime, &target_id)? {
+    if !cli_focus_attached_session(runtime, &target_id)? {
         return Ok(None);
     }
     Ok(Some((target_id, next_index + 1, child_ids.len())))
@@ -2569,8 +2875,11 @@ fn cli_active_stage_context_lines(
     {
         lines.push(truncate_display(&format!("Last: {last_event}"), max_width));
     }
-    if let Some(ref child_id) = stage.child_session_id {
-        lines.push(truncate_display(&format!("Child: {child_id}"), max_width));
+    if let Some(ref attached_id) = stage.attached_session_id {
+        lines.push(truncate_display(
+            &format!("Child: {attached_id}"),
+            max_width,
+        ));
     }
     lines
 }
@@ -3164,7 +3473,7 @@ fn cli_sidebar_lines(
     lines.push("/events".to_string());
     lines.push("/events next · /events prev · /events page <n>".to_string());
     lines.push("/events first · /events clear".to_string());
-    lines.push("/child · /abort · /status".to_string());
+    lines.push("/attached · /abort · /status".to_string());
     lines
 }
 
@@ -3306,8 +3615,8 @@ fn cli_active_stage_panel_lines(
             stage.done_agent_count, stage.total_agent_count
         ));
     }
-    if let Some(ref child_id) = stage.child_session_id {
-        lines.push(format!("→ Attached session: {}", child_id));
+    if let Some(ref attached_id) = stage.attached_session_id {
+        lines.push(format!("→ Attached session: {}", attached_id));
     }
     lines
 }
@@ -3502,6 +3811,7 @@ fn cli_render_retained_layout(
 #[cfg(test)]
 mod session_projection_tests {
     use super::{
+        cli_cache_evidence_status_label, cli_context_closure_cache_diagnostic_label,
         cli_context_usage_bar, cli_current_context_tokens, cli_default_events_query_input,
         cli_format_context_meter, cli_parse_events_command_input, cli_parse_events_query_input,
         cli_session_insights_lines, cli_sidebar_lines, cli_usage_snapshot_lines,
@@ -3627,8 +3937,7 @@ mod session_projection_tests {
     #[test]
     fn sidebar_surfaces_cache_diagnostic_without_token_totals() {
         let mut projection = CliFrontendProjection::default();
-        projection.cache_diagnostic =
-            Some("hard bust · toolsHash changed: tool schema or order changed".to_string());
+        projection.cache_diagnostic = Some("cache explained".to_string());
         let topology = CliObservedExecutionTopology {
             active: false,
             root_id: None,
@@ -3642,7 +3951,70 @@ mod session_projection_tests {
 
         assert!(lines
             .iter()
-            .any(|line| line.contains("hard bust") && line.contains("toolsHash")));
+            .any(|line| line.contains("Cache:") && line.contains("cache explained")));
+    }
+
+    #[test]
+    fn context_closure_cache_diagnostic_prefers_narrow_status_words() {
+        let contract = rocode_types::SessionContextClosureContract {
+            prefix_stability: rocode_types::SessionPrefixStabilityContract {
+                basis: rocode_types::SessionCacheSemanticsBasis::ApiView,
+                tracked_on_api_view: true,
+                api_view_messages: 8,
+                trimmed_model_visible_messages: 3,
+                prefix_change_detected: true,
+                explanation: None,
+            },
+            compaction_boundary: rocode_types::SessionCompactionBoundaryContract {
+                boundary_recorded: true,
+                phase: None,
+                trigger: None,
+                reason: None,
+                governance_status: None,
+                request_pressure_percent: None,
+                live_pressure_percent: None,
+                compaction_attempted: true,
+                compaction_succeeded: true,
+                blocking: false,
+            },
+            cache_explainability: rocode_types::SessionCacheExplainabilityContract {
+                issue_present: true,
+                explained: true,
+                source: rocode_types::SessionCacheExplainabilitySource::BoundaryEvidence,
+                severity: Some(rocode_types::SessionCacheSeverity::MediumChange),
+                explanation: None,
+            },
+            child_history_isolation: rocode_types::SessionChildHistoryIsolationContract {
+                attached_subtree_session_count: 0,
+                owner_session_cumulative_tokens: 0,
+                workflow_cumulative_tokens: 0,
+                attached_subtree_cumulative_tokens: 0,
+                owner_live_context_tokens: Some(0),
+                owner_local_live_prefix: true,
+                child_history_in_live_prefix_detected: false,
+                explanation: "isolated".to_string(),
+            },
+        };
+
+        assert_eq!(
+            cli_context_closure_cache_diagnostic_label(Some(&contract)).as_deref(),
+            Some("cache explained · prefix changed")
+        );
+    }
+
+    #[test]
+    fn cache_evidence_status_label_uses_narrow_status_words() {
+        let summary = rocode_provider::cache::CacheEvidenceSummary {
+            status: "degraded".to_string(),
+            severity: rocode_provider::cache::CacheEvidenceSeverity::MediumChange,
+            primary_cause: Some("tool surface changed".to_string()),
+            change_count: 1,
+        };
+
+        assert_eq!(
+            cli_cache_evidence_status_label(&summary).as_deref(),
+            Some("cache explained")
+        );
     }
 
     #[test]
@@ -3683,7 +4055,7 @@ mod session_projection_tests {
                 active_tools: Vec::new(),
                 pending_question: None,
                 pending_permission: None,
-                child_sessions: Vec::new(),
+                attached_sessions: Vec::new(),
             },
             stages: Vec::new(),
             topology: crate::api_client::SessionExecutionTopology {
@@ -3721,7 +4093,7 @@ mod session_projection_tests {
                 },
             },
             memory: None,
-            cache_bust_summary: None,
+            cache_evidence: None,
             context_explain: Some(SessionContextExplain {
                 resolved_model: Some("openai/gpt-4o".to_string()),
                 fork: None,
@@ -3772,34 +4144,78 @@ mod session_projection_tests {
                     kept_message_count: Some(8),
                     trimmed_model_visible_messages: 7,
                     likely_changed_prefix: true,
-                    possible_cache_bust: true,
+                    possible_cache_evidence: true,
                 }),
-                cache_bust: Some(rocode_types::SessionCacheBustExplain {
+                cache_evidence: Some(rocode_types::SessionCacheEvidenceExplain {
                     status: "degraded".to_string(),
-                    severity: rocode_types::SessionCacheSeverity::LikelyBust,
+                    severity: rocode_types::SessionCacheSeverity::MediumChange,
                     primary_cause: Some(
-                        "messagePrefixHash changed: message prefix changed before the stable boundary"
-                            .to_string(),
+                        "prefix changed before the stable boundary".to_string(),
                     ),
                     change_count: 1,
                 }),
-                prompt_surface_invalidation: Some(
-                    rocode_types::PromptSurfaceSnapshotInvalidationSummary {
-                        severity: rocode_types::SessionCacheSeverity::SoftDegradation,
-                        reason: "prompt surface runtime changed: ingressPolicyHash".to_string(),
+                prompt_surface_evidence: Some(
+                    rocode_types::PromptSurfaceEvidenceSummary {
+                        severity: rocode_types::SessionCacheSeverity::LowChange,
+                        reason: "surface changed: ingressPolicyHash".to_string(),
                         changed_fields: vec!["ingressPolicyHash".to_string()],
                     },
                 ),
                 label: Some(
-                    "likely bust · compact boundary likely changed the API-view prefix"
-                        .to_string(),
+                    "boundary recorded · prefix changed".to_string(),
                 ),
             }),
+            context_closure_contract: Some(rocode_types::SessionContextClosureContract {
+                prefix_stability: rocode_types::SessionPrefixStabilityContract {
+                    basis: rocode_types::SessionCacheSemanticsBasis::ApiView,
+                    tracked_on_api_view: true,
+                    api_view_messages: 8,
+                    trimmed_model_visible_messages: 7,
+                    prefix_change_detected: true,
+                    explanation: Some(
+                        "boundary recorded · prefix changed".to_string(),
+                    ),
+                },
+                compaction_boundary: rocode_types::SessionCompactionBoundaryContract {
+                    boundary_recorded: true,
+                    phase: Some("prompt.pre_request".to_string()),
+                    trigger: Some("auto_preflight".to_string()),
+                    reason: Some("request_view_threshold".to_string()),
+                    governance_status: Some(
+                        rocode_types::ContextPressureGovernanceStatus::Compacted,
+                    ),
+                    request_pressure_percent: Some(92),
+                    live_pressure_percent: Some(82),
+                    compaction_attempted: true,
+                    compaction_succeeded: true,
+                    blocking: false,
+                },
+                cache_explainability: rocode_types::SessionCacheExplainabilityContract {
+                    issue_present: true,
+                    explained: true,
+                    source:
+                        rocode_types::SessionCacheExplainabilitySource::CacheEvidence,
+                    severity: Some(rocode_types::SessionCacheSeverity::MediumChange),
+                    explanation: Some("boundary recorded · prefix changed".to_string()),
+                },
+                child_history_isolation: rocode_types::SessionChildHistoryIsolationContract {
+                    attached_subtree_session_count: 0,
+                    owner_session_cumulative_tokens: 104_000,
+                    workflow_cumulative_tokens: 143_000,
+                    attached_subtree_cumulative_tokens: 0,
+                    owner_live_context_tokens: Some(82_000),
+                    owner_local_live_prefix: true,
+                    child_history_in_live_prefix_detected: false,
+                    explanation:
+                        "No attached subtree sessions were observed; the live prefix remains owner-local."
+                            .to_string(),
+                },
+            }),
             prompt_surface_runtime_snapshot: None,
-            prompt_surface_snapshot_invalidation: Some(
-                rocode_types::PromptSurfaceSnapshotInvalidationSummary {
-                    severity: rocode_types::SessionCacheSeverity::SoftDegradation,
-                    reason: "prompt surface runtime changed: ingressPolicyHash".to_string(),
+            prompt_surface_evidence: Some(
+                rocode_types::PromptSurfaceEvidenceSummary {
+                    severity: rocode_types::SessionCacheSeverity::LowChange,
+                    reason: "surface changed: ingressPolicyHash".to_string(),
                     changed_fields: vec!["ingressPolicyHash".to_string()],
                 },
             ),
@@ -3828,13 +4244,28 @@ mod session_projection_tests {
         assert!(lines
             .iter()
             .any(|line| line == "  Compact owner: this session"));
-        assert!(lines.iter().any(|line| line == "Cache semantics"));
-        assert!(lines.iter().any(|line| {
-            line == "  Compact: auto preflight · request view threshold · may have shifted the cache prefix"
-        }));
-        assert!(lines.iter().any(|line| {
-            line == "  Impact: likely bust · compact boundary likely changed the API-view prefix"
-        }));
+        assert!(!lines.iter().any(|line| line == "Cache semantics"));
+        assert!(lines.iter().any(|line| line == "Context Closure"));
+        assert!(lines
+            .iter()
+            .any(|line| { line == "  Prefix: prefix changed" }));
+        assert!(lines
+            .iter()
+            .any(|line| { line == "  Prefix explain: boundary recorded · prefix changed" }));
+        assert!(lines
+            .iter()
+            .any(|line| { line == "  Cache: cache explained" }));
+        assert!(lines
+            .iter()
+            .any(|line| { line == "  Source: cache evidence · impact medium change" }));
+        assert!(lines
+            .iter()
+            .any(|line| { line == "  Cache explain: boundary recorded · prefix changed" }));
+        assert!(lines
+            .iter()
+            .any(|line| { line == "  Evidence: surface ingressPolicyHash" }));
+        assert!(lines.iter().all(|line| !line.contains("bust")));
+        assert!(lines.iter().any(|line| { line == "  Isolation: isolated" }));
         assert!(lines.iter().any(|line| line == "Live context"));
         assert!(lines.iter().any(|line| line == "Last request"));
         assert!(lines.iter().any(|line| line == "Workflow cumulative"));

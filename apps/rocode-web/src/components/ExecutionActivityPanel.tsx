@@ -5,6 +5,17 @@ import {
   currentContextTokensFromSources,
   isLiveStageStatus,
 } from "../lib/contextPressure";
+import { promptSurfaceEvidenceFromTelemetry } from "../lib/cacheDiagnostics";
+import {
+  contextClosureBoundaryStatusLabel,
+  contextClosureCacheStatusLabel,
+  contextClosureContractFromTelemetry,
+  contextClosureExplainabilitySourceLabel,
+  contextClosureGovernanceStatusLabel,
+  contextClosureIsolationStatusLabel,
+  contextClosurePrefixStatusLabel,
+  contextClosureSeverityLabel,
+} from "../lib/contextClosureDiagnostics";
 import { humanizeStageEvent, humanizeStageWaitTarget } from "../lib/stageSignals";
 import { cn } from "@/lib/utils";
 import { memoryRecordIdValue } from "../lib/memory";
@@ -18,7 +29,7 @@ interface ExecutionActivityPanelProps {
   previewStageId?: string | null;
   onJumpToConversation: (target: ConversationJumpTarget) => void;
   onNavigateStage: (stageId: string) => void;
-  onNavigateChildSession: (
+  onNavigateAttachedSession: (
     sessionId: string,
     context?: { stageId?: string | null; toolCallId?: string | null; label?: string | null },
   ) => void;
@@ -104,8 +115,8 @@ function stageSummaryMeta(stage: ExecutionActivityState["stageSummaries"][number
   if (stage.active_tool_count > 0) {
     parts.push(`tools ${stage.active_tool_count}`);
   }
-  if (stage.child_session_count > 0) {
-    parts.push(`child ${stage.child_session_count}`);
+  if (stage.attached_session_count > 0) {
+    parts.push(`attached ${stage.attached_session_count}`);
   }
   if (typeof stage.skill_tree_budget === "number") {
     parts.push(
@@ -118,6 +129,19 @@ function stageSummaryMeta(stage: ExecutionActivityState["stageSummaries"][number
     parts.push(`ctx ${formatCompactTokenCount(stage.estimated_context_tokens)}`);
   }
   return parts;
+}
+
+function diagnosticToneClass(tone: "good" | "warn" | "critical" | "neutral") {
+  switch (tone) {
+    case "good":
+      return "bg-green-500/10 text-green-700 dark:text-green-300";
+    case "warn":
+      return "bg-amber-500/10 text-amber-700 dark:text-amber-300";
+    case "critical":
+      return "bg-rose-500/10 text-rose-700 dark:text-rose-300";
+    default:
+      return "bg-muted text-muted-foreground";
+  }
 }
 
 function metadataValue(record: Record<string, unknown> | null | undefined, key: string) {
@@ -160,11 +184,11 @@ function eventJumpTarget(event: ExecutionActivityState["selectedEvent"]) {
   };
 }
 
-function eventChildSessionId(event: ExecutionActivityState["selectedEvent"]) {
+function eventAttachedSessionId(event: ExecutionActivityState["selectedEvent"]) {
   if (!event) return null;
   const payload = event.payload ?? {};
-  return typeof payload.child_session_id === "string" && payload.child_session_id
-    ? payload.child_session_id
+  return typeof payload.attached_session_id === "string" && payload.attached_session_id
+    ? payload.attached_session_id
     : null;
 }
 
@@ -245,14 +269,14 @@ export function ExecutionActivityPanel({
   previewStageId = null,
   onJumpToConversation,
   onNavigateStage,
-  onNavigateChildSession,
+  onNavigateAttachedSession,
   onNavigateToolCall,
 }: ExecutionActivityPanelProps) {
   const [pageDraft, setPageDraft] = useState(String(activity.activityPage));
   const contextEstimate = currentContextEstimate(activity);
   const executionJump = executionJumpTarget(activity.selectedExecution);
   const selectedEventJump = eventJumpTarget(activity.selectedEvent);
-  const selectedEventChildSessionId = eventChildSessionId(activity.selectedEvent);
+  const selectedEventAttachedSessionId = eventAttachedSessionId(activity.selectedEvent);
   const canCancelSelectedExecution =
     Boolean(activity.selectedExecution) &&
     activity.selectedExecution?.status !== "done" &&
@@ -278,6 +302,8 @@ export function ExecutionActivityPanel({
     insightRecentSessionRecords.filter(
       (item) => item.linked_skill_name || item.derived_skill_name,
     );
+  const contextClosure = contextClosureContractFromTelemetry(activity.telemetry);
+  const promptSurfaceEvidence = promptSurfaceEvidenceFromTelemetry(activity.telemetry);
 
   return (
     <div className="roc-panel roc-rail-panel p-5">
@@ -379,6 +405,154 @@ export function ExecutionActivityPanel({
                 ) : (
                   <p className="text-sm text-muted-foreground leading-relaxed">No active stage summary in telemetry.</p>
                 )}
+              </div>
+            </div>
+          ) : null}
+          {contextClosure ? (
+            <div className={sideSectionClass}>
+              <div className="roc-rail-section-header">
+                <div className="roc-rail-section-copy">
+                  <p className="roc-section-label">Context Closure</p>
+                  <h4 className="roc-rail-section-title">Read-only Acceptance Contract</h4>
+                </div>
+                <p className="roc-rail-section-note">Authority-backed telemetry snapshot</p>
+              </div>
+              <div className="grid gap-3 xl:grid-cols-2">
+                <div className="roc-rail-item grid gap-2 bg-card/45 p-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <strong>Prefix</strong>
+                    <span
+                      className={cn(
+                        "roc-badge px-2.5 py-1 text-xs",
+                        diagnosticToneClass(
+                          contextClosure.prefix_stability.prefix_change_detected ? "warn" : "good",
+                        ),
+                      )}
+                    >
+                      {contextClosurePrefixStatusLabel(contextClosure.prefix_stability)}
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Basis API view · {contextClosure.prefix_stability.api_view_messages} messages · trimmed {contextClosure.prefix_stability.trimmed_model_visible_messages}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {contextClosure.prefix_stability.explanation || "No prefix instability explanation recorded."}
+                  </p>
+                </div>
+
+                <div className="roc-rail-item grid gap-2 bg-card/45 p-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <strong>Boundary</strong>
+                    <span
+                      className={cn(
+                        "roc-badge px-2.5 py-1 text-xs",
+                        diagnosticToneClass(
+                          contextClosure.compaction_boundary.blocking
+                            ? "critical"
+                            : contextClosure.compaction_boundary.boundary_recorded
+                              ? "warn"
+                              : "neutral",
+                        ),
+                      )}
+                    >
+                      {contextClosureBoundaryStatusLabel(contextClosure.compaction_boundary)}
+                    </span>
+                    {contextClosure.compaction_boundary.governance_status ? (
+                      <span className="roc-badge px-2.5 py-1 text-xs">
+                        {contextClosureGovernanceStatusLabel(
+                          contextClosure.compaction_boundary.governance_status,
+                        )}
+                      </span>
+                    ) : null}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Detail {contextClosure.compaction_boundary.phase || "--"} · {contextClosure.compaction_boundary.trigger || "--"} · {contextClosure.compaction_boundary.reason || "--"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Request {typeof contextClosure.compaction_boundary.request_pressure_percent === "number"
+                      ? `${contextClosure.compaction_boundary.request_pressure_percent}%`
+                      : "--"} · live {typeof contextClosure.compaction_boundary.live_pressure_percent === "number"
+                      ? `${contextClosure.compaction_boundary.live_pressure_percent}%`
+                      : "--"} · attempted {contextClosure.compaction_boundary.compaction_attempted ? "yes" : "no"} · succeeded {contextClosure.compaction_boundary.compaction_succeeded ? "yes" : "no"} · blocking {contextClosure.compaction_boundary.blocking ? "yes" : "no"}
+                  </p>
+                </div>
+
+                <div className="roc-rail-item grid gap-2 bg-card/45 p-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <strong>Cache</strong>
+                    <span
+                      className={cn(
+                        "roc-badge px-2.5 py-1 text-xs",
+                        diagnosticToneClass(
+                          !contextClosure.cache_explainability.issue_present
+                            ? "good"
+                            : contextClosure.cache_explainability.explained
+                              ? "warn"
+                              : "critical",
+                        ),
+                      )}
+                    >
+                      {contextClosureCacheStatusLabel(
+                        contextClosure.cache_explainability,
+                      )}
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Source {contextClosureExplainabilitySourceLabel(
+                      contextClosure.cache_explainability.source,
+                    )} · severity {contextClosureSeverityLabel(
+                      contextClosure.cache_explainability.severity,
+                    )}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {contextClosure.cache_explainability.explanation ||
+                      "No cache explainability note recorded."}
+                  </p>
+                  {promptSurfaceEvidence?.changed_fields?.length ? (
+                    <p className="text-xs text-muted-foreground">
+                      Evidence prompt surface {promptSurfaceEvidence.changed_fields.join(", ")}
+                    </p>
+                  ) : null}
+                </div>
+
+                <div className="roc-rail-item grid gap-2 bg-card/45 p-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <strong>Isolation</strong>
+                    <span
+                      className={cn(
+                        "roc-badge px-2.5 py-1 text-xs",
+                        diagnosticToneClass(
+                          contextClosure.child_history_isolation.child_history_in_live_prefix_detected
+                            ? "critical"
+                            : contextClosure.child_history_isolation.owner_local_live_prefix
+                              ? "good"
+                              : "warn",
+                        ),
+                      )}
+                    >
+                      {contextClosureIsolationStatusLabel(
+                        contextClosure.child_history_isolation,
+                      )}
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Usage attached subtree {contextClosure.child_history_isolation.attached_subtree_session_count} · subtree cumulative {formatCompactTokenCount(
+                      contextClosure.child_history_isolation.attached_subtree_cumulative_tokens,
+                    )} · owner live {typeof contextClosure.child_history_isolation.owner_live_context_tokens === "number"
+                      ? formatCompactTokenCount(
+                          contextClosure.child_history_isolation.owner_live_context_tokens,
+                        )
+                      : "--"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Scope owner-local live prefix {contextClosure.child_history_isolation.owner_local_live_prefix ? "yes" : "no"} · workflow cumulative {formatCompactTokenCount(
+                      contextClosure.child_history_isolation.workflow_cumulative_tokens,
+                    )}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {contextClosure.child_history_isolation.explanation}
+                  </p>
+                </div>
               </div>
             </div>
           ) : null}
@@ -784,22 +958,22 @@ export function ExecutionActivityPanel({
                   </dd>
                 </div>
               ) : null}
-              {selectedEventChildSessionId ? (
+              {selectedEventAttachedSessionId ? (
                 <div className="roc-structured-row">
-                  <dt className="roc-structured-key">Child Session</dt>
+                  <dt className="roc-structured-key">Attached Session</dt>
                   <dd className="text-sm text-foreground">
                     <button
                       className="roc-rail-link"
                       type="button"
                       onClick={() =>
-                        onNavigateChildSession(selectedEventChildSessionId, {
+                        onNavigateAttachedSession(selectedEventAttachedSessionId, {
                           stageId: activity.selectedEvent?.stage_id ?? null,
                           toolCallId: selectedEventJump?.toolCallId ?? null,
-                          label: activity.selectedEvent?.event_type || selectedEventChildSessionId,
+                          label: activity.selectedEvent?.event_type || selectedEventAttachedSessionId,
                         })
                       }
                     >
-                      {selectedEventChildSessionId}
+                      {selectedEventAttachedSessionId}
                     </button>
                   </dd>
                 </div>
@@ -944,19 +1118,19 @@ export function ExecutionActivityPanel({
                     Filter to Stage
                   </button>
                 ) : null}
-                {selectedEventChildSessionId ? (
+                {selectedEventAttachedSessionId ? (
                   <button
                     className={actionButtonClass}
                     type="button"
                     onClick={() =>
-                      onNavigateChildSession(selectedEventChildSessionId, {
+                      onNavigateAttachedSession(selectedEventAttachedSessionId, {
                         stageId: activity.selectedEvent?.stage_id ?? null,
                         toolCallId: selectedEventJump?.toolCallId ?? null,
-                        label: activity.selectedEvent?.event_type || selectedEventChildSessionId,
+                        label: activity.selectedEvent?.event_type || selectedEventAttachedSessionId,
                       })
                     }
                   >
-                    Open Child Session
+                    Open Attached Session
                   </button>
                 ) : null}
                 {selectedEventJump?.toolCallId ? (
@@ -978,7 +1152,7 @@ export function ExecutionActivityPanel({
                 value={{
                   scope: activity.selectedEvent.scope,
                   stage_id: activity.selectedEvent.stage_id,
-                  child_session_id: selectedEventChildSessionId,
+                  attached_session_id: selectedEventAttachedSessionId,
                   execution_id: activity.selectedEvent.execution_id,
                   tool_call_id: selectedEventJump?.toolCallId ?? null,
                   payload: activity.selectedEvent.payload,
@@ -986,8 +1160,8 @@ export function ExecutionActivityPanel({
                 emptyLabel="No structured payload for this event."
                 onNavigateKeyValue={(key, value) => {
                   if (key === "stage_id") onNavigateStage(value);
-                  if (key === "child_session_id") {
-                    onNavigateChildSession(value, {
+                  if (key === "attached_session_id") {
+                    onNavigateAttachedSession(value, {
                       stageId: activity.selectedEvent?.stage_id ?? null,
                       toolCallId: selectedEventJump?.toolCallId ?? null,
                       label: activity.selectedEvent?.event_type || value,

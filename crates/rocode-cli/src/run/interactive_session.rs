@@ -319,11 +319,11 @@ pub(super) async fn run_chat_session(
                             io::stdout().flush()?;
                         }
                     }
-                    InteractiveCommand::ListChildSessions => {
-                        cli_list_child_sessions(&runtime);
+                    InteractiveCommand::ListAttachedSessions => {
+                        cli_list_attached_sessions(&runtime);
                     }
-                    InteractiveCommand::FocusChildSession(session_id) => {
-                        match cli_focus_child_session(&runtime, &session_id) {
+                    InteractiveCommand::FocusAttachedSession(session_id) => {
+                        match cli_focus_attached_session(&runtime, &session_id) {
                             Ok(true) => {
                                 let _ = print_block(
                                     Some(&runtime),
@@ -338,7 +338,7 @@ pub(super) async fn run_chat_session(
                                 let _ = print_block(
                                     Some(&runtime),
                                     OutputBlock::Status(StatusBlock::warning(format!(
-                                        "Unknown attached session: {}. Use /child list first.",
+                                        "Unknown attached session: {}. Use /attached list first.",
                                         session_id
                                     ))),
                                     &repl_style,
@@ -356,8 +356,8 @@ pub(super) async fn run_chat_session(
                             }
                         }
                     }
-                    InteractiveCommand::FocusNextChildSession => {
-                        match cli_cycle_child_session(&runtime, true) {
+                    InteractiveCommand::FocusNextAttachedSession => {
+                        match cli_cycle_attached_session(&runtime, true) {
                             Ok(Some((session_id, index, total))) => {
                                 let _ = print_block(
                                     Some(&runtime),
@@ -372,7 +372,7 @@ pub(super) async fn run_chat_session(
                                 let _ = print_block(
                             Some(&runtime),
                             OutputBlock::Status(StatusBlock::warning(
-                                "No attached sessions available. Use /child list to inspect the cache.",
+                                "No attached sessions available. Use /attached list to inspect the cache.",
                             )),
                             &repl_style,
                         );
@@ -389,8 +389,8 @@ pub(super) async fn run_chat_session(
                             }
                         }
                     }
-                    InteractiveCommand::FocusPreviousChildSession => {
-                        match cli_cycle_child_session(&runtime, false) {
+                    InteractiveCommand::FocusPreviousAttachedSession => {
+                        match cli_cycle_attached_session(&runtime, false) {
                             Ok(Some((session_id, index, total))) => {
                                 let _ = print_block(
                                     Some(&runtime),
@@ -405,7 +405,7 @@ pub(super) async fn run_chat_session(
                                 let _ = print_block(
                             Some(&runtime),
                             OutputBlock::Status(StatusBlock::warning(
-                                "No attached sessions available. Use /child list to inspect the cache.",
+                                "No attached sessions available. Use /attached list to inspect the cache.",
                             )),
                             &repl_style,
                         );

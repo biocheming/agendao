@@ -271,7 +271,7 @@ pub(crate) fn stream_server_events(
             match value.get("sessionID").and_then(|v| v.as_str()) {
                 Some(sid) => sid == filter.as_str(),
                 None => {
-                    // Also check "parentID" for child_session events.
+                    // Also check "parentID" for attached_session events.
                     match value.get("parentID").and_then(|v| v.as_str()) {
                         Some(pid) => pid == filter.as_str(),
                         None => true, // global event

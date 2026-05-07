@@ -49,12 +49,12 @@ struct ActiveStageMessage {
     step_count: u32,
     committed_usage: rocode_orchestrator::runtime::events::StepUsage,
     live_usage: rocode_orchestrator::runtime::events::StepUsage,
-    /// If this stage creates an isolated child session, its session ID.
-    child_session_id: Option<String>,
-    /// The assistant message ID within the child session where content flows.
-    child_message_id: Option<String>,
-    /// Whether a reasoning stream has started for the child-session assistant message.
-    child_reasoning_started: bool,
+    /// If this stage creates an isolated attached session, its session ID.
+    attached_session_id: Option<String>,
+    /// The assistant message ID within the attached session where content flows.
+    attached_message_id: Option<String>,
+    /// Whether a reasoning stream has started for the attached-session assistant message.
+    attached_reasoning_started: bool,
     /// Whether a reasoning stream has started for the main session message.
     reasoning_started: bool,
 }
@@ -450,7 +450,9 @@ fn same_step_checkpoint_directive(
     match (left, right) {
         (StepCheckpointDirective::Continue, StepCheckpointDirective::Continue) => true,
         (
-            StepCheckpointDirective::Block { reason: left_reason },
+            StepCheckpointDirective::Block {
+                reason: left_reason,
+            },
             StepCheckpointDirective::Block {
                 reason: right_reason,
             },
@@ -1147,15 +1149,17 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
         capabilities: Option<&SchedulerStageCapabilities>,
         exec_ctx: &OrchestratorExecutionContext,
     ) {
-        let wants_child_session = capabilities.map(|caps| caps.child_session).unwrap_or(false);
+        let wants_attached_session = capabilities
+            .map(|caps| caps.attached_session)
+            .unwrap_or(false);
 
         let mut sessions = self.state.sessions.lock().await;
         let Some(mut session) = sessions.get(&self.session_id).cloned() else {
             return;
         };
 
-        // ── Create child session if requested ──
-        let (child_session_id, child_message_id) = if wants_child_session {
+        // ── Create attached session if requested ──
+        let (attached_session_id, attached_message_id) = if wants_attached_session {
             let mut child = Session::child_with_context_kind(
                 &session,
                 SessionContextKind::SchedulerStageOutputSession,
@@ -1165,22 +1169,22 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
                 pretty_scheduler_stage_name(stage_name),
                 &self.scheduler_profile
             ));
-            let child_id = child.id.clone();
+            let attached_id = child.id.clone();
             let child_msg = child.add_assistant_message();
             let child_msg_id = child_msg.id.clone();
             child_msg.add_text(String::new());
             child.touch();
             sessions.update(child);
-            (Some(child_id), Some(child_msg_id))
+            (Some(attached_id), Some(child_msg_id))
         } else {
             (None, None)
         };
         if let (Some(child_sid), Some(child_mid)) =
-            (child_session_id.as_ref(), child_message_id.as_ref())
+            (attached_session_id.as_ref(), attached_message_id.as_ref())
         {
             self.state
                 .runtime_telemetry
-                .child_attached(
+                .attached_session_registered(
                     &self.session_id,
                     child_sid,
                     SessionContextKind::SchedulerStageOutputSession,
@@ -1285,14 +1289,14 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
             serde_json::json!(Vec::<String>::new()),
         );
 
-        // Store child session reference in metadata for persistence/reconstruction.
-        if let Some(ref child_id) = child_session_id {
+        // Store attached-session reference in metadata for persistence/reconstruction.
+        if let Some(ref attached_id) = attached_session_id {
             message.metadata.insert(
-                "scheduler_stage_child_session_id".to_string(),
-                serde_json::json!(child_id),
+                "scheduler_stage_attached_session_id".to_string(),
+                serde_json::json!(attached_id),
             );
             message.metadata.insert(
-                "scheduler_stage_child_session_kind".to_string(),
+                "scheduler_stage_attached_session_kind".to_string(),
                 serde_json::to_value(SessionContextKind::SchedulerStageOutputSession)
                     .unwrap_or_else(|_| serde_json::json!("scheduler_stage_output_session")),
             );
@@ -1340,9 +1344,9 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
                 step_count: 0,
                 committed_usage: rocode_orchestrator::runtime::events::StepUsage::default(),
                 live_usage: rocode_orchestrator::runtime::events::StepUsage::default(),
-                child_session_id,
-                child_message_id,
-                child_reasoning_started: false,
+                attached_session_id,
+                attached_message_id,
+                attached_reasoning_started: false,
                 reasoning_started: false,
             });
     }
@@ -1354,20 +1358,20 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
         content_delta: &str,
         _exec_ctx: &OrchestratorExecutionContext,
     ) {
-        let (message_id, child_session_id, child_message_id) = {
+        let (message_id, attached_session_id, attached_message_id) = {
             let guard = self.active_stage_messages.lock().await;
             match guard.last() {
                 Some(active) => (
                     active.message_id.clone(),
-                    active.child_session_id.clone(),
-                    active.child_message_id.clone(),
+                    active.attached_session_id.clone(),
+                    active.attached_message_id.clone(),
                 ),
                 None => return,
             }
         };
 
-        // If a child session exists, route content there instead of the parent stage message.
-        if let (Some(child_sid), Some(child_mid)) = (child_session_id, child_message_id) {
+        // If an attached session exists, route content there instead of the parent stage message.
+        if let (Some(child_sid), Some(child_mid)) = (attached_session_id, attached_message_id) {
             let mut sessions = self.state.sessions.lock().await;
             if let Some(mut child) = sessions.get(&child_sid).cloned() {
                 if let Some(msg) = child.get_message_mut(&child_mid) {
@@ -1425,31 +1429,31 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
 
         let (
             message_id,
-            child_session_id,
-            child_message_id,
-            start_child_reasoning,
+            attached_session_id,
+            attached_message_id,
+            start_attached_reasoning,
             start_reasoning,
         ) = {
             let mut guard = self.active_stage_messages.lock().await;
             match guard.last_mut() {
                 Some(active) => {
-                    let start_child_reasoning = active.child_session_id.is_some()
-                        && active.child_message_id.is_some()
-                        && !active.child_reasoning_started;
-                    if start_child_reasoning {
-                        active.child_reasoning_started = true;
+                    let start_attached_reasoning = active.attached_session_id.is_some()
+                        && active.attached_message_id.is_some()
+                        && !active.attached_reasoning_started;
+                    if start_attached_reasoning {
+                        active.attached_reasoning_started = true;
                     }
-                    // For main session (non-child), track reasoning started
+                    // For main session (non-attached), track reasoning started
                     let start_reasoning =
-                        active.child_session_id.is_none() && !active.reasoning_started;
+                        active.attached_session_id.is_none() && !active.reasoning_started;
                     if start_reasoning {
                         active.reasoning_started = true;
                     }
                     (
                         Some(active.message_id.clone()),
-                        active.child_session_id.clone(),
-                        active.child_message_id.clone(),
-                        start_child_reasoning,
+                        active.attached_session_id.clone(),
+                        active.attached_message_id.clone(),
+                        start_attached_reasoning,
                         start_reasoning,
                     )
                 }
@@ -1479,8 +1483,8 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
             return;
         };
 
-        // If a child session exists, route reasoning there.
-        if let (Some(child_sid), Some(child_mid)) = (child_session_id, child_message_id) {
+        // If an attached session exists, route reasoning there.
+        if let (Some(child_sid), Some(child_mid)) = (attached_session_id, attached_message_id) {
             let mut sessions = self.state.sessions.lock().await;
             if let Some(mut child) = sessions.get(&child_sid).cloned() {
                 if let Some(msg) = child.get_message_mut(&child_mid) {
@@ -1490,7 +1494,7 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
                 sessions.update(child);
             }
             drop(sessions);
-            if start_child_reasoning {
+            if start_attached_reasoning {
                 self.emit_output_block(
                     child_sid.clone(),
                     OutputBlock::Reasoning(ReasoningBlock::start()),
@@ -1507,7 +1511,7 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
             return;
         }
 
-        // Non-child session: emit reasoning events for TUI/CLI to display
+        // Non-attached session: emit reasoning events for TUI/CLI to display
         if start_reasoning {
             self.emit_output_block(
                 self.session_id.clone(),
@@ -1586,9 +1590,13 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
         default_directive: &StepCheckpointDirective,
         _exec_ctx: &OrchestratorExecutionContext,
     ) -> Result<Option<StepCheckpointDirective>, rocode_orchestrator::OrchestratorError> {
-        let request_context_tokens = checkpoint.current_view.estimated_context_tokens.or_else(|| {
-            Some(usage.context_tokens.max(usage.prompt_tokens)).filter(|tokens| *tokens > 0)
-        });
+        let request_context_tokens =
+            checkpoint
+                .current_view
+                .estimated_context_tokens
+                .or_else(|| {
+                    Some(usage.context_tokens.max(usage.prompt_tokens)).filter(|tokens| *tokens > 0)
+                });
         let request_body_chars = checkpoint.current_view.estimated_body_chars;
         let compaction_attempted = checkpoint.compaction_attempted();
         let compaction_succeeded = checkpoint.compaction_succeeded();
@@ -1740,12 +1748,12 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
                     message_snapshot = Some(message.clone());
                 }
 
-                let child_session_id = active.child_session_id.clone();
-                let child_message_id = active.child_message_id.clone();
+                let attached_session_id = active.attached_session_id.clone();
+                let attached_message_id = active.attached_message_id.clone();
 
-                // Finalize child session assistant message if present.
+                // Finalize attached-session assistant message if present.
                 if let (Some(ref child_sid), Some(ref child_mid)) =
-                    (child_session_id.as_ref(), child_message_id.as_ref())
+                    (attached_session_id.as_ref(), attached_message_id.as_ref())
                 {
                     if let Some(mut child) = sessions.get(child_sid).cloned() {
                         if let Some(msg) = child.get_message_mut(child_mid) {
@@ -1763,8 +1771,10 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
                 if let Some(message) = message_snapshot.as_ref() {
                     self.emit_stage_block(message).await;
                 }
-                if let (Some(child_sid), Some(child_mid)) = (child_session_id, child_message_id) {
-                    if active.child_reasoning_started {
+                if let (Some(child_sid), Some(child_mid)) =
+                    (attached_session_id, attached_message_id)
+                {
+                    if active.attached_reasoning_started {
                         self.emit_output_block(
                             child_sid.clone(),
                             OutputBlock::Reasoning(ReasoningBlock::end()),
@@ -1780,10 +1790,10 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
                     .await;
                     self.state
                         .runtime_telemetry
-                        .child_detached(&self.session_id, &child_sid)
+                        .attached_session_unregistered(&self.session_id, &child_sid)
                         .await;
                 } else {
-                    // Non-child session: emit reasoning end if reasoning was started
+                    // Non-attached session: emit reasoning end if reasoning was started
                     if active.reasoning_started {
                         self.emit_output_block(
                             self.session_id.clone(),
@@ -4566,7 +4576,7 @@ mod tests {
                 ],
                 agents: vec!["build".to_string(), "explore".to_string()],
                 categories: vec!["frontend".to_string()],
-                child_session: false,
+                attached_session: false,
             }),
             &exec_ctx,
         )
@@ -4644,7 +4654,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lifecycle_hook_routes_child_session_content_to_child_session() {
+    async fn lifecycle_hook_routes_attached_session_content_to_attached_session() {
         let state = Arc::new(ServerState::new());
         let session_id = {
             let mut sessions = state.sessions.lock().await;
@@ -4681,7 +4691,7 @@ mod tests {
                 skill_list: vec![],
                 agents: vec![],
                 categories: vec![],
-                child_session: true,
+                attached_session: true,
             }),
             &exec_ctx,
         )
@@ -4689,14 +4699,14 @@ mod tests {
         hook.on_scheduler_stage_content(
             "execution-orchestration",
             2,
-            "child session streamed content",
+            "attached session streamed content",
             &exec_ctx,
         )
         .await;
         hook.on_scheduler_stage_reasoning(
             "execution-orchestration",
             2,
-            "child session streamed reasoning",
+            "attached session streamed reasoning",
             &exec_ctx,
         )
         .await;
@@ -4719,22 +4729,25 @@ mod tests {
             .messages
             .last()
             .expect("parent stage message");
-        let child_session_id = parent_stage_message
+        let attached_session_id = parent_stage_message
             .metadata
-            .get("scheduler_stage_child_session_id")
+            .get("scheduler_stage_attached_session_id")
             .and_then(|value| value.as_str())
-            .expect("child session id")
+            .expect("attached session id")
             .to_string();
 
         let child = sessions
-            .get(&child_session_id)
-            .expect("child session should exist");
+            .get(&attached_session_id)
+            .expect("attached session should exist");
         let child_message = child
             .record()
             .messages
             .last()
             .expect("child assistant message");
-        assert_eq!(child_message.get_text(), "child session streamed content");
+        assert_eq!(
+            child_message.get_text(),
+            "attached session streamed content"
+        );
         assert_eq!(child_message.finish.as_deref(), Some("end_turn"));
         assert_eq!(child.parent_id.as_deref(), Some(session_id.as_str()));
         assert_eq!(
@@ -4744,7 +4757,7 @@ mod tests {
         assert_eq!(
             parent_stage_message
                 .metadata
-                .get("scheduler_stage_child_session_kind"),
+                .get("scheduler_stage_attached_session_kind"),
             Some(&serde_json::json!("scheduler_stage_output_session"))
         );
         drop(sessions);
@@ -4755,7 +4768,7 @@ mod tests {
             .clone();
         let child_blocks = emitted
             .into_iter()
-            .filter(|event| event.session_id == child_session_id)
+            .filter(|event| event.session_id == attached_session_id)
             .map(|event| event.block)
             .collect::<Vec<_>>();
         assert!(matches!(
@@ -4771,17 +4784,17 @@ mod tests {
                 && message_delta
                     == &MessageBlock::delta(
                         OutputMessageRole::Assistant,
-                        "child session streamed content",
+                        "attached session streamed content",
                     )
                 && reasoning_start == &ReasoningBlock::start()
-                && reasoning_delta == &ReasoningBlock::delta("child session streamed reasoning")
+                && reasoning_delta == &ReasoningBlock::delta("attached session streamed reasoning")
                 && reasoning_end == &ReasoningBlock::end()
                 && message_end == &MessageBlock::end(OutputMessageRole::Assistant)
         ));
     }
 
     #[tokio::test]
-    async fn lifecycle_hook_emits_scheduler_stage_and_reasoning_blocks_for_non_child_session() {
+    async fn lifecycle_hook_emits_scheduler_stage_and_reasoning_blocks_for_non_attached_session() {
         let state = Arc::new(ServerState::new());
         let session_id = {
             let mut sessions = state.sessions.lock().await;
@@ -4810,7 +4823,7 @@ mod tests {
             })
         })));
 
-        // Start stage without child session (child_session: false)
+        // Start stage without attached session (attached_session: false)
         hook.on_scheduler_stage_start(
             "atlas",
             "execution-orchestration",
@@ -4819,7 +4832,7 @@ mod tests {
                 skill_list: vec![],
                 agents: vec![],
                 categories: vec![],
-                child_session: false,
+                attached_session: false,
             }),
             &exec_ctx,
         )
@@ -4922,7 +4935,7 @@ mod tests {
                 ],
                 agents: vec!["build".to_string(), "explore".to_string()],
                 categories: vec!["frontend".to_string()],
-                child_session: false,
+                attached_session: false,
             }),
             &exec_ctx,
         )

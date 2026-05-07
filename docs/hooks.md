@@ -316,7 +316,7 @@ pub trait LifecycleHook: Send + Sync {
 | `skill_list` | `Vec<SchedulerSkillRef>` | 可用的 skill 列表 |
 | `agents` | `Vec<String>` | 可用的 agent 名称列表 |
 | `categories` | `Vec<String>` | 可用的能力分类 |
-| `child_session` | `bool` | 是否创建子会话 |
+| `attached_session` | `bool` | 是否创建子会话 |
 
 **默认实现：** 空操作。
 

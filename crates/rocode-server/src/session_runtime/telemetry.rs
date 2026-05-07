@@ -435,14 +435,14 @@ impl RuntimeTelemetryAuthority {
         self.runtime_state.permission_resolved(session_id).await;
     }
 
-    pub(crate) async fn child_attached(
+    pub(crate) async fn attached_session_registered(
         &self,
         parent_id: &str,
-        child_id: &str,
+        attached_id: &str,
         context_kind: rocode_types::SessionContextKind,
     ) {
         self.runtime_state
-            .child_attached(parent_id, child_id, context_kind)
+            .attached_session_registered(parent_id, attached_id, context_kind)
             .await;
         self.record_stage_event(
             parent_id,
@@ -450,10 +450,10 @@ impl RuntimeTelemetryAuthority {
                 EventScope::Session,
                 None,
                 None,
-                telemetry_event_names::CHILD_SESSION_ATTACHED,
+                telemetry_event_names::ATTACHED_SESSION_ATTACHED,
                 serde_json::json!({
                     "parentID": parent_id,
-                    "childID": child_id,
+                    "attachedID": attached_id,
                     "sessionContextKind": context_kind,
                 }),
             ),
@@ -461,18 +461,20 @@ impl RuntimeTelemetryAuthority {
         .await;
     }
 
-    pub(crate) async fn child_detached(&self, parent_id: &str, child_id: &str) {
-        self.runtime_state.child_detached(parent_id, child_id).await;
+    pub(crate) async fn attached_session_unregistered(&self, parent_id: &str, attached_id: &str) {
+        self.runtime_state
+            .attached_session_unregistered(parent_id, attached_id)
+            .await;
         self.record_stage_event(
             parent_id,
             StageEvent::new(
                 EventScope::Session,
                 None,
                 None,
-                telemetry_event_names::CHILD_SESSION_DETACHED,
+                telemetry_event_names::ATTACHED_SESSION_DETACHED,
                 serde_json::json!({
                     "parentID": parent_id,
-                    "childID": child_id,
+                    "attachedID": attached_id,
                 }),
             ),
         )

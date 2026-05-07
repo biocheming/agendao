@@ -29,7 +29,7 @@
         "cache_read_tokens": 5,
         "cache_write_tokens": 3,
         "decision": null,
-        "child_session_id": null
+        "attached_session_id": null
       },
       "metadata": {
         "scheduler_stage": "planning",
@@ -164,7 +164,7 @@
         "cache_read_tokens": 50,
         "cache_write_tokens": 10,
         "decision": null,
-        "child_session_id": "child_impl_sub_001"
+        "attached_session_id": "child_impl_sub_001"
       },
       "metadata": {
         "scheduler_stage": "implementation",
@@ -189,7 +189,7 @@
         "scheduler_stage_reasoning_tokens": 120,
         "scheduler_stage_cache_read_tokens": 50,
         "scheduler_stage_cache_write_tokens": 10,
-        "scheduler_stage_child_session_id": "child_impl_sub_001"
+        "scheduler_stage_attached_session_id": "child_impl_sub_001"
       },
       "message_text": "## Atlas · Implementation\n\nWriting the data pipeline module.",
       "execution_records": [
@@ -350,7 +350,7 @@
             {"title": "Action", "body": "Merge into main branch."}
           ]
         },
-        "child_session_id": null
+        "attached_session_id": null
       },
       "metadata": {
         "scheduler_stage": "review",
@@ -456,7 +456,7 @@
     "distinct_agent_labels": ["planner", "architect", "coder", "tester", "reviewer"],
     "distinct_tool_labels": ["read_file", "write_file"],
     "question_count": 2,
-    "stages_with_child_sessions": 1,
+    "stages_with_attached_sessions": 1,
     "aggregate_prompt_tokens": 3700,
     "aggregate_completion_tokens": 1250,
     "aggregate_reasoning_tokens": 210

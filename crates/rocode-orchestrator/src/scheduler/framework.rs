@@ -118,9 +118,9 @@ pub struct SchedulerStageCapabilities {
     pub agents: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub categories: Vec<String>,
-    /// Whether this stage should create an isolated child session.
+    /// Whether this stage should create an isolated attached session.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub child_session: bool,
+    pub attached_session: bool,
 }
 
 impl SchedulerStageCapabilities {
@@ -128,7 +128,7 @@ impl SchedulerStageCapabilities {
         self.skill_list.is_empty()
             && self.agents.is_empty()
             && self.categories.is_empty()
-            && !self.child_session
+            && !self.attached_session
     }
 }
 
@@ -171,8 +171,8 @@ pub struct SchedulerStagePolicy {
     pub session_projection: SchedulerSessionProjection,
     pub tool_policy: StageToolPolicy,
     pub loop_budget: SchedulerLoopBudget,
-    /// Whether this stage should create an isolated child session for its content.
-    pub child_session: bool,
+    /// Whether this stage should create an isolated attached session for its content.
+    pub attached_session: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

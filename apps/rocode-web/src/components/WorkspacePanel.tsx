@@ -62,7 +62,7 @@ interface WorkspacePanelProps {
   conversationJump: unknown;
   schedulerNavigation: {
     navigateToStage: (stageId: string) => void;
-    navigateToChildSession: (
+    navigateToAttachedSession: (
       sessionId: string,
       context?: { stageId?: string | null; toolCallId?: string | null; label?: string | null },
     ) => void | Promise<void>;

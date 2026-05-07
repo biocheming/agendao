@@ -276,15 +276,15 @@ struct CliExecutionRuntime {
     api_client: Option<Arc<CliApiClient>>,
     /// Server-side session ID (created via HTTP POST /session).
     server_session_id: Option<String>,
-    /// Root session plus any explicitly attached child sessions for the active execution tree.
+    /// Root session plus any explicitly attached sessions for the active execution tree.
     related_session_ids: Arc<Mutex<BTreeSet<String>>>,
     /// Canonical retained transcript for the root session even when the operator
-    /// temporarily focuses a child session view.
+    /// temporarily focuses an attached-session view.
     root_session_transcript: Arc<Mutex<CliRetainedTranscript>>,
-    /// Background transcripts for non-root child sessions. These are populated
+    /// Background transcripts for non-root attached sessions. These are populated
     /// from the unified event surface but not rendered into the main transcript
     /// until the operator explicitly focuses one.
-    child_session_transcripts: Arc<Mutex<HashMap<String, CliRetainedTranscript>>>,
+    attached_session_transcripts: Arc<Mutex<HashMap<String, CliRetainedTranscript>>>,
     stream_accumulators: Arc<Mutex<HashMap<String, TerminalStreamAccumulator>>>,
     render_states: Arc<Mutex<HashMap<String, TerminalSemanticStreamRenderState>>>,
     /// Local CLI-only focus target. `None` means the root session remains visible.
@@ -682,7 +682,7 @@ fn format_session_time(timestamp: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        cli_cycle_child_session, cli_focus_child_session, cli_focus_root_session,
+        cli_cycle_attached_session, cli_focus_attached_session, cli_focus_root_session,
         cli_normalize_model_ref, cli_observe_terminal_stream_block, cli_prompt_agent_override,
         cli_prompt_assist_view, cli_prompt_screen_lines, cli_recent_session_info_for_directory,
         cli_render_retained_layout, cli_render_startup_banner, cli_resolve_registry_ui_action,
@@ -783,16 +783,16 @@ mod tests {
             cache_miss_tokens: None,
             cache_write_tokens: None,
             decision: None,
-            child_session_id: None,
+            attached_session_id: None,
         }
     }
 
-    fn test_runtime_with_child_focus_data() -> CliExecutionRuntime {
+    fn test_runtime_with_attached_focus_data() -> CliExecutionRuntime {
         let mut root_transcript = CliRetainedTranscript::default();
         root_transcript.append_rendered("● root line\n");
 
-        let mut child_transcript = CliRetainedTranscript::default();
-        child_transcript.append_rendered("● child line\n");
+        let mut attached_transcript = CliRetainedTranscript::default();
+        attached_transcript.append_rendered("● attached line\n");
 
         CliExecutionRuntime {
             resolved_agent_name: "build".to_string(),
@@ -819,12 +819,12 @@ mod tests {
             server_session_id: Some("root-session".to_string()),
             related_session_ids: Arc::new(Mutex::new(BTreeSet::from([
                 "root-session".to_string(),
-                "child-session-a".to_string(),
+                "attached-session-a".to_string(),
             ]))),
             root_session_transcript: Arc::new(Mutex::new(root_transcript)),
-            child_session_transcripts: Arc::new(Mutex::new(HashMap::from([(
-                "child-session-a".to_string(),
-                child_transcript,
+            attached_session_transcripts: Arc::new(Mutex::new(HashMap::from([(
+                "attached-session-a".to_string(),
+                attached_transcript,
             )]))),
             stream_accumulators: Arc::new(Mutex::new(HashMap::new())),
             render_states: Arc::new(Mutex::new(HashMap::new())),
@@ -834,20 +834,20 @@ mod tests {
         }
     }
 
-    fn test_runtime_with_multiple_child_sessions() -> CliExecutionRuntime {
-        let runtime = test_runtime_with_child_focus_data();
+    fn test_runtime_with_multiple_attached_sessions() -> CliExecutionRuntime {
+        let runtime = test_runtime_with_attached_focus_data();
         runtime
             .related_session_ids
             .lock()
             .expect("related session ids")
-            .insert("child-session-b".to_string());
+            .insert("attached-session-b".to_string());
         runtime
-            .child_session_transcripts
+            .attached_session_transcripts
             .lock()
-            .expect("child transcripts")
-            .insert("child-session-b".to_string(), {
+            .expect("attached transcripts")
+            .insert("attached-session-b".to_string(), {
                 let mut transcript = CliRetainedTranscript::default();
-                transcript.append_rendered("● second child line\n");
+                transcript.append_rendered("● second attached line\n");
                 transcript
             });
         runtime
@@ -855,7 +855,7 @@ mod tests {
 
     #[test]
     fn cli_root_session_reset_clears_stream_accumulators() {
-        let mut runtime = test_runtime_with_child_focus_data();
+        let mut runtime = test_runtime_with_attached_focus_data();
         runtime
             .stream_accumulators
             .lock()
@@ -873,7 +873,7 @@ mod tests {
 
     #[test]
     fn cli_terminal_stream_observer_maps_empty_session_to_root_session() {
-        let runtime = test_runtime_with_child_focus_data();
+        let runtime = test_runtime_with_attached_focus_data();
 
         cli_observe_terminal_stream_block(
             &runtime,
@@ -1026,10 +1026,11 @@ mod tests {
     }
 
     #[test]
-    fn focus_child_session_switches_visible_transcript_but_keeps_root_session() {
-        let runtime = test_runtime_with_child_focus_data();
+    fn focus_attached_session_switches_visible_transcript_but_keeps_root_session() {
+        let runtime = test_runtime_with_attached_focus_data();
 
-        assert!(cli_focus_child_session(&runtime, "child-session-a").expect("focus child session"));
+        assert!(cli_focus_attached_session(&runtime, "attached-session-a")
+            .expect("focus attached session"));
 
         let visible = runtime
             .frontend_projection
@@ -1037,7 +1038,7 @@ mod tests {
             .expect("frontend projection")
             .transcript
             .rendered_text();
-        assert_eq!(visible, "● child line\n");
+        assert_eq!(visible, "● attached line\n");
         assert_eq!(runtime.server_session_id.as_deref(), Some("root-session"));
         assert_eq!(
             runtime
@@ -1045,7 +1046,7 @@ mod tests {
                 .lock()
                 .expect("focused session")
                 .as_deref(),
-            Some("child-session-a")
+            Some("attached-session-a")
         );
         assert_eq!(
             runtime
@@ -1054,7 +1055,7 @@ mod tests {
                 .expect("frontend projection")
                 .view_label
                 .as_deref(),
-            Some("view child child-se")
+            Some("view attached attached")
         );
 
         assert!(cli_focus_root_session(&runtime).expect("back to root session"));
@@ -1084,25 +1085,25 @@ mod tests {
     }
 
     #[test]
-    fn cycle_child_session_moves_forward_and_backward() {
-        let runtime = test_runtime_with_multiple_child_sessions();
+    fn cycle_attached_session_moves_forward_and_backward() {
+        let runtime = test_runtime_with_multiple_attached_sessions();
 
-        let first = cli_cycle_child_session(&runtime, true)
+        let first = cli_cycle_attached_session(&runtime, true)
             .expect("cycle next from root")
-            .expect("first child");
-        assert_eq!(first.0, "child-session-a");
+            .expect("first attached session");
+        assert_eq!(first.0, "attached-session-a");
         assert_eq!((first.1, first.2), (1, 2));
 
-        let second = cli_cycle_child_session(&runtime, true)
+        let second = cli_cycle_attached_session(&runtime, true)
             .expect("cycle next from first")
-            .expect("second child");
-        assert_eq!(second.0, "child-session-b");
+            .expect("second attached session");
+        assert_eq!(second.0, "attached-session-b");
         assert_eq!((second.1, second.2), (2, 2));
 
-        let previous = cli_cycle_child_session(&runtime, false)
+        let previous = cli_cycle_attached_session(&runtime, false)
             .expect("cycle prev from second")
-            .expect("previous child");
-        assert_eq!(previous.0, "child-session-a");
+            .expect("previous attached session");
+        assert_eq!(previous.0, "attached-session-a");
         assert_eq!((previous.1, previous.2), (1, 2));
     }
 
@@ -1254,7 +1255,7 @@ mod tests {
         let mut projection = CliFrontendProjection {
             phase: CliFrontendPhase::Busy,
             active_label: Some("assistant response".to_string()),
-            view_label: Some("view child child-abc".to_string()),
+            view_label: Some("view attached attached-abc".to_string()),
             queue_len: 2,
             active_stage: Some(stage_with_status("running")),
             session_runtime: None,
@@ -1300,7 +1301,7 @@ mod tests {
         assert!(joined.contains("Active"));
         assert!(joined.contains("assistant reply"));
         assert!(joined.contains("Test Session"));
-        assert!(joined.contains("view child child-abc"));
+        assert!(joined.contains("view attached attached-abc"));
     }
 
     #[test]
@@ -1332,18 +1333,18 @@ mod tests {
     }
 
     #[test]
-    fn footer_text_surfaces_child_focus_state() {
+    fn footer_text_surfaces_attached_focus_state() {
         let projection = CliFrontendProjection {
             phase: CliFrontendPhase::Busy,
-            view_label: Some("view child abcd1234".to_string()),
+            view_label: Some("view attached abcd1234".to_string()),
             ..Default::default()
         };
 
         let footer = projection.footer_text();
 
         assert!(footer.contains("Busy"));
-        assert!(footer.contains("view child abcd1234"));
-        assert!(footer.contains("/child"));
+        assert!(footer.contains("view attached abcd1234"));
+        assert!(footer.contains("/attached"));
     }
 
     #[test]
@@ -1405,7 +1406,7 @@ mod tests {
         rich_stage.active_skills = vec!["planner".to_string(), "reviewer".to_string()];
         rich_stage.total_agent_count = 3;
         rich_stage.done_agent_count = 1;
-        rich_stage.child_session_id = Some("child-abc".to_string());
+        rich_stage.attached_session_id = Some("attached-abc".to_string());
 
         let proj_rich = CliFrontendProjection {
             phase: CliFrontendPhase::Busy,
@@ -1433,7 +1434,7 @@ mod tests {
 
         let joined_rich = lines_rich.join("\n");
         assert!(joined_rich.contains("Active"));
-        assert!(joined_rich.contains("child-abc"));
+        assert!(joined_rich.contains("attached-abc"));
         assert!(joined_rich.contains("planner"));
     }
 

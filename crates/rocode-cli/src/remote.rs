@@ -334,8 +334,8 @@ pub(crate) fn parse_output_block(payload: &serde_json::Value) -> Option<OutputBl
             cache_miss_tokens: payload.get("cache_miss_tokens").and_then(|v| v.as_u64()),
             cache_write_tokens: payload.get("cache_write_tokens").and_then(|v| v.as_u64()),
             decision: parse_scheduler_decision(payload.get("decision")),
-            child_session_id: payload
-                .get("child_session_id")
+            attached_session_id: payload
+                .get("attached_session_id")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
         }))),

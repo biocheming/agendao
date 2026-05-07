@@ -596,10 +596,10 @@ impl App {
             InteractiveCommand::ExecuteRecovery(selector) => {
                 self.handle_execute_recovery_action(&selector);
             }
-            InteractiveCommand::ListChildSessions
-            | InteractiveCommand::FocusChildSession(_)
-            | InteractiveCommand::FocusNextChildSession
-            | InteractiveCommand::FocusPreviousChildSession
+            InteractiveCommand::ListAttachedSessions
+            | InteractiveCommand::FocusAttachedSession(_)
+            | InteractiveCommand::FocusNextAttachedSession
+            | InteractiveCommand::FocusPreviousAttachedSession
             | InteractiveCommand::BackToRootSession => {
                 self.toast.show(
                     ToastVariant::Info,
@@ -774,6 +774,7 @@ mod tests {
             share: None,
             permission: None,
             revert: None,
+            fork: None,
             telemetry: None,
             metadata: None,
         };
