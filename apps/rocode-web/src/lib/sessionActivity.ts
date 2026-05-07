@@ -181,7 +181,6 @@ export interface SessionTelemetrySnapshotRecord {
   cache_evidence?: Record<string, unknown> | null;
   cache_semantics?: Record<string, unknown> | null;
   context_closure_contract?: SessionContextClosureContractRecord | null;
-  prompt_surface_runtime_snapshot?: Record<string, unknown> | null;
   prompt_surface_evidence?: Record<string, unknown> | null;
   ingress_stabilization?: Record<string, unknown> | null;
   provider_diagnostic_summary?: Record<string, unknown> | null;

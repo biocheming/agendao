@@ -3309,7 +3309,6 @@ mod tests {
                             .to_string(),
                 },
             }),
-            prompt_surface_runtime_snapshot: None,
             prompt_surface_evidence: Some(
                 rocode_types::PromptSurfaceEvidenceSummary {
                     severity: rocode_types::SessionCacheSeverity::LowChange,

@@ -51,8 +51,6 @@ pub struct SessionTelemetrySnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_closure_contract: Option<SessionContextClosureContract>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt_surface_runtime_snapshot: Option<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_surface_evidence: Option<PromptSurfaceEvidenceSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ingress_stabilization: Option<serde_json::Value>,
@@ -188,9 +186,6 @@ pub(super) async fn build_session_telemetry_snapshot(
         .as_ref()
         .and_then(SessionDiagnosticsSidecar::context_pressure_governance_summary_value)
         .and_then(|value| serde_json::from_value(value).ok());
-    let prompt_surface_runtime_snapshot = diagnostics
-        .as_ref()
-        .and_then(SessionDiagnosticsSidecar::prompt_surface_runtime_snapshot_value);
     let prompt_surface_evidence = diagnostics
         .as_ref()
         .and_then(SessionDiagnosticsSidecar::latest_prompt_surface_evidence_value)
@@ -236,7 +231,6 @@ pub(super) async fn build_session_telemetry_snapshot(
         context_pressure_governance_summary,
         cache_semantics,
         context_closure_contract,
-        prompt_surface_runtime_snapshot,
         prompt_surface_evidence,
         ingress_stabilization,
         execution_preflight_summary,
@@ -473,11 +467,6 @@ fn latest_context_compaction_summary(session: &Session) -> Option<ContextCompact
     diagnostics_sidecar(session)
         .and_then(|sidecar| sidecar.latest_context_compaction_record_value())
         .and_then(|value| serde_json::from_value(value).ok())
-}
-
-#[cfg(test)]
-fn prompt_surface_runtime_snapshot(session: &Session) -> Option<serde_json::Value> {
-    diagnostics_sidecar(session).and_then(|sidecar| sidecar.prompt_surface_runtime_snapshot_value())
 }
 
 #[cfg(test)]
@@ -725,49 +714,6 @@ mod tests {
     }
 
     #[test]
-    fn prompt_surface_runtime_snapshot_prefers_session_metadata() {
-        let mut session = Session::new("session-1".to_string(), ".".to_string());
-        session.insert_metadata(
-            rocode_session::prompt::PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY.to_string(),
-            serde_json::json!({
-                "generation": 2,
-                "source": "session",
-            }),
-        );
-        let assistant = session.add_assistant_message();
-        assistant.metadata.insert(
-            rocode_session::prompt::PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY.to_string(),
-            serde_json::json!({
-                "generation": 1,
-                "source": "assistant",
-            }),
-        );
-
-        let snapshot = prompt_surface_runtime_snapshot(&session).expect("snapshot");
-
-        assert_eq!(snapshot["generation"], 2);
-        assert_eq!(snapshot["source"], "session");
-    }
-
-    #[test]
-    fn prompt_surface_runtime_snapshot_falls_back_to_assistant_metadata() {
-        let mut session = Session::new("session-1".to_string(), ".".to_string());
-        let assistant = session.add_assistant_message();
-        assistant.metadata.insert(
-            rocode_session::prompt::PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY.to_string(),
-            serde_json::json!({
-                "generation": 3,
-                "source": "assistant",
-            }),
-        );
-
-        let snapshot = prompt_surface_runtime_snapshot(&session).expect("snapshot");
-
-        assert_eq!(snapshot["generation"], 3);
-        assert_eq!(snapshot["source"], "assistant");
-    }
-
-    #[test]
     fn latest_prompt_surface_evidence_reads_assistant_metadata() {
         let mut session = Session::new("session-1".to_string(), ".".to_string());
         let assistant = session.add_assistant_message();
@@ -800,7 +746,7 @@ mod tests {
     fn latest_prompt_surface_evidence_falls_back_to_snapshot_payload() {
         let mut session = Session::new("session-1".to_string(), ".".to_string());
         session.insert_metadata(
-            rocode_session::prompt::PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY.to_string(),
+            rocode_session::prompt::PROMPT_SURFACE_STATE_SNAPSHOT_METADATA_KEY.to_string(),
             serde_json::json!({
                 "generation": 7,
                 "evidence": {
@@ -1310,12 +1256,6 @@ mod tests {
                             .to_string(),
                 },
             }),
-            prompt_surface_runtime_snapshot: Some(serde_json::json!({
-                "generation": 7,
-                "evidence": {
-                    "reason": "surface changed: toolSurfaceHash"
-                },
-            })),
             prompt_surface_evidence: Some(PromptSurfaceEvidenceSummary {
                 severity: rocode_types::SessionCacheSeverity::HighChange,
                 reason: "surface changed: toolSurfaceHash".to_string(),
@@ -1396,7 +1336,6 @@ mod tests {
             value["context_closure_contract"]["child_history_isolation"]["owner_local_live_prefix"],
             true
         );
-        assert_eq!(value["prompt_surface_runtime_snapshot"]["generation"], 7);
         assert_eq!(
             value["prompt_surface_evidence"]["changed_fields"][0],
             "toolSurfaceHash"
