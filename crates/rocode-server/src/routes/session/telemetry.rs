@@ -1725,7 +1725,7 @@ mod tests {
             assistant.usage = Some(root_usage.clone());
             sessions.update(root.clone());
 
-            let mut child = rocode_session::Session::child_with_context_kind(
+            let mut child = rocode_session::Session::attached_with_context_kind(
                 &root,
                 rocode_types::SessionContextKind::DelegatedSubsession,
             );

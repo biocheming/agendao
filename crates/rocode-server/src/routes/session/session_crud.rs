@@ -930,12 +930,12 @@ mod tests {
     fn collect_session_tree_ids_includes_descendants() {
         let mut sessions = rocode_session::SessionManager::new();
         let root = sessions.create("project", "/tmp/project");
-        let child = Session::child_with_context_kind(
+        let child = Session::attached_with_context_kind(
             &root,
             rocode_types::SessionContextKind::DelegatedSubsession,
         );
         sessions.update(child.clone());
-        let grandchild = Session::child_with_context_kind(
+        let grandchild = Session::attached_with_context_kind(
             &child,
             rocode_types::SessionContextKind::DelegatedSubsession,
         );
@@ -1102,7 +1102,7 @@ mod tests {
         let parent_id = {
             let mut sessions = state.sessions.lock().await;
             let parent = sessions.create("project", "/tmp/project");
-            let child = Session::child_with_context_kind(
+            let child = Session::attached_with_context_kind(
                 &parent,
                 rocode_types::SessionContextKind::DelegatedSubsession,
             );

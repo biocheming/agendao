@@ -1160,7 +1160,7 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
 
         // ── Create attached session if requested ──
         let (attached_session_id, attached_message_id) = if wants_attached_session {
-            let mut child = Session::child_with_context_kind(
+            let mut child = Session::attached_with_context_kind(
                 &session,
                 SessionContextKind::SchedulerStageOutputSession,
             );
