@@ -1,4 +1,4 @@
-use rocode_session::{MessageRole, Session};
+use rocode_session::{MessageRole, Session, SessionContextKind};
 
 #[test]
 fn test_session_creation() {
@@ -35,12 +35,20 @@ fn test_session_add_assistant_message() {
 #[test]
 fn test_session_child_creation() {
     let parent = Session::new("test-project", "/test/directory");
-    let child = Session::child(&parent);
+    let child = Session::child_with_context_kind(&parent, SessionContextKind::DelegatedSubsession);
 
     assert!(child.parent_id.is_some());
     assert_eq!(child.parent_id.clone().unwrap(), parent.id);
     assert_eq!(child.project_id, parent.project_id);
     assert_eq!(child.directory, parent.directory);
+    assert_eq!(
+        parent.context_kind(),
+        SessionContextKind::RootSessionContinuity
+    );
+    assert_eq!(
+        child.context_kind(),
+        SessionContextKind::DelegatedSubsession
+    );
 }
 
 #[test]

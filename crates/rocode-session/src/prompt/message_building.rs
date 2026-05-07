@@ -21,7 +21,7 @@ use super::surface_contract::{
     parse_hidden_runtime_hint, sanctioned_model_context_projection_for_message,
 };
 use super::tools_and_output::{compose_session_title_source, generate_session_title_for_session};
-use super::SessionPrompt;
+use super::{SessionPrompt, CONTEXT_COMPACTION_RECORD_METADATA_KEY};
 
 type LegacyToolResult = (
     String,
@@ -36,6 +36,17 @@ type LegacyToolResultMap = HashMap<String, LegacyToolResult>;
 const CONTEXT_AUTO_COMPACT_THRESHOLD_PERCENT: u64 = 90;
 const AUTO_COMPACTION_RECENT_WINDOW_MESSAGES: usize = 12;
 const AUTO_COMPACTION_MIN_MESSAGES_AFTER_LAST: usize = 4;
+const FORCE_COMPACTION_MIN_MESSAGES: usize = 2;
+const AUTO_COMPACTION_MIN_MESSAGES: usize = 10;
+const MAX_BODY_CHARS: usize = 5_000_000;
+const MAX_CONTEXT_CHARS: usize = 200_000;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompactionAssessment {
+    pub reason: &'static str,
+    pub limit_tokens: Option<u64>,
+    pub body_chars: Option<usize>,
+}
 
 struct LegacyToolStateInput<'a> {
     tool_call_id: &'a str,
@@ -49,6 +60,28 @@ struct LegacyToolStateInput<'a> {
 }
 
 impl SessionPrompt {
+    pub(crate) fn build_compaction_record(
+        trigger: &str,
+        phase: Option<&str>,
+        reason: Option<&str>,
+        forced: bool,
+        request_context_tokens: Option<u64>,
+        live_context_tokens: Option<u64>,
+        limit_tokens: Option<u64>,
+        body_chars: Option<usize>,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "trigger": trigger,
+            "phase": phase,
+            "reason": reason,
+            "forced": forced,
+            "request_context_tokens": request_context_tokens,
+            "live_context_tokens": live_context_tokens,
+            "limit_tokens": limit_tokens,
+            "body_chars": body_chars,
+        })
+    }
+
     fn model_hidden_runtime_hint(message: &SessionMessage) -> Option<&str> {
         parse_hidden_runtime_hint(
             message
@@ -59,7 +92,7 @@ impl SessionPrompt {
         .map(|hint| hint.as_str())
     }
 
-    fn is_model_visible_message(message: &SessionMessage) -> bool {
+    pub(super) fn is_model_visible_message(message: &SessionMessage) -> bool {
         Self::model_hidden_runtime_hint(message).is_none()
     }
 
@@ -400,19 +433,67 @@ impl SessionPrompt {
             >= 2
     }
 
-    pub(super) fn should_compact(
+    fn provider_content_part_char_len(part: &ContentPart) -> usize {
+        let text_len = part.text.as_ref().map_or(0, |text| text.len());
+        let image_len = part.image_url.as_ref().map_or(0, |image| image.url.len());
+        let tool_use_len = part.tool_use.as_ref().map_or(0, |tool_use| {
+            tool_use.id.len()
+                + tool_use.name.len()
+                + serde_json::to_string(&tool_use.input).map_or(0, |value| value.len())
+        });
+        let tool_result_len = part.tool_result.as_ref().map_or(0, |tool_result| {
+            tool_result.tool_use_id.len() + tool_result.content.len()
+        });
+        let filename_len = part.filename.as_ref().map_or(0, |value| value.len());
+        let media_type_len = part.media_type.as_ref().map_or(0, |value| value.len());
+        let provider_options_len = part.provider_options.as_ref().map_or(0, |value| {
+            serde_json::to_string(value).map_or(0, |encoded| encoded.len())
+        });
+
+        text_len
+            + image_len
+            + tool_use_len
+            + tool_result_len
+            + filename_len
+            + media_type_len
+            + provider_options_len
+    }
+
+    fn provider_message_char_len(message: &Message) -> usize {
+        let content_len = match &message.content {
+            Content::Text(text) => text.len(),
+            Content::Parts(parts) => parts.iter().map(Self::provider_content_part_char_len).sum(),
+        };
+        let provider_options_len = message.provider_options.as_ref().map_or(0, |value| {
+            serde_json::to_string(value).map_or(0, |encoded| encoded.len())
+        });
+
+        content_len + provider_options_len
+    }
+
+    pub(crate) fn estimate_request_context_tokens_from_provider_messages(
+        messages: &[Message],
+    ) -> (Option<u64>, usize) {
+        let total_chars: usize = messages.iter().map(Self::provider_message_char_len).sum();
+        let estimated_tokens = (total_chars > 0).then_some((total_chars as u64) / 4);
+        (estimated_tokens, total_chars)
+    }
+
+    pub(crate) fn assess_compaction(
         messages: &[SessionMessage],
         provider: &dyn Provider,
         model_id: &str,
         max_output_tokens: Option<u64>,
         compaction_config: &CompactionConfig,
         live_context_tokens: Option<u64>,
-    ) -> bool {
+        request_context_tokens: Option<u64>,
+        request_body_chars: Option<usize>,
+    ) -> Option<CompactionAssessment> {
         if Self::should_back_off_auto_compaction(messages) {
-            return false;
+            return None;
         }
         if !compaction_config.auto {
-            return false;
+            return None;
         }
 
         let usage = Self::token_usage_from_messages(messages);
@@ -427,8 +508,13 @@ impl SessionPrompt {
                 .unwrap_or(8192),
         };
         let engine = CompactionEngine::new(compaction_config.clone());
+        let compaction_limit = Self::effective_compaction_limit(&limits, compaction_config);
         if engine.is_overflow(&usage, &limits) {
-            return true;
+            return Some(CompactionAssessment {
+                reason: "usage_overflow",
+                limit_tokens: Some(compaction_limit),
+                body_chars: None,
+            });
         }
 
         let usage_count = if usage.total > 0 {
@@ -447,13 +533,49 @@ impl SessionPrompt {
                 total: live_context_tokens,
             };
             if engine.is_overflow(&live_usage, &limits) {
-                return true;
+                return Some(CompactionAssessment {
+                    reason: "live_context_overflow",
+                    limit_tokens: Some(compaction_limit),
+                    body_chars: None,
+                });
+            }
+        }
+        if let Some(request_context_tokens) = request_context_tokens.filter(|tokens| *tokens > 0) {
+            let request_usage = TokenUsage {
+                input: request_context_tokens,
+                output: 0,
+                cache_read: 0,
+                cache_miss: 0,
+                cache_write: 0,
+                total: request_context_tokens,
+            };
+            if engine.is_overflow(&request_usage, &limits) {
+                return Some(CompactionAssessment {
+                    reason: "request_view_overflow",
+                    limit_tokens: Some(compaction_limit),
+                    body_chars: request_body_chars,
+                });
+            }
+            if Self::should_trigger_proactive_compaction(
+                request_context_tokens,
+                &limits,
+                compaction_config,
+            ) {
+                return Some(CompactionAssessment {
+                    reason: "request_view_threshold",
+                    limit_tokens: Some(compaction_limit),
+                    body_chars: request_body_chars,
+                });
             }
         }
         if usage_count > 0
             && Self::should_trigger_proactive_compaction(usage_count, &limits, compaction_config)
         {
-            return true;
+            return Some(CompactionAssessment {
+                reason: "usage_threshold",
+                limit_tokens: Some(compaction_limit),
+                body_chars: None,
+            });
         }
         if let Some(live_context_tokens) = live_context_tokens {
             if Self::should_trigger_proactive_compaction(
@@ -461,7 +583,11 @@ impl SessionPrompt {
                 &limits,
                 compaction_config,
             ) {
-                return true;
+                return Some(CompactionAssessment {
+                    reason: "live_context_threshold",
+                    limit_tokens: Some(compaction_limit),
+                    body_chars: None,
+                });
             }
         }
 
@@ -480,7 +606,11 @@ impl SessionPrompt {
             total: estimated_input_tokens,
         };
         if estimated_input_tokens > 0 && engine.is_overflow(&estimated_usage, &limits) {
-            return true;
+            return Some(CompactionAssessment {
+                reason: "session_content_overflow",
+                limit_tokens: Some(compaction_limit),
+                body_chars: Some(total_chars),
+            });
         }
         if estimated_input_tokens > 0
             && Self::should_trigger_proactive_compaction(
@@ -489,19 +619,53 @@ impl SessionPrompt {
                 compaction_config,
             )
         {
-            return true;
+            return Some(CompactionAssessment {
+                reason: "session_content_threshold",
+                limit_tokens: Some(compaction_limit),
+                body_chars: Some(total_chars),
+            });
         }
 
-        // Hard cap: 5MB of content to stay under typical 6MB API body limits
-        // (leaves ~1MB for JSON overhead, tool definitions, system prompt).
-        const MAX_BODY_CHARS: usize = 5_000_000;
         if total_chars > MAX_BODY_CHARS {
-            return true;
+            return Some(CompactionAssessment {
+                reason: "request_body_too_large",
+                limit_tokens: Some(compaction_limit),
+                body_chars: Some(total_chars),
+            });
         }
 
         // Softer cap based on estimated token count.
-        const MAX_CONTEXT_CHARS: usize = 200_000;
-        total_chars > MAX_CONTEXT_CHARS
+        if total_chars > MAX_CONTEXT_CHARS {
+            return Some(CompactionAssessment {
+                reason: "session_content_chars_threshold",
+                limit_tokens: Some(compaction_limit),
+                body_chars: Some(total_chars),
+            });
+        }
+
+        None
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) fn should_compact(
+        messages: &[SessionMessage],
+        provider: &dyn Provider,
+        model_id: &str,
+        max_output_tokens: Option<u64>,
+        compaction_config: &CompactionConfig,
+        live_context_tokens: Option<u64>,
+    ) -> bool {
+        Self::assess_compaction(
+            messages,
+            provider,
+            model_id,
+            max_output_tokens,
+            compaction_config,
+            live_context_tokens,
+            None,
+            None,
+        )
+        .is_some()
     }
 
     pub(super) async fn ensure_title(
@@ -1008,8 +1172,23 @@ impl SessionPrompt {
         messages: &[SessionMessage],
         focus: Option<&str>,
     ) -> Option<String> {
+        Self::trigger_compaction_with_record(session, messages, focus, None, false)
+    }
+
+    pub(crate) fn trigger_compaction_with_record(
+        session: &mut Session,
+        messages: &[SessionMessage],
+        focus: Option<&str>,
+        record: Option<serde_json::Value>,
+        force: bool,
+    ) -> Option<String> {
         let total_messages = messages.len();
-        if total_messages < 10 {
+        let min_messages = if force {
+            FORCE_COMPACTION_MIN_MESSAGES
+        } else {
+            AUTO_COMPACTION_MIN_MESSAGES
+        };
+        if total_messages < min_messages {
             return None;
         }
 
@@ -1083,6 +1262,26 @@ impl SessionPrompt {
         // This mirrors the TS behavior where compaction creates an assistant message with
         // summary=true and a compaction part, so that filter_compacted_messages can find it.
         let mut compaction_msg = SessionMessage::assistant(session.id.clone());
+        if let Some(record) = record {
+            let mut record = record;
+            if let Some(object) = record.as_object_mut() {
+                object
+                    .entry("message_count_before".to_string())
+                    .or_insert_with(|| serde_json::json!(total_messages));
+                object
+                    .entry("compacted_message_count".to_string())
+                    .or_insert_with(|| serde_json::json!(total_messages - keep_count));
+                object
+                    .entry("kept_message_count".to_string())
+                    .or_insert_with(|| serde_json::json!(keep_count));
+                object
+                    .entry("summary".to_string())
+                    .or_insert_with(|| serde_json::json!(summary.clone()));
+            }
+            compaction_msg
+                .metadata
+                .insert(CONTEXT_COMPACTION_RECORD_METADATA_KEY.to_string(), record);
+        }
         compaction_msg.parts.push(crate::MessagePart {
             id: format!("prt_{}", uuid::Uuid::new_v4()),
             part_type: PartType::Compaction {
@@ -1553,6 +1752,91 @@ mod tests {
             .expect("focused compaction should produce a summary");
         assert!(summary.contains("Focused on `xterm`."));
         assert!(summary.to_ascii_lowercase().contains("xterm"));
+    }
+
+    #[test]
+    fn forced_compaction_bypasses_auto_minimum_and_records_diagnostics() {
+        let mut session = Session::new("proj", ".");
+        let session_id = session.id.clone();
+        let messages = vec![
+            SessionMessage::user(session_id.clone(), "first"),
+            SessionMessage::user(session_id, "second"),
+        ];
+        let record = SessionPrompt::build_compaction_record(
+            "overflow_recovery",
+            Some("prompt.provider_overflow"),
+            Some("provider_overflow"),
+            true,
+            Some(120_000),
+            None,
+            Some(100_000),
+            Some(480_000),
+        );
+
+        let summary = SessionPrompt::trigger_compaction_with_record(
+            &mut session,
+            &messages,
+            None,
+            Some(record),
+            true,
+        )
+        .expect("forced compaction should not require 10 messages");
+
+        let compaction_message = session
+            .record()
+            .messages
+            .last()
+            .expect("compaction message should be appended");
+        let diagnostics = compaction_message
+            .metadata
+            .get(CONTEXT_COMPACTION_RECORD_METADATA_KEY)
+            .expect("diagnostics metadata should exist");
+
+        assert_eq!(
+            diagnostics["trigger"],
+            serde_json::json!("overflow_recovery")
+        );
+        assert_eq!(diagnostics["forced"], serde_json::json!(true));
+        assert_eq!(diagnostics["compacted_message_count"], serde_json::json!(1));
+        assert_eq!(diagnostics["kept_message_count"], serde_json::json!(1));
+        assert_eq!(diagnostics["message_count_before"], serde_json::json!(2));
+        assert_eq!(diagnostics["summary"], serde_json::json!(summary));
+    }
+
+    #[test]
+    fn assess_compaction_prefers_request_view_thresholds() {
+        let provider = StaticModelProvider {
+            model: Some(ModelInfo {
+                id: "request-view-model".to_string(),
+                name: "Request View Model".to_string(),
+                provider: "mock".to_string(),
+                context_window: 1_000_000,
+                max_input_tokens: Some(50_000),
+                max_output_tokens: 8_192,
+                supports_vision: false,
+                supports_tools: false,
+                cost_per_million_input: 0.0,
+                cost_per_million_output: 0.0,
+                cost_per_million_cache_read: None,
+                cost_per_million_cache_write: None,
+            }),
+        };
+        let messages = vec![SessionMessage::user("ses_test", "small user message")];
+
+        let assessment = SessionPrompt::assess_compaction(
+            &messages,
+            &provider,
+            "request-view-model",
+            None,
+            &CompactionConfig::default(),
+            None,
+            Some(38_000),
+            Some(152_000),
+        )
+        .expect("request view should trigger proactive compaction");
+
+        assert_eq!(assessment.reason, "request_view_threshold");
+        assert_eq!(assessment.body_chars, Some(152_000));
     }
 
     #[test]

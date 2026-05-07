@@ -1,4 +1,5 @@
 use crate::runtime::events::{LoopError, LoopRequest, ModelFailure, ToolCallReady, ToolResult};
+use crate::runtime::policy::ModelContextLimits;
 use crate::runtime::traits::{ModelCaller, ToolDispatcher};
 use crate::tool_runner::{ToolCallInput, ToolRunner};
 use crate::traits::{ModelResolver, ToolExecutor};
@@ -17,18 +18,21 @@ pub struct ModelCallerBridge {
     model_resolver: Arc<dyn ModelResolver>,
     model: Option<ModelRef>,
     exec_ctx: ExecutionContext,
+    context_limits: Option<ModelContextLimits>,
 }
 
 impl ModelCallerBridge {
-    pub fn new(
+    pub async fn new(
         model_resolver: Arc<dyn ModelResolver>,
         model: Option<ModelRef>,
         exec_ctx: ExecutionContext,
     ) -> Self {
+        let context_limits = model_resolver.context_limits(model.as_ref(), &exec_ctx).await;
         Self {
             model_resolver,
             model,
             exec_ctx,
+            context_limits,
         }
     }
 
@@ -89,6 +93,14 @@ impl ModelCaller for ModelCallerBridge {
             error,
         ))
     }
+
+    fn context_limits(&self) -> Option<ModelContextLimits> {
+        self.context_limits.or_else(|| {
+            self.model
+                .as_ref()
+                .map(|model| ModelContextLimits::heuristic_for_model_id(&model.model_id))
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -143,5 +155,64 @@ impl ToolDispatcher for ToolDispatcherBridge {
 
     async fn list_definitions(&self) -> Vec<rocode_provider::ToolDefinition> {
         self.tool_executor.list_definitions(&self.exec_ctx).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::policy::ModelContextLimits;
+    use crate::{ExecutionContext, OrchestratorError};
+    use async_trait::async_trait;
+    use std::collections::HashMap;
+
+    struct LimitsOnlyResolver {
+        limits: Option<ModelContextLimits>,
+    }
+
+    #[async_trait]
+    impl ModelResolver for LimitsOnlyResolver {
+        async fn chat_stream(
+            &self,
+            _model: Option<&ModelRef>,
+            _messages: Vec<rocode_provider::Message>,
+            _tools: Vec<rocode_provider::ToolDefinition>,
+            _exec_ctx: &ExecutionContext,
+        ) -> Result<rocode_provider::StreamResult, OrchestratorError> {
+            unreachable!("chat_stream should not be called in this test")
+        }
+
+        async fn context_limits(
+            &self,
+            _model: Option<&ModelRef>,
+            _exec_ctx: &ExecutionContext,
+        ) -> Option<ModelContextLimits> {
+            self.limits
+        }
+    }
+
+    #[tokio::test]
+    async fn model_caller_bridge_prefers_resolver_context_limits() {
+        let exact = ModelContextLimits {
+            context_window_tokens: Some(1_000_000),
+            max_input_tokens: Some(900_000),
+            max_output_tokens: Some(32_000),
+        };
+        let bridge = ModelCallerBridge::new(
+            Arc::new(LimitsOnlyResolver { limits: Some(exact) }),
+            Some(ModelRef {
+                provider_id: "mock".to_string(),
+                model_id: "tiny-model".to_string(),
+            }),
+            ExecutionContext {
+                session_id: "session".to_string(),
+                workdir: ".".to_string(),
+                agent_name: "agent".to_string(),
+                metadata: HashMap::new(),
+            },
+        )
+        .await;
+
+        assert_eq!(bridge.context_limits(), Some(exact));
     }
 }

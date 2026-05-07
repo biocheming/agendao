@@ -6,9 +6,17 @@ use rocode_execution_types::ExecutionRequestContext;
 use rocode_orchestrator::ToolExecError as OrchestratorToolExecError;
 use rocode_provider::ProviderRegistry;
 use rocode_tool::{ToolContext, ToolError, ToolRegistry};
+use rocode_types::{
+    SessionContextKind, SubsessionHandoffFieldKind, SubsessionHandoffPacket,
+    SubsessionResultEnvelope,
+};
 
 use super::{AgentExecutor, Conversation, SubsessionState};
 use crate::ToolCall;
+
+const MAX_SUBSESSION_HANDOFF_TAIL_FIELDS: usize = 3;
+const MAX_SUBSESSION_FIELD_CHARS: usize = 4_000;
+const MAX_SUBSESSION_TAIL_FIELD_CHARS: usize = 1_200;
 
 pub(super) fn agent_execution_context(info: &crate::AgentInfo) -> ExecutionRequestContext {
     ExecutionRequestContext {
@@ -20,19 +28,6 @@ pub(super) fn agent_execution_context(info: &crate::AgentInfo) -> ExecutionReque
         variant: info.variant.clone(),
         provider_options: (!info.options.is_empty()).then_some(info.options.clone()),
     }
-}
-
-pub(super) fn collect_tool_names(conversation: &Conversation) -> HashMap<String, String> {
-    let mut tool_name_by_id = HashMap::new();
-    for message in &conversation.messages {
-        if !matches!(message.role, crate::MessageRole::Assistant) {
-            continue;
-        }
-        for call in &message.tool_calls {
-            tool_name_by_id.insert(call.id.clone(), call.name.clone());
-        }
-    }
-    tool_name_by_id
 }
 
 pub(super) fn append_provider_message(
@@ -313,11 +308,14 @@ pub(super) fn attach_subsession_callbacks(
                     Conversation::new()
                 };
 
+                // A delegated subsession starts fresh and receives context only
+                // through explicit handoff on prompt_subsession.
                 let session_id = format!("task_{}_{}", agent_name, uuid::Uuid::new_v4().simple());
                 let mut store = subsessions.lock().await;
                 store.insert(
                     session_id.clone(),
                     SubsessionState {
+                        kind: SessionContextKind::DelegatedSubsession,
                         agent,
                         conversation,
                         disabled_tools: disabled_tools.into_iter().collect(),
@@ -368,7 +366,7 @@ pub(super) fn attach_subsession_callbacks(
         let registry = agent_registry.clone();
         let parent_abort = parent_abort.clone();
         let tool_runtime_config = tool_runtime_config.clone();
-        move |session_id, prompt| {
+        move |session_id, handoff| {
             let subsessions = subsessions.clone();
             let providers = providers.clone();
             let tools = tools.clone();
@@ -398,7 +396,10 @@ pub(super) fn attach_subsession_callbacks(
                 executor.conversation = state.conversation;
 
                 let output = executor
-                    .execute_subsession_with_cancel_token(prompt, parent_abort.clone())
+                    .execute_subsession_with_cancel_token(
+                        render_subsession_handoff_packet(&handoff),
+                        parent_abort.clone(),
+                    )
                     .await
                     .map_err(|e| {
                         ToolError::ExecutionError(format!("Subagent execution failed: {}", e))
@@ -409,10 +410,63 @@ pub(super) fn attach_subsession_callbacks(
                     state.conversation = executor.conversation.clone();
                 }
 
-                Ok(output)
+                Ok(SubsessionResultEnvelope::summary(output))
             }
         }
     })
+}
+
+fn render_subsession_handoff_packet(packet: &SubsessionHandoffPacket) -> String {
+    let mut sections = Vec::new();
+    let mut sanctioned_tail_count = 0usize;
+    for field in &packet.fields {
+        let text = field.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let text = if matches!(field.kind, SubsessionHandoffFieldKind::SanctionedRecentTail) {
+            if sanctioned_tail_count >= MAX_SUBSESSION_HANDOFF_TAIL_FIELDS {
+                continue;
+            }
+            sanctioned_tail_count += 1;
+            truncate_subsession_field(text, MAX_SUBSESSION_TAIL_FIELD_CHARS)
+        } else {
+            truncate_subsession_field(text, MAX_SUBSESSION_FIELD_CHARS)
+        };
+        let label = match field.kind {
+            SubsessionHandoffFieldKind::Goal => "Goal",
+            SubsessionHandoffFieldKind::Constraint => "Constraints",
+            SubsessionHandoffFieldKind::Fact => "Facts",
+            SubsessionHandoffFieldKind::RequiredPath => "Required Paths",
+            SubsessionHandoffFieldKind::SupportingContext => "Supporting Context",
+            SubsessionHandoffFieldKind::PreflightContext => "Preflight Context",
+            SubsessionHandoffFieldKind::RecentConclusion => "Recent Conclusions",
+            SubsessionHandoffFieldKind::SanctionedRecentTail => "Sanctioned Recent Tail",
+        };
+        let heading = field
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|title| format!("## {}: {}", label, title))
+            .unwrap_or_else(|| format!("## {}", label));
+        sections.push(format!("{}\n\n{}", heading, text));
+    }
+
+    if sections.is_empty() {
+        String::new()
+    } else {
+        sections.join("\n\n")
+    }
+}
+
+fn truncate_subsession_field(text: &str, max_chars: usize) -> String {
+    let truncated = text.chars().take(max_chars).collect::<String>();
+    if text.chars().count() > max_chars {
+        format!("{}...", truncated)
+    } else {
+        truncated
+    }
 }
 
 pub(super) fn parse_model_string(raw: Option<&str>) -> Option<(String, String)> {

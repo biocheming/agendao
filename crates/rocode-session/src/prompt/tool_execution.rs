@@ -8,6 +8,10 @@ use tokio_util::sync::CancellationToken;
 
 use rocode_orchestrator::inline_subtask_request_defaults;
 use rocode_provider::{Provider, ToolDefinition};
+use rocode_types::{
+    SubsessionHandoffFieldKind, SubsessionHandoffPacket, SubsessionHandoffRichness,
+    SubsessionResultEnvelope,
+};
 
 use crate::{FilePart, MessageRole, PartType, Session, SessionMessage};
 
@@ -30,6 +34,11 @@ struct ToolExecutionOptions {
     model_id: String,
     hooks: PromptHooks,
 }
+
+const MAX_PERSISTED_SUBSESSION_HISTORY_TURNS: usize = 8;
+const MAX_SUBSESSION_HANDOFF_TAIL_FIELDS: usize = 3;
+const MAX_SUBSESSION_FIELD_CHARS: usize = 4_000;
+const MAX_SUBSESSION_TAIL_FIELD_CHARS: usize = 1_200;
 
 #[derive(Clone)]
 pub(super) struct PersistedSubsessionPromptOptions {
@@ -560,6 +569,7 @@ impl SessionPrompt {
                     state.insert(
                         session_id.clone(),
                         PersistedSubsession {
+                            kind: rocode_types::SessionContextKind::DelegatedSubsession,
                             agent,
                             model,
                             directory: Some(parent_directory),
@@ -576,7 +586,7 @@ impl SessionPrompt {
         let tool_runtime_config = ctx.runtime_config.clone();
         let config_store = ctx.config_store.clone();
 
-        ctx.with_prompt_subsession(move |session_id, prompt| {
+        ctx.with_prompt_subsession(move |session_id, handoff| {
             let subsessions = subsessions.clone();
             let provider = provider.clone();
             let tool_registry = tool_registry.clone();
@@ -602,7 +612,7 @@ impl SessionPrompt {
 
                 let output = Self::execute_persisted_subsession_prompt(
                     &current,
-                    &prompt,
+                    &handoff,
                     provider,
                     tool_registry,
                     PersistedSubsessionPromptOptions {
@@ -625,8 +635,10 @@ impl SessionPrompt {
                 let mut state = subsessions.lock().await;
                 if let Some(existing) = state.get_mut(&session_id) {
                     existing.history.push(PersistedSubsessionTurn {
-                        prompt,
-                        output: output.clone(),
+                        handoff: Some(handoff),
+                        result: Some(output.clone()),
+                        prompt: None,
+                        output: None,
                     });
                 }
                 Ok(output)
@@ -636,18 +648,20 @@ impl SessionPrompt {
 
     pub(super) async fn execute_persisted_subsession_prompt(
         subsession: &PersistedSubsession,
-        prompt: &str,
+        handoff: &SubsessionHandoffPacket,
         provider: Arc<dyn Provider>,
         tool_registry: Arc<rocode_tool::ToolRegistry>,
         options: PersistedSubsessionPromptOptions,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<SubsessionResultEnvelope> {
         let model = Self::resolve_subsession_model(
             subsession.model.as_deref(),
             &options.default_model,
             provider.id(),
         );
 
-        let composed_prompt = Self::compose_subsession_prompt(&subsession.history, prompt);
+        // Cross-session handoff stays bounded: only the delegated subsession's
+        // own history and the new explicit prompt cross this boundary.
+        let composed_prompt = Self::compose_subsession_prompt(&subsession.history, handoff);
         let working_directory = subsession
             .directory
             .as_deref()
@@ -714,9 +728,10 @@ impl SessionPrompt {
                 .or(request_defaults.top_p),
         };
 
-        executor
+        let output = executor
             .execute_inline(provider, &tool_registry, &subsession.disabled_tools)
-            .await
+            .await?;
+        Ok(SubsessionResultEnvelope::summary(output))
     }
 
     pub(super) fn resolve_subsession_model(
@@ -769,25 +784,120 @@ impl SessionPrompt {
 
     pub(super) fn compose_subsession_prompt(
         history: &[PersistedSubsessionTurn],
-        prompt: &str,
+        handoff: &SubsessionHandoffPacket,
     ) -> String {
+        let rendered_handoff = Self::render_subsession_handoff(handoff);
         if history.is_empty() {
-            return prompt.to_string();
+            return rendered_handoff;
         }
 
         let history_text = history
             .iter()
             .rev()
-            .take(8)
+            .take(MAX_PERSISTED_SUBSESSION_HISTORY_TURNS)
             .rev()
-            .map(|turn| format!("User:\n{}\n\nAssistant:\n{}", turn.prompt, turn.output))
+            .map(Self::render_persisted_subsession_turn)
             .collect::<Vec<_>>()
             .join("\n\n---\n\n");
 
         format!(
-            "Continue this subtask session.\n\nPrevious conversation:\n{}\n\nNew request:\n{}",
-            history_text, prompt
+            "Continue this delegated subsession.\n\nPrevious delegated work:\n{}\n\nNew handoff:\n{}",
+            history_text, rendered_handoff
         )
+    }
+
+    fn render_persisted_subsession_turn(turn: &PersistedSubsessionTurn) -> String {
+        let handoff = turn.handoff.clone().unwrap_or_else(|| {
+            SubsessionHandoffPacket::bounded_goal(turn.prompt.clone().unwrap_or_default())
+        });
+        let result = turn.result.clone().unwrap_or_else(|| {
+            SubsessionResultEnvelope::summary(turn.output.clone().unwrap_or_default())
+        });
+
+        format!(
+            "Delegated handoff:\n{}\n\nRecovered result ({}):\n{}",
+            Self::indent_block(&Self::render_subsession_handoff(&handoff)),
+            match result.absorb_mode {
+                rocode_types::SubsessionResultAbsorbMode::SummaryOnly => "summary only",
+            },
+            Self::indent_block(&Self::truncate_subsession_field(
+                &result.text,
+                MAX_SUBSESSION_FIELD_CHARS
+            ))
+        )
+    }
+
+    fn render_subsession_handoff(handoff: &SubsessionHandoffPacket) -> String {
+        let mut lines = vec![format!(
+            "Delegated handoff mode: {}",
+            match handoff.effective_richness() {
+                SubsessionHandoffRichness::Bounded => "bounded",
+                SubsessionHandoffRichness::Enriched => "enriched",
+            }
+        )];
+
+        let mut sanctioned_tail_count = 0usize;
+        for field in &handoff.fields {
+            let trimmed = field.text.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            let limit = if matches!(field.kind, SubsessionHandoffFieldKind::SanctionedRecentTail) {
+                if sanctioned_tail_count >= MAX_SUBSESSION_HANDOFF_TAIL_FIELDS {
+                    continue;
+                }
+                sanctioned_tail_count += 1;
+                MAX_SUBSESSION_TAIL_FIELD_CHARS
+            } else {
+                MAX_SUBSESSION_FIELD_CHARS
+            };
+            let text = Self::truncate_subsession_field(trimmed, limit);
+            let label = Self::subsession_handoff_field_label(field.kind);
+            let title = field
+                .title
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let header = match title {
+                Some(title) => format!("## {}: {}", label, title),
+                None => format!("## {}", label),
+            };
+            lines.push(header);
+            lines.push(text);
+        }
+
+        lines.join("\n\n")
+    }
+
+    fn subsession_handoff_field_label(kind: SubsessionHandoffFieldKind) -> &'static str {
+        match kind {
+            SubsessionHandoffFieldKind::Goal => "Goal",
+            SubsessionHandoffFieldKind::Constraint => "Constraints",
+            SubsessionHandoffFieldKind::Fact => "Facts",
+            SubsessionHandoffFieldKind::RequiredPath => "Required Paths",
+            SubsessionHandoffFieldKind::SupportingContext => "Supporting Context",
+            SubsessionHandoffFieldKind::PreflightContext => "Preflight Context",
+            SubsessionHandoffFieldKind::RecentConclusion => "Recent Conclusions",
+            SubsessionHandoffFieldKind::SanctionedRecentTail => "Sanctioned Recent Tail",
+        }
+    }
+
+    fn truncate_subsession_field(text: &str, max_chars: usize) -> String {
+        let normalized = text.trim();
+        let truncated = normalized.chars().take(max_chars).collect::<String>();
+        if normalized.chars().count() > max_chars {
+            format!("{}...", truncated)
+        } else {
+            truncated
+        }
+    }
+
+    fn indent_block(text: &str) -> String {
+        text.lines()
+            .map(|line| format!("  {}", line))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -927,13 +1037,16 @@ mod tests {
         map.insert(
             "task_explore_1".to_string(),
             PersistedSubsession {
+                kind: rocode_types::SessionContextKind::DelegatedSubsession,
                 agent: "explore".to_string(),
                 model: Some("ethnopic:test-model".to_string()),
                 directory: Some("/tmp/project".to_string()),
                 disabled_tools: vec!["task".to_string()],
                 history: vec![PersistedSubsessionTurn {
-                    prompt: "Inspect src".to_string(),
-                    output: "Done".to_string(),
+                    handoff: Some(SubsessionHandoffPacket::bounded_goal("Inspect src")),
+                    result: Some(SubsessionResultEnvelope::summary("Done")),
+                    prompt: None,
+                    output: None,
                 }],
             },
         );
@@ -941,6 +1054,10 @@ mod tests {
         SessionPrompt::save_persisted_subsessions(&mut session, &map);
         let loaded = SessionPrompt::load_persisted_subsessions(&session);
         assert_eq!(loaded.len(), 1);
+        assert_eq!(
+            loaded["task_explore_1"].kind,
+            rocode_types::SessionContextKind::DelegatedSubsession
+        );
         assert_eq!(loaded["task_explore_1"].agent, "explore");
         assert_eq!(loaded["task_explore_1"].history.len(), 1);
     }
@@ -977,13 +1094,40 @@ mod tests {
     #[test]
     fn compose_subsession_prompt_includes_recent_history() {
         let history = vec![PersistedSubsessionTurn {
-            prompt: "Find files".to_string(),
-            output: "Found 10 files".to_string(),
+            handoff: Some(SubsessionHandoffPacket::bounded_goal("Find files")),
+            result: Some(SubsessionResultEnvelope::summary("Found 10 files")),
+            prompt: None,
+            output: None,
         }];
-        let composed = SessionPrompt::compose_subsession_prompt(&history, "Continue");
-        assert!(composed.contains("Previous conversation"));
+        let composed = SessionPrompt::compose_subsession_prompt(
+            &history,
+            &SubsessionHandoffPacket::bounded_goal("Continue"),
+        );
+        assert!(composed.contains("Previous delegated work"));
         assert!(composed.contains("Find files"));
         assert!(composed.contains("Continue"));
+    }
+
+    #[test]
+    fn compose_subsession_prompt_limits_sanctioned_recent_tail_fields() {
+        let mut handoff = SubsessionHandoffPacket::bounded_goal("Continue");
+        handoff.push_text(SubsessionHandoffFieldKind::SanctionedRecentTail, "tail one");
+        handoff.push_text(SubsessionHandoffFieldKind::SanctionedRecentTail, "tail two");
+        handoff.push_text(
+            SubsessionHandoffFieldKind::SanctionedRecentTail,
+            "tail three",
+        );
+        handoff.push_text(
+            SubsessionHandoffFieldKind::SanctionedRecentTail,
+            "tail four",
+        );
+
+        let composed = SessionPrompt::compose_subsession_prompt(&[], &handoff);
+
+        assert!(composed.contains("tail one"));
+        assert!(composed.contains("tail two"));
+        assert!(composed.contains("tail three"));
+        assert!(!composed.contains("tail four"));
     }
 
     #[tokio::test]

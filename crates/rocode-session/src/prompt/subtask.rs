@@ -10,6 +10,7 @@ use rocode_provider::{
     Content, ContentPart, Message, Provider, Role, ToolDefinition, ToolResult as ProviderToolResult,
 };
 use rocode_tool::{ToolContext, ToolError};
+use rocode_types::SubsessionHandoffPacket;
 use tokio_util::sync::CancellationToken;
 
 use super::{AgentParams, AskPermissionHook, AskQuestionHook, ModelRef};
@@ -199,10 +200,13 @@ impl SubtaskExecutor {
             .unwrap_or_else(|_| format!("task_{}_{}", self.agent_name, uuid::Uuid::new_v4()));
 
         if let Ok(output) = ctx
-            .do_prompt_subsession(subsession_id.clone(), self.prompt.clone())
+            .do_prompt_subsession(
+                subsession_id.clone(),
+                SubsessionHandoffPacket::bounded_goal(self.prompt.clone()),
+            )
             .await
         {
-            return Ok(Self::format_task_output(&subsession_id, &output));
+            return Ok(Self::format_task_output(&subsession_id, &output.text));
         }
 
         let output = self.execute_inline(provider, tool_registry, &[]).await?;

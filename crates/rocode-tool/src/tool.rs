@@ -113,10 +113,14 @@ pub type CreateSubsessionCallback = Arc<
 pub type PromptSubsessionCallback = Arc<
     dyn (Fn(
             String,
-            String,
-        )
-            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, ToolError>> + Send>>)
-        + Send
+            rocode_types::SubsessionHandoffPacket,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<rocode_types::SubsessionResultEnvelope, ToolError>,
+                    > + Send,
+            >,
+        >) + Send
         + Sync,
 >;
 
@@ -384,6 +388,76 @@ pub struct ToolRuntimeConfig {
     pub context_docs_registry_path: Option<String>,
 }
 
+pub const SUBSESSION_HANDOFF_RECENT_TAIL_EXTRA_KEY: &str = "subsession_handoff_recent_tail";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum SubsessionHandoffTailExtraEntry {
+    Text(String),
+    Rich {
+        text: String,
+        #[serde(default)]
+        title: Option<String>,
+    },
+}
+
+pub fn subsession_handoff_recent_tail_fields(
+    extra: &Metadata,
+) -> Vec<rocode_types::SubsessionHandoffField> {
+    extra
+        .get(SUBSESSION_HANDOFF_RECENT_TAIL_EXTRA_KEY)
+        .and_then(|value| {
+            serde_json::from_value::<Vec<SubsessionHandoffTailExtraEntry>>(value.clone()).ok()
+        })
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| match entry {
+            SubsessionHandoffTailExtraEntry::Text(text) => {
+                let trimmed = text.trim();
+                (!trimmed.is_empty()).then(|| {
+                    rocode_types::SubsessionHandoffField::new(
+                        rocode_types::SubsessionHandoffFieldKind::SanctionedRecentTail,
+                        trimmed.to_string(),
+                    )
+                })
+            }
+            SubsessionHandoffTailExtraEntry::Rich { text, title } => {
+                let trimmed = text.trim();
+                (!trimmed.is_empty()).then(|| {
+                    if let Some(title) = title
+                        .map(|value| value.trim().to_string())
+                        .filter(|value| !value.is_empty())
+                    {
+                        rocode_types::SubsessionHandoffField::titled(
+                            rocode_types::SubsessionHandoffFieldKind::SanctionedRecentTail,
+                            title,
+                            trimmed.to_string(),
+                        )
+                    } else {
+                        rocode_types::SubsessionHandoffField::new(
+                            rocode_types::SubsessionHandoffFieldKind::SanctionedRecentTail,
+                            trimmed.to_string(),
+                        )
+                    }
+                })
+            }
+        })
+        .collect()
+}
+
+pub fn append_subsession_handoff_recent_tail_from_extra(
+    packet: &mut rocode_types::SubsessionHandoffPacket,
+    extra: &Metadata,
+) {
+    let fields = subsession_handoff_recent_tail_fields(extra);
+    if fields.is_empty() {
+        return;
+    }
+
+    packet.richness = rocode_types::SubsessionHandoffRichness::Enriched;
+    packet.fields.extend(fields);
+}
+
 impl ToolRuntimeConfig {
     pub fn from_config(config: &rocode_config::Config) -> Self {
         Self {
@@ -621,11 +695,13 @@ impl ToolContext {
 
     pub fn with_prompt_subsession<F, Fut>(mut self, callback: F) -> Self
     where
-        F: Fn(String, String) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = Result<String, ToolError>> + Send + 'static,
+        F: Fn(String, rocode_types::SubsessionHandoffPacket) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<rocode_types::SubsessionResultEnvelope, ToolError>>
+            + Send
+            + 'static,
     {
-        self.prompt_subsession = Some(Arc::new(move |session_id, prompt| {
-            Box::pin(callback(session_id, prompt))
+        self.prompt_subsession = Some(Arc::new(move |session_id, handoff| {
+            Box::pin(callback(session_id, handoff))
         }));
         self
     }
@@ -633,10 +709,10 @@ impl ToolContext {
     pub async fn do_prompt_subsession(
         &self,
         session_id: String,
-        prompt: String,
-    ) -> Result<String, ToolError> {
+        handoff: rocode_types::SubsessionHandoffPacket,
+    ) -> Result<rocode_types::SubsessionResultEnvelope, ToolError> {
         if let Some(ref callback) = self.prompt_subsession {
-            callback(session_id, prompt).await
+            callback(session_id, handoff).await
         } else {
             Err(ToolError::ExecutionError(
                 "The current execution environment does not support subagent sessions (task/task_flow). \

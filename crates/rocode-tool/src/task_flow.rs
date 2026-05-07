@@ -455,6 +455,21 @@ async fn execute_delegate(
     metadata.insert("delegated".to_string(), serde_json::json!(true));
     metadata.insert("agentTaskId".to_string(), serde_json::json!(agent_task_id));
     metadata.insert("sessionId".to_string(), serde_json::json!(session_id));
+    if let Some(session_context_kind) = delegated.metadata.get("sessionContextKind") {
+        metadata.insert(
+            "sessionContextKind".to_string(),
+            session_context_kind.clone(),
+        );
+    }
+    if let Some(session_handoff_richness) = delegated.metadata.get("sessionHandoffRichness") {
+        metadata.insert(
+            "sessionHandoffRichness".to_string(),
+            session_handoff_richness.clone(),
+        );
+    }
+    if let Some(result_absorb_mode) = delegated.metadata.get("resultAbsorbMode") {
+        metadata.insert("resultAbsorbMode".to_string(), result_absorb_mode.clone());
+    }
     metadata.insert(
         "hasTextOutput".to_string(),
         serde_json::json!(has_text_output),
@@ -959,10 +974,23 @@ fn validate_task_status_filter(status: &str) -> Result<(), ToolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rocode_types::{SubsessionHandoffPacket, SubsessionResultEnvelope};
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use tokio::sync::Mutex;
+
+    fn summary(text: &str) -> SubsessionResultEnvelope {
+        SubsessionResultEnvelope::summary(text.to_string())
+    }
+
+    fn goal_text(packet: &SubsessionHandoffPacket) -> Option<&str> {
+        packet
+            .fields
+            .iter()
+            .find(|field| field.kind == rocode_types::SubsessionHandoffFieldKind::Goal)
+            .map(|field| field.text.as_str())
+    }
 
     fn sample_task(status: AgentTaskStatus) -> AgentTask {
         let mut output_tail = VecDeque::new();
@@ -1402,7 +1430,7 @@ mod tests {
                 Ok("task_build_122".to_string())
             })
             .with_prompt_subsession(|_session_id, _prompt| async move {
-                Ok("subagent output".to_string())
+                Ok(summary("subagent output"))
             });
 
         TaskFlowTool::new()
@@ -1445,7 +1473,7 @@ mod tests {
             Option<String>,
             Vec<String>,
         )>::new()));
-        let prompt_calls = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let prompt_calls = Arc::new(Mutex::new(Vec::<(String, SubsessionHandoffPacket)>::new()));
 
         let ctx = ToolContext::new("session-1".into(), "message-1".into(), ".".into())
             .with_get_agent_info(|name| async move {
@@ -1485,7 +1513,7 @@ mod tests {
                     let prompt_calls = prompt_calls.clone();
                     async move {
                         prompt_calls.lock().await.push((session_id, prompt));
-                        Ok("subagent output".to_string())
+                        Ok(summary("subagent output"))
                     }
                 }
             });
@@ -1508,6 +1536,18 @@ mod tests {
         assert_eq!(
             result.metadata["sessionId"],
             serde_json::json!("task_build_123")
+        );
+        assert_eq!(
+            result.metadata["sessionContextKind"],
+            serde_json::json!("delegated_subsession")
+        );
+        assert_eq!(
+            result.metadata["sessionHandoffRichness"],
+            serde_json::json!("bounded")
+        );
+        assert_eq!(
+            result.metadata["resultAbsorbMode"],
+            serde_json::json!("summary_only")
         );
         assert!(result.metadata["agentTaskId"]
             .as_str()
@@ -1537,7 +1577,7 @@ mod tests {
             Option<String>,
             Vec<String>,
         )>::new()));
-        let prompt_calls = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let prompt_calls = Arc::new(Mutex::new(Vec::<(String, SubsessionHandoffPacket)>::new()));
         let updated_todos = Arc::new(Mutex::new(Vec::<crate::TodoItemData>::new()));
 
         let ctx = ToolContext::new("session-1".into(), "message-1".into(), ".".into())
@@ -1578,7 +1618,7 @@ mod tests {
                     let prompt_calls = prompt_calls.clone();
                     async move {
                         prompt_calls.lock().await.push((session_id, prompt));
-                        Ok("subagent output".to_string())
+                        Ok(summary("subagent output"))
                     }
                 }
             })
@@ -1659,9 +1699,9 @@ mod tests {
             .with_create_subsession(|_agent, _title, _model, _disabled_tools| async move {
                 Ok("task_build_345".to_string())
             })
-            .with_prompt_subsession(|_session_id, _prompt| async move {
-                Ok("subagent output".to_string())
-            })
+            .with_prompt_subsession(
+                |_session_id, _prompt| async move { Ok(summary("subagent output")) },
+            )
             .with_todo_get(|_session_id| async move {
                 Ok(vec![crate::TodoItemData {
                     content: "existing item".to_string(),
@@ -1744,7 +1784,7 @@ mod tests {
                 Ok("task_build_345".to_string())
             })
             .with_prompt_subsession(|_session_id, _prompt| async move {
-                Ok("subagent output".to_string())
+                Ok(summary("subagent output"))
             });
 
         let result = TaskFlowTool::new()
@@ -1766,7 +1806,7 @@ mod tests {
     #[tokio::test]
     async fn execute_resume_does_not_sync_todo_projection() {
         let todo_updates = Arc::new(AtomicBool::new(false));
-        let prompted = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let prompted = Arc::new(Mutex::new(Vec::<(String, SubsessionHandoffPacket)>::new()));
 
         let ctx = ToolContext::new("session-1".into(), "message-1".into(), ".".into())
             .with_get_agent_info(|name| async move {
@@ -1796,7 +1836,7 @@ mod tests {
                     let prompted = prompted.clone();
                     async move {
                         prompted.lock().await.push((session_id, prompt));
-                        Ok("continued output".to_string())
+                        Ok(summary("continued output"))
                     }
                 }
             })
@@ -1837,7 +1877,7 @@ mod tests {
     #[tokio::test]
     async fn execute_resume_reuses_session_id_and_returns_new_agent_task_id() {
         let created = Arc::new(Mutex::new(false));
-        let prompted = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let prompted = Arc::new(Mutex::new(Vec::<(String, SubsessionHandoffPacket)>::new()));
 
         let ctx = ToolContext::new("session-1".into(), "message-1".into(), ".".into())
             .with_get_agent_info(|name| async move {
@@ -1874,7 +1914,7 @@ mod tests {
                     let prompted = prompted.clone();
                     async move {
                         prompted.lock().await.push((session_id, prompt));
-                        Ok("continued output".to_string())
+                        Ok(summary("continued output"))
                     }
                 }
             });
@@ -1898,6 +1938,10 @@ mod tests {
             result.metadata["sessionId"],
             serde_json::json!("task_existing_42")
         );
+        assert_eq!(
+            result.metadata["sessionContextKind"],
+            serde_json::json!("delegated_subsession")
+        );
         assert!(result.metadata["agentTaskId"]
             .as_str()
             .is_some_and(|value| value.starts_with('a')));
@@ -1909,6 +1953,9 @@ mod tests {
         let prompted = prompted.lock().await.clone();
         assert_eq!(prompted.len(), 1);
         assert_eq!(prompted[0].0, "task_existing_42");
-        assert_eq!(prompted[0].1, "Continue where you left off");
+        assert_eq!(
+            goal_text(&prompted[0].1),
+            Some("Continue where you left off")
+        );
     }
 }

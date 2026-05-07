@@ -9,8 +9,9 @@ use rocode_core::bus::{Bus, BusEventDef};
 use rocode_plugin::{HookContext, HookEvent};
 use rocode_types::Session as SessionRecord;
 pub use rocode_types::{
-    FileDiff, PermissionRuleset, SessionRevert, SessionShare, SessionStatus, SessionSummary,
-    SessionTime, SessionUsage,
+    FileDiff, PermissionRuleset, SessionContextKind, SessionForkExplain, SessionOwnershipSummary,
+    SessionRevert, SessionShare, SessionStatus, SessionSummary, SessionTime, SessionUsage,
+    SessionUsageBooks,
 };
 
 #[cfg(test)]
@@ -34,6 +35,25 @@ pub static PART_UPDATED_EVENT: BusEventDef = BusEventDef::new("message.part.upda
 pub static PART_REMOVED_EVENT: BusEventDef = BusEventDef::new("message.part.removed");
 pub static PART_DELTA_EVENT: BusEventDef = BusEventDef::new("message.part.delta");
 pub static COMMAND_EXECUTED_EVENT: BusEventDef = BusEventDef::new("command.executed");
+pub const SESSION_CONTEXT_KIND_METADATA_KEY: &str = "session_context_kind";
+pub const FORK_ORIGIN_SESSION_ID_METADATA_KEY: &str = "fork_origin_session_id";
+pub const FORK_ORIGIN_MESSAGE_ID_METADATA_KEY: &str = "fork_origin_message_id";
+pub const FORK_POLICY_FROZEN_METADATA_KEY: &str = "fork_policy_frozen";
+pub const FORK_IMPORTED_HISTORY_METADATA_KEY: &str = "fork_imported_history";
+
+const FORK_POLICY_METADATA_ALLOWLIST: &[&str] = &[
+    "agent",
+    "model_id",
+    "model_provider",
+    "model_variant",
+    "scheduler_applied",
+    "scheduler_profile",
+    "scheduler_root_agent",
+    "scheduler_selection_source",
+    "scheduler_selection_trace",
+    "scheduler_selection_warning",
+    "scheduler_skill_tree_applied",
+];
 
 /// Canonical allowlist for server-side session list search.
 ///
@@ -365,6 +385,13 @@ impl Session {
     pub fn new(project_id: impl Into<String>, directory: impl Into<String>) -> Self {
         let now = Utc::now();
         let slug = Self::generate_slug();
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            SESSION_CONTEXT_KIND_METADATA_KEY.to_string(),
+            serde_json::to_value(SessionContextKind::RootSessionContinuity).unwrap_or(
+                serde_json::Value::String("root_session_continuity".to_string()),
+            ),
+        );
 
         Self {
             inner: SessionRecord {
@@ -383,18 +410,25 @@ impl Session {
                 permission: None,
                 usage: None,
                 status: SessionStatus::Active,
-                metadata: HashMap::new(),
+                metadata,
                 created_at: now,
                 updated_at: now,
             },
         }
     }
 
-    /// Create a child session
-    pub fn child(parent: &Session) -> Self {
+    /// Create a child session with an explicit context kind so child-session
+    /// ownership is never inferred from `parent_id` alone.
+    pub fn child_with_context_kind(parent: &Session, kind: SessionContextKind) -> Self {
         let now = Utc::now();
         let slug = Self::generate_slug();
         let parent_record = parent.record();
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            SESSION_CONTEXT_KIND_METADATA_KEY.to_string(),
+            serde_json::to_value(kind)
+                .unwrap_or(serde_json::Value::String("unclassified_child".to_string())),
+        );
 
         Self {
             inner: SessionRecord {
@@ -413,11 +447,121 @@ impl Session {
                 permission: parent_record.permission.clone(),
                 usage: None,
                 status: SessionStatus::Active,
-                metadata: HashMap::new(),
+                metadata,
                 created_at: now,
                 updated_at: now,
             },
         }
+    }
+
+    pub fn context_kind(&self) -> SessionContextKind {
+        self.inner
+            .metadata
+            .get(SESSION_CONTEXT_KIND_METADATA_KEY)
+            .and_then(|value| serde_json::from_value::<SessionContextKind>(value.clone()).ok())
+            .unwrap_or_else(|| {
+                if self.inner.parent_id.is_some() {
+                    SessionContextKind::UnclassifiedChild
+                } else {
+                    SessionContextKind::RootSessionContinuity
+                }
+            })
+    }
+
+    pub fn ownership_summary(&self) -> SessionOwnershipSummary {
+        self.context_kind().ownership_summary()
+    }
+
+    pub fn set_context_kind(&mut self, kind: SessionContextKind) {
+        self.inner.metadata.insert(
+            SESSION_CONTEXT_KIND_METADATA_KEY.to_string(),
+            serde_json::to_value(kind)
+                .unwrap_or(serde_json::Value::String("unclassified_child".to_string())),
+        );
+        self.touch();
+    }
+
+    pub fn fork_origin_session_id(&self) -> Option<&str> {
+        self.inner
+            .metadata
+            .get(FORK_ORIGIN_SESSION_ID_METADATA_KEY)
+            .and_then(|value| value.as_str())
+    }
+
+    pub fn fork_origin_message_id(&self) -> Option<&str> {
+        self.inner
+            .metadata
+            .get(FORK_ORIGIN_MESSAGE_ID_METADATA_KEY)
+            .and_then(|value| value.as_str())
+    }
+
+    pub fn fork_policy_frozen(&self) -> bool {
+        self.inner
+            .metadata
+            .get(FORK_POLICY_FROZEN_METADATA_KEY)
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    }
+
+    pub fn imported_history_message_count(&self) -> usize {
+        self.inner
+            .messages
+            .iter()
+            .filter(|message| Self::is_imported_fork_history_message(message))
+            .count()
+    }
+
+    pub fn fork_explain(&self) -> Option<SessionForkExplain> {
+        if self.context_kind() != SessionContextKind::ExplicitFullHistoryFork {
+            return None;
+        }
+
+        let origin_session_id = self.fork_origin_session_id()?.to_string();
+        Some(SessionForkExplain {
+            origin_session_id,
+            origin_message_id: self.fork_origin_message_id().map(str::to_string),
+            imported_history_messages: self.imported_history_message_count(),
+            policy_frozen: self.fork_policy_frozen(),
+        })
+    }
+
+    fn is_imported_fork_history_message(message: &SessionMessage) -> bool {
+        message
+            .metadata
+            .get(FORK_IMPORTED_HISTORY_METADATA_KEY)
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    }
+
+    fn copy_fork_policy_metadata_from(source: &Session, target: &mut Session) {
+        for key in FORK_POLICY_METADATA_ALLOWLIST {
+            if let Some(value) = source.record().metadata.get(*key).cloned() {
+                target.insert_metadata((*key).to_string(), value);
+            }
+        }
+        target.insert_metadata(FORK_POLICY_FROZEN_METADATA_KEY, serde_json::json!(true));
+    }
+
+    fn imported_fork_history_message(
+        source_session_id: &str,
+        target_session_id: &str,
+        source_message: &SessionMessage,
+    ) -> SessionMessage {
+        let mut message = source_message.clone();
+        message.session_id = target_session_id.to_string();
+        message.metadata.insert(
+            FORK_IMPORTED_HISTORY_METADATA_KEY.to_string(),
+            serde_json::json!(true),
+        );
+        message
+            .metadata
+            .entry(FORK_ORIGIN_SESSION_ID_METADATA_KEY.to_string())
+            .or_insert_with(|| serde_json::json!(source_session_id));
+        message
+            .metadata
+            .entry(FORK_ORIGIN_MESSAGE_ID_METADATA_KEY.to_string())
+            .or_insert_with(|| serde_json::json!(&source_message.id));
+        message
     }
 
     fn generate_slug() -> String {
@@ -617,18 +761,44 @@ impl Session {
         for msg in &self.inner.messages {
             if matches!(msg.role, MessageRole::Assistant) {
                 if let Some(ref msg_usage) = msg.usage {
-                    usage.input_tokens += msg_usage.input_tokens;
-                    usage.output_tokens += msg_usage.output_tokens;
-                    usage.reasoning_tokens += msg_usage.reasoning_tokens;
-                    usage.cache_write_tokens += msg_usage.cache_write_tokens;
-                    usage.cache_read_tokens += msg_usage.cache_read_tokens;
-                    usage.cache_miss_tokens += msg_usage.cache_miss_tokens;
-                    usage.context_tokens = msg_usage.context_tokens.max(msg_usage.input_tokens);
-                    usage.total_cost += msg_usage.total_cost;
+                    if !Self::is_imported_fork_history_message(msg) {
+                        usage.input_tokens += msg_usage.input_tokens;
+                        usage.output_tokens += msg_usage.output_tokens;
+                        usage.reasoning_tokens += msg_usage.reasoning_tokens;
+                        usage.cache_write_tokens += msg_usage.cache_write_tokens;
+                        usage.cache_read_tokens += msg_usage.cache_read_tokens;
+                        usage.cache_miss_tokens += msg_usage.cache_miss_tokens;
+                        usage.total_cost += msg_usage.total_cost;
+                    }
+                    usage.context_tokens = msg_usage.live_context_tokens().unwrap_or_default();
                 }
             }
         }
         usage
+    }
+
+    pub fn latest_request_context_tokens(&self) -> Option<u64> {
+        self.inner.messages.iter().rev().find_map(|message| {
+            if !matches!(message.role, MessageRole::Assistant) {
+                return None;
+            }
+            if Self::is_imported_fork_history_message(message) {
+                return None;
+            }
+            message
+                .usage
+                .as_ref()
+                .and_then(crate::message::MessageUsage::request_context_tokens)
+        })
+    }
+
+    pub fn usage_books(&self) -> SessionUsageBooks {
+        let usage = self.get_usage();
+        SessionUsageBooks {
+            request_context_tokens: self.latest_request_context_tokens(),
+            live_context_tokens: usage.live_context_tokens(),
+            workflow_cumulative: usage.workflow_usage_summary(),
+        }
     }
 
     /// Share the session (set share URL)
@@ -964,43 +1134,56 @@ impl SessionManager {
         session
     }
 
-    /// Create a child session
-    pub fn create_child(&mut self, parent_id: &str) -> Option<Session> {
-        let parent = self.sessions.get(parent_id)?;
-        let child = Session::child(parent);
-        let child_id = child.record().id.clone();
-        self.sessions.insert(child_id, child.clone());
-        self.events.push(SessionEvent::Created {
-            info: child.clone(),
-        });
-        self.publish_session_event(&SESSION_CREATED_EVENT, &child);
-        Some(child)
-    }
-
     /// Fork a session at a specific message
     pub fn fork(&mut self, session_id: &str, message_id: Option<&str>) -> Option<Session> {
         let original = self.sessions.get(session_id)?;
         let forked_title = original.get_forked_title();
 
-        let mut forked = Session::child(original);
+        let mut forked =
+            Session::child_with_context_kind(original, SessionContextKind::ExplicitFullHistoryFork);
+        Session::copy_fork_policy_metadata_from(original, &mut forked);
+
+        let forked_id = forked.record().id.clone();
+        let imported_messages = if let Some(msg_id) = message_id {
+            let cutoff = original
+                .record()
+                .messages
+                .iter()
+                .position(|message| message.id == msg_id)?;
+            original.record().messages[..=cutoff]
+                .iter()
+                .map(|message| {
+                    Session::imported_fork_history_message(session_id, &forked_id, message)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            original
+                .record()
+                .messages
+                .iter()
+                .map(|message| {
+                    Session::imported_fork_history_message(session_id, &forked_id, message)
+                })
+                .collect::<Vec<_>>()
+        };
+
         {
             let forked_record = forked.record_mut();
             forked_record.parent_id = None;
             forked_record.title = forked_title;
-        }
-
-        if let Some(msg_id) = message_id {
-            for msg in &original.record().messages {
-                if msg.id == msg_id {
-                    break;
-                }
-                forked.push_message(msg.clone());
+            forked_record.messages = imported_messages;
+            forked_record.metadata.insert(
+                FORK_ORIGIN_SESSION_ID_METADATA_KEY.to_string(),
+                serde_json::json!(session_id),
+            );
+            if let Some(msg_id) = message_id {
+                forked_record.metadata.insert(
+                    FORK_ORIGIN_MESSAGE_ID_METADATA_KEY.to_string(),
+                    serde_json::json!(msg_id),
+                );
             }
-        } else {
-            forked.record_mut().messages = original.record().messages.clone();
         }
 
-        let forked_id = forked.record().id.clone();
         self.sessions.insert(forked_id, forked.clone());
         self.events.push(SessionEvent::Created {
             info: forked.clone(),
@@ -1392,16 +1575,80 @@ mod tests {
         assert!(session.title.starts_with("New session"));
         assert!(session.parent_id.is_none());
         assert_eq!(session.status, SessionStatus::Active);
+        assert_eq!(
+            session.context_kind(),
+            SessionContextKind::RootSessionContinuity
+        );
     }
 
     #[test]
-    fn test_child_session() {
+    fn test_typed_child_session() {
         let parent = Session::new("project-1", "/path/to/project");
-        let child = Session::child(&parent);
+        let child =
+            Session::child_with_context_kind(&parent, SessionContextKind::DelegatedSubsession);
 
         assert!(child.parent_id.is_some());
         assert_eq!(child.parent_id.clone().unwrap(), parent.id);
         assert!(child.title.starts_with("Child session"));
+        assert_eq!(
+            child.context_kind(),
+            SessionContextKind::DelegatedSubsession
+        );
+    }
+
+    #[test]
+    fn test_explicit_child_session_kind() {
+        let parent = Session::new("project-1", "/path/to/project");
+        let child = Session::child_with_context_kind(
+            &parent,
+            SessionContextKind::SchedulerStageOutputSession,
+        );
+
+        assert_eq!(
+            child.context_kind(),
+            SessionContextKind::SchedulerStageOutputSession
+        );
+        assert!(!child.context_kind().owns_prompt_continuity());
+    }
+
+    #[test]
+    fn test_ownership_summary_marks_provider_model_as_request_shape_only() {
+        let session = Session::new("project-1", "/path/to/project");
+
+        let ownership = session.ownership_summary();
+
+        assert_eq!(
+            ownership.context_kind,
+            SessionContextKind::RootSessionContinuity
+        );
+        assert!(ownership.owns_prompt_continuity);
+        assert!(ownership.compact_owner);
+        assert_eq!(
+            ownership.provider_model_role,
+            rocode_types::SessionProviderModelRole::RequestShapeOnly
+        );
+        assert_eq!(
+            ownership.workflow_usage_role,
+            rocode_types::SessionWorkflowUsageRole::ObservationOnly
+        );
+    }
+
+    #[test]
+    fn test_stage_output_sink_is_not_compact_owner() {
+        let parent = Session::new("project-1", "/path/to/project");
+        let child = Session::child_with_context_kind(
+            &parent,
+            SessionContextKind::SchedulerStageOutputSession,
+        );
+
+        let ownership = child.ownership_summary();
+
+        assert_eq!(
+            ownership.handoff_mode,
+            rocode_types::SessionHandoffMode::StageOutputSink
+        );
+        assert!(!ownership.owns_prompt_continuity);
+        assert!(!ownership.compact_owner);
     }
 
     #[test]
@@ -1423,7 +1670,9 @@ mod tests {
         assert!(manager.get(&session.id).is_some());
         assert_eq!(manager.count(), 1);
 
-        let child = manager.create_child(&session.id).unwrap();
+        let child =
+            Session::child_with_context_kind(&session, SessionContextKind::DelegatedSubsession);
+        manager.update(child.clone());
         assert!(child.parent_id.is_some());
 
         manager.delete(&session.id);
@@ -1440,6 +1689,156 @@ mod tests {
         temp.set_title(title1);
         let title2 = temp.get_forked_title();
         assert!(title2.ends_with("(fork #2)"));
+    }
+
+    #[test]
+    fn test_session_manager_fork_marks_explicit_full_history_fork() {
+        let mut manager = SessionManager::new();
+        let session = manager.create("project-1", "/path/to/project");
+        let forked = manager
+            .fork(&session.id, None)
+            .expect("expected forked session");
+
+        assert_eq!(
+            forked.context_kind(),
+            SessionContextKind::ExplicitFullHistoryFork
+        );
+        assert!(forked.parent_id.is_none());
+    }
+
+    #[test]
+    fn test_session_manager_fork_freezes_policy_and_marks_imported_history() {
+        let mut manager = SessionManager::new();
+        let mut session = manager.create("project-1", "/path/to/project");
+        session.insert_metadata("model_provider".to_string(), serde_json::json!("openai"));
+        session.insert_metadata("model_id".to_string(), serde_json::json!("gpt-4.1"));
+        session.insert_metadata("scheduler_profile".to_string(), serde_json::json!("atlas"));
+        session.insert_metadata("last_ingress_source".to_string(), serde_json::json!("web"));
+        session.insert_metadata("custom_session_key".to_string(), serde_json::json!(true));
+        session.add_user_message("hello");
+        let selected_message_id = {
+            let assistant = session.add_assistant_message();
+            assistant.add_text("answer");
+            assistant.usage = Some(MessageUsage {
+                input_tokens: 120,
+                output_tokens: 30,
+                reasoning_tokens: 4,
+                cache_write_tokens: 2,
+                cache_read_tokens: 3,
+                cache_miss_tokens: 1,
+                context_tokens: 120,
+                total_cost: 0.42,
+            });
+            assistant.id.clone()
+        };
+        manager.update(session.clone());
+
+        let forked = manager
+            .fork(&session.id, Some(&selected_message_id))
+            .expect("expected forked session");
+
+        assert_eq!(
+            forked.context_kind(),
+            SessionContextKind::ExplicitFullHistoryFork
+        );
+        assert!(forked.parent_id.is_none());
+        assert_eq!(forked.fork_origin_session_id(), Some(session.id.as_str()));
+        assert_eq!(
+            forked.fork_origin_message_id(),
+            Some(selected_message_id.as_str())
+        );
+        assert!(forked.fork_policy_frozen());
+        assert_eq!(
+            forked.metadata.get("model_provider"),
+            Some(&serde_json::json!("openai"))
+        );
+        assert_eq!(
+            forked.metadata.get("model_id"),
+            Some(&serde_json::json!("gpt-4.1"))
+        );
+        assert_eq!(
+            forked.metadata.get("scheduler_profile"),
+            Some(&serde_json::json!("atlas"))
+        );
+        assert!(!forked.metadata.contains_key("last_ingress_source"));
+        assert!(!forked.metadata.contains_key("custom_session_key"));
+        assert_eq!(forked.record().messages.len(), 2);
+        assert_eq!(forked.imported_history_message_count(), 2);
+        assert!(forked.record().messages.iter().all(|message| {
+            message.session_id == forked.id
+                && message
+                    .metadata
+                    .get(FORK_IMPORTED_HISTORY_METADATA_KEY)
+                    .and_then(|value| value.as_bool())
+                    == Some(true)
+                && message
+                    .metadata
+                    .get(FORK_ORIGIN_SESSION_ID_METADATA_KEY)
+                    .and_then(|value| value.as_str())
+                    == Some(session.id.as_str())
+        }));
+    }
+
+    #[test]
+    fn test_fork_usage_excludes_imported_history_but_preserves_live_context() {
+        let mut manager = SessionManager::new();
+        let mut session = manager.create("project-1", "/path/to/project");
+        session.add_user_message("hello");
+        {
+            let assistant = session.add_assistant_message();
+            assistant.usage = Some(MessageUsage {
+                input_tokens: 100,
+                output_tokens: 20,
+                reasoning_tokens: 5,
+                cache_write_tokens: 1,
+                cache_read_tokens: 2,
+                cache_miss_tokens: 3,
+                context_tokens: 150,
+                total_cost: 0.15,
+            });
+        }
+        manager.update(session.clone());
+
+        let mut forked = manager
+            .fork(&session.id, None)
+            .expect("expected forked session");
+
+        let inherited_usage = forked.get_usage();
+        assert_eq!(inherited_usage.input_tokens, 0);
+        assert_eq!(inherited_usage.output_tokens, 0);
+        assert_eq!(inherited_usage.reasoning_tokens, 0);
+        assert_eq!(inherited_usage.cache_write_tokens, 0);
+        assert_eq!(inherited_usage.cache_read_tokens, 0);
+        assert_eq!(inherited_usage.cache_miss_tokens, 0);
+        assert_eq!(inherited_usage.context_tokens, 150);
+        assert_eq!(inherited_usage.total_cost, 0.0);
+        assert_eq!(forked.latest_request_context_tokens(), None);
+
+        let local = forked.add_assistant_message();
+        local.usage = Some(MessageUsage {
+            input_tokens: 40,
+            output_tokens: 10,
+            reasoning_tokens: 1,
+            cache_write_tokens: 0,
+            cache_read_tokens: 4,
+            cache_miss_tokens: 0,
+            context_tokens: 70,
+            total_cost: 0.07,
+        });
+
+        let local_usage = forked.get_usage();
+        assert_eq!(local_usage.input_tokens, 40);
+        assert_eq!(local_usage.output_tokens, 10);
+        assert_eq!(local_usage.reasoning_tokens, 1);
+        assert_eq!(local_usage.cache_read_tokens, 4);
+        assert_eq!(local_usage.context_tokens, 70);
+        assert!((local_usage.total_cost - 0.07).abs() < f64::EPSILON);
+        assert_eq!(forked.latest_request_context_tokens(), Some(70));
+
+        let fork_explain = forked.fork_explain().expect("fork explain should exist");
+        assert_eq!(fork_explain.origin_session_id, session.id);
+        assert_eq!(fork_explain.imported_history_messages, 2);
+        assert!(fork_explain.policy_frozen);
     }
 
     #[test]

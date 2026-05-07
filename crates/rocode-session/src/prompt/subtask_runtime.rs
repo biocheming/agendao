@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use rocode_provider::Provider;
+use rocode_types::{SubsessionHandoffFieldKind, SubsessionHandoffPacket};
 
 use crate::{MessageRole, PartType, Session, SessionMessage};
 
@@ -115,15 +116,19 @@ impl SessionPrompt {
         let user_text = session.messages[last_user_idx].get_text();
 
         for subtask in &pending {
-            let combined_prompt = if user_text.trim().is_empty() {
-                subtask.prompt.clone()
-            } else {
-                format!("{}\n\nSubtask: {}", user_text, subtask.prompt)
-            };
+            let mut handoff = SubsessionHandoffPacket::bounded_goal(subtask.prompt.clone());
+            if !user_text.trim().is_empty() {
+                handoff.push_titled_text(
+                    SubsessionHandoffFieldKind::SupportingContext,
+                    "parent request context",
+                    user_text.clone(),
+                );
+            }
             let subsession_id = format!("task_subtask_{}", subtask.subtask_id);
             persisted
                 .entry(subsession_id.clone())
                 .or_insert_with(|| PersistedSubsession {
+                    kind: rocode_types::SessionContextKind::DelegatedSubsession,
                     agent: subtask.agent.clone(),
                     model: Some(default_model.clone()),
                     directory: Some(session.directory.clone()),
@@ -135,6 +140,7 @@ impl SessionPrompt {
                     .get(&subsession_id)
                     .cloned()
                     .unwrap_or(PersistedSubsession {
+                        kind: rocode_types::SessionContextKind::DelegatedSubsession,
                         agent: subtask.agent.clone(),
                         model: Some(default_model.clone()),
                         directory: Some(session.directory.clone()),
@@ -144,7 +150,7 @@ impl SessionPrompt {
 
             match Self::execute_persisted_subsession_prompt(
                 &state_snapshot,
-                &combined_prompt,
+                &handoff,
                 provider.clone(),
                 tool_registry.clone(),
                 tool_execution::PersistedSubsessionPromptOptions {
@@ -167,8 +173,10 @@ impl SessionPrompt {
                 Ok(output) => {
                     if let Some(existing) = persisted.get_mut(&subsession_id) {
                         existing.history.push(PersistedSubsessionTurn {
-                            prompt: combined_prompt,
-                            output: output.clone(),
+                            handoff: Some(handoff),
+                            result: Some(output.clone()),
+                            prompt: None,
+                            output: None,
                         });
                     }
                     results.push((
@@ -176,7 +184,7 @@ impl SessionPrompt {
                         subtask.subtask_id.clone(),
                         false,
                         subtask.description.clone(),
-                        output,
+                        output.text,
                     ));
                 }
                 Err(error) => {

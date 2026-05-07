@@ -197,6 +197,7 @@ fn stage_loop_policy(
         max_steps,
         tool_dedup: ToolDedupScope::PerStep,
         on_tool_error,
+        checkpoint_governance: Default::default(),
     }
 }
 

@@ -22,11 +22,11 @@ use rocode_provider::cache::{
     CACHE_BUST_INSPECTION_METADATA_KEY, CACHE_BUST_SUMMARY_METADATA_KEY,
     CACHE_REQUEST_FINGERPRINT_METADATA_KEY,
 };
+use rocode_provider::error_code::StandardErrorCode;
 use rocode_provider::transform::{apply_caching, ProviderType};
 use rocode_provider::{Provider, ToolDefinition};
+use rocode_types::SessionContinuityPacket;
 
-use crate::compaction::{run_compaction, CompactionResult};
-use crate::message_v2::ModelRef as V2ModelRef;
 use crate::{MessageRole, Session, SessionMessage};
 
 use super::runtime_step::{SessionStepRuntimeOutput, SessionStepSink, SessionStepToolDispatcher};
@@ -880,7 +880,6 @@ struct PromptLoopContext {
     compiled_request: CompiledExecutionRequest,
     hooks: PromptHooks,
     config_store: Option<Arc<rocode_config::ConfigStore>>,
-    memory_authority: Option<Arc<rocode_memory::MemoryAuthority>>,
 }
 
 #[derive(Clone)]
@@ -1058,7 +1057,6 @@ impl SessionPrompt {
                         compiled_request,
                         hooks,
                         config_store: self.config_store.clone(),
-                        memory_authority: self.memory_authority.clone(),
                     },
                 )
                 .await;
@@ -1236,7 +1234,6 @@ impl SessionPrompt {
                     compiled_request: compiled_request.clone(),
                     hooks: PromptHooks::default(),
                     config_store: self.config_store.clone(),
-                    memory_authority: self.memory_authority.clone(),
                 },
             )
             .await;
@@ -1326,13 +1323,14 @@ impl SessionPrompt {
             tool_dedup: ToolDedupScope::None,
             ..Default::default()
         };
+        let mut chat_messages = input.chat_messages;
         let outcome = run_loop(
             &model,
             &tools,
             &mut sink,
             &policy,
             &cancel,
-            input.chat_messages,
+            &mut chat_messages,
         )
         .await;
         let output = sink.into_output();
@@ -1368,137 +1366,163 @@ impl SessionPrompt {
         }
     }
 
-    async fn maybe_compact_context(
+    async fn compact_context_for_reason(
         session_id: &str,
-        provider_id: &str,
-        model_id: &str,
         session: &mut Session,
-        provider: &Arc<dyn Provider>,
         filtered_messages: &[SessionMessage],
+        output_block_hook: Option<&super::OutputBlockHook>,
+        status_start: &'static str,
+        status_success: &'static str,
+        status_failure: &'static str,
+        record: serde_json::Value,
+        force: bool,
+    ) -> bool {
+        Self::emit_context_compaction_status(
+            output_block_hook,
+            session_id,
+            StatusBlock::warning(status_start),
+        )
+        .await;
+
+        if let Some(summary) = Self::trigger_compaction_with_record(
+            session,
+            filtered_messages,
+            None,
+            Some(record),
+            force,
+        ) {
+            tracing::info!(session_id = %session_id, summary, "context compacted");
+            Self::emit_context_compaction_status(
+                output_block_hook,
+                session_id,
+                StatusBlock::success(status_success),
+            )
+            .await;
+            return true;
+        }
+
+        Self::emit_context_compaction_status(
+            output_block_hook,
+            session_id,
+            StatusBlock::warning(status_failure),
+        )
+        .await;
+        false
+    }
+
+    async fn maybe_compact_context_from_request_view(
+        session_id: &str,
+        session: &mut Session,
+        filtered_messages: &[SessionMessage],
+        provider: &Arc<dyn Provider>,
+        model_id: &str,
         compiled_request: &CompiledExecutionRequest,
         config_store: Option<&rocode_config::ConfigStore>,
         output_block_hook: Option<&super::OutputBlockHook>,
-        memory_authority: Option<Arc<rocode_memory::MemoryAuthority>>,
-    ) {
+        request_context_tokens: Option<u64>,
+        request_body_chars: Option<usize>,
+    ) -> bool {
         let compaction_config = Self::runtime_compaction_config(config_store);
-        if !Self::should_compact(
+        let Some(assessment) = Self::assess_compaction(
             filtered_messages,
             provider.as_ref(),
             model_id,
             compiled_request.max_tokens,
             &compaction_config,
             None,
-        ) {
-            return;
-        }
-
-        tracing::info!(
-            "Context overflow detected, triggering compaction for session {}",
-            session_id
-        );
-        Self::emit_context_compaction_status(
-            output_block_hook,
-            session_id,
-            StatusBlock::warning("Auto-compacting context to stay within the model window..."),
-        )
-        .await;
-
-        let parent_id = filtered_messages
-            .last()
-            .map(|m| m.id.clone())
-            .unwrap_or_default();
-        let compaction_messages =
-            Self::build_chat_messages(filtered_messages, None).unwrap_or_default();
-        let compaction_messages_with_parts = Self::to_message_with_parts(
-            filtered_messages,
-            provider_id,
-            model_id,
-            &session.directory,
-        );
-        let model_ref = V2ModelRef {
-            provider_id: provider_id.to_string(),
-            model_id: model_id.to_string(),
+            request_context_tokens,
+            request_body_chars,
+        ) else {
+            return false;
         };
 
-        match run_compaction::<crate::compaction::NoopSessionOps>(
+        tracing::info!(
+            session_id = %session_id,
+            reason = assessment.reason,
+            request_context_tokens,
+            request_body_chars,
+            "pre-request compaction triggered from request view"
+        );
+        let record = Self::build_compaction_record(
+            "auto_preflight",
+            Some("prompt.pre_request"),
+            Some(assessment.reason),
+            false,
+            request_context_tokens,
+            None,
+            assessment.limit_tokens,
+            assessment.body_chars,
+        );
+        Self::compact_context_for_reason(
             session_id,
-            &parent_id,
-            compaction_messages,
-            compaction_messages_with_parts,
-            model_ref,
-            provider.clone(),
-            crate::compaction::RunCompactionOptions {
-                abort: CancellationToken::new(),
-                auto: true,
-                config: Some(compaction_config.clone()),
-                session_ops: None,
-                memory_authority: memory_authority.clone(),
-            },
+            session,
+            filtered_messages,
+            output_block_hook,
+            "Auto-compacting context before the next provider request...",
+            "Context compacted before the next provider request.",
+            "Auto-compaction ran, but the context could not be reduced.",
+            record,
+            false,
         )
         .await
-        {
-            Ok(CompactionResult::Continue) => {
-                tracing::info!(
-                    "LLM compaction complete for session {}, continuing",
-                    session_id
-                );
-                Self::emit_context_compaction_status(
-                    output_block_hook,
-                    session_id,
-                    StatusBlock::success("Context compacted. Continuing the session."),
-                )
-                .await;
+    }
+
+    fn provider_failure_is_overflow(error: &anyhow::Error) -> bool {
+        if let Some(summary) = super::provider_error_summary_from_anyhow(error) {
+            if summary.standard_code == StandardErrorCode::RequestTooLarge {
+                return true;
             }
-            Ok(CompactionResult::Stop) => {
-                tracing::warn!(
-                    "LLM compaction returned stop for session {}, falling back to simple compaction",
-                    session_id
-                );
-                if let Some(summary) = Self::trigger_compaction(session, filtered_messages, None) {
-                    tracing::info!("Fallback compaction (from stop) complete: {}", summary);
-                    Self::emit_context_compaction_status(
-                        output_block_hook,
-                        session_id,
-                        StatusBlock::success("Context compacted. Continuing the session."),
-                    )
-                    .await;
-                } else {
-                    Self::emit_context_compaction_status(
-                        output_block_hook,
-                        session_id,
-                        StatusBlock::warning(
-                            "Auto-compaction ran, but the context could not be reduced.",
-                        ),
-                    )
-                    .await;
-                }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "LLM compaction failed for session {}: {}, falling back to simple compaction",
-                    session_id,
-                    e
-                );
-                if let Some(summary) = Self::trigger_compaction(session, filtered_messages, None) {
-                    tracing::info!("Fallback compaction complete: {}", summary);
-                    Self::emit_context_compaction_status(
-                        output_block_hook,
-                        session_id,
-                        StatusBlock::success("Context compacted. Continuing the session."),
-                    )
-                    .await;
-                } else {
-                    Self::emit_context_compaction_status(
-                        output_block_hook,
-                        session_id,
-                        StatusBlock::warning(
-                            "Auto-compaction failed, and the context could not be reduced.",
-                        ),
-                    )
-                    .await;
-                }
+            if rocode_provider::ProviderError::is_overflow(&summary.message) {
+                return true;
             }
         }
+
+        super::untyped_provider_error_text_from_anyhow(error)
+            .map(|message| rocode_provider::ProviderError::is_overflow(&message))
+            .unwrap_or(false)
+    }
+
+    async fn maybe_recover_provider_overflow(
+        session_id: &str,
+        session: &mut Session,
+        assistant_message_id: &str,
+        output_block_hook: Option<&super::OutputBlockHook>,
+        request_context_tokens: Option<u64>,
+        request_body_chars: Option<usize>,
+    ) -> bool {
+        let drop_placeholder = session
+            .get_message(assistant_message_id)
+            .map(|message| {
+                message.parts.is_empty() && message.finish.is_none() && message.usage.is_none()
+            })
+            .unwrap_or(false);
+        if drop_placeholder {
+            let _ = session.remove_message(assistant_message_id);
+        }
+
+        let filtered_messages = Self::filter_compacted_messages(&session.messages);
+        let record = Self::build_compaction_record(
+            "overflow_recovery",
+            Some("prompt.provider_overflow"),
+            Some("provider_overflow"),
+            true,
+            request_context_tokens,
+            None,
+            None,
+            request_body_chars,
+        );
+        Self::compact_context_for_reason(
+            session_id,
+            session,
+            &filtered_messages,
+            output_block_hook,
+            "Provider rejected the request as too large. Compacting and retrying...",
+            "Context compacted after provider overflow. Retrying the session.",
+            "Provider overflow recovery could not reduce the context.",
+            record,
+            true,
+        )
+        .await
     }
 
     async fn prepare_chat_messages(
@@ -1689,55 +1713,13 @@ impl SessionPrompt {
     }
 
     fn scc_stable_refs_hash(session: &Session) -> Option<String> {
-        let packet = session.metadata.get("scheduler_session_context_packet")?;
-        let exact_recent_tail = packet
-            .get("exact_recent_tail")
-            .and_then(|value| value.as_array())
-            .map(|items| {
-                items
-                    .iter()
-                    .map(|item| {
-                        serde_json::json!({
-                            "message_id": item.get("message_id").cloned().unwrap_or(serde_json::Value::Null),
-                            "role": item.get("role").cloned().unwrap_or(serde_json::Value::Null),
-                            "projected": item.get("projected").cloned().unwrap_or(serde_json::Value::Null),
-                        })
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let memory_anchors = packet
-            .get("memory_anchors")
-            .and_then(|value| value.as_array())
-            .map(|items| {
-                items
-                    .iter()
-                    .map(|item| {
-                        serde_json::json!({
-                            "record_id": item.get("record_id").cloned().unwrap_or(serde_json::Value::Null),
-                            "kind": item.get("kind").cloned().unwrap_or(serde_json::Value::Null),
-                            "status": item.get("status").cloned().unwrap_or(serde_json::Value::Null),
-                        })
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let packet = session
+            .metadata
+            .get("scheduler_session_context_packet")
+            .and_then(SessionContinuityPacket::from_value)?;
 
         Some(rocode_provider::cache::json_fingerprint(
-            &serde_json::json!({
-                "version": packet.get("version").cloned().unwrap_or(serde_json::Value::Null),
-                "eligible_message_count": packet
-                    .get("eligible_message_count")
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null),
-                "exact_recent_tail": exact_recent_tail,
-                "memory_anchors": memory_anchors,
-                "latest_compaction_summary": packet
-                    .get("latest_compaction_summary")
-                    .and_then(|value| value.get("message_id"))
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null),
-            }),
+            &packet.stable_refs_value(),
         ))
     }
 
@@ -2232,6 +2214,7 @@ impl SessionPrompt {
     ) -> anyhow::Result<()> {
         let mut step = 0u32;
         let provider_type = ProviderType::from_provider_id(&prompt_ctx.provider_id);
+        let mut overflow_recovery_attempts = 0_u8;
         let mut post_first_step_ran = false;
         let turn_start_index = session.messages.len().saturating_sub(1);
 
@@ -2288,27 +2271,6 @@ impl SessionPrompt {
                 break;
             }
 
-            Self::maybe_compact_context(
-                &session_id,
-                &prompt_ctx.provider_id,
-                &prompt_ctx.model_id,
-                session,
-                &prompt_ctx.provider,
-                &filtered_messages,
-                &prompt_ctx.compiled_request,
-                prompt_ctx.config_store.as_deref(),
-                prompt_ctx.hooks.output_block_hook.as_ref(),
-                prompt_ctx.memory_authority.clone(),
-            )
-            .await;
-
-            tracing::info!(
-                step = step,
-                session_id = %session_id,
-                message_count = filtered_messages.len(),
-                "prompt loop step start"
-            );
-
             let PreparedChatMessages {
                 prompt_messages,
                 chat_messages,
@@ -2320,6 +2282,33 @@ impl SessionPrompt {
                 provider_type,
             )
             .await?;
+            let (request_context_tokens, request_body_chars) =
+                Self::estimate_request_context_tokens_from_provider_messages(&chat_messages);
+            let filtered_messages = Self::filter_compacted_messages(&session.messages);
+            if Self::maybe_compact_context_from_request_view(
+                &session_id,
+                session,
+                &filtered_messages,
+                &prompt_ctx.provider,
+                &prompt_ctx.model_id,
+                &prompt_ctx.compiled_request,
+                prompt_ctx.config_store.as_deref(),
+                prompt_ctx.hooks.output_block_hook.as_ref(),
+                request_context_tokens,
+                Some(request_body_chars),
+            )
+            .await
+            {
+                continue;
+            }
+
+            tracing::info!(
+                step = step,
+                session_id = %session_id,
+                message_count = prompt_messages.len(),
+                request_context_tokens,
+                "prompt loop step start"
+            );
             let base_tools = prompt_ctx.tools.clone();
             let extra_tools = Self::mcp_tools_from_session(session);
             let tool_source_surface_hash = Self::tool_source_surface_hash(
@@ -2414,7 +2403,7 @@ impl SessionPrompt {
                 assistant_metadata.insert(CACHE_BUST_SUMMARY_METADATA_KEY.to_string(), value);
             }
             session.messages_mut().push(SessionMessage {
-                id: assistant_message_id,
+                id: assistant_message_id.clone(),
                 session_id: session_id.clone(),
                 role: MessageRole::Assistant,
                 parts: Vec::new(),
@@ -2426,7 +2415,7 @@ impl SessionPrompt {
             session.touch();
             Self::emit_session_update(prompt_ctx.hooks.update_hook.as_ref(), session);
 
-            let step_output = self
+            let step_output = match self
                 .run_runtime_step(
                     token.clone(),
                     session,
@@ -2447,7 +2436,31 @@ impl SessionPrompt {
                         },
                     },
                 )
-                .await?;
+                .await
+            {
+                Ok(output) => {
+                    overflow_recovery_attempts = 0;
+                    output
+                }
+                Err(error) => {
+                    if overflow_recovery_attempts == 0
+                        && Self::provider_failure_is_overflow(&error)
+                        && Self::maybe_recover_provider_overflow(
+                            &session_id,
+                            session,
+                            &assistant_message_id,
+                            prompt_ctx.hooks.output_block_hook.as_ref(),
+                            request_context_tokens,
+                            Some(request_body_chars),
+                        )
+                        .await
+                    {
+                        overflow_recovery_attempts = 1;
+                        continue;
+                    }
+                    return Err(error);
+                }
+            };
 
             let finish_reason = step_output.finish_reason.clone();
             let executed_local_tools_this_step = step_output.executed_local_tools_this_step;
@@ -2558,5 +2571,51 @@ impl SessionPrompt {
             Self::emit_session_update(update_hook, session);
             *last_emit = Instant::now();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::prompt::PromptError;
+    use rocode_orchestrator::runtime::events::ModelFailure;
+    use rocode_provider::{
+        error_code::StandardErrorCode, ProviderDiagnosticSeverity, ProviderDiagnosticSource,
+        ProviderDiagnosticSummary, ProviderErrorKind, ProviderErrorSummary,
+    };
+
+    #[test]
+    fn provider_failure_is_overflow_accepts_typed_request_too_large() {
+        let summary = ProviderErrorSummary {
+            kind: ProviderErrorKind::InvalidRequest,
+            provider_id: "deepseek".to_string(),
+            model_id: Some("deepseek-reasoner".to_string()),
+            message: "maximum context length exceeded".to_string(),
+            status_code: Some(400),
+            standard_code: StandardErrorCode::RequestTooLarge,
+            retryable: false,
+            provider_diagnostic: Some(ProviderDiagnosticSummary {
+                severity: ProviderDiagnosticSeverity::HardFail,
+                source: ProviderDiagnosticSource::RequestValidation,
+                code: "context_overflow".to_string(),
+                provider_id: "deepseek".to_string(),
+                model_id: Some("deepseek-reasoner".to_string()),
+                message: "maximum context length exceeded".to_string(),
+            }),
+        };
+        let error = anyhow::Error::new(PromptError::ProviderFailure(ModelFailure::Provider(
+            summary,
+        )));
+
+        assert!(SessionPrompt::provider_failure_is_overflow(&error));
+    }
+
+    #[test]
+    fn provider_failure_is_overflow_accepts_untyped_overflow_text() {
+        let error = anyhow::Error::new(PromptError::ProviderFailure(ModelFailure::Message(
+            "provider rejected request: maximum context length is 128000 tokens".to_string(),
+        )));
+
+        assert!(SessionPrompt::provider_failure_is_overflow(&error));
     }
 }

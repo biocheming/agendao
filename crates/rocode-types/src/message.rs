@@ -238,6 +238,24 @@ pub struct MessageUsage {
     pub total_cost: f64,
 }
 
+impl MessageUsage {
+    /// Actual request-context size for this completed assistant turn.
+    ///
+    /// This is the "what we really sent to the provider for this request"
+    /// book, not the workflow cumulative total.
+    pub fn request_context_tokens(&self) -> Option<u64> {
+        let tokens = self.context_tokens.max(self.input_tokens);
+        (tokens > 0).then_some(tokens)
+    }
+
+    /// Per-turn live context pressure. For completed turns this falls back to
+    /// the request-context size because message usage does not track post-turn
+    /// subtree aggregation.
+    pub fn live_context_tokens(&self) -> Option<u64> {
+        self.request_context_tokens()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMessage {
     pub id: String,

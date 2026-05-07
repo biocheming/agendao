@@ -87,7 +87,8 @@ impl Orchestrator for SkillListOrchestrator {
             ctx.model_resolver.clone(),
             self.agent.model.clone(),
             ctx.exec_ctx.clone(),
-        );
+        )
+        .await;
         let tools = ToolDispatcherBridge::new(
             self.tool_runner.clone(),
             ctx.tool_executor.clone(),
@@ -112,17 +113,20 @@ impl Orchestrator for SkillListOrchestrator {
             sink = sink.with_stage_context(stage_name.clone(), stage_index);
         }
 
-        let messages = self.conversation.messages().to_vec();
+        let mut messages = self.conversation.messages().to_vec();
         let outcome = run_loop(
             &model,
             &tools,
             &mut sink,
             &policy,
             ctx.cancel_token.as_ref(),
-            messages,
+            &mut messages,
         )
-        .await
-        .map_err(|e| match e {
+        .await;
+
+        self.conversation.load_messages(messages);
+
+        let outcome = outcome.map_err(|e| match e {
             LoopError::ModelError(failure) => {
                 if failure.is_provider_not_found() {
                     OrchestratorError::NoProvider
@@ -139,8 +143,6 @@ impl Orchestrator for SkillListOrchestrator {
         })?;
 
         let output_metadata = sink.output_metadata().clone();
-        // Merge conversation updates from the sink
-        self.conversation.extend_messages(sink.into_messages());
 
         ctx.lifecycle_hook
             .on_orchestration_end(&self.agent.name, outcome.total_steps, &ctx.exec_ctx)
@@ -240,10 +242,6 @@ impl SkillListSink {
             last_flush: Instant::now(),
         });
         self
-    }
-
-    fn into_messages(self) -> Vec<rocode_provider::Message> {
-        self.messages
     }
 
     fn output_metadata(&self) -> &HashMap<String, serde_json::Value> {
@@ -419,15 +417,24 @@ impl LoopSink for SkillListSink {
                 self.step_tool_calls.clear();
                 self.assistant_flushed = false;
             }
-            StepBoundary::End { usage, .. } => {
+            StepBoundary::End {
+                step: _,
+                finish_reason: _,
+                usage,
+                ..
+            } => {
                 // Flush any remaining stage content delta.
                 self.flush_stage_content().await;
+                let stage_context = self
+                    .stage_ctx
+                    .as_ref()
+                    .map(|ctx| (ctx.stage_name.clone(), ctx.stage_index));
                 if let Some(usage) = usage {
-                    if let Some(stage_ctx) = self.stage_ctx.as_ref() {
+                    if let Some((stage_name, stage_index)) = stage_context.as_ref() {
                         self.lifecycle_hook
                             .on_scheduler_stage_usage(
-                                &stage_ctx.stage_name,
-                                stage_ctx.stage_index,
+                                stage_name,
+                                *stage_index,
                                 usage,
                                 true,
                                 &self.exec_ctx,
@@ -449,6 +456,46 @@ impl LoopSink for SkillListSink {
             }
         }
         Ok(())
+    }
+
+    async fn on_step_checkpoint(
+        &mut self,
+        ctx: &StepBoundary,
+        request_view: &[rocode_provider::Message],
+        checkpoint: &crate::runtime::events::StepCheckpointSnapshot,
+        default_directive: &crate::runtime::events::StepCheckpointDirective,
+    ) -> Result<Option<crate::runtime::events::StepCheckpointDirective>, LoopError> {
+        let StepBoundary::End {
+            step,
+            finish_reason,
+            usage,
+            ..
+        } = ctx
+        else {
+            return Ok(None);
+        };
+        if !matches!(finish_reason, FinishReason::ToolUse) {
+            return Ok(None);
+        }
+        let Some(usage) = usage.as_ref() else {
+            return Ok(None);
+        };
+
+        self.lifecycle_hook
+            .on_step_checkpoint(
+                &self.agent_name,
+                &self.model_id,
+                *step,
+                self.stage_ctx.as_ref().map(|ctx| ctx.stage_name.as_str()),
+                self.stage_ctx.as_ref().map(|ctx| ctx.stage_index),
+                usage,
+                request_view,
+                checkpoint,
+                default_directive,
+                &self.exec_ctx,
+            )
+            .await
+            .map_err(|error| LoopError::Other(format!("step checkpoint failed: {error}")))
     }
 }
 
@@ -857,5 +904,318 @@ mod tests {
             }
             other => panic!("expected assistant parts replay, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn execute_persists_checkpoint_rewritten_request_view_between_runs() {
+        struct CapturingModelResolver {
+            streams: Mutex<Vec<rocode_provider::StreamResult>>,
+            requests: Mutex<Vec<Vec<rocode_provider::Message>>>,
+        }
+
+        #[async_trait]
+        impl ModelResolver for CapturingModelResolver {
+            async fn chat_stream(
+                &self,
+                _model: Option<&ModelRef>,
+                messages: Vec<rocode_provider::Message>,
+                _tools: Vec<rocode_provider::ToolDefinition>,
+                _exec_ctx: &ExecutionContext,
+            ) -> Result<rocode_provider::StreamResult, OrchestratorError> {
+                self.requests.lock().await.push(messages);
+                self.streams
+                    .lock()
+                    .await
+                    .pop()
+                    .ok_or_else(|| OrchestratorError::Other("missing test stream".to_string()))
+            }
+        }
+
+        struct CompactingCheckpointHook;
+
+        #[async_trait]
+        impl LifecycleHook for CompactingCheckpointHook {
+            async fn on_orchestration_start(
+                &self,
+                _agent_name: &str,
+                _max_steps: Option<u32>,
+                _exec_ctx: &ExecutionContext,
+            ) {
+            }
+
+            async fn on_step_start(
+                &self,
+                _agent_name: &str,
+                _model_id: &str,
+                _step: u32,
+                _exec_ctx: &ExecutionContext,
+            ) {
+            }
+
+            async fn on_orchestration_end(
+                &self,
+                _agent_name: &str,
+                _steps: u32,
+                _exec_ctx: &ExecutionContext,
+            ) {
+            }
+
+            async fn on_step_checkpoint(
+                &self,
+                _agent_name: &str,
+                _model_id: &str,
+                _step: u32,
+                _stage_name: Option<&str>,
+                _stage_index: Option<u32>,
+                _usage: &crate::runtime::events::StepUsage,
+                _request_view: &[rocode_provider::Message],
+                checkpoint: &crate::runtime::events::StepCheckpointSnapshot,
+                _default_directive: &crate::runtime::events::StepCheckpointDirective,
+                _exec_ctx: &ExecutionContext,
+            ) -> Result<Option<crate::runtime::events::StepCheckpointDirective>, OrchestratorError>
+            {
+                if checkpoint.compaction_attempted() {
+                    Ok(None)
+                } else {
+                    Ok(Some(crate::runtime::events::StepCheckpointDirective::CompactRequestView {
+                        focus: Some("echo".to_string()),
+                        reason: Some("request_view_threshold".to_string()),
+                    }))
+                }
+            }
+        }
+
+        let tool_executor: Arc<dyn ToolExecutor> = Arc::new(TestToolExecutor);
+        let resolver = Arc::new(CapturingModelResolver {
+            streams: Mutex::new(vec![
+                stream_from(vec![
+                    rocode_provider::StreamEvent::TextDelta("follow-up".to_string()),
+                    rocode_provider::StreamEvent::Done,
+                ]),
+                stream_from(vec![
+                    rocode_provider::StreamEvent::TextDelta("done".to_string()),
+                    rocode_provider::StreamEvent::Done,
+                ]),
+                stream_from(vec![
+                    rocode_provider::StreamEvent::ToolCallEnd {
+                        id: "tool-call-1".to_string(),
+                        name: "echo".to_string(),
+                        input: json!({"value":"x"}),
+                    },
+                    rocode_provider::StreamEvent::FinishStep {
+                        finish_reason: Some("tool_calls".to_string()),
+                        usage: rocode_provider::StreamUsage {
+                            prompt_tokens: 160,
+                            completion_tokens: 24,
+                            context_tokens: 160,
+                            reasoning_tokens: 0,
+                            cache_read_tokens: 0,
+                            cache_miss_tokens: 0,
+                            cache_write_tokens: 0,
+                        },
+                        provider_metadata: None,
+                    },
+                    rocode_provider::StreamEvent::Done,
+                ]),
+            ]),
+            requests: Mutex::new(Vec::new()),
+        });
+        let context = OrchestratorContext {
+            agent_resolver: Arc::new(TestAgentResolver),
+            model_resolver: resolver.clone(),
+            tool_executor: tool_executor.clone(),
+            lifecycle_hook: Arc::new(CompactingCheckpointHook),
+            cancel_token: Arc::new(crate::runtime::events::NeverCancel),
+            exec_ctx: ExecutionContext {
+                session_id: "test".to_string(),
+                workdir: ".".to_string(),
+                agent_name: "test-agent".to_string(),
+                metadata: HashMap::new(),
+            },
+        };
+        let mut orchestrator = SkillListOrchestrator::new(
+            AgentDescriptor {
+                name: "test-agent".to_string(),
+                system_prompt: None,
+                model: Some(ModelRef {
+                    provider_id: "openai".to_string(),
+                    model_id: "gpt-test".to_string(),
+                }),
+                max_steps: Some(4),
+                temperature: None,
+                allowed_tools: Vec::new(),
+            },
+            ToolRunner::new(tool_executor),
+        );
+        orchestrator.load_messages(
+            (0..10)
+                .map(|index| rocode_provider::Message::user(format!("history message {index}")))
+                .collect(),
+        );
+
+        let first = orchestrator.execute("first run", &context).await.unwrap();
+        assert_eq!(first.tool_calls_count, 1);
+        assert!(orchestrator.conversation().messages().iter().any(|message| {
+            matches!(
+                &message.content,
+                rocode_provider::Content::Text(text)
+                    if text.starts_with("Checkpoint context summary of")
+            )
+        }));
+
+        let _second = orchestrator.execute("second run", &context).await.unwrap();
+
+        let requests = resolver.requests.lock().await.clone();
+        assert!(requests.len() >= 3);
+        let second_run_first_request = &requests[2];
+        assert!(second_run_first_request.iter().any(|message| {
+            matches!(
+                &message.content,
+                rocode_provider::Content::Text(text)
+                    if text.starts_with("Checkpoint context summary of")
+            )
+        }));
+    }
+
+    #[tokio::test]
+    async fn execute_blocks_before_next_model_call_when_step_checkpoint_rejects() {
+        struct CountingModelResolver {
+            streams: Mutex<Vec<rocode_provider::StreamResult>>,
+            request_count: Arc<Mutex<u32>>,
+        }
+
+        #[async_trait]
+        impl ModelResolver for CountingModelResolver {
+            async fn chat_stream(
+                &self,
+                _model: Option<&ModelRef>,
+                _messages: Vec<rocode_provider::Message>,
+                _tools: Vec<rocode_provider::ToolDefinition>,
+                _exec_ctx: &ExecutionContext,
+            ) -> Result<rocode_provider::StreamResult, OrchestratorError> {
+                *self.request_count.lock().await += 1;
+                self.streams
+                    .lock()
+                    .await
+                    .pop()
+                    .ok_or_else(|| OrchestratorError::Other("missing test stream".to_string()))
+            }
+        }
+
+        struct BlockingCheckpointHook;
+
+        #[async_trait]
+        impl LifecycleHook for BlockingCheckpointHook {
+            async fn on_orchestration_start(
+                &self,
+                _agent_name: &str,
+                _max_steps: Option<u32>,
+                _exec_ctx: &ExecutionContext,
+            ) {
+            }
+
+            async fn on_step_start(
+                &self,
+                _agent_name: &str,
+                _model_id: &str,
+                _step: u32,
+                _exec_ctx: &ExecutionContext,
+            ) {
+            }
+
+            async fn on_orchestration_end(
+                &self,
+                _agent_name: &str,
+                _steps: u32,
+                _exec_ctx: &ExecutionContext,
+            ) {
+            }
+
+            async fn on_step_checkpoint(
+                &self,
+                _agent_name: &str,
+                _model_id: &str,
+                _step: u32,
+                _stage_name: Option<&str>,
+                _stage_index: Option<u32>,
+                _usage: &crate::runtime::events::StepUsage,
+                _request_view: &[rocode_provider::Message],
+                _checkpoint: &crate::runtime::events::StepCheckpointSnapshot,
+                _default_directive: &crate::runtime::events::StepCheckpointDirective,
+                _exec_ctx: &ExecutionContext,
+            ) -> Result<Option<crate::runtime::events::StepCheckpointDirective>, OrchestratorError>
+            {
+                Ok(Some(crate::runtime::events::StepCheckpointDirective::Block {
+                    reason: "context pressure gate blocked the next scheduler step".to_string(),
+                }))
+            }
+        }
+
+        let request_count = Arc::new(Mutex::new(0));
+        let streams = vec![
+            stream_from(vec![
+                rocode_provider::StreamEvent::TextDelta("second step".to_string()),
+                rocode_provider::StreamEvent::Done,
+            ]),
+            stream_from(vec![
+                rocode_provider::StreamEvent::ToolCallEnd {
+                    id: "tool-call-1".to_string(),
+                    name: "echo".to_string(),
+                    input: json!({"value":"x"}),
+                },
+                rocode_provider::StreamEvent::FinishStep {
+                    finish_reason: Some("tool_calls".to_string()),
+                    usage: rocode_provider::StreamUsage {
+                        prompt_tokens: 120,
+                        completion_tokens: 12,
+                        context_tokens: 120,
+                        reasoning_tokens: 0,
+                        cache_read_tokens: 0,
+                        cache_miss_tokens: 0,
+                        cache_write_tokens: 0,
+                    },
+                    provider_metadata: None,
+                },
+                rocode_provider::StreamEvent::Done,
+            ]),
+        ];
+        let tool_executor: Arc<dyn ToolExecutor> = Arc::new(TestToolExecutor);
+        let context = OrchestratorContext {
+            agent_resolver: Arc::new(TestAgentResolver),
+            model_resolver: Arc::new(CountingModelResolver {
+                streams: Mutex::new(streams),
+                request_count: request_count.clone(),
+            }),
+            tool_executor: tool_executor.clone(),
+            lifecycle_hook: Arc::new(BlockingCheckpointHook),
+            cancel_token: Arc::new(crate::runtime::events::NeverCancel),
+            exec_ctx: ExecutionContext {
+                session_id: "test".to_string(),
+                workdir: ".".to_string(),
+                agent_name: "test-agent".to_string(),
+                metadata: HashMap::new(),
+            },
+        };
+        let mut orchestrator = SkillListOrchestrator::new(
+            AgentDescriptor {
+                name: "test-agent".to_string(),
+                system_prompt: None,
+                model: Some(ModelRef {
+                    provider_id: "openai".to_string(),
+                    model_id: "gpt-test".to_string(),
+                }),
+                max_steps: Some(4),
+                temperature: None,
+                allowed_tools: Vec::new(),
+            },
+            ToolRunner::new(tool_executor),
+        );
+
+        let error = orchestrator.execute("hi", &context).await.unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "orchestrator error: context pressure gate blocked the next scheduler step"
+        );
+        assert_eq!(*request_count.lock().await, 1);
     }
 }

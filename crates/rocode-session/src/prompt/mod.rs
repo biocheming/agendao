@@ -19,6 +19,9 @@ pub mod tools_and_output;
 pub const PROMPT_SURFACE_RUNTIME_SNAPSHOT_METADATA_KEY: &str = "prompt_surface_runtime_snapshot";
 pub const PROMPT_SURFACE_SNAPSHOT_INVALIDATION_METADATA_KEY: &str =
     "prompt_surface_snapshot_invalidation";
+pub const CONTEXT_COMPACTION_RECORD_METADATA_KEY: &str = "context_compaction_record";
+pub const CONTEXT_PRESSURE_GOVERNANCE_SUMMARY_METADATA_KEY: &str =
+    "context_pressure_governance_summary";
 
 pub fn sanctioned_model_context_summary(message: &SessionMessage) -> Option<&str> {
     surface_contract::sanctioned_model_context_projection_for_message(message)
@@ -60,9 +63,16 @@ use tokio_util::sync::CancellationToken;
 
 use rocode_content::output_blocks::OutputBlock;
 use rocode_execution_types::CompiledExecutionRequest;
-use rocode_provider::{Provider, ToolDefinition};
+use rocode_provider::{cache::CacheBustSummary, Provider, ToolDefinition};
 use rocode_skill::RuntimeInstructionSource;
-use rocode_types::MemoryRetrievalPacket;
+use rocode_types::{
+    context_usage_percent, ContextCompactionSummary, ContextPressureGovernanceStatus,
+    ContextPressureGovernanceSummary, MemoryRetrievalPacket,
+    PromptSurfaceSnapshotInvalidationSummary, SessionCacheBoundaryKind,
+    SessionCacheBoundarySummary, SessionCacheBustExplain, SessionCacheSemanticsBasis,
+    SessionCacheSemanticsSummary, SessionCacheSeverity, SessionContextExplain, SessionContextKind,
+    SubsessionHandoffPacket, SubsessionResultEnvelope,
+};
 
 use crate::instruction::{InstructionLoader, InstructionSource};
 use crate::system::SystemPrompt;
@@ -162,6 +172,8 @@ struct StreamToolState {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 pub(super) struct PersistedSubsession {
+    #[serde(default = "default_persisted_subsession_kind")]
+    kind: SessionContextKind,
     agent: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
@@ -173,10 +185,20 @@ pub(super) struct PersistedSubsession {
     history: Vec<PersistedSubsessionTurn>,
 }
 
+fn default_persisted_subsession_kind() -> SessionContextKind {
+    SessionContextKind::DelegatedSubsession
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct PersistedSubsessionTurn {
-    prompt: String,
-    output: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    handoff: Option<SubsessionHandoffPacket>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    result: Option<SubsessionResultEnvelope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    output: Option<String>,
 }
 
 /// LLM parameters derived from agent configuration.
@@ -419,6 +441,9 @@ pub fn compact_session_now_with_focus(
     session: &mut Session,
     focus: Option<&str>,
 ) -> Option<String> {
+    if !session.context_kind().owns_prompt_continuity() {
+        return None;
+    }
     let filtered = SessionPrompt::filter_compacted_messages(&session.messages);
     SessionPrompt::trigger_compaction(session, &filtered, focus)
 }
@@ -430,26 +455,692 @@ pub fn auto_compact_session_with_focus_if_needed(
     max_output_tokens: Option<u64>,
     config_store: Option<&rocode_config::ConfigStore>,
     live_context_tokens: Option<u64>,
+    request_context_tokens: Option<u64>,
     focus: Option<&str>,
+    trigger: &str,
+    phase: Option<&str>,
 ) -> Option<String> {
+    if !session.context_kind().owns_prompt_continuity() {
+        return None;
+    }
     let filtered = SessionPrompt::filter_compacted_messages(&session.messages);
     let compaction_config = SessionPrompt::runtime_compaction_config(config_store);
-    if !SessionPrompt::should_compact(
+    let assessment = SessionPrompt::assess_compaction(
         &filtered,
         provider,
         model_id,
         max_output_tokens,
         &compaction_config,
         live_context_tokens,
-    ) {
-        return None;
+        request_context_tokens,
+        None,
+    )?;
+    let record = SessionPrompt::build_compaction_record(
+        trigger,
+        phase,
+        Some(assessment.reason),
+        false,
+        request_context_tokens,
+        live_context_tokens,
+        assessment.limit_tokens,
+        assessment.body_chars,
+    );
+    SessionPrompt::trigger_compaction_with_record(session, &filtered, focus, Some(record), false)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContextPressureGovernanceOutcome {
+    Proceed(ContextPressureGovernanceSummary),
+    Blocked(ContextPressureGovernanceSummary),
+}
+
+fn persist_context_pressure_governance_summary(
+    session: &mut Session,
+    summary: &ContextPressureGovernanceSummary,
+) {
+    if let Ok(value) = serde_json::to_value(summary) {
+        session.insert_metadata(
+            CONTEXT_PRESSURE_GOVERNANCE_SUMMARY_METADATA_KEY.to_string(),
+            value,
+        );
     }
-    SessionPrompt::trigger_compaction(session, &filtered, focus)
+}
+
+pub fn record_context_pressure_governance_summary(
+    session: &mut Session,
+    summary: &ContextPressureGovernanceSummary,
+) {
+    persist_context_pressure_governance_summary(session, summary);
+}
+
+fn should_block_pre_dispatch_governance(
+    reason: &str,
+    request_pressure_percent: Option<u64>,
+    live_pressure_percent: Option<u64>,
+) -> bool {
+    matches!(
+        reason,
+        "usage_overflow"
+            | "live_context_overflow"
+            | "request_view_overflow"
+            | "session_content_overflow"
+            | "request_body_too_large"
+    ) || request_pressure_percent
+        .map(|percent| percent >= rocode_types::CONTEXT_PRESSURE_CRITICAL_PERCENT)
+        .unwrap_or(false)
+        || live_pressure_percent
+            .map(|percent| percent >= rocode_types::CONTEXT_PRESSURE_CRITICAL_PERCENT)
+            .unwrap_or(false)
+}
+
+fn request_view_metrics_for_governance(
+    session: &Session,
+    fallback_request_context_tokens: Option<u64>,
+    fallback_body_chars: Option<usize>,
+) -> (Option<u64>, Option<usize>) {
+    let explain = explain_session_context(session, None);
+    (
+        explain
+            .api_view_estimated_input_tokens
+            .or(fallback_request_context_tokens),
+        explain.api_view_body_chars.or(fallback_body_chars),
+    )
+}
+
+fn context_pressure_governance_summary(
+    trigger: &str,
+    phase: &str,
+    status: ContextPressureGovernanceStatus,
+    reason: Option<&str>,
+    request_context_tokens: Option<u64>,
+    live_context_tokens: Option<u64>,
+    limit_tokens: Option<u64>,
+    body_chars: Option<usize>,
+    compaction_attempted: bool,
+    compaction_succeeded: bool,
+    blocking: bool,
+) -> ContextPressureGovernanceSummary {
+    ContextPressureGovernanceSummary {
+        trigger: trigger.to_string(),
+        phase: phase.to_string(),
+        status,
+        reason: reason.map(str::to_string),
+        request_context_tokens,
+        live_context_tokens,
+        limit_tokens,
+        body_chars,
+        request_pressure_percent: request_context_tokens
+            .zip(limit_tokens)
+            .and_then(|(used, limit)| context_usage_percent(used, limit)),
+        live_pressure_percent: live_context_tokens
+            .zip(limit_tokens)
+            .and_then(|(used, limit)| context_usage_percent(used, limit)),
+        compaction_attempted,
+        compaction_succeeded,
+        blocking,
+    }
+}
+
+pub fn assess_request_view_context_governance(
+    provider: &dyn rocode_provider::Provider,
+    model_id: &str,
+    max_output_tokens: Option<u64>,
+    config_store: Option<&rocode_config::ConfigStore>,
+    live_context_tokens: Option<u64>,
+    request_context_tokens: Option<u64>,
+    request_body_chars: Option<usize>,
+    trigger: &str,
+    phase: &str,
+    compaction_attempted: bool,
+    compaction_succeeded: bool,
+) -> ContextPressureGovernanceSummary {
+    let compaction_config = SessionPrompt::runtime_compaction_config(config_store);
+    let assessment = SessionPrompt::assess_compaction(
+        &[],
+        provider,
+        model_id,
+        max_output_tokens,
+        &compaction_config,
+        live_context_tokens,
+        request_context_tokens,
+        request_body_chars,
+    );
+
+    match assessment {
+        Some(assessment) => {
+            let blocking = compaction_attempted
+                && should_block_pre_dispatch_governance(
+                    assessment.reason,
+                    request_context_tokens
+                        .zip(assessment.limit_tokens)
+                        .and_then(|(used, limit)| context_usage_percent(used, limit)),
+                    live_context_tokens
+                        .zip(assessment.limit_tokens)
+                        .and_then(|(used, limit)| context_usage_percent(used, limit)),
+                );
+            context_pressure_governance_summary(
+                trigger,
+                phase,
+                if blocking {
+                    ContextPressureGovernanceStatus::Blocked
+                } else if compaction_attempted && compaction_succeeded {
+                    ContextPressureGovernanceStatus::Compacted
+                } else {
+                    ContextPressureGovernanceStatus::Deferred
+                },
+                Some(assessment.reason),
+                request_context_tokens,
+                live_context_tokens,
+                assessment.limit_tokens,
+                assessment.body_chars.or(request_body_chars),
+                compaction_attempted,
+                compaction_succeeded,
+                blocking,
+            )
+        }
+        None => context_pressure_governance_summary(
+            trigger,
+            phase,
+            if compaction_attempted && compaction_succeeded {
+                ContextPressureGovernanceStatus::Compacted
+            } else {
+                ContextPressureGovernanceStatus::Ready
+            },
+            None,
+            request_context_tokens,
+            live_context_tokens,
+            None,
+            request_body_chars,
+            compaction_attempted,
+            compaction_succeeded,
+            false,
+        ),
+    }
+}
+
+pub fn govern_pre_dispatch_session_context(
+    session: &mut Session,
+    provider: &dyn rocode_provider::Provider,
+    model_id: &str,
+    max_output_tokens: Option<u64>,
+    config_store: Option<&rocode_config::ConfigStore>,
+    live_context_tokens: Option<u64>,
+    request_context_tokens: Option<u64>,
+    request_body_chars: Option<usize>,
+    focus: Option<&str>,
+    trigger: &str,
+    phase: &str,
+) -> ContextPressureGovernanceOutcome {
+    let live_context_tokens =
+        live_context_tokens.or_else(|| estimate_current_context_tokens(&session.record().messages));
+    if !session.context_kind().owns_prompt_continuity() {
+        let summary = context_pressure_governance_summary(
+            trigger,
+            phase,
+            ContextPressureGovernanceStatus::Ready,
+            None,
+            request_context_tokens,
+            live_context_tokens,
+            None,
+            request_body_chars,
+            false,
+            false,
+            false,
+        );
+        persist_context_pressure_governance_summary(session, &summary);
+        return ContextPressureGovernanceOutcome::Proceed(summary);
+    }
+
+    let filtered = SessionPrompt::filter_compacted_messages(&session.record().messages);
+    let compaction_config = SessionPrompt::runtime_compaction_config(config_store);
+    let Some(assessment) = SessionPrompt::assess_compaction(
+        &filtered,
+        provider,
+        model_id,
+        max_output_tokens,
+        &compaction_config,
+        live_context_tokens,
+        request_context_tokens,
+        request_body_chars,
+    ) else {
+        let summary = context_pressure_governance_summary(
+            trigger,
+            phase,
+            ContextPressureGovernanceStatus::Ready,
+            None,
+            request_context_tokens,
+            live_context_tokens,
+            None,
+            request_body_chars,
+            false,
+            false,
+            false,
+        );
+        persist_context_pressure_governance_summary(session, &summary);
+        return ContextPressureGovernanceOutcome::Proceed(summary);
+    };
+
+    let record = SessionPrompt::build_compaction_record(
+        trigger,
+        Some(phase),
+        Some(assessment.reason),
+        false,
+        request_context_tokens,
+        live_context_tokens,
+        assessment.limit_tokens,
+        assessment.body_chars.or(request_body_chars),
+    );
+    let compacted = SessionPrompt::trigger_compaction_with_record(
+        session,
+        &filtered,
+        focus,
+        Some(record),
+        false,
+    )
+    .is_some();
+
+    let (request_context_tokens, request_body_chars, live_context_tokens, reassessment) =
+        if compacted {
+            let filtered = SessionPrompt::filter_compacted_messages(&session.record().messages);
+            let live_context_tokens =
+                estimate_current_context_tokens(&session.record().messages).or(live_context_tokens);
+            let (request_context_tokens, request_body_chars) = request_view_metrics_for_governance(
+                session,
+                request_context_tokens,
+                request_body_chars,
+            );
+            let reassessment = SessionPrompt::assess_compaction(
+                &filtered,
+                provider,
+                model_id,
+                max_output_tokens,
+                &compaction_config,
+                live_context_tokens,
+                request_context_tokens,
+                request_body_chars,
+            );
+            (
+                request_context_tokens,
+                request_body_chars,
+                live_context_tokens,
+                reassessment,
+            )
+        } else {
+            (
+                request_context_tokens,
+                request_body_chars,
+                live_context_tokens,
+                Some(assessment.clone()),
+            )
+        };
+
+    let summary = if let Some(assessment) = reassessment {
+        let blocking = should_block_pre_dispatch_governance(
+            assessment.reason,
+            request_context_tokens
+                .zip(assessment.limit_tokens)
+                .and_then(|(used, limit)| context_usage_percent(used, limit)),
+            live_context_tokens
+                .zip(assessment.limit_tokens)
+                .and_then(|(used, limit)| context_usage_percent(used, limit)),
+        );
+        context_pressure_governance_summary(
+            trigger,
+            phase,
+            if blocking {
+                ContextPressureGovernanceStatus::Blocked
+            } else if compacted {
+                ContextPressureGovernanceStatus::Compacted
+            } else {
+                ContextPressureGovernanceStatus::Deferred
+            },
+            Some(assessment.reason),
+            request_context_tokens,
+            live_context_tokens,
+            assessment.limit_tokens,
+            assessment.body_chars.or(request_body_chars),
+            true,
+            compacted,
+            blocking,
+        )
+    } else {
+        context_pressure_governance_summary(
+            trigger,
+            phase,
+            ContextPressureGovernanceStatus::Compacted,
+            Some(assessment.reason),
+            request_context_tokens,
+            live_context_tokens,
+            assessment.limit_tokens,
+            assessment.body_chars.or(request_body_chars),
+            true,
+            true,
+            false,
+        )
+    };
+    persist_context_pressure_governance_summary(session, &summary);
+
+    if summary.blocking {
+        ContextPressureGovernanceOutcome::Blocked(summary)
+    } else {
+        ContextPressureGovernanceOutcome::Proceed(summary)
+    }
 }
 
 pub fn estimate_current_context_tokens(messages: &[SessionMessage]) -> Option<u64> {
     let filtered = SessionPrompt::filter_compacted_messages(messages);
     latest_prompt_input_tokens(&filtered).or_else(|| estimate_tail_content_tokens(&filtered))
+}
+
+pub fn explain_session_context(
+    session: &Session,
+    workflow_cumulative_tokens: Option<u64>,
+) -> SessionContextExplain {
+    let record = session.record();
+    let provider_id = record
+        .metadata
+        .get("model_provider")
+        .and_then(|value| value.as_str())
+        .unwrap_or("default");
+    let model_id = record
+        .metadata
+        .get("model_id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("default");
+    let raw_history_messages = record.messages.len();
+    let raw_model_visible_messages = record
+        .messages
+        .iter()
+        .filter(|message| SessionPrompt::is_model_visible_message(message))
+        .count();
+    let filtered = SessionPrompt::filter_compacted_messages(&record.messages);
+    let message_with_parts =
+        SessionPrompt::to_message_with_parts(&filtered, provider_id, model_id, &record.directory);
+    let api_view_messages = crate::message_v2::to_model_messages(
+        &message_with_parts,
+        &crate::message_v2::ModelContext {
+            provider_id: provider_id.to_string(),
+            model_id: model_id.to_string(),
+            api_npm: String::new(),
+            api_id: model_id.to_string(),
+        },
+    );
+    let (api_view_estimated_input_tokens, api_view_body_chars) =
+        SessionPrompt::estimate_request_context_tokens_from_provider_messages(&api_view_messages);
+    let usage = session.get_usage();
+    let resolved_model = (provider_id != "default" || model_id != "default")
+        .then(|| format!("{provider_id}/{model_id}"));
+
+    SessionContextExplain {
+        resolved_model,
+        fork: session.fork_explain(),
+        raw_history_messages,
+        raw_model_visible_messages,
+        api_view_messages: api_view_messages.len(),
+        api_view_estimated_input_tokens,
+        api_view_body_chars: (api_view_body_chars > 0).then_some(api_view_body_chars),
+        live_context_tokens: usage.live_context_tokens(),
+        last_request_context_tokens: session.latest_request_context_tokens(),
+        owner_session_cumulative_tokens: usage.session_cumulative_tokens(),
+        workflow_cumulative_tokens: workflow_cumulative_tokens
+            .unwrap_or_else(|| usage.session_cumulative_tokens()),
+    }
+}
+
+pub fn explain_session_cache_semantics(
+    context_explain: &SessionContextExplain,
+    context_compaction_summary: Option<&ContextCompactionSummary>,
+    cache_bust_summary: Option<&CacheBustSummary>,
+    prompt_surface_snapshot_invalidation: Option<&PromptSurfaceSnapshotInvalidationSummary>,
+) -> SessionCacheSemanticsSummary {
+    let trimmed_model_visible_messages = context_explain
+        .raw_model_visible_messages
+        .saturating_sub(context_explain.api_view_messages);
+    let boundary = context_compaction_summary.map(|summary| {
+        let likely_changed_prefix =
+            trimmed_model_visible_messages > 0 || summary.compacted_message_count.unwrap_or(0) > 0;
+        let possible_cache_bust = likely_changed_prefix
+            && cache_bust_summary
+                .map(|summary| {
+                    session_cache_severity_from_provider(summary.severity)
+                        >= SessionCacheSeverity::LikelyBust
+                        && summary
+                            .primary_cause
+                            .as_deref()
+                            .is_some_and(|cause| cause.contains("messagePrefixHash"))
+                })
+                .unwrap_or(false);
+
+        SessionCacheBoundarySummary {
+            kind: SessionCacheBoundaryKind::Compaction,
+            trigger: summary.trigger.clone(),
+            phase: summary.phase.clone(),
+            reason: summary.reason.clone(),
+            message_count_before: summary.message_count_before,
+            compacted_message_count: summary.compacted_message_count,
+            kept_message_count: summary.kept_message_count,
+            trimmed_model_visible_messages,
+            likely_changed_prefix,
+            possible_cache_bust,
+        }
+    });
+    let cache_bust = cache_bust_summary.map(|summary| SessionCacheBustExplain {
+        status: summary.status.clone(),
+        severity: session_cache_severity_from_provider(summary.severity),
+        primary_cause: summary.primary_cause.clone(),
+        change_count: summary.change_count,
+    });
+    let prompt_surface_invalidation = prompt_surface_snapshot_invalidation.cloned();
+    let label = cache_semantics_label(
+        boundary.as_ref(),
+        cache_bust.as_ref(),
+        prompt_surface_invalidation.as_ref(),
+    );
+
+    SessionCacheSemanticsSummary {
+        basis: SessionCacheSemanticsBasis::ApiView,
+        api_view_messages: context_explain.api_view_messages,
+        trimmed_model_visible_messages,
+        boundary,
+        cache_bust,
+        prompt_surface_invalidation,
+        label,
+    }
+}
+
+fn session_cache_severity_from_provider(
+    value: rocode_provider::cache::CacheBustSeverity,
+) -> SessionCacheSeverity {
+    match value {
+        rocode_provider::cache::CacheBustSeverity::Stable => SessionCacheSeverity::Stable,
+        rocode_provider::cache::CacheBustSeverity::SoftDegradation => {
+            SessionCacheSeverity::SoftDegradation
+        }
+        rocode_provider::cache::CacheBustSeverity::LikelyBust => SessionCacheSeverity::LikelyBust,
+        rocode_provider::cache::CacheBustSeverity::HardBust => SessionCacheSeverity::HardBust,
+    }
+}
+
+fn cache_semantics_label(
+    boundary: Option<&SessionCacheBoundarySummary>,
+    cache_bust: Option<&SessionCacheBustExplain>,
+    prompt_surface_invalidation: Option<&PromptSurfaceSnapshotInvalidationSummary>,
+) -> Option<String> {
+    if let Some(cache_bust) = cache_bust {
+        if should_surface_cache_bust(cache_bust) {
+            let severity = session_cache_severity_label(cache_bust.severity);
+            let cause = if boundary.is_some_and(|boundary| boundary.possible_cache_bust) {
+                "compact boundary likely changed the API-view prefix".to_string()
+            } else {
+                cache_bust
+                    .primary_cause
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("prompt surface changed")
+                    .to_string()
+            };
+            return Some(format!("{severity} · {cause}"));
+        }
+    }
+
+    if let Some(invalidation) = prompt_surface_invalidation {
+        if invalidation.severity > SessionCacheSeverity::Stable {
+            let severity = session_cache_severity_label(invalidation.severity);
+            let reason = invalidation.reason.trim();
+            if !reason.is_empty() {
+                return Some(format!("{severity} · {reason}"));
+            }
+        }
+    }
+
+    let boundary = boundary?;
+    if boundary.likely_changed_prefix {
+        if boundary.trimmed_model_visible_messages > 0 {
+            return Some(format!(
+                "compact boundary · {} earlier messages trimmed from the API view",
+                boundary.trimmed_model_visible_messages
+            ));
+        }
+
+        return Some("compact boundary · session compacted before the next request".to_string());
+    }
+
+    None
+}
+
+fn should_surface_cache_bust(summary: &SessionCacheBustExplain) -> bool {
+    !matches!(summary.status.as_str(), "stable" | "cold_start")
+        && summary.severity > SessionCacheSeverity::Stable
+}
+
+fn session_cache_severity_label(value: SessionCacheSeverity) -> &'static str {
+    match value {
+        SessionCacheSeverity::Stable => "stable",
+        SessionCacheSeverity::SoftDegradation => "soft degradation",
+        SessionCacheSeverity::LikelyBust => "likely bust",
+        SessionCacheSeverity::HardBust => "hard bust",
+    }
+}
+
+#[cfg(test)]
+mod cache_semantics_tests {
+    use super::{compact_session_now, explain_session_cache_semantics};
+    use crate::Session;
+    use rocode_provider::cache::{CacheBustSeverity, CacheBustSummary};
+    use rocode_types::{
+        ContextCompactionSummary, PromptSurfaceSnapshotInvalidationSummary, SessionCacheSeverity,
+        SessionContextExplain,
+    };
+
+    #[test]
+    fn cache_semantics_marks_compact_boundary_as_possible_bust() {
+        let explain = SessionContextExplain {
+            resolved_model: Some("openai/gpt-4o".to_string()),
+            fork: None,
+            raw_history_messages: 18,
+            raw_model_visible_messages: 15,
+            api_view_messages: 8,
+            api_view_estimated_input_tokens: Some(92_000),
+            api_view_body_chars: Some(360_000),
+            live_context_tokens: Some(82_000),
+            last_request_context_tokens: Some(88_000),
+            owner_session_cumulative_tokens: 104_000,
+            workflow_cumulative_tokens: 143_000,
+        };
+        let compaction = ContextCompactionSummary {
+            trigger: "auto_preflight".to_string(),
+            phase: Some("prompt.pre_request".to_string()),
+            reason: Some("request_view_threshold".to_string()),
+            forced: false,
+            request_context_tokens: Some(92_000),
+            live_context_tokens: Some(82_000),
+            limit_tokens: Some(100_000),
+            body_chars: Some(360_000),
+            message_count_before: Some(15),
+            compacted_message_count: Some(7),
+            kept_message_count: Some(8),
+            summary: Some("Compacted 7 messages.".to_string()),
+        };
+        let cache_bust = CacheBustSummary {
+            status: "degraded".to_string(),
+            severity: CacheBustSeverity::LikelyBust,
+            primary_cause: Some(
+                "messagePrefixHash changed: message prefix changed before the stable boundary"
+                    .to_string(),
+            ),
+            change_count: 1,
+        };
+
+        let summary =
+            explain_session_cache_semantics(&explain, Some(&compaction), Some(&cache_bust), None);
+
+        assert_eq!(
+            summary.basis,
+            rocode_types::SessionCacheSemanticsBasis::ApiView
+        );
+        assert_eq!(summary.trimmed_model_visible_messages, 7);
+        assert!(summary
+            .boundary
+            .as_ref()
+            .is_some_and(|boundary| boundary.possible_cache_bust));
+        assert_eq!(
+            summary.label.as_deref(),
+            Some("likely bust · compact boundary likely changed the API-view prefix")
+        );
+    }
+
+    #[test]
+    fn cache_semantics_falls_back_to_prompt_surface_invalidation() {
+        let explain = SessionContextExplain {
+            resolved_model: None,
+            fork: None,
+            raw_history_messages: 4,
+            raw_model_visible_messages: 4,
+            api_view_messages: 4,
+            api_view_estimated_input_tokens: Some(8_000),
+            api_view_body_chars: Some(32_000),
+            live_context_tokens: Some(8_000),
+            last_request_context_tokens: Some(8_000),
+            owner_session_cumulative_tokens: 9_000,
+            workflow_cumulative_tokens: 9_000,
+        };
+        let invalidation = PromptSurfaceSnapshotInvalidationSummary {
+            severity: SessionCacheSeverity::SoftDegradation,
+            reason: "prompt surface runtime changed: ingressPolicyHash".to_string(),
+            changed_fields: vec!["ingressPolicyHash".to_string()],
+        };
+
+        let summary = explain_session_cache_semantics(&explain, None, None, Some(&invalidation));
+
+        assert_eq!(
+            summary.label.as_deref(),
+            Some("soft degradation · prompt surface runtime changed: ingressPolicyHash")
+        );
+        assert_eq!(
+            summary
+                .prompt_surface_invalidation
+                .as_ref()
+                .map(|value| value.changed_fields.clone()),
+            Some(vec!["ingressPolicyHash".to_string()])
+        );
+    }
+
+    #[test]
+    fn compact_session_now_skips_stage_output_sinks() {
+        let parent = Session::new("proj", ".");
+        let mut child = Session::child_with_context_kind(
+            &parent,
+            rocode_types::SessionContextKind::SchedulerStageOutputSession,
+        );
+        child.add_user_message("hello");
+        child.add_assistant_message().add_text("world");
+
+        let summary = compact_session_now(&mut child);
+
+        assert!(summary.is_none());
+        assert_eq!(child.record().messages.len(), 2);
+    }
 }
 
 fn latest_prompt_input_tokens(messages: &[SessionMessage]) -> Option<u64> {
@@ -461,8 +1152,7 @@ fn latest_prompt_input_tokens(messages: &[SessionMessage]) -> Option<u64> {
         message
             .usage
             .as_ref()
-            .map(|usage| usage.context_tokens)
-            .filter(|tokens| *tokens > 0)
+            .and_then(|usage| usage.live_context_tokens())
             .or_else(|| metadata_u64(message, "tokens_input"))
             .or_else(|| metadata_usage_u64(message, "prompt_tokens"))
     })

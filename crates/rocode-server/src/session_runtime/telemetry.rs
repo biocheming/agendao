@@ -435,8 +435,15 @@ impl RuntimeTelemetryAuthority {
         self.runtime_state.permission_resolved(session_id).await;
     }
 
-    pub(crate) async fn child_attached(&self, parent_id: &str, child_id: &str) {
-        self.runtime_state.child_attached(parent_id, child_id).await;
+    pub(crate) async fn child_attached(
+        &self,
+        parent_id: &str,
+        child_id: &str,
+        context_kind: rocode_types::SessionContextKind,
+    ) {
+        self.runtime_state
+            .child_attached(parent_id, child_id, context_kind)
+            .await;
         self.record_stage_event(
             parent_id,
             StageEvent::new(
@@ -447,6 +454,7 @@ impl RuntimeTelemetryAuthority {
                 serde_json::json!({
                     "parentID": parent_id,
                     "childID": child_id,
+                    "sessionContextKind": context_kind,
                 }),
             ),
         )
