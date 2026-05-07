@@ -1,4 +1,4 @@
-# USER GUIDE - RustingOpenCode (ROCode)
+# USER GUIDE - RockyCode (ROCode)
 
 本手册面向日常使用者，按“如何启动、如何工作、如何排查”的顺序介绍当前版本的 ROCode。
 

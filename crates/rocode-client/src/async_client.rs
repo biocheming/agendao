@@ -78,13 +78,11 @@ impl AsyncApiClient {
 
     pub async fn create_session(
         &self,
-        parent_id: Option<String>,
         scheduler_profile: Option<String>,
         directory: Option<String>,
     ) -> anyhow::Result<SessionInfo> {
         let url = server_url(&self.base_url, "/session");
         let req = CreateSessionRequest {
-            parent_id,
             scheduler_profile,
             directory,
             project_id: None,
@@ -1050,18 +1048,12 @@ impl AsyncApiClient {
         session_id: &str,
         message_id: Option<&str>,
     ) -> anyhow::Result<SessionInfo> {
-        let url = server_url(&self.base_url, &format!("/session/{}/fork", session_id));
-        let mut params: Vec<(&str, String)> = Vec::new();
-        if let Some(msg_id) = message_id {
-            params.push(("message_id", msg_id.to_string()));
-        }
-        let req = if params.is_empty() {
-            self.client.post(&url)
-        } else {
-            self.client.post(&url).query(&params)
-        };
-        let resp = req.send().await?;
-        Self::json_ok(resp, &format!("fork session `{}`", session_id)).await
+        self.post_json(
+            &format!("/session/{}/fork", session_id),
+            &format!("fork session `{}`", session_id),
+            &serde_json::json!({ "message_id": message_id }),
+        )
+        .await
     }
 
     async fn get_json<T: serde::de::DeserializeOwned>(

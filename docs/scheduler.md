@@ -253,12 +253,14 @@ Verifier trace 是 ROCode-native trajectory projection：候选最终输出、ex
 
 ## Session Continuity 与 Hydration
 
-Scheduler 每次执行都会收到当前用户 prompt，但 follow-up 任务还需要知道同一 session 之前发生了什么。ROCode 不把全部历史直接塞进每个 stage，而是由 server 构建 `SchedulerSessionContextPacket`，同时提供两个通道：
+Scheduler 每次执行都会收到当前用户 prompt，但 follow-up 任务还需要知道同一 session 之前发生了什么。ROCode 不把全部历史直接塞进每个 stage，而是由 server 构建 shared `SessionContinuityPacket`，再从这个 packet 派生 markdown continuity projection 给模型读取。
 
-- `scheduler_session_context`：markdown projection，给模型读取
-- `scheduler_session_context_packet`：JSON contract，给 orchestrator 和工具运行时验证
+也就是说：
 
-Markdown projection 会渲染 `Context Coverage`、`Source Anchors`、`Memory Anchors`、`Hydration Guidance`、`Working Ledger`、`Latest Compaction Summary` 和 `Exact Recent Tail`。它告诉模型当前快照覆盖了多少历史、遗漏了多少 older turns、哪些 message id / memory record id 是可授权回查的。
+- `scheduler_session_context_packet`：唯一结构化 contract / authority
+- markdown continuity block：从 packet 渲染出的派生视图，不再是另一条独立真源
+
+派生出的 markdown continuity block 会渲染 `Context Coverage`、`Source Anchors`、`Memory Anchors`、`Hydration Guidance`、`Working Ledger`、`Latest Compaction Summary` 和 `Exact Recent Tail`。它告诉模型当前快照覆盖了多少历史、遗漏了多少 older turns、哪些 message id / memory record id 是可授权回查的。
 
 结构化 packet 带 `version` 门控。orchestrator 只接受当前版本的 packet；版本不匹配时，受控 hydration 的授权面为空，不做猜测降级。
 

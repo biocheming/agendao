@@ -979,23 +979,22 @@ async fn cli_refresh_server_info(
                     projection.session_runtime = Some(telemetry.runtime.clone());
                     projection.stage_summaries = telemetry.stages.clone();
                     projection.telemetry_topology = Some(telemetry.topology.clone());
-                    projection.token_stats.sync_from_usage(
-                        telemetry.usage.input_tokens,
-                        telemetry.usage.output_tokens,
-                        telemetry.usage.reasoning_tokens,
-                        telemetry.usage.cache_read_tokens,
-                        telemetry.usage.cache_miss_tokens,
-                        telemetry.usage.cache_write_tokens,
-                        telemetry.usage.context_tokens,
-                        telemetry.usage.total_cost,
-                    );
+                    projection
+                        .token_stats
+                        .sync_from_snapshot(&telemetry.usage, Some(&telemetry.usage_books));
                     projection.cache_diagnostic = telemetry
-                        .cache_bust_summary
+                        .cache_semantics
                         .as_ref()
-                        .cloned()
-                        .and_then(|value| serde_json::from_value(value).ok())
-                        .and_then(|summary| {
-                            rocode_provider::cache::cache_bust_summary_label(&summary)
+                        .and_then(|summary| summary.label.clone())
+                        .or_else(|| {
+                            telemetry
+                                .cache_bust_summary
+                                .as_ref()
+                                .cloned()
+                                .and_then(|value| serde_json::from_value(value).ok())
+                                .and_then(|summary| {
+                                    rocode_provider::cache::cache_bust_summary_label(&summary)
+                                })
                         });
                     projection.ingress_diagnostic =
                         ingress_stabilization_label(telemetry.ingress_stabilization.as_ref());

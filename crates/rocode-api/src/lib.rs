@@ -16,26 +16,29 @@ pub use rocode_session::{
 pub use rocode_types::{
     ConfigPolicyValidationEffect, ConfigPolicyValidationItem, ConfigPolicyValidationOwner,
     ConfigPolicyValidationScope, ConfigPolicyValidationScopeKind, ConfigPolicyValidationSeverity,
-    ConfigPolicyValidationSnapshot, ExternalAdapterResolvedBinding, ExternalAdapterSource,
-    ManagedSkillRecord, MemoryConflictResponse, MemoryConsolidationRequest,
-    MemoryConsolidationResponse, MemoryConsolidationRunListResponse, MemoryConsolidationRunQuery,
-    MemoryDetailView, MemoryListQuery, MemoryListResponse, MemoryRetrievalPreviewResponse,
-    MemoryRetrievalQuery, MemoryRuleHitListResponse, MemoryRuleHitQuery,
-    MemoryRulePackListResponse, MemoryScope, MemoryValidationReportResponse, ProposalStatus,
+    ConfigPolicyValidationSnapshot, ContextCompactionSummary, ContextPressureGovernanceSummary,
+    ExternalAdapterResolvedBinding, ExternalAdapterSource, ManagedSkillRecord,
+    MemoryConflictResponse, MemoryConsolidationRequest, MemoryConsolidationResponse,
+    MemoryConsolidationRunListResponse, MemoryConsolidationRunQuery, MemoryDetailView,
+    MemoryListQuery, MemoryListResponse, MemoryRetrievalPreviewResponse, MemoryRetrievalQuery,
+    MemoryRuleHitListResponse, MemoryRuleHitQuery, MemoryRulePackListResponse, MemoryScope,
+    MemoryValidationReportResponse, PromptSurfaceSnapshotInvalidationSummary, ProposalStatus,
     ProviderConnectionDescriptorCandidate, ProviderProfileDescriptorView,
+    SessionCacheSemanticsSummary, SessionContextExplain, SessionContextKind,
     SessionEffectiveCompactionPolicy, SessionEffectiveExternalAdapterPolicy,
     SessionEffectiveMemoryPolicy, SessionEffectivePolicyView, SessionEffectiveProviderPolicy,
     SessionEffectiveProviderRuntimeProfile, SessionEffectiveSchedulerPolicy,
     SessionEffectiveSchedulerTraceStep, SessionEffectiveSchedulerTraceStepKind,
-    SessionEffectiveSkillTreePolicy, SessionInsightsResponse, SessionMemoryTelemetrySummary,
-    SessionStatusInfo, SkillArtifactCacheEntry, SkillAuditEvent, SkillDistributionRecord,
-    SkillEvolutionProposal, SkillEvolutionProposalKind, SkillGovernanceTimelineEntry,
-    SkillGovernanceTimelineStatus, SkillGovernanceWriteResult, SkillGuardReport, SkillGuardStatus,
-    SkillHubArtifactCacheResponse, SkillHubAuditResponse, SkillHubDistributionResponse,
-    SkillHubGuardRunRequest, SkillHubGuardRunResponse, SkillHubIndexRefreshRequest,
-    SkillHubIndexRefreshResponse, SkillHubIndexResponse, SkillHubLifecycleResponse,
-    SkillHubManagedDetachRequest, SkillHubManagedDetachResponse, SkillHubManagedRemoveRequest,
-    SkillHubManagedRemoveResponse, SkillHubManagedResponse, SkillHubPolicy, SkillHubPolicyResponse,
+    SessionEffectiveSkillTreePolicy, SessionForkExplain, SessionInsightsResponse,
+    SessionMemoryTelemetrySummary, SessionOwnershipSummary, SessionStatusInfo, SessionUsageBooks,
+    SkillArtifactCacheEntry, SkillAuditEvent, SkillDistributionRecord, SkillEvolutionProposal,
+    SkillEvolutionProposalKind, SkillGovernanceTimelineEntry, SkillGovernanceTimelineStatus,
+    SkillGovernanceWriteResult, SkillGuardReport, SkillGuardStatus, SkillHubArtifactCacheResponse,
+    SkillHubAuditResponse, SkillHubDistributionResponse, SkillHubGuardRunRequest,
+    SkillHubGuardRunResponse, SkillHubIndexRefreshRequest, SkillHubIndexRefreshResponse,
+    SkillHubIndexResponse, SkillHubLifecycleResponse, SkillHubManagedDetachRequest,
+    SkillHubManagedDetachResponse, SkillHubManagedRemoveRequest, SkillHubManagedRemoveResponse,
+    SkillHubManagedResponse, SkillHubPolicy, SkillHubPolicyResponse,
     SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
     SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest, SkillHubSyncApplyRequest,
     SkillHubSyncPlanRequest, SkillHubSyncPlanResponse, SkillHubTimelineQuery,
@@ -316,6 +319,8 @@ pub struct PendingPermissionSummary {
 pub struct ChildSessionSummary {
     pub child_id: String,
     pub parent_id: String,
+    #[serde(default)]
+    pub context_kind: Option<SessionContextKind>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -397,12 +402,25 @@ pub struct SessionTelemetrySnapshot {
     pub stages: Vec<StageSummary>,
     pub topology: SessionExecutionTopology,
     pub usage: SessionUsage,
+    pub usage_books: SessionUsageBooks,
     #[serde(default)]
     pub memory: Option<SessionMemoryTelemetrySummary>,
     #[serde(default)]
     pub cache_bust_summary: Option<serde_json::Value>,
     #[serde(default)]
+    pub context_explain: Option<SessionContextExplain>,
+    #[serde(default)]
+    pub ownership: Option<SessionOwnershipSummary>,
+    #[serde(default)]
+    pub context_compaction_summary: Option<ContextCompactionSummary>,
+    #[serde(default)]
+    pub context_pressure_governance_summary: Option<ContextPressureGovernanceSummary>,
+    #[serde(default)]
+    pub cache_semantics: Option<SessionCacheSemanticsSummary>,
+    #[serde(default)]
     pub prompt_surface_runtime_snapshot: Option<serde_json::Value>,
+    #[serde(default)]
+    pub prompt_surface_snapshot_invalidation: Option<PromptSurfaceSnapshotInvalidationSummary>,
     #[serde(default)]
     pub ingress_stabilization: Option<serde_json::Value>,
     #[serde(default)]
@@ -666,7 +684,6 @@ pub struct ExecuteShellRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateSessionRequest {
-    pub parent_id: Option<String>,
     pub scheduler_profile: Option<String>,
     pub directory: Option<String>,
     pub project_id: Option<String>,

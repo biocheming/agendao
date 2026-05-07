@@ -20,11 +20,11 @@
 12. [rocode db -- 数据库工具](#rocode-db----数据库工具)
 13. [rocode config -- 配置显示](#rocode-config----配置显示)
 14. [rocode auth -- 凭证管理](#rocode-auth----凭证管理)
-15. [rocode agent -- 代理管理](#rocode-agent----代理管理)
+15. [rocode agent -- 智能体管理](#rocode-agent----智能体管理)
 16. [rocode debug -- 调试工具](#rocode-debug----调试工具)
 17. [rocode mcp -- MCP 服务器管理](#rocode-mcp----mcp-服务器管理)
 18. [rocode export / import -- 会话导入导出](#rocode-export--import----会话导入导出)
-19. [rocode github -- GitHub 代理](#rocode-github----github-代理)
+19. [rocode github -- GitHub 智能体](#rocode-github----github-智能体)
 20. [rocode pr -- PR 检出](#rocode-pr----pr-检出)
 21. [rocode upgrade -- 升级](#rocode-upgrade----升级)
 22. [rocode uninstall -- 卸载](#rocode-uninstall----卸载)
@@ -71,7 +71,7 @@ rocode tui [PROJECT] [选项]
 | `-s, --session` | string | -- | 指定会话 ID |
 | `--fork` | flag | false | 从已有会话分叉后再进入 TUI（需要 `-c` 或 `-s`） |
 | `--prompt` | string | -- | 初始提示词 |
-| `--agent` | string | -- | 指定代理名称 |
+| `--agent` | string | -- | 指定智能体名称 |
 | `--port` | u16 | 0 | HTTP 服务端口（0 = 自动） |
 | `--hostname` | string | 127.0.0.1 | 绑定地址 |
 | `--mdns` | flag | false | 启用 mDNS 服务发现 |
@@ -118,7 +118,7 @@ rocode run --command <command> [选项]
 | `--fork` | flag | false | 从已有会话分叉 |
 | `--share` | flag | false | 共享会话 |
 | `-m, --model` | string | -- | 指定模型 |
-| `--agent` | string | -- | 指定代理（与 `--scheduler-profile` 互斥） |
+| `--agent` | string | -- | 指定智能体（与 `--scheduler-profile` 互斥） |
 | `--scheduler-profile` | string | -- | 指定调度器配置（与 `--agent` 互斥） |
 | `-f, --file` | path[] | [] | 附加文件 |
 | `--format` | enum | default | 输出格式: `default` 或 `json` |
@@ -435,23 +435,23 @@ rocode auth logout zhipuai
 
 ---
 
-## rocode agent -- 代理管理
+## rocode agent -- 智能体管理
 
-管理代理定义。
+管理智能体定义。
 
 ### 子命令
 
 | 子命令 | 说明 |
 |--------|------|
-| `list` | 列出可用代理 |
-| `create` | 创建代理 Markdown 文件 |
+| `list` | 列出可用智能体 |
+| `create` | 创建智能体 Markdown 文件 |
 
 #### create 参数
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `NAME` | string | 必填 | 代理名称 |
-| `--description` | string | 必填 | 代理描述 |
+| `NAME` | string | 必填 | 智能体名称 |
+| `--description` | string | 必填 | 智能体描述 |
 | `--mode` | enum | all | 文件模式: `all`, `primary`, `subagent` |
 | `--path` | path | -- | 输出路径 |
 | `--tools` | string | -- | 允许的工具列表 |
@@ -478,7 +478,7 @@ rocode auth logout zhipuai
 | `rg` | Ripgrep 调试工具 |
 | `lsp` | LSP 调试工具 |
 | `docs` | 上下文文档调试工具 |
-| `agent` | 显示代理配置详情 |
+| `agent` | 显示智能体配置详情 |
 
 #### debug agent
 
@@ -621,17 +621,17 @@ rocode import <FILE_OR_URL>
 
 ---
 
-## rocode github -- GitHub 代理
+## rocode github -- GitHub 智能体
 
-管理 GitHub 代理集成。
+管理 GitHub 智能体集成。
 
 ### 子命令
 
 | 子命令 | 说明 |
 |--------|------|
 | `status` | 检查 GitHub CLI 安装和认证状态 |
-| `install` | 在当前仓库安装 GitHub 代理 |
-| `run` | 运行 GitHub 代理（CI 模式） |
+| `install` | 在当前仓库安装 GitHub 智能体 |
+| `run` | 运行 GitHub 智能体（CI 模式） |
 
 #### github run 参数
 
@@ -747,13 +747,13 @@ rocode generate
 | `/preset` | 列出调度器预设 |
 | `/preset <name>` | 选择调度器预设 |
 
-### 代理与任务
+### 智能体与任务
 
 | 命令 | 说明 |
 |------|------|
-| `/agent` | 列出可用代理 |
-| `/agent <name>` | 切换代理 |
-| `/tasks` | 列出代理任务 |
+| `/agent` | 列出可用智能体 |
+| `/agent <name>` | 切换智能体 |
+| `/tasks` | 列出智能体任务 |
 | `/tasks show <ID>` | 显示任务详情 |
 | `/tasks kill <ID>` | 终止任务（别名: `/tasks cancel`） |
 

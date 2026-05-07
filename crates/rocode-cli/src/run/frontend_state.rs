@@ -144,7 +144,7 @@ const CLI_PROMPT_COMMANDS: &[CliPromptCommandSpec] = &[
     CliPromptCommandSpec {
         name: "child",
         takes_value: None,
-        description: "list or focus child sessions",
+        description: "list or focus attached sessions",
     },
     CliPromptCommandSpec {
         name: "tasks",
@@ -764,7 +764,10 @@ impl CliRetainedTranscript {
     }
 }
 
-/// Cumulative token usage and cost for the current session.
+/// Usage snapshot for the currently focused session tree.
+///
+/// Cumulative totals are workflow/subtree totals; live context remains
+/// owner-local to the focused session.
 #[derive(Debug, Clone, Default)]
 struct CliSessionTokenStats {
     total_tokens: u64,
@@ -779,26 +782,27 @@ struct CliSessionTokenStats {
 }
 
 impl CliSessionTokenStats {
-    pub(super) fn sync_from_usage(
+    pub(super) fn sync_from_snapshot(
         &mut self,
-        input_tokens: u64,
-        output_tokens: u64,
-        reasoning_tokens: u64,
-        cache_read_tokens: u64,
-        cache_miss_tokens: u64,
-        cache_write_tokens: u64,
-        context_tokens: u64,
-        total_cost: f64,
+        usage: &rocode_session::SessionUsage,
+        usage_books: Option<&rocode_types::SessionUsageBooks>,
     ) {
-        self.input_tokens = input_tokens;
-        self.output_tokens = output_tokens;
-        self.reasoning_tokens = reasoning_tokens;
-        self.cache_read_tokens = cache_read_tokens;
-        self.cache_miss_tokens = cache_miss_tokens;
-        self.cache_write_tokens = cache_write_tokens;
-        self.context_tokens = context_tokens;
-        self.total_tokens = input_tokens + output_tokens + reasoning_tokens;
-        self.total_cost = total_cost;
+        let workflow = usage_books
+            .map(|books| books.workflow_cumulative.clone())
+            .unwrap_or_else(|| usage.workflow_usage_summary());
+
+        self.input_tokens = workflow.input_tokens;
+        self.output_tokens = workflow.output_tokens;
+        self.reasoning_tokens = workflow.reasoning_tokens;
+        self.cache_read_tokens = workflow.cache_read_tokens;
+        self.cache_miss_tokens = workflow.cache_miss_tokens;
+        self.cache_write_tokens = workflow.cache_write_tokens;
+        self.context_tokens = usage_books
+            .and_then(|books| books.live_context_tokens)
+            .or_else(|| usage.live_context_tokens())
+            .unwrap_or(0);
+        self.total_tokens = workflow.total_tokens();
+        self.total_cost = workflow.total_cost;
     }
 }
 
@@ -975,7 +979,7 @@ impl CliFrontendProjection {
             }
         } else if self.token_stats.total_tokens > 0 {
             parts.push(format!(
-                "total {}",
+                "workflow {}",
                 format_token_count(self.token_stats.total_tokens)
             ));
         }

@@ -161,7 +161,6 @@ impl App {
                 let session_directory = self.context.directory.read().clone();
                 thread::spawn(move || {
                     let (created_session, response, error) = match client.create_session(
-                        None,
                         selected_mode.scheduler_profile.clone(),
                         Some(session_directory),
                     ) {
@@ -381,7 +380,6 @@ impl App {
 
                 let session_directory = self.context.directory.read().clone();
                 let session = match client.create_session(
-                    None,
                     selected_mode.scheduler_profile.clone(),
                     Some(session_directory),
                 ) {

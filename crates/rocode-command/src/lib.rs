@@ -213,7 +213,7 @@ impl CommandRegistry {
     fn register_builtin_commands(&mut self) {
         self.register(Command {
             name: "init".to_string(),
-            description: "Initialize OpenCode in the current project".to_string(),
+            description: "Initialize ROCode in the current project".to_string(),
             template: include_str!("../commands/init.md").to_string(),
             scheduler_profile: None,
             aliases: Vec::new(),

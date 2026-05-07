@@ -860,26 +860,31 @@ impl App {
         }
 
         if let Some(usage) = usage.as_ref() {
+            let workflow_usage = self
+                .context
+                .session_usage_books()
+                .map(|books| books.workflow_cumulative)
+                .unwrap_or_else(|| usage.workflow_usage_summary());
             if let Some(current_tokens) = self.context.current_context_tokens() {
                 let context_limit = self
                     .context
                     .resolve_model_info(self.context.last_assistant_model().as_deref())
                     .map(|model| model.context_window);
                 blocks.push(StatusBlock::normal(format!(
-                    "Current context: {}",
+                    "Live context: {}",
                     tui_format_context_usage_label(current_tokens, context_limit)
                 )));
             }
             blocks.push(StatusBlock::normal(format!(
-                "Session cumulative: {} total · input {} · output {} · reasoning {} · cache H/M/W {}/{}/{} · cost ${:.4}",
-                tui_format_token_count(tui_total_session_tokens(usage)),
-                tui_format_token_count(usage.input_tokens),
-                tui_format_token_count(usage.output_tokens),
-                tui_format_token_count(usage.reasoning_tokens),
-                tui_format_token_count(usage.cache_read_tokens),
-                tui_format_token_count(usage.cache_miss_tokens),
-                tui_format_token_count(usage.cache_write_tokens),
-                usage.total_cost
+                "Workflow cumulative: {} total · input {} · output {} · reasoning {} · cache H/M/W {}/{}/{} · cost ${:.4}",
+                tui_format_token_count(workflow_usage.total_tokens()),
+                tui_format_token_count(workflow_usage.input_tokens),
+                tui_format_token_count(workflow_usage.output_tokens),
+                tui_format_token_count(workflow_usage.reasoning_tokens),
+                tui_format_token_count(workflow_usage.cache_read_tokens),
+                tui_format_token_count(workflow_usage.cache_miss_tokens),
+                tui_format_token_count(workflow_usage.cache_write_tokens),
+                workflow_usage.total_cost
             )));
         }
 
@@ -1611,6 +1616,20 @@ fn format_run_status(status: &crate::api::SessionRunStatusKind) -> &'static str 
     }
 }
 
+fn tui_session_context_kind_label(kind: crate::api::SessionContextKind) -> &'static str {
+    kind.label()
+}
+
+fn tui_session_handoff_mode_label(mode: rocode_types::SessionHandoffMode) -> &'static str {
+    match mode {
+        rocode_types::SessionHandoffMode::SelfContinuity => "self continuity",
+        rocode_types::SessionHandoffMode::BoundedHandoff => "bounded handoff",
+        rocode_types::SessionHandoffMode::StageOutputSink => "stage output sink",
+        rocode_types::SessionHandoffMode::FullHistoryFork => "full-history fork",
+        rocode_types::SessionHandoffMode::UnclassifiedChild => "unclassified child",
+    }
+}
+
 fn tui_runtime_status_lines(
     session_id: &str,
     telemetry: &crate::api::SessionTelemetrySnapshot,
@@ -1721,13 +1740,17 @@ fn tui_runtime_status_lines(
     if !runtime.child_sessions.is_empty() {
         lines.push(StatusLine::muted(String::new()));
         lines.push(StatusLine::title(format!(
-            "Child Sessions ({})",
+            "Attached Sessions ({})",
             runtime.child_sessions.len()
         )));
         for child in &runtime.child_sessions {
+            let kind = child
+                .context_kind
+                .map(tui_session_context_kind_label)
+                .unwrap_or("attached session");
             lines.push(StatusLine::normal(format!(
-                "- {} ← {}",
-                child.child_id, child.parent_id
+                "- {} · {} ← {}",
+                kind, child.child_id, child.parent_id
             )));
         }
     }
@@ -1810,14 +1833,133 @@ fn tui_usage_status_lines(
     last_turn_tokens: Option<&crate::context::TokenUsage>,
 ) -> Vec<StatusLine> {
     let usage = &telemetry.usage;
+    let usage_books = &telemetry.usage_books;
+    let workflow = &usage_books.workflow_cumulative;
     let mut lines = vec![
         StatusLine::title("Session Usage"),
         StatusLine::normal(format!("Session: {}", session_id)),
     ];
 
+    if let Some(explain) = telemetry.context_explain.as_ref() {
+        lines.push(StatusLine::muted(String::new()));
+        lines.push(StatusLine::title("Surface Views"));
+        if let Some(model) = explain.resolved_model.as_deref() {
+            lines.push(StatusLine::normal(format!("Model: {}", model)));
+        }
+        lines.push(StatusLine::normal(format!(
+            "Raw history: {} persisted messages",
+            explain.raw_history_messages
+        )));
+        if explain.raw_history_messages > explain.raw_model_visible_messages {
+            lines.push(StatusLine::normal(format!(
+                "Model-visible history: {} messages ({} runtime-only hidden)",
+                explain.raw_model_visible_messages,
+                explain
+                    .raw_history_messages
+                    .saturating_sub(explain.raw_model_visible_messages)
+            )));
+        } else {
+            lines.push(StatusLine::normal(format!(
+                "Model-visible history: {} messages",
+                explain.raw_model_visible_messages
+            )));
+        }
+        let mut api_view_line = format!("API view: {} messages", explain.api_view_messages);
+        if let Some(tokens) = explain.api_view_estimated_input_tokens {
+            api_view_line.push_str(&format!(" · ~{} tokens", tui_format_token_count(tokens)));
+        }
+        if let Some(chars) = explain.api_view_body_chars {
+            api_view_line.push_str(&format!(
+                " · {} chars",
+                tui_format_token_count(chars as u64)
+            ));
+        }
+        lines.push(StatusLine::normal(api_view_line));
+        if explain.raw_model_visible_messages > explain.api_view_messages {
+            lines.push(StatusLine::muted(format!(
+                "Boundary: {} earlier model-visible messages trimmed before the next request",
+                explain
+                    .raw_model_visible_messages
+                    .saturating_sub(explain.api_view_messages)
+            )));
+        }
+    }
+
+    if let Some(ownership) = telemetry.ownership.as_ref() {
+        lines.push(StatusLine::muted(String::new()));
+        lines.push(StatusLine::title("Ownership"));
+        lines.push(StatusLine::normal(format!(
+            "Kind: {}",
+            tui_session_context_kind_label(ownership.context_kind)
+        )));
+        lines.push(StatusLine::normal(format!(
+            "Handoff: {}",
+            tui_session_handoff_mode_label(ownership.handoff_mode)
+        )));
+        lines.push(StatusLine::normal(format!(
+            "Prompt continuity: {}",
+            if ownership.owns_prompt_continuity {
+                "owned by this session"
+            } else {
+                "not owned by this session"
+            }
+        )));
+        lines.push(StatusLine::normal(format!(
+            "Compact owner: {}",
+            if ownership.compact_owner {
+                "this session"
+            } else {
+                "not eligible"
+            }
+        )));
+        lines.push(StatusLine::muted("Provider/model: request shape only"));
+        lines.push(StatusLine::muted("Workflow cumulative: observation only"));
+    }
+
+    if let Some(cache_semantics) = telemetry.cache_semantics.as_ref() {
+        lines.push(StatusLine::muted(String::new()));
+        lines.push(StatusLine::title("Cache semantics"));
+        lines.push(StatusLine::normal(format!(
+            "Basis: API view ({} messages)",
+            cache_semantics.api_view_messages
+        )));
+        if cache_semantics.trimmed_model_visible_messages > 0 {
+            lines.push(StatusLine::muted(format!(
+                "Boundary: {} earlier model-visible messages trimmed before the next request",
+                cache_semantics.trimmed_model_visible_messages
+            )));
+        }
+        if let Some(boundary) = cache_semantics.boundary.as_ref() {
+            let trigger = boundary.trigger.replace('_', " ");
+            let reason = boundary
+                .reason
+                .as_deref()
+                .map(|value| value.replace('_', " "));
+            let mut detail = format!("Compact: {}", trigger);
+            if let Some(reason) = reason.as_deref() {
+                detail.push_str(&format!(" · {}", reason));
+            }
+            if boundary.possible_cache_bust {
+                detail.push_str(" · may have shifted the cache prefix");
+            }
+            lines.push(StatusLine::normal(detail));
+        }
+        if let Some(label) = cache_semantics.label.as_deref() {
+            lines.push(StatusLine::warning(format!("Impact: {}", label)));
+        }
+        if let Some(invalidation) = cache_semantics.prompt_surface_invalidation.as_ref() {
+            if !invalidation.changed_fields.is_empty() {
+                lines.push(StatusLine::muted(format!(
+                    "Prompt surface: {}",
+                    invalidation.changed_fields.join(", ")
+                )));
+            }
+        }
+    }
+
     if let Some(current_tokens) = current_context_tokens {
         lines.push(StatusLine::muted(String::new()));
-        lines.push(StatusLine::title("Current Context"));
+        lines.push(StatusLine::title("Live Context"));
         lines.push(StatusLine::normal(format!(
             "Pressure: {}",
             tui_format_context_usage_label(current_tokens, current_context_limit)
@@ -1831,31 +1973,59 @@ fn tui_usage_status_lines(
         }
     }
 
-    if let Some(tokens) = last_turn_tokens.filter(|tokens| tui_has_turn_usage(tokens)) {
+    if last_turn_tokens
+        .filter(|tokens| tui_has_turn_usage(tokens))
+        .is_some()
+        || usage_books.request_context_tokens.is_some()
+    {
         lines.push(StatusLine::muted(String::new()));
-        lines.push(StatusLine::title("Last Turn"));
-        lines.push(StatusLine::normal(tui_format_last_turn_usage(tokens)));
+        lines.push(StatusLine::title("Last Request"));
+        if let Some(request_context_tokens) = usage_books.request_context_tokens {
+            lines.push(StatusLine::normal(format!(
+                "Context {}",
+                tui_format_token_count(request_context_tokens)
+            )));
+        }
+        if let Some(tokens) = last_turn_tokens.filter(|tokens| tui_has_turn_usage(tokens)) {
+            lines.push(StatusLine::normal(tui_format_last_turn_usage(tokens)));
+        }
     }
 
     lines.push(StatusLine::muted(String::new()));
-    lines.push(StatusLine::title("Session Cumulative"));
+    lines.push(StatusLine::title("Workflow Cumulative"));
     lines.push(StatusLine::normal(format!(
         "Total {} · Cost ${:.4}",
-        tui_format_token_count(tui_total_session_tokens(usage)),
-        usage.total_cost
+        tui_format_token_count(workflow.total_tokens()),
+        workflow.total_cost
     )));
     lines.push(StatusLine::normal(format!(
         "Input {} · Output {} · Reasoning {}",
-        tui_format_token_count(usage.input_tokens),
-        tui_format_token_count(usage.output_tokens),
-        tui_format_token_count(usage.reasoning_tokens)
+        tui_format_token_count(workflow.input_tokens),
+        tui_format_token_count(workflow.output_tokens),
+        tui_format_token_count(workflow.reasoning_tokens)
     )));
     lines.push(StatusLine::normal(format!(
         "Cache read {} · Cache miss {} · Cache write {}",
-        tui_format_token_count(usage.cache_read_tokens),
-        tui_format_token_count(usage.cache_miss_tokens),
-        tui_format_token_count(usage.cache_write_tokens)
+        tui_format_token_count(workflow.cache_read_tokens),
+        tui_format_token_count(workflow.cache_miss_tokens),
+        tui_format_token_count(workflow.cache_write_tokens)
     )));
+
+    if workflow.total_tokens() != usage.session_cumulative_tokens() {
+        lines.push(StatusLine::muted(String::new()));
+        lines.push(StatusLine::title("Owner Session Cumulative"));
+        lines.push(StatusLine::normal(format!(
+            "Total {} · Cost ${:.4}",
+            tui_format_token_count(usage.session_cumulative_tokens()),
+            usage.total_cost
+        )));
+        lines.push(StatusLine::normal(format!(
+            "Input {} · Output {} · Reasoning {}",
+            tui_format_token_count(usage.input_tokens),
+            tui_format_token_count(usage.output_tokens),
+            tui_format_token_count(usage.reasoning_tokens)
+        )));
+    }
 
     if !telemetry.stages.is_empty() {
         lines.push(StatusLine::muted(String::new()));
@@ -2475,11 +2645,12 @@ mod tests {
         ConfigPolicyValidationScope, ConfigPolicyValidationScopeKind,
         ConfigPolicyValidationSeverity, ConfigPolicyValidationSnapshot, MemoryScope,
         ProviderConnectionDescriptorCandidate, ProviderProfileDescriptorView,
-        SessionEffectiveCompactionPolicy, SessionEffectiveExternalAdapterPolicy,
-        SessionEffectiveMemoryPolicy, SessionEffectivePolicyView, SessionEffectiveProviderPolicy,
+        SessionContextExplain, SessionEffectiveCompactionPolicy,
+        SessionEffectiveExternalAdapterPolicy, SessionEffectiveMemoryPolicy,
+        SessionEffectivePolicyView, SessionEffectiveProviderPolicy,
         SessionEffectiveProviderRuntimeProfile, SessionEffectiveSchedulerPolicy,
         SessionEffectiveSchedulerTraceStep, SessionEffectiveSchedulerTraceStepKind,
-        SessionEffectiveSkillTreePolicy,
+        SessionEffectiveSkillTreePolicy, SessionUsageBooks, WorkflowUsageSummary,
     };
 
     #[test]
@@ -2713,6 +2884,190 @@ mod tests {
         assert!(texts
             .iter()
             .any(|line| line.contains("Scope: provider · openai")));
+    }
+
+    #[test]
+    fn usage_surface_explains_raw_history_and_api_view() {
+        let telemetry = crate::api::SessionTelemetrySnapshot {
+            runtime: crate::api::SessionRuntimeState {
+                session_id: "sess_123".to_string(),
+                run_status: crate::api::SessionRunStatusKind::Idle,
+                current_message_id: None,
+                usage: None,
+                active_stage_id: None,
+                active_stage_count: 0,
+                active_tools: Vec::new(),
+                pending_question: None,
+                pending_permission: None,
+                child_sessions: Vec::new(),
+            },
+            stages: Vec::new(),
+            topology: crate::api::SessionExecutionTopology {
+                session_id: "sess_123".to_string(),
+                active_count: 0,
+                done_count: 0,
+                running_count: 0,
+                waiting_count: 0,
+                cancelling_count: 0,
+                retry_count: 0,
+                updated_at: None,
+                roots: Vec::new(),
+            },
+            usage: rocode_session::SessionUsage {
+                input_tokens: 90_000,
+                output_tokens: 10_000,
+                reasoning_tokens: 4_000,
+                cache_write_tokens: 2_000,
+                cache_read_tokens: 30_000,
+                cache_miss_tokens: 6_000,
+                context_tokens: 82_000,
+                total_cost: 1.25,
+            },
+            usage_books: SessionUsageBooks {
+                request_context_tokens: Some(88_000),
+                live_context_tokens: Some(82_000),
+                workflow_cumulative: WorkflowUsageSummary {
+                    input_tokens: 120_000,
+                    output_tokens: 18_000,
+                    reasoning_tokens: 5_000,
+                    cache_write_tokens: 2_000,
+                    cache_read_tokens: 34_000,
+                    cache_miss_tokens: 7_000,
+                    total_cost: 1.60,
+                },
+            },
+            memory: None,
+            cache_bust_summary: None,
+            context_explain: Some(SessionContextExplain {
+                resolved_model: Some("openai/gpt-4o".to_string()),
+                fork: None,
+                raw_history_messages: 18,
+                raw_model_visible_messages: 15,
+                api_view_messages: 8,
+                api_view_estimated_input_tokens: Some(92_000),
+                api_view_body_chars: Some(360_000),
+                live_context_tokens: Some(82_000),
+                last_request_context_tokens: Some(88_000),
+                owner_session_cumulative_tokens: 104_000,
+                workflow_cumulative_tokens: 143_000,
+            }),
+            ownership: Some(rocode_types::SessionOwnershipSummary {
+                context_kind: rocode_types::SessionContextKind::RootSessionContinuity,
+                handoff_mode: rocode_types::SessionHandoffMode::SelfContinuity,
+                owns_prompt_continuity: true,
+                compact_owner: true,
+                provider_model_role: rocode_types::SessionProviderModelRole::RequestShapeOnly,
+                workflow_usage_role: rocode_types::SessionWorkflowUsageRole::ObservationOnly,
+            }),
+            context_compaction_summary: Some(rocode_types::ContextCompactionSummary {
+                trigger: "auto_preflight".to_string(),
+                phase: Some("prompt.pre_request".to_string()),
+                reason: Some("request_view_threshold".to_string()),
+                forced: false,
+                request_context_tokens: Some(92_000),
+                live_context_tokens: Some(82_000),
+                limit_tokens: Some(100_000),
+                body_chars: Some(360_000),
+                message_count_before: Some(15),
+                compacted_message_count: Some(7),
+                kept_message_count: Some(8),
+                summary: Some("Compacted 7 messages.".to_string()),
+            }),
+            context_pressure_governance_summary: None,
+            cache_semantics: Some(rocode_types::SessionCacheSemanticsSummary {
+                basis: rocode_types::SessionCacheSemanticsBasis::ApiView,
+                api_view_messages: 8,
+                trimmed_model_visible_messages: 7,
+                boundary: Some(rocode_types::SessionCacheBoundarySummary {
+                    kind: rocode_types::SessionCacheBoundaryKind::Compaction,
+                    trigger: "auto_preflight".to_string(),
+                    phase: Some("prompt.pre_request".to_string()),
+                    reason: Some("request_view_threshold".to_string()),
+                    message_count_before: Some(15),
+                    compacted_message_count: Some(7),
+                    kept_message_count: Some(8),
+                    trimmed_model_visible_messages: 7,
+                    likely_changed_prefix: true,
+                    possible_cache_bust: true,
+                }),
+                cache_bust: Some(rocode_types::SessionCacheBustExplain {
+                    status: "degraded".to_string(),
+                    severity: rocode_types::SessionCacheSeverity::LikelyBust,
+                    primary_cause: Some(
+                        "messagePrefixHash changed: message prefix changed before the stable boundary"
+                            .to_string(),
+                    ),
+                    change_count: 1,
+                }),
+                prompt_surface_invalidation: Some(
+                    rocode_types::PromptSurfaceSnapshotInvalidationSummary {
+                        severity: rocode_types::SessionCacheSeverity::SoftDegradation,
+                        reason: "prompt surface runtime changed: ingressPolicyHash".to_string(),
+                        changed_fields: vec!["ingressPolicyHash".to_string()],
+                    },
+                ),
+                label: Some(
+                    "likely bust · compact boundary likely changed the API-view prefix"
+                        .to_string(),
+                ),
+            }),
+            prompt_surface_runtime_snapshot: None,
+            prompt_surface_snapshot_invalidation: Some(
+                rocode_types::PromptSurfaceSnapshotInvalidationSummary {
+                    severity: rocode_types::SessionCacheSeverity::SoftDegradation,
+                    reason: "prompt surface runtime changed: ingressPolicyHash".to_string(),
+                    changed_fields: vec!["ingressPolicyHash".to_string()],
+                },
+            ),
+            ingress_stabilization: None,
+            execution_preflight_summary: None,
+            provider_diagnostic_summary: None,
+        };
+
+        let lines = tui_usage_status_lines(
+            "sess_123",
+            &telemetry,
+            Some(82_000),
+            Some(200_000),
+            Some(&crate::context::TokenUsage {
+                input: 88_000,
+                output: 2_400,
+                reasoning: 300,
+                cache_read: 30_000,
+                cache_miss: 6_000,
+                cache_write: 0,
+            }),
+        );
+        let texts = lines.into_iter().map(|line| line.text).collect::<Vec<_>>();
+
+        assert!(texts.iter().any(|line| line == "Surface Views"));
+        assert!(texts
+            .iter()
+            .any(|line| line == "Raw history: 18 persisted messages"));
+        assert!(texts
+            .iter()
+            .any(|line| { line == "Model-visible history: 15 messages (3 runtime-only hidden)" }));
+        assert!(texts
+            .iter()
+            .any(|line| { line == "API view: 8 messages · ~92K tokens · 360K chars" }));
+        assert!(texts.iter().any(|line| line == "Ownership"));
+        assert!(texts.iter().any(|line| line == "Kind: root continuity"));
+        assert!(texts
+            .iter()
+            .any(|line| line == "Compact owner: this session"));
+        assert!(texts.iter().any(|line| line == "Cache semantics"));
+        assert!(texts.iter().any(|line| {
+            line == "Compact: auto preflight · request view threshold · may have shifted the cache prefix"
+        }));
+        assert!(texts.iter().any(|line| {
+            line == "Impact: likely bust · compact boundary likely changed the API-view prefix"
+        }));
+        assert!(texts.iter().any(|line| {
+            line == "Boundary: 7 earlier model-visible messages trimmed before the next request"
+        }));
+        assert!(texts.iter().any(|line| line == "Live Context"));
+        assert!(texts.iter().any(|line| line == "Last Request"));
+        assert!(texts.iter().any(|line| line == "Workflow Cumulative"));
     }
 }
 

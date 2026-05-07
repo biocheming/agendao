@@ -809,7 +809,7 @@ async fn cli_execute_ui_action(
             if token_stats.total_tokens > 0 {
                 lines.push(String::new());
                 lines.push(format!(
-                    "Tokens: {} total",
+                    "Workflow tokens: {} total",
                     format_token_count(token_stats.total_tokens)
                 ));
                 lines.push(format!(

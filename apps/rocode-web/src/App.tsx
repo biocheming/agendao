@@ -34,6 +34,7 @@ import {
 import {
   cacheBustSummaryFromMetadata,
   cacheBustSummaryLabel,
+  cacheSemanticsFromTelemetry,
   type CacheBustSummaryRecord,
 } from "./lib/cacheDiagnostics";
 import {
@@ -121,6 +122,7 @@ import {
 import {
   AlertTriangleIcon,
   FolderTreeIcon,
+  GitForkIcon,
   PanelLeftIcon,
   SettingsIcon,
   TerminalSquareIcon,
@@ -1402,6 +1404,9 @@ export default function App() {
     return null;
   }, [messageHistory]);
   const latestCacheDiagnostic = useMemo(() => {
+    const semanticsLabel = cacheSemanticsFromTelemetry(executionActivity.telemetry)?.label;
+    if (semanticsLabel) return semanticsLabel;
+
     const telemetrySummary =
       executionActivity.telemetry?.cache_bust_summary &&
       typeof executionActivity.telemetry.cache_bust_summary === "object"
@@ -1417,7 +1422,11 @@ export default function App() {
       if (label) return label;
     }
     return null;
-  }, [executionActivity.telemetry?.cache_bust_summary, messageHistory]);
+  }, [
+    executionActivity.telemetry?.cache_bust_summary,
+    executionActivity.telemetry?.cache_semantics,
+    messageHistory,
+  ]);
   const latestIngressDiagnostic = useMemo(
     () => ingressStabilizationLabel(executionActivity.telemetry?.ingress_stabilization ?? null),
     [executionActivity.telemetry?.ingress_stabilization],
@@ -2228,7 +2237,7 @@ export default function App() {
         project_id: options?.projectId,
       }),
     });
-      const normalized = normalizeSessionRecord(created);
+    const normalized = normalizeSessionRecord(created);
     setSessions((current) =>
       normalizeSessionRecords([normalized, ...current.filter((item) => item.id !== normalized.id)]),
     );
@@ -2236,6 +2245,27 @@ export default function App() {
     selectedSessionRef.current = normalized.id;
     setSelectedSessionId(normalized.id);
     return normalized.id;
+  };
+
+  const forkSelectedSession = async () => {
+    if (!selectedSessionId) return;
+    try {
+      const forked = normalizeSessionRecord(
+        await apiJson<SessionRecord>(`/session/${selectedSessionId}/fork`, {
+          method: "POST",
+          body: JSON.stringify({ message_id: null }),
+        }),
+      );
+      setSessions((current) =>
+        normalizeSessionRecords([forked, ...current.filter((item) => item.id !== forked.id)]),
+      );
+      setCurrentWorkspacePath(forked.directory?.trim() || currentWorkspacePath || null);
+      selectedSessionRef.current = forked.id;
+      setSelectedSessionId(forked.id);
+      setBanner(`Forked session ${forked.title}`);
+    } catch (error) {
+      setBanner(`Failed to fork session: ${formatError(error)}`);
+    }
   };
 
   const selectWorkspace = (workspacePath: string) => {
@@ -2930,6 +2960,18 @@ export default function App() {
             </div>
           ) : null}
           <div className="absolute right-4 top-3 z-20 flex items-center gap-1.5 md:right-5">
+            {selectedSessionId ? (
+              <button
+                onClick={() => {
+                  void forkSelectedSession();
+                }}
+                className="rounded-lg border border-border/50 bg-background/78 p-1.5 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:bg-muted hover:text-foreground"
+                title="Fork session"
+                aria-label="Fork session"
+              >
+                <GitForkIcon className="size-4" />
+              </button>
+            ) : null}
             {!rightSidebarOpen && selectedWorkspaceFilename ? (
               <button
                 onClick={() => setRightSidebarOpen(true)}
