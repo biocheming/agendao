@@ -19,6 +19,8 @@ use rocode_multimodal::{MultimodalDisplaySummary, PersistedMultimodalExplain, Se
 
 use super::session_crud::persist_sessions_if_enabled;
 
+const LOADED_INSTRUCTION_FILES_PREFIX: &str = "Loaded instruction files:";
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct SendMessageRequest {
     pub content: String,
@@ -409,7 +411,11 @@ fn compact_instruction_system_reminder(
         return None;
     }
 
-    Some(format!("System Reminder Sent: {}", files.join(", ")))
+    Some(format!(
+        "{} {}",
+        LOADED_INSTRUCTION_FILES_PREFIX,
+        files.join(", ")
+    ))
 }
 
 fn message_to_info(
@@ -1049,7 +1055,7 @@ mod tests {
 
         assert_eq!(
             info.parts[0].text.as_deref(),
-            Some("System Reminder Sent: /tmp/project/AGENTS.md")
+            Some("Loaded instruction files: /tmp/project/AGENTS.md")
         );
     }
 

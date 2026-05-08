@@ -1357,7 +1357,6 @@ impl SessionPrompt {
                 let path = std::path::PathBuf::from(&instruction.path);
                 match instruction.source {
                     InstructionSource::AgentsMd
-                    | InstructionSource::ClaudeMd
                     | InstructionSource::ContextMd
                     | InstructionSource::Custom(_) => {
                         if path.starts_with(&project_dir) {

@@ -718,7 +718,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_user_message_file_url_injects_agents_but_not_claude_for_file_scope() {
+    async fn create_user_message_file_url_injects_agents_but_not_context_for_file_scope() {
         let prompt = SessionPrompt::default();
         let temp_dir = tempfile::tempdir().expect("tempdir should create");
         let project_root = temp_dir.path().to_path_buf();
@@ -729,9 +729,9 @@ mod tests {
         tokio::fs::write(project_root.join("AGENTS.md"), "Root agents rule")
             .await
             .expect("root AGENTS should write");
-        tokio::fs::write(src_dir.join("CLAUDE.md"), "src claude rule")
+        tokio::fs::write(src_dir.join("CONTEXT.md"), "src context rule")
             .await
-            .expect("src CLAUDE should write");
+            .expect("src CONTEXT should write");
 
         let file_path = src_dir.join("sample.rs");
         tokio::fs::write(&file_path, "fn main() {}")
@@ -776,6 +776,6 @@ mod tests {
             .join("\n");
 
         assert!(text.contains("Root agents rule"));
-        assert!(!text.contains("src claude rule"));
+        assert!(!text.contains("src context rule"));
     }
 }

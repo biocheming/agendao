@@ -4,13 +4,12 @@ use std::path::{Path, PathBuf};
 use tracing::warn;
 
 pub const AGENTS_MD: &str = "AGENTS.md";
-pub const CLAUDE_MD: &str = "CLAUDE.md";
 pub const CONTEXT_MD: &str = "CONTEXT.md"; // deprecated
 pub const CURSOR_MD: &str = ".cursorrules";
 pub const COPILOT_MD: &str = ".github/copilot-instructions.md";
 
 /// Well-known instruction file names searched in project directories.
-const PROJECT_FILES: &[&str] = &[AGENTS_MD, CLAUDE_MD, CONTEXT_MD];
+const PROJECT_FILES: &[&str] = &[AGENTS_MD, CONTEXT_MD];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstructionFile {
@@ -22,7 +21,6 @@ pub struct InstructionFile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InstructionSource {
     AgentsMd,
-    ClaudeMd,
     ContextMd,
     CursorRules,
     CopilotInstructions,
@@ -72,6 +70,11 @@ fn global_config_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("rocode"))
 }
 
+/// Return the legacy rocode home config directory (e.g. `~/.rocode`).
+fn legacy_home_config_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|d| d.join(".rocode"))
+}
+
 /// Build the list of global instruction file paths to probe.
 fn global_files() -> Vec<PathBuf> {
     let mut files = Vec::new();
@@ -86,11 +89,9 @@ fn global_files() -> Vec<PathBuf> {
         files.push(cfg.join(AGENTS_MD));
     }
 
-    // ~/.claude/CLAUDE.md
-    if !env_truthy_any(&["ROCODE_DISABLE_CLAUDE_CODE_PROMPT"]) {
-        if let Some(home) = dirs::home_dir() {
-            files.push(home.join(".claude").join(CLAUDE_MD));
-        }
+    // ~/.rocode/AGENTS.md
+    if let Some(cfg) = legacy_home_config_dir() {
+        files.push(cfg.join(AGENTS_MD));
     }
 
     files
@@ -181,7 +182,6 @@ fn is_url(s: &str) -> bool {
 fn instruction_source_from_filename(name: &str) -> InstructionSource {
     match name {
         AGENTS_MD => InstructionSource::AgentsMd,
-        CLAUDE_MD => InstructionSource::ClaudeMd,
         CONTEXT_MD => InstructionSource::ContextMd,
         CURSOR_MD => InstructionSource::CursorRules,
         COPILOT_MD => InstructionSource::CopilotInstructions,
@@ -247,7 +247,7 @@ fn resolve_for_file_candidates(
 ///
 /// Mirrors TS `InstructionPrompt.resolve(...)` behavior at a filesystem level:
 /// while walking from the file's directory up to `project_root`, collect the
-/// first matching instruction file in each directory (`AGENTS.md`, `CLAUDE.md`,
+/// first matching instruction file in each directory (`AGENTS.md`,
 /// `CONTEXT.md`), skipping duplicates and the target file itself.
 pub fn resolve_for_file(file_path: &Path, project_root: &Path) -> Vec<InstructionFile> {
     resolve_for_file_candidates(file_path, project_root, PROJECT_FILES)
@@ -277,7 +277,7 @@ impl InstructionLoader {
         }
     }
 
-    /// Load all instructions: global files, project files, and config entries.
+    /// Load all instructions: workspace-local files, global files, and config entries.
     ///
     /// * `project_dir` - the project root directory (cwd)
     /// * `config_instructions` - entries from `config.instructions` (file paths,
@@ -289,7 +289,7 @@ impl InstructionLoader {
     ) -> Vec<InstructionFile> {
         let mut result = Vec::new();
 
-        // 1. Project-level instruction files (findUp from cwd)
+        // 1. Workspace-local instruction files (current project dir only)
         if !is_project_config_disabled() {
             result.extend(self.load_project_instructions(project_dir));
         }
@@ -305,36 +305,33 @@ impl InstructionLoader {
 
         result
     }
-    /// Load project-level instruction files by walking up from `project_dir`
-    /// to the worktree root, looking for well-known files.
+    /// Load workspace-local instruction files from `project_dir` only.
     ///
-    /// Matches TS `systemPaths()`: for each file in PROJECT_FILES, findUp from
-    /// project_dir to worktree root. If any matches are found for a file name,
-    /// add them and stop (don't check the next file name).
+    /// Session ownership lives at the selected workspace root, so project-level
+    /// instructions must not inherit from arbitrary parent directories.
     fn load_project_instructions(&mut self, project_dir: &Path) -> Vec<InstructionFile> {
-        let worktree = detect_worktree_root(project_dir);
+        let project_dir = normalize(project_dir);
         let mut result = Vec::new();
 
         for &file in PROJECT_FILES {
-            let matches = find_up(file, project_dir, &worktree);
-            if !matches.is_empty() {
-                for path in &matches {
-                    let key = normalize(path).to_string_lossy().to_string();
-                    if self.loaded.contains(&key) {
-                        continue;
-                    }
-                    if let Ok(content) = std::fs::read_to_string(path) {
-                        self.loaded.insert(key.clone());
-                        let source = instruction_source_from_filename(file);
-                        result.push(InstructionFile {
-                            path: key,
-                            content,
-                            source,
-                        });
-                    }
-                }
-                break; // TS parity: stop after first file name that has matches
+            let path = project_dir.join(file);
+            if !path.exists() || !path.is_file() {
+                continue;
             }
+            let key = normalize(&path).to_string_lossy().to_string();
+            if self.loaded.contains(&key) {
+                continue;
+            }
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                self.loaded.insert(key.clone());
+                let source = instruction_source_from_filename(file);
+                result.push(InstructionFile {
+                    path: key,
+                    content,
+                    source,
+                });
+            }
+            break;
         }
 
         result
@@ -488,11 +485,11 @@ impl InstructionLoader {
             });
         }
 
-        if let Ok(content) = std::fs::read_to_string(dir.join(CLAUDE_MD)) {
+        if let Ok(content) = std::fs::read_to_string(dir.join(CONTEXT_MD)) {
             instructions.push(InstructionFile {
-                path: CLAUDE_MD.to_string(),
+                path: CONTEXT_MD.to_string(),
                 content,
-                source: InstructionSource::ClaudeMd,
+                source: InstructionSource::ContextMd,
             });
         }
 
@@ -526,7 +523,7 @@ impl InstructionLoader {
 
     pub fn find_instruction_files(dir: &Path) -> Vec<PathBuf> {
         let mut files = Vec::new();
-        let candidates = [AGENTS_MD, CLAUDE_MD, CURSOR_MD];
+        let candidates = [AGENTS_MD, CONTEXT_MD, CURSOR_MD];
         for name in candidates {
             let path = dir.join(name);
             if path.exists() {
@@ -595,7 +592,7 @@ mod tests {
     fn test_load_from_directory_finds_multiple() {
         let tmp = TempDir::new().unwrap();
         fs::write(tmp.path().join(AGENTS_MD), "agents").unwrap();
-        fs::write(tmp.path().join(CLAUDE_MD), "claude").unwrap();
+        fs::write(tmp.path().join(CONTEXT_MD), "context").unwrap();
         fs::write(tmp.path().join(CURSOR_MD), "cursor").unwrap();
         fs::create_dir_all(tmp.path().join(".github")).unwrap();
         fs::write(
@@ -670,7 +667,7 @@ mod tests {
             InstructionFile {
                 path: "/b.md".to_string(),
                 content: "content b".to_string(),
-                source: InstructionSource::ClaudeMd,
+                source: InstructionSource::ContextMd,
             },
         ];
         let merged = InstructionLoader::merge_instructions(&files);
@@ -692,16 +689,37 @@ mod tests {
     }
 
     #[test]
+    fn test_global_files_only_probe_agents_files() {
+        let files = global_files();
+        assert!(files
+            .iter()
+            .all(|path| path.file_name().and_then(|name| name.to_str()) == Some(AGENTS_MD)));
+    }
+
+    #[test]
     fn test_project_files_first_match_wins() {
-        // If AGENTS.md exists, CLAUDE.md and CONTEXT.md should not be loaded
+        // If AGENTS.md exists, CONTEXT.md should not be loaded
         let tmp = TempDir::new().unwrap();
         fs::write(tmp.path().join(AGENTS_MD), "agents").unwrap();
-        fs::write(tmp.path().join(CLAUDE_MD), "claude").unwrap();
+        fs::write(tmp.path().join(CONTEXT_MD), "context").unwrap();
 
         let mut loader = InstructionLoader::new();
         let files = loader.load_project_instructions(tmp.path());
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].content, "agents");
+    }
+
+    #[test]
+    fn test_load_project_instructions_does_not_inherit_parent_directory_files() {
+        let tmp = TempDir::new().unwrap();
+        let parent = tmp.path().join("parent");
+        let child = parent.join("child");
+        fs::create_dir_all(&child).unwrap();
+        fs::write(parent.join(AGENTS_MD), "parent agents").unwrap();
+
+        let mut loader = InstructionLoader::new();
+        let files = loader.load_project_instructions(&child);
+        assert!(files.is_empty());
     }
 
     #[test]
@@ -726,7 +744,7 @@ mod tests {
         let nested_dir = project_root.join("src/deep");
         fs::create_dir_all(&nested_dir).unwrap();
         fs::write(project_root.join(AGENTS_MD), "root rules").unwrap();
-        fs::write(project_root.join("src").join(CLAUDE_MD), "src rules").unwrap();
+        fs::write(project_root.join("src").join(CONTEXT_MD), "src rules").unwrap();
         let file_path = nested_dir.join("lib.rs");
         fs::write(&file_path, "pub fn ok() {}").unwrap();
 
@@ -759,14 +777,14 @@ mod tests {
         let nested_dir = project_root.join("src/deep");
         fs::create_dir_all(&nested_dir).unwrap();
         fs::write(project_root.join(AGENTS_MD), "root agents").unwrap();
-        fs::write(project_root.join("src").join(CLAUDE_MD), "src claude").unwrap();
+        fs::write(project_root.join("src").join(CONTEXT_MD), "src context").unwrap();
         let file_path = nested_dir.join("lib.rs");
         fs::write(&file_path, "pub fn ok() {}").unwrap();
 
         let instructions = resolve_agents_for_file(&file_path, &project_root);
         assert_eq!(instructions.len(), 1);
         assert!(instructions[0].content.contains("root agents"));
-        assert!(!instructions[0].content.contains("src claude"));
+        assert!(!instructions[0].content.contains("src context"));
     }
 
     #[test]

@@ -12,6 +12,8 @@ use super::markdown::MarkdownRenderer;
 use crate::{context::Message, theme::Theme};
 
 pub const ASSISTANT_MARKER: &str = "▶ ";
+const LEGACY_SYSTEM_REMINDER_PREFIX: &str = "System Reminder Sent:";
+const LOADED_INSTRUCTION_FILES_PREFIX: &str = "Loaded instruction files:";
 
 pub struct MessageTextRender {
     pub lines: Vec<Line<'static>>,
@@ -741,20 +743,23 @@ fn flush_markdown_buffer(
 }
 
 fn is_system_reminder_display_line(line: &str) -> bool {
-    line.trim_start().starts_with("System Reminder Sent:")
+    let line = line.trim_start();
+    line.starts_with(LEGACY_SYSTEM_REMINDER_PREFIX)
+        || line.starts_with(LOADED_INSTRUCTION_FILES_PREFIX)
 }
 
 fn render_system_reminder_line(line: &str, theme: &Theme) -> Line<'static> {
     let reminder = line.trim();
     let detail = reminder
-        .strip_prefix("System Reminder Sent:")
+        .strip_prefix(LOADED_INSTRUCTION_FILES_PREFIX)
+        .or_else(|| reminder.strip_prefix(LEGACY_SYSTEM_REMINDER_PREFIX))
         .map(str::trim)
         .unwrap_or_default();
 
     let mut spans = vec![
         Span::styled("↳ ", Style::default().fg(theme.border_subtle)),
         Span::styled(
-            "System Reminder",
+            "Instruction Files",
             Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
         ),
     ];
@@ -1735,17 +1740,19 @@ mod tests {
     #[test]
     fn system_reminder_display_renders_on_its_own_styled_line() {
         let rendered = render_text_part(
-            "Primary answer.\n\nSystem Reminder Sent: /tmp/project/AGENTS.md",
+            "Primary answer.\n\nLoaded instruction files: /tmp/project/AGENTS.md",
             &Theme::default(),
             Color::Blue,
         );
 
         let all_text: Vec<String> = rendered.iter().map(line_text).collect();
         assert!(all_text.iter().any(|line| line.contains("Primary answer.")));
-        assert!(all_text.iter().any(|line| line.contains("System Reminder")));
         assert!(all_text
             .iter()
-            .all(|line| !line.contains("Primary answer.System Reminder Sent")));
+            .any(|line| line.contains("Instruction Files")));
+        assert!(all_text
+            .iter()
+            .all(|line| !line.contains("Primary answer.Loaded instruction files")));
     }
 
     #[test]

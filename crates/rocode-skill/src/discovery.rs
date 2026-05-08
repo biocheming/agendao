@@ -31,9 +31,6 @@ pub(crate) fn collect_skill_roots(base: &Path, config: Option<&Config>) -> Vec<S
         roots.push(SkillRoot {
             path: home.join(".agents/skills"),
         });
-        roots.push(SkillRoot {
-            path: home.join(".claude/skills"),
-        });
     }
 
     roots.push(SkillRoot {
@@ -44,9 +41,6 @@ pub(crate) fn collect_skill_roots(base: &Path, config: Option<&Config>) -> Vec<S
     });
     roots.push(SkillRoot {
         path: base.join(".agents/skills"),
-    });
-    roots.push(SkillRoot {
-        path: base.join(".claude/skills"),
     });
 
     if let Some(config) = config {
