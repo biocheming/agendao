@@ -363,6 +363,15 @@ pub(crate) enum SkillHubCommands {
         #[command(flatten)]
         output: SkillHubOutputArgs,
     },
+    #[command(
+        about = "Mark redundant workspace-local skills as review candidates from semantic conflict diagnostics"
+    )]
+    SemanticConflictReviewSync {
+        #[arg(long)]
+        session_id: String,
+        #[command(flatten)]
+        output: SkillHubOutputArgs,
+    },
     #[command(about = "Set one workspace-local skill vitality state")]
     VitalitySet {
         #[arg(long)]

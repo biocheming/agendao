@@ -128,6 +128,24 @@ async fn handle_skill_hub_command(
                 print_semantic_conflicts(response.conflicts);
             }
         }
+        SkillHubCommands::SemanticConflictReviewSync { session_id, output } => {
+            let response = client
+                .sync_skill_hub_semantic_conflict_review_candidates(
+                    &SkillHubReviewCandidatesSyncRequest { session_id },
+                )
+                .await?;
+            if matches!(output.format, SkillHubOutputFormat::Json) {
+                print_json(&response)?;
+            } else {
+                println!(
+                    "Marked {} semantic-conflict review candidate(s).",
+                    response.updated.len()
+                );
+                print_usage_ledger(SkillHubUsageLedgerResponse {
+                    entries: response.updated,
+                });
+            }
+        }
         SkillHubCommands::VitalitySet {
             session_id,
             skill_name,

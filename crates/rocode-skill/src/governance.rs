@@ -142,11 +142,10 @@ impl SkillGovernanceAuthority {
             entry.source_scope == SkillOperationalSourceScope::WorkspaceLocal
                 && entry.severity == SkillGovernanceDiagnosticSeverity::Warn
         }) {
-            let current_state = self.effective_skill_vitality_state(&diagnostic.skill_name);
-            if matches!(
-                current_state,
-                SkillVitalityState::Retired | SkillVitalityState::Archived
-            ) {
+            let current = self
+                .hub_store
+                .skill_operational_snapshot(&diagnostic.skill_name);
+            if !should_sync_negative_entropy_review_candidate(current.as_ref()) {
                 continue;
             }
 
@@ -162,6 +161,63 @@ impl SkillGovernanceAuthority {
             };
             updated.push(self.set_skill_vitality_state(
                 &diagnostic.skill_name,
+                SkillVitalityState::ReviewCandidate,
+                reason,
+                actor,
+            )?);
+        }
+        Ok(updated)
+    }
+
+    pub fn sync_semantic_conflict_review_candidates(
+        &self,
+        actor: &str,
+    ) -> Result<Vec<SkillOperationalSnapshot>, SkillError> {
+        let diagnostics = self.skill_semantic_conflict_diagnostics()?;
+        let mut updated = Vec::new();
+        let mut seen_redundant = BTreeSet::new();
+        for conflict in diagnostics
+            .into_iter()
+            .filter(semantic_conflict_is_review_candidate)
+        {
+            let Some(preferred_skill_name) = conflict.preferred_skill_name.clone() else {
+                continue;
+            };
+            let Some(redundant_skill_name) =
+                semantic_conflict_redundant_skill_name(&conflict, &preferred_skill_name)
+            else {
+                continue;
+            };
+            if !seen_redundant.insert(normalize_name(&redundant_skill_name)) {
+                continue;
+            }
+
+            let current = self.prepare_operational_snapshot(
+                &redundant_skill_name,
+                None,
+                SkillOperationalSourceScope::Unknown,
+            )?;
+            if current.source_scope != SkillOperationalSourceScope::WorkspaceLocal {
+                continue;
+            }
+            if !should_sync_semantic_conflict_review_candidate(
+                Some(&current),
+                &preferred_skill_name,
+            ) {
+                continue;
+            }
+
+            let reason = SkillRetirementReason {
+                kind: SkillRetirementReasonKind::SemanticConflict,
+                summary: semantic_conflict_review_candidate_summary(
+                    &conflict,
+                    &preferred_skill_name,
+                ),
+                noted_at: now_unix_timestamp(),
+                related_skill_name: Some(preferred_skill_name.clone()),
+            };
+            updated.push(self.set_skill_vitality_state(
+                &redundant_skill_name,
                 SkillVitalityState::ReviewCandidate,
                 reason,
                 actor,
@@ -3105,6 +3161,83 @@ fn preferred_skill_name(
         (Some(_), None) => Some(left.skill_name.clone()),
         (None, Some(_)) => Some(right.skill_name.clone()),
         _ => None,
+    }
+}
+
+fn semantic_conflict_is_review_candidate(conflict: &SkillSemanticConflictDiagnostic) -> bool {
+    conflict.severity == SkillGovernanceDiagnosticSeverity::Warn
+        && conflict.kind == SkillSemanticConflictKind::ReplacementHint
+        && conflict.preferred_skill_name.is_some()
+}
+
+fn semantic_conflict_redundant_skill_name(
+    conflict: &SkillSemanticConflictDiagnostic,
+    preferred_skill_name: &str,
+) -> Option<String> {
+    if conflict
+        .left_skill_name
+        .eq_ignore_ascii_case(preferred_skill_name)
+    {
+        return Some(conflict.right_skill_name.clone());
+    }
+    if conflict
+        .right_skill_name
+        .eq_ignore_ascii_case(preferred_skill_name)
+    {
+        return Some(conflict.left_skill_name.clone());
+    }
+    None
+}
+
+fn semantic_conflict_review_candidate_summary(
+    conflict: &SkillSemanticConflictDiagnostic,
+    preferred_skill_name: &str,
+) -> String {
+    let overlap_reason = conflict
+        .reasons
+        .iter()
+        .find(|reason| !reason.contains("usage ledger currently favors"))
+        .cloned()
+        .unwrap_or_else(|| "semantic overlap was detected".to_string());
+    format!(
+        "{overlap_reason}; usage ledger currently favors `{preferred_skill_name}` as the more active skill in this overlap pair"
+    )
+}
+
+fn should_sync_negative_entropy_review_candidate(
+    snapshot: Option<&SkillOperationalSnapshot>,
+) -> bool {
+    !matches!(
+        snapshot
+            .and_then(|entry| entry.vitality.as_ref())
+            .map(|record| record.state),
+        Some(
+            SkillVitalityState::ReviewCandidate
+                | SkillVitalityState::Retired
+                | SkillVitalityState::Archived
+        )
+    )
+}
+
+fn should_sync_semantic_conflict_review_candidate(
+    snapshot: Option<&SkillOperationalSnapshot>,
+    preferred_skill_name: &str,
+) -> bool {
+    let Some(vitality) = snapshot.and_then(|entry| entry.vitality.as_ref()) else {
+        return true;
+    };
+    match vitality.state {
+        SkillVitalityState::Retired | SkillVitalityState::Archived => false,
+        SkillVitalityState::Active => true,
+        SkillVitalityState::ReviewCandidate => {
+            !(vitality.reason.kind == SkillRetirementReasonKind::SemanticConflict
+                && vitality
+                    .reason
+                    .related_skill_name
+                    .as_deref()
+                    .map(normalize_name)
+                    == Some(normalize_name(preferred_skill_name)))
+        }
     }
 }
 

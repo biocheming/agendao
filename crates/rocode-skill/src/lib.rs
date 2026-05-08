@@ -703,6 +703,122 @@ Review code changes carefully and verify evidence before reporting.
     }
 
     #[test]
+    fn governance_semantic_conflict_review_sync_marks_redundant_workspace_skill() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join(".rocode/skills");
+        fs::create_dir_all(root.join("review/repo-review")).unwrap();
+        fs::write(
+            root.join("review/repo-review/SKILL.md"),
+            r#"---
+name: repo-review
+description: Review repository changes carefully with code search and file reads
+category: review
+metadata:
+  rocode:
+    requires_tools: [read, grep]
+    stage_filter: [implementation]
+---
+Review repository changes carefully and verify evidence before reporting.
+"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("review/code-review")).unwrap();
+        fs::write(
+            root.join("review/code-review/SKILL.md"),
+            r#"---
+name: code-review
+description: Review code changes carefully with code search and file reads
+category: review
+metadata:
+  rocode:
+    requires_tools: [read, grep]
+    stage_filter: [implementation]
+---
+Review code changes carefully and verify evidence before reporting.
+"#,
+        )
+        .unwrap();
+
+        let governance = SkillGovernanceAuthority::new(dir.path(), None);
+        governance
+            .record_runtime_skill_usage(
+                "repo-review",
+                "task",
+                Some("implementation"),
+                Some("review"),
+                false,
+            )
+            .unwrap();
+        governance
+            .record_runtime_skill_usage(
+                "repo-review",
+                "task",
+                Some("implementation"),
+                Some("review"),
+                false,
+            )
+            .unwrap();
+
+        let updated = governance
+            .sync_semantic_conflict_review_candidates("test:semantic-sync")
+            .unwrap();
+        let repeated = governance
+            .sync_semantic_conflict_review_candidates("test:semantic-sync-repeat")
+            .unwrap();
+
+        assert_eq!(updated.len(), 1);
+        assert!(repeated.is_empty());
+        assert_eq!(updated[0].skill_name, "code-review");
+        assert_eq!(
+            updated[0].vitality.as_ref().map(|record| record.state),
+            Some(rocode_types::SkillVitalityState::ReviewCandidate)
+        );
+        assert_eq!(
+            updated[0]
+                .vitality
+                .as_ref()
+                .map(|record| record.reason.kind),
+            Some(rocode_types::SkillRetirementReasonKind::SemanticConflict)
+        );
+        assert_eq!(
+            updated[0]
+                .vitality
+                .as_ref()
+                .and_then(|record| record.reason.related_skill_name.as_deref()),
+            Some("repo-review")
+        );
+    }
+
+    #[test]
+    fn governance_negative_entropy_sync_is_idempotent_for_existing_review_candidate() {
+        let dir = tempdir().unwrap();
+        let governance = SkillGovernanceAuthority::new(dir.path(), None);
+        governance
+            .create_skill(
+                CreateSkillRequest {
+                    name: "stale-checklist".to_string(),
+                    description: "stale checklist".to_string(),
+                    body: "Use when stale checklist review is required.".to_string(),
+                    frontmatter: None,
+                    category: Some("ops".to_string()),
+                    directory_name: None,
+                },
+                "test:create",
+            )
+            .unwrap();
+
+        let first = governance
+            .sync_negative_entropy_review_candidates("test:first-sync")
+            .unwrap();
+        let second = governance
+            .sync_negative_entropy_review_candidates("test:second-sync")
+            .unwrap();
+
+        assert_eq!(first.len(), 1);
+        assert!(second.is_empty());
+    }
+
+    #[test]
     fn governance_timeline_merges_managed_provenance_and_audit_entries() {
         let dir = tempdir().unwrap();
         let governance = SkillGovernanceAuthority::new(dir.path(), None);

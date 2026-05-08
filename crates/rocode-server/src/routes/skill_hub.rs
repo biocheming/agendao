@@ -36,6 +36,10 @@ pub(crate) fn skill_hub_routes() -> Router<Arc<ServerState>> {
             "/semantic-conflicts",
             get(list_semantic_conflict_diagnostics),
         )
+        .route(
+            "/semantic-conflicts/review-candidates/sync",
+            post(sync_semantic_conflict_review_candidates),
+        )
         .route("/vitality", post(update_skill_vitality))
         .route("/index", get(list_source_indices))
         .route("/distributions", get(list_distributions))
@@ -142,6 +146,35 @@ async fn list_semantic_conflict_diagnostics(
         generated_at,
         conflicts,
     }))
+}
+
+async fn sync_semantic_conflict_review_candidates(
+    State(state): State<Arc<ServerState>>,
+    Json(req): Json<SkillHubReviewCandidatesSyncRequest>,
+) -> Result<Json<SkillHubReviewCandidatesSyncResponse>> {
+    let session_id = required_string(Some(req.session_id), "session_id")?;
+    request_permission(
+        state.clone(),
+        session_id,
+        PermissionRequest::new("skill_hub")
+            .with_pattern("semantic_conflict_review_candidates")
+            .with_metadata(
+                "action",
+                serde_json::json!("semantic_conflict_review_candidates_sync"),
+            ),
+    )
+    .await
+    .map_err(map_tool_error_to_api_error)?;
+
+    let updated = run_skill_hub_blocking(state, move |authority| {
+        authority
+            .sync_semantic_conflict_review_candidates(
+                "route:/skill/hub/semantic-conflicts/review-candidates/sync",
+            )
+            .map_err(map_skill_error_to_api_error)
+    })
+    .await?;
+    Ok(Json(SkillHubReviewCandidatesSyncResponse { updated }))
 }
 
 async fn update_skill_vitality(
@@ -981,6 +1014,100 @@ Review code changes carefully and verify evidence before reporting.
             })
             .expect("semantic conflict pair should exist");
         assert_eq!(pair.preferred_skill_name.as_deref(), Some("repo-review"));
+    }
+
+    #[tokio::test]
+    async fn semantic_conflict_review_sync_marks_redundant_workspace_skill() {
+        let dir = tempdir().expect("tempdir");
+        let session_id = "skill-hub-semantic-sync";
+        let skills_root = dir.path().join(".rocode/skills");
+        fs::create_dir_all(skills_root.join("review/repo-review")).expect("repo skill dir");
+        fs::write(
+            skills_root.join("review/repo-review/SKILL.md"),
+            r#"---
+name: repo-review
+description: Review repository changes carefully with code search and file reads
+category: review
+metadata:
+  rocode:
+    requires_tools: [read, grep]
+    stage_filter: [implementation]
+---
+Review repository changes carefully and verify evidence before reporting.
+"#,
+        )
+        .expect("repo skill");
+        fs::create_dir_all(skills_root.join("review/code-review")).expect("code skill dir");
+        fs::write(
+            skills_root.join("review/code-review/SKILL.md"),
+            r#"---
+name: code-review
+description: Review code changes carefully with code search and file reads
+category: review
+metadata:
+  rocode:
+    requires_tools: [read, grep]
+    stage_filter: [implementation]
+---
+Review code changes carefully and verify evidence before reporting.
+"#,
+        )
+        .expect("code skill");
+
+        let state = server_state_for_project(dir.path());
+        let authority = skill_governance_authority(&state);
+        authority
+            .record_runtime_skill_usage(
+                "repo-review",
+                "task",
+                Some("implementation"),
+                Some("review"),
+                false,
+            )
+            .expect("usage should record");
+        authority
+            .record_runtime_skill_usage(
+                "repo-review",
+                "task",
+                Some("implementation"),
+                Some("review"),
+                false,
+            )
+            .expect("second usage should record");
+
+        PERMISSION_ENGINE.lock().await.clear_session(session_id);
+        PERMISSION_ENGINE.lock().await.grant_patterns(
+            session_id,
+            "skill_hub",
+            &["semantic_conflict_review_candidates".to_string()],
+        );
+
+        let Json(response) = sync_semantic_conflict_review_candidates(
+            State(state),
+            Json(SkillHubReviewCandidatesSyncRequest {
+                session_id: session_id.to_string(),
+            }),
+        )
+        .await
+        .expect("semantic conflict review sync should succeed");
+
+        assert_eq!(response.updated.len(), 1);
+        assert_eq!(response.updated[0].skill_name, "code-review");
+        assert_eq!(
+            response.updated[0]
+                .vitality
+                .as_ref()
+                .map(|record| record.state),
+            Some(SkillVitalityState::ReviewCandidate)
+        );
+        assert_eq!(
+            response.updated[0]
+                .vitality
+                .as_ref()
+                .and_then(|record| record.reason.related_skill_name.as_deref()),
+            Some("repo-review")
+        );
+        PERMISSION_ENGINE.lock().await.clear_session(session_id);
     }
 
     #[tokio::test]
