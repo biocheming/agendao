@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026.5.8
+
+- 同步工作区版本到 `v2026.5.8`，更新 ROCode 自有包元数据、Web 根包版本与相关 lock 文件中的 ROCode 自身条目。
+- provider 治理线完成收口：typed `ProviderProfile` 统一承接 protocol family / shape / transport / usage / cache 语义；Web/TUI/CLI 通过独立 provider descriptor 和 config validation 读面解释当前生效配置。
+- session / context ownership 完成收口：telemetry 明确区分 `request_context_tokens`、`live_context_tokens`、`workflow_cumulative_tokens`，并新增 `context_closure_contract` 与 `prompt_surface_state_snapshot` 诊断 sidecar。
+- run loop 现在持有 owner-local request-view checkpoint 语义，能结合 exact model limits 在执行中决定 continue / compact request view / block，而不再只靠 pre-run / post-run 两头治理。
+- external adapter 不再允许集成方自行猜测 session id；必须先走 owner-local `/external-adapter/session/provision` 创建受控 session，再绑定 verify / replay / run。
+- 显式 full-history fork 完成 contract 收口：冻结 fork policy、导入历史只读、usage / revert / recovery 保持 local-only，child/subsession 则继续走 packet handoff 与 result/summary 回收语义。
+- skill 治理从“安装和读取”扩展到 usage ledger、negative entropy、semantic conflict、composition relationship、proposal inbox 和统一 runtime gate；`retired` skill 对 inspection 仍可见，但不再进入 runtime catalog。
+
 ## 2026.4.29
 
 - 同步工作区版本到 `v2026.4.29`，更新 ROCode 自有包元数据、Web 根包版本与相关 lock 文件中的 ROCode 自身条目。

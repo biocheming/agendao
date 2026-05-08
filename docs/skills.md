@@ -129,6 +129,39 @@ skill 自进化并不止于“写回一个 SKILL.md”：
 
 这样 skill、session 和记忆不是三套分离系统，而是单向可审计的能力沉淀链。
 
+## Skill 治理收口：不只会增，还会减，还会重新组织
+
+这一轮计划之后，ROCode 的 skill 治理不再停留在“装上就算存在”。现在正式收口成五条线：
+
+### 1. Usage Ledger
+
+- authority 会维护 canonical skill usage / write ledger
+- 账本同时记录 runtime 使用、报错、create / patch / edit / supporting file 写入、install / update / detach / remove 等写路径
+- Web、CLI、TUI 的 inspection 都以这份账本为基础，而不是各端自己拼 usage 统计
+
+### 2. Negative Entropy
+
+- 很久未使用、长期零复用、被更稳定方法取代、或只剩历史包袱的 skill，会进入 negative entropy 诊断
+- 这不是直接删；它先产出 owner-local `review_candidate` / `retired` 建议，再由治理动作决定
+- vitality 判断现在不只看 usage ledger，还会消费 memory / proposal 的正向演化信号，避免刚被方法学吸收的 skill 被误判成纯噪音
+
+### 3. Semantic Conflict
+
+- 治理层会检查功能重叠、关键词重叠、tool / stage 条件重叠等 overlap 迹象
+- 语义冲突不会直接覆盖现有 skill；它先形成只读 diagnostics，再通过 review sync / vitality set 落到 owner judgement
+
+### 4. Composition Relationship / Capability Group
+
+- skill 之间现在可以形成只读 relationship candidate，而不是永远把重复能力平铺为多个孤岛
+- accepted relationship 和 active capability group 会进入后续 prompt hint / proposal retargeting
+- methodology proposal 可以被 retarget 到 canonical composition target，避免重复地为近亲 skill 生成碎片化 patch
+
+### 5. Runtime Gate
+
+- inspection 和 runtime 已经分层：skill 可以继续在 detail / history / reflection 里可见，但不一定继续允许进入 runtime catalog
+- `retired` skill 会被 runtime gate 阻止加载；`review_candidate` 仍可继续运行
+- tool / server / prompt reflection 现在都通过统一 `SkillRuntimeResolver` 读取这条语义，不再各处散补“能不能加载”
+
 ---
 
 ## Skill Hub -- 远程分发与托管
@@ -578,6 +611,11 @@ pub struct SkillGovernanceTimelineEntry {
 | 命令 | 说明 |
 |------|------|
 | `rocode skill hub status` | 查看当前托管 skill 状态 |
+| `rocode skill hub managed` | 查看 managed provenance 记录 |
+| `rocode skill hub usage` | 查看 canonical usage / write ledger |
+| `rocode skill hub negative-entropy` | 查看 negative entropy 诊断 |
+| `rocode skill hub semantic-conflicts` | 查看 semantic overlap 诊断 |
+| `rocode skill hub index` | 查看 source index 缓存 |
 | `rocode skill hub distributions` | 列出所有分发记录 |
 | `rocode skill hub artifact-cache` | 查看 artifact 缓存状态 |
 | `rocode skill hub policy` | 查看当前 artifact 策略 |
@@ -591,12 +629,32 @@ pub struct SkillGovernanceTimelineEntry {
 | `rocode skill hub install-apply --session-id <session> --source-id <id> --source-kind registry --locator <locator> --skill-name <name>` | 执行安装 |
 | `rocode skill hub update-apply --session-id <session> --source-id <id> --source-kind registry --locator <locator> --skill-name <name>` | 执行更新 |
 
+### 治理动作命令
+
+| 命令 | 说明 |
+|------|------|
+| `rocode skill hub review-candidates-sync --session-id <session>` | 把当前 negative-entropy review candidate 同步到 workspace-local vitality |
+| `rocode skill hub semantic-conflict-review-sync --session-id <session>` | 把当前 semantic conflict review candidate 同步到 workspace-local vitality |
+| `rocode skill hub vitality-set --session-id <session> --skill-name <name> --state <state> --summary <text>` | 显式设置某个 skill 的 vitality judgement |
+
 ### 卸载命令
 
 | 命令 | 说明 |
 |------|------|
 | `rocode skill hub detach --session-id <session> --source-id <id> --source-kind registry --locator <locator> --skill-name <name>` | 解除托管（保留文件） |
 | `rocode skill hub remove --session-id <session> --source-id <id> --source-kind registry --locator <locator> --skill-name <name>` | 完全删除 |
+
+## Proposal Inbox
+
+memory consolidation 产出的 methodology candidate 现在可以进一步生成 skill evolution proposal。它们不会直接改写 `SKILL.md`，而是进入单独的 proposal inbox：
+
+- CLI: `rocode skill proposal list --status draft`
+- CLI: `rocode skill proposal show <id>`
+- CLI: `rocode skill proposal approve <id>`
+- CLI: `rocode skill proposal reject <id>`
+- Web / TUI: proposal review 面板
+
+proposal notice 属于 runtime hint，不会污染 model-visible prompt surface；它只提醒用户有新的治理材料待裁决。
 
 ---
 
