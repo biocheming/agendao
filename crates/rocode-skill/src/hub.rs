@@ -2,8 +2,8 @@ use crate::audit::{append_audit_event, load_audit_events, DEFAULT_AUDIT_TAIL_LIM
 use crate::SkillError;
 use rocode_types::{
     BundledSkillManifest, ManagedSkillRecord, SkillArtifactCacheEntry, SkillAuditEvent,
-    SkillDistributionRecord, SkillManagedLifecycleRecord, SkillSourceIndexEntry,
-    SkillSourceIndexSnapshot, SkillSourceRef,
+    SkillDistributionRecord, SkillManagedLifecycleRecord, SkillOperationalSnapshot,
+    SkillSourceIndexEntry, SkillSourceIndexSnapshot, SkillSourceRef,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -21,18 +21,22 @@ const ARTIFACT_CACHE_INDEX_FILENAME: &str = "index.json";
 const DISTRIBUTION_LOCK_FILENAME: &str = "distribution-lock.json";
 const INDEX_CACHE_DIRNAME: &str = "index-cache";
 const LIFECYCLE_FILENAME: &str = "lifecycle.json";
+const OPERATIONAL_LEDGER_FILENAME: &str = "operational-ledger.json";
 const ARTIFACT_CACHE_SCHEMA: &str = "rocode.skill_artifact_cache";
 const ARTIFACT_CACHE_VERSION: u32 = 1;
 const DISTRIBUTION_LOCK_SCHEMA: &str = "rocode.skill_distribution_lock";
 const DISTRIBUTION_LOCK_VERSION: u32 = 1;
 const LIFECYCLE_SCHEMA: &str = "rocode.skill_lifecycle";
 const LIFECYCLE_VERSION: u32 = 1;
+const OPERATIONAL_LEDGER_SCHEMA: &str = "rocode.skill_operational_ledger";
+const OPERATIONAL_LEDGER_VERSION: u32 = 1;
 const SOURCE_INDEX_CACHE_SCHEMA: &str = "rocode.skill_source_index_cache";
 const SOURCE_INDEX_CACHE_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Default)]
 pub struct SkillHubSnapshot {
     pub managed_skills: Vec<ManagedSkillRecord>,
+    pub operational_snapshots: Vec<SkillOperationalSnapshot>,
     pub artifact_cache: Vec<SkillArtifactCacheEntry>,
     pub distributions: Vec<SkillDistributionRecord>,
     pub lifecycle: Vec<SkillManagedLifecycleRecord>,
@@ -91,6 +95,14 @@ struct StoredSkillLifecycleState {
     version: u32,
     #[serde(default)]
     lifecycle: Vec<SkillManagedLifecycleRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredSkillOperationalLedgerState {
+    schema: String,
+    version: u32,
+    #[serde(default)]
+    entries: Vec<SkillOperationalSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,6 +167,10 @@ impl SkillHubStore {
         self.governance_dir().join(BUNDLED_MANIFEST_FILENAME)
     }
 
+    pub fn operational_ledger_path(&self) -> PathBuf {
+        self.governance_dir().join(OPERATIONAL_LEDGER_FILENAME)
+    }
+
     pub fn snapshot(&self) -> SkillHubSnapshot {
         self.snapshot_result().unwrap_or_else(|error| {
             tracing::warn!(%error, "failed to read skill hub snapshot from cache");
@@ -168,6 +184,17 @@ impl SkillHubStore {
 
     pub fn distributions(&self) -> Vec<SkillDistributionRecord> {
         self.snapshot().distributions
+    }
+
+    pub fn skill_operational_snapshots(&self) -> Vec<SkillOperationalSnapshot> {
+        self.snapshot().operational_snapshots
+    }
+
+    pub fn skill_operational_snapshot(&self, skill_name: &str) -> Option<SkillOperationalSnapshot> {
+        self.snapshot()
+            .operational_snapshots
+            .into_iter()
+            .find(|entry| entry.skill_name.eq_ignore_ascii_case(skill_name))
     }
 
     pub fn artifact_cache(&self) -> Vec<SkillArtifactCacheEntry> {
@@ -217,6 +244,73 @@ impl SkillHubStore {
         managed_skills.sort_by(|left, right| left.skill_name.cmp(&right.skill_name));
         let mut snapshot = self.snapshot_result()?;
         snapshot.managed_skills = managed_skills;
+        self.persist_snapshot(snapshot)
+    }
+
+    pub fn replace_skill_operational_snapshots(
+        &self,
+        mut entries: Vec<SkillOperationalSnapshot>,
+    ) -> Result<(), SkillError> {
+        entries.sort_by(|left, right| left.skill_name.cmp(&right.skill_name));
+        let mut snapshot = self.snapshot_result()?;
+        snapshot.operational_snapshots = entries;
+        self.persist_snapshot(snapshot)
+    }
+
+    pub fn upsert_skill_operational_snapshot(
+        &self,
+        entry: SkillOperationalSnapshot,
+    ) -> Result<(), SkillError> {
+        let mut snapshot = self.snapshot_result()?;
+        if let Some(existing) = snapshot
+            .operational_snapshots
+            .iter_mut()
+            .find(|current| current.skill_name.eq_ignore_ascii_case(&entry.skill_name))
+        {
+            *existing = entry;
+        } else {
+            snapshot.operational_snapshots.push(entry);
+            snapshot
+                .operational_snapshots
+                .sort_by(|left, right| left.skill_name.cmp(&right.skill_name));
+        }
+        self.persist_snapshot(snapshot)
+    }
+
+    pub fn rename_skill_operational_snapshot(
+        &self,
+        from_skill_name: &str,
+        to_skill_name: &str,
+    ) -> Result<(), SkillError> {
+        if from_skill_name.eq_ignore_ascii_case(to_skill_name) {
+            return Ok(());
+        }
+
+        let mut snapshot = self.snapshot_result()?;
+        let Some(from_index) = snapshot
+            .operational_snapshots
+            .iter()
+            .position(|entry| entry.skill_name.eq_ignore_ascii_case(from_skill_name))
+        else {
+            return Ok(());
+        };
+
+        let mut moved = snapshot.operational_snapshots.remove(from_index);
+        moved.skill_name = to_skill_name.to_string();
+
+        if let Some(existing) = snapshot
+            .operational_snapshots
+            .iter_mut()
+            .find(|entry| entry.skill_name.eq_ignore_ascii_case(to_skill_name))
+        {
+            merge_operational_snapshot(existing, moved);
+        } else {
+            snapshot.operational_snapshots.push(moved);
+        }
+
+        snapshot
+            .operational_snapshots
+            .sort_by(|left, right| left.skill_name.cmp(&right.skill_name));
         self.persist_snapshot(snapshot)
     }
 
@@ -652,6 +746,7 @@ fn load_snapshot_from_disk(base_dir: &Path) -> Result<SkillHubSnapshot, SkillErr
     let distribution_lock_path = governance_dir.join(DISTRIBUTION_LOCK_FILENAME);
     let index_cache_dir = governance_dir.join(INDEX_CACHE_DIRNAME);
     let lifecycle_path = governance_dir.join(LIFECYCLE_FILENAME);
+    let operational_ledger_path = governance_dir.join(OPERATIONAL_LEDGER_FILENAME);
 
     let state = match load_hub_state(&hub_lock_path) {
         Ok(state) => state,
@@ -689,6 +784,13 @@ fn load_snapshot_from_disk(base_dir: &Path) -> Result<SkillHubSnapshot, SkillErr
             Vec::new()
         }
     };
+    let operational_snapshots = match load_operational_ledger_state(&operational_ledger_path) {
+        Ok(entries) => entries,
+        Err(error) => {
+            tracing::warn!(%error, path=%operational_ledger_path.display(), "failed to load skill operational ledger");
+            Vec::new()
+        }
+    };
     let audit_tail = match load_audit_events(&audit_log_path, DEFAULT_AUDIT_TAIL_LIMIT) {
         Ok(audit_tail) => audit_tail,
         Err(error) => {
@@ -698,6 +800,7 @@ fn load_snapshot_from_disk(base_dir: &Path) -> Result<SkillHubSnapshot, SkillErr
     };
     Ok(SkillHubSnapshot {
         managed_skills: state.managed_skills,
+        operational_snapshots,
         artifact_cache,
         distributions,
         lifecycle,
@@ -761,6 +864,10 @@ fn persist_hub_state(base_dir: &Path, snapshot: &SkillHubSnapshot) -> Result<(),
     persist_lifecycle_state(
         &governance_dir.join(LIFECYCLE_FILENAME),
         &snapshot.lifecycle,
+    )?;
+    persist_operational_ledger_state(
+        &governance_dir.join(OPERATIONAL_LEDGER_FILENAME),
+        &snapshot.operational_snapshots,
     )
 }
 
@@ -930,6 +1037,140 @@ fn persist_lifecycle_state(
         path: path.to_path_buf(),
         message: error.to_string(),
     })
+}
+
+fn load_operational_ledger_state(path: &Path) -> Result<Vec<SkillOperationalSnapshot>, SkillError> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let content = fs::read_to_string(path).map_err(|error| SkillError::ReadFailed {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    })?;
+    let stored =
+        serde_json::from_str::<StoredSkillOperationalLedgerState>(&content).map_err(|error| {
+            SkillError::ReadFailed {
+                path: path.to_path_buf(),
+                message: error.to_string(),
+            }
+        })?;
+    if stored.schema != OPERATIONAL_LEDGER_SCHEMA || stored.version != OPERATIONAL_LEDGER_VERSION {
+        return Ok(Vec::new());
+    }
+    Ok(stored.entries)
+}
+
+fn persist_operational_ledger_state(
+    path: &Path,
+    entries: &[SkillOperationalSnapshot],
+) -> Result<(), SkillError> {
+    let payload = serde_json::to_string_pretty(&StoredSkillOperationalLedgerState {
+        schema: OPERATIONAL_LEDGER_SCHEMA.to_string(),
+        version: OPERATIONAL_LEDGER_VERSION,
+        entries: entries.to_vec(),
+    })
+    .map_err(|error| SkillError::WriteFailed {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    })?;
+    fs::write(path, payload).map_err(|error| SkillError::WriteFailed {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    })
+}
+
+fn merge_operational_snapshot(
+    existing: &mut SkillOperationalSnapshot,
+    incoming: SkillOperationalSnapshot,
+) {
+    if matches!(
+        existing.source_scope,
+        rocode_types::SkillOperationalSourceScope::Unknown
+    ) {
+        existing.source_scope = incoming.source_scope;
+    }
+    if existing.source_id.is_none() {
+        existing.source_id = incoming.source_id;
+    }
+    merge_skill_usage_entry(existing, incoming.usage);
+    merge_skill_write_entry(existing, incoming.writes);
+}
+
+fn merge_skill_usage_entry(
+    existing: &mut SkillOperationalSnapshot,
+    incoming: Option<rocode_types::SkillUsageLedgerEntry>,
+) {
+    let Some(incoming) = incoming else {
+        return;
+    };
+    if let Some(current) = existing.usage.as_mut() {
+        if current.first_seen_at.is_none()
+            || incoming
+                .first_seen_at
+                .zip(current.first_seen_at)
+                .is_some_and(|(left, right)| left < right)
+        {
+            current.first_seen_at = incoming.first_seen_at;
+        }
+        if incoming
+            .last_used_at
+            .zip(current.last_used_at)
+            .is_some_and(|(left, right)| left >= right)
+            || current.last_used_at.is_none()
+        {
+            current.last_used_at = incoming.last_used_at;
+            current.last_stage_id = incoming.last_stage_id.clone();
+            current.last_tool_name = incoming.last_tool_name.clone();
+            current.last_category = incoming.last_category.clone();
+        }
+        current.runtime_use_count += incoming.runtime_use_count;
+        current.runtime_success_count += incoming.runtime_success_count;
+        current.runtime_error_count += incoming.runtime_error_count;
+    } else {
+        existing.usage = Some(incoming);
+    }
+}
+
+fn merge_skill_write_entry(
+    existing: &mut SkillOperationalSnapshot,
+    incoming: Option<rocode_types::SkillWriteLedgerEntry>,
+) {
+    let Some(incoming) = incoming else {
+        return;
+    };
+    if let Some(current) = existing.writes.as_mut() {
+        if current.first_written_at.is_none()
+            || incoming
+                .first_written_at
+                .zip(current.first_written_at)
+                .is_some_and(|(left, right)| left < right)
+        {
+            current.first_written_at = incoming.first_written_at;
+        }
+        if incoming
+            .last_write_at
+            .zip(current.last_write_at)
+            .is_some_and(|(left, right)| left >= right)
+            || current.last_write_at.is_none()
+        {
+            current.last_write_at = incoming.last_write_at;
+            current.last_action = incoming.last_action;
+            current.last_location = incoming.last_location.clone();
+            current.last_supporting_file = incoming.last_supporting_file.clone();
+        }
+        current.create_count += incoming.create_count;
+        current.patch_count += incoming.patch_count;
+        current.edit_count += incoming.edit_count;
+        current.supporting_file_write_count += incoming.supporting_file_write_count;
+        current.supporting_file_remove_count += incoming.supporting_file_remove_count;
+        current.install_count += incoming.install_count;
+        current.update_count += incoming.update_count;
+        current.detach_count += incoming.detach_count;
+        current.remove_count += incoming.remove_count;
+        current.delete_count += incoming.delete_count;
+    } else {
+        existing.writes = Some(incoming);
+    }
 }
 
 fn merge_cached_remote_source_indices(

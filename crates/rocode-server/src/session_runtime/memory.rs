@@ -1,10 +1,13 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
 use rocode_command::stage_protocol::StageSummary;
+use rocode_config::ConfigStore;
 use rocode_memory::{
     MemoryAuthority, SkillUsageObservation, SkillWriteObservation, ToolMemoryObservation,
 };
+use rocode_skill::SkillGovernanceAuthority;
 use rocode_types::{
     MemoryConflictResponse, MemoryConsolidationRequest, MemoryConsolidationResponse,
     MemoryConsolidationRunListResponse, MemoryConsolidationRunQuery, MemoryDetailView,
@@ -17,15 +20,29 @@ use rocode_types::{
 #[derive(Clone)]
 pub(crate) struct RuntimeMemoryAuthority {
     memory: Arc<MemoryAuthority>,
+    workspace_root: PathBuf,
+    config_store: Option<Arc<ConfigStore>>,
 }
 
 impl RuntimeMemoryAuthority {
-    pub(crate) fn new(memory: Arc<MemoryAuthority>) -> Self {
-        Self { memory }
+    pub(crate) fn new(
+        memory: Arc<MemoryAuthority>,
+        workspace_root: impl Into<PathBuf>,
+        config_store: Option<Arc<ConfigStore>>,
+    ) -> Self {
+        Self {
+            memory,
+            workspace_root: workspace_root.into(),
+            config_store,
+        }
     }
 
     pub(crate) fn memory_authority(&self) -> Arc<MemoryAuthority> {
         self.memory.clone()
+    }
+
+    fn skill_governance(&self) -> SkillGovernanceAuthority {
+        SkillGovernanceAuthority::new(self.workspace_root.clone(), self.config_store.clone())
     }
 
     #[cfg(test)]
@@ -230,6 +247,7 @@ impl RuntimeMemoryAuthority {
                     .and_then(|value| value.get("category"))
                     .and_then(|value| value.as_str())
             });
+        let governance = self.skill_governance();
 
         for skill_name in loaded_skills {
             let _ = self
@@ -245,6 +263,13 @@ impl RuntimeMemoryAuthority {
                     is_error,
                 })
                 .await?;
+            governance.record_runtime_skill_usage(
+                &skill_name,
+                tool_name,
+                stage_id,
+                category,
+                is_error,
+            )?;
         }
         Ok(())
     }
@@ -304,23 +329,28 @@ mod tests {
     use rocode_runtime_context::ResolvedWorkspaceContextAuthority;
     use rocode_state::UserStateAuthority;
     use rocode_storage::{Database, MemoryRepository};
+    use std::path::Path;
     use std::sync::Arc;
     use tempfile::tempdir;
 
-    async fn runtime_memory_for(dir: &std::path::Path) -> RuntimeMemoryAuthority {
+    async fn runtime_memory_for(dir: &Path) -> RuntimeMemoryAuthority {
         let config_store =
             Arc::new(ConfigStore::from_project_dir(dir).expect("project config store should load"));
         let user_state = Arc::new(UserStateAuthority::from_config_store(&config_store));
         let resolved_context_authority = Arc::new(ResolvedWorkspaceContextAuthority::new(
-            config_store,
+            config_store.clone(),
             user_state.clone(),
         ));
         let db = Database::in_memory().await.expect("db should initialize");
         let repository = Arc::new(MemoryRepository::new(db.pool().clone()));
-        RuntimeMemoryAuthority::new(Arc::new(
-            MemoryAuthority::new(user_state, resolved_context_authority)
-                .with_repository(repository),
-        ))
+        RuntimeMemoryAuthority::new(
+            Arc::new(
+                MemoryAuthority::new(user_state, resolved_context_authority)
+                    .with_repository(repository),
+            ),
+            dir,
+            Some(config_store),
+        )
     }
 
     #[test]
@@ -347,6 +377,18 @@ mod tests {
     #[tokio::test]
     async fn ingest_runtime_loaded_skills_persists_linked_skill_usage_records() {
         let dir = tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".rocode/skills/frontend-ui-ux"))
+            .expect("skill dir should exist");
+        std::fs::write(
+            dir.path().join(".rocode/skills/frontend-ui-ux/SKILL.md"),
+            r#"---
+name: frontend-ui-ux
+description: frontend ui
+---
+Use for frontend tasks.
+"#,
+        )
+        .expect("skill file should exist");
         let runtime_memory = runtime_memory_for(dir.path()).await;
 
         runtime_memory
@@ -372,5 +414,23 @@ mod tests {
         assert!(records.iter().any(|record| {
             record.title.contains("frontend-ui-ux") && record.summary.contains("completed")
         }));
+
+        let governance = SkillGovernanceAuthority::new(dir.path(), None);
+        let snapshots = governance.skill_operational_snapshots();
+        let entry = snapshots
+            .iter()
+            .find(|entry| entry.skill_name == "frontend-ui-ux")
+            .expect("operational snapshot should exist");
+        assert_eq!(
+            entry.usage.as_ref().map(|usage| usage.runtime_use_count),
+            Some(1)
+        );
+        assert_eq!(
+            entry
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.last_category.as_deref()),
+            Some("frontend")
+        );
     }
 }

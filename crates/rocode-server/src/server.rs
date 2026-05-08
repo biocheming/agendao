@@ -286,10 +286,14 @@ impl ServerState {
             config_store.clone(),
             user_state.clone(),
         ));
-        let runtime_memory = Arc::new(RuntimeMemoryAuthority::new(Arc::new(MemoryAuthority::new(
-            user_state.clone(),
-            resolved_context_authority.clone(),
-        ))));
+        let runtime_memory = Arc::new(RuntimeMemoryAuthority::new(
+            Arc::new(MemoryAuthority::new(
+                user_state.clone(),
+                resolved_context_authority.clone(),
+            )),
+            workspace_root.clone(),
+            Some(config_store.clone()),
+        ));
         let (tx, _) = broadcast::channel(1024);
         let runtime_telemetry = Arc::new(RuntimeTelemetryAuthority::new(tx.clone()));
         let runtime_control = runtime_telemetry.runtime_control();
@@ -408,11 +412,14 @@ impl ServerState {
         state.config_store = config_store.clone();
         state.user_state = user_state;
         state.resolved_context_authority = resolved_context_authority.clone();
-        state.runtime_memory =
-            Arc::new(RuntimeMemoryAuthority::new(Arc::new(MemoryAuthority::new(
+        state.runtime_memory = Arc::new(RuntimeMemoryAuthority::new(
+            Arc::new(MemoryAuthority::new(
                 state.user_state.clone(),
                 state.resolved_context_authority.clone(),
-            ))));
+            )),
+            workspace_root.clone(),
+            Some(config_store.clone()),
+        ));
         let _ = state.refresh_resolved_context().await;
 
         // Load task category registry from configured path
@@ -454,7 +461,11 @@ impl ServerState {
             )
             .with_repository(memory_repo.clone()),
         );
-        state.runtime_memory = Arc::new(RuntimeMemoryAuthority::new(memory_authority.clone()));
+        state.runtime_memory = Arc::new(RuntimeMemoryAuthority::new(
+            memory_authority.clone(),
+            workspace_root.clone(),
+            Some(config_store.clone()),
+        ));
         let proposal_repo = Arc::new(rocode_storage::SkillEvolutionProposalRepository::new(
             pool.clone(),
         ));

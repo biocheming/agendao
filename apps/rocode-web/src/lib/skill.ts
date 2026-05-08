@@ -127,6 +127,105 @@ export interface SkillHubManagedResponseRecord {
   managed_skills: ManagedSkillRecord[];
 }
 
+export type SkillOperationalSourceScopeRecord =
+  | "workspace_local"
+  | "managed"
+  | "discovered_read_only"
+  | "unknown";
+
+export interface SkillUsageLedgerEntryRecord {
+  first_seen_at?: number | null;
+  last_used_at?: number | null;
+  runtime_use_count: number;
+  runtime_success_count: number;
+  runtime_error_count: number;
+  last_stage_id?: string | null;
+  last_tool_name?: string | null;
+  last_category?: string | null;
+}
+
+export interface SkillWriteLedgerEntryRecord {
+  first_written_at?: number | null;
+  last_write_at?: number | null;
+  create_count: number;
+  patch_count: number;
+  edit_count: number;
+  supporting_file_write_count: number;
+  supporting_file_remove_count: number;
+  install_count: number;
+  update_count: number;
+  detach_count: number;
+  remove_count: number;
+  delete_count: number;
+  last_action?: string | null;
+  last_location?: string | null;
+  last_supporting_file?: string | null;
+}
+
+export interface SkillOperationalSnapshotRecord {
+  skill_name: string;
+  source_scope: SkillOperationalSourceScopeRecord;
+  source_id?: string | null;
+  usage?: SkillUsageLedgerEntryRecord | null;
+  writes?: SkillWriteLedgerEntryRecord | null;
+}
+
+export interface SkillHubUsageLedgerResponseRecord {
+  entries: SkillOperationalSnapshotRecord[];
+}
+
+export type SkillGovernanceDiagnosticSeverityRecord = "info" | "warn";
+
+export type SkillNegativeEntropySignalRecord =
+  | "never_reused"
+  | "stale_unused"
+  | "write_heavy_low_reuse"
+  | "dormant_managed";
+
+export interface SkillNegativeEntropyDiagnosticRecord {
+  skill_name: string;
+  source_scope: SkillOperationalSourceScopeRecord;
+  source_id?: string | null;
+  signals: SkillNegativeEntropySignalRecord[];
+  severity: SkillGovernanceDiagnosticSeverityRecord;
+  runtime_use_count: number;
+  runtime_error_count: number;
+  write_count: number;
+  last_used_at?: number | null;
+  last_write_at?: number | null;
+  semantic_overlap_count: number;
+  reasons: string[];
+}
+
+export interface SkillHubNegativeEntropyResponseRecord {
+  generated_at: number;
+  candidates: SkillNegativeEntropyDiagnosticRecord[];
+}
+
+export type SkillSemanticConflictKindRecord =
+  | "near_duplicate"
+  | "trigger_overlap"
+  | "replacement_hint";
+
+export interface SkillSemanticConflictDiagnosticRecord {
+  left_skill_name: string;
+  right_skill_name: string;
+  kind: SkillSemanticConflictKindRecord;
+  severity: SkillGovernanceDiagnosticSeverityRecord;
+  score: number;
+  reasons: string[];
+  preferred_skill_name?: string | null;
+  left_runtime_use_count: number;
+  right_runtime_use_count: number;
+  left_last_used_at?: number | null;
+  right_last_used_at?: number | null;
+}
+
+export interface SkillHubSemanticConflictResponseRecord {
+  generated_at: number;
+  conflicts: SkillSemanticConflictDiagnosticRecord[];
+}
+
 export interface SkillHubIndexResponseRecord {
   source_indices: SkillSourceIndexSnapshotRecord[];
 }

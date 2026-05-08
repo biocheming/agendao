@@ -9,17 +9,20 @@ use crate::{
 use rocode_config::ConfigStore;
 use rocode_types::{
     BundledSkillManifest, ManagedSkillRecord, SkillArtifactCacheEntry, SkillArtifactCacheStatus,
-    SkillAuditEvent, SkillAuditKind, SkillDistributionRecord, SkillGovernanceTimelineEntry,
-    SkillGovernanceTimelineKind, SkillGovernanceTimelineStatus, SkillGovernanceWriteResult,
-    SkillGuardReport, SkillGuardStatus, SkillGuardViolation, SkillHubManagedDetachResponse,
-    SkillHubManagedRemoveResponse, SkillHubPolicy, SkillHubTimelineQuery,
-    SkillManagedLifecycleRecord, SkillManagedLifecycleState, SkillRemoteInstallAction,
-    SkillRemoteInstallEntry, SkillRemoteInstallPlan, SkillRemoteInstallResponse,
-    SkillSourceIndexSnapshot, SkillSourceRef, SkillSyncAction, SkillSyncPlan,
+    SkillAuditEvent, SkillAuditKind, SkillDistributionRecord, SkillGovernanceDiagnosticSeverity,
+    SkillGovernanceTimelineEntry, SkillGovernanceTimelineKind, SkillGovernanceTimelineStatus,
+    SkillGovernanceWriteResult, SkillGuardReport, SkillGuardStatus, SkillGuardViolation,
+    SkillHubManagedDetachResponse, SkillHubManagedRemoveResponse, SkillHubPolicy,
+    SkillHubTimelineQuery, SkillManagedLifecycleRecord, SkillManagedLifecycleState,
+    SkillNegativeEntropyDiagnostic, SkillNegativeEntropySignal, SkillOperationalSnapshot,
+    SkillOperationalSourceScope, SkillRemoteInstallAction, SkillRemoteInstallEntry,
+    SkillRemoteInstallPlan, SkillRemoteInstallResponse, SkillSemanticConflictDiagnostic,
+    SkillSemanticConflictKind, SkillSourceIndexSnapshot, SkillSourceRef, SkillSyncAction,
+    SkillSyncPlan, SkillUsageLedgerEntry, SkillWriteLedgerAction, SkillWriteLedgerEntry,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -97,6 +100,182 @@ impl SkillGovernanceAuthority {
 
     pub fn managed_skills(&self) -> Vec<ManagedSkillRecord> {
         self.hub_store.managed_skills()
+    }
+
+    pub fn skill_operational_snapshots(&self) -> Vec<SkillOperationalSnapshot> {
+        self.hub_store.skill_operational_snapshots()
+    }
+
+    pub fn skill_negative_entropy_diagnostics(
+        &self,
+    ) -> Result<Vec<SkillNegativeEntropyDiagnostic>, SkillError> {
+        let snapshots = self.skill_operational_snapshots();
+        let conflicts = self.skill_semantic_conflict_diagnostics()?;
+        let mut overlap_counts = BTreeMap::<String, u64>::new();
+        for conflict in &conflicts {
+            *overlap_counts
+                .entry(normalize_name(&conflict.left_skill_name))
+                .or_default() += 1;
+            *overlap_counts
+                .entry(normalize_name(&conflict.right_skill_name))
+                .or_default() += 1;
+        }
+
+        let now = now_unix_timestamp();
+        let mut diagnostics = Vec::new();
+        for snapshot in snapshots {
+            let runtime_use_count = snapshot
+                .usage
+                .as_ref()
+                .map(|entry| entry.runtime_use_count)
+                .unwrap_or(0);
+            let runtime_error_count = snapshot
+                .usage
+                .as_ref()
+                .map(|entry| entry.runtime_error_count)
+                .unwrap_or(0);
+            let last_used_at = snapshot.usage.as_ref().and_then(|entry| entry.last_used_at);
+            let write_count = snapshot
+                .writes
+                .as_ref()
+                .map(total_skill_write_count)
+                .unwrap_or(0);
+            let last_write_at = snapshot
+                .writes
+                .as_ref()
+                .and_then(|entry| entry.last_write_at);
+            let semantic_overlap_count = overlap_counts
+                .get(&normalize_name(&snapshot.skill_name))
+                .copied()
+                .unwrap_or(0);
+
+            let mut signals = Vec::new();
+            let mut reasons = Vec::new();
+
+            if write_count > 0 && runtime_use_count == 0 {
+                signals.push(SkillNegativeEntropySignal::NeverReused);
+                reasons.push(format!(
+                    "write history exists ({write_count} write actions) but runtime reuse has never been recorded"
+                ));
+            }
+
+            if write_count >= 3 && runtime_use_count <= 1 {
+                signals.push(SkillNegativeEntropySignal::WriteHeavyLowReuse);
+                reasons.push(format!(
+                    "write churn is high ({write_count} write actions) while runtime reuse remains low ({runtime_use_count})"
+                ));
+            }
+
+            if is_skill_timestamp_stale(last_used_at, now, SKILL_NEGATIVE_ENTROPY_STALE_SECONDS)
+                && is_skill_timestamp_stale(
+                    last_write_at.or(last_used_at),
+                    now,
+                    SKILL_NEGATIVE_ENTROPY_STALE_SECONDS,
+                )
+            {
+                signals.push(SkillNegativeEntropySignal::StaleUnused);
+                reasons.push(format!(
+                    "no recent use or write activity in the last {} days",
+                    SKILL_NEGATIVE_ENTROPY_STALE_SECONDS / 86_400
+                ));
+            }
+
+            if matches!(snapshot.source_scope, SkillOperationalSourceScope::Managed)
+                && runtime_use_count == 0
+                && last_used_at.is_none()
+            {
+                signals.push(SkillNegativeEntropySignal::DormantManaged);
+                reasons.push(
+                    "managed skill has been installed or tracked, but runtime usage has not been observed yet"
+                        .to_string(),
+                );
+            }
+
+            if signals.is_empty() {
+                continue;
+            }
+
+            if semantic_overlap_count > 0 {
+                reasons.push(format!(
+                    "semantic conflict diagnostics report {semantic_overlap_count} overlap candidate(s)"
+                ));
+            }
+            if runtime_error_count > 0 {
+                reasons.push(format!(
+                    "runtime ledger recorded {runtime_error_count} error event(s)"
+                ));
+            }
+
+            let severity =
+                skill_negative_entropy_severity(snapshot.source_scope, signals.as_slice());
+            diagnostics.push(SkillNegativeEntropyDiagnostic {
+                skill_name: snapshot.skill_name,
+                source_scope: snapshot.source_scope,
+                source_id: snapshot.source_id,
+                signals,
+                severity,
+                runtime_use_count,
+                runtime_error_count,
+                write_count,
+                last_used_at,
+                last_write_at,
+                semantic_overlap_count,
+                reasons,
+            });
+        }
+
+        diagnostics.sort_by(|left, right| {
+            skill_diagnostic_sort_key(left.severity)
+                .cmp(&skill_diagnostic_sort_key(right.severity))
+                .then_with(|| {
+                    right
+                        .semantic_overlap_count
+                        .cmp(&left.semantic_overlap_count)
+                })
+                .then_with(|| right.write_count.cmp(&left.write_count))
+                .then_with(|| left.runtime_use_count.cmp(&right.runtime_use_count))
+                .then_with(|| left.skill_name.cmp(&right.skill_name))
+        });
+        Ok(diagnostics)
+    }
+
+    pub fn skill_semantic_conflict_diagnostics(
+        &self,
+    ) -> Result<Vec<SkillSemanticConflictDiagnostic>, SkillError> {
+        let snapshots = self.skill_operational_snapshots();
+        let snapshot_by_name = snapshots
+            .iter()
+            .cloned()
+            .map(|snapshot| (normalize_name(&snapshot.skill_name), snapshot))
+            .collect::<BTreeMap<_, _>>();
+        let catalog = self.skill_authority.list_skill_catalog(None)?;
+        let mut descriptors = Vec::with_capacity(catalog.len());
+        for meta in &catalog {
+            descriptors.push(self.build_skill_semantic_descriptor(meta, &snapshot_by_name)?);
+        }
+
+        let mut diagnostics = Vec::new();
+        for left_index in 0..descriptors.len() {
+            for right_index in (left_index + 1)..descriptors.len() {
+                if let Some(conflict) = build_skill_semantic_conflict(
+                    &descriptors[left_index],
+                    &descriptors[right_index],
+                    snapshot_by_name.get(&normalize_name(&descriptors[left_index].skill_name)),
+                    snapshot_by_name.get(&normalize_name(&descriptors[right_index].skill_name)),
+                ) {
+                    diagnostics.push(conflict);
+                }
+            }
+        }
+
+        diagnostics.sort_by(|left, right| {
+            skill_diagnostic_sort_key(left.severity)
+                .cmp(&skill_diagnostic_sort_key(right.severity))
+                .then_with(|| right.score.cmp(&left.score))
+                .then_with(|| left.left_skill_name.cmp(&right.left_skill_name))
+                .then_with(|| left.right_skill_name.cmp(&right.right_skill_name))
+        });
+        Ok(diagnostics)
     }
 
     pub fn distributions(&self) -> Vec<SkillDistributionRecord> {
@@ -624,6 +803,14 @@ impl SkillGovernanceAuthority {
         );
         self.record_lifecycle(Some(actor), lifecycle.clone())?;
         self.append_audit_event(hub_detach_audit_event(source, actor, &removed))?;
+        self.record_skill_write_action(
+            &removed.skill_name,
+            None,
+            SkillWriteLedgerAction::Detach,
+            SkillOperationalSourceScope::WorkspaceLocal,
+            None,
+            None,
+        )?;
         Ok(SkillHubManagedDetachResponse { lifecycle })
     }
 
@@ -683,6 +870,14 @@ impl SkillGovernanceAuthority {
             &removed,
             deleted_from_workspace,
         ))?;
+        self.record_skill_write_action(
+            &removed.skill_name,
+            None,
+            SkillWriteLedgerAction::Remove,
+            SkillOperationalSourceScope::Managed,
+            None,
+            None,
+        )?;
         Ok(SkillHubManagedRemoveResponse {
             lifecycle,
             deleted_from_workspace,
@@ -708,6 +903,45 @@ impl SkillGovernanceAuthority {
                 .refresh_managed_records(&records, &catalog, None)?,
         )?;
         Ok(records)
+    }
+
+    pub fn record_runtime_skill_usage(
+        &self,
+        skill_name: &str,
+        tool_name: &str,
+        stage_id: Option<&str>,
+        category: Option<&str>,
+        is_error: bool,
+    ) -> Result<SkillOperationalSnapshot, SkillError> {
+        let mut snapshot = self.prepare_operational_snapshot(
+            skill_name,
+            None,
+            SkillOperationalSourceScope::Unknown,
+        )?;
+        let now = now_unix_timestamp();
+        let usage = snapshot
+            .usage
+            .get_or_insert_with(SkillUsageLedgerEntry::default);
+        usage.first_seen_at.get_or_insert(now);
+        usage.last_used_at = Some(now);
+        usage.runtime_use_count += 1;
+        if is_error {
+            usage.runtime_error_count += 1;
+        } else {
+            usage.runtime_success_count += 1;
+        }
+        usage.last_stage_id = stage_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        usage.last_tool_name = Some(tool_name.trim().to_string()).filter(|value| !value.is_empty());
+        usage.last_category = category
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        self.hub_store
+            .upsert_skill_operational_snapshot(snapshot.clone())?;
+        Ok(snapshot)
     }
 
     pub fn create_skill(
@@ -738,6 +972,14 @@ impl SkillGovernanceAuthority {
             &result,
             None,
         ))?;
+        self.record_skill_write_action(
+            &result.skill_name,
+            None,
+            SkillWriteLedgerAction::Create,
+            SkillOperationalSourceScope::WorkspaceLocal,
+            Some(result.location.as_path()),
+            result.supporting_file.as_deref(),
+        )?;
         Ok(SkillGovernedWriteResult {
             result,
             guard_report,
@@ -775,6 +1017,14 @@ impl SkillGovernanceAuthority {
             &result,
             None,
         ))?;
+        self.record_skill_write_action(
+            &result.skill_name,
+            Some(&current.name),
+            SkillWriteLedgerAction::Patch,
+            SkillOperationalSourceScope::WorkspaceLocal,
+            Some(result.location.as_path()),
+            result.supporting_file.as_deref(),
+        )?;
         Ok(SkillGovernedWriteResult {
             result,
             guard_report,
@@ -943,6 +1193,14 @@ impl SkillGovernanceAuthority {
             &result,
             None,
         ))?;
+        self.record_skill_write_action(
+            &result.skill_name,
+            Some(&current.name),
+            SkillWriteLedgerAction::Edit,
+            SkillOperationalSourceScope::WorkspaceLocal,
+            Some(result.location.as_path()),
+            result.supporting_file.as_deref(),
+        )?;
         Ok(SkillGovernedWriteResult {
             result,
             guard_report,
@@ -971,6 +1229,14 @@ impl SkillGovernanceAuthority {
             &result,
             None,
         ))?;
+        self.record_skill_write_action(
+            &result.skill_name,
+            None,
+            SkillWriteLedgerAction::WriteFile,
+            SkillOperationalSourceScope::WorkspaceLocal,
+            Some(result.location.as_path()),
+            result.supporting_file.as_deref(),
+        )?;
         Ok(SkillGovernedWriteResult {
             result,
             guard_report,
@@ -989,6 +1255,14 @@ impl SkillGovernanceAuthority {
             &result,
             None,
         ))?;
+        self.record_skill_write_action(
+            &result.skill_name,
+            None,
+            SkillWriteLedgerAction::RemoveFile,
+            SkillOperationalSourceScope::WorkspaceLocal,
+            Some(result.location.as_path()),
+            result.supporting_file.as_deref(),
+        )?;
         Ok(SkillGovernedWriteResult {
             result,
             guard_report: None,
@@ -1007,6 +1281,14 @@ impl SkillGovernanceAuthority {
             &result,
             None,
         ))?;
+        self.record_skill_write_action(
+            &result.skill_name,
+            None,
+            SkillWriteLedgerAction::Delete,
+            SkillOperationalSourceScope::WorkspaceLocal,
+            Some(result.location.as_path()),
+            result.supporting_file.as_deref(),
+        )?;
         Ok(SkillGovernedWriteResult {
             result,
             guard_report: None,
@@ -1192,6 +1474,14 @@ impl SkillGovernanceAuthority {
                     ))?;
                     self.hub_store
                         .upsert_managed_skill(self.synced_managed_record(source, source_entry)?)?;
+                    self.record_skill_write_action(
+                        &result.skill_name,
+                        None,
+                        SkillWriteLedgerAction::Install,
+                        SkillOperationalSourceScope::Managed,
+                        Some(result.location.as_path()),
+                        result.supporting_file.as_deref(),
+                    )?;
                 }
                 SkillSyncAction::Update => {
                     let source_entry =
@@ -1215,6 +1505,14 @@ impl SkillGovernanceAuthority {
                     ))?;
                     self.hub_store
                         .upsert_managed_skill(self.synced_managed_record(source, source_entry)?)?;
+                    self.record_skill_write_action(
+                        &result.skill_name,
+                        Some(&plan_entry.skill_name),
+                        SkillWriteLedgerAction::Update,
+                        SkillOperationalSourceScope::Managed,
+                        Some(result.location.as_path()),
+                        result.supporting_file.as_deref(),
+                    )?;
                 }
                 SkillSyncAction::SkipLocalModification => {
                     if let Some(managed_record) = managed_record {
@@ -1251,6 +1549,14 @@ impl SkillGovernanceAuthority {
                             &managed_record.record,
                             deleted_from_workspace,
                         ))?;
+                        self.record_skill_write_action(
+                            &managed_record.record.skill_name,
+                            None,
+                            SkillWriteLedgerAction::Remove,
+                            SkillOperationalSourceScope::Managed,
+                            None,
+                            None,
+                        )?;
                     }
                 }
                 SkillSyncAction::Noop => {
@@ -1640,6 +1946,17 @@ impl SkillGovernanceAuthority {
                 &result,
                 Some(source),
             ))?;
+            self.record_skill_write_action(
+                &result.skill_name,
+                None,
+                match plan_for_apply.entry.action {
+                    SkillRemoteInstallAction::Install => SkillWriteLedgerAction::Install,
+                    SkillRemoteInstallAction::Update => SkillWriteLedgerAction::Update,
+                },
+                SkillOperationalSourceScope::Managed,
+                Some(result.location.as_path()),
+                result.supporting_file.as_deref(),
+            )?;
 
             Ok(SkillRemoteInstallResponse {
                 plan: plan_for_apply.clone(),
@@ -1845,6 +2162,169 @@ impl SkillGovernanceAuthority {
             })
             .cloned()
             .or_else(|| candidates.pop())
+    }
+
+    fn record_skill_write_action(
+        &self,
+        skill_name: &str,
+        previous_skill_name: Option<&str>,
+        action: SkillWriteLedgerAction,
+        fallback_scope: SkillOperationalSourceScope,
+        last_location: Option<&Path>,
+        last_supporting_file: Option<&str>,
+    ) -> Result<SkillOperationalSnapshot, SkillError> {
+        let mut snapshot =
+            self.prepare_operational_snapshot(skill_name, previous_skill_name, fallback_scope)?;
+        let now = now_unix_timestamp();
+        let writes = snapshot
+            .writes
+            .get_or_insert_with(SkillWriteLedgerEntry::default);
+        writes.first_written_at.get_or_insert(now);
+        writes.last_write_at = Some(now);
+        writes.last_action = Some(action);
+        writes.last_location = last_location.map(|path| path.to_string_lossy().to_string());
+        writes.last_supporting_file = last_supporting_file.map(ToOwned::to_owned);
+
+        match action {
+            SkillWriteLedgerAction::Create => writes.create_count += 1,
+            SkillWriteLedgerAction::Patch => writes.patch_count += 1,
+            SkillWriteLedgerAction::Edit => writes.edit_count += 1,
+            SkillWriteLedgerAction::WriteFile => writes.supporting_file_write_count += 1,
+            SkillWriteLedgerAction::RemoveFile => writes.supporting_file_remove_count += 1,
+            SkillWriteLedgerAction::Install => writes.install_count += 1,
+            SkillWriteLedgerAction::Update => writes.update_count += 1,
+            SkillWriteLedgerAction::Detach => writes.detach_count += 1,
+            SkillWriteLedgerAction::Remove => writes.remove_count += 1,
+            SkillWriteLedgerAction::Delete => writes.delete_count += 1,
+        }
+
+        self.hub_store
+            .upsert_skill_operational_snapshot(snapshot.clone())?;
+        Ok(snapshot)
+    }
+
+    fn prepare_operational_snapshot(
+        &self,
+        skill_name: &str,
+        previous_skill_name: Option<&str>,
+        fallback_scope: SkillOperationalSourceScope,
+    ) -> Result<SkillOperationalSnapshot, SkillError> {
+        if let Some(previous_skill_name) =
+            previous_skill_name.filter(|previous| !previous.eq_ignore_ascii_case(skill_name))
+        {
+            self.hub_store
+                .rename_skill_operational_snapshot(previous_skill_name, skill_name)?;
+        }
+
+        let mut snapshot = self
+            .hub_store
+            .skill_operational_snapshot(skill_name)
+            .unwrap_or_else(|| SkillOperationalSnapshot {
+                skill_name: skill_name.to_string(),
+                ..SkillOperationalSnapshot::default()
+            });
+        snapshot.skill_name = skill_name.to_string();
+
+        let (source_scope, source_id) = self.resolve_operational_identity(skill_name);
+        if !matches!(source_scope, SkillOperationalSourceScope::Unknown) {
+            snapshot.source_scope = source_scope;
+            snapshot.source_id = source_id;
+        } else if !matches!(fallback_scope, SkillOperationalSourceScope::Unknown) {
+            snapshot.source_scope = fallback_scope;
+            if !matches!(fallback_scope, SkillOperationalSourceScope::Managed) {
+                snapshot.source_id = None;
+            }
+        }
+
+        Ok(snapshot)
+    }
+
+    fn resolve_operational_identity(
+        &self,
+        skill_name: &str,
+    ) -> (SkillOperationalSourceScope, Option<String>) {
+        if let Some(managed) = self.hub_store.managed_skill(skill_name) {
+            return (
+                SkillOperationalSourceScope::Managed,
+                managed.source.map(|source| source.source_id),
+            );
+        }
+
+        match self.skill_authority.resolve_skill(skill_name, None) {
+            Ok(meta) => {
+                if meta
+                    .location
+                    .starts_with(self.skill_authority.workspace_skill_root())
+                {
+                    (SkillOperationalSourceScope::WorkspaceLocal, None)
+                } else {
+                    (SkillOperationalSourceScope::DiscoveredReadOnly, None)
+                }
+            }
+            Err(_) => (SkillOperationalSourceScope::Unknown, None),
+        }
+    }
+
+    fn build_skill_semantic_descriptor(
+        &self,
+        meta: &crate::SkillMeta,
+        _snapshot_by_name: &BTreeMap<String, SkillOperationalSnapshot>,
+    ) -> Result<SkillSemanticDescriptor, SkillError> {
+        let detail = self
+            .skill_authority
+            .load_skill_detail_for_meta(meta)
+            .unwrap_or_default();
+        let normalized_name = normalize_name(&meta.name);
+
+        let mut tokens = BTreeSet::new();
+        for token in skill_descriptor_tokens(&meta.name) {
+            tokens.insert(token);
+        }
+        for token in skill_descriptor_tokens(&meta.description) {
+            tokens.insert(token);
+        }
+        if let Some(category) = meta.category.as_deref() {
+            for token in skill_descriptor_tokens(category) {
+                tokens.insert(token);
+            }
+        }
+        for token in &detail.tags {
+            for normalized in skill_descriptor_tokens(token) {
+                tokens.insert(normalized);
+            }
+        }
+
+        let mut trigger_terms = BTreeSet::new();
+        for value in meta
+            .conditions
+            .requires_tools
+            .iter()
+            .chain(meta.conditions.requires_toolsets.iter())
+            .chain(meta.conditions.stage_filter.iter())
+            .chain(meta.conditions.fallback_for_tools.iter())
+            .chain(meta.conditions.fallback_for_toolsets.iter())
+        {
+            let normalized = normalize_name(value);
+            if !normalized.is_empty() {
+                trigger_terms.insert(normalized);
+            }
+        }
+
+        let related_skills = detail
+            .related_skills
+            .iter()
+            .map(|value| normalize_name(value))
+            .filter(|value| !value.is_empty())
+            .collect::<BTreeSet<_>>();
+
+        Ok(SkillSemanticDescriptor {
+            skill_name: meta.name.clone(),
+            normalized_name,
+            category: meta.category.as_ref().map(|value| normalize_name(value)),
+            tokens,
+            trigger_terms,
+            related_skills,
+        })
     }
 
     fn synced_managed_record(
@@ -2302,6 +2782,270 @@ fn timeline_matches_filters(
         }
     }
     true
+}
+
+const SKILL_NEGATIVE_ENTROPY_STALE_SECONDS: i64 = 30 * 24 * 60 * 60;
+
+#[derive(Debug, Clone)]
+struct SkillSemanticDescriptor {
+    skill_name: String,
+    normalized_name: String,
+    category: Option<String>,
+    tokens: BTreeSet<String>,
+    trigger_terms: BTreeSet<String>,
+    related_skills: BTreeSet<String>,
+}
+
+fn build_skill_semantic_conflict(
+    left: &SkillSemanticDescriptor,
+    right: &SkillSemanticDescriptor,
+    left_snapshot: Option<&SkillOperationalSnapshot>,
+    right_snapshot: Option<&SkillOperationalSnapshot>,
+) -> Option<SkillSemanticConflictDiagnostic> {
+    if left.normalized_name == right.normalized_name {
+        return None;
+    }
+
+    let shared_tokens = set_intersection_count(&left.tokens, &right.tokens);
+    let token_jaccard = set_jaccard_ratio(&left.tokens, &right.tokens);
+    let shared_triggers = set_intersection_count(&left.trigger_terms, &right.trigger_terms);
+    let trigger_jaccard = set_jaccard_ratio(&left.trigger_terms, &right.trigger_terms);
+    let same_category = left.category.is_some() && left.category == right.category;
+    let related_overlap = left.related_skills.contains(&right.normalized_name)
+        || right.related_skills.contains(&left.normalized_name)
+        || set_intersection_count(&left.related_skills, &right.related_skills) > 0;
+
+    let mut score = 0u16;
+    let mut reasons = Vec::new();
+
+    if same_category {
+        score += 15;
+        if let Some(category) = left.category.as_deref() {
+            reasons.push(format!("shared category `{category}`"));
+        }
+    }
+
+    if shared_triggers > 0 && trigger_jaccard >= 0.6 {
+        score += 35;
+        reasons.push(format!(
+            "runtime trigger conditions heavily overlap ({shared_triggers} shared trigger terms)"
+        ));
+    } else if shared_triggers >= 2 {
+        score += 20;
+        reasons.push(format!(
+            "runtime trigger conditions overlap ({shared_triggers} shared trigger terms)"
+        ));
+    }
+
+    if shared_tokens >= 3 && token_jaccard >= 0.45 {
+        score += 30;
+        reasons.push(format!(
+            "name/description tokens strongly overlap ({shared_tokens} shared descriptor terms)"
+        ));
+    } else if shared_tokens >= 4 {
+        score += 20;
+        reasons.push(format!(
+            "descriptor vocabulary overlaps ({shared_tokens} shared terms)"
+        ));
+    }
+
+    if related_overlap {
+        score += 10;
+        reasons.push(
+            "frontmatter related-skills metadata points at the same capability cluster".to_string(),
+        );
+    }
+
+    if score < 45 {
+        return None;
+    }
+
+    let left_runtime_use_count = left_snapshot
+        .and_then(|snapshot| snapshot.usage.as_ref())
+        .map(|usage| usage.runtime_use_count)
+        .unwrap_or(0);
+    let right_runtime_use_count = right_snapshot
+        .and_then(|snapshot| snapshot.usage.as_ref())
+        .map(|usage| usage.runtime_use_count)
+        .unwrap_or(0);
+    let left_last_used_at =
+        left_snapshot.and_then(|snapshot| snapshot.usage.as_ref()?.last_used_at);
+    let right_last_used_at =
+        right_snapshot.and_then(|snapshot| snapshot.usage.as_ref()?.last_used_at);
+
+    let preferred_skill_name = preferred_skill_name(
+        left,
+        right,
+        left_runtime_use_count,
+        right_runtime_use_count,
+        left_last_used_at,
+        right_last_used_at,
+    );
+    if let Some(preferred) = preferred_skill_name.as_deref() {
+        reasons.push(format!(
+            "usage ledger currently favors `{preferred}` as the more active skill in this overlap pair"
+        ));
+    }
+
+    let kind = if score >= 70 && preferred_skill_name.is_some() {
+        SkillSemanticConflictKind::ReplacementHint
+    } else if score >= 70 {
+        SkillSemanticConflictKind::NearDuplicate
+    } else {
+        SkillSemanticConflictKind::TriggerOverlap
+    };
+    let severity = if matches!(
+        kind,
+        SkillSemanticConflictKind::ReplacementHint | SkillSemanticConflictKind::NearDuplicate
+    ) {
+        SkillGovernanceDiagnosticSeverity::Warn
+    } else {
+        SkillGovernanceDiagnosticSeverity::Info
+    };
+
+    let (
+        left_skill_name,
+        right_skill_name,
+        left_runtime_use_count,
+        right_runtime_use_count,
+        left_last_used_at,
+        right_last_used_at,
+        preferred_skill_name,
+    ) = if left.skill_name <= right.skill_name {
+        (
+            left.skill_name.clone(),
+            right.skill_name.clone(),
+            left_runtime_use_count,
+            right_runtime_use_count,
+            left_last_used_at,
+            right_last_used_at,
+            preferred_skill_name,
+        )
+    } else {
+        (
+            right.skill_name.clone(),
+            left.skill_name.clone(),
+            right_runtime_use_count,
+            left_runtime_use_count,
+            right_last_used_at,
+            left_last_used_at,
+            preferred_skill_name,
+        )
+    };
+
+    Some(SkillSemanticConflictDiagnostic {
+        left_skill_name,
+        right_skill_name,
+        kind,
+        severity,
+        score,
+        reasons,
+        preferred_skill_name,
+        left_runtime_use_count,
+        right_runtime_use_count,
+        left_last_used_at,
+        right_last_used_at,
+    })
+}
+
+fn preferred_skill_name(
+    left: &SkillSemanticDescriptor,
+    right: &SkillSemanticDescriptor,
+    left_runtime_use_count: u64,
+    right_runtime_use_count: u64,
+    left_last_used_at: Option<i64>,
+    right_last_used_at: Option<i64>,
+) -> Option<String> {
+    if left_runtime_use_count > right_runtime_use_count {
+        return Some(left.skill_name.clone());
+    }
+    if right_runtime_use_count > left_runtime_use_count {
+        return Some(right.skill_name.clone());
+    }
+    match (left_last_used_at, right_last_used_at) {
+        (Some(left_ts), Some(right_ts)) if left_ts > right_ts => Some(left.skill_name.clone()),
+        (Some(left_ts), Some(right_ts)) if right_ts > left_ts => Some(right.skill_name.clone()),
+        (Some(_), None) => Some(left.skill_name.clone()),
+        (None, Some(_)) => Some(right.skill_name.clone()),
+        _ => None,
+    }
+}
+
+fn skill_negative_entropy_severity(
+    source_scope: SkillOperationalSourceScope,
+    signals: &[SkillNegativeEntropySignal],
+) -> SkillGovernanceDiagnosticSeverity {
+    if matches!(source_scope, SkillOperationalSourceScope::WorkspaceLocal)
+        && signals.iter().any(|signal| {
+            matches!(
+                signal,
+                SkillNegativeEntropySignal::NeverReused
+                    | SkillNegativeEntropySignal::StaleUnused
+                    | SkillNegativeEntropySignal::WriteHeavyLowReuse
+            )
+        })
+    {
+        SkillGovernanceDiagnosticSeverity::Warn
+    } else {
+        SkillGovernanceDiagnosticSeverity::Info
+    }
+}
+
+fn skill_diagnostic_sort_key(severity: SkillGovernanceDiagnosticSeverity) -> u8 {
+    match severity {
+        SkillGovernanceDiagnosticSeverity::Warn => 0,
+        SkillGovernanceDiagnosticSeverity::Info => 1,
+    }
+}
+
+fn total_skill_write_count(entry: &SkillWriteLedgerEntry) -> u64 {
+    entry.create_count
+        + entry.patch_count
+        + entry.edit_count
+        + entry.supporting_file_write_count
+        + entry.supporting_file_remove_count
+        + entry.install_count
+        + entry.update_count
+        + entry.detach_count
+        + entry.remove_count
+        + entry.delete_count
+}
+
+fn is_skill_timestamp_stale(timestamp: Option<i64>, now: i64, threshold_seconds: i64) -> bool {
+    timestamp
+        .map(|value| value > 0 && now.saturating_sub(value) >= threshold_seconds)
+        .unwrap_or(false)
+}
+
+fn set_intersection_count(left: &BTreeSet<String>, right: &BTreeSet<String>) -> usize {
+    left.intersection(right).count()
+}
+
+fn set_jaccard_ratio(left: &BTreeSet<String>, right: &BTreeSet<String>) -> f32 {
+    if left.is_empty() || right.is_empty() {
+        return 0.0;
+    }
+    let shared = set_intersection_count(left, right) as f32;
+    let union = (left.len() + right.len() - shared as usize) as f32;
+    if union <= 0.0 {
+        0.0
+    } else {
+        shared / union
+    }
+}
+
+fn skill_descriptor_tokens(value: &str) -> Vec<String> {
+    const STOP_WORDS: &[&str] = &[
+        "a", "an", "and", "are", "be", "for", "from", "how", "into", "of", "or", "that", "the",
+        "this", "to", "use", "with",
+    ];
+
+    value
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .map(|part| part.trim().to_ascii_lowercase())
+        .filter(|part| part.len() >= 3)
+        .filter(|part| !STOP_WORDS.contains(&part.as_str()))
+        .collect()
 }
 
 fn managed_record_timeline_entry(record: ManagedSkillRecord) -> SkillGovernanceTimelineEntry {

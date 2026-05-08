@@ -33,11 +33,13 @@ use crate::{
     SkillHubGuardRunResponse, SkillHubIndexRefreshRequest, SkillHubIndexRefreshResponse,
     SkillHubIndexResponse, SkillHubLifecycleResponse, SkillHubManagedDetachRequest,
     SkillHubManagedDetachResponse, SkillHubManagedRemoveRequest, SkillHubManagedRemoveResponse,
-    SkillHubManagedResponse, SkillHubPolicyResponse, SkillHubRemoteInstallApplyRequest,
-    SkillHubRemoteInstallPlanRequest, SkillHubRemoteUpdateApplyRequest,
-    SkillHubRemoteUpdatePlanRequest, SkillHubSyncApplyRequest, SkillHubSyncPlanRequest,
-    SkillHubSyncPlanResponse, SkillHubTimelineQuery, SkillHubTimelineResponse, SkillManageRequest,
-    SkillManageResponse, SkillRemoteInstallPlan, SkillRemoteInstallResponse, UpdateSessionRequest,
+    SkillHubManagedResponse, SkillHubNegativeEntropyResponse, SkillHubPolicyResponse,
+    SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
+    SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest,
+    SkillHubSemanticConflictResponse, SkillHubSyncApplyRequest, SkillHubSyncPlanRequest,
+    SkillHubSyncPlanResponse, SkillHubTimelineQuery, SkillHubTimelineResponse,
+    SkillHubUsageLedgerResponse, SkillManageRequest, SkillManageResponse, SkillRemoteInstallPlan,
+    SkillRemoteInstallResponse, UpdateSessionRequest,
 };
 
 #[derive(Clone)]
@@ -754,6 +756,28 @@ impl AsyncApiClient {
         let url = server_url(&self.base_url, "/skill/hub/managed");
         let resp = self.client.get(&url).send().await?;
         Self::json_ok(resp, "get skill hub managed").await
+    }
+
+    pub async fn list_skill_hub_usage(&self) -> anyhow::Result<SkillHubUsageLedgerResponse> {
+        let url = server_url(&self.base_url, "/skill/hub/usage");
+        let resp = self.client.get(&url).send().await?;
+        Self::json_ok(resp, "get skill hub usage ledger").await
+    }
+
+    pub async fn list_skill_hub_negative_entropy(
+        &self,
+    ) -> anyhow::Result<SkillHubNegativeEntropyResponse> {
+        let url = server_url(&self.base_url, "/skill/hub/negative-entropy");
+        let resp = self.client.get(&url).send().await?;
+        Self::json_ok(resp, "get skill hub negative entropy diagnostics").await
+    }
+
+    pub async fn list_skill_hub_semantic_conflicts(
+        &self,
+    ) -> anyhow::Result<SkillHubSemanticConflictResponse> {
+        let url = server_url(&self.base_url, "/skill/hub/semantic-conflicts");
+        let resp = self.client.get(&url).send().await?;
+        Self::json_ok(resp, "get skill hub semantic conflict diagnostics").await
     }
 
     pub async fn list_skill_hub_index(&self) -> anyhow::Result<SkillHubIndexResponse> {
