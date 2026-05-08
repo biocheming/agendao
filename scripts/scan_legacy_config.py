@@ -232,15 +232,10 @@ def uniq_paths(paths: Iterable[Path]) -> List[Path]:
 def legacy_roots(cwd: Path, home: Path) -> List[Tuple[str, Path]]:
     return [
         ("cwd_opencode", cwd / ".opencode"),
-        ("cwd_claude", cwd / ".claude"),
         ("home_opencode", home / ".opencode"),
-        ("home_claude", home / ".claude"),
         ("config_opencode", home / ".config" / "opencode"),
-        ("config_claude", home / ".config" / "claude"),
         ("data_opencode", home / ".local" / "share" / "opencode"),
-        ("data_claude", home / ".local" / "share" / "claude"),
         ("cache_opencode", home / ".cache" / "opencode"),
-        ("cache_claude", home / ".cache" / "claude"),
     ]
 
 
@@ -248,17 +243,12 @@ def candidate_config_files(cwd: Path, home: Path) -> List[Path]:
     roots = [
         cwd,
         cwd / ".opencode",
-        cwd / ".claude",
         home / ".opencode",
-        home / ".claude",
         home / ".config" / "opencode",
-        home / ".config" / "claude",
     ]
     names = [
         "opencode.jsonc",
         "opencode.json",
-        "claude.jsonc",
-        "claude.json",
         "config.jsonc",
         "config.json",
         "settings.jsonc",
@@ -267,7 +257,6 @@ def candidate_config_files(cwd: Path, home: Path) -> List[Path]:
     ]
 
     candidates: List[Path] = []
-    candidates.append(home / ".claude.json")
     candidates.append(home / ".opencode.json")
     for root in roots:
         for name in names:
@@ -539,8 +528,8 @@ def parse_args() -> argparse.Namespace:
         "--cwd",
         type=Path,
         default=Path.cwd(),
-        help="Project directory used for local .opencode/.claude scanning (default: current directory). "
-             "The .claude directory is scanned for legacy config migration.",
+        help="Project directory used for local legacy config scanning (default: current directory). "
+             "Legacy OpenCode-style directories under this path are scanned for migration.",
     )
     parser.add_argument(
         "--home",

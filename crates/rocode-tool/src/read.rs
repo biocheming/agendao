@@ -16,7 +16,6 @@ const DESCRIPTION: &str = include_str!("read.txt");
 
 const INSTRUCTION_FILES: &[&str] = &[
     "AGENTS.md",
-    "CLAUDE.md",
     "CONTEXT.md",
     "CONTEXT.txt",
     ".context",

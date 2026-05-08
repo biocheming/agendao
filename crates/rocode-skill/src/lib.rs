@@ -4327,15 +4327,15 @@ project content
         )
         .unwrap();
 
-        let claude_skill = root.join(".claude/skills/claude/SKILL.md");
-        fs::create_dir_all(claude_skill.parent().unwrap()).unwrap();
+        let ignored_foreign_skill = root.join(".foreign/skills/foreign/SKILL.md");
+        fs::create_dir_all(ignored_foreign_skill.parent().unwrap()).unwrap();
         fs::write(
-            &claude_skill,
+            &ignored_foreign_skill,
             r#"---
-name: claude-skill
-description: claude
+name: foreign-skill
+description: foreign
 ---
-claude content
+foreign content
 "#,
         )
         .unwrap();
@@ -4363,8 +4363,8 @@ custom content
         let names: Vec<String> = discovered.into_iter().map(|s| s.name).collect();
 
         assert!(names.contains(&"local-skill".to_string()));
-        assert!(names.contains(&"claude-skill".to_string()));
         assert!(names.contains(&"custom-skill".to_string()));
+        assert!(!names.contains(&"foreign-skill".to_string()));
     }
 
     #[test]

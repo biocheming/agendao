@@ -3,6 +3,9 @@ use rocode_command::terminal_tool_block_display::{
     build_file_items, build_image_items, summarize_block_items_inline,
 };
 
+const LEGACY_SYSTEM_REMINDER_PREFIX: &str = "System Reminder Sent:";
+const LOADED_INSTRUCTION_FILES_PREFIX: &str = "Loaded instruction files:";
+
 pub(super) fn apply_incremental_session_sync(
     session_ctx: &mut crate::context::SessionContext,
     session_id: &str,
@@ -133,7 +136,11 @@ fn append_text_part(existing: &mut String, incoming: &str) {
 }
 
 fn needs_system_reminder_separator(existing: &str, incoming: &str) -> bool {
-    !existing.trim().is_empty() && incoming.trim_start().starts_with("System Reminder Sent:")
+    !existing.trim().is_empty() && {
+        let incoming = incoming.trim_start();
+        incoming.starts_with(LEGACY_SYSTEM_REMINDER_PREFIX)
+            || incoming.starts_with(LOADED_INSTRUCTION_FILES_PREFIX)
+    }
 }
 
 pub(super) fn map_api_revert(revert: &SessionRevertInfo) -> RevertInfo {
@@ -317,7 +324,7 @@ mod tests {
                 text: "User-facing summary.".to_string(),
             },
             ContextMessagePart::Text {
-                text: "System Reminder Sent: /tmp/project/AGENTS.md".to_string(),
+                text: "Loaded instruction files: /tmp/project/AGENTS.md".to_string(),
             },
         ];
 
@@ -327,7 +334,7 @@ mod tests {
         assert!(matches!(
             &merged[0],
             ContextMessagePart::Text { text }
-                if text == "User-facing summary.\n\nSystem Reminder Sent: /tmp/project/AGENTS.md"
+                if text == "User-facing summary.\n\nLoaded instruction files: /tmp/project/AGENTS.md"
         ));
     }
 }

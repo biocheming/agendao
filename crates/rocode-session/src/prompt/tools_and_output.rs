@@ -20,6 +20,8 @@ IMPORTANT:
 - This tool provides your final answer - no further actions are taken after calling it"#;
 
 const STRUCTURED_OUTPUT_SYSTEM_PROMPT: &str = r#"IMPORTANT: The user has requested structured output. You MUST use the StructuredOutput tool to provide your final response. Do NOT respond with plain text - you MUST call the StructuredOutput tool with your answer formatted according to the schema."#;
+const LEGACY_SYSTEM_REMINDER_PREFIX: &str = "System Reminder Sent:";
+const LOADED_INSTRUCTION_FILES_PREFIX: &str = "Loaded instruction files:";
 
 pub struct StructuredOutputConfig {
     pub schema: serde_json::Value,
@@ -580,7 +582,8 @@ pub fn sanitize_session_title_source(text: &str) -> String {
         }
 
         if is_system_reminder_close_tag(trimmed)
-            || trimmed.starts_with("System Reminder Sent:")
+            || trimmed.starts_with(LEGACY_SYSTEM_REMINDER_PREFIX)
+            || trimmed.starts_with(LOADED_INSTRUCTION_FILES_PREFIX)
             || trimmed.starts_with("Instructions from:")
         {
             continue;
@@ -914,7 +917,7 @@ mod tests {
     #[test]
     fn sanitize_session_title_source_strips_system_reminder_wrappers() {
         let cleaned = sanitize_session_title_source(
-            "帮我重构 TUI\n\n<system-reminder>\nInstructions from: /tmp/project/AGENTS.md\nBe strict.\n</system-reminder>\n\nSystem Reminder Sent: /tmp/project/AGENTS.md",
+            "帮我重构 TUI\n\n<system-reminder>\nInstructions from: /tmp/project/AGENTS.md\nBe strict.\n</system-reminder>\n\nLoaded instruction files: /tmp/project/AGENTS.md",
         );
 
         assert_eq!(cleaned, "帮我重构 TUI");
