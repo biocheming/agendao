@@ -53,8 +53,9 @@ pub use tools_and_output::{
     StructuredOutputConfig,
 };
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
@@ -63,7 +64,7 @@ use tokio_util::sync::CancellationToken;
 use rocode_content::output_blocks::OutputBlock;
 use rocode_execution_types::CompiledExecutionRequest;
 use rocode_provider::{cache::CacheEvidenceSummary, Provider, ToolDefinition};
-use rocode_skill::RuntimeInstructionSource;
+use rocode_skill::{RuntimeInstructionSource, SkillGovernanceAuthority};
 use rocode_types::{
     context_usage_percent, ContextCompactionSummary, ContextPressureGovernanceStatus,
     ContextPressureGovernanceSummary, MemoryRetrievalPacket, PromptSurfaceEvidenceSummary,
@@ -290,6 +291,7 @@ pub struct SessionPrompt {
 pub struct RuntimeReviewNudge {
     pub session_id: String,
     pub workspace_key: String,
+    pub workspace_directory: Option<String>,
     pub step_count: usize,
     pub tool_call_count: usize,
     pub error_tool_call_count: usize,
@@ -348,6 +350,7 @@ impl RuntimeReviewNudge {
         Self {
             session_id: session.id.clone(),
             workspace_key: session_review_scope_key(session),
+            workspace_directory: normalized_nudge_workspace_directory(session),
             step_count,
             tool_call_count,
             error_tool_call_count,
@@ -369,6 +372,61 @@ fn session_review_scope_key(session: &Session) -> String {
     }
 
     format!("session:{}", session.id)
+}
+
+fn normalized_nudge_workspace_directory(session: &Session) -> Option<String> {
+    let directory = session.directory.trim();
+    (!directory.is_empty()).then(|| directory.to_string())
+}
+
+fn normalize_linked_skill_name(skill_name: &str) -> String {
+    skill_name.trim().to_ascii_lowercase()
+}
+
+fn linked_skill_memory_promotion_counts(
+    candidates: &[rocode_types::MemoryRecord],
+) -> BTreeMap<String, (String, u64)> {
+    let mut counts = BTreeMap::<String, (String, u64)>::new();
+    for record in candidates {
+        let Some(skill_name) = record
+            .linked_skill_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        let key = normalize_linked_skill_name(skill_name);
+        let entry = counts
+            .entry(key)
+            .or_insert_with(|| (skill_name.to_string(), 0));
+        entry.1 += 1;
+    }
+    counts
+}
+
+fn linked_methodology_skill_names(
+    candidates: &[rocode_types::MemoryRecord],
+) -> BTreeMap<String, String> {
+    let mut skill_names = BTreeMap::new();
+    for record in candidates {
+        if record.kind != rocode_types::MemoryKind::MethodologyCandidate {
+            continue;
+        }
+        let Some(skill_name) = record
+            .linked_skill_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        skill_names.insert(
+            normalize_linked_skill_name(skill_name),
+            skill_name.to_string(),
+        );
+    }
+    skill_names
 }
 
 /// Why a consolidation nudge was skipped.
@@ -1613,6 +1671,7 @@ impl SessionPrompt {
                     .maybe_generate_proposals(
                         memory,
                         &nudge.session_id,
+                        nudge.workspace_directory.as_deref(),
                         &response.promoted_record_ids,
                     )
                     .await;
@@ -1713,12 +1772,9 @@ impl SessionPrompt {
         &self,
         memory: &rocode_memory::MemoryAuthority,
         session_id: &str,
+        workspace_directory: Option<&str>,
         promoted_record_ids: &[rocode_types::MemoryRecordId],
     ) -> (u32, u32) {
-        let Some(repo) = self.proposal_repo.as_deref() else {
-            return (0, 0);
-        };
-
         let mut candidates = Vec::new();
         for record_id in promoted_record_ids {
             match memory.get_memory_detail(record_id).await {
@@ -1739,10 +1795,26 @@ impl SessionPrompt {
             return (0, 0);
         }
 
+        self.sync_skill_memory_promotion_evidence(workspace_directory, session_id, &candidates);
+
+        let Some(repo) = self.proposal_repo.as_deref() else {
+            return (0, 0);
+        };
+        let linked_methodology_skills = linked_methodology_skill_names(&candidates);
+
         match rocode_storage::generate_skill_evolution_proposals(repo, &candidates, session_id)
             .await
         {
-            Ok(summary) => (summary.proposals_created, summary.proposals_skipped),
+            Ok(summary) => {
+                self.sync_skill_proposal_evidence(
+                    workspace_directory,
+                    session_id,
+                    repo,
+                    &linked_methodology_skills,
+                )
+                .await;
+                (summary.proposals_created, summary.proposals_skipped)
+            }
             Err(error) => {
                 tracing::warn!(
                     session_id,
@@ -1752,6 +1824,99 @@ impl SessionPrompt {
                 (0, 0)
             }
         }
+    }
+
+    fn sync_skill_memory_promotion_evidence(
+        &self,
+        workspace_directory: Option<&str>,
+        session_id: &str,
+        candidates: &[rocode_types::MemoryRecord],
+    ) {
+        let Some(governance) = self.skill_governance_for_workspace(workspace_directory) else {
+            return;
+        };
+
+        for (_key, (skill_name, count)) in linked_skill_memory_promotion_counts(candidates) {
+            if let Err(error) = governance.record_skill_memory_promotion_signal(&skill_name, count)
+            {
+                tracing::warn!(
+                    session_id,
+                    skill_name = %skill_name,
+                    %error,
+                    "nudge: failed to sync skill memory promotion evidence"
+                );
+            }
+        }
+    }
+
+    async fn sync_skill_proposal_evidence(
+        &self,
+        workspace_directory: Option<&str>,
+        session_id: &str,
+        repo: &rocode_storage::SkillEvolutionProposalRepository,
+        linked_methodology_skills: &BTreeMap<String, String>,
+    ) {
+        if linked_methodology_skills.is_empty() {
+            return;
+        }
+        let Some(governance) = self.skill_governance_for_workspace(workspace_directory) else {
+            return;
+        };
+
+        let draft_proposals = match repo
+            .list_by_status(&rocode_types::ProposalStatus::Draft)
+            .await
+        {
+            Ok(items) => items,
+            Err(error) => {
+                tracing::warn!(
+                    session_id,
+                    %error,
+                    "nudge: failed to inspect draft proposal state for skill governance"
+                );
+                return;
+            }
+        };
+
+        let linked_keys = linked_methodology_skills
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let mut draft_counts = BTreeMap::<String, u64>::new();
+        for proposal in draft_proposals {
+            let Some(skill_name) = proposal.linked_skill_name.as_deref() else {
+                continue;
+            };
+            let key = normalize_linked_skill_name(skill_name);
+            if linked_keys.contains(&key) {
+                *draft_counts.entry(key).or_default() += 1;
+            }
+        }
+
+        for (key, skill_name) in linked_methodology_skills {
+            let draft_count = draft_counts.get(key).copied().unwrap_or(0);
+            if let Err(error) = governance.record_skill_proposal_signal(skill_name, draft_count) {
+                tracing::warn!(
+                    session_id,
+                    skill_name = %skill_name,
+                    %error,
+                    "nudge: failed to sync skill proposal evidence"
+                );
+            }
+        }
+    }
+
+    fn skill_governance_for_workspace(
+        &self,
+        workspace_directory: Option<&str>,
+    ) -> Option<SkillGovernanceAuthority> {
+        let directory = workspace_directory
+            .map(str::trim)
+            .filter(|value| !value.is_empty())?;
+        Some(SkillGovernanceAuthority::new(
+            PathBuf::from(directory),
+            self.config_store.clone(),
+        ))
     }
 
     pub fn with_mcp_clients(mut self, clients: Arc<rocode_mcp::McpClientRegistry>) -> Self {

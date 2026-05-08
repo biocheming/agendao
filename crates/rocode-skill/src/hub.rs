@@ -1094,6 +1094,7 @@ fn merge_operational_snapshot(
     }
     merge_skill_usage_entry(existing, incoming.usage);
     merge_skill_write_entry(existing, incoming.writes);
+    merge_skill_evolution_entry(existing, incoming.evolution);
     merge_skill_vitality_entry(existing, incoming.vitality);
 }
 
@@ -1187,6 +1188,47 @@ fn merge_skill_vitality_entry(
         }
     } else {
         existing.vitality = Some(incoming);
+    }
+}
+
+fn merge_skill_evolution_entry(
+    existing: &mut SkillOperationalSnapshot,
+    incoming: Option<rocode_types::SkillEvolutionEvidenceSummary>,
+) {
+    let Some(incoming) = incoming else {
+        return;
+    };
+    if let Some(current) = existing.evolution.as_mut() {
+        current.memory_promotion_count += incoming.memory_promotion_count;
+        current.proposal_signal_count += incoming.proposal_signal_count;
+        if incoming
+            .last_memory_promotion_at
+            .zip(current.last_memory_promotion_at)
+            .is_some_and(|(left, right)| left >= right)
+            || current.last_memory_promotion_at.is_none()
+        {
+            current.last_memory_promotion_at = incoming.last_memory_promotion_at;
+        }
+        if incoming
+            .last_proposal_at
+            .zip(current.last_proposal_at)
+            .is_some_and(|(left, right)| left >= right)
+            || current.last_proposal_at.is_none()
+        {
+            current.last_proposal_at = incoming.last_proposal_at;
+            current.last_observed_draft_proposal_count =
+                incoming.last_observed_draft_proposal_count;
+        }
+        if incoming
+            .last_positive_signal_at
+            .zip(current.last_positive_signal_at)
+            .is_some_and(|(left, right)| left >= right)
+            || current.last_positive_signal_at.is_none()
+        {
+            current.last_positive_signal_at = incoming.last_positive_signal_at;
+        }
+    } else {
+        existing.evolution = Some(incoming);
     }
 }
 

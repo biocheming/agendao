@@ -314,6 +314,22 @@ pub struct SkillVitalityRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct SkillEvolutionEvidenceSummary {
+    #[serde(default)]
+    pub memory_promotion_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_memory_promotion_at: Option<i64>,
+    #[serde(default)]
+    pub proposal_signal_count: u64,
+    #[serde(default)]
+    pub last_observed_draft_proposal_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_proposal_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_positive_signal_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct SkillOperationalSnapshot {
     pub skill_name: String,
     #[serde(default)]
@@ -324,6 +340,8 @@ pub struct SkillOperationalSnapshot {
     pub usage: Option<SkillUsageLedgerEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub writes: Option<SkillWriteLedgerEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evolution: Option<SkillEvolutionEvidenceSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vitality: Option<SkillVitalityRecord>,
 }

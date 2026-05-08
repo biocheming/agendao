@@ -2,25 +2,26 @@ use crate::{
     CreateSkillRequest, DeleteSkillRequest, EditSkillRequest, PatchSkillRequest,
     RemoveSkillFileRequest, RuntimeInstructionSource, RuntimeSkillBootstrapReport,
     RuntimeSkillMaterialization, RuntimeSkillMaterializationAction, RuntimeSkillSourceKind,
-    SkillArtifactStore, SkillAuthority, SkillDistributionResolver, SkillError, SkillGuardEngine,
-    SkillHubSnapshot, SkillHubStore, SkillLifecycleCoordinator, SkillSyncPlanner, SkillWriteAction,
-    SkillWriteResult, WriteSkillFileRequest,
+    SkillArtifactStore, SkillAuthority, SkillConditions, SkillDetailView,
+    SkillDistributionResolver, SkillError, SkillGuardEngine, SkillHubSnapshot, SkillHubStore,
+    SkillLifecycleCoordinator, SkillSyncPlanner, SkillWriteAction, SkillWriteResult,
+    WriteSkillFileRequest,
 };
 use rocode_config::ConfigStore;
 use rocode_types::{
     BundledSkillManifest, ManagedSkillRecord, SkillArtifactCacheEntry, SkillArtifactCacheStatus,
-    SkillAuditEvent, SkillAuditKind, SkillDistributionRecord, SkillGovernanceDiagnosticSeverity,
-    SkillGovernanceTimelineEntry, SkillGovernanceTimelineKind, SkillGovernanceTimelineStatus,
-    SkillGovernanceWriteResult, SkillGuardReport, SkillGuardStatus, SkillGuardViolation,
-    SkillHubManagedDetachResponse, SkillHubManagedRemoveResponse, SkillHubPolicy,
-    SkillHubTimelineQuery, SkillManagedLifecycleRecord, SkillManagedLifecycleState,
-    SkillNegativeEntropyDiagnostic, SkillNegativeEntropySignal, SkillOperationalSnapshot,
-    SkillOperationalSourceScope, SkillRemoteInstallAction, SkillRemoteInstallEntry,
-    SkillRemoteInstallPlan, SkillRemoteInstallResponse, SkillRetirementReason,
-    SkillRetirementReasonKind, SkillSemanticConflictDiagnostic, SkillSemanticConflictKind,
-    SkillSourceIndexSnapshot, SkillSourceRef, SkillSyncAction, SkillSyncPlan,
-    SkillUsageLedgerEntry, SkillVitalityRecord, SkillVitalityState, SkillWriteLedgerAction,
-    SkillWriteLedgerEntry,
+    SkillAuditEvent, SkillAuditKind, SkillDistributionRecord, SkillEvolutionEvidenceSummary,
+    SkillGovernanceDiagnosticSeverity, SkillGovernanceTimelineEntry, SkillGovernanceTimelineKind,
+    SkillGovernanceTimelineStatus, SkillGovernanceWriteResult, SkillGuardReport,
+    SkillGuardSeverity, SkillGuardStatus, SkillGuardViolation, SkillHubManagedDetachResponse,
+    SkillHubManagedRemoveResponse, SkillHubPolicy, SkillHubTimelineQuery,
+    SkillManagedLifecycleRecord, SkillManagedLifecycleState, SkillNegativeEntropyDiagnostic,
+    SkillNegativeEntropySignal, SkillOperationalSnapshot, SkillOperationalSourceScope,
+    SkillRemoteInstallAction, SkillRemoteInstallEntry, SkillRemoteInstallPlan,
+    SkillRemoteInstallResponse, SkillRetirementReason, SkillRetirementReasonKind,
+    SkillSemanticConflictDiagnostic, SkillSemanticConflictKind, SkillSourceIndexSnapshot,
+    SkillSourceRef, SkillSyncAction, SkillSyncPlan, SkillUsageLedgerEntry, SkillVitalityRecord,
+    SkillVitalityState, SkillWriteLedgerAction, SkillWriteLedgerEntry,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -311,6 +312,13 @@ impl SkillGovernanceAuthority {
                 .get(&normalize_name(&snapshot.skill_name))
                 .copied()
                 .unwrap_or(0);
+            let recent_positive_evolution = snapshot
+                .evolution
+                .as_ref()
+                .and_then(|summary| summary.last_positive_signal_at)
+                .is_some_and(|timestamp| {
+                    now.saturating_sub(timestamp) < SKILL_POSITIVE_EVOLUTION_GRACE_SECONDS
+                });
 
             let mut signals = Vec::new();
             let mut reasons = Vec::new();
@@ -368,9 +376,17 @@ impl SkillGovernanceAuthority {
                     "runtime ledger recorded {runtime_error_count} error event(s)"
                 ));
             }
+            if recent_positive_evolution {
+                if let Some(evolution) = snapshot.evolution.as_ref() {
+                    reasons.push(format_skill_positive_evolution_reason(evolution, now));
+                }
+            }
 
-            let severity =
-                skill_negative_entropy_severity(snapshot.source_scope, signals.as_slice());
+            let severity = skill_negative_entropy_severity(
+                snapshot.source_scope,
+                signals.as_slice(),
+                recent_positive_evolution,
+            );
             diagnostics.push(SkillNegativeEntropyDiagnostic {
                 skill_name: snapshot.skill_name,
                 source_scope: snapshot.source_scope,
@@ -1107,6 +1123,86 @@ impl SkillGovernanceAuthority {
         Ok(snapshot)
     }
 
+    pub fn record_skill_memory_promotion_signal(
+        &self,
+        skill_name: &str,
+        promoted_record_count: u64,
+    ) -> Result<SkillOperationalSnapshot, SkillError> {
+        let mut snapshot = self.prepare_operational_snapshot(
+            skill_name,
+            None,
+            SkillOperationalSourceScope::Unknown,
+        )?;
+        if matches!(snapshot.source_scope, SkillOperationalSourceScope::Unknown) {
+            return Err(SkillError::InvalidSkillContent {
+                message: format!(
+                    "skill `{}` is unresolved and cannot record memory promotion evidence",
+                    skill_name.trim()
+                ),
+            });
+        }
+        if promoted_record_count == 0 {
+            return Ok(snapshot);
+        }
+
+        let now = now_unix_timestamp();
+        let evolution = snapshot
+            .evolution
+            .get_or_insert_with(SkillEvolutionEvidenceSummary::default);
+        evolution.memory_promotion_count += promoted_record_count;
+        evolution.last_memory_promotion_at = Some(now);
+        evolution.last_positive_signal_at = Some(
+            evolution
+                .last_positive_signal_at
+                .map(|current| current.max(now))
+                .unwrap_or(now),
+        );
+
+        self.hub_store
+            .upsert_skill_operational_snapshot(snapshot.clone())?;
+        Ok(snapshot)
+    }
+
+    pub fn record_skill_proposal_signal(
+        &self,
+        skill_name: &str,
+        draft_proposal_count: u64,
+    ) -> Result<SkillOperationalSnapshot, SkillError> {
+        let mut snapshot = self.prepare_operational_snapshot(
+            skill_name,
+            None,
+            SkillOperationalSourceScope::Unknown,
+        )?;
+        if matches!(snapshot.source_scope, SkillOperationalSourceScope::Unknown) {
+            return Err(SkillError::InvalidSkillContent {
+                message: format!(
+                    "skill `{}` is unresolved and cannot record proposal evidence",
+                    skill_name.trim()
+                ),
+            });
+        }
+
+        let now = now_unix_timestamp();
+        let evolution = snapshot
+            .evolution
+            .get_or_insert_with(SkillEvolutionEvidenceSummary::default);
+        evolution.last_observed_draft_proposal_count = draft_proposal_count;
+        if draft_proposal_count > 0 {
+            evolution.proposal_signal_count += 1;
+            evolution.last_proposal_at = Some(now);
+            evolution.last_positive_signal_at = Some(
+                evolution
+                    .last_positive_signal_at
+                    .map(|current| current.max(now))
+                    .unwrap_or(now),
+            );
+        }
+
+        self.hub_store
+            .upsert_skill_operational_snapshot(snapshot.clone())?;
+        Ok(snapshot)
+    }
+
     pub fn create_skill(
         &self,
         req: CreateSkillRequest,
@@ -1120,13 +1216,7 @@ impl SkillGovernanceAuthority {
         let guard_report = self.apply_guard_report(
             actor,
             None,
-            self.guard_engine.evaluate_create(
-                &req.name,
-                &req.description,
-                &req.body,
-                duplicate_conflict,
-                now_unix_timestamp(),
-            ),
+            self.evaluate_create_guard_report(&req, duplicate_conflict),
         )?;
         let result = self.skill_authority.create_skill(req)?;
         self.append_audit_event(write_audit_event(
@@ -1165,13 +1255,7 @@ impl SkillGovernanceAuthority {
         let guard_report = self.apply_guard_report(
             actor,
             None,
-            self.guard_engine.evaluate_patch(
-                &current.name,
-                next_name,
-                req.body.as_deref(),
-                duplicate_conflict,
-                now_unix_timestamp(),
-            ),
+            self.evaluate_patch_guard_report(&current, &req, next_name, duplicate_conflict),
         )?;
         let result = self.skill_authority.patch_skill(req)?;
         self.append_audit_event(write_audit_event(
@@ -1342,12 +1426,7 @@ impl SkillGovernanceAuthority {
         let guard_report = self.apply_guard_report(
             actor,
             None,
-            self.guard_engine.evaluate_edit(
-                &next_name,
-                &req.content,
-                duplicate_conflict,
-                now_unix_timestamp(),
-            ),
+            self.evaluate_edit_guard_report(&current, &req, &next_name, duplicate_conflict),
         )?;
         let result = self.skill_authority.edit_skill(req)?;
         self.append_audit_event(write_audit_event(
@@ -1516,6 +1595,13 @@ impl SkillGovernanceAuthority {
             false,
             now_unix_timestamp(),
         );
+        let report = self.with_semantic_overlap_guard_warnings(
+            report,
+            Some(markdown_content.as_str()),
+            meta.category.as_deref(),
+            &[],
+            Some(meta.name.as_str()),
+        );
         self.audit_guard_observation(actor, None, &report)?;
         Ok(vec![report])
     }
@@ -1567,6 +1653,13 @@ impl SkillGovernanceAuthority {
                     .collect::<Vec<_>>(),
                 duplicate_conflict,
                 now_unix_timestamp(),
+            );
+            let report = self.with_semantic_overlap_guard_warnings(
+                report,
+                Some(entry.markdown_content.as_str()),
+                entry.category.as_deref(),
+                &[],
+                None,
             );
             self.audit_guard_observation(actor, Some(source), &report)?;
             reports.push(report);
@@ -1624,7 +1717,7 @@ impl SkillGovernanceAuthority {
                             ),
                         })?;
                     if let Some(report) =
-                        self.apply_import_guard(actor, source, source_entry, false)?
+                        self.apply_import_guard(actor, source, source_entry, false, None)?
                     {
                         guard_reports.push(report);
                     }
@@ -1654,9 +1747,13 @@ impl SkillGovernanceAuthority {
                                 plan_entry.skill_name
                             ),
                         })?;
-                    if let Some(report) =
-                        self.apply_import_guard(actor, source, source_entry, false)?
-                    {
+                    if let Some(report) = self.apply_import_guard(
+                        actor,
+                        source,
+                        source_entry,
+                        false,
+                        Some(plan_entry.skill_name.as_str()),
+                    )? {
                         guard_reports.push(report);
                     }
                     let result = self.update_skill_from_source(source_entry, catalog_entry)?;
@@ -1801,6 +1898,258 @@ impl SkillGovernanceAuthority {
         }
     }
 
+    fn evaluate_create_guard_report(
+        &self,
+        req: &CreateSkillRequest,
+        duplicate_conflict: bool,
+    ) -> SkillGuardReport {
+        let report = self.guard_engine.evaluate_create(
+            &req.name,
+            &req.description,
+            &req.body,
+            duplicate_conflict,
+            now_unix_timestamp(),
+        );
+        let preview_markdown = crate::write::build_create_frontmatter(
+            &req.name,
+            &req.description,
+            req.frontmatter.as_ref(),
+        )
+        .and_then(|frontmatter| crate::write::build_skill_document(&frontmatter, &req.body))
+        .ok();
+        self.with_semantic_overlap_guard_warnings(
+            report,
+            preview_markdown.as_deref(),
+            req.category.as_deref(),
+            &[],
+            None,
+        )
+    }
+
+    fn evaluate_patch_guard_report(
+        &self,
+        current: &crate::SkillMeta,
+        req: &PatchSkillRequest,
+        next_name: &str,
+        duplicate_conflict: bool,
+    ) -> SkillGuardReport {
+        let report = self.guard_engine.evaluate_patch(
+            &current.name,
+            next_name,
+            req.body.as_deref(),
+            duplicate_conflict,
+            now_unix_timestamp(),
+        );
+        let preview_markdown = self.build_patch_preview_markdown(current, req).ok();
+        self.with_semantic_overlap_guard_warnings(
+            report,
+            preview_markdown.as_deref(),
+            current.category.as_deref(),
+            &[current.name.as_str()],
+            Some(current.name.as_str()),
+        )
+    }
+
+    fn evaluate_edit_guard_report(
+        &self,
+        current: &crate::SkillMeta,
+        req: &EditSkillRequest,
+        next_name: &str,
+        duplicate_conflict: bool,
+    ) -> SkillGuardReport {
+        let report = self.guard_engine.evaluate_edit(
+            next_name,
+            &req.content,
+            duplicate_conflict,
+            now_unix_timestamp(),
+        );
+        self.with_semantic_overlap_guard_warnings(
+            report,
+            Some(req.content.as_str()),
+            current.category.as_deref(),
+            &[current.name.as_str()],
+            Some(current.name.as_str()),
+        )
+    }
+
+    fn evaluate_imported_skill_guard_report(
+        &self,
+        skill_name: &str,
+        markdown_content: &str,
+        supporting_files: &[(String, String)],
+        duplicate_conflict: bool,
+        category: Option<&str>,
+        current_skill_name: Option<&str>,
+    ) -> SkillGuardReport {
+        let report = self.guard_engine.evaluate_imported_skill(
+            skill_name,
+            markdown_content,
+            supporting_files,
+            duplicate_conflict,
+            now_unix_timestamp(),
+        );
+        let exclude_names = current_skill_name
+            .map(|value| vec![value])
+            .unwrap_or_default();
+        self.with_semantic_overlap_guard_warnings(
+            report,
+            Some(markdown_content),
+            category,
+            exclude_names.as_slice(),
+            current_skill_name,
+        )
+    }
+
+    fn build_patch_preview_markdown(
+        &self,
+        current: &crate::SkillMeta,
+        req: &PatchSkillRequest,
+    ) -> Result<String, SkillError> {
+        let mut document = crate::write::load_skill_document(&current.location)?;
+        let mut frontmatter = crate::write::parse_skill_frontmatter(&document)?;
+        let next_name = match req.new_name.as_deref() {
+            Some(value) => crate::write::validate_skill_name(value)?,
+            None => current.name.clone(),
+        };
+        let next_description = match req.description.as_deref() {
+            Some(value) => crate::write::validate_skill_description(&next_name, value)?,
+            None => current.description.clone(),
+        };
+        let next_body = match req.body.as_deref() {
+            Some(value) => crate::write::validate_skill_body(value)?,
+            None => document.body.clone(),
+        };
+
+        frontmatter.name = next_name;
+        frontmatter.description = next_description;
+        if let Some(patch) = req.frontmatter.as_ref() {
+            crate::write::apply_frontmatter_patch(&mut frontmatter, patch);
+        }
+        document.frontmatter_lines = crate::write::render_skill_frontmatter_lines(&frontmatter)?;
+        document.body = next_body;
+        Ok(crate::write::render_skill_document(&document))
+    }
+
+    fn with_semantic_overlap_guard_warnings(
+        &self,
+        mut report: SkillGuardReport,
+        markdown_content: Option<&str>,
+        category: Option<&str>,
+        exclude_names: &[&str],
+        current_skill_name: Option<&str>,
+    ) -> SkillGuardReport {
+        let Some(markdown_content) = markdown_content else {
+            return report;
+        };
+        let Some(candidate) = self.semantic_descriptor_from_markdown(markdown_content, category)
+        else {
+            return report;
+        };
+        let violations =
+            self.semantic_overlap_guard_violations(&candidate, exclude_names, current_skill_name);
+        if violations.is_empty() {
+            return report;
+        }
+        if report.status == SkillGuardStatus::Passed {
+            report.status = SkillGuardStatus::Warn;
+        }
+        report.violations.extend(violations);
+        report
+    }
+
+    fn semantic_descriptor_from_markdown(
+        &self,
+        markdown_content: &str,
+        category: Option<&str>,
+    ) -> Option<SkillSemanticDescriptor> {
+        let document = crate::write::parse_skill_document(markdown_content).ok()?;
+        let frontmatter = crate::write::parse_skill_frontmatter(&document).ok()?;
+        let rocode = frontmatter
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.rocode.as_ref());
+        let detail = SkillDetailView {
+            tags: semantic_detail_tags(&frontmatter),
+            related_skills: semantic_detail_related_skills(&frontmatter),
+            ..SkillDetailView::default()
+        };
+        let conditions = SkillConditions {
+            requires_tools: rocode
+                .map(|metadata| metadata.requires_tools.clone())
+                .unwrap_or_default(),
+            fallback_for_tools: rocode
+                .map(|metadata| metadata.fallback_for_tools.clone())
+                .unwrap_or_default(),
+            requires_toolsets: rocode
+                .map(|metadata| metadata.requires_toolsets.clone())
+                .unwrap_or_default(),
+            fallback_for_toolsets: rocode
+                .map(|metadata| metadata.fallback_for_toolsets.clone())
+                .unwrap_or_default(),
+            stage_filter: rocode
+                .map(|metadata| metadata.stage_filter.clone())
+                .unwrap_or_default(),
+        };
+        Some(build_skill_semantic_descriptor_from_parts(
+            &frontmatter.name,
+            &frontmatter.description,
+            category,
+            &conditions,
+            &detail,
+        ))
+    }
+
+    fn semantic_overlap_guard_violations(
+        &self,
+        candidate: &SkillSemanticDescriptor,
+        exclude_names: &[&str],
+        current_skill_name: Option<&str>,
+    ) -> Vec<SkillGuardViolation> {
+        let snapshot_by_name = self
+            .skill_operational_snapshots()
+            .into_iter()
+            .map(|snapshot| (normalize_name(&snapshot.skill_name), snapshot))
+            .collect::<BTreeMap<_, _>>();
+        let exclude = exclude_names
+            .iter()
+            .map(|name| normalize_name(name))
+            .collect::<BTreeSet<_>>();
+        let candidate_snapshot = current_skill_name.and_then(|name| {
+            let normalized = normalize_name(name);
+            snapshot_by_name.get(&normalized)
+        });
+        let mut conflicts = self
+            .skill_authority
+            .list_skill_catalog(None)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|meta| !exclude.contains(&normalize_name(&meta.name)))
+            .filter_map(|meta| {
+                let existing = self
+                    .build_skill_semantic_descriptor(&meta, &snapshot_by_name)
+                    .ok()?;
+                build_skill_semantic_conflict(
+                    candidate,
+                    &existing,
+                    candidate_snapshot,
+                    snapshot_by_name.get(&normalize_name(&existing.skill_name)),
+                )
+            })
+            .collect::<Vec<_>>();
+        conflicts.sort_by(|left, right| {
+            right
+                .score
+                .cmp(&left.score)
+                .then_with(|| left.left_skill_name.cmp(&right.left_skill_name))
+                .then_with(|| left.right_skill_name.cmp(&right.right_skill_name))
+        });
+        conflicts
+            .into_iter()
+            .take(3)
+            .map(|conflict| semantic_conflict_guard_violation(candidate, &conflict))
+            .collect()
+    }
+
     fn apply_guard_report(
         &self,
         actor: &str,
@@ -1825,8 +2174,9 @@ impl SkillGovernanceAuthority {
         source: &SkillSourceRef,
         entry: &crate::sync::SkillSyncSourceEntry,
         duplicate_conflict: bool,
+        current_skill_name: Option<&str>,
     ) -> Result<Option<SkillGuardReport>, SkillError> {
-        let report = self.guard_engine.evaluate_imported_skill(
+        let report = self.evaluate_imported_skill_guard_report(
             &entry.skill_name,
             &entry.markdown_content,
             &entry
@@ -1835,7 +2185,8 @@ impl SkillGovernanceAuthority {
                 .map(|file| (file.relative_path.clone(), file.content.clone()))
                 .collect::<Vec<_>>(),
             duplicate_conflict,
-            now_unix_timestamp(),
+            entry.category.as_deref(),
+            current_skill_name,
         );
         self.apply_guard_report(actor, Some(source), report)
     }
@@ -2028,10 +2379,20 @@ impl SkillGovernanceAuthority {
                         .name
                         .eq_ignore_ascii_case(&plan_for_apply.distribution.skill_name)
                 });
+            let current_meta = if matches!(
+                plan_for_apply.entry.action,
+                SkillRemoteInstallAction::Update
+            ) {
+                self.skill_authority
+                    .resolve_skill(&package.skill_name, None)
+                    .ok()
+            } else {
+                None
+            };
             let guard_report = self.apply_guard_report(
                 actor,
                 Some(source),
-                self.guard_engine.evaluate_imported_skill(
+                self.evaluate_imported_skill_guard_report(
                     &package.skill_name,
                     &package.markdown_content(),
                     &package
@@ -2040,7 +2401,10 @@ impl SkillGovernanceAuthority {
                         .map(|file| (file.relative_path.clone(), file.content.clone()))
                         .collect::<Vec<_>>(),
                     duplicate_conflict,
-                    now_unix_timestamp(),
+                    package.category.as_deref().or(current_meta
+                        .as_ref()
+                        .and_then(|meta| meta.category.as_deref())),
+                    current_meta.as_ref().map(|meta| meta.name.as_str()),
                 ),
             )?;
 
@@ -2437,57 +2801,13 @@ impl SkillGovernanceAuthority {
             .skill_authority
             .load_skill_detail_for_meta(meta)
             .unwrap_or_default();
-        let normalized_name = normalize_name(&meta.name);
-
-        let mut tokens = BTreeSet::new();
-        for token in skill_descriptor_tokens(&meta.name) {
-            tokens.insert(token);
-        }
-        for token in skill_descriptor_tokens(&meta.description) {
-            tokens.insert(token);
-        }
-        if let Some(category) = meta.category.as_deref() {
-            for token in skill_descriptor_tokens(category) {
-                tokens.insert(token);
-            }
-        }
-        for token in &detail.tags {
-            for normalized in skill_descriptor_tokens(token) {
-                tokens.insert(normalized);
-            }
-        }
-
-        let mut trigger_terms = BTreeSet::new();
-        for value in meta
-            .conditions
-            .requires_tools
-            .iter()
-            .chain(meta.conditions.requires_toolsets.iter())
-            .chain(meta.conditions.stage_filter.iter())
-            .chain(meta.conditions.fallback_for_tools.iter())
-            .chain(meta.conditions.fallback_for_toolsets.iter())
-        {
-            let normalized = normalize_name(value);
-            if !normalized.is_empty() {
-                trigger_terms.insert(normalized);
-            }
-        }
-
-        let related_skills = detail
-            .related_skills
-            .iter()
-            .map(|value| normalize_name(value))
-            .filter(|value| !value.is_empty())
-            .collect::<BTreeSet<_>>();
-
-        Ok(SkillSemanticDescriptor {
-            skill_name: meta.name.clone(),
-            normalized_name,
-            category: meta.category.as_ref().map(|value| normalize_name(value)),
-            tokens,
-            trigger_terms,
-            related_skills,
-        })
+        Ok(build_skill_semantic_descriptor_from_parts(
+            &meta.name,
+            &meta.description,
+            meta.category.as_deref(),
+            &meta.conditions,
+            &detail,
+        ))
     }
 
     fn synced_managed_record(
@@ -2978,6 +3298,9 @@ fn timeline_matches_filters(
 }
 
 const SKILL_NEGATIVE_ENTROPY_STALE_SECONDS: i64 = 30 * 24 * 60 * 60;
+const SKILL_POSITIVE_EVOLUTION_GRACE_SECONDS: i64 = SKILL_NEGATIVE_ENTROPY_STALE_SECONDS;
+const SKILL_GUARD_RULE_SEMANTIC_OVERLAP: &str = "semantic.skill_overlap";
+const SKILL_GUARD_RULE_TRIGGER_OVERLAP: &str = "semantic.trigger_overlap";
 
 #[derive(Debug, Clone)]
 struct SkillSemanticDescriptor {
@@ -2987,6 +3310,160 @@ struct SkillSemanticDescriptor {
     tokens: BTreeSet<String>,
     trigger_terms: BTreeSet<String>,
     related_skills: BTreeSet<String>,
+}
+
+fn build_skill_semantic_descriptor_from_parts(
+    skill_name: &str,
+    description: &str,
+    category: Option<&str>,
+    conditions: &SkillConditions,
+    detail: &SkillDetailView,
+) -> SkillSemanticDescriptor {
+    let normalized_name = normalize_name(skill_name);
+
+    let mut tokens = BTreeSet::new();
+    for token in skill_descriptor_tokens(skill_name) {
+        tokens.insert(token);
+    }
+    for token in skill_descriptor_tokens(description) {
+        tokens.insert(token);
+    }
+    if let Some(category) = category {
+        for token in skill_descriptor_tokens(category) {
+            tokens.insert(token);
+        }
+    }
+    for token in &detail.tags {
+        for normalized in skill_descriptor_tokens(token) {
+            tokens.insert(normalized);
+        }
+    }
+
+    let mut trigger_terms = BTreeSet::new();
+    for value in conditions
+        .requires_tools
+        .iter()
+        .chain(conditions.requires_toolsets.iter())
+        .chain(conditions.stage_filter.iter())
+        .chain(conditions.fallback_for_tools.iter())
+        .chain(conditions.fallback_for_toolsets.iter())
+    {
+        let normalized = normalize_name(value);
+        if !normalized.is_empty() {
+            trigger_terms.insert(normalized);
+        }
+    }
+
+    let related_skills = detail
+        .related_skills
+        .iter()
+        .map(|value| normalize_name(value))
+        .filter(|value| !value.is_empty())
+        .collect::<BTreeSet<_>>();
+
+    SkillSemanticDescriptor {
+        skill_name: skill_name.to_string(),
+        normalized_name,
+        category: category.map(normalize_name),
+        tokens,
+        trigger_terms,
+        related_skills,
+    }
+}
+
+fn semantic_detail_tags(frontmatter: &crate::SkillFrontmatter) -> Vec<String> {
+    frontmatter
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.hermes.as_ref())
+        .map(|metadata| metadata.tags.clone())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| frontmatter.tags.clone())
+}
+
+fn semantic_detail_related_skills(frontmatter: &crate::SkillFrontmatter) -> Vec<String> {
+    frontmatter
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.hermes.as_ref())
+        .map(|metadata| metadata.related_skills.clone())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| frontmatter.related_skills.clone())
+}
+
+fn semantic_conflict_guard_violation(
+    candidate: &SkillSemanticDescriptor,
+    conflict: &SkillSemanticConflictDiagnostic,
+) -> SkillGuardViolation {
+    let counterpart = semantic_conflict_counterpart_skill_name(candidate, conflict)
+        .unwrap_or_else(|| conflict.right_skill_name.as_str());
+    let overlap_reason = conflict
+        .reasons
+        .iter()
+        .filter(|reason| !reason.contains("usage ledger currently favors"))
+        .take(2)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("; ");
+    let mut message = format!(
+        "skill `{}` overlaps existing `{}` ({}, score {}): {}.",
+        candidate.skill_name,
+        counterpart,
+        semantic_conflict_guard_kind_label(conflict.kind),
+        conflict.score,
+        if overlap_reason.is_empty() {
+            "semantic overlap was detected".to_string()
+        } else {
+            overlap_reason
+        }
+    );
+    if let Some(preferred_skill_name) = conflict.preferred_skill_name.as_deref() {
+        message.push_str(&format!(
+            " usage ledger currently favors `{preferred_skill_name}` in this overlap pair."
+        ));
+    }
+    SkillGuardViolation {
+        rule_id: semantic_conflict_guard_rule_id(conflict.kind).to_string(),
+        severity: SkillGuardSeverity::Warn,
+        message,
+        file_path: Some("SKILL.md".to_string()),
+    }
+}
+
+fn semantic_conflict_counterpart_skill_name<'a>(
+    candidate: &SkillSemanticDescriptor,
+    conflict: &'a SkillSemanticConflictDiagnostic,
+) -> Option<&'a str> {
+    if conflict
+        .left_skill_name
+        .eq_ignore_ascii_case(&candidate.skill_name)
+    {
+        return Some(conflict.right_skill_name.as_str());
+    }
+    if conflict
+        .right_skill_name
+        .eq_ignore_ascii_case(&candidate.skill_name)
+    {
+        return Some(conflict.left_skill_name.as_str());
+    }
+    None
+}
+
+fn semantic_conflict_guard_rule_id(kind: SkillSemanticConflictKind) -> &'static str {
+    match kind {
+        SkillSemanticConflictKind::TriggerOverlap => SKILL_GUARD_RULE_TRIGGER_OVERLAP,
+        SkillSemanticConflictKind::NearDuplicate | SkillSemanticConflictKind::ReplacementHint => {
+            SKILL_GUARD_RULE_SEMANTIC_OVERLAP
+        }
+    }
+}
+
+fn semantic_conflict_guard_kind_label(kind: SkillSemanticConflictKind) -> &'static str {
+    match kind {
+        SkillSemanticConflictKind::NearDuplicate => "near duplicate",
+        SkillSemanticConflictKind::TriggerOverlap => "trigger overlap",
+        SkillSemanticConflictKind::ReplacementHint => "replacement hint",
+    }
 }
 
 fn build_skill_semantic_conflict(
@@ -3244,7 +3721,11 @@ fn should_sync_semantic_conflict_review_candidate(
 fn skill_negative_entropy_severity(
     source_scope: SkillOperationalSourceScope,
     signals: &[SkillNegativeEntropySignal],
+    recent_positive_evolution: bool,
 ) -> SkillGovernanceDiagnosticSeverity {
+    if recent_positive_evolution {
+        return SkillGovernanceDiagnosticSeverity::Info;
+    }
     if matches!(source_scope, SkillOperationalSourceScope::WorkspaceLocal)
         && signals.iter().any(|signal| {
             matches!(
@@ -3285,6 +3766,23 @@ fn is_skill_timestamp_stale(timestamp: Option<i64>, now: i64, threshold_seconds:
     timestamp
         .map(|value| value > 0 && now.saturating_sub(value) >= threshold_seconds)
         .unwrap_or(false)
+}
+
+fn format_skill_positive_evolution_reason(
+    evolution: &SkillEvolutionEvidenceSummary,
+    now: i64,
+) -> String {
+    let days_ago = evolution
+        .last_positive_signal_at
+        .map(|timestamp| now.saturating_sub(timestamp) / 86_400)
+        .unwrap_or(0);
+    format!(
+        "recent memory/proposal evolution signal observed {} day(s) ago ({} memory promotion(s), {} proposal signal(s), {} active draft proposal(s)); review severity is downgraded while the skill is still evolving",
+        days_ago,
+        evolution.memory_promotion_count,
+        evolution.proposal_signal_count,
+        evolution.last_observed_draft_proposal_count
+    )
 }
 
 fn set_intersection_count(left: &BTreeSet<String>, right: &BTreeSet<String>) -> usize {

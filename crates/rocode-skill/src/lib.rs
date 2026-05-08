@@ -358,6 +358,7 @@ Use the following explicit create or refresh mapping:
                     last_location: Some("/tmp/frontend-ui-ux".to_string()),
                     last_supporting_file: None,
                 }),
+                evolution: None,
                 vitality: None,
             })
             .unwrap();
@@ -446,6 +447,43 @@ Use the following explicit create or refresh mapping:
     }
 
     #[test]
+    fn governance_records_positive_evolution_evidence_in_operational_snapshot() {
+        let dir = tempdir().unwrap();
+        write_directory_skill(
+            &dir.path().join(".rocode/skills"),
+            "ops/provider-refresh",
+            "provider-refresh",
+            "provider refresh",
+            "Use for provider refresh tasks.",
+            &[],
+        );
+        let governance = SkillGovernanceAuthority::new(dir.path(), None);
+
+        let snapshot = governance
+            .record_skill_memory_promotion_signal("provider-refresh", 2)
+            .unwrap();
+        assert_eq!(
+            snapshot
+                .evolution
+                .as_ref()
+                .map(|entry| entry.memory_promotion_count),
+            Some(2)
+        );
+
+        let snapshot = governance
+            .record_skill_proposal_signal("provider-refresh", 1)
+            .unwrap();
+        let evolution = snapshot
+            .evolution
+            .as_ref()
+            .expect("evolution evidence should exist");
+        assert_eq!(evolution.memory_promotion_count, 2);
+        assert_eq!(evolution.proposal_signal_count, 1);
+        assert_eq!(evolution.last_observed_draft_proposal_count, 1);
+        assert!(evolution.last_positive_signal_at.is_some());
+    }
+
+    #[test]
     fn governance_patch_rename_keeps_operational_write_history() {
         let dir = tempdir().unwrap();
         let governance = SkillGovernanceAuthority::new(dir.path(), None);
@@ -518,6 +556,48 @@ Use the following explicit create or refresh mapping:
             candidate.severity,
             rocode_types::SkillGovernanceDiagnosticSeverity::Warn
         );
+    }
+
+    #[test]
+    fn governance_negative_entropy_downgrades_recent_positive_evolution_signal() {
+        let dir = tempdir().unwrap();
+        let governance = SkillGovernanceAuthority::new(dir.path(), None);
+        governance
+            .create_skill(
+                CreateSkillRequest {
+                    name: "stale-checklist".to_string(),
+                    description: "stale checklist".to_string(),
+                    body: "Use when stale checklist review is required.".to_string(),
+                    frontmatter: None,
+                    category: Some("ops".to_string()),
+                    directory_name: None,
+                },
+                "test:create",
+            )
+            .unwrap();
+        governance
+            .record_skill_memory_promotion_signal("stale-checklist", 1)
+            .unwrap();
+        governance
+            .record_skill_proposal_signal("stale-checklist", 1)
+            .unwrap();
+
+        let diagnostics = governance.skill_negative_entropy_diagnostics().unwrap();
+        let candidate = diagnostics
+            .iter()
+            .find(|entry| entry.skill_name == "stale-checklist")
+            .expect("negative entropy candidate should exist");
+        assert!(candidate
+            .signals
+            .contains(&rocode_types::SkillNegativeEntropySignal::NeverReused));
+        assert_eq!(
+            candidate.severity,
+            rocode_types::SkillGovernanceDiagnosticSeverity::Info
+        );
+        assert!(candidate
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("recent memory/proposal evolution signal")));
     }
 
     #[test]
@@ -787,6 +867,140 @@ Review code changes carefully and verify evidence before reporting.
                 .and_then(|record| record.reason.related_skill_name.as_deref()),
             Some("repo-review")
         );
+    }
+
+    #[test]
+    fn governance_create_skill_guard_warns_on_semantic_overlap() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join(".rocode/skills");
+        fs::create_dir_all(root.join("review/repo-review")).unwrap();
+        fs::write(
+            root.join("review/repo-review/SKILL.md"),
+            r#"---
+name: repo-review
+description: Review repository changes carefully with code search and file reads
+category: review
+metadata:
+  rocode:
+    requires_tools: [read, grep]
+    stage_filter: [implementation]
+---
+Review repository changes carefully and verify evidence before reporting.
+"#,
+        )
+        .unwrap();
+
+        let governance = SkillGovernanceAuthority::new(dir.path(), None);
+        let created = governance
+            .create_skill(
+                CreateSkillRequest {
+                    name: "code-review".to_string(),
+                    description: "Review code changes carefully with code search and file reads"
+                        .to_string(),
+                    body: "Review code changes carefully and verify evidence before reporting."
+                        .to_string(),
+                    frontmatter: Some(SkillFrontmatterPatch {
+                        metadata: Some(SkillMetadataBlocks {
+                            hermes: None,
+                            rocode: Some(SkillRocodeMetadata {
+                                requires_tools: vec!["read".to_string(), "grep".to_string()],
+                                fallback_for_tools: Vec::new(),
+                                requires_toolsets: Vec::new(),
+                                fallback_for_toolsets: Vec::new(),
+                                stage_filter: vec!["implementation".to_string()],
+                            }),
+                        }),
+                        ..SkillFrontmatterPatch::default()
+                    }),
+                    category: Some("review".to_string()),
+                    directory_name: None,
+                },
+                "test:create",
+            )
+            .unwrap();
+
+        let guard_report = created.guard_report.expect("guard report should exist");
+        assert_eq!(guard_report.status, rocode_types::SkillGuardStatus::Warn);
+        assert!(guard_report
+            .violations
+            .iter()
+            .any(|violation| violation.rule_id == "semantic.skill_overlap"));
+        assert!(governance.audit_tail().iter().any(|event| {
+            event.kind == SkillAuditKind::GuardWarned
+                && event.skill_name.as_deref() == Some("code-review")
+                && event
+                    .payload
+                    .get("violations")
+                    .and_then(|value| value.as_array())
+                    .into_iter()
+                    .flatten()
+                    .any(|violation| {
+                        violation.get("rule_id").and_then(|value| value.as_str())
+                            == Some("semantic.skill_overlap")
+                    })
+        }));
+    }
+
+    #[test]
+    fn governance_run_guard_for_source_warns_on_semantic_overlap() {
+        let dir = tempdir().unwrap();
+        let workspace_root = dir.path().join(".rocode/skills");
+        fs::create_dir_all(workspace_root.join("review/repo-review")).unwrap();
+        fs::write(
+            workspace_root.join("review/repo-review/SKILL.md"),
+            r#"---
+name: repo-review
+description: Review repository changes carefully with code search and file reads
+category: review
+metadata:
+  rocode:
+    requires_tools: [read, grep]
+    stage_filter: [implementation]
+---
+Review repository changes carefully and verify evidence before reporting.
+"#,
+        )
+        .unwrap();
+
+        let source_root = dir.path().join("source-skills");
+        fs::create_dir_all(source_root.join("review/code-review")).unwrap();
+        fs::write(
+            source_root.join("review/code-review/SKILL.md"),
+            r#"---
+name: code-review
+description: Review code changes carefully with code search and file reads
+category: review
+metadata:
+  rocode:
+    requires_tools: [read, grep]
+    stage_filter: [implementation]
+---
+Review code changes carefully and verify evidence before reporting.
+"#,
+        )
+        .unwrap();
+
+        let governance = SkillGovernanceAuthority::new(dir.path(), None);
+        let reports = governance
+            .run_guard_for_source(
+                &SkillSourceRef {
+                    source_id: "local:test-source".to_string(),
+                    source_kind: SkillSourceKind::LocalPath,
+                    locator: source_root.to_string_lossy().to_string(),
+                    revision: None,
+                },
+                "test:source-guard",
+            )
+            .unwrap();
+
+        let report = reports
+            .iter()
+            .find(|report| report.skill_name == "code-review")
+            .expect("source report should exist");
+        assert!(report
+            .violations
+            .iter()
+            .any(|violation| violation.rule_id == "semantic.skill_overlap"));
     }
 
     #[test]

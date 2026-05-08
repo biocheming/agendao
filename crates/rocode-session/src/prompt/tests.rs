@@ -8,14 +8,20 @@ use crate::message::MessagePart;
 use crate::SessionMessage;
 use async_trait::async_trait;
 use futures::stream;
+use rocode_config::ConfigStore;
 use rocode_execution_types::CompiledExecutionRequest;
 use rocode_provider::{
     ChatRequest, ChatResponse, ModelInfo, ProviderError, StreamEvent, StreamResult, StreamUsage,
 };
-use rocode_skill::RuntimeInstructionSource;
+use rocode_skill::{RuntimeInstructionSource, SkillGovernanceAuthority};
+use rocode_storage::{Database, SkillEvolutionProposalRepository};
 use rocode_tool::{Tool, ToolContext, ToolError, ToolResult};
-use rocode_types::ContextPressureGovernanceStatus;
+use rocode_types::{
+    ContextPressureGovernanceStatus, MemoryEvidenceRef, MemoryKind, MemoryRecord, MemoryRecordId,
+    MemoryScope, MemoryStatus, MemoryValidationStatus, ProposalStatus,
+};
 use std::fs;
+use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use tempfile::tempdir;
 
@@ -91,6 +97,55 @@ fn write_methodology_skill(
         format!("---\nname: {name}\ndescription: test skill\n---\n\n{body}\n",),
     )
     .unwrap();
+}
+
+async fn prompt_with_memory_and_proposals(
+    root: &std::path::Path,
+) -> (SessionPrompt, Arc<SkillEvolutionProposalRepository>) {
+    let config_store =
+        Arc::new(ConfigStore::from_project_dir(root).expect("project config store should load"));
+    let db = Database::in_memory().await.expect("db should initialize");
+    let proposal_repo = Arc::new(SkillEvolutionProposalRepository::new(db.pool().clone()));
+    let prompt = SessionPrompt::default()
+        .with_config_store(config_store)
+        .with_proposal_repo(proposal_repo.clone());
+    (prompt, proposal_repo)
+}
+
+fn methodology_candidate_record(
+    id: &str,
+    session_id: &str,
+    workspace_identity: &str,
+    linked_skill_name: &str,
+) -> MemoryRecord {
+    MemoryRecord {
+        id: MemoryRecordId(id.to_string()),
+        kind: MemoryKind::MethodologyCandidate,
+        scope: MemoryScope::WorkspaceShared,
+        status: MemoryStatus::Consolidated,
+        title: format!("Methodology for {linked_skill_name}"),
+        summary: "Refined methodology".to_string(),
+        trigger_conditions: vec!["when provider config needs refresh".to_string()],
+        normalized_facts: vec!["provider config refresh flow".to_string()],
+        boundaries: vec!["only patch existing refresh workflow".to_string()],
+        confidence: Some(0.91),
+        evidence_refs: vec![MemoryEvidenceRef {
+            session_id: Some(session_id.to_string()),
+            message_id: Some("msg-1".to_string()),
+            tool_call_id: Some("tool-1".to_string()),
+            stage_id: Some("stage-review".to_string()),
+            note: Some("runtime review nudge".to_string()),
+        }],
+        source_session_id: Some(session_id.to_string()),
+        workspace_identity: Some(workspace_identity.to_string()),
+        created_at: 1_700_000_000,
+        updated_at: 1_700_000_000,
+        last_validated_at: Some(1_700_000_000),
+        expires_at: None,
+        derived_skill_name: None,
+        linked_skill_name: Some(linked_skill_name.to_string()),
+        validation_status: MemoryValidationStatus::Passed,
+    }
 }
 
 #[async_trait]
@@ -2085,6 +2140,80 @@ fn ingress_metadata_is_hidden_from_model_prompt_surface() {
         "{rendered}"
     );
     assert!(!rendered.contains("session_prompt"), "{rendered}");
+}
+
+#[tokio::test]
+async fn proposal_generation_syncs_positive_evolution_evidence_to_skill_governance() {
+    let dir = tempdir().expect("tempdir");
+    fs::create_dir_all(dir.path().join(".rocode/skills/provider-refresh"))
+        .expect("skill dir should exist");
+    fs::write(
+        dir.path().join(".rocode/skills/provider-refresh/SKILL.md"),
+        r#"---
+name: provider-refresh
+description: refresh provider
+---
+Use for provider refresh tasks.
+"#,
+    )
+    .expect("skill file should exist");
+
+    let (prompt, proposal_repo) = prompt_with_memory_and_proposals(dir.path()).await;
+    let record = methodology_candidate_record(
+        "mem_provider_refresh",
+        "ses_skill_nudge",
+        "ws:test",
+        "provider-refresh",
+    );
+    let candidates = vec![record];
+
+    let summary = rocode_storage::generate_skill_evolution_proposals(
+        proposal_repo.as_ref(),
+        &candidates,
+        "ses_skill_nudge",
+    )
+    .await
+    .expect("proposal generation should succeed");
+    prompt.sync_skill_memory_promotion_evidence(
+        dir.path().to_str(),
+        "ses_skill_nudge",
+        &candidates,
+    );
+    prompt
+        .sync_skill_proposal_evidence(
+            dir.path().to_str(),
+            "ses_skill_nudge",
+            proposal_repo.as_ref(),
+            &linked_methodology_skill_names(&candidates),
+        )
+        .await;
+
+    assert_eq!(summary.proposals_created, 1);
+    assert_eq!(summary.proposals_skipped, 0);
+    assert_eq!(
+        proposal_repo
+            .list_by_status(&ProposalStatus::Draft)
+            .await
+            .expect("draft proposals should list")
+            .len(),
+        1
+    );
+
+    let governance = SkillGovernanceAuthority::new(dir.path(), None);
+    let snapshot = governance
+        .skill_operational_snapshots()
+        .into_iter()
+        .find(|entry| entry.skill_name == "provider-refresh")
+        .expect("operational snapshot should exist");
+    let evolution = snapshot
+        .evolution
+        .expect("positive evolution evidence should be recorded");
+    assert_eq!(evolution.memory_promotion_count, 1);
+    assert_eq!(evolution.proposal_signal_count, 1);
+    assert_eq!(evolution.last_observed_draft_proposal_count, 1);
+    assert!(evolution.last_memory_promotion_at.is_some());
+    assert!(evolution.last_proposal_at.is_some());
+    assert!(evolution.last_positive_signal_at.is_some());
 }
 
 #[test]
