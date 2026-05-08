@@ -794,6 +794,18 @@ impl AsyncApiClient {
         Self::json_ok(resp, "get skill hub semantic conflict diagnostics").await
     }
 
+    pub async fn sync_skill_hub_semantic_conflict_review_candidates(
+        &self,
+        req: &SkillHubReviewCandidatesSyncRequest,
+    ) -> anyhow::Result<SkillHubReviewCandidatesSyncResponse> {
+        self.post_json(
+            "/skill/hub/semantic-conflicts/review-candidates/sync",
+            "sync skill hub semantic conflict review candidates",
+            req,
+        )
+        .await
+    }
+
     pub async fn update_skill_hub_vitality(
         &self,
         req: &SkillHubVitalityUpdateRequest,
