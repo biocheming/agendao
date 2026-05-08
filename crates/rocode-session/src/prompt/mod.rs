@@ -64,7 +64,8 @@ use tokio_util::sync::CancellationToken;
 use rocode_content::output_blocks::OutputBlock;
 use rocode_execution_types::CompiledExecutionRequest;
 use rocode_provider::{cache::CacheEvidenceSummary, Provider, ToolDefinition};
-use rocode_skill::{RuntimeInstructionSource, SkillGovernanceAuthority};
+use rocode_skill::{infer_runtime_skill_names, RuntimeInstructionSource, SkillGovernanceAuthority};
+use rocode_types::SkillRuntimeCompositionHintKind;
 use rocode_types::{
     context_usage_percent, ContextCompactionSummary, ContextPressureGovernanceStatus,
     ContextPressureGovernanceSummary, MemoryRetrievalPacket, PromptSurfaceEvidenceSummary,
@@ -1347,6 +1348,8 @@ impl SessionPrompt {
             .unwrap_or_default();
         let mut loader = InstructionLoader::new();
         let instructions = loader.load_all(&project_dir, &config_instructions).await;
+        let workspace_directory =
+            (!session.directory.trim().is_empty()).then(|| session.directory.clone());
 
         let runtime_instruction_sources = instructions
             .iter()
@@ -1393,6 +1396,13 @@ impl SessionPrompt {
             if !merged.trim().is_empty() {
                 user_msg.add_text(SystemPrompt::system_reminder(&merged));
             }
+            if let Some(reminder) = self.render_runtime_skill_composition_reminder(
+                workspace_directory.as_deref(),
+                &project_dir,
+                &runtime_instruction_sources,
+            ) {
+                user_msg.add_text(SystemPrompt::system_reminder(&reminder));
+            }
             let loaded_paths = instructions
                 .iter()
                 .map(|instruction| instruction.path.clone())
@@ -1401,6 +1411,43 @@ impl SessionPrompt {
         }
 
         Ok(())
+    }
+
+    fn render_runtime_skill_composition_reminder(
+        &self,
+        workspace_directory: Option<&str>,
+        project_dir: &std::path::Path,
+        runtime_instruction_sources: &[RuntimeInstructionSource],
+    ) -> Option<String> {
+        if runtime_instruction_sources.is_empty() {
+            return None;
+        }
+        let Some(governance) = self.skill_governance_for_workspace(workspace_directory) else {
+            return None;
+        };
+
+        let skill_names = infer_runtime_skill_names(project_dir, runtime_instruction_sources);
+        if skill_names.is_empty() {
+            return None;
+        }
+
+        let hints = governance.runtime_skill_composition_hints(&skill_names);
+        if hints.is_empty() {
+            return None;
+        }
+
+        let mut lines = vec![
+            "Runtime Skill Governance:".to_string(),
+            "- The following hints come from accepted composition relationships and active capability groups.".to_string(),
+        ];
+        for hint in hints {
+            let label = match hint.kind {
+                SkillRuntimeCompositionHintKind::PreferCanonicalSkill => "prefer canonical",
+                SkillRuntimeCompositionHintKind::ComplementaryBundle => "keep complementary",
+            };
+            lines.push(format!("- {label}: {}", hint.summary));
+        }
+        Some(lines.join("\n"))
     }
 
     fn apply_runtime_memory_prefetch(
@@ -1800,10 +1847,19 @@ impl SessionPrompt {
         let Some(repo) = self.proposal_repo.as_deref() else {
             return (0, 0);
         };
-        let linked_methodology_skills = linked_methodology_skill_names(&candidates);
+        let proposal_candidates = self.retarget_methodology_candidates_for_composition(
+            workspace_directory,
+            session_id,
+            &candidates,
+        );
+        let linked_methodology_skills = linked_methodology_skill_names(&proposal_candidates);
 
-        match rocode_storage::generate_skill_evolution_proposals(repo, &candidates, session_id)
-            .await
+        match rocode_storage::generate_skill_evolution_proposals(
+            repo,
+            &proposal_candidates,
+            session_id,
+        )
+        .await
         {
             Ok(summary) => {
                 self.sync_skill_proposal_evidence(
@@ -1824,6 +1880,69 @@ impl SessionPrompt {
                 (0, 0)
             }
         }
+    }
+
+    fn retarget_methodology_candidates_for_composition(
+        &self,
+        workspace_directory: Option<&str>,
+        session_id: &str,
+        candidates: &[rocode_types::MemoryRecord],
+    ) -> Vec<rocode_types::MemoryRecord> {
+        let Some(governance) = self.skill_governance_for_workspace(workspace_directory) else {
+            return candidates.to_vec();
+        };
+
+        let mut rewritten = Vec::with_capacity(candidates.len());
+        for record in candidates {
+            if record.kind != rocode_types::MemoryKind::MethodologyCandidate {
+                rewritten.push(record.clone());
+                continue;
+            }
+
+            let target = record
+                .linked_skill_name
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .and_then(|skill_name| governance.skill_composition_proposal_target(skill_name))
+                .or_else(|| {
+                    record
+                        .derived_skill_name
+                        .as_deref()
+                        .filter(|value| !value.trim().is_empty())
+                        .and_then(|skill_name| {
+                            governance.skill_composition_proposal_target(skill_name)
+                        })
+                });
+
+            let Some(target_skill_name) = target else {
+                rewritten.push(record.clone());
+                continue;
+            };
+            if record
+                .linked_skill_name
+                .as_deref()
+                .map(|value| value.eq_ignore_ascii_case(&target_skill_name))
+                .unwrap_or(false)
+            {
+                rewritten.push(record.clone());
+                continue;
+            }
+
+            tracing::debug!(
+                session_id,
+                record_id = %record.id.0,
+                previous_linked_skill_name = ?record.linked_skill_name,
+                derived_skill_name = ?record.derived_skill_name,
+                target_skill_name = %target_skill_name,
+                "nudge: retargeting methodology candidate to canonical composition proposal target"
+            );
+
+            let mut rewritten_record = record.clone();
+            rewritten_record.linked_skill_name = Some(target_skill_name);
+            rewritten.push(rewritten_record);
+        }
+
+        rewritten
     }
 
     fn sync_skill_memory_promotion_evidence(

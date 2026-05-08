@@ -10,15 +10,18 @@ use crate::{
 use rocode_config::ConfigStore;
 use rocode_types::{
     BundledSkillManifest, ManagedSkillRecord, SkillArtifactCacheEntry, SkillArtifactCacheStatus,
-    SkillAuditEvent, SkillAuditKind, SkillDistributionRecord, SkillEvolutionEvidenceSummary,
-    SkillGovernanceDiagnosticSeverity, SkillGovernanceTimelineEntry, SkillGovernanceTimelineKind,
-    SkillGovernanceTimelineStatus, SkillGovernanceWriteResult, SkillGuardReport,
-    SkillGuardSeverity, SkillGuardStatus, SkillGuardViolation, SkillHubManagedDetachResponse,
-    SkillHubManagedRemoveResponse, SkillHubPolicy, SkillHubTimelineQuery,
-    SkillManagedLifecycleRecord, SkillManagedLifecycleState, SkillNegativeEntropyDiagnostic,
-    SkillNegativeEntropySignal, SkillOperationalSnapshot, SkillOperationalSourceScope,
-    SkillRemoteInstallAction, SkillRemoteInstallEntry, SkillRemoteInstallPlan,
-    SkillRemoteInstallResponse, SkillRetirementReason, SkillRetirementReasonKind,
+    SkillAuditEvent, SkillAuditKind, SkillCapabilityGroup, SkillCapabilityGroupKind,
+    SkillCapabilityMember, SkillCapabilityMemberRole, SkillDistributionRecord,
+    SkillEvolutionEvidenceSummary, SkillGovernanceDiagnosticSeverity, SkillGovernanceTimelineEntry,
+    SkillGovernanceTimelineKind, SkillGovernanceTimelineStatus, SkillGovernanceWriteResult,
+    SkillGuardReport, SkillGuardSeverity, SkillGuardStatus, SkillGuardViolation,
+    SkillHubManagedDetachResponse, SkillHubManagedRemoveResponse, SkillHubPolicy,
+    SkillHubTimelineQuery, SkillManagedLifecycleRecord, SkillManagedLifecycleState,
+    SkillNegativeEntropyDiagnostic, SkillNegativeEntropySignal, SkillOperationalSnapshot,
+    SkillOperationalSourceScope, SkillRelationshipEdge, SkillRelationshipKind,
+    SkillRelationshipState, SkillRemoteInstallAction, SkillRemoteInstallEntry,
+    SkillRemoteInstallPlan, SkillRemoteInstallResponse, SkillRetirementReason,
+    SkillRetirementReasonKind, SkillRuntimeCompositionHint, SkillRuntimeCompositionHintKind,
     SkillSemanticConflictDiagnostic, SkillSemanticConflictKind, SkillSourceIndexSnapshot,
     SkillSourceRef, SkillSyncAction, SkillSyncPlan, SkillUsageLedgerEntry, SkillVitalityRecord,
     SkillVitalityState, SkillWriteLedgerAction, SkillWriteLedgerEntry,
@@ -53,6 +56,26 @@ pub struct SkillGovernanceAuthority {
     distribution_resolver: Arc<SkillDistributionResolver>,
     artifact_store: Arc<SkillArtifactStore>,
     lifecycle: Arc<SkillLifecycleCoordinator>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SkillCompositionConsumptionContext {
+    canonical_skill_name: Option<String>,
+    canonical_family_id: Option<String>,
+    family_member_role: Option<SkillCapabilityMemberRole>,
+    complementary_group_ids: Vec<String>,
+    complementary_peer_skill_names: Vec<String>,
+}
+
+impl SkillCompositionConsumptionContext {
+    fn complementary_protected(&self) -> bool {
+        !self.complementary_group_ids.is_empty() || !self.complementary_peer_skill_names.is_empty()
+    }
+
+    fn related_skill_name_for_review(&self, skill_name: &str) -> Option<String> {
+        let canonical = self.canonical_skill_name.as_deref()?;
+        (!canonical.eq_ignore_ascii_case(skill_name)).then(|| canonical.to_string())
+    }
 }
 
 impl SkillGovernanceAuthority {
@@ -109,6 +132,447 @@ impl SkillGovernanceAuthority {
         self.hub_store.skill_operational_snapshots()
     }
 
+    pub fn skill_composition_relationships(&self) -> Vec<SkillRelationshipEdge> {
+        self.hub_store.composition_relationships()
+    }
+
+    pub fn skill_capability_groups(&self) -> Vec<SkillCapabilityGroup> {
+        self.hub_store.capability_groups()
+    }
+
+    pub fn skill_composition_proposal_target(&self, skill_name: &str) -> Option<String> {
+        self.skill_composition_consumption_context(skill_name)
+            .related_skill_name_for_review(skill_name)
+    }
+
+    pub fn runtime_skill_composition_hints(
+        &self,
+        selected_skill_names: &[String],
+    ) -> Vec<SkillRuntimeCompositionHint> {
+        let selected = normalize_runtime_selected_skill_names(selected_skill_names);
+        if selected.is_empty() {
+            return Vec::new();
+        }
+
+        let selected_keys = selected
+            .iter()
+            .map(|skill_name| normalize_name(skill_name))
+            .collect::<BTreeSet<_>>();
+        let mut hints = Vec::new();
+        let mut seen_prefer = BTreeSet::new();
+        for skill_name in &selected {
+            let context = self.skill_composition_consumption_context(skill_name);
+            let Some(preferred_skill_name) = context.related_skill_name_for_review(skill_name)
+            else {
+                continue;
+            };
+            let identity = (
+                normalize_name(skill_name),
+                normalize_name(&preferred_skill_name),
+                context.canonical_family_id.clone().unwrap_or_default(),
+            );
+            if !seen_prefer.insert(identity) {
+                continue;
+            }
+            hints.push(SkillRuntimeCompositionHint {
+                kind: SkillRuntimeCompositionHintKind::PreferCanonicalSkill,
+                skill_names: vec![skill_name.clone()],
+                preferred_skill_name: Some(preferred_skill_name.clone()),
+                capability_id: context.canonical_family_id.clone(),
+                summary: format_runtime_prefer_canonical_hint(
+                    skill_name,
+                    &preferred_skill_name,
+                    context.family_member_role,
+                    context.canonical_family_id.as_deref(),
+                ),
+            });
+        }
+
+        let mut seen_bundle = BTreeSet::new();
+        for group in self.skill_capability_groups().into_iter().filter(|group| {
+            group.state == rocode_types::SkillCapabilityGroupState::Active
+                && group.group_kind == SkillCapabilityGroupKind::ComplementaryBundle
+        }) {
+            let selected_members = group
+                .members
+                .iter()
+                .filter(|member| selected_keys.contains(&normalize_name(&member.skill_name)))
+                .map(|member| member.skill_name.clone())
+                .collect::<Vec<_>>();
+            if selected_members.len() < 2 {
+                continue;
+            }
+            let identity = normalize_name(&group.capability_id);
+            if !seen_bundle.insert(identity) {
+                continue;
+            }
+            hints.push(SkillRuntimeCompositionHint {
+                kind: SkillRuntimeCompositionHintKind::ComplementaryBundle,
+                skill_names: selected_members.clone(),
+                preferred_skill_name: None,
+                capability_id: Some(group.capability_id.clone()),
+                summary: format_runtime_complementary_bundle_hint(
+                    &selected_members,
+                    Some(group.capability_id.as_str()),
+                ),
+            });
+        }
+
+        let mut seen_pair = BTreeSet::new();
+        for relationship in
+            self.skill_composition_relationships()
+                .into_iter()
+                .filter(|relationship| {
+                    relationship.state == SkillRelationshipState::Accepted
+                        && relationship.relation_kind
+                            == SkillRelationshipKind::ComplementaryComponent
+                })
+        {
+            let left_key = normalize_name(&relationship.left_skill_name);
+            let right_key = normalize_name(&relationship.right_skill_name);
+            if !selected_keys.contains(&left_key) || !selected_keys.contains(&right_key) {
+                continue;
+            }
+            let identity = relationship_pair_key(
+                &relationship.left_skill_name,
+                &relationship.right_skill_name,
+            );
+            if !seen_pair.insert(identity) {
+                continue;
+            }
+            let skill_names = ordered_skill_names(
+                &relationship.left_skill_name,
+                &relationship.right_skill_name,
+            );
+            if hints.iter().any(|hint| {
+                hint.kind == SkillRuntimeCompositionHintKind::ComplementaryBundle
+                    && skill_names_includes_pair(&hint.skill_names, &skill_names.0, &skill_names.1)
+            }) {
+                continue;
+            }
+            hints.push(SkillRuntimeCompositionHint {
+                kind: SkillRuntimeCompositionHintKind::ComplementaryBundle,
+                skill_names: vec![skill_names.0.clone(), skill_names.1.clone()],
+                preferred_skill_name: None,
+                capability_id: None,
+                summary: format_runtime_complementary_bundle_hint(
+                    &[skill_names.0, skill_names.1],
+                    None,
+                ),
+            });
+        }
+
+        sort_runtime_composition_hints(&mut hints);
+        hints
+    }
+
+    pub fn skill_composition_relationship_inspection(
+        &self,
+    ) -> Result<Vec<SkillRelationshipEdge>, SkillError> {
+        let mut candidate_by_key = self
+            .skill_composition_relationship_candidates()?
+            .into_iter()
+            .map(|relationship| (relationship_edge_identity_key(&relationship), relationship))
+            .collect::<BTreeMap<_, _>>();
+        let mut merged = Vec::new();
+
+        for stored in self.skill_composition_relationships() {
+            let key = relationship_edge_identity_key(&stored);
+            if let Some(candidate) = candidate_by_key.remove(&key) {
+                merged.push(merge_relationship_inspection_entry(&stored, &candidate));
+            } else {
+                merged.push(stored);
+            }
+        }
+
+        merged.extend(candidate_by_key.into_values());
+        sort_skill_relationship_edges(&mut merged);
+        Ok(merged)
+    }
+
+    pub fn skill_capability_group_inspection(
+        &self,
+    ) -> Result<Vec<SkillCapabilityGroup>, SkillError> {
+        let mut candidate_by_id = self
+            .skill_capability_group_candidates()?
+            .into_iter()
+            .map(|group| (normalize_name(&group.capability_id), group))
+            .collect::<BTreeMap<_, _>>();
+        let mut merged = Vec::new();
+
+        for stored in self.skill_capability_groups() {
+            let key = normalize_name(&stored.capability_id);
+            if let Some(candidate) = candidate_by_id.remove(&key) {
+                merged.push(merge_capability_group_inspection_entry(&stored, &candidate));
+            } else {
+                merged.push(stored);
+            }
+        }
+
+        merged.extend(candidate_by_id.into_values());
+        sort_skill_capability_groups(&mut merged);
+        Ok(merged)
+    }
+
+    pub fn skill_composition_relationship_candidates(
+        &self,
+    ) -> Result<Vec<SkillRelationshipEdge>, SkillError> {
+        let (descriptors, snapshot_by_name) = self.skill_semantic_analysis_inputs()?;
+        let descriptor_by_name = descriptors
+            .iter()
+            .cloned()
+            .map(|descriptor| (descriptor.normalized_name.clone(), descriptor))
+            .collect::<BTreeMap<_, _>>();
+        let conflicts = collect_skill_semantic_conflicts(&descriptors, &snapshot_by_name);
+        let conflict_by_pair = conflicts
+            .iter()
+            .cloned()
+            .map(|conflict| {
+                (
+                    relationship_pair_key(&conflict.left_skill_name, &conflict.right_skill_name),
+                    conflict,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut edges = BTreeMap::new();
+
+        for conflict in &conflicts {
+            let pair_key =
+                relationship_pair_key(&conflict.left_skill_name, &conflict.right_skill_name);
+            let Some(left) = descriptor_by_name.get(&normalize_name(&conflict.left_skill_name))
+            else {
+                continue;
+            };
+            let Some(right) = descriptor_by_name.get(&normalize_name(&conflict.right_skill_name))
+            else {
+                continue;
+            };
+
+            if let Some(edge) =
+                build_skill_specialization_relationship_candidate(left, right, conflict)
+            {
+                edges.insert(pair_key, edge);
+                continue;
+            }
+            if let Some(edge) = build_skill_redundant_relationship_candidate(conflict) {
+                edges.insert(pair_key, edge);
+            }
+        }
+
+        for left_index in 0..descriptors.len() {
+            for right_index in (left_index + 1)..descriptors.len() {
+                let left = &descriptors[left_index];
+                let right = &descriptors[right_index];
+                let pair_key = relationship_pair_key(&left.skill_name, &right.skill_name);
+                if edges.contains_key(&pair_key) {
+                    continue;
+                }
+                let Some(edge) = build_skill_complementary_relationship_candidate(
+                    left,
+                    right,
+                    conflict_by_pair.get(&pair_key),
+                    snapshot_by_name.get(&normalize_name(&left.skill_name)),
+                    snapshot_by_name.get(&normalize_name(&right.skill_name)),
+                ) else {
+                    continue;
+                };
+                edges.insert(pair_key, edge);
+            }
+        }
+
+        let mut edges = edges.into_values().collect::<Vec<_>>();
+        sort_skill_relationship_edges(&mut edges);
+        Ok(edges)
+    }
+
+    pub fn skill_capability_group_candidates(
+        &self,
+    ) -> Result<Vec<SkillCapabilityGroup>, SkillError> {
+        let relationships = self.skill_composition_relationship_candidates()?;
+        Ok(build_skill_capability_group_candidates(&relationships))
+    }
+
+    pub fn accept_skill_composition_relationship(
+        &self,
+        left_skill_name: &str,
+        right_skill_name: &str,
+        relation_kind: rocode_types::SkillRelationshipKind,
+        preferred_skill_name: Option<&str>,
+        actor: &str,
+    ) -> Result<SkillRelationshipEdge, SkillError> {
+        self.set_skill_composition_relationship_state(
+            left_skill_name,
+            right_skill_name,
+            relation_kind,
+            rocode_types::SkillRelationshipState::Accepted,
+            preferred_skill_name,
+            actor,
+        )
+    }
+
+    pub fn dismiss_skill_composition_relationship(
+        &self,
+        left_skill_name: &str,
+        right_skill_name: &str,
+        relation_kind: rocode_types::SkillRelationshipKind,
+        actor: &str,
+    ) -> Result<SkillRelationshipEdge, SkillError> {
+        self.set_skill_composition_relationship_state(
+            left_skill_name,
+            right_skill_name,
+            relation_kind,
+            rocode_types::SkillRelationshipState::Dismissed,
+            None,
+            actor,
+        )
+    }
+
+    pub fn activate_skill_capability_group(
+        &self,
+        capability_id: Option<&str>,
+        group_kind: rocode_types::SkillCapabilityGroupKind,
+        canonical_skill_name: Option<&str>,
+        members: Vec<SkillCapabilityMember>,
+        reasons: Vec<String>,
+        actor: &str,
+    ) -> Result<SkillCapabilityGroup, SkillError> {
+        let candidate_lookup_id = capability_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let candidate_group = if let Some(capability_id) = candidate_lookup_id.as_deref() {
+            self.skill_capability_group_candidates()?
+                .into_iter()
+                .find(|group| normalize_name(&group.capability_id) == normalize_name(capability_id))
+        } else {
+            None
+        };
+
+        let mut group = validate_capability_group_input(
+            capability_id,
+            group_kind,
+            canonical_skill_name,
+            members,
+            reasons,
+            candidate_group.as_ref(),
+            |skill_name| self.resolve_composition_skill_name(skill_name),
+        )?;
+        group.state = rocode_types::SkillCapabilityGroupState::Active;
+        group.updated_at = Some(now_unix_timestamp());
+
+        self.upsert_capability_group(group.clone())?;
+        self.append_audit_event(capability_group_activated_audit_event(&group, actor))?;
+        Ok(group)
+    }
+
+    pub fn set_skill_capability_group_member_role(
+        &self,
+        capability_id: &str,
+        skill_name: &str,
+        role: rocode_types::SkillCapabilityMemberRole,
+        actor: &str,
+    ) -> Result<SkillCapabilityGroup, SkillError> {
+        let capability_id = required_nonempty_text(capability_id, "capability_id")?;
+        let resolved_skill_name = self.resolve_composition_skill_name(skill_name)?;
+        let mut group = self.existing_capability_group(&capability_id)?;
+        validate_capability_group_member_role_update(&group, role)?;
+
+        if let Some(existing) = group
+            .members
+            .iter()
+            .find(|member| member.skill_name.eq_ignore_ascii_case(&resolved_skill_name))
+        {
+            if existing.role == role {
+                return Ok(group);
+            }
+        }
+
+        let previous_role = group
+            .members
+            .iter()
+            .find(|member| member.skill_name.eq_ignore_ascii_case(&resolved_skill_name))
+            .map(|member| member.role);
+        if let Some(existing) = group
+            .members
+            .iter_mut()
+            .find(|member| member.skill_name.eq_ignore_ascii_case(&resolved_skill_name))
+        {
+            existing.role = role;
+        } else {
+            group.members.push(SkillCapabilityMember {
+                skill_name: resolved_skill_name.clone(),
+                role,
+            });
+        }
+
+        sort_skill_capability_members(&mut group.members);
+        group.updated_at = Some(now_unix_timestamp());
+        self.upsert_capability_group(group.clone())?;
+        self.append_audit_event(capability_group_member_role_updated_audit_event(
+            &group,
+            &resolved_skill_name,
+            previous_role,
+            role,
+            actor,
+        ))?;
+        Ok(group)
+    }
+
+    pub fn remove_skill_capability_group_member(
+        &self,
+        capability_id: &str,
+        skill_name: &str,
+        actor: &str,
+    ) -> Result<SkillCapabilityGroup, SkillError> {
+        let capability_id = required_nonempty_text(capability_id, "capability_id")?;
+        let resolved_skill_name = self.resolve_composition_skill_name(skill_name)?;
+        let mut group = self.existing_capability_group(&capability_id)?;
+        let remove_index = group
+            .members
+            .iter()
+            .position(|member| member.skill_name.eq_ignore_ascii_case(&resolved_skill_name))
+            .ok_or_else(|| SkillError::InvalidSkillContent {
+                message: format!(
+                    "skill `{}` is not a member of capability group `{}`",
+                    resolved_skill_name, capability_id
+                ),
+            })?;
+        if group.members[remove_index].role == rocode_types::SkillCapabilityMemberRole::Canonical
+            || group
+                .canonical_skill_name
+                .as_deref()
+                .map(|value| value.eq_ignore_ascii_case(&resolved_skill_name))
+                .unwrap_or(false)
+        {
+            return Err(SkillError::InvalidSkillContent {
+                message: format!(
+                    "cannot remove canonical member `{}` from capability group `{}`",
+                    resolved_skill_name, capability_id
+                ),
+            });
+        }
+
+        group.members.remove(remove_index);
+        if group.members.len() < 2 {
+            return Err(SkillError::InvalidSkillContent {
+                message: format!(
+                    "removing `{}` would collapse capability group `{}` below 2 members",
+                    resolved_skill_name, capability_id
+                ),
+            });
+        }
+
+        sort_skill_capability_members(&mut group.members);
+        group.updated_at = Some(now_unix_timestamp());
+        self.upsert_capability_group(group.clone())?;
+        self.append_audit_event(capability_group_member_removed_audit_event(
+            &group,
+            &resolved_skill_name,
+            actor,
+        ))?;
+        Ok(group)
+    }
+
     pub fn effective_skill_vitality_state(&self, skill_name: &str) -> SkillVitalityState {
         self.hub_store
             .skill_operational_snapshot(skill_name)
@@ -150,15 +614,17 @@ impl SkillGovernanceAuthority {
                 continue;
             }
 
+            let composition_context =
+                self.skill_composition_consumption_context(&diagnostic.skill_name);
             let reason = SkillRetirementReason {
                 kind: SkillRetirementReasonKind::NegativeEntropy,
-                summary: diagnostic
-                    .reasons
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| "negative entropy review candidate".to_string()),
+                summary: negative_entropy_review_candidate_summary(
+                    &diagnostic,
+                    &composition_context,
+                ),
                 noted_at: now_unix_timestamp(),
-                related_skill_name: None,
+                related_skill_name: composition_context
+                    .related_skill_name_for_review(&diagnostic.skill_name),
             };
             updated.push(self.set_skill_vitality_state(
                 &diagnostic.skill_name,
@@ -319,6 +785,8 @@ impl SkillGovernanceAuthority {
                 .is_some_and(|timestamp| {
                     now.saturating_sub(timestamp) < SKILL_POSITIVE_EVOLUTION_GRACE_SECONDS
                 });
+            let composition_context =
+                self.skill_composition_consumption_context(&snapshot.skill_name);
 
             let mut signals = Vec::new();
             let mut reasons = Vec::new();
@@ -381,11 +849,18 @@ impl SkillGovernanceAuthority {
                     reasons.push(format_skill_positive_evolution_reason(evolution, now));
                 }
             }
+            if let Some(reason) = format_negative_entropy_composition_reason(
+                &snapshot.skill_name,
+                &composition_context,
+            ) {
+                reasons.push(reason);
+            }
 
             let severity = skill_negative_entropy_severity(
                 snapshot.source_scope,
                 signals.as_slice(),
                 recent_positive_evolution,
+                &composition_context,
             );
             diagnostics.push(SkillNegativeEntropyDiagnostic {
                 skill_name: snapshot.skill_name,
@@ -421,40 +896,11 @@ impl SkillGovernanceAuthority {
     pub fn skill_semantic_conflict_diagnostics(
         &self,
     ) -> Result<Vec<SkillSemanticConflictDiagnostic>, SkillError> {
-        let snapshots = self.skill_operational_snapshots();
-        let snapshot_by_name = snapshots
-            .iter()
-            .cloned()
-            .map(|snapshot| (normalize_name(&snapshot.skill_name), snapshot))
-            .collect::<BTreeMap<_, _>>();
-        let catalog = self.skill_authority.list_skill_catalog(None)?;
-        let mut descriptors = Vec::with_capacity(catalog.len());
-        for meta in &catalog {
-            descriptors.push(self.build_skill_semantic_descriptor(meta, &snapshot_by_name)?);
-        }
-
-        let mut diagnostics = Vec::new();
-        for left_index in 0..descriptors.len() {
-            for right_index in (left_index + 1)..descriptors.len() {
-                if let Some(conflict) = build_skill_semantic_conflict(
-                    &descriptors[left_index],
-                    &descriptors[right_index],
-                    snapshot_by_name.get(&normalize_name(&descriptors[left_index].skill_name)),
-                    snapshot_by_name.get(&normalize_name(&descriptors[right_index].skill_name)),
-                ) {
-                    diagnostics.push(conflict);
-                }
-            }
-        }
-
-        diagnostics.sort_by(|left, right| {
-            skill_diagnostic_sort_key(left.severity)
-                .cmp(&skill_diagnostic_sort_key(right.severity))
-                .then_with(|| right.score.cmp(&left.score))
-                .then_with(|| left.left_skill_name.cmp(&right.left_skill_name))
-                .then_with(|| left.right_skill_name.cmp(&right.right_skill_name))
-        });
-        Ok(diagnostics)
+        let (descriptors, snapshot_by_name) = self.skill_semantic_analysis_inputs()?;
+        Ok(collect_skill_semantic_conflicts(
+            &descriptors,
+            &snapshot_by_name,
+        ))
     }
 
     pub fn distributions(&self) -> Vec<SkillDistributionRecord> {
@@ -584,9 +1030,8 @@ impl SkillGovernanceAuthority {
             .collect::<Vec<_>>();
 
         entries.extend(self.audit_tail().into_iter().filter_map(|event| {
-            if !timeline_matches_filters(
-                event.skill_name.as_deref(),
-                event.source_id.as_deref(),
+            if !audit_event_matches_filters(
+                &event,
                 normalized_skill_filter.as_deref(),
                 source_filter.as_deref(),
             ) {
@@ -2810,6 +3255,125 @@ impl SkillGovernanceAuthority {
         ))
     }
 
+    fn skill_semantic_analysis_inputs(
+        &self,
+    ) -> Result<
+        (
+            Vec<SkillSemanticDescriptor>,
+            BTreeMap<String, SkillOperationalSnapshot>,
+        ),
+        SkillError,
+    > {
+        let snapshots = self.skill_operational_snapshots();
+        let snapshot_by_name = snapshots
+            .iter()
+            .cloned()
+            .map(|snapshot| (normalize_name(&snapshot.skill_name), snapshot))
+            .collect::<BTreeMap<_, _>>();
+        let catalog = self.skill_authority.list_skill_catalog(None)?;
+        let mut descriptors = Vec::with_capacity(catalog.len());
+        for meta in &catalog {
+            descriptors.push(self.build_skill_semantic_descriptor(meta, &snapshot_by_name)?);
+        }
+        Ok((descriptors, snapshot_by_name))
+    }
+
+    fn resolve_composition_skill_name(&self, skill_name: &str) -> Result<String, SkillError> {
+        let requested = required_nonempty_text(skill_name, "skill_name")?;
+        Ok(self.skill_authority.resolve_skill(&requested, None)?.name)
+    }
+
+    fn set_skill_composition_relationship_state(
+        &self,
+        left_skill_name: &str,
+        right_skill_name: &str,
+        relation_kind: rocode_types::SkillRelationshipKind,
+        state: rocode_types::SkillRelationshipState,
+        preferred_skill_name: Option<&str>,
+        actor: &str,
+    ) -> Result<SkillRelationshipEdge, SkillError> {
+        let left_skill_name = self.resolve_composition_skill_name(left_skill_name)?;
+        let right_skill_name = self.resolve_composition_skill_name(right_skill_name)?;
+        if left_skill_name.eq_ignore_ascii_case(&right_skill_name) {
+            return Err(SkillError::InvalidSkillContent {
+                message: "composition relationship requires two distinct skills".to_string(),
+            });
+        }
+
+        let inspection = self.skill_composition_relationship_inspection()?;
+        let mut relationship = inspection
+            .into_iter()
+            .find(|entry| {
+                relationship_edge_identity_key(entry)
+                    == relationship_identity_key(&left_skill_name, &right_skill_name, relation_kind)
+            })
+            .ok_or_else(|| SkillError::InvalidSkillContent {
+                message: format!(
+                    "no composition relationship candidate exists for `{}` <-> `{}` with kind `{}`",
+                    left_skill_name,
+                    right_skill_name,
+                    format_skill_relationship_kind(relation_kind)
+                ),
+            })?;
+        relationship.state = state;
+        relationship.preferred_skill_name = validate_relationship_preferred_skill(
+            &left_skill_name,
+            &right_skill_name,
+            relation_kind,
+            relationship.preferred_skill_name.as_deref(),
+            preferred_skill_name,
+        )?;
+        relationship.updated_at = Some(now_unix_timestamp());
+
+        self.upsert_composition_relationship(relationship.clone())?;
+        self.append_audit_event(composition_relationship_audit_event(
+            &relationship,
+            actor,
+            state,
+        ))?;
+        Ok(relationship)
+    }
+
+    fn upsert_composition_relationship(
+        &self,
+        relationship: SkillRelationshipEdge,
+    ) -> Result<(), SkillError> {
+        let mut relationships = self.skill_composition_relationships();
+        if let Some(existing) = relationships.iter_mut().find(|entry| {
+            relationship_edge_identity_key(entry) == relationship_edge_identity_key(&relationship)
+        }) {
+            *existing = relationship;
+        } else {
+            relationships.push(relationship);
+        }
+        self.hub_store
+            .replace_composition_relationships(relationships)
+    }
+
+    fn upsert_capability_group(&self, group: SkillCapabilityGroup) -> Result<(), SkillError> {
+        let mut groups = self.skill_capability_groups();
+        if let Some(existing) = groups.iter_mut().find(|entry| {
+            normalize_name(&entry.capability_id) == normalize_name(&group.capability_id)
+        }) {
+            *existing = group;
+        } else {
+            groups.push(group);
+        }
+        self.hub_store.replace_capability_groups(groups)
+    }
+
+    fn existing_capability_group(
+        &self,
+        capability_id: &str,
+    ) -> Result<SkillCapabilityGroup, SkillError> {
+        self.skill_capability_groups()
+            .into_iter()
+            .find(|group| normalize_name(&group.capability_id) == normalize_name(capability_id))
+            .ok_or_else(|| SkillError::InvalidSkillContent {
+                message: format!("unknown capability group `{}`", capability_id.trim()),
+            })
+    }
+
     fn synced_managed_record(
         &self,
         source: &SkillSourceRef,
@@ -2831,6 +3395,113 @@ impl SkillGovernanceAuthority {
             locally_modified: false,
             deleted_locally: false,
         })
+    }
+
+    fn skill_composition_consumption_context(
+        &self,
+        skill_name: &str,
+    ) -> SkillCompositionConsumptionContext {
+        let key = normalize_name(skill_name);
+        let mut context = SkillCompositionConsumptionContext::default();
+
+        for group in self
+            .skill_capability_groups()
+            .into_iter()
+            .filter(|group| group.state == rocode_types::SkillCapabilityGroupState::Active)
+        {
+            let Some(member) = group
+                .members
+                .iter()
+                .find(|member| normalize_name(&member.skill_name) == key)
+            else {
+                continue;
+            };
+
+            match group.group_kind {
+                SkillCapabilityGroupKind::CanonicalFamily => {
+                    if context.canonical_family_id.is_none() {
+                        context.canonical_family_id = Some(group.capability_id.clone());
+                    }
+                    if context.family_member_role.is_none() {
+                        context.family_member_role = Some(member.role);
+                    }
+                    if context.canonical_skill_name.is_none() {
+                        context.canonical_skill_name = group
+                            .canonical_skill_name
+                            .clone()
+                            .or_else(|| canonical_member_skill_name(&group));
+                    }
+                }
+                SkillCapabilityGroupKind::ComplementaryBundle => {
+                    context
+                        .complementary_group_ids
+                        .push(group.capability_id.clone());
+                    context.complementary_peer_skill_names.extend(
+                        group
+                            .members
+                            .iter()
+                            .filter(|entry| normalize_name(&entry.skill_name) != key)
+                            .map(|entry| entry.skill_name.clone()),
+                    );
+                }
+            }
+        }
+
+        for relationship in self
+            .skill_composition_relationships()
+            .into_iter()
+            .filter(|relationship| relationship.state == SkillRelationshipState::Accepted)
+        {
+            if normalize_name(&relationship.left_skill_name) != key
+                && normalize_name(&relationship.right_skill_name) != key
+            {
+                continue;
+            }
+
+            match relationship.relation_kind {
+                SkillRelationshipKind::ComplementaryComponent => {
+                    if let Some(peer_skill_name) =
+                        relationship_other_skill_name(&relationship, skill_name)
+                    {
+                        context.complementary_peer_skill_names.push(peer_skill_name);
+                    }
+                }
+                SkillRelationshipKind::SpecializationVariant => {
+                    if let Some(preferred_skill_name) = relationship
+                        .preferred_skill_name
+                        .as_deref()
+                        .filter(|preferred| !preferred.eq_ignore_ascii_case(skill_name))
+                    {
+                        context
+                            .canonical_skill_name
+                            .get_or_insert_with(|| preferred_skill_name.to_string());
+                        context
+                            .family_member_role
+                            .get_or_insert(SkillCapabilityMemberRole::Specialization);
+                    }
+                }
+                SkillRelationshipKind::RedundantOverlap => {
+                    if let Some(preferred_skill_name) = relationship
+                        .preferred_skill_name
+                        .as_deref()
+                        .filter(|preferred| !preferred.eq_ignore_ascii_case(skill_name))
+                    {
+                        context
+                            .canonical_skill_name
+                            .get_or_insert_with(|| preferred_skill_name.to_string());
+                        context
+                            .family_member_role
+                            .get_or_insert(SkillCapabilityMemberRole::MergeCandidate);
+                    }
+                }
+            }
+        }
+
+        context.complementary_group_ids.sort();
+        context.complementary_group_ids.dedup();
+        context.complementary_peer_skill_names.sort();
+        context.complementary_peer_skill_names.dedup();
+        context
     }
 }
 
@@ -3051,6 +3722,164 @@ fn vitality_transition_audit_event(
             "reason_kind": format_skill_retirement_reason_kind(current.reason.kind),
             "reason_summary": current.reason.summary,
             "related_skill_name": current.reason.related_skill_name,
+        }),
+    }
+}
+
+fn composition_relationship_audit_event(
+    relationship: &SkillRelationshipEdge,
+    actor: &str,
+    state: rocode_types::SkillRelationshipState,
+) -> SkillAuditEvent {
+    let created_at = relationship.updated_at.unwrap_or_else(now_unix_timestamp);
+    let primary_skill_name = relationship
+        .preferred_skill_name
+        .clone()
+        .unwrap_or_else(|| relationship.left_skill_name.clone());
+    SkillAuditEvent {
+        event_id: format!(
+            "skill-composition-relationship-{}-{}-{}-{}",
+            created_at,
+            relationship
+                .left_skill_name
+                .replace(|ch: char| !ch.is_ascii_alphanumeric(), "_"),
+            relationship
+                .right_skill_name
+                .replace(|ch: char| !ch.is_ascii_alphanumeric(), "_"),
+            format_skill_relationship_kind(relationship.relation_kind)
+        ),
+        kind: match state {
+            rocode_types::SkillRelationshipState::Accepted => {
+                SkillAuditKind::CompositionRelationshipAccepted
+            }
+            rocode_types::SkillRelationshipState::Dismissed => {
+                SkillAuditKind::CompositionRelationshipDismissed
+            }
+            rocode_types::SkillRelationshipState::Observed => {
+                SkillAuditKind::CompositionRelationshipAccepted
+            }
+        },
+        skill_name: Some(primary_skill_name),
+        source_id: None,
+        actor: actor.to_string(),
+        created_at,
+        payload: json!({
+            "relation_kind": format_skill_relationship_kind(relationship.relation_kind),
+            "state": format_skill_relationship_state(state),
+            "preferred_skill_name": relationship.preferred_skill_name,
+            "left_skill_name": relationship.left_skill_name,
+            "right_skill_name": relationship.right_skill_name,
+            "skill_names": [
+                relationship.left_skill_name.clone(),
+                relationship.right_skill_name.clone()
+            ],
+            "score": relationship.score,
+            "reasons": relationship.reasons,
+        }),
+    }
+}
+
+fn capability_group_activated_audit_event(
+    group: &SkillCapabilityGroup,
+    actor: &str,
+) -> SkillAuditEvent {
+    let created_at = group.updated_at.unwrap_or_else(now_unix_timestamp);
+    SkillAuditEvent {
+        event_id: format!(
+            "skill-capability-group-activated-{}-{}",
+            created_at,
+            group
+                .capability_id
+                .replace(|ch: char| !ch.is_ascii_alphanumeric(), "_")
+        ),
+        kind: SkillAuditKind::CapabilityGroupActivated,
+        skill_name: group.canonical_skill_name.clone().or_else(|| {
+            group
+                .members
+                .first()
+                .map(|member| member.skill_name.clone())
+        }),
+        source_id: None,
+        actor: actor.to_string(),
+        created_at,
+        payload: json!({
+            "capability_id": group.capability_id,
+            "group_kind": format_capability_group_kind(group.group_kind),
+            "state": format_capability_group_state(group.state),
+            "canonical_skill_name": group.canonical_skill_name,
+            "skill_names": group.members.iter().map(|member| member.skill_name.clone()).collect::<Vec<_>>(),
+            "member_roles": group.members.iter().map(|member| {
+                json!({
+                    "skill_name": member.skill_name,
+                    "role": format_capability_member_role(member.role),
+                })
+            }).collect::<Vec<_>>(),
+            "reasons": group.reasons,
+        }),
+    }
+}
+
+fn capability_group_member_role_updated_audit_event(
+    group: &SkillCapabilityGroup,
+    skill_name: &str,
+    previous_role: Option<rocode_types::SkillCapabilityMemberRole>,
+    current_role: rocode_types::SkillCapabilityMemberRole,
+    actor: &str,
+) -> SkillAuditEvent {
+    let created_at = group.updated_at.unwrap_or_else(now_unix_timestamp);
+    SkillAuditEvent {
+        event_id: format!(
+            "skill-capability-group-role-{}-{}-{}",
+            created_at,
+            group
+                .capability_id
+                .replace(|ch: char| !ch.is_ascii_alphanumeric(), "_"),
+            skill_name.replace(|ch: char| !ch.is_ascii_alphanumeric(), "_")
+        ),
+        kind: SkillAuditKind::CapabilityGroupMemberRoleUpdated,
+        skill_name: Some(skill_name.to_string()),
+        source_id: None,
+        actor: actor.to_string(),
+        created_at,
+        payload: json!({
+            "capability_id": group.capability_id,
+            "group_kind": format_capability_group_kind(group.group_kind),
+            "skill_names": group.members.iter().map(|member| member.skill_name.clone()).collect::<Vec<_>>(),
+            "target_skill_name": skill_name,
+            "previous_role": previous_role.map(format_capability_member_role),
+            "current_role": format_capability_member_role(current_role),
+            "canonical_skill_name": group.canonical_skill_name,
+        }),
+    }
+}
+
+fn capability_group_member_removed_audit_event(
+    group: &SkillCapabilityGroup,
+    removed_skill_name: &str,
+    actor: &str,
+) -> SkillAuditEvent {
+    let created_at = group.updated_at.unwrap_or_else(now_unix_timestamp);
+    SkillAuditEvent {
+        event_id: format!(
+            "skill-capability-group-remove-{}-{}-{}",
+            created_at,
+            group
+                .capability_id
+                .replace(|ch: char| !ch.is_ascii_alphanumeric(), "_"),
+            removed_skill_name.replace(|ch: char| !ch.is_ascii_alphanumeric(), "_")
+        ),
+        kind: SkillAuditKind::CapabilityGroupMemberRemoved,
+        skill_name: Some(removed_skill_name.to_string()),
+        source_id: None,
+        actor: actor.to_string(),
+        created_at,
+        payload: json!({
+            "capability_id": group.capability_id,
+            "group_kind": format_capability_group_kind(group.group_kind),
+            "skill_names": group.members.iter().map(|member| member.skill_name.clone()).collect::<Vec<_>>(),
+            "removed_skill_name": removed_skill_name,
+            "remaining_member_count": group.members.len(),
+            "canonical_skill_name": group.canonical_skill_name,
         }),
     }
 }
@@ -3297,6 +4126,27 @@ fn timeline_matches_filters(
     true
 }
 
+fn audit_event_matches_filters(
+    event: &SkillAuditEvent,
+    skill_filter: Option<&str>,
+    source_filter: Option<&str>,
+) -> bool {
+    if let Some(source_filter) = source_filter {
+        if event.source_id.as_deref().map(str::trim) != Some(source_filter) {
+            return false;
+        }
+    }
+    if let Some(skill_filter) = skill_filter {
+        if event.skill_name.as_deref().map(normalize_name).as_deref() == Some(skill_filter) {
+            return true;
+        }
+        return payload_skill_names(&event.payload)
+            .iter()
+            .any(|skill_name| normalize_name(skill_name) == skill_filter);
+    }
+    true
+}
+
 const SKILL_NEGATIVE_ENTROPY_STALE_SECONDS: i64 = 30 * 24 * 60 * 60;
 const SKILL_POSITIVE_EVOLUTION_GRACE_SECONDS: i64 = SKILL_NEGATIVE_ENTROPY_STALE_SECONDS;
 const SKILL_GUARD_RULE_SEMANTIC_OVERLAP: &str = "semantic.skill_overlap";
@@ -3310,6 +4160,9 @@ struct SkillSemanticDescriptor {
     tokens: BTreeSet<String>,
     trigger_terms: BTreeSet<String>,
     related_skills: BTreeSet<String>,
+    requires_tools: BTreeSet<String>,
+    requires_toolsets: BTreeSet<String>,
+    stage_filter: BTreeSet<String>,
 }
 
 fn build_skill_semantic_descriptor_from_parts(
@@ -3360,6 +4213,24 @@ fn build_skill_semantic_descriptor_from_parts(
         .map(|value| normalize_name(value))
         .filter(|value| !value.is_empty())
         .collect::<BTreeSet<_>>();
+    let requires_tools = conditions
+        .requires_tools
+        .iter()
+        .map(|value| normalize_name(value))
+        .filter(|value| !value.is_empty())
+        .collect::<BTreeSet<_>>();
+    let requires_toolsets = conditions
+        .requires_toolsets
+        .iter()
+        .map(|value| normalize_name(value))
+        .filter(|value| !value.is_empty())
+        .collect::<BTreeSet<_>>();
+    let stage_filter = conditions
+        .stage_filter
+        .iter()
+        .map(|value| normalize_name(value))
+        .filter(|value| !value.is_empty())
+        .collect::<BTreeSet<_>>();
 
     SkillSemanticDescriptor {
         skill_name: skill_name.to_string(),
@@ -3368,6 +4239,9 @@ fn build_skill_semantic_descriptor_from_parts(
         tokens,
         trigger_terms,
         related_skills,
+        requires_tools,
+        requires_toolsets,
+        stage_filter,
     }
 }
 
@@ -3618,6 +4492,34 @@ fn build_skill_semantic_conflict(
     })
 }
 
+fn collect_skill_semantic_conflicts(
+    descriptors: &[SkillSemanticDescriptor],
+    snapshot_by_name: &BTreeMap<String, SkillOperationalSnapshot>,
+) -> Vec<SkillSemanticConflictDiagnostic> {
+    let mut diagnostics = Vec::new();
+    for left_index in 0..descriptors.len() {
+        for right_index in (left_index + 1)..descriptors.len() {
+            if let Some(conflict) = build_skill_semantic_conflict(
+                &descriptors[left_index],
+                &descriptors[right_index],
+                snapshot_by_name.get(&normalize_name(&descriptors[left_index].skill_name)),
+                snapshot_by_name.get(&normalize_name(&descriptors[right_index].skill_name)),
+            ) {
+                diagnostics.push(conflict);
+            }
+        }
+    }
+
+    diagnostics.sort_by(|left, right| {
+        skill_diagnostic_sort_key(left.severity)
+            .cmp(&skill_diagnostic_sort_key(right.severity))
+            .then_with(|| right.score.cmp(&left.score))
+            .then_with(|| left.left_skill_name.cmp(&right.left_skill_name))
+            .then_with(|| left.right_skill_name.cmp(&right.right_skill_name))
+    });
+    diagnostics
+}
+
 fn preferred_skill_name(
     left: &SkillSemanticDescriptor,
     right: &SkillSemanticDescriptor,
@@ -3696,6 +4598,33 @@ fn should_sync_negative_entropy_review_candidate(
     )
 }
 
+fn negative_entropy_review_candidate_summary(
+    diagnostic: &SkillNegativeEntropyDiagnostic,
+    context: &SkillCompositionConsumptionContext,
+) -> String {
+    let base = diagnostic
+        .reasons
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "negative entropy review candidate".to_string());
+    let Some(canonical_skill_name) = context.related_skill_name_for_review(&diagnostic.skill_name)
+    else {
+        return base;
+    };
+    let qualifier = match context.family_member_role {
+        Some(SkillCapabilityMemberRole::Specialization) => format!(
+            "the skill is governed as a specialization variant under canonical skill `{canonical_skill_name}`"
+        ),
+        Some(SkillCapabilityMemberRole::MergeCandidate) => format!(
+            "the skill is governed as a merge candidate under canonical skill `{canonical_skill_name}`"
+        ),
+        _ => format!(
+            "the skill is governed relative to canonical skill `{canonical_skill_name}`"
+        ),
+    };
+    format!("{base}; {qualifier}")
+}
+
 fn should_sync_semantic_conflict_review_candidate(
     snapshot: Option<&SkillOperationalSnapshot>,
     preferred_skill_name: &str,
@@ -3722,8 +4651,12 @@ fn skill_negative_entropy_severity(
     source_scope: SkillOperationalSourceScope,
     signals: &[SkillNegativeEntropySignal],
     recent_positive_evolution: bool,
+    composition_context: &SkillCompositionConsumptionContext,
 ) -> SkillGovernanceDiagnosticSeverity {
     if recent_positive_evolution {
+        return SkillGovernanceDiagnosticSeverity::Info;
+    }
+    if composition_context.complementary_protected() {
         return SkillGovernanceDiagnosticSeverity::Info;
     }
     if matches!(source_scope, SkillOperationalSourceScope::WorkspaceLocal)
@@ -3785,8 +4718,1158 @@ fn format_skill_positive_evolution_reason(
     )
 }
 
+fn canonical_member_skill_name(group: &SkillCapabilityGroup) -> Option<String> {
+    group
+        .members
+        .iter()
+        .find(|member| member.role == SkillCapabilityMemberRole::Canonical)
+        .map(|member| member.skill_name.clone())
+}
+
+fn relationship_other_skill_name(
+    relationship: &SkillRelationshipEdge,
+    skill_name: &str,
+) -> Option<String> {
+    if relationship
+        .left_skill_name
+        .eq_ignore_ascii_case(skill_name)
+    {
+        return Some(relationship.right_skill_name.clone());
+    }
+    if relationship
+        .right_skill_name
+        .eq_ignore_ascii_case(skill_name)
+    {
+        return Some(relationship.left_skill_name.clone());
+    }
+    None
+}
+
+fn format_negative_entropy_composition_reason(
+    skill_name: &str,
+    context: &SkillCompositionConsumptionContext,
+) -> Option<String> {
+    if context.complementary_protected() {
+        if context.complementary_peer_skill_names.is_empty() {
+            return Some(
+                "skill is explicitly governed as a complementary component; low standalone reuse is expected and is not treated as pure redundancy"
+                    .to_string(),
+            );
+        }
+        return Some(format!(
+            "skill is explicitly governed as a complementary component alongside {}; low standalone reuse is expected and is not treated as pure redundancy",
+            context.complementary_peer_skill_names.join(", ")
+        ));
+    }
+
+    let canonical_skill_name = context.related_skill_name_for_review(skill_name)?;
+    let relation_label = match context.family_member_role {
+        Some(SkillCapabilityMemberRole::Specialization) => "specialization member",
+        Some(SkillCapabilityMemberRole::MergeCandidate) => "merge candidate",
+        _ => "family member",
+    };
+    if let Some(capability_id) = context.canonical_family_id.as_deref() {
+        return Some(format!(
+            "skill is an explicit {relation_label} in canonical family `{capability_id}` led by `{canonical_skill_name}`; low reuse is evaluated relative to that family owner"
+        ));
+    }
+    Some(format!(
+        "skill is an explicit {relation_label} governed relative to canonical skill `{canonical_skill_name}`; low reuse is evaluated relative to that owner"
+    ))
+}
+
 fn set_intersection_count(left: &BTreeSet<String>, right: &BTreeSet<String>) -> usize {
     left.intersection(right).count()
+}
+
+fn relationship_pair_key(left_skill_name: &str, right_skill_name: &str) -> (String, String) {
+    let left = normalize_name(left_skill_name);
+    let right = normalize_name(right_skill_name);
+    if left <= right {
+        (left, right)
+    } else {
+        (right, left)
+    }
+}
+
+fn ordered_skill_names(left_skill_name: &str, right_skill_name: &str) -> (String, String) {
+    if left_skill_name <= right_skill_name {
+        (left_skill_name.to_string(), right_skill_name.to_string())
+    } else {
+        (right_skill_name.to_string(), left_skill_name.to_string())
+    }
+}
+
+fn normalize_runtime_selected_skill_names(raw_names: &[String]) -> Vec<String> {
+    let mut names = Vec::new();
+    for raw_name in raw_names {
+        let trimmed = raw_name.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !names
+            .iter()
+            .any(|seen: &String| seen.eq_ignore_ascii_case(trimmed))
+        {
+            names.push(trimmed.to_string());
+        }
+    }
+    names
+}
+
+fn skill_names_includes_pair(
+    skill_names: &[String],
+    left_skill_name: &str,
+    right_skill_name: &str,
+) -> bool {
+    let left_present = skill_names
+        .iter()
+        .any(|skill_name| skill_name.eq_ignore_ascii_case(left_skill_name));
+    let right_present = skill_names
+        .iter()
+        .any(|skill_name| skill_name.eq_ignore_ascii_case(right_skill_name));
+    left_present && right_present
+}
+
+fn build_skill_redundant_relationship_candidate(
+    conflict: &SkillSemanticConflictDiagnostic,
+) -> Option<SkillRelationshipEdge> {
+    if conflict.score < 70 || conflict.preferred_skill_name.is_none() {
+        return None;
+    }
+    if !matches!(
+        conflict.kind,
+        SkillSemanticConflictKind::ReplacementHint | SkillSemanticConflictKind::NearDuplicate
+    ) {
+        return None;
+    }
+
+    Some(SkillRelationshipEdge {
+        left_skill_name: conflict.left_skill_name.clone(),
+        right_skill_name: conflict.right_skill_name.clone(),
+        relation_kind: rocode_types::SkillRelationshipKind::RedundantOverlap,
+        state: rocode_types::SkillRelationshipState::Observed,
+        score: conflict.score,
+        reasons: dedupe_string_reasons(conflict.reasons.clone()),
+        preferred_skill_name: conflict.preferred_skill_name.clone(),
+        observed_at: None,
+        updated_at: None,
+    })
+}
+
+fn build_skill_specialization_relationship_candidate(
+    left: &SkillSemanticDescriptor,
+    right: &SkillSemanticDescriptor,
+    conflict: &SkillSemanticConflictDiagnostic,
+) -> Option<SkillRelationshipEdge> {
+    if conflict.score < 55 {
+        return None;
+    }
+
+    let specialization = specialization_variant_direction(left, right)?;
+    let mut reasons = conflict
+        .reasons
+        .iter()
+        .filter(|reason| !reason.contains("usage ledger currently favors"))
+        .take(2)
+        .cloned()
+        .collect::<Vec<_>>();
+    reasons.extend(specialization.reasons);
+    if conflict.preferred_skill_name.as_deref()
+        == Some(specialization.canonical_skill_name.as_str())
+    {
+        reasons.push(format!(
+            "usage ledger also currently favors `{}` within this variant family",
+            specialization.canonical_skill_name
+        ));
+    }
+    let (left_skill_name, right_skill_name) =
+        ordered_skill_names(&left.skill_name, &right.skill_name);
+
+    Some(SkillRelationshipEdge {
+        left_skill_name,
+        right_skill_name,
+        relation_kind: rocode_types::SkillRelationshipKind::SpecializationVariant,
+        state: rocode_types::SkillRelationshipState::Observed,
+        score: conflict
+            .score
+            .saturating_add((specialization.strict_signal_count as u16).saturating_mul(5))
+            .min(100),
+        reasons: dedupe_string_reasons(reasons),
+        preferred_skill_name: Some(specialization.canonical_skill_name),
+        observed_at: None,
+        updated_at: None,
+    })
+}
+
+fn build_skill_complementary_relationship_candidate(
+    left: &SkillSemanticDescriptor,
+    right: &SkillSemanticDescriptor,
+    conflict: Option<&SkillSemanticConflictDiagnostic>,
+    left_snapshot: Option<&SkillOperationalSnapshot>,
+    right_snapshot: Option<&SkillOperationalSnapshot>,
+) -> Option<SkillRelationshipEdge> {
+    if conflict.map(|entry| entry.score >= 70).unwrap_or(false) {
+        return None;
+    }
+
+    let same_category = left.category.is_some() && left.category == right.category;
+    let direct_related = left.related_skills.contains(&right.normalized_name)
+        || right.related_skills.contains(&left.normalized_name);
+    let shared_related = set_intersection_count(&left.related_skills, &right.related_skills);
+    let shared_tools = set_intersection_count(&left.requires_tools, &right.requires_tools);
+    let shared_toolsets = set_intersection_count(&left.requires_toolsets, &right.requires_toolsets);
+    let shared_stages = if left.stage_filter.is_empty() || right.stage_filter.is_empty() {
+        0
+    } else {
+        set_intersection_count(&left.stage_filter, &right.stage_filter)
+    };
+    let shared_last_category = shared_usage_value(
+        left_snapshot.and_then(|snapshot| snapshot.usage.as_ref()?.last_category.as_deref()),
+        right_snapshot.and_then(|snapshot| snapshot.usage.as_ref()?.last_category.as_deref()),
+    );
+    let shared_last_stage = shared_usage_value(
+        left_snapshot.and_then(|snapshot| snapshot.usage.as_ref()?.last_stage_id.as_deref()),
+        right_snapshot.and_then(|snapshot| snapshot.usage.as_ref()?.last_stage_id.as_deref()),
+    );
+
+    let has_anchor = direct_related || shared_related > 0 || same_category;
+    let has_domain = shared_tools > 0
+        || shared_toolsets > 0
+        || shared_stages > 0
+        || shared_last_category.is_some()
+        || shared_last_stage.is_some()
+        || conflict.is_some();
+    if !has_anchor || !has_domain {
+        return None;
+    }
+
+    let mut score = 0u16;
+    let mut reasons = Vec::new();
+    if direct_related {
+        score += 30;
+        reasons.push("frontmatter related_skills directly links the pair".to_string());
+    } else if shared_related > 0 {
+        score += 20;
+        reasons.push(format!(
+            "related_skills metadata points at {shared_related} shared adjacent skill(s)"
+        ));
+    }
+    if same_category {
+        score += 20;
+        if let Some(category) = left.category.as_deref() {
+            reasons.push(format!("shared category `{category}`"));
+        }
+    }
+    if shared_tools > 0 {
+        score += 15;
+        reasons.push(format!(
+            "runtime tool requirements share {shared_tools} tool(s): {}",
+            join_terms(left.requires_tools.intersection(&right.requires_tools))
+        ));
+    }
+    if shared_toolsets > 0 {
+        score += 15;
+        reasons.push(format!(
+            "runtime toolset requirements share {shared_toolsets} toolset(s): {}",
+            join_terms(
+                left.requires_toolsets
+                    .intersection(&right.requires_toolsets)
+            )
+        ));
+    }
+    if shared_stages > 0 {
+        score += 10;
+        reasons.push(format!(
+            "stage filters intersect at {shared_stages} stage(s): {}",
+            join_terms(left.stage_filter.intersection(&right.stage_filter))
+        ));
+    }
+    if let Some(category) = shared_last_category {
+        score += 5;
+        reasons.push(format!(
+            "usage ledger recently observed both skills under runtime category `{category}`"
+        ));
+    }
+    if let Some(stage) = shared_last_stage {
+        score += 5;
+        reasons.push(format!(
+            "usage ledger recently observed both skills in runtime stage `{stage}`"
+        ));
+    }
+    if let Some(conflict) = conflict {
+        score += 10;
+        if let Some(reason) = conflict
+            .reasons
+            .iter()
+            .find(|reason| !reason.contains("usage ledger currently favors"))
+        {
+            reasons.push(format!(
+                "semantic overlap stays below merge threshold but still signals shared working surface: {reason}"
+            ));
+        }
+    }
+    if score < 45 {
+        return None;
+    }
+
+    let (left_skill_name, right_skill_name) =
+        ordered_skill_names(&left.skill_name, &right.skill_name);
+    Some(SkillRelationshipEdge {
+        left_skill_name,
+        right_skill_name,
+        relation_kind: rocode_types::SkillRelationshipKind::ComplementaryComponent,
+        state: rocode_types::SkillRelationshipState::Observed,
+        score: score.min(100),
+        reasons: dedupe_string_reasons(reasons),
+        preferred_skill_name: None,
+        observed_at: None,
+        updated_at: None,
+    })
+}
+
+#[derive(Debug, Clone)]
+struct SkillSpecializationVariantDirection {
+    canonical_skill_name: String,
+    reasons: Vec<String>,
+    strict_signal_count: usize,
+}
+
+fn specialization_variant_direction(
+    left: &SkillSemanticDescriptor,
+    right: &SkillSemanticDescriptor,
+) -> Option<SkillSpecializationVariantDirection> {
+    let left_specializes_right = skill_narrowing_reasons(left, right);
+    let right_specializes_left = skill_narrowing_reasons(right, left);
+    match (left_specializes_right, right_specializes_left) {
+        (Some((reasons, strict_signal_count)), None) => Some(SkillSpecializationVariantDirection {
+            canonical_skill_name: right.skill_name.clone(),
+            reasons,
+            strict_signal_count,
+        }),
+        (None, Some((reasons, strict_signal_count))) => Some(SkillSpecializationVariantDirection {
+            canonical_skill_name: left.skill_name.clone(),
+            reasons,
+            strict_signal_count,
+        }),
+        _ => None,
+    }
+}
+
+fn skill_narrowing_reasons(
+    candidate: &SkillSemanticDescriptor,
+    broad: &SkillSemanticDescriptor,
+) -> Option<(Vec<String>, usize)> {
+    let mut reasons = Vec::new();
+    let mut strict_signal_count = 0usize;
+
+    if !broad.requires_tools.is_subset(&candidate.requires_tools) {
+        return None;
+    }
+    let extra_tools = candidate
+        .requires_tools
+        .difference(&broad.requires_tools)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !extra_tools.is_empty() {
+        strict_signal_count += 1;
+        reasons.push(format!(
+            "`{}` adds narrower runtime tool requirements beyond `{}`: {}",
+            candidate.skill_name,
+            broad.skill_name,
+            join_terms(extra_tools.iter())
+        ));
+    }
+
+    if !broad
+        .requires_toolsets
+        .is_subset(&candidate.requires_toolsets)
+    {
+        return None;
+    }
+    let extra_toolsets = candidate
+        .requires_toolsets
+        .difference(&broad.requires_toolsets)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !extra_toolsets.is_empty() {
+        strict_signal_count += 1;
+        reasons.push(format!(
+            "`{}` adds narrower runtime toolset requirements beyond `{}`: {}",
+            candidate.skill_name,
+            broad.skill_name,
+            join_terms(extra_toolsets.iter())
+        ));
+    }
+
+    match stage_filter_specialization_state(candidate, broad) {
+        StageFilterSpecializationState::Narrower(reason) => {
+            strict_signal_count += 1;
+            reasons.push(reason);
+        }
+        StageFilterSpecializationState::Equal => {}
+        StageFilterSpecializationState::Incompatible => return None,
+    }
+
+    if strict_signal_count == 0 {
+        return None;
+    }
+
+    Some((reasons, strict_signal_count))
+}
+
+enum StageFilterSpecializationState {
+    Equal,
+    Narrower(String),
+    Incompatible,
+}
+
+fn stage_filter_specialization_state(
+    candidate: &SkillSemanticDescriptor,
+    broad: &SkillSemanticDescriptor,
+) -> StageFilterSpecializationState {
+    match (candidate.stage_filter.is_empty(), broad.stage_filter.is_empty()) {
+        (true, true) => StageFilterSpecializationState::Equal,
+        (true, false) => StageFilterSpecializationState::Incompatible,
+        (false, true) => StageFilterSpecializationState::Narrower(format!(
+            "`{}` narrows runtime stage scope relative to broad `{}` by restricting execution to {}",
+            candidate.skill_name,
+            broad.skill_name,
+            join_terms(candidate.stage_filter.iter())
+        )),
+        (false, false) => {
+            if !candidate.stage_filter.is_subset(&broad.stage_filter) {
+                return StageFilterSpecializationState::Incompatible;
+            }
+            if candidate.stage_filter.len() == broad.stage_filter.len() {
+                return StageFilterSpecializationState::Equal;
+            }
+            StageFilterSpecializationState::Narrower(format!(
+                "`{}` narrows runtime stage scope from {} to {} relative to `{}`",
+                candidate.skill_name,
+                join_terms(broad.stage_filter.iter()),
+                join_terms(candidate.stage_filter.iter()),
+                broad.skill_name
+            ))
+        }
+    }
+}
+
+fn shared_usage_value(left: Option<&str>, right: Option<&str>) -> Option<String> {
+    let left = left.map(str::trim).filter(|value| !value.is_empty())?;
+    let right = right.map(str::trim).filter(|value| !value.is_empty())?;
+    if normalize_name(left) == normalize_name(right) {
+        Some(left.to_string())
+    } else {
+        None
+    }
+}
+
+fn sort_skill_relationship_edges(edges: &mut [SkillRelationshipEdge]) {
+    edges.sort_by(|left, right| {
+        left.left_skill_name
+            .cmp(&right.left_skill_name)
+            .then_with(|| left.right_skill_name.cmp(&right.right_skill_name))
+            .then_with(|| {
+                relationship_kind_sort_key(left.relation_kind)
+                    .cmp(&relationship_kind_sort_key(right.relation_kind))
+            })
+            .then_with(|| right.score.cmp(&left.score))
+    });
+}
+
+fn relationship_kind_sort_key(kind: rocode_types::SkillRelationshipKind) -> u8 {
+    match kind {
+        rocode_types::SkillRelationshipKind::RedundantOverlap => 0,
+        rocode_types::SkillRelationshipKind::SpecializationVariant => 1,
+        rocode_types::SkillRelationshipKind::ComplementaryComponent => 2,
+    }
+}
+
+fn build_skill_capability_group_candidates(
+    relationships: &[SkillRelationshipEdge],
+) -> Vec<SkillCapabilityGroup> {
+    let mut groups = Vec::new();
+
+    let family_edges = relationships
+        .iter()
+        .filter(|edge| {
+            matches!(
+                edge.relation_kind,
+                rocode_types::SkillRelationshipKind::RedundantOverlap
+                    | rocode_types::SkillRelationshipKind::SpecializationVariant
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    for component in relationship_components(&family_edges) {
+        let members = component_members(&component);
+        if members.len() < 2 {
+            continue;
+        }
+        let canonical_skill_name = canonical_family_skill_name(&component);
+        let Some(canonical_skill_name) = canonical_skill_name else {
+            continue;
+        };
+        let mut capability_members = members
+            .iter()
+            .map(|skill_name| SkillCapabilityMember {
+                skill_name: skill_name.clone(),
+                role: family_member_role(skill_name, &canonical_skill_name, &component),
+            })
+            .collect::<Vec<_>>();
+        sort_skill_capability_members(&mut capability_members);
+        groups.push(SkillCapabilityGroup {
+            capability_id: build_capability_group_id(
+                rocode_types::SkillCapabilityGroupKind::CanonicalFamily,
+                &members,
+            ),
+            group_kind: rocode_types::SkillCapabilityGroupKind::CanonicalFamily,
+            state: rocode_types::SkillCapabilityGroupState::Candidate,
+            canonical_skill_name: Some(canonical_skill_name),
+            members: capability_members,
+            reasons: component_reasons(&component),
+            updated_at: None,
+        });
+    }
+
+    let complementary_edges = relationships
+        .iter()
+        .filter(|edge| {
+            edge.relation_kind == rocode_types::SkillRelationshipKind::ComplementaryComponent
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    for component in relationship_components(&complementary_edges) {
+        let members = component_members(&component);
+        if members.len() < 2 {
+            continue;
+        }
+        let mut capability_members = members
+            .iter()
+            .map(|skill_name| SkillCapabilityMember {
+                skill_name: skill_name.clone(),
+                role: rocode_types::SkillCapabilityMemberRole::Complementary,
+            })
+            .collect::<Vec<_>>();
+        sort_skill_capability_members(&mut capability_members);
+        groups.push(SkillCapabilityGroup {
+            capability_id: build_capability_group_id(
+                rocode_types::SkillCapabilityGroupKind::ComplementaryBundle,
+                &members,
+            ),
+            group_kind: rocode_types::SkillCapabilityGroupKind::ComplementaryBundle,
+            state: rocode_types::SkillCapabilityGroupState::Candidate,
+            canonical_skill_name: None,
+            members: capability_members,
+            reasons: component_reasons(&component),
+            updated_at: None,
+        });
+    }
+
+    sort_skill_capability_groups(&mut groups);
+    groups
+}
+
+fn relationship_components(edges: &[SkillRelationshipEdge]) -> Vec<Vec<SkillRelationshipEdge>> {
+    let mut adjacency = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut edge_by_pair = BTreeMap::<(String, String), SkillRelationshipEdge>::new();
+    for edge in edges {
+        adjacency
+            .entry(edge.left_skill_name.clone())
+            .or_default()
+            .insert(edge.right_skill_name.clone());
+        adjacency
+            .entry(edge.right_skill_name.clone())
+            .or_default()
+            .insert(edge.left_skill_name.clone());
+        edge_by_pair.insert(
+            relationship_pair_key(&edge.left_skill_name, &edge.right_skill_name),
+            edge.clone(),
+        );
+    }
+
+    let mut visited = BTreeSet::new();
+    let mut components = Vec::new();
+    for start in adjacency.keys() {
+        if !visited.insert(start.clone()) {
+            continue;
+        }
+        let mut stack = vec![start.clone()];
+        let mut nodes = BTreeSet::new();
+        nodes.insert(start.clone());
+        while let Some(node) = stack.pop() {
+            if let Some(neighbors) = adjacency.get(&node) {
+                for neighbor in neighbors {
+                    if visited.insert(neighbor.clone()) {
+                        stack.push(neighbor.clone());
+                    }
+                    nodes.insert(neighbor.clone());
+                }
+            }
+        }
+
+        let mut component_edges = edge_by_pair
+            .iter()
+            .filter(|((left, right), _)| nodes.contains(left) && nodes.contains(right))
+            .map(|(_, edge)| edge.clone())
+            .collect::<Vec<_>>();
+        sort_skill_relationship_edges(&mut component_edges);
+        components.push(component_edges);
+    }
+
+    components
+}
+
+fn component_members(component: &[SkillRelationshipEdge]) -> Vec<String> {
+    let mut members = BTreeSet::new();
+    for edge in component {
+        members.insert(edge.left_skill_name.clone());
+        members.insert(edge.right_skill_name.clone());
+    }
+    members.into_iter().collect()
+}
+
+fn canonical_family_skill_name(component: &[SkillRelationshipEdge]) -> Option<String> {
+    let mut votes = BTreeMap::<String, usize>::new();
+    for edge in component {
+        let Some(preferred_skill_name) = edge.preferred_skill_name.as_ref() else {
+            continue;
+        };
+        *votes.entry(preferred_skill_name.clone()).or_default() += 1;
+    }
+    votes
+        .into_iter()
+        .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.cmp(&left.0)))
+        .map(|(skill_name, _)| skill_name)
+}
+
+fn family_member_role(
+    skill_name: &str,
+    canonical_skill_name: &str,
+    component: &[SkillRelationshipEdge],
+) -> rocode_types::SkillCapabilityMemberRole {
+    if skill_name.eq_ignore_ascii_case(canonical_skill_name) {
+        return rocode_types::SkillCapabilityMemberRole::Canonical;
+    }
+    if component.iter().any(|edge| {
+        edge.relation_kind == rocode_types::SkillRelationshipKind::SpecializationVariant
+            && (edge.left_skill_name.eq_ignore_ascii_case(skill_name)
+                || edge.right_skill_name.eq_ignore_ascii_case(skill_name))
+    }) {
+        rocode_types::SkillCapabilityMemberRole::Specialization
+    } else {
+        rocode_types::SkillCapabilityMemberRole::MergeCandidate
+    }
+}
+
+fn component_reasons(component: &[SkillRelationshipEdge]) -> Vec<String> {
+    let mut reasons = Vec::new();
+    for edge in component {
+        reasons.extend(edge.reasons.clone());
+    }
+    let mut reasons = dedupe_string_reasons(reasons);
+    reasons.truncate(6);
+    reasons
+}
+
+fn build_capability_group_id(
+    group_kind: rocode_types::SkillCapabilityGroupKind,
+    members: &[String],
+) -> String {
+    let prefix = match group_kind {
+        rocode_types::SkillCapabilityGroupKind::CanonicalFamily => "canonical_family",
+        rocode_types::SkillCapabilityGroupKind::ComplementaryBundle => "complementary_bundle",
+    };
+    let normalized_members = members
+        .iter()
+        .map(|member| normalize_name(member))
+        .collect::<Vec<_>>()
+        .join("+");
+    format!("{prefix}:{normalized_members}")
+}
+
+fn sort_skill_capability_members(members: &mut [SkillCapabilityMember]) {
+    members.sort_by(|left, right| {
+        capability_member_role_sort_key(left.role)
+            .cmp(&capability_member_role_sort_key(right.role))
+            .then_with(|| left.skill_name.cmp(&right.skill_name))
+    });
+}
+
+fn capability_member_role_sort_key(role: rocode_types::SkillCapabilityMemberRole) -> u8 {
+    match role {
+        rocode_types::SkillCapabilityMemberRole::Canonical => 0,
+        rocode_types::SkillCapabilityMemberRole::Specialization => 1,
+        rocode_types::SkillCapabilityMemberRole::MergeCandidate => 2,
+        rocode_types::SkillCapabilityMemberRole::Complementary => 3,
+    }
+}
+
+fn sort_skill_capability_groups(groups: &mut [SkillCapabilityGroup]) {
+    groups.sort_by(|left, right| {
+        capability_group_kind_sort_key(left.group_kind)
+            .cmp(&capability_group_kind_sort_key(right.group_kind))
+            .then_with(|| right.members.len().cmp(&left.members.len()))
+            .then_with(|| left.capability_id.cmp(&right.capability_id))
+    });
+}
+
+fn sort_runtime_composition_hints(hints: &mut [SkillRuntimeCompositionHint]) {
+    hints.sort_by(|left, right| {
+        runtime_composition_hint_sort_key(left.kind)
+            .cmp(&runtime_composition_hint_sort_key(right.kind))
+            .then_with(|| left.skill_names.cmp(&right.skill_names))
+            .then_with(|| left.preferred_skill_name.cmp(&right.preferred_skill_name))
+            .then_with(|| left.capability_id.cmp(&right.capability_id))
+    });
+}
+
+fn capability_group_kind_sort_key(kind: rocode_types::SkillCapabilityGroupKind) -> u8 {
+    match kind {
+        rocode_types::SkillCapabilityGroupKind::CanonicalFamily => 0,
+        rocode_types::SkillCapabilityGroupKind::ComplementaryBundle => 1,
+    }
+}
+
+fn runtime_composition_hint_sort_key(kind: SkillRuntimeCompositionHintKind) -> u8 {
+    match kind {
+        SkillRuntimeCompositionHintKind::PreferCanonicalSkill => 0,
+        SkillRuntimeCompositionHintKind::ComplementaryBundle => 1,
+    }
+}
+
+fn relationship_identity_key(
+    left_skill_name: &str,
+    right_skill_name: &str,
+    relation_kind: rocode_types::SkillRelationshipKind,
+) -> (String, String, u8) {
+    let (left, right) = relationship_pair_key(left_skill_name, right_skill_name);
+    (left, right, relationship_kind_sort_key(relation_kind))
+}
+
+fn relationship_edge_identity_key(edge: &SkillRelationshipEdge) -> (String, String, u8) {
+    relationship_identity_key(
+        &edge.left_skill_name,
+        &edge.right_skill_name,
+        edge.relation_kind,
+    )
+}
+
+fn merge_relationship_inspection_entry(
+    stored: &SkillRelationshipEdge,
+    candidate: &SkillRelationshipEdge,
+) -> SkillRelationshipEdge {
+    SkillRelationshipEdge {
+        left_skill_name: candidate.left_skill_name.clone(),
+        right_skill_name: candidate.right_skill_name.clone(),
+        relation_kind: stored.relation_kind,
+        state: stored.state,
+        score: candidate.score.max(stored.score),
+        reasons: if stored.reasons.is_empty() {
+            candidate.reasons.clone()
+        } else {
+            dedupe_string_reasons(
+                stored
+                    .reasons
+                    .iter()
+                    .cloned()
+                    .chain(candidate.reasons.iter().cloned())
+                    .collect(),
+            )
+        },
+        preferred_skill_name: stored
+            .preferred_skill_name
+            .clone()
+            .or_else(|| candidate.preferred_skill_name.clone()),
+        observed_at: stored.observed_at.or(candidate.observed_at),
+        updated_at: stored.updated_at,
+    }
+}
+
+fn merge_capability_group_inspection_entry(
+    stored: &SkillCapabilityGroup,
+    candidate: &SkillCapabilityGroup,
+) -> SkillCapabilityGroup {
+    SkillCapabilityGroup {
+        capability_id: stored.capability_id.clone(),
+        group_kind: stored.group_kind,
+        state: stored.state,
+        canonical_skill_name: stored
+            .canonical_skill_name
+            .clone()
+            .or_else(|| candidate.canonical_skill_name.clone()),
+        members: if stored.members.is_empty() {
+            candidate.members.clone()
+        } else {
+            stored.members.clone()
+        },
+        reasons: if stored.reasons.is_empty() {
+            candidate.reasons.clone()
+        } else {
+            dedupe_string_reasons(
+                stored
+                    .reasons
+                    .iter()
+                    .cloned()
+                    .chain(candidate.reasons.iter().cloned())
+                    .collect(),
+            )
+        },
+        updated_at: stored.updated_at,
+    }
+}
+
+fn validate_relationship_preferred_skill(
+    left_skill_name: &str,
+    right_skill_name: &str,
+    relation_kind: rocode_types::SkillRelationshipKind,
+    existing_preferred_skill_name: Option<&str>,
+    requested_preferred_skill_name: Option<&str>,
+) -> Result<Option<String>, SkillError> {
+    match relation_kind {
+        rocode_types::SkillRelationshipKind::RedundantOverlap
+        | rocode_types::SkillRelationshipKind::SpecializationVariant => {
+            let preferred_skill_name = requested_preferred_skill_name
+                .or(existing_preferred_skill_name)
+                .ok_or_else(|| SkillError::InvalidSkillContent {
+                    message: format!(
+                        "relationship `{}` requires a preferred canonical skill",
+                        format_skill_relationship_kind(relation_kind)
+                    ),
+                })?;
+            canonicalize_pair_skill_name(left_skill_name, right_skill_name, preferred_skill_name)
+                .map(Some)
+        }
+        rocode_types::SkillRelationshipKind::ComplementaryComponent => {
+            if requested_preferred_skill_name.is_some() {
+                return Err(SkillError::InvalidSkillContent {
+                    message: "complementary_component does not allow preferred_skill_name"
+                        .to_string(),
+                });
+            }
+            Ok(None)
+        }
+    }
+}
+
+fn canonicalize_pair_skill_name(
+    left_skill_name: &str,
+    right_skill_name: &str,
+    requested_skill_name: &str,
+) -> Result<String, SkillError> {
+    let requested = required_nonempty_text(requested_skill_name, "preferred_skill_name")?;
+    if left_skill_name.eq_ignore_ascii_case(&requested) {
+        return Ok(left_skill_name.to_string());
+    }
+    if right_skill_name.eq_ignore_ascii_case(&requested) {
+        return Ok(right_skill_name.to_string());
+    }
+    Err(SkillError::InvalidSkillContent {
+        message: format!(
+            "preferred skill `{}` must match one of `{}` or `{}`",
+            requested, left_skill_name, right_skill_name
+        ),
+    })
+}
+
+fn validate_capability_group_input<F>(
+    capability_id: Option<&str>,
+    group_kind: rocode_types::SkillCapabilityGroupKind,
+    canonical_skill_name: Option<&str>,
+    members: Vec<SkillCapabilityMember>,
+    reasons: Vec<String>,
+    candidate_group: Option<&SkillCapabilityGroup>,
+    mut resolve_skill_name: F,
+) -> Result<SkillCapabilityGroup, SkillError>
+where
+    F: FnMut(&str) -> Result<String, SkillError>,
+{
+    if members.len() < 2 {
+        return Err(SkillError::InvalidSkillContent {
+            message: "capability group requires at least 2 members".to_string(),
+        });
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut resolved_members = Vec::with_capacity(members.len());
+    for member in members {
+        let resolved_skill_name = resolve_skill_name(&member.skill_name)?;
+        let normalized = normalize_name(&resolved_skill_name);
+        if !seen.insert(normalized) {
+            return Err(SkillError::InvalidSkillContent {
+                message: format!(
+                    "capability group contains duplicate member `{}`",
+                    resolved_skill_name
+                ),
+            });
+        }
+        resolved_members.push(SkillCapabilityMember {
+            skill_name: resolved_skill_name,
+            role: member.role,
+        });
+    }
+
+    let cleaned_reasons = {
+        let cleaned = dedupe_string_reasons(
+            reasons
+                .into_iter()
+                .map(|reason| reason.trim().to_string())
+                .filter(|reason| !reason.is_empty())
+                .collect(),
+        );
+        if cleaned.is_empty() {
+            candidate_group
+                .map(|group| group.reasons.clone())
+                .unwrap_or_default()
+        } else {
+            cleaned
+        }
+    };
+
+    let mut canonical_skill_name = canonical_skill_name.map(resolve_skill_name).transpose()?;
+    match group_kind {
+        rocode_types::SkillCapabilityGroupKind::CanonicalFamily => {
+            let Some(canonical_name) = canonical_skill_name.clone() else {
+                return Err(SkillError::InvalidSkillContent {
+                    message: "canonical_family group requires canonical_skill_name".to_string(),
+                });
+            };
+            let canonical_count = resolved_members
+                .iter()
+                .filter(|member| member.role == rocode_types::SkillCapabilityMemberRole::Canonical)
+                .count();
+            if canonical_count > 1
+                || (canonical_count == 1
+                    && !resolved_members.iter().any(|member| {
+                        member.role == rocode_types::SkillCapabilityMemberRole::Canonical
+                            && member.skill_name.eq_ignore_ascii_case(&canonical_name)
+                    }))
+            {
+                return Err(SkillError::InvalidSkillContent {
+                    message: "canonical_family group must have exactly one canonical member matching canonical_skill_name".to_string(),
+                });
+            }
+            if !resolved_members
+                .iter()
+                .any(|member| member.skill_name.eq_ignore_ascii_case(&canonical_name))
+            {
+                return Err(SkillError::InvalidSkillContent {
+                    message: format!(
+                        "canonical skill `{}` must appear in capability group members",
+                        canonical_name
+                    ),
+                });
+            }
+
+            for member in &mut resolved_members {
+                if member.skill_name.eq_ignore_ascii_case(&canonical_name) {
+                    member.role = rocode_types::SkillCapabilityMemberRole::Canonical;
+                } else if matches!(
+                    member.role,
+                    rocode_types::SkillCapabilityMemberRole::Canonical
+                        | rocode_types::SkillCapabilityMemberRole::Complementary
+                ) {
+                    return Err(SkillError::InvalidSkillContent {
+                        message: format!(
+                            "canonical_family member `{}` must use specialization or merge_candidate role",
+                            member.skill_name
+                        ),
+                    });
+                }
+            }
+        }
+        rocode_types::SkillCapabilityGroupKind::ComplementaryBundle => {
+            if canonical_skill_name.is_some() {
+                return Err(SkillError::InvalidSkillContent {
+                    message: "complementary_bundle does not allow canonical_skill_name".to_string(),
+                });
+            }
+            canonical_skill_name = None;
+            if resolved_members
+                .iter()
+                .any(|member| member.role != rocode_types::SkillCapabilityMemberRole::Complementary)
+            {
+                return Err(SkillError::InvalidSkillContent {
+                    message: "complementary_bundle members must all use complementary role"
+                        .to_string(),
+                });
+            }
+        }
+    }
+
+    sort_skill_capability_members(&mut resolved_members);
+    let capability_id = capability_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            build_capability_group_id(
+                group_kind,
+                &resolved_members
+                    .iter()
+                    .map(|member| member.skill_name.clone())
+                    .collect::<Vec<_>>(),
+            )
+        });
+
+    Ok(SkillCapabilityGroup {
+        capability_id,
+        group_kind,
+        state: rocode_types::SkillCapabilityGroupState::Candidate,
+        canonical_skill_name,
+        members: resolved_members,
+        reasons: cleaned_reasons,
+        updated_at: None,
+    })
+}
+
+fn validate_capability_group_member_role_update(
+    group: &SkillCapabilityGroup,
+    role: rocode_types::SkillCapabilityMemberRole,
+) -> Result<(), SkillError> {
+    match group.group_kind {
+        rocode_types::SkillCapabilityGroupKind::CanonicalFamily => {
+            if matches!(
+                role,
+                rocode_types::SkillCapabilityMemberRole::Canonical
+                    | rocode_types::SkillCapabilityMemberRole::Complementary
+            ) {
+                return Err(SkillError::InvalidSkillContent {
+                    message: format!(
+                        "canonical_family member role update only supports specialization or merge_candidate for `{}`",
+                        group.capability_id
+                    ),
+                });
+            }
+        }
+        rocode_types::SkillCapabilityGroupKind::ComplementaryBundle => {
+            if role != rocode_types::SkillCapabilityMemberRole::Complementary {
+                return Err(SkillError::InvalidSkillContent {
+                    message: format!(
+                        "complementary_bundle member role update only supports complementary for `{}`",
+                        group.capability_id
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn required_nonempty_text(value: &str, field_name: &str) -> Result<String, SkillError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(SkillError::InvalidSkillContent {
+            message: format!("{field_name} cannot be empty"),
+        });
+    }
+    Ok(trimmed.to_string())
+}
+
+fn format_skill_relationship_kind(kind: rocode_types::SkillRelationshipKind) -> &'static str {
+    match kind {
+        rocode_types::SkillRelationshipKind::RedundantOverlap => "redundant_overlap",
+        rocode_types::SkillRelationshipKind::SpecializationVariant => "specialization_variant",
+        rocode_types::SkillRelationshipKind::ComplementaryComponent => "complementary_component",
+    }
+}
+
+fn format_skill_relationship_state(state: rocode_types::SkillRelationshipState) -> &'static str {
+    match state {
+        rocode_types::SkillRelationshipState::Observed => "observed",
+        rocode_types::SkillRelationshipState::Accepted => "accepted",
+        rocode_types::SkillRelationshipState::Dismissed => "dismissed",
+    }
+}
+
+fn format_capability_group_kind(kind: rocode_types::SkillCapabilityGroupKind) -> &'static str {
+    match kind {
+        rocode_types::SkillCapabilityGroupKind::CanonicalFamily => "canonical_family",
+        rocode_types::SkillCapabilityGroupKind::ComplementaryBundle => "complementary_bundle",
+    }
+}
+
+fn format_capability_group_state(state: rocode_types::SkillCapabilityGroupState) -> &'static str {
+    match state {
+        rocode_types::SkillCapabilityGroupState::Candidate => "candidate",
+        rocode_types::SkillCapabilityGroupState::Active => "active",
+        rocode_types::SkillCapabilityGroupState::Dismissed => "dismissed",
+    }
+}
+
+fn format_capability_member_role(role: rocode_types::SkillCapabilityMemberRole) -> &'static str {
+    match role {
+        rocode_types::SkillCapabilityMemberRole::Canonical => "canonical",
+        rocode_types::SkillCapabilityMemberRole::Specialization => "specialization",
+        rocode_types::SkillCapabilityMemberRole::Complementary => "complementary",
+        rocode_types::SkillCapabilityMemberRole::MergeCandidate => "merge_candidate",
+    }
+}
+
+fn format_runtime_prefer_canonical_hint(
+    skill_name: &str,
+    preferred_skill_name: &str,
+    role: Option<SkillCapabilityMemberRole>,
+    capability_id: Option<&str>,
+) -> String {
+    let (relation_label, closing_clause) = match role {
+        Some(SkillCapabilityMemberRole::Specialization) => (
+            "specialization variant",
+            format!("only use `{skill_name}` for its narrower responsibility"),
+        ),
+        Some(SkillCapabilityMemberRole::MergeCandidate) => (
+            "merge candidate",
+            format!("avoid splitting duplicate instructions across both skills"),
+        ),
+        _ => (
+            "related member",
+            format!("keep `{preferred_skill_name}` as the family owner when the two overlap"),
+        ),
+    };
+    let family_clause = capability_id
+        .map(|value| format!(" within canonical family `{}`", value.trim()))
+        .unwrap_or_default();
+    format!(
+        "Skill `{skill_name}` is governed as a {relation_label}{family_clause} under preferred skill `{preferred_skill_name}`. Prefer the canonical workflow as the family owner, and {closing_clause}."
+    )
+}
+
+fn format_runtime_complementary_bundle_hint(
+    skill_names: &[String],
+    capability_id: Option<&str>,
+) -> String {
+    let listed = skill_names
+        .iter()
+        .map(|skill_name| format!("`{skill_name}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let bundle_clause = capability_id
+        .map(|value| format!(" in complementary bundle `{}`", value.trim()))
+        .unwrap_or_default();
+    format!(
+        "Skills {listed} are governed as complementary components{bundle_clause}. Keep their responsibilities distinct and do not collapse one skill into another."
+    )
+}
+
+fn dedupe_string_reasons(reasons: Vec<String>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut deduped = Vec::new();
+    for reason in reasons {
+        let normalized = normalize_name(&reason);
+        if normalized.is_empty() || !seen.insert(normalized) {
+            continue;
+        }
+        deduped.push(reason);
+    }
+    deduped
+}
+
+fn join_terms<'a>(terms: impl IntoIterator<Item = &'a String>) -> String {
+    terms
+        .into_iter()
+        .map(|term| term.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn set_jaccard_ratio(left: &BTreeSet<String>, right: &BTreeSet<String>) -> f32 {
@@ -3896,6 +5979,26 @@ fn audit_event_timeline_entry(
 
 fn audit_event_title(event: &SkillAuditEvent) -> String {
     match event.kind {
+        SkillAuditKind::CompositionRelationshipAccepted => format!(
+            "Composition relationship accepted · {}",
+            event.skill_name.as_deref().unwrap_or("skill")
+        ),
+        SkillAuditKind::CompositionRelationshipDismissed => format!(
+            "Composition relationship dismissed · {}",
+            event.skill_name.as_deref().unwrap_or("skill")
+        ),
+        SkillAuditKind::CapabilityGroupActivated => format!(
+            "Capability group activated · {}",
+            payload_string(&event.payload, "capability_id").unwrap_or_else(|| "group".to_string())
+        ),
+        SkillAuditKind::CapabilityGroupMemberRoleUpdated => format!(
+            "Capability group member updated · {}",
+            payload_string(&event.payload, "capability_id").unwrap_or_else(|| "group".to_string())
+        ),
+        SkillAuditKind::CapabilityGroupMemberRemoved => format!(
+            "Capability group member removed · {}",
+            payload_string(&event.payload, "capability_id").unwrap_or_else(|| "group".to_string())
+        ),
         SkillAuditKind::VitalityTransitioned => format!(
             "Vitality transitioned · {}",
             event.skill_name.as_deref().unwrap_or("skill")
@@ -3997,6 +6100,43 @@ fn audit_event_title(event: &SkillAuditEvent) -> String {
 
 fn audit_event_summary(event: &SkillAuditEvent) -> String {
     match event.kind {
+        SkillAuditKind::CompositionRelationshipAccepted
+        | SkillAuditKind::CompositionRelationshipDismissed => {
+            let relation_kind = payload_string(&event.payload, "relation_kind")
+                .unwrap_or_else(|| "relationship".to_string());
+            let left_skill_name = payload_string(&event.payload, "left_skill_name")
+                .unwrap_or_else(|| "left".to_string());
+            let right_skill_name = payload_string(&event.payload, "right_skill_name")
+                .unwrap_or_else(|| "right".to_string());
+            let preferred_skill_name = payload_string(&event.payload, "preferred_skill_name");
+            match preferred_skill_name {
+                Some(preferred_skill_name) => format!(
+                    "{relation_kind} · {left_skill_name} <-> {right_skill_name} · preferred {preferred_skill_name}"
+                ),
+                None => format!("{relation_kind} · {left_skill_name} <-> {right_skill_name}"),
+            }
+        }
+        SkillAuditKind::CapabilityGroupActivated => format!(
+            "{} · {} member(s){}",
+            payload_string(&event.payload, "group_kind").unwrap_or_else(|| "group".to_string()),
+            payload_skill_names(&event.payload).len(),
+            payload_string(&event.payload, "canonical_skill_name")
+                .map(|canonical| format!(" · canonical {canonical}"))
+                .unwrap_or_default()
+        ),
+        SkillAuditKind::CapabilityGroupMemberRoleUpdated => format!(
+            "{} -> {} · {}",
+            payload_string(&event.payload, "previous_role").unwrap_or_else(|| "none".to_string()),
+            payload_string(&event.payload, "current_role").unwrap_or_else(|| "role".to_string()),
+            payload_string(&event.payload, "target_skill_name")
+                .unwrap_or_else(|| "member".to_string())
+        ),
+        SkillAuditKind::CapabilityGroupMemberRemoved => format!(
+            "{} removed · {} remaining",
+            payload_string(&event.payload, "removed_skill_name")
+                .unwrap_or_else(|| "member".to_string()),
+            payload_usize(&event.payload, "remaining_member_count").unwrap_or_default()
+        ),
         SkillAuditKind::VitalityTransitioned => format!(
             "{} -> {} · {}",
             payload_string(&event.payload, "from_state").unwrap_or_else(|| "active".to_string()),
@@ -4095,6 +6235,11 @@ fn audit_event_summary(event: &SkillAuditEvent) -> String {
 
 fn audit_event_status(kind: &SkillAuditKind) -> SkillGovernanceTimelineStatus {
     match kind {
+        SkillAuditKind::CompositionRelationshipDismissed => SkillGovernanceTimelineStatus::Info,
+        SkillAuditKind::CompositionRelationshipAccepted
+        | SkillAuditKind::CapabilityGroupActivated
+        | SkillAuditKind::CapabilityGroupMemberRoleUpdated
+        | SkillAuditKind::CapabilityGroupMemberRemoved => SkillGovernanceTimelineStatus::Success,
         SkillAuditKind::VitalityTransitioned => SkillGovernanceTimelineStatus::Warn,
         SkillAuditKind::ArtifactEvicted => SkillGovernanceTimelineStatus::Info,
         SkillAuditKind::ArtifactFetchFailed => SkillGovernanceTimelineStatus::Error,
@@ -4160,6 +6305,19 @@ fn payload_bool(payload: &Value, key: &str) -> Option<bool> {
 
 fn payload_usize(payload: &Value, key: &str) -> Option<usize> {
     payload.get(key)?.as_u64().map(|value| value as usize)
+}
+
+fn payload_skill_names(payload: &Value) -> Vec<String> {
+    payload
+        .get("skill_names")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(|value| value.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
 }
 
 fn payload_first_guard_rule(payload: &Value) -> Option<String> {

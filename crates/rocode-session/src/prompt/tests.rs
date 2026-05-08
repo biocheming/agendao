@@ -18,7 +18,8 @@ use rocode_storage::{Database, SkillEvolutionProposalRepository};
 use rocode_tool::{Tool, ToolContext, ToolError, ToolResult};
 use rocode_types::{
     ContextPressureGovernanceStatus, MemoryEvidenceRef, MemoryKind, MemoryRecord, MemoryRecordId,
-    MemoryScope, MemoryStatus, MemoryValidationStatus, ProposalStatus,
+    MemoryScope, MemoryStatus, MemoryValidationStatus, ProposalStatus, SkillCapabilityGroupKind,
+    SkillCapabilityMember, SkillCapabilityMemberRole,
 };
 use std::fs;
 use std::sync::Arc;
@@ -1901,6 +1902,109 @@ fn prepare_skill_reflection_loads_methodology_from_runtime_skill_names() {
     );
 }
 
+#[tokio::test]
+async fn apply_runtime_workspace_context_adds_composition_governance_reminder() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("AGENTS.md"),
+        r#"
+1. For the harness protocol itself
+   - target workspace skill: `provider-refresh-gitlab`
+   - target path: `.rocode/skills/provider-refresh-gitlab/SKILL.md`
+   - description: `GitLab provider refresh workflow.`
+
+2. For the harness protocol itself
+   - target workspace skill: `frontend-ui-ux`
+   - target path: `.rocode/skills/frontend-ui-ux/SKILL.md`
+   - description: `Frontend UX workflow.`
+
+3. For the harness protocol itself
+   - target workspace skill: `frontend-ui-a11y`
+   - target path: `.rocode/skills/frontend-ui-a11y/SKILL.md`
+   - description: `Frontend accessibility workflow.`
+"#,
+    )
+    .unwrap();
+
+    let governance = SkillGovernanceAuthority::new(dir.path(), None);
+    for skill_name in [
+        "provider-refresh",
+        "provider-refresh-gitlab",
+        "frontend-ui-ux",
+        "frontend-ui-a11y",
+    ] {
+        governance
+            .create_skill(
+                rocode_skill::CreateSkillRequest {
+                    name: skill_name.to_string(),
+                    description: format!("{skill_name} skill"),
+                    body: format!("Use {skill_name}."),
+                    frontmatter: None,
+                    category: Some("test".to_string()),
+                    directory_name: None,
+                },
+                "test:create",
+            )
+            .unwrap();
+    }
+    governance
+        .activate_skill_capability_group(
+            Some("provider-refresh-family"),
+            SkillCapabilityGroupKind::CanonicalFamily,
+            Some("provider-refresh"),
+            vec![
+                SkillCapabilityMember {
+                    skill_name: "provider-refresh".to_string(),
+                    role: SkillCapabilityMemberRole::Canonical,
+                },
+                SkillCapabilityMember {
+                    skill_name: "provider-refresh-gitlab".to_string(),
+                    role: SkillCapabilityMemberRole::Specialization,
+                },
+            ],
+            vec!["gitlab refresh is governed by shared provider refresh".to_string()],
+            "test:activate-group",
+        )
+        .unwrap();
+    governance
+        .activate_skill_capability_group(
+            Some("frontend-delivery-bundle"),
+            SkillCapabilityGroupKind::ComplementaryBundle,
+            None,
+            vec![
+                SkillCapabilityMember {
+                    skill_name: "frontend-ui-ux".to_string(),
+                    role: SkillCapabilityMemberRole::Complementary,
+                },
+                SkillCapabilityMember {
+                    skill_name: "frontend-ui-a11y".to_string(),
+                    role: SkillCapabilityMemberRole::Complementary,
+                },
+            ],
+            vec!["frontend delivery needs both ux and a11y coverage".to_string()],
+            "test:activate-group",
+        )
+        .unwrap();
+
+    let prompt = SessionPrompt::default();
+    let mut session = Session::new("proj", dir.path().to_string_lossy().to_string());
+    session.add_user_message("run the runtime skills");
+
+    prompt
+        .apply_runtime_workspace_context(&mut session)
+        .await
+        .expect("runtime workspace context should apply");
+
+    let user_message = session.messages.last().expect("user message should exist");
+    let rendered = user_message.get_text();
+    assert!(rendered.contains("Runtime Skill Governance:"));
+    assert!(rendered.contains("provider-refresh-gitlab"));
+    assert!(rendered.contains("provider-refresh"));
+    assert!(rendered.contains("frontend-ui-ux"));
+    assert!(rendered.contains("frontend-ui-a11y"));
+    assert!(rendered.contains("Keep their responsibilities distinct"));
+}
+
 #[test]
 fn update_skill_reflection_metadata_removes_stale_value_when_none() {
     let mut session = Session::new("proj", ".");
@@ -2214,6 +2318,114 @@ Use for provider refresh tasks.
     assert!(evolution.last_memory_promotion_at.is_some());
     assert!(evolution.last_proposal_at.is_some());
     assert!(evolution.last_positive_signal_at.is_some());
+}
+
+#[tokio::test]
+async fn proposal_generation_retargets_specialization_to_canonical_skill() {
+    let dir = tempdir().expect("tempdir");
+    fs::create_dir_all(dir.path().join(".rocode/skills/provider-refresh"))
+        .expect("canonical skill dir should exist");
+    fs::write(
+        dir.path().join(".rocode/skills/provider-refresh/SKILL.md"),
+        r#"---
+name: provider-refresh
+description: refresh provider
+---
+Use for provider refresh tasks.
+"#,
+    )
+    .expect("canonical skill file should exist");
+    fs::create_dir_all(dir.path().join(".rocode/skills/provider-refresh-gitlab"))
+        .expect("specialization skill dir should exist");
+    fs::write(
+        dir.path()
+            .join(".rocode/skills/provider-refresh-gitlab/SKILL.md"),
+        r#"---
+name: provider-refresh-gitlab
+description: refresh gitlab provider
+---
+Use for GitLab-specific provider refresh tasks.
+"#,
+    )
+    .expect("specialization skill file should exist");
+
+    let governance = SkillGovernanceAuthority::new(dir.path(), None);
+    governance
+        .activate_skill_capability_group(
+            Some("provider-refresh-family"),
+            SkillCapabilityGroupKind::CanonicalFamily,
+            Some("provider-refresh"),
+            vec![
+                SkillCapabilityMember {
+                    skill_name: "provider-refresh".to_string(),
+                    role: SkillCapabilityMemberRole::Canonical,
+                },
+                SkillCapabilityMember {
+                    skill_name: "provider-refresh-gitlab".to_string(),
+                    role: SkillCapabilityMemberRole::Specialization,
+                },
+            ],
+            vec!["GitLab refresh is governed under the shared provider refresh skill".to_string()],
+            "test:activate-group",
+        )
+        .expect("capability group should activate");
+
+    let (prompt, proposal_repo) = prompt_with_memory_and_proposals(dir.path()).await;
+    let candidates = vec![methodology_candidate_record(
+        "mem_provider_refresh_gitlab",
+        "ses_skill_nudge",
+        "ws:test",
+        "provider-refresh-gitlab",
+    )];
+    let proposal_candidates = prompt.retarget_methodology_candidates_for_composition(
+        dir.path().to_str(),
+        "ses_skill_nudge",
+        &candidates,
+    );
+    assert_eq!(
+        proposal_candidates[0].linked_skill_name.as_deref(),
+        Some("provider-refresh")
+    );
+
+    let summary = rocode_storage::generate_skill_evolution_proposals(
+        proposal_repo.as_ref(),
+        &proposal_candidates,
+        "ses_skill_nudge",
+    )
+    .await
+    .expect("proposal generation should succeed");
+    prompt
+        .sync_skill_proposal_evidence(
+            dir.path().to_str(),
+            "ses_skill_nudge",
+            proposal_repo.as_ref(),
+            &linked_methodology_skill_names(&proposal_candidates),
+        )
+        .await;
+
+    assert_eq!(summary.proposals_created, 1);
+    let drafts = proposal_repo
+        .list_by_status(&ProposalStatus::Draft)
+        .await
+        .expect("draft proposals should list");
+    assert_eq!(drafts.len(), 1);
+    assert_eq!(
+        drafts[0].linked_skill_name.as_deref(),
+        Some("provider-refresh")
+    );
+
+    let canonical_snapshot = SkillGovernanceAuthority::new(dir.path(), None)
+        .skill_operational_snapshots()
+        .into_iter()
+        .find(|entry| entry.skill_name == "provider-refresh")
+        .expect("canonical snapshot should exist");
+    assert_eq!(
+        canonical_snapshot
+            .evolution
+            .as_ref()
+            .map(|entry| entry.proposal_signal_count),
+        Some(1)
+    );
 }
 
 #[test]
