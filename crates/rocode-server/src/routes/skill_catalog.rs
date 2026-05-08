@@ -41,7 +41,7 @@ pub(crate) async fn resolve_skill_catalog(
     state: &Arc<ServerState>,
     query: &SkillCatalogQuery,
 ) -> Result<Vec<SkillMetaView>> {
-    resolve_skill_catalog_inner(state, query, None).await
+    resolve_skill_catalog_inner(state, query, None, false).await
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -302,7 +302,7 @@ async fn resolve_skill_refs_for_stage(
         tools: Vec::new(),
         toolsets: Vec::new(),
     };
-    let views = resolve_skill_catalog_inner(state, &query, requested_names).await?;
+    let views = resolve_skill_catalog_inner(state, &query, requested_names, true).await?;
     Ok(views
         .into_iter()
         .map(|skill| SchedulerSkillRef {
@@ -317,14 +317,23 @@ async fn resolve_skill_catalog_inner(
     state: &Arc<ServerState>,
     query: &SkillCatalogQuery,
     requested_names: Option<&[String]>,
+    runtime_only: bool,
 ) -> Result<Vec<SkillMetaView>> {
     let authority = skill_authority(state);
     let filter = build_skill_filter(state, query).await?;
     let authority_filter = filter.as_ref().map(OwnedSkillFilter::as_filter);
 
-    let views = authority
+    let mut views = authority
         .list_skill_meta(authority_filter.as_ref())
         .map_err(|error| ApiError::InternalError(error.to_string()))?;
+    if runtime_only {
+        let governance = skill_governance_authority(state);
+        views.retain(|view| {
+            governance
+                .ensure_skill_runtime_available(&view.name)
+                .is_ok()
+        });
+    }
     Ok(select_skill_views(views, requested_names))
 }
 

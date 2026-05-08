@@ -162,12 +162,38 @@ export interface SkillWriteLedgerEntryRecord {
   last_supporting_file?: string | null;
 }
 
+export type SkillVitalityStateRecord =
+  | "active"
+  | "review_candidate"
+  | "retired"
+  | "archived";
+
+export type SkillRetirementReasonKindRecord =
+  | "negative_entropy"
+  | "semantic_conflict"
+  | "manual_override"
+  | "restored";
+
+export interface SkillRetirementReasonRecord {
+  kind: SkillRetirementReasonKindRecord;
+  summary: string;
+  noted_at: number;
+  related_skill_name?: string | null;
+}
+
+export interface SkillVitalityRecord {
+  state: SkillVitalityStateRecord;
+  updated_at: number;
+  reason: SkillRetirementReasonRecord;
+}
+
 export interface SkillOperationalSnapshotRecord {
   skill_name: string;
   source_scope: SkillOperationalSourceScopeRecord;
   source_id?: string | null;
   usage?: SkillUsageLedgerEntryRecord | null;
   writes?: SkillWriteLedgerEntryRecord | null;
+  vitality?: SkillVitalityRecord | null;
 }
 
 export interface SkillHubUsageLedgerResponseRecord {

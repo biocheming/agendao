@@ -38,10 +38,12 @@ use crate::{
     SkillHubManagedRemoveRequest, SkillHubManagedRemoveResponse, SkillHubManagedResponse,
     SkillHubNegativeEntropyResponse, SkillHubPolicyResponse, SkillHubRemoteInstallApplyRequest,
     SkillHubRemoteInstallPlanRequest, SkillHubRemoteUpdateApplyRequest,
-    SkillHubRemoteUpdatePlanRequest, SkillHubSemanticConflictResponse, SkillHubSyncApplyRequest,
-    SkillHubSyncPlanRequest, SkillHubSyncPlanResponse, SkillHubTimelineQuery,
-    SkillHubTimelineResponse, SkillHubUsageLedgerResponse, SkillManageRequest, SkillManageResponse,
-    SkillRemoteInstallPlan, SkillRemoteInstallResponse, UpdateSessionRequest,
+    SkillHubRemoteUpdatePlanRequest, SkillHubReviewCandidatesSyncRequest,
+    SkillHubReviewCandidatesSyncResponse, SkillHubSemanticConflictResponse,
+    SkillHubSyncApplyRequest, SkillHubSyncPlanRequest, SkillHubSyncPlanResponse,
+    SkillHubTimelineQuery, SkillHubTimelineResponse, SkillHubUsageLedgerResponse,
+    SkillHubVitalityUpdateRequest, SkillHubVitalityUpdateResponse, SkillManageRequest,
+    SkillManageResponse, SkillRemoteInstallPlan, SkillRemoteInstallResponse, UpdateSessionRequest,
 };
 
 pub struct BlockingApiClient {
@@ -716,6 +718,17 @@ impl BlockingApiClient {
         )
     }
 
+    pub fn sync_skill_hub_review_candidates(
+        &self,
+        req: &SkillHubReviewCandidatesSyncRequest,
+    ) -> anyhow::Result<SkillHubReviewCandidatesSyncResponse> {
+        self.post_json(
+            "/skill/hub/review-candidates/sync",
+            "sync skill hub review candidates",
+            req,
+        )
+    }
+
     pub fn list_skill_hub_semantic_conflicts(
         &self,
     ) -> anyhow::Result<SkillHubSemanticConflictResponse> {
@@ -723,6 +736,13 @@ impl BlockingApiClient {
             "/skill/hub/semantic-conflicts",
             "fetch skill hub semantic conflict diagnostics",
         )
+    }
+
+    pub fn update_skill_hub_vitality(
+        &self,
+        req: &SkillHubVitalityUpdateRequest,
+    ) -> anyhow::Result<SkillHubVitalityUpdateResponse> {
+        self.post_json("/skill/hub/vitality", "update skill hub vitality", req)
     }
 
     pub fn list_skill_hub_index(&self) -> anyhow::Result<SkillHubIndexResponse> {

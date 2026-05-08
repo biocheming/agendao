@@ -351,8 +351,32 @@ pub(crate) enum SkillHubCommands {
         #[command(flatten)]
         output: SkillHubOutputArgs,
     },
+    #[command(about = "Mark current negative-entropy review candidates on workspace-local skills")]
+    ReviewCandidatesSync {
+        #[arg(long)]
+        session_id: String,
+        #[command(flatten)]
+        output: SkillHubOutputArgs,
+    },
     #[command(about = "Show read-only semantic overlap diagnostics")]
     SemanticConflicts {
+        #[command(flatten)]
+        output: SkillHubOutputArgs,
+    },
+    #[command(about = "Set one workspace-local skill vitality state")]
+    VitalitySet {
+        #[arg(long)]
+        session_id: String,
+        #[arg(long)]
+        skill_name: String,
+        #[arg(long, value_enum)]
+        state: SkillVitalityStateArg,
+        #[arg(long, value_enum)]
+        reason_kind: Option<SkillRetirementReasonKindArg>,
+        #[arg(long)]
+        summary: String,
+        #[arg(long)]
+        related_skill_name: Option<String>,
         #[command(flatten)]
         output: SkillHubOutputArgs,
     },
@@ -782,6 +806,22 @@ pub(crate) enum SkillSourceKindArg {
     Git,
     Archive,
     Registry,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum SkillVitalityStateArg {
+    Active,
+    ReviewCandidate,
+    Retired,
+    Archived,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum SkillRetirementReasonKindArg {
+    NegativeEntropy,
+    SemanticConflict,
+    ManualOverride,
+    Restored,
 }
 
 #[derive(Subcommand)]

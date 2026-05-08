@@ -15,9 +15,11 @@ use rocode_types::{
     SkillHubManagedRemoveResponse, SkillHubManagedResponse, SkillHubNegativeEntropyResponse,
     SkillHubPolicyResponse, SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
     SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest,
+    SkillHubReviewCandidatesSyncRequest, SkillHubReviewCandidatesSyncResponse,
     SkillHubSemanticConflictResponse, SkillHubSyncApplyRequest, SkillHubSyncPlanRequest,
     SkillHubSyncPlanResponse, SkillHubTimelineQuery, SkillHubTimelineResponse,
-    SkillHubUsageLedgerResponse, SkillRemoteInstallPlan, SkillRemoteInstallResponse,
+    SkillHubUsageLedgerResponse, SkillHubVitalityUpdateRequest, SkillHubVitalityUpdateResponse,
+    SkillRemoteInstallPlan, SkillRemoteInstallResponse, SkillRetirementReason,
 };
 use std::sync::Arc;
 
@@ -27,9 +29,14 @@ pub(crate) fn skill_hub_routes() -> Router<Arc<ServerState>> {
         .route("/usage", get(list_usage_ledger))
         .route("/negative-entropy", get(list_negative_entropy_diagnostics))
         .route(
+            "/review-candidates/sync",
+            post(sync_negative_entropy_review_candidates),
+        )
+        .route(
             "/semantic-conflicts",
             get(list_semantic_conflict_diagnostics),
         )
+        .route("/vitality", post(update_skill_vitality))
         .route("/index", get(list_source_indices))
         .route("/distributions", get(list_distributions))
         .route("/artifact-cache", get(list_artifact_cache))
@@ -97,6 +104,30 @@ async fn list_negative_entropy_diagnostics(
     }))
 }
 
+async fn sync_negative_entropy_review_candidates(
+    State(state): State<Arc<ServerState>>,
+    Json(req): Json<SkillHubReviewCandidatesSyncRequest>,
+) -> Result<Json<SkillHubReviewCandidatesSyncResponse>> {
+    let session_id = required_string(Some(req.session_id), "session_id")?;
+    request_permission(
+        state.clone(),
+        session_id,
+        PermissionRequest::new("skill_hub")
+            .with_pattern("negative_entropy_review_candidates")
+            .with_metadata("action", serde_json::json!("review_candidates_sync")),
+    )
+    .await
+    .map_err(map_tool_error_to_api_error)?;
+
+    let updated = run_skill_hub_blocking(state, move |authority| {
+        authority
+            .sync_negative_entropy_review_candidates("route:/skill/hub/review-candidates/sync")
+            .map_err(map_skill_error_to_api_error)
+    })
+    .await?;
+    Ok(Json(SkillHubReviewCandidatesSyncResponse { updated }))
+}
+
 async fn list_semantic_conflict_diagnostics(
     State(state): State<Arc<ServerState>>,
 ) -> Result<Json<SkillHubSemanticConflictResponse>> {
@@ -111,6 +142,46 @@ async fn list_semantic_conflict_diagnostics(
         generated_at,
         conflicts,
     }))
+}
+
+async fn update_skill_vitality(
+    State(state): State<Arc<ServerState>>,
+    Json(req): Json<SkillHubVitalityUpdateRequest>,
+) -> Result<Json<SkillHubVitalityUpdateResponse>> {
+    let session_id = required_string(Some(req.session_id.clone()), "session_id")?;
+    let skill_name = required_string(Some(req.skill_name.clone()), "skill_name")?;
+    let summary = required_string(Some(req.summary.clone()), "summary")?;
+    request_permission(
+        state.clone(),
+        session_id,
+        PermissionRequest::new("skill_hub")
+            .with_pattern(skill_name.clone())
+            .with_metadata("action", serde_json::json!("set_vitality"))
+            .with_metadata("skill_name", serde_json::json!(&skill_name))
+            .with_metadata("state", serde_json::json!(req.state))
+            .with_metadata("reason_kind", serde_json::json!(req.reason_kind)),
+    )
+    .await
+    .map_err(map_tool_error_to_api_error)?;
+
+    let related_skill_name = trimmed_option(req.related_skill_name.clone());
+    let snapshot = run_skill_hub_blocking(state, move |authority| {
+        authority
+            .set_skill_vitality_state(
+                &skill_name,
+                req.state,
+                SkillRetirementReason {
+                    kind: req.reason_kind,
+                    summary,
+                    noted_at: chrono::Utc::now().timestamp(),
+                    related_skill_name,
+                },
+                "route:/skill/hub/vitality",
+            )
+            .map_err(map_skill_error_to_api_error)
+    })
+    .await?;
+    Ok(Json(SkillHubVitalityUpdateResponse { snapshot }))
 }
 
 async fn list_distributions(
@@ -514,8 +585,9 @@ mod tests {
         ManagedSkillRecord, SkillGovernanceTimelineKind, SkillHubGuardRunRequest,
         SkillHubIndexRefreshRequest, SkillHubManagedDetachRequest, SkillHubManagedRemoveRequest,
         SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
-        SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest, SkillHubTimelineQuery,
-        SkillSourceKind, SkillSourceRef,
+        SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest,
+        SkillHubReviewCandidatesSyncRequest, SkillHubTimelineQuery, SkillHubVitalityUpdateRequest,
+        SkillRetirementReasonKind, SkillSourceKind, SkillSourceRef, SkillVitalityState,
     };
     use std::fs;
     use tempfile::tempdir;
@@ -792,6 +864,52 @@ Use for frontend tasks.
     }
 
     #[tokio::test]
+    async fn review_candidates_sync_route_marks_workspace_local_candidates() {
+        let dir = tempdir().expect("tempdir");
+        let state = server_state_for_project(dir.path());
+        let authority = skill_governance_authority(&state);
+        let session_id = "skill-hub-review-sync";
+        authority
+            .create_skill(
+                rocode_skill::CreateSkillRequest {
+                    name: "stale-checklist".to_string(),
+                    description: "stale checklist".to_string(),
+                    body: "Use when stale checklist review is required.".to_string(),
+                    frontmatter: None,
+                    category: Some("ops".to_string()),
+                    directory_name: None,
+                },
+                "test:create",
+            )
+            .expect("skill create");
+        PERMISSION_ENGINE.lock().await.clear_session(session_id);
+        PERMISSION_ENGINE.lock().await.grant_patterns(
+            session_id,
+            "skill_hub",
+            &["negative_entropy_review_candidates".to_string()],
+        );
+
+        let Json(response) = sync_negative_entropy_review_candidates(
+            State(state),
+            Json(SkillHubReviewCandidatesSyncRequest {
+                session_id: session_id.to_string(),
+            }),
+        )
+        .await
+        .expect("review sync should succeed");
+
+        assert_eq!(response.updated.len(), 1);
+        assert_eq!(
+            response.updated[0]
+                .vitality
+                .as_ref()
+                .map(|record| record.state),
+            Some(SkillVitalityState::ReviewCandidate)
+        );
+        PERMISSION_ENGINE.lock().await.clear_session(session_id);
+    }
+
+    #[tokio::test]
     async fn semantic_conflict_route_returns_ledger_prioritized_pairs() {
         let dir = tempdir().expect("tempdir");
         let skills_root = dir.path().join(".rocode/skills");
@@ -863,6 +981,61 @@ Review code changes carefully and verify evidence before reporting.
             })
             .expect("semantic conflict pair should exist");
         assert_eq!(pair.preferred_skill_name.as_deref(), Some("repo-review"));
+    }
+
+    #[tokio::test]
+    async fn vitality_update_route_persists_state_transition() {
+        let dir = tempdir().expect("tempdir");
+        let state = server_state_for_project(dir.path());
+        let authority = skill_governance_authority(&state);
+        let session_id = "skill-hub-vitality";
+        authority
+            .create_skill(
+                rocode_skill::CreateSkillRequest {
+                    name: "stale-checklist".to_string(),
+                    description: "stale checklist".to_string(),
+                    body: "Use when stale checklist review is required.".to_string(),
+                    frontmatter: None,
+                    category: Some("ops".to_string()),
+                    directory_name: None,
+                },
+                "test:create",
+            )
+            .expect("skill create");
+        PERMISSION_ENGINE.lock().await.clear_session(session_id);
+        PERMISSION_ENGINE.lock().await.grant_patterns(
+            session_id,
+            "skill_hub",
+            &["stale-checklist".to_string()],
+        );
+
+        let Json(response) = update_skill_vitality(
+            State(state.clone()),
+            Json(SkillHubVitalityUpdateRequest {
+                session_id: session_id.to_string(),
+                skill_name: "stale-checklist".to_string(),
+                state: SkillVitalityState::Retired,
+                reason_kind: SkillRetirementReasonKind::ManualOverride,
+                summary: "manually retired".to_string(),
+                related_skill_name: None,
+            }),
+        )
+        .await
+        .expect("vitality update should succeed");
+
+        assert_eq!(
+            response
+                .snapshot
+                .vitality
+                .as_ref()
+                .map(|record| record.state),
+            Some(SkillVitalityState::Retired)
+        );
+        assert_eq!(
+            skill_governance_authority(&state).effective_skill_vitality_state("stale-checklist"),
+            SkillVitalityState::Retired
+        );
+        PERMISSION_ENGINE.lock().await.clear_session(session_id);
     }
 
     #[tokio::test]

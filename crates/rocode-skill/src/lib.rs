@@ -358,6 +358,7 @@ Use the following explicit create or refresh mapping:
                     last_location: Some("/tmp/frontend-ui-ux".to_string()),
                     last_supporting_file: None,
                 }),
+                vitality: None,
             })
             .unwrap();
 
@@ -517,6 +518,113 @@ Use the following explicit create or refresh mapping:
             candidate.severity,
             rocode_types::SkillGovernanceDiagnosticSeverity::Warn
         );
+    }
+
+    #[test]
+    fn governance_sync_negative_entropy_review_candidates_marks_workspace_skill() {
+        let dir = tempdir().unwrap();
+        let governance = SkillGovernanceAuthority::new(dir.path(), None);
+        governance
+            .create_skill(
+                CreateSkillRequest {
+                    name: "stale-checklist".to_string(),
+                    description: "stale checklist".to_string(),
+                    body: "Use when stale checklist review is required.".to_string(),
+                    frontmatter: None,
+                    category: Some("ops".to_string()),
+                    directory_name: None,
+                },
+                "test:create",
+            )
+            .unwrap();
+
+        let updated = governance
+            .sync_negative_entropy_review_candidates("test:review-sync")
+            .unwrap();
+
+        assert_eq!(updated.len(), 1);
+        assert_eq!(
+            updated[0].vitality.as_ref().map(|record| record.state),
+            Some(rocode_types::SkillVitalityState::ReviewCandidate)
+        );
+        assert_eq!(
+            updated[0]
+                .vitality
+                .as_ref()
+                .map(|record| record.reason.kind),
+            Some(rocode_types::SkillRetirementReasonKind::NegativeEntropy)
+        );
+    }
+
+    #[test]
+    fn governance_runtime_availability_rejects_retired_skill() {
+        let dir = tempdir().unwrap();
+        let governance = SkillGovernanceAuthority::new(dir.path(), None);
+        governance
+            .create_skill(
+                CreateSkillRequest {
+                    name: "provider-refresh".to_string(),
+                    description: "refresh".to_string(),
+                    body: "refresh provider".to_string(),
+                    frontmatter: None,
+                    category: Some("ops".to_string()),
+                    directory_name: None,
+                },
+                "test:create",
+            )
+            .unwrap();
+        governance
+            .set_skill_vitality_state(
+                "provider-refresh",
+                rocode_types::SkillVitalityState::Retired,
+                rocode_types::SkillRetirementReason {
+                    kind: rocode_types::SkillRetirementReasonKind::ManualOverride,
+                    summary: "manual retire".to_string(),
+                    noted_at: 123,
+                    related_skill_name: None,
+                },
+                "test:retire",
+            )
+            .unwrap();
+
+        let error = governance
+            .ensure_skill_runtime_available("provider-refresh")
+            .unwrap_err();
+        assert!(matches!(error, SkillError::InvalidSkillContent { .. }));
+    }
+
+    #[test]
+    fn governance_rejects_vitality_mutation_for_non_workspace_skill() {
+        let dir = tempdir().unwrap();
+        let bundled_root = dir.path().join(".codex/skills/reviewer");
+        fs::create_dir_all(&bundled_root).unwrap();
+        fs::write(
+            bundled_root.join("SKILL.md"),
+            r#"---
+name: reviewer
+description: reviewer
+---
+review carefully
+"#,
+        )
+        .unwrap();
+
+        let governance = SkillGovernanceAuthority::new(dir.path(), None);
+        let error = governance
+            .set_skill_vitality_state(
+                "reviewer",
+                rocode_types::SkillVitalityState::Retired,
+                rocode_types::SkillRetirementReason {
+                    kind: rocode_types::SkillRetirementReasonKind::ManualOverride,
+                    summary: "manual retire".to_string(),
+                    noted_at: 123,
+                    related_skill_name: None,
+                },
+                "test:retire",
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, SkillError::InvalidSkillContent { .. }));
     }
 
     #[test]

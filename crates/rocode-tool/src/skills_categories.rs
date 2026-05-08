@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::skill_support::{
-    authority_for, format_skill_categories_output, map_skill_error, resolve_skill_filter,
+    authority_for, collect_skill_category_views, filter_runtime_visible_skill_meta,
+    format_skill_categories_output, map_skill_error, resolve_skill_filter,
 };
 use crate::{Tool, ToolContext, ToolError, ToolResult};
 use rocode_config::ConfigStore;
@@ -65,9 +66,14 @@ impl Tool for SkillsCategoriesTool {
         );
         let resolved_filter = resolve_skill_filter(&ctx, None).await;
         let filter = resolved_filter.as_filter();
-        let categories = authority
-            .list_skill_categories(Some(&filter))
-            .map_err(map_skill_error)?;
+        let skills = filter_runtime_visible_skill_meta(
+            std::path::Path::new(&ctx.directory),
+            ctx.config_store.clone(),
+            authority
+                .list_skill_meta(Some(&filter))
+                .map_err(map_skill_error)?,
+        );
+        let categories = collect_skill_category_views(&skills);
         let output = format_skill_categories_output(&categories);
 
         let mut result = ToolResult::simple("Available skill categories", output)
