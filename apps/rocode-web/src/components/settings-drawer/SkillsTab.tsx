@@ -11,6 +11,7 @@ import type {
   SkillNegativeEntropyDiagnosticRecord,
   SkillManagedLifecycleRecord,
   SkillOperationalSnapshotRecord,
+  SkillRetirementReasonKindRecord,
   SkillRemoteInstallPlanRecord,
   SkillSemanticConflictDiagnosticRecord,
   SkillSourceIndexSnapshotRecord,
@@ -29,6 +30,16 @@ type SkillSubtabId = "overview" | "hub" | "catalog" | "governance";
 type SkillVitalityStateValue = NonNullable<
   SkillOperationalSnapshotRecord["vitality"]
 >["state"];
+type SkillReviewReasonKindValue = SkillRetirementReasonKindRecord;
+
+interface SkillReviewCandidateView {
+  entry: SkillOperationalSnapshotRecord;
+  reasonKind: SkillReviewReasonKindValue;
+  relatedSkillName: string | null;
+  summary: string;
+  evidenceBadges: string[];
+  evidenceLines: string[];
+}
 
 interface SkillsTabStyles {
   primaryButtonClass: string;
@@ -247,12 +258,46 @@ function vitalityStateClass(state?: SkillVitalityStateValue | null): string {
   }
 }
 
+function reviewReasonKindLabel(kind: SkillReviewReasonKindValue): string {
+  switch (kind) {
+    case "negative_entropy":
+      return "negative entropy";
+    case "semantic_conflict":
+      return "semantic conflict";
+    case "manual_override":
+      return "manual override";
+    case "restored":
+      return "restored";
+    default:
+      return kind;
+  }
+}
+
+function reviewReasonKindClass(kind: SkillReviewReasonKindValue): string {
+  switch (kind) {
+    case "negative_entropy":
+      return "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-950/60 dark:text-amber-200";
+    case "semantic_conflict":
+      return "border-sky-300 bg-sky-50 text-sky-900 dark:border-sky-700 dark:bg-sky-950/60 dark:text-sky-200";
+    case "manual_override":
+      return "border-border/40 bg-muted text-muted-foreground";
+    case "restored":
+      return "border-green-300 bg-green-50 text-green-800 dark:border-green-700 dark:bg-green-950 dark:text-green-300";
+    default:
+      return "border-border/40 bg-muted text-muted-foreground";
+  }
+}
+
 function negativeEntropySignalLabel(signal: string): string {
   return signal.replaceAll("_", " ");
 }
 
 function semanticConflictKindLabel(kind: string): string {
   return kind.replaceAll("_", " ");
+}
+
+function skillNameKey(value: string): string {
+  return value.trim().toLowerCase();
 }
 
 export function SkillsTab({
@@ -385,6 +430,78 @@ export function SkillsTab({
   const reviewCandidateCount = useMemo(
     () => skillUsageLedger.filter((entry) => entry.vitality?.state === "review_candidate").length,
     [skillUsageLedger],
+  );
+  const reviewCandidateEntries = useMemo<SkillReviewCandidateView[]>(
+    () =>
+      skillUsageLedger
+        .filter((entry) => entry.vitality?.state === "review_candidate" && entry.vitality?.reason)
+        .map((entry) => {
+          const reason = entry.vitality!.reason;
+          const relatedSkillName = reason.related_skill_name ?? null;
+          const skillKey = skillNameKey(entry.skill_name);
+          const relatedSkillKey = relatedSkillName ? skillNameKey(relatedSkillName) : null;
+          const evidenceBadges: string[] = [];
+          const evidenceLines: string[] = [];
+
+          if (reason.kind === "negative_entropy") {
+            const diagnostic =
+              skillNegativeEntropy.find((item) => skillNameKey(item.skill_name) === skillKey) ?? null;
+            if (diagnostic) {
+              evidenceBadges.push(...diagnostic.signals.map(negativeEntropySignalLabel));
+              evidenceLines.push(
+                `use ${diagnostic.runtime_use_count} · writes ${diagnostic.write_count} · overlap ${diagnostic.semantic_overlap_count}`,
+              );
+              diagnostic.reasons
+                .filter((line) => line !== reason.summary)
+                .slice(0, 2)
+                .forEach((line) => evidenceLines.push(line));
+            }
+          } else if (reason.kind === "semantic_conflict") {
+            const conflict =
+              skillSemanticConflicts.find((item) => {
+                const matchesSkill =
+                  skillNameKey(item.left_skill_name) === skillKey ||
+                  skillNameKey(item.right_skill_name) === skillKey;
+                if (!matchesSkill) return false;
+                if (!relatedSkillKey) return true;
+                return (
+                  skillNameKey(item.left_skill_name) === relatedSkillKey ||
+                  skillNameKey(item.right_skill_name) === relatedSkillKey ||
+                  (item.preferred_skill_name
+                    ? skillNameKey(item.preferred_skill_name) === relatedSkillKey
+                    : false)
+                );
+              }) ?? null;
+            if (conflict) {
+              evidenceBadges.push(semanticConflictKindLabel(conflict.kind), `score ${conflict.score}`);
+              evidenceLines.push(
+                `ledger: ${conflict.left_skill_name} ${conflict.left_runtime_use_count} use(s) · ${conflict.right_skill_name} ${conflict.right_runtime_use_count} use(s)`,
+              );
+              if (conflict.preferred_skill_name) {
+                evidenceLines.push(`ledger prefers ${conflict.preferred_skill_name}`);
+              }
+              conflict.reasons
+                .filter((line) => line !== reason.summary)
+                .slice(0, 2)
+                .forEach((line) => evidenceLines.push(line));
+            }
+          }
+
+          return {
+            entry,
+            reasonKind: reason.kind,
+            relatedSkillName,
+            summary: reason.summary,
+            evidenceBadges,
+            evidenceLines,
+          };
+        })
+        .sort(
+          (left, right) =>
+            (right.entry.vitality?.updated_at ?? 0) - (left.entry.vitality?.updated_at ?? 0) ||
+            left.entry.skill_name.localeCompare(right.entry.skill_name),
+        ),
+    [skillNegativeEntropy, skillSemanticConflicts, skillUsageLedger],
   );
   const topUsageEntries = useMemo(
     () =>
@@ -1419,6 +1536,85 @@ export function SkillsTab({
           </div>
 
           <div className="grid gap-4 lg:grid-cols-3">
+            <div className={sectionCardClass + " lg:col-span-3"}>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">
+                  Review Candidates
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  owner-local vitality, explained by /usage + /negative-entropy + /semantic-conflicts
+                </span>
+              </div>
+              <div className="mt-3 grid gap-2">
+                {reviewCandidateEntries.length ? (
+                  reviewCandidateEntries.map((item) => (
+                    <div
+                      key={item.entry.skill_name}
+                      className="rounded-lg bg-muted/30 px-3 py-2 text-sm"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <strong className="block truncate">{item.entry.skill_name}</strong>
+                          <div className="mt-1 flex flex-wrap gap-1.5 text-[10px]">
+                            <span
+                              className={cn(
+                                "rounded-full border px-2 py-0.5 font-semibold uppercase tracking-wide",
+                                vitalityStateClass(item.entry.vitality?.state),
+                              )}
+                            >
+                              {formatVitalityStateLabel(item.entry.vitality?.state)}
+                            </span>
+                            <span
+                              className={cn(
+                                "rounded-full border px-2 py-0.5 font-semibold uppercase tracking-wide",
+                                reviewReasonKindClass(item.reasonKind),
+                              )}
+                            >
+                              {reviewReasonKindLabel(item.reasonKind)}
+                            </span>
+                            {item.relatedSkillName ? (
+                              <span className="rounded-full border border-border/40 bg-muted px-2 py-0.5 text-muted-foreground">
+                                related {item.relatedSkillName}
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
+                        <span className="shrink-0 text-xs text-muted-foreground">
+                          {unixTimeLabel(item.entry.vitality?.updated_at)}
+                        </span>
+                      </div>
+                      <div className="mt-2 text-xs text-muted-foreground">
+                        Marked because {item.summary}
+                      </div>
+                      {item.evidenceBadges.length ? (
+                        <div className="mt-2 flex flex-wrap gap-1.5 text-[10px]">
+                          {item.evidenceBadges.map((badge) => (
+                            <span
+                              key={`${item.entry.skill_name}:${badge}`}
+                              className="rounded-full border border-border/40 bg-muted px-2 py-0.5 text-muted-foreground"
+                            >
+                              {badge}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                      {item.evidenceLines.length ? (
+                        <div className="mt-2 grid gap-1 text-xs text-muted-foreground">
+                          {item.evidenceLines.map((line, index) => (
+                            <div key={`${item.entry.skill_name}:${index}`}>{line}</div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-lg bg-muted/30 px-4 py-6 text-sm text-muted-foreground">
+                    No workspace skills are currently marked as review candidates.
+                  </div>
+                )}
+              </div>
+            </div>
+
             <div className={sectionCardClass}>
               <div className="flex items-center justify-between gap-3">
                 <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">

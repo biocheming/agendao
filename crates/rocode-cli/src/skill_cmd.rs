@@ -6,9 +6,10 @@ use rocode_types::{
     SkillHubPolicy, SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
     SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest, SkillHubSyncApplyRequest,
     SkillHubSyncPlanRequest, SkillHubUsageLedgerResponse, SkillHubVitalityUpdateRequest,
-    SkillManagedLifecycleRecord, SkillNegativeEntropyDiagnostic, SkillRemoteInstallPlan,
-    SkillRemoteInstallResponse, SkillRetirementReasonKind, SkillSemanticConflictDiagnostic,
-    SkillSourceKind, SkillSourceRef, SkillSyncAction, SkillSyncPlan, SkillVitalityState,
+    SkillManagedLifecycleRecord, SkillNegativeEntropyDiagnostic, SkillOperationalSnapshot,
+    SkillRemoteInstallPlan, SkillRemoteInstallResponse, SkillRetirementReasonKind,
+    SkillSemanticConflictDiagnostic, SkillSourceKind, SkillSourceRef, SkillSyncAction,
+    SkillSyncPlan, SkillVitalityState,
 };
 use serde::Serialize;
 
@@ -23,6 +24,22 @@ use crate::cli::{
 use crate::import_export::{export_skill_data, import_skill_data};
 use crate::server_lifecycle::FrontendRuntimeContext;
 use crate::util::truncate_text;
+
+#[derive(Debug, Clone)]
+struct SkillReviewCandidateView {
+    skill_name: String,
+    source_scope: rocode_types::SkillOperationalSourceScope,
+    runtime_use_count: u64,
+    runtime_error_count: u64,
+    write_count: u64,
+    state: SkillVitalityState,
+    reason_kind: SkillRetirementReasonKind,
+    related_skill_name: Option<String>,
+    summary: String,
+    updated_at: i64,
+    evidence_tags: Vec<String>,
+    evidence_lines: Vec<String>,
+}
 
 pub(crate) async fn handle_skill_command(
     action: SkillCommands,
@@ -91,7 +108,13 @@ async fn handle_skill_hub_command(
             if matches!(output.format, SkillHubOutputFormat::Json) {
                 print_json(&response)?;
             } else {
-                print_usage_ledger(response);
+                let negative_entropy = client.list_skill_hub_negative_entropy().await?;
+                let semantic_conflicts = client.list_skill_hub_semantic_conflicts().await?;
+                print_usage_ledger(
+                    response,
+                    &negative_entropy.candidates,
+                    &semantic_conflicts.conflicts,
+                );
             }
         }
         SkillHubCommands::NegativeEntropy { output } => {
@@ -115,9 +138,15 @@ async fn handle_skill_hub_command(
                     "Marked {} workspace-local review candidate(s).",
                     response.updated.len()
                 );
-                print_usage_ledger(SkillHubUsageLedgerResponse {
-                    entries: response.updated,
-                });
+                let negative_entropy = client.list_skill_hub_negative_entropy().await?;
+                let semantic_conflicts = client.list_skill_hub_semantic_conflicts().await?;
+                print_usage_ledger(
+                    SkillHubUsageLedgerResponse {
+                        entries: response.updated,
+                    },
+                    &negative_entropy.candidates,
+                    &semantic_conflicts.conflicts,
+                );
             }
         }
         SkillHubCommands::SemanticConflicts { output } => {
@@ -141,9 +170,15 @@ async fn handle_skill_hub_command(
                     "Marked {} semantic-conflict review candidate(s).",
                     response.updated.len()
                 );
-                print_usage_ledger(SkillHubUsageLedgerResponse {
-                    entries: response.updated,
-                });
+                let negative_entropy = client.list_skill_hub_negative_entropy().await?;
+                let semantic_conflicts = client.list_skill_hub_semantic_conflicts().await?;
+                print_usage_ledger(
+                    SkillHubUsageLedgerResponse {
+                        entries: response.updated,
+                    },
+                    &negative_entropy.candidates,
+                    &semantic_conflicts.conflicts,
+                );
             }
         }
         SkillHubCommands::VitalitySet {
@@ -173,9 +208,13 @@ async fn handle_skill_hub_command(
                     response.snapshot.skill_name,
                     format_vitality_state(response.snapshot.vitality.as_ref().map(|v| v.state))
                 );
-                print_usage_ledger(SkillHubUsageLedgerResponse {
-                    entries: vec![response.snapshot],
-                });
+                print_usage_ledger(
+                    SkillHubUsageLedgerResponse {
+                        entries: vec![response.snapshot],
+                    },
+                    &[],
+                    &[],
+                );
             }
         }
         SkillHubCommands::Index { output } => {
@@ -449,6 +488,8 @@ fn print_hub_status(
     negative_entropy: Vec<SkillNegativeEntropyDiagnostic>,
     semantic_conflicts: Vec<SkillSemanticConflictDiagnostic>,
 ) {
+    let review_candidate_views =
+        build_review_candidate_views(&usage.entries, &negative_entropy, &semantic_conflicts);
     let index_entry_count = index
         .iter()
         .map(|snapshot| snapshot.entries.len())
@@ -526,6 +567,10 @@ fn print_hub_status(
         "  Diagnostics: {} negative-entropy candidates · {} semantic overlap pairs",
         negative_entropy.len(),
         semantic_conflicts.len()
+    );
+    println!(
+        "  Review candidates: {} owner-local vitality mark(s)",
+        review_candidate_views.len()
     );
 
     if !index.is_empty() {
@@ -642,8 +687,15 @@ fn print_hub_status(
         }
     }
 
+    print_review_candidate_views(
+        "\nReview candidates:",
+        &review_candidate_views,
+        Some("These are owner-local vitality marks. The lines below explain why a skill was marked review_candidate using ledger state plus negative-entropy / semantic-conflict evidence."),
+        8,
+    );
+
     if !negative_entropy.is_empty() {
-        println!("\nNegative entropy review candidates:");
+        println!("\nNegative entropy diagnostics:");
         for item in negative_entropy.into_iter().take(8) {
             let signals = item
                 .signals
@@ -703,7 +755,13 @@ fn print_policy(policy: &SkillHubPolicy) {
     );
 }
 
-fn print_usage_ledger(mut response: SkillHubUsageLedgerResponse) {
+fn print_usage_ledger(
+    mut response: SkillHubUsageLedgerResponse,
+    negative_entropy: &[SkillNegativeEntropyDiagnostic],
+    semantic_conflicts: &[SkillSemanticConflictDiagnostic],
+) {
+    let review_candidate_views =
+        build_review_candidate_views(&response.entries, negative_entropy, semantic_conflicts);
     response
         .entries
         .sort_by(|left, right| left.skill_name.cmp(&right.skill_name));
@@ -745,12 +803,22 @@ fn print_usage_ledger(mut response: SkillHubUsageLedgerResponse) {
         );
         if let Some(vitality) = entry.vitality.as_ref() {
             println!(
-                "    Vitality reason: {} · updated {}",
+                "    Vitality reason: {} · {} · updated {}",
+                format_skill_retirement_reason_kind_human(vitality.reason.kind),
                 vitality.reason.summary,
                 format_timestamp(vitality.updated_at)
             );
+            if let Some(related_skill_name) = vitality.reason.related_skill_name.as_deref() {
+                println!("    Related skill: {}", related_skill_name);
+            }
         }
     }
+    print_review_candidate_views(
+        "\nReview candidate explanation:",
+        &review_candidate_views,
+        Some("Only owner-local vitality entries marked review_candidate appear here. The explanation joins usage-ledger state with the matching governance diagnostics."),
+        usize::MAX,
+    );
 }
 
 fn print_negative_entropy(mut candidates: Vec<SkillNegativeEntropyDiagnostic>) {
@@ -1125,6 +1193,15 @@ fn format_vitality_state(state: Option<SkillVitalityState>) -> &'static str {
     }
 }
 
+fn format_skill_retirement_reason_kind_human(kind: SkillRetirementReasonKind) -> &'static str {
+    match kind {
+        SkillRetirementReasonKind::NegativeEntropy => "negative entropy",
+        SkillRetirementReasonKind::SemanticConflict => "semantic conflict",
+        SkillRetirementReasonKind::ManualOverride => "manual override",
+        SkillRetirementReasonKind::Restored => "restored",
+    }
+}
+
 fn skill_vitality_state_from_arg(state: SkillVitalityStateArg) -> SkillVitalityState {
     match state {
         SkillVitalityStateArg::Active => SkillVitalityState::Active,
@@ -1185,6 +1262,190 @@ fn format_semantic_conflict_kind(kind: rocode_types::SkillSemanticConflictKind) 
         rocode_types::SkillSemanticConflictKind::TriggerOverlap => "trigger_overlap",
         rocode_types::SkillSemanticConflictKind::ReplacementHint => "replacement_hint",
     }
+}
+
+fn build_review_candidate_views(
+    entries: &[SkillOperationalSnapshot],
+    negative_entropy: &[SkillNegativeEntropyDiagnostic],
+    semantic_conflicts: &[SkillSemanticConflictDiagnostic],
+) -> Vec<SkillReviewCandidateView> {
+    let mut views = entries
+        .iter()
+        .filter_map(|entry| {
+            let vitality = entry.vitality.as_ref()?;
+            if vitality.state != SkillVitalityState::ReviewCandidate {
+                return None;
+            }
+            let runtime_use_count = entry
+                .usage
+                .as_ref()
+                .map(|usage| usage.runtime_use_count)
+                .unwrap_or(0);
+            let runtime_error_count = entry
+                .usage
+                .as_ref()
+                .map(|usage| usage.runtime_error_count)
+                .unwrap_or(0);
+            let write_count = entry
+                .writes
+                .as_ref()
+                .map(total_usage_write_count)
+                .unwrap_or(0);
+            let mut evidence_tags = Vec::new();
+            let mut evidence_lines = Vec::new();
+            match vitality.reason.kind {
+                SkillRetirementReasonKind::NegativeEntropy => {
+                    if let Some(diagnostic) = negative_entropy
+                        .iter()
+                        .find(|item| skill_name_eq(&item.skill_name, &entry.skill_name))
+                    {
+                        evidence_tags.extend(
+                            diagnostic
+                                .signals
+                                .iter()
+                                .map(|signal| format_negative_entropy_signal(*signal).to_string()),
+                        );
+                        evidence_lines.push(format!(
+                            "ledger: use {} · writes {} · overlap {}",
+                            diagnostic.runtime_use_count,
+                            diagnostic.write_count,
+                            diagnostic.semantic_overlap_count
+                        ));
+                        evidence_lines.extend(
+                            diagnostic
+                                .reasons
+                                .iter()
+                                .filter(|line| line.as_str() != vitality.reason.summary)
+                                .take(2)
+                                .cloned(),
+                        );
+                    }
+                }
+                SkillRetirementReasonKind::SemanticConflict => {
+                    if let Some(conflict) = find_semantic_conflict_for_entry(
+                        entry,
+                        vitality.reason.related_skill_name.as_deref(),
+                        semantic_conflicts,
+                    ) {
+                        evidence_tags
+                            .push(format_semantic_conflict_kind(conflict.kind).to_string());
+                        evidence_tags.push(format!("score {}", conflict.score));
+                        evidence_lines.push(format!(
+                            "ledger pair: {} {} use(s) · {} {} use(s)",
+                            conflict.left_skill_name,
+                            conflict.left_runtime_use_count,
+                            conflict.right_skill_name,
+                            conflict.right_runtime_use_count
+                        ));
+                        if let Some(preferred_skill_name) = conflict.preferred_skill_name.as_deref()
+                        {
+                            evidence_lines.push(format!("ledger prefers {}", preferred_skill_name));
+                        }
+                        evidence_lines.extend(
+                            conflict
+                                .reasons
+                                .iter()
+                                .filter(|line| line.as_str() != vitality.reason.summary)
+                                .take(2)
+                                .cloned(),
+                        );
+                    }
+                }
+                SkillRetirementReasonKind::ManualOverride | SkillRetirementReasonKind::Restored => {
+                }
+            }
+            Some(SkillReviewCandidateView {
+                skill_name: entry.skill_name.clone(),
+                source_scope: entry.source_scope,
+                runtime_use_count,
+                runtime_error_count,
+                write_count,
+                state: vitality.state,
+                reason_kind: vitality.reason.kind,
+                related_skill_name: vitality.reason.related_skill_name.clone(),
+                summary: vitality.reason.summary.clone(),
+                updated_at: vitality.updated_at,
+                evidence_tags,
+                evidence_lines,
+            })
+        })
+        .collect::<Vec<_>>();
+    views.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| left.skill_name.cmp(&right.skill_name))
+    });
+    views
+}
+
+fn find_semantic_conflict_for_entry<'a>(
+    entry: &SkillOperationalSnapshot,
+    related_skill_name: Option<&str>,
+    semantic_conflicts: &'a [SkillSemanticConflictDiagnostic],
+) -> Option<&'a SkillSemanticConflictDiagnostic> {
+    semantic_conflicts.iter().find(|item| {
+        let matches_skill = skill_name_eq(&item.left_skill_name, &entry.skill_name)
+            || skill_name_eq(&item.right_skill_name, &entry.skill_name);
+        if !matches_skill {
+            return false;
+        }
+        let Some(related_skill_name) = related_skill_name else {
+            return true;
+        };
+        skill_name_eq(&item.left_skill_name, related_skill_name)
+            || skill_name_eq(&item.right_skill_name, related_skill_name)
+            || item
+                .preferred_skill_name
+                .as_deref()
+                .map(|preferred| skill_name_eq(preferred, related_skill_name))
+                .unwrap_or(false)
+    })
+}
+
+fn print_review_candidate_views(
+    title: &str,
+    views: &[SkillReviewCandidateView],
+    subtitle: Option<&str>,
+    limit: usize,
+) {
+    if views.is_empty() {
+        return;
+    }
+    println!("{title}");
+    if let Some(subtitle) = subtitle {
+        println!("  {}", subtitle);
+    }
+    for item in views.iter().take(limit) {
+        println!(
+            "  - {} · scope {} · vitality {} · {}",
+            item.skill_name,
+            format_source_scope(item.source_scope),
+            format_vitality_state(Some(item.state)),
+            format_skill_retirement_reason_kind_human(item.reason_kind),
+        );
+        println!("    marked because: {}", item.summary);
+        println!(
+            "    ledger: use {} · writes {} · errors {} · updated {}",
+            item.runtime_use_count,
+            item.write_count,
+            item.runtime_error_count,
+            format_timestamp(item.updated_at)
+        );
+        if let Some(related_skill_name) = item.related_skill_name.as_deref() {
+            println!("    related skill: {}", related_skill_name);
+        }
+        if !item.evidence_tags.is_empty() {
+            println!("    evidence: {}", item.evidence_tags.join(", "));
+        }
+        for line in &item.evidence_lines {
+            println!("    why: {}", line);
+        }
+    }
+}
+
+fn skill_name_eq(left: &str, right: &str) -> bool {
+    left.trim().eq_ignore_ascii_case(right.trim())
 }
 
 fn format_duration_seconds(value: u64) -> String {
