@@ -2,7 +2,7 @@ use rocode_config::ConfigStore;
 use rocode_skill::{
     infer_toolsets_from_tools, LoadedSkill, LoadedSkillFile, SkillAuthority, SkillCategoryView,
     SkillDetailView, SkillError, SkillFileRef, SkillFilter, SkillGovernanceAuthority,
-    SkillMetaView,
+    SkillMetaView, SkillRuntimeResolver,
 };
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
@@ -62,6 +62,12 @@ pub(crate) fn map_skill_error(err: SkillError) -> ToolError {
             ToolError::InvalidArguments(format!("Invalid skill description for {}", name))
         }
         SkillError::InvalidSkillContent { message } => ToolError::InvalidArguments(message),
+        SkillError::SkillRuntimeUnavailable { name, state } => {
+            ToolError::InvalidArguments(format!(
+                "skill `{}` is not available for runtime resolution because it is marked {:?}",
+                name, state
+            ))
+        }
         SkillError::InvalidSkillCategory { category } => {
             ToolError::InvalidArguments(format!("Invalid skill category path: {}", category))
         }
@@ -150,52 +156,60 @@ pub(crate) fn governance_authority_for(
     SkillGovernanceAuthority::new(base.to_path_buf(), config_store)
 }
 
+pub(crate) fn runtime_resolver_for(
+    base: &Path,
+    config_store: Option<Arc<ConfigStore>>,
+) -> SkillRuntimeResolver {
+    SkillRuntimeResolver::new(base.to_path_buf(), config_store)
+}
+
 pub(crate) fn load_skill_with_runtime_materialization(
-    authority: &SkillAuthority,
     base_dir: &Path,
     config_store: Option<Arc<ConfigStore>>,
     requested_name: &str,
     filter: Option<&SkillFilter<'_>>,
     _extra: Option<&Metadata>,
 ) -> Result<LoadedSkill, ToolError> {
-    governance_authority_for(base_dir, config_store)
-        .ensure_skill_runtime_available(requested_name)
-        .map_err(map_skill_error)?;
-    authority
+    let resolver = runtime_resolver_for(base_dir, config_store);
+    resolver
         .load_skill(requested_name, filter)
         .map_err(map_skill_error)
 }
 
 pub(crate) fn resolve_skill_with_runtime_materialization(
-    authority: &SkillAuthority,
     base_dir: &Path,
     config_store: Option<Arc<ConfigStore>>,
     requested_name: &str,
     filter: Option<&SkillFilter<'_>>,
     _extra: Option<&Metadata>,
 ) -> Result<rocode_skill::SkillMeta, ToolError> {
-    governance_authority_for(base_dir, config_store)
-        .ensure_skill_runtime_available(requested_name)
-        .map_err(map_skill_error)?;
-    authority
+    let resolver = runtime_resolver_for(base_dir, config_store);
+    resolver
         .resolve_skill(requested_name, filter)
         .map_err(map_skill_error)
 }
 
-pub(crate) fn filter_runtime_visible_skill_meta(
+pub(crate) fn load_skill_file_with_runtime_materialization(
     base_dir: &Path,
     config_store: Option<Arc<ConfigStore>>,
-    skills: Vec<rocode_skill::SkillMetaView>,
-) -> Vec<rocode_skill::SkillMetaView> {
-    let governance = governance_authority_for(base_dir, config_store);
-    skills
-        .into_iter()
-        .filter(|skill| {
-            governance
-                .ensure_skill_runtime_available(&skill.name)
-                .is_ok()
-        })
-        .collect()
+    requested_name: &str,
+    file_path: &str,
+    filter: Option<&SkillFilter<'_>>,
+    _extra: Option<&Metadata>,
+) -> Result<LoadedSkillFile, ToolError> {
+    runtime_resolver_for(base_dir, config_store)
+        .load_skill_file(requested_name, file_path, filter)
+        .map_err(map_skill_error)
+}
+
+pub(crate) fn list_runtime_visible_skill_meta(
+    base_dir: &Path,
+    config_store: Option<Arc<ConfigStore>>,
+    filter: Option<&SkillFilter<'_>>,
+) -> Result<Vec<rocode_skill::SkillMetaView>, ToolError> {
+    runtime_resolver_for(base_dir, config_store)
+        .list_skill_meta(filter)
+        .map_err(map_skill_error)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -267,8 +281,6 @@ pub(crate) fn load_skills_prompt_context(
     let Some(requested_skills) = requested_skills else {
         return Ok(LoadedSkillsPromptContext::default());
     };
-
-    let authority = authority_for(base_dir, config_store.clone());
     let requested_skills = normalize_requested_skill_names(requested_skills);
     if requested_skills.is_empty() {
         return Ok(LoadedSkillsPromptContext::default());
@@ -278,7 +290,6 @@ pub(crate) fn load_skills_prompt_context(
     let mut loaded_skills = Vec::new();
     for requested_skill in requested_skills {
         let skill = load_skill_with_runtime_materialization(
-            &authority,
             base_dir,
             config_store.clone(),
             &requested_skill,
@@ -548,9 +559,7 @@ mod tests {
         )
         .unwrap();
 
-        let authority = authority_for(dir.path(), None);
         let error = load_skill_with_runtime_materialization(
-            &authority,
             dir.path(),
             None,
             "drug-discovery-evaluate-properties",
@@ -782,7 +791,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_visibility_filter_excludes_retired_skills() {
+    fn list_runtime_visible_skill_meta_excludes_retired_skills() {
         let dir = tempdir().unwrap();
         let governance = governance_authority_for(dir.path(), None);
         governance
@@ -825,12 +834,7 @@ mod tests {
             )
             .unwrap();
 
-        let authority = authority_for(dir.path(), None);
-        let filtered = filter_runtime_visible_skill_meta(
-            dir.path(),
-            None,
-            authority.list_skill_meta(None).unwrap(),
-        );
+        let filtered = list_runtime_visible_skill_meta(dir.path(), None, None).unwrap();
 
         assert!(filtered.iter().any(|skill| skill.name == "active-skill"));
         assert!(!filtered.iter().any(|skill| skill.name == "retired-skill"));
@@ -867,16 +871,9 @@ mod tests {
             )
             .unwrap();
 
-        let authority = authority_for(dir.path(), None);
-        let error = load_skill_with_runtime_materialization(
-            &authority,
-            dir.path(),
-            None,
-            "retired-skill",
-            None,
-            None,
-        )
-        .unwrap_err();
+        let error =
+            load_skill_with_runtime_materialization(dir.path(), None, "retired-skill", None, None)
+                .unwrap_err();
 
         assert!(
             matches!(error, ToolError::InvalidArguments(message) if message.contains("not available for runtime resolution"))

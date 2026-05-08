@@ -63,7 +63,6 @@ impl Tool for SkillTool {
         let resolved_filter = resolve_skill_filter(&ctx, None).await;
         let filter = resolved_filter.as_filter();
         let skill = load_skill_with_runtime_materialization(
-            &authority,
             Path::new(&ctx.directory),
             ctx.config_store.clone(),
             &input.skill_name,

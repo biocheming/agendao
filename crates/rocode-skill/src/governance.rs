@@ -48,6 +48,7 @@ pub struct SkillGovernedSyncResult {
     pub guard_reports: Vec<SkillGuardReport>,
 }
 
+#[derive(Clone)]
 pub struct SkillGovernanceAuthority {
     skill_authority: SkillAuthority,
     hub_store: Arc<SkillHubStore>,
@@ -583,16 +584,14 @@ impl SkillGovernanceAuthority {
     }
 
     pub fn ensure_skill_runtime_available(&self, skill_name: &str) -> Result<(), SkillError> {
-        match self.effective_skill_vitality_state(skill_name) {
-            SkillVitalityState::Retired | SkillVitalityState::Archived => Err(
-                SkillError::InvalidSkillContent {
-                    message: format!(
-                        "skill `{}` is not available for runtime resolution because it is marked {:?}",
-                        skill_name.trim(),
-                        self.effective_skill_vitality_state(skill_name)
-                    ),
-                },
-            ),
+        let state = self.effective_skill_vitality_state(skill_name);
+        match state {
+            SkillVitalityState::Retired | SkillVitalityState::Archived => {
+                Err(SkillError::SkillRuntimeUnavailable {
+                    name: skill_name.trim().to_string(),
+                    state,
+                })
+            }
             SkillVitalityState::Active | SkillVitalityState::ReviewCandidate => Ok(()),
         }
     }

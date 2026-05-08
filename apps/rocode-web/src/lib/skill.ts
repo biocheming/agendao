@@ -29,6 +29,13 @@ export interface SkillDetailResponseRecord {
   skill: LoadedSkillRecord;
   source: string;
   writable: boolean;
+  runtime_resolution: SkillRuntimeResolutionDiagnosticRecord;
+}
+
+export interface SkillRuntimeResolutionDiagnosticRecord {
+  inspection_available: boolean;
+  runtime_available: boolean;
+  vitality_state: "active" | "review_candidate" | "retired" | "archived";
 }
 
 export interface SkillGovernanceWriteResultRecord {

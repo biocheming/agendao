@@ -1,7 +1,14 @@
+use crate::{
+    LoadedSkill, LoadedSkillFile, SkillDetailView, SkillError, SkillFilter,
+    SkillGovernanceAuthority, SkillMeta, SkillMetaView,
+};
+use rocode_config::ConfigStore;
+use rocode_types::SkillVitalityState;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeInstructionSource {
@@ -51,6 +58,150 @@ pub struct RuntimeSkillBootstrapReport {
 impl RuntimeSkillBootstrapReport {
     pub fn is_empty(&self) -> bool {
         self.materializations.is_empty() && self.warnings.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillRuntimeResolutionDiagnostic {
+    pub inspection_available: bool,
+    pub runtime_available: bool,
+    pub vitality_state: SkillVitalityState,
+}
+
+#[derive(Clone)]
+pub struct SkillRuntimeResolver {
+    governance_authority: SkillGovernanceAuthority,
+}
+
+impl SkillRuntimeResolver {
+    pub fn new(base_dir: impl Into<PathBuf>, config_store: Option<Arc<ConfigStore>>) -> Self {
+        Self {
+            governance_authority: SkillGovernanceAuthority::new(base_dir, config_store),
+        }
+    }
+
+    pub fn from_governance(governance_authority: SkillGovernanceAuthority) -> Self {
+        Self {
+            governance_authority,
+        }
+    }
+
+    pub fn list_skill_meta(
+        &self,
+        filter: Option<&SkillFilter<'_>>,
+    ) -> Result<Vec<SkillMetaView>, SkillError> {
+        let skills = self.list_skill_catalog(filter)?;
+        Ok(skills.iter().map(SkillMetaView::from).collect())
+    }
+
+    pub fn list_skill_catalog(
+        &self,
+        filter: Option<&SkillFilter<'_>>,
+    ) -> Result<Vec<SkillMeta>, SkillError> {
+        let mut visible = Vec::new();
+        for meta in self
+            .governance_authority
+            .skill_authority()
+            .list_skill_catalog(filter)?
+            .into_iter()
+        {
+            if self.runtime_catalog_visible(&meta) {
+                visible.push(meta);
+            }
+        }
+        Ok(visible)
+    }
+
+    pub fn resolve_skill(
+        &self,
+        name: &str,
+        filter: Option<&SkillFilter<'_>>,
+    ) -> Result<SkillMeta, SkillError> {
+        let meta = self
+            .governance_authority
+            .skill_authority()
+            .resolve_skill(name, filter)?;
+        self.require_runtime_visible_meta(meta)
+    }
+
+    pub fn load_skill(
+        &self,
+        name: &str,
+        filter: Option<&SkillFilter<'_>>,
+    ) -> Result<LoadedSkill, SkillError> {
+        let meta = self.resolve_skill(name, filter)?;
+        self.governance_authority()
+            .skill_authority()
+            .load_resolved_skill(meta)
+    }
+
+    pub fn load_skill_source(
+        &self,
+        name: &str,
+        filter: Option<&SkillFilter<'_>>,
+    ) -> Result<String, SkillError> {
+        let meta = self.resolve_skill(name, filter)?;
+        self.governance_authority()
+            .skill_authority()
+            .load_resolved_skill_source(&meta)
+    }
+
+    pub fn load_skill_detail(
+        &self,
+        name: &str,
+        filter: Option<&SkillFilter<'_>>,
+    ) -> Result<SkillDetailView, SkillError> {
+        let meta = self.resolve_skill(name, filter)?;
+        self.governance_authority()
+            .skill_authority()
+            .load_skill_detail_for_meta(&meta)
+    }
+
+    pub fn load_skill_file(
+        &self,
+        name: &str,
+        file_path: &str,
+        filter: Option<&SkillFilter<'_>>,
+    ) -> Result<LoadedSkillFile, SkillError> {
+        let meta = self.resolve_skill(name, filter)?;
+        self.governance_authority()
+            .skill_authority()
+            .load_resolved_skill_file(&meta, file_path)
+    }
+
+    pub fn runtime_resolution_diagnostic(
+        &self,
+        skill_name: &str,
+    ) -> SkillRuntimeResolutionDiagnostic {
+        let vitality_state = self
+            .governance_authority
+            .effective_skill_vitality_state(skill_name);
+        SkillRuntimeResolutionDiagnostic {
+            inspection_available: true,
+            runtime_available: matches!(
+                vitality_state,
+                SkillVitalityState::Active | SkillVitalityState::ReviewCandidate
+            ),
+            vitality_state,
+        }
+    }
+
+    fn require_runtime_visible_meta(&self, meta: SkillMeta) -> Result<SkillMeta, SkillError> {
+        self.governance_authority
+            .ensure_skill_runtime_available(&meta.name)?;
+        Ok(meta)
+    }
+
+    fn runtime_catalog_visible(&self, meta: &SkillMeta) -> bool {
+        matches!(
+            self.governance_authority
+                .effective_skill_vitality_state(&meta.name),
+            SkillVitalityState::Active | SkillVitalityState::ReviewCandidate
+        )
+    }
+
+    fn governance_authority(&self) -> &SkillGovernanceAuthority {
+        &self.governance_authority
     }
 }
 

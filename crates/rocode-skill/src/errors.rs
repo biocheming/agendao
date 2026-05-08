@@ -1,4 +1,4 @@
-use rocode_types::SkillGuardReport;
+use rocode_types::{SkillGuardReport, SkillVitalityState};
 use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -35,6 +35,14 @@ pub enum SkillError {
 
     #[error("invalid skill frontmatter: {message}")]
     InvalidSkillFrontmatter { message: String },
+
+    #[error(
+        "skill `{name}` is not available for runtime resolution because it is marked {state:?}"
+    )]
+    SkillRuntimeUnavailable {
+        name: String,
+        state: SkillVitalityState,
+    },
 
     #[error("skill already exists: {name}")]
     SkillAlreadyExists { name: String },

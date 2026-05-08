@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::skill_support::{
-    authority_for, collect_skill_category_views, filter_runtime_visible_skill_meta,
-    format_skill_categories_output, map_skill_error, resolve_skill_filter,
+    authority_for, collect_skill_category_views, format_skill_categories_output,
+    list_runtime_visible_skill_meta, resolve_skill_filter,
 };
 use crate::{Tool, ToolContext, ToolError, ToolResult};
 use rocode_config::ConfigStore;
@@ -60,19 +60,13 @@ impl Tool for SkillsCategoriesTool {
         let input: SkillsCategoriesInput =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
         let _ = input.verbose;
-        let authority = authority_for(
-            std::path::Path::new(&ctx.directory),
-            ctx.config_store.clone(),
-        );
         let resolved_filter = resolve_skill_filter(&ctx, None).await;
         let filter = resolved_filter.as_filter();
-        let skills = filter_runtime_visible_skill_meta(
+        let skills = list_runtime_visible_skill_meta(
             std::path::Path::new(&ctx.directory),
             ctx.config_store.clone(),
-            authority
-                .list_skill_meta(Some(&filter))
-                .map_err(map_skill_error)?,
-        );
+            Some(&filter),
+        )?;
         let categories = collect_skill_category_views(&skills);
         let output = format_skill_categories_output(&categories);
 

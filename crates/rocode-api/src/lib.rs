@@ -94,10 +94,18 @@ pub struct SkillDetailSkill {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillRuntimeResolutionDiagnostic {
+    pub inspection_available: bool,
+    pub runtime_available: bool,
+    pub vitality_state: rocode_types::SkillVitalityState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SkillDetailResponse {
     pub skill: SkillDetailSkill,
     pub source: String,
     pub writable: bool,
+    pub runtime_resolution: SkillRuntimeResolutionDiagnostic,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

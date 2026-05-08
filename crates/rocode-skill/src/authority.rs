@@ -138,6 +138,10 @@ impl SkillAuthority {
         filter: Option<&SkillFilter<'_>>,
     ) -> Result<LoadedSkill, SkillError> {
         let meta = self.resolve_skill(name, filter)?;
+        self.load_resolved_skill(meta)
+    }
+
+    pub(crate) fn load_resolved_skill(&self, meta: SkillMeta) -> Result<LoadedSkill, SkillError> {
         {
             let mut guard = self.write_cache()?;
             if let Some(loaded) = guard.cached_loaded_skill(&meta.name) {
@@ -163,8 +167,15 @@ impl SkillAuthority {
         filter: Option<&SkillFilter<'_>>,
     ) -> Result<String, SkillError> {
         let meta = self.resolve_skill(name, filter)?;
+        self.load_resolved_skill_source(&meta)
+    }
+
+    pub(crate) fn load_resolved_skill_source(
+        &self,
+        meta: &SkillMeta,
+    ) -> Result<String, SkillError> {
         std::fs::read_to_string(&meta.location).map_err(|error| SkillError::ReadFailed {
-            path: meta.location,
+            path: meta.location.clone(),
             message: error.to_string(),
         })
     }
@@ -213,9 +224,17 @@ impl SkillAuthority {
         file_path: &str,
     ) -> Result<LoadedSkillFile, SkillError> {
         let meta = self.resolve_skill(name, None)?;
+        self.load_resolved_skill_file(&meta, file_path)
+    }
+
+    pub(crate) fn load_resolved_skill_file(
+        &self,
+        meta: &SkillMeta,
+        file_path: &str,
+    ) -> Result<LoadedSkillFile, SkillError> {
         if !is_valid_relative_skill_path(file_path) {
             return Err(SkillError::InvalidSkillFilePath {
-                skill: meta.name,
+                skill: meta.name.clone(),
                 file_path: file_path.to_string(),
             });
         }
@@ -237,7 +256,7 @@ impl SkillAuthority {
         })?;
 
         Ok(LoadedSkillFile {
-            skill_name: meta.name,
+            skill_name: meta.name.clone(),
             file_path: file_ref.relative_path.clone(),
             location: file_ref.location.clone(),
             content,
