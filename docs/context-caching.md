@@ -2,6 +2,8 @@
 
 ROCode 的上下文缓存优化核心原则是：维护一个长期稳定、可复现、可解释的 prompt prefix，而不是在每轮请求里临时拼接更多缓存字段。
 
+这份文档现在不只解释“怎么命中缓存”，也解释 ROCode 如何界定上下文所有权。缓存优化不能靠偷偷塞更多历史；它依赖的是对 prompt surface、child handoff、compaction boundary 和 request-view checkpoint 的统一治理。
+
 ## 协议族边界
 
 ROCode 只把缓存策略按内部协议族分派：
@@ -12,6 +14,31 @@ ROCode 只把缓存策略按内部协议族分派：
 | Ethnopic-compatible | `ethnopic` | 显式 cache breakpoint；ROCode 负责规划稳定边界并写入 `cache_control`。底层 wire path 仍可能是 `/messages`。 |
 
 Provider 具体是谁不是主轴。厂商差异只作为 typed capability / usage parser override 后置处理，不能反过来驱动核心 prompt 结构。
+
+## 三本账：请求、会话、工作流
+
+ROCode 现在把上下文与用量拆成三本账，而不是继续把它们折叠成一个“Current”数字：
+
+- `request_context_tokens`
+  - 下一次真正发给 provider 的 request-view 估算大小
+- `live_context_tokens`
+  - 当前 session 自己拥有的 live prefix / live pressure
+- `workflow_cumulative_tokens`
+  - 整个 workflow 累计消耗，包含 child session / subsession / attached subtree 的花费
+
+这三本账对应三个不同的问题：
+
+- 这一轮还发不发得出去
+- 当前 session 的 prefix 还能不能保持稳定
+- 这条 workflow 到现在一共花了多少
+
+因此：
+
+- `Turn` 反映最近一次已完成调用的真实输入/输出
+- `Current` 应结合 request/live 账本理解，而不是拿它去替代累计消耗
+- `Session` / `workflow cumulative` 是成本账，不是下一轮 prompt 的真实大小
+
+CLI、TUI、Web 现在都能从 `context_closure_contract` 读到这三本账的解释，而不是各端自己猜 usage 含义。
 
 ## 稳定提示面
 
@@ -33,6 +60,17 @@ ROCode 会尽量把请求组织成三段：
    - 本轮 tool output / retrieval slice
 
 `Session Continuity Context` 的 Coverage、Source Anchors、Memory Anchors 属于 Semi-Stable；Exact Recent Tail 正文和本轮 hydration 结果属于 Dynamic。这样可以保留可追溯性，同时减少因为尾部正文变化导致的前缀失效。
+
+## Child / Fork 边界
+
+上下文稳定还依赖 child handoff 语义。ROCode 当前收口后的规则是：
+
+- parent 只向 child 传显式 packet，而不是把 parent 的完整运行史隐式倒给 child
+- child 回来时，parent 只吸收 result / summary，不回收 child 内部全部历史
+- attached subtree 的 token 成本进入 `workflow_cumulative_tokens`，但不应泄漏进 parent 的 live prefix
+- 显式 full-history fork 是单独语义：它允许导入历史，但会冻结 fork policy，并把 imported history 视为只读来源
+
+这套规则的目标不是节省一点点 token，而是保证缓存语义始终围绕 owner-local prompt surface，而不是围绕整棵 workflow 的混合历史。
 
 ## 输出投影
 
@@ -78,6 +116,38 @@ Cache medium change · prefix changed before the stable boundary
 - **medium change**：message prefix、prompt cache affinity、continuation 状态改变。
 - **low change**：冷启动、provider fallback、请求过短、能力未启用。
 
+这些 cache 诊断现在优先从 `context_closure_contract` 读取词汇，而不是让消息级 cache 文案、telemetry 文案和前端 sidebar 各自生成一套表述。
+
+## Context Closure Contract
+
+为了把“为什么没命中缓存”说清楚，ROCode 现在用一份统一的 `context_closure_contract` 来汇总四类事实：
+
+- `prefix_stability`
+  - prefix 是否在 API view 上保持稳定，是否发生了 stable boundary 之前的变化
+- `compaction_boundary`
+  - 这轮是否记录了 compaction boundary、是否尝试过 compact、是否已经进入 block
+- `cache_explainability`
+  - 当前 cache 问题是否已经能用 cache evidence / surface evidence / boundary evidence 解释
+- `child_history_isolation`
+  - child/subsession 的累计成本是否只留在 workflow 账本，而没有泄漏进 owner-local live prefix
+
+这意味着：
+
+- cache bust 不再只是某条 message metadata 里的零散标签
+- CLI / TUI / Web 会尽量复用同一套 closure 词汇来表达 prefix change、boundary recorded、cache explained、isolation leaked
+- artifact/export 读面也可以通过 diagnostics sidecar 复用同一份解释语义
+
+## 运行中 Checkpoint
+
+过去只在 pre-run / post-run 两头检查上下文压力，很容易在一次长链执行里错过真正的溢出点。现在 run loop 自己持有 request view，并在 step checkpoint 上重新评估：
+
+- 当前 request-view 估算 token
+- 当前模型的 exact / best-effort limit
+- 是否还有 compact/rewrite 尝试额度
+- 是否应该继续、compact request view，或者直接 block 下一次 model call
+
+默认策略已经下沉到 runtime loop / runtime policy；外层 hook 更适合做 override 和 observability，而不是重新担任 owner。
+
 ## 开发约束
 
 上下文缓存优化受 ROCode 宪法第十条“唯一提示面权威”约束：
@@ -94,6 +164,8 @@ Cache medium change · prefix changed before the stable boundary
 - `crates/rocode-provider/src/transform/normalize.rs`
 - `crates/rocode-session/src/prompt/message_building.rs`
 - `crates/rocode-session/src/prompt/loop_lifecycle.rs`
+- `crates/rocode-orchestrator/src/runtime/policy.rs`
+- `crates/rocode-orchestrator/src/runtime/loop_impl.rs`
 - `crates/rocode-cli/src/run/session_projection.rs`
 - `crates/rocode-tui/src/components/sidebar.rs`
 - `apps/rocode-web/src/lib/cacheDiagnostics.ts`

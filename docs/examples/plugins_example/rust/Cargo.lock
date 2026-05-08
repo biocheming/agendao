@@ -473,7 +473,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-core"
-version = "2026.5.5"
+version = "2026.5.8"
 dependencies = [
  "chrono",
  "hex",
@@ -499,7 +499,7 @@ dependencies = [
 
 [[package]]
 name = "rocode-plugin"
-version = "2026.5.5"
+version = "2026.5.8"
 dependencies = [
  "anyhow",
  "async-trait",

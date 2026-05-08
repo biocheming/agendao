@@ -1,6 +1,6 @@
 {
   "$schema": "https://rocode.dev/schemas/scheduler-profile.schema.json",
-  "version": "2026-05-05",
+  "version": "2026-05-08",
 
   "defaults": {
     "profile": "atlas-default"

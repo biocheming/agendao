@@ -1,8 +1,37 @@
 # ROCode Docs
 
-文档基线：`v2026.5.5`（更新日期：`2026-05-05`）
+文档基线：`v2026.5.8`（更新日期：`2026-05-08`）
 
 This directory contains product-facing examples and design references for ROCode features.
+
+## 这轮计划收口后，ROCode 现在正式提供什么
+
+- **Provider authority 收口**
+  - typed `ProviderProfile` 统一持有 protocol family / shape / transport / usage / cache 语义
+  - `/provider/{id}/descriptor` 提供窄只读 provider descriptor；Web/TUI/CLI 不再从 `/managed` 大响应里侧取
+  - `/config/validation` 会把 provider / external adapter / scheduler skill tree 的 owner-local 校验结果聚合成一份 snapshot
+- **上下文治理收口**
+  - session telemetry 现在区分 `request_context_tokens`、`live_context_tokens`、`workflow_cumulative_tokens`
+  - `context_closure_contract` 统一解释 prefix stability、compaction boundary、cache explainability、child history isolation
+  - `prompt_surface_state_snapshot` 作为 diagnostics sidecar 进入 artifact/export 读面，用来解释 cache bust 与 prefix 失稳
+- **artifact / adapter owner 收口**
+  - session bundle 与 memory artifact 都有 shared schema 和 owner-local legacy adapter 边界
+  - external adapter 必须先走 `/external-adapter/session/provision` 创建 owner-local session，不能让集成方自行猜测 session id
+  - 显式 full-history fork 已有冻结策略、只读 imported history 和 lifecycle explain
+- **Skill 治理收口**
+  - `skill hub` 不只看 managed/distribution，还新增 usage ledger、negative entropy、semantic conflict、composition relationship 和 runtime resolution
+  - draft proposal、review candidate、retired 状态、runtime gate 都进入统一 inspection / runtime 分层
+
+如果你想顺着这些治理线读代码和界面，优先看下面四份文档：
+
+- `context-caching.md`
+  - 稳定提示面、cache 语义、context closure、运行中 checkpoint
+- `skills.md`
+  - usage ledger、negative entropy、semantic conflict、composition relationship、runtime gate
+- `configuration.md`
+  - workspace authority、effective policy、validation
+- `../README.md`
+  - 产品层总览，说明这些能力为什么要同时存在
 
 ## 当前文档入口
 
@@ -132,10 +161,18 @@ The current schema IDs are:
 
 ```bash
 rocode skill hub status
+rocode skill hub managed
+rocode skill hub usage
+rocode skill hub negative-entropy
+rocode skill hub semantic-conflicts
+rocode skill hub index
 rocode skill hub distributions
 rocode skill hub artifact-cache
 rocode skill hub policy
 rocode skill hub lifecycle
+rocode skill hub review-candidates-sync --session-id <session>
+rocode skill hub semantic-conflict-review-sync --session-id <session>
+rocode skill hub vitality-set --session-id <session> --skill-name <name> --state review-candidate --summary <text>
 rocode skill hub install-plan --source-id <id> --source-kind registry --locator <locator> --skill-name <name>
 rocode skill hub install-apply --session-id <session> --source-id <id> --source-kind registry --locator <locator> --skill-name <name>
 rocode skill hub update-apply --session-id <session> --source-id <id> --source-kind registry --locator <locator> --skill-name <name>

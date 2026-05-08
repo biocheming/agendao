@@ -2,7 +2,7 @@
 
 ROCode（RockyCode）是一个用 Rust 编写的高性能 AI 编码编排器。它将终端原生交互、多 Agent 协调、可扩展技能系统和多模型 Provider 整合为一个统一的开发工作流引擎。
 
-> **版本:** 2026.5.5 · **许可证:** MIT · **作者:** Biocheming
+> **版本:** 2026.5.8 · **许可证:** MIT · **作者:** Biocheming
 
 ---
 
@@ -67,11 +67,15 @@ CLI、TUI 和 Web 会显示 cache read/write、hit/miss 以及 cache evidence / 
 
 ```bash
 rocode skill hub status
+rocode skill hub usage
+rocode skill hub negative-entropy
 rocode skill hub distributions
 rocode skill hub install-plan --source-id <id> --source-kind registry --locator <loc> --skill-name <name>
 ```
 
 所有读写命令经由 `rocode-server` 的 `/skill/hub/*` 路由进入 authority，不在 CLI 侧直接执行副作用。
+
+这一层现在不只做“装 skill”。它还维护 usage ledger、negative entropy、semantic conflict、composition relationship、proposal inbox 和 runtime gate。
 
 ### Memory 与 Skill 自进化
 
@@ -86,6 +90,8 @@ ROCode 当前已经把“会话经验 -> 可复用能力”的链路做成正式
 ### 多 Provider 支持
 
 通过 `models.dev` 获取完整模型目录，支持阿里云百炼、智谱 BigModel、Moonshot Kimi、DeepSeek、OpenRouter、Google、AWS Bedrock、Ollama 等多种 Provider 与认证插件。参见 [认证](auth)。
+
+provider 的当前生效配置不再需要前端各自猜测。ROCode 现在提供只读 provider descriptor 与 config validation 解释面，用来说明 typed provider profile、transport、认证与模型覆盖到底如何落地。
 
 ### MCP 集成
 
@@ -104,6 +110,8 @@ rocode mcp connect my-server
 ### Web 界面
 
 内置 React 前端，通过 `rocode web` 启动；当前版本已补齐更高密度的消息阅读节奏、可过滤 model picker、批量 session 删除与更统一的 workspace / session / activity 视觉体系。
+
+Web 现在也直接消费 context closure、effective policy、provider descriptor、external adapter provisioning 和 skill proposal 这些正式读面，而不是再从大响应里侧取零散字段。
 
 ### HTTP Server
 
