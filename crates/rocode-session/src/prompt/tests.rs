@@ -19,7 +19,8 @@ use rocode_tool::{Tool, ToolContext, ToolError, ToolResult};
 use rocode_types::{
     ContextPressureGovernanceStatus, MemoryEvidenceRef, MemoryKind, MemoryRecord, MemoryRecordId,
     MemoryScope, MemoryStatus, MemoryValidationStatus, ProposalStatus, SkillCapabilityGroupKind,
-    SkillCapabilityMember, SkillCapabilityMemberRole,
+    SkillCapabilityMember, SkillCapabilityMemberRole, SkillRetirementReason,
+    SkillRetirementReasonKind, SkillVitalityState,
 };
 use std::fs;
 use std::sync::Arc;
@@ -1896,6 +1897,91 @@ fn prepare_skill_reflection_loads_methodology_from_runtime_skill_names() {
             .methodology
             .as_ref()
             .expect("methodology should load")
+            .core_steps[0]
+            .experienced_tools,
+        vec!["cargo".to_string()]
+    );
+}
+
+#[test]
+fn prepare_skill_reflection_keeps_retired_skill_history_visible() {
+    let dir = tempdir().unwrap();
+    let governance = SkillGovernanceAuthority::new(dir.path(), None);
+    governance
+        .create_skill(
+            rocode_skill::CreateSkillRequest {
+                name: "runtime-check".to_string(),
+                description: "Reusable runtime verification workflow.".to_string(),
+                body:
+                    rocode_skill::render_methodology_skill_body(
+                        "runtime-check",
+                        &rocode_skill::SkillMethodologyTemplate {
+                            when_to_use: vec![
+                                "Use when runtime checks should be repeated.".to_string()
+                            ],
+                            when_not_to_use: vec!["Do not use for ad-hoc notes.".to_string()],
+                            prerequisites: vec![],
+                            core_steps: vec![rocode_skill::SkillMethodologyStep {
+                                title: "Check".to_string(),
+                                action: "Run the runtime check.".to_string(),
+                                outcome: Some("Runtime state is known.".to_string()),
+                                experienced_tools: vec!["cargo".to_string()],
+                            }],
+                            success_criteria: vec!["The runtime state is visible.".to_string()],
+                            validation: vec!["Repeat the check after changes.".to_string()],
+                            pitfalls: vec![
+                                "Do not patch production configs while checking.".to_string()
+                            ],
+                            references: vec![],
+                        },
+                    )
+                    .expect("render methodology body"),
+                frontmatter: None,
+                category: Some("ops".to_string()),
+                directory_name: None,
+            },
+            "test:create-runtime-check",
+        )
+        .expect("create skill");
+    governance
+        .set_skill_vitality_state(
+            "runtime-check",
+            SkillVitalityState::Retired,
+            SkillRetirementReason {
+                kind: SkillRetirementReasonKind::ManualOverride,
+                summary: "manual retire".to_string(),
+                noted_at: 123,
+                related_skill_name: None,
+            },
+            "test:retire-runtime-check",
+        )
+        .expect("retire skill");
+
+    let mut session = Session::new("proj", dir.path().to_string_lossy().to_string());
+    session.insert_metadata(
+        "runtime_skill_instructions",
+        serde_json::to_value(vec![RuntimeInstructionSource {
+            path: dir.path().join("AGENTS.md"),
+            content: r#"
+1. For the harness protocol itself
+   - target workspace skill: `runtime-check`
+   - target path: `.rocode/skills/runtime-check/SKILL.md`
+   - description: `Reusable runtime verification workflow.`
+"#
+            .to_string(),
+        }])
+        .unwrap(),
+    );
+
+    let reflection = prepare_skill_reflection(None, &session)
+        .expect("retired skill should remain visible to historical reflection");
+    assert_eq!(reflection.skills_used.len(), 1);
+    assert_eq!(reflection.skills_used[0].name, "runtime-check");
+    assert_eq!(
+        reflection.skills_used[0]
+            .methodology
+            .as_ref()
+            .expect("methodology should still load")
             .core_steps[0]
             .experienced_tools,
         vec!["cargo".to_string()]

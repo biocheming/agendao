@@ -14,7 +14,8 @@ use rocode_skill::{
     render_methodology_skill_body, CreateSkillRequest, DeleteSkillRequest, EditSkillRequest,
     LoadedSkill, PatchSkillRequest, RemoveSkillFileRequest, SkillAuthority, SkillFilter,
     SkillGovernanceAuthority, SkillGovernedWriteResult, SkillMeta, SkillMetaView,
-    SkillMethodologyTemplate, WriteSkillFileRequest,
+    SkillMethodologyTemplate, SkillRuntimeResolutionDiagnostic, SkillRuntimeResolver,
+    WriteSkillFileRequest,
 };
 use rocode_types::SkillGuardReport;
 use serde::{Deserialize, Serialize};
@@ -66,6 +67,7 @@ pub(crate) struct SkillDetailResponse {
     pub skill: LoadedSkill,
     pub source: String,
     pub writable: bool,
+    pub runtime_resolution: SkillRuntimeResolutionDiagnostic,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -149,10 +151,13 @@ pub(crate) async fn get_skill_detail(
         .load_skill_source(&name, authority_filter.as_ref())
         .map_err(map_skill_error_to_api_error)?;
     let writable = authority.is_skill_meta_writable(&skill.meta);
+    let runtime_resolution =
+        skill_runtime_resolver(&state).runtime_resolution_diagnostic(&skill.meta.name);
     Ok(Json(SkillDetailResponse {
         skill,
         source,
         writable,
+        runtime_resolution,
     }))
 }
 
@@ -319,21 +324,18 @@ async fn resolve_skill_catalog_inner(
     requested_names: Option<&[String]>,
     runtime_only: bool,
 ) -> Result<Vec<SkillMetaView>> {
-    let authority = skill_authority(state);
     let filter = build_skill_filter(state, query).await?;
     let authority_filter = filter.as_ref().map(OwnedSkillFilter::as_filter);
 
-    let mut views = authority
-        .list_skill_meta(authority_filter.as_ref())
-        .map_err(|error| ApiError::InternalError(error.to_string()))?;
-    if runtime_only {
-        let governance = skill_governance_authority(state);
-        views.retain(|view| {
-            governance
-                .ensure_skill_runtime_available(&view.name)
-                .is_ok()
-        });
-    }
+    let views = if runtime_only {
+        skill_runtime_resolver(state)
+            .list_skill_meta(authority_filter.as_ref())
+            .map_err(map_skill_error_to_api_error)?
+    } else {
+        skill_authority(state)
+            .list_skill_meta(authority_filter.as_ref())
+            .map_err(|error| ApiError::InternalError(error.to_string()))?
+    };
     Ok(select_skill_views(views, requested_names))
 }
 
@@ -569,6 +571,11 @@ fn skill_authority(state: &Arc<ServerState>) -> SkillAuthority {
 fn skill_governance_authority(state: &Arc<ServerState>) -> SkillGovernanceAuthority {
     let base_dir = state.project_root();
     SkillGovernanceAuthority::new(base_dir, Some(state.config_store.clone()))
+}
+
+fn skill_runtime_resolver(state: &Arc<ServerState>) -> SkillRuntimeResolver {
+    let base_dir = state.project_root();
+    SkillRuntimeResolver::new(base_dir, Some(state.config_store.clone()))
 }
 
 fn skill_catalog_entry_from_meta(
@@ -900,6 +907,7 @@ fn map_skill_error_to_api_error(error: rocode_skill::SkillError) -> ApiError {
         | rocode_skill::SkillError::InvalidSkillName { .. }
         | rocode_skill::SkillError::InvalidSkillDescription { .. }
         | rocode_skill::SkillError::InvalidSkillContent { .. }
+        | rocode_skill::SkillError::SkillRuntimeUnavailable { .. }
         | rocode_skill::SkillError::InvalidSkillCategory { .. }
         | rocode_skill::SkillError::InvalidSkillFrontmatter { .. }
         | rocode_skill::SkillError::SkillAlreadyExists { .. }
@@ -1463,5 +1471,167 @@ Only for planning.
         .await
         .expect("unfiltered detail should resolve");
         assert_eq!(detail.skill.meta.name, "plan-only");
+        assert!(detail.runtime_resolution.inspection_available);
+        assert!(detail.runtime_resolution.runtime_available);
+        assert_eq!(
+            detail.runtime_resolution.vitality_state,
+            rocode_types::SkillVitalityState::Active
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_only_skill_catalog_excludes_retired_skill() {
+        let dir = tempdir().expect("tempdir");
+        let state = server_state_for_project(dir.path());
+        let governance = skill_governance_authority(&state);
+        governance
+            .create_skill(
+                CreateSkillRequest {
+                    name: "active-runtime-skill".to_string(),
+                    description: "active".to_string(),
+                    body: "active".to_string(),
+                    frontmatter: None,
+                    category: Some("ops".to_string()),
+                    directory_name: None,
+                },
+                "test:create-active",
+            )
+            .expect("create active skill");
+        governance
+            .create_skill(
+                CreateSkillRequest {
+                    name: "retired-runtime-skill".to_string(),
+                    description: "retired".to_string(),
+                    body: "retired".to_string(),
+                    frontmatter: None,
+                    category: Some("ops".to_string()),
+                    directory_name: None,
+                },
+                "test:create-retired",
+            )
+            .expect("create retired skill");
+        governance
+            .set_skill_vitality_state(
+                "retired-runtime-skill",
+                rocode_types::SkillVitalityState::Retired,
+                rocode_types::SkillRetirementReason {
+                    kind: rocode_types::SkillRetirementReasonKind::ManualOverride,
+                    summary: "manual retire".to_string(),
+                    noted_at: 123,
+                    related_skill_name: None,
+                },
+                "test:retire",
+            )
+            .expect("retire skill");
+
+        let views = resolve_skill_catalog_inner(&state, &SkillCatalogQuery::default(), None, true)
+            .await
+            .expect("runtime catalog should resolve");
+        assert!(views
+            .iter()
+            .any(|skill| skill.name == "active-runtime-skill"));
+        assert!(!views
+            .iter()
+            .any(|skill| skill.name == "retired-runtime-skill"));
+    }
+
+    #[tokio::test]
+    async fn skill_detail_keeps_retired_skill_visible_but_reports_runtime_block() {
+        let dir = tempdir().expect("tempdir");
+        let state = server_state_for_project(dir.path());
+        let governance = skill_governance_authority(&state);
+        governance
+            .create_skill(
+                CreateSkillRequest {
+                    name: "retired-detail-skill".to_string(),
+                    description: "retired detail".to_string(),
+                    body: "retired detail body".to_string(),
+                    frontmatter: None,
+                    category: Some("ops".to_string()),
+                    directory_name: None,
+                },
+                "test:create-retired-detail",
+            )
+            .expect("create retired detail skill");
+        governance
+            .set_skill_vitality_state(
+                "retired-detail-skill",
+                rocode_types::SkillVitalityState::Retired,
+                rocode_types::SkillRetirementReason {
+                    kind: rocode_types::SkillRetirementReasonKind::ManualOverride,
+                    summary: "manual retire".to_string(),
+                    noted_at: 123,
+                    related_skill_name: None,
+                },
+                "test:retire-detail",
+            )
+            .expect("retire detail skill");
+
+        let Json(detail) = get_skill_detail(
+            State(state),
+            Query(SkillDetailQuery {
+                name: "retired-detail-skill".to_string(),
+                catalog: SkillCatalogQuery::default(),
+            }),
+        )
+        .await
+        .expect("inspection detail should still resolve");
+        assert_eq!(detail.skill.meta.name, "retired-detail-skill");
+        assert!(detail.runtime_resolution.inspection_available);
+        assert!(!detail.runtime_resolution.runtime_available);
+        assert_eq!(
+            detail.runtime_resolution.vitality_state,
+            rocode_types::SkillVitalityState::Retired
+        );
+    }
+
+    #[tokio::test]
+    async fn skill_detail_reports_review_candidate_as_runtime_available() {
+        let dir = tempdir().expect("tempdir");
+        let state = server_state_for_project(dir.path());
+        let governance = skill_governance_authority(&state);
+        governance
+            .create_skill(
+                CreateSkillRequest {
+                    name: "review-candidate-detail-skill".to_string(),
+                    description: "review candidate detail".to_string(),
+                    body: "review candidate detail body".to_string(),
+                    frontmatter: None,
+                    category: Some("ops".to_string()),
+                    directory_name: None,
+                },
+                "test:create-review-detail",
+            )
+            .expect("create review candidate skill");
+        governance
+            .set_skill_vitality_state(
+                "review-candidate-detail-skill",
+                rocode_types::SkillVitalityState::ReviewCandidate,
+                rocode_types::SkillRetirementReason {
+                    kind: rocode_types::SkillRetirementReasonKind::NegativeEntropy,
+                    summary: "needs review".to_string(),
+                    noted_at: 123,
+                    related_skill_name: None,
+                },
+                "test:review-detail",
+            )
+            .expect("mark review candidate");
+
+        let Json(detail) = get_skill_detail(
+            State(state),
+            Query(SkillDetailQuery {
+                name: "review-candidate-detail-skill".to_string(),
+                catalog: SkillCatalogQuery::default(),
+            }),
+        )
+        .await
+        .expect("inspection detail should resolve");
+        assert_eq!(detail.skill.meta.name, "review-candidate-detail-skill");
+        assert!(detail.runtime_resolution.inspection_available);
+        assert!(detail.runtime_resolution.runtime_available);
+        assert_eq!(
+            detail.runtime_resolution.vitality_state,
+            rocode_types::SkillVitalityState::ReviewCandidate
+        );
     }
 }

@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::skill_support::{
-    authority_for, collect_skill_categories, filter_runtime_visible_skill_meta,
-    format_skill_list_output, map_skill_error, resolve_skill_filter,
+    authority_for, collect_skill_categories, format_skill_list_output,
+    list_runtime_visible_skill_meta, resolve_skill_filter,
 };
 use crate::{Tool, ToolContext, ToolError, ToolResult};
 
@@ -58,19 +58,13 @@ impl Tool for SkillsListTool {
     ) -> Result<ToolResult, ToolError> {
         let input: SkillsListInput =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
-        let authority = authority_for(
-            std::path::Path::new(&ctx.directory),
-            ctx.config_store.clone(),
-        );
         let resolved_filter = resolve_skill_filter(&ctx, input.category.as_deref()).await;
         let filter = resolved_filter.as_filter();
-        let skills = filter_runtime_visible_skill_meta(
+        let skills = list_runtime_visible_skill_meta(
             std::path::Path::new(&ctx.directory),
             ctx.config_store.clone(),
-            authority
-                .list_skill_meta(Some(&filter))
-                .map_err(map_skill_error)?,
-        );
+            Some(&filter),
+        )?;
         let categories = collect_skill_categories(&skills);
         let output = format_skill_list_output(&skills);
 

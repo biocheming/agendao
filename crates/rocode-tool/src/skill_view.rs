@@ -4,8 +4,9 @@ use std::path::Path;
 
 use crate::skill_support::{
     attach_skill_runtime_preflight, authority_for, format_loaded_skill_file_output,
-    format_loaded_skill_output, load_skill_with_runtime_materialization, map_skill_error,
-    resolve_skill_filter, resolve_skill_with_runtime_materialization,
+    format_loaded_skill_output, load_skill_file_with_runtime_materialization,
+    load_skill_with_runtime_materialization, map_skill_error, resolve_skill_filter,
+    resolve_skill_with_runtime_materialization,
 };
 use crate::{PermissionRequest, Tool, ToolContext, ToolError, ToolResult};
 
@@ -58,7 +59,6 @@ impl Tool for SkillViewTool {
 
         if let Some(file_path) = input.file_path.as_deref() {
             let meta = resolve_skill_with_runtime_materialization(
-                &authority,
                 Path::new(&ctx.directory),
                 ctx.config_store.clone(),
                 &input.name,
@@ -71,9 +71,14 @@ impl Tool for SkillViewTool {
                     .with_always(&meta.name),
             )
             .await?;
-            let loaded = authority
-                .load_skill_file(&meta.name, file_path)
-                .map_err(map_skill_error)?;
+            let loaded = load_skill_file_with_runtime_materialization(
+                Path::new(&ctx.directory),
+                ctx.config_store.clone(),
+                &input.name,
+                file_path,
+                Some(&filter),
+                Some(&ctx.extra),
+            )?;
             let detail = authority
                 .load_skill_detail_for_meta(&meta)
                 .map_err(map_skill_error)?;
@@ -104,7 +109,6 @@ impl Tool for SkillViewTool {
         .await?;
 
         let loaded = load_skill_with_runtime_materialization(
-            &authority,
             Path::new(&ctx.directory),
             ctx.config_store.clone(),
             &input.name,

@@ -818,6 +818,7 @@ fn map_skill_error_to_api_error(error: SkillError) -> ApiError {
         | SkillError::InvalidSkillName { .. }
         | SkillError::InvalidSkillDescription { .. }
         | SkillError::InvalidSkillContent { .. }
+        | SkillError::SkillRuntimeUnavailable { .. }
         | SkillError::InvalidSkillCategory { .. }
         | SkillError::InvalidSkillFrontmatter { .. }
         | SkillError::SkillAlreadyExists { .. }

@@ -37,6 +37,7 @@ pub use methodology::{
 pub use runtime::{
     infer_runtime_skill_names, RuntimeInstructionSource, RuntimeSkillBootstrapReport,
     RuntimeSkillMaterialization, RuntimeSkillMaterializationAction, RuntimeSkillSourceKind,
+    SkillRuntimeResolutionDiagnostic, SkillRuntimeResolver,
 };
 pub use sync::SkillSyncPlanner;
 pub use types::{
@@ -932,7 +933,160 @@ Use the following explicit create or refresh mapping:
         let error = governance
             .ensure_skill_runtime_available("provider-refresh")
             .unwrap_err();
-        assert!(matches!(error, SkillError::InvalidSkillContent { .. }));
+        assert!(matches!(
+            error,
+            SkillError::SkillRuntimeUnavailable {
+                name,
+                state: rocode_types::SkillVitalityState::Retired
+            } if name == "provider-refresh"
+        ));
+    }
+
+    #[test]
+    fn runtime_resolver_filters_retired_skill_from_runtime_catalog_only() {
+        let dir = tempdir().unwrap();
+        let governance = SkillGovernanceAuthority::new(dir.path(), None);
+        governance
+            .create_skill(
+                CreateSkillRequest {
+                    name: "active-reviewer".to_string(),
+                    description: "active".to_string(),
+                    body: "active reviewer".to_string(),
+                    frontmatter: None,
+                    category: Some("review".to_string()),
+                    directory_name: None,
+                },
+                "test:create-active",
+            )
+            .unwrap();
+        governance
+            .create_skill(
+                CreateSkillRequest {
+                    name: "retired-reviewer".to_string(),
+                    description: "retired".to_string(),
+                    body: "retired reviewer".to_string(),
+                    frontmatter: None,
+                    category: Some("review".to_string()),
+                    directory_name: None,
+                },
+                "test:create-retired",
+            )
+            .unwrap();
+        governance
+            .set_skill_vitality_state(
+                "retired-reviewer",
+                rocode_types::SkillVitalityState::Retired,
+                rocode_types::SkillRetirementReason {
+                    kind: rocode_types::SkillRetirementReasonKind::ManualOverride,
+                    summary: "manual retire".to_string(),
+                    noted_at: 123,
+                    related_skill_name: None,
+                },
+                "test:retire",
+            )
+            .unwrap();
+
+        let runtime = SkillRuntimeResolver::from_governance(governance.clone());
+        let runtime_catalog = runtime.list_skill_meta(None).unwrap();
+        assert!(runtime_catalog
+            .iter()
+            .any(|skill| skill.name == "active-reviewer"));
+        assert!(!runtime_catalog
+            .iter()
+            .any(|skill| skill.name == "retired-reviewer"));
+
+        let raw_catalog = governance.skill_authority().list_skill_meta(None).unwrap();
+        assert!(raw_catalog
+            .iter()
+            .any(|skill| skill.name == "retired-reviewer"));
+    }
+
+    #[test]
+    fn runtime_resolver_gates_after_canonical_name_resolution() {
+        let dir = tempdir().unwrap();
+        let governance = SkillGovernanceAuthority::new(dir.path(), None);
+        governance
+            .create_skill(
+                CreateSkillRequest {
+                    name: "provider-refresh".to_string(),
+                    description: "refresh".to_string(),
+                    body: "refresh provider".to_string(),
+                    frontmatter: None,
+                    category: Some("ops".to_string()),
+                    directory_name: None,
+                },
+                "test:create",
+            )
+            .unwrap();
+        governance
+            .set_skill_vitality_state(
+                "provider-refresh",
+                rocode_types::SkillVitalityState::Retired,
+                rocode_types::SkillRetirementReason {
+                    kind: rocode_types::SkillRetirementReasonKind::ManualOverride,
+                    summary: "manual retire".to_string(),
+                    noted_at: 123,
+                    related_skill_name: None,
+                },
+                "test:retire",
+            )
+            .unwrap();
+
+        let runtime = SkillRuntimeResolver::from_governance(governance);
+        let error = runtime.resolve_skill("PROVIDER-REFRESH", None).unwrap_err();
+        assert!(matches!(
+            error,
+            SkillError::SkillRuntimeUnavailable {
+                name,
+                state: rocode_types::SkillVitalityState::Retired
+            } if name == "provider-refresh"
+        ));
+    }
+
+    #[test]
+    fn runtime_resolver_allows_review_candidate_and_reports_runtime_available() {
+        let dir = tempdir().unwrap();
+        let governance = SkillGovernanceAuthority::new(dir.path(), None);
+        governance
+            .create_skill(
+                CreateSkillRequest {
+                    name: "review-candidate-reviewer".to_string(),
+                    description: "candidate".to_string(),
+                    body: "candidate reviewer".to_string(),
+                    frontmatter: None,
+                    category: Some("review".to_string()),
+                    directory_name: None,
+                },
+                "test:create-review-candidate",
+            )
+            .unwrap();
+        governance
+            .set_skill_vitality_state(
+                "review-candidate-reviewer",
+                rocode_types::SkillVitalityState::ReviewCandidate,
+                rocode_types::SkillRetirementReason {
+                    kind: rocode_types::SkillRetirementReasonKind::NegativeEntropy,
+                    summary: "needs review".to_string(),
+                    noted_at: 123,
+                    related_skill_name: None,
+                },
+                "test:review-candidate",
+            )
+            .unwrap();
+
+        let runtime = SkillRuntimeResolver::from_governance(governance);
+        let loaded = runtime
+            .load_skill("review-candidate-reviewer", None)
+            .unwrap();
+        assert_eq!(loaded.meta.name, "review-candidate-reviewer");
+
+        let diagnostic = runtime.runtime_resolution_diagnostic(&loaded.meta.name);
+        assert!(diagnostic.inspection_available);
+        assert!(diagnostic.runtime_available);
+        assert_eq!(
+            diagnostic.vitality_state,
+            rocode_types::SkillVitalityState::ReviewCandidate
+        );
     }
 
     #[test]
