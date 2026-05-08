@@ -346,6 +346,115 @@ pub struct SkillOperationalSnapshot {
     pub vitality: Option<SkillVitalityRecord>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillRelationshipKind {
+    #[default]
+    RedundantOverlap,
+    SpecializationVariant,
+    ComplementaryComponent,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillRelationshipState {
+    #[default]
+    Observed,
+    Accepted,
+    Dismissed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct SkillRelationshipEdge {
+    pub left_skill_name: String,
+    pub right_skill_name: String,
+    pub relation_kind: SkillRelationshipKind,
+    #[serde(default)]
+    pub state: SkillRelationshipState,
+    #[serde(default)]
+    pub score: u16,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_skill_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillCapabilityGroupKind {
+    #[default]
+    CanonicalFamily,
+    ComplementaryBundle,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillCapabilityMemberRole {
+    #[default]
+    Canonical,
+    Specialization,
+    Complementary,
+    MergeCandidate,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct SkillCapabilityMember {
+    pub skill_name: String,
+    #[serde(default)]
+    pub role: SkillCapabilityMemberRole,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillCapabilityGroupState {
+    #[default]
+    Candidate,
+    Active,
+    Dismissed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct SkillCapabilityGroup {
+    pub capability_id: String,
+    #[serde(default)]
+    pub group_kind: SkillCapabilityGroupKind,
+    #[serde(default)]
+    pub state: SkillCapabilityGroupState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_skill_name: Option<String>,
+    #[serde(default)]
+    pub members: Vec<SkillCapabilityMember>,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillRuntimeCompositionHintKind {
+    #[default]
+    PreferCanonicalSkill,
+    ComplementaryBundle,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct SkillRuntimeCompositionHint {
+    #[serde(default)]
+    pub kind: SkillRuntimeCompositionHintKind,
+    #[serde(default)]
+    pub skill_names: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_skill_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_id: Option<String>,
+    pub summary: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillSyncAction {
@@ -381,6 +490,77 @@ pub struct SkillHubManagedResponse {
 pub struct SkillHubUsageLedgerResponse {
     #[serde(default)]
     pub entries: Vec<SkillOperationalSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillHubCompositionRelationshipsResponse {
+    pub generated_at: i64,
+    #[serde(default)]
+    pub relationships: Vec<SkillRelationshipEdge>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillHubCompositionGroupsResponse {
+    pub generated_at: i64,
+    #[serde(default)]
+    pub groups: Vec<SkillCapabilityGroup>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillHubCompositionRelationshipAcceptRequest {
+    pub session_id: String,
+    pub left_skill_name: String,
+    pub right_skill_name: String,
+    pub relation_kind: SkillRelationshipKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_skill_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillHubCompositionRelationshipDismissRequest {
+    pub session_id: String,
+    pub left_skill_name: String,
+    pub right_skill_name: String,
+    pub relation_kind: SkillRelationshipKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillHubCompositionRelationshipWriteResponse {
+    pub relationship: SkillRelationshipEdge,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillHubCompositionGroupCreateRequest {
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_id: Option<String>,
+    pub group_kind: SkillCapabilityGroupKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_skill_name: Option<String>,
+    #[serde(default)]
+    pub members: Vec<SkillCapabilityMember>,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillHubCompositionGroupMemberRoleRequest {
+    pub session_id: String,
+    pub capability_id: String,
+    pub skill_name: String,
+    pub role: SkillCapabilityMemberRole,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillHubCompositionGroupMemberRemoveRequest {
+    pub session_id: String,
+    pub capability_id: String,
+    pub skill_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillHubCompositionGroupWriteResponse {
+    pub group: SkillCapabilityGroup,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -696,6 +876,11 @@ pub struct SkillHubGuardRunResponse {
 #[serde(rename_all = "snake_case")]
 pub enum SkillGovernanceTimelineKind {
     ManagedSnapshot,
+    CompositionRelationshipAccepted,
+    CompositionRelationshipDismissed,
+    CapabilityGroupActivated,
+    CapabilityGroupMemberRoleUpdated,
+    CapabilityGroupMemberRemoved,
     VitalityTransitioned,
     SourceIndexRefreshed,
     SourceResolved,
@@ -789,6 +974,11 @@ pub struct SkillGuardReport {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillAuditKind {
+    CompositionRelationshipAccepted,
+    CompositionRelationshipDismissed,
+    CapabilityGroupActivated,
+    CapabilityGroupMemberRoleUpdated,
+    CapabilityGroupMemberRemoved,
     VitalityTransitioned,
     SourceIndexRefreshed,
     SourceResolved,
@@ -817,6 +1007,17 @@ pub enum SkillAuditKind {
 impl From<SkillAuditKind> for SkillGovernanceTimelineKind {
     fn from(value: SkillAuditKind) -> Self {
         match value {
+            SkillAuditKind::CompositionRelationshipAccepted => {
+                Self::CompositionRelationshipAccepted
+            }
+            SkillAuditKind::CompositionRelationshipDismissed => {
+                Self::CompositionRelationshipDismissed
+            }
+            SkillAuditKind::CapabilityGroupActivated => Self::CapabilityGroupActivated,
+            SkillAuditKind::CapabilityGroupMemberRoleUpdated => {
+                Self::CapabilityGroupMemberRoleUpdated
+            }
+            SkillAuditKind::CapabilityGroupMemberRemoved => Self::CapabilityGroupMemberRemoved,
             SkillAuditKind::VitalityTransitioned => Self::VitalityTransitioned,
             SkillAuditKind::SourceIndexRefreshed => Self::SourceIndexRefreshed,
             SkillAuditKind::SourceResolved => Self::SourceResolved,

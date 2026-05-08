@@ -2,8 +2,9 @@ use crate::audit::{append_audit_event, load_audit_events, DEFAULT_AUDIT_TAIL_LIM
 use crate::SkillError;
 use rocode_types::{
     BundledSkillManifest, ManagedSkillRecord, SkillArtifactCacheEntry, SkillAuditEvent,
-    SkillDistributionRecord, SkillManagedLifecycleRecord, SkillOperationalSnapshot,
-    SkillSourceIndexEntry, SkillSourceIndexSnapshot, SkillSourceRef,
+    SkillCapabilityGroup, SkillDistributionRecord, SkillManagedLifecycleRecord,
+    SkillOperationalSnapshot, SkillRelationshipEdge, SkillSourceIndexEntry,
+    SkillSourceIndexSnapshot, SkillSourceRef,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -22,8 +23,11 @@ const DISTRIBUTION_LOCK_FILENAME: &str = "distribution-lock.json";
 const INDEX_CACHE_DIRNAME: &str = "index-cache";
 const LIFECYCLE_FILENAME: &str = "lifecycle.json";
 const OPERATIONAL_LEDGER_FILENAME: &str = "operational-ledger.json";
+const COMPOSITION_GRAPH_FILENAME: &str = "composition-graph.json";
 const ARTIFACT_CACHE_SCHEMA: &str = "rocode.skill_artifact_cache";
 const ARTIFACT_CACHE_VERSION: u32 = 1;
+const COMPOSITION_GRAPH_SCHEMA: &str = "rocode.skill_composition_graph";
+const COMPOSITION_GRAPH_VERSION: u32 = 1;
 const DISTRIBUTION_LOCK_SCHEMA: &str = "rocode.skill_distribution_lock";
 const DISTRIBUTION_LOCK_VERSION: u32 = 1;
 const LIFECYCLE_SCHEMA: &str = "rocode.skill_lifecycle";
@@ -37,6 +41,8 @@ const SOURCE_INDEX_CACHE_VERSION: u32 = 1;
 pub struct SkillHubSnapshot {
     pub managed_skills: Vec<ManagedSkillRecord>,
     pub operational_snapshots: Vec<SkillOperationalSnapshot>,
+    pub composition_relationships: Vec<SkillRelationshipEdge>,
+    pub capability_groups: Vec<SkillCapabilityGroup>,
     pub artifact_cache: Vec<SkillArtifactCacheEntry>,
     pub distributions: Vec<SkillDistributionRecord>,
     pub lifecycle: Vec<SkillManagedLifecycleRecord>,
@@ -106,6 +112,16 @@ struct StoredSkillOperationalLedgerState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredSkillCompositionGraphState {
+    schema: String,
+    version: u32,
+    #[serde(default)]
+    relationships: Vec<SkillRelationshipEdge>,
+    #[serde(default)]
+    groups: Vec<SkillCapabilityGroup>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredSkillArtifactCacheState {
     schema: String,
     version: u32,
@@ -171,6 +187,10 @@ impl SkillHubStore {
         self.governance_dir().join(OPERATIONAL_LEDGER_FILENAME)
     }
 
+    pub fn composition_graph_path(&self) -> PathBuf {
+        self.governance_dir().join(COMPOSITION_GRAPH_FILENAME)
+    }
+
     pub fn snapshot(&self) -> SkillHubSnapshot {
         self.snapshot_result().unwrap_or_else(|error| {
             tracing::warn!(%error, "failed to read skill hub snapshot from cache");
@@ -195,6 +215,14 @@ impl SkillHubStore {
             .operational_snapshots
             .into_iter()
             .find(|entry| entry.skill_name.eq_ignore_ascii_case(skill_name))
+    }
+
+    pub fn composition_relationships(&self) -> Vec<SkillRelationshipEdge> {
+        self.snapshot().composition_relationships
+    }
+
+    pub fn capability_groups(&self) -> Vec<SkillCapabilityGroup> {
+        self.snapshot().capability_groups
     }
 
     pub fn artifact_cache(&self) -> Vec<SkillArtifactCacheEntry> {
@@ -274,6 +302,35 @@ impl SkillHubStore {
                 .operational_snapshots
                 .sort_by(|left, right| left.skill_name.cmp(&right.skill_name));
         }
+        self.persist_snapshot(snapshot)
+    }
+
+    pub fn replace_composition_relationships(
+        &self,
+        mut relationships: Vec<SkillRelationshipEdge>,
+    ) -> Result<(), SkillError> {
+        relationships.sort_by(|left, right| {
+            left.left_skill_name
+                .cmp(&right.left_skill_name)
+                .then_with(|| left.right_skill_name.cmp(&right.right_skill_name))
+                .then_with(|| {
+                    serde_json::to_string(&left.relation_kind)
+                        .unwrap_or_default()
+                        .cmp(&serde_json::to_string(&right.relation_kind).unwrap_or_default())
+                })
+        });
+        let mut snapshot = self.snapshot_result()?;
+        snapshot.composition_relationships = relationships;
+        self.persist_snapshot(snapshot)
+    }
+
+    pub fn replace_capability_groups(
+        &self,
+        mut groups: Vec<SkillCapabilityGroup>,
+    ) -> Result<(), SkillError> {
+        groups.sort_by(|left, right| left.capability_id.cmp(&right.capability_id));
+        let mut snapshot = self.snapshot_result()?;
+        snapshot.capability_groups = groups;
         self.persist_snapshot(snapshot)
     }
 
@@ -747,6 +804,7 @@ fn load_snapshot_from_disk(base_dir: &Path) -> Result<SkillHubSnapshot, SkillErr
     let index_cache_dir = governance_dir.join(INDEX_CACHE_DIRNAME);
     let lifecycle_path = governance_dir.join(LIFECYCLE_FILENAME);
     let operational_ledger_path = governance_dir.join(OPERATIONAL_LEDGER_FILENAME);
+    let composition_graph_path = governance_dir.join(COMPOSITION_GRAPH_FILENAME);
 
     let state = match load_hub_state(&hub_lock_path) {
         Ok(state) => state,
@@ -791,6 +849,15 @@ fn load_snapshot_from_disk(base_dir: &Path) -> Result<SkillHubSnapshot, SkillErr
             Vec::new()
         }
     };
+    let (composition_relationships, capability_groups) = match load_composition_graph_state(
+        &composition_graph_path,
+    ) {
+        Ok((relationships, groups)) => (relationships, groups),
+        Err(error) => {
+            tracing::warn!(%error, path=%composition_graph_path.display(), "failed to load skill composition graph");
+            (Vec::new(), Vec::new())
+        }
+    };
     let audit_tail = match load_audit_events(&audit_log_path, DEFAULT_AUDIT_TAIL_LIMIT) {
         Ok(audit_tail) => audit_tail,
         Err(error) => {
@@ -801,6 +868,8 @@ fn load_snapshot_from_disk(base_dir: &Path) -> Result<SkillHubSnapshot, SkillErr
     Ok(SkillHubSnapshot {
         managed_skills: state.managed_skills,
         operational_snapshots,
+        composition_relationships,
+        capability_groups,
         artifact_cache,
         distributions,
         lifecycle,
@@ -864,6 +933,11 @@ fn persist_hub_state(base_dir: &Path, snapshot: &SkillHubSnapshot) -> Result<(),
     persist_lifecycle_state(
         &governance_dir.join(LIFECYCLE_FILENAME),
         &snapshot.lifecycle,
+    )?;
+    persist_composition_graph_state(
+        &governance_dir.join(COMPOSITION_GRAPH_FILENAME),
+        &snapshot.composition_relationships,
+        &snapshot.capability_groups,
     )?;
     persist_operational_ledger_state(
         &governance_dir.join(OPERATIONAL_LEDGER_FILENAME),
@@ -1068,6 +1142,50 @@ fn persist_operational_ledger_state(
         schema: OPERATIONAL_LEDGER_SCHEMA.to_string(),
         version: OPERATIONAL_LEDGER_VERSION,
         entries: entries.to_vec(),
+    })
+    .map_err(|error| SkillError::WriteFailed {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    })?;
+    fs::write(path, payload).map_err(|error| SkillError::WriteFailed {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    })
+}
+
+fn load_composition_graph_state(
+    path: &Path,
+) -> Result<(Vec<SkillRelationshipEdge>, Vec<SkillCapabilityGroup>), SkillError> {
+    if !path.exists() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let content = fs::read_to_string(path).map_err(|error| SkillError::ReadFailed {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    })?;
+    let stored =
+        serde_json::from_str::<StoredSkillCompositionGraphState>(&content).map_err(|error| {
+            SkillError::ReadFailed {
+                path: path.to_path_buf(),
+                message: error.to_string(),
+            }
+        })?;
+    if stored.schema != COMPOSITION_GRAPH_SCHEMA || stored.version != COMPOSITION_GRAPH_VERSION {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    Ok((stored.relationships, stored.groups))
+}
+
+fn persist_composition_graph_state(
+    path: &Path,
+    relationships: &[SkillRelationshipEdge],
+    groups: &[SkillCapabilityGroup],
+) -> Result<(), SkillError> {
+    let payload = serde_json::to_string_pretty(&StoredSkillCompositionGraphState {
+        schema: COMPOSITION_GRAPH_SCHEMA.to_string(),
+        version: COMPOSITION_GRAPH_VERSION,
+        relationships: relationships.to_vec(),
+        groups: groups.to_vec(),
     })
     .map_err(|error| SkillError::WriteFailed {
         path: path.to_path_buf(),

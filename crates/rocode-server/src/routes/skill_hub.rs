@@ -8,18 +8,23 @@ use axum::{
 use rocode_skill::{SkillError, SkillGovernanceAuthority};
 use rocode_tool::{PermissionRequest, ToolError};
 use rocode_types::{
-    SkillHubArtifactCacheResponse, SkillHubAuditResponse, SkillHubDistributionResponse,
-    SkillHubGuardRunRequest, SkillHubGuardRunResponse, SkillHubIndexRefreshRequest,
-    SkillHubIndexRefreshResponse, SkillHubIndexResponse, SkillHubLifecycleResponse,
-    SkillHubManagedDetachRequest, SkillHubManagedDetachResponse, SkillHubManagedRemoveRequest,
-    SkillHubManagedRemoveResponse, SkillHubManagedResponse, SkillHubNegativeEntropyResponse,
-    SkillHubPolicyResponse, SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
-    SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest,
-    SkillHubReviewCandidatesSyncRequest, SkillHubReviewCandidatesSyncResponse,
-    SkillHubSemanticConflictResponse, SkillHubSyncApplyRequest, SkillHubSyncPlanRequest,
-    SkillHubSyncPlanResponse, SkillHubTimelineQuery, SkillHubTimelineResponse,
-    SkillHubUsageLedgerResponse, SkillHubVitalityUpdateRequest, SkillHubVitalityUpdateResponse,
-    SkillRemoteInstallPlan, SkillRemoteInstallResponse, SkillRetirementReason,
+    SkillHubArtifactCacheResponse, SkillHubAuditResponse, SkillHubCompositionGroupCreateRequest,
+    SkillHubCompositionGroupMemberRemoveRequest, SkillHubCompositionGroupMemberRoleRequest,
+    SkillHubCompositionGroupWriteResponse, SkillHubCompositionGroupsResponse,
+    SkillHubCompositionRelationshipAcceptRequest, SkillHubCompositionRelationshipDismissRequest,
+    SkillHubCompositionRelationshipWriteResponse, SkillHubCompositionRelationshipsResponse,
+    SkillHubDistributionResponse, SkillHubGuardRunRequest, SkillHubGuardRunResponse,
+    SkillHubIndexRefreshRequest, SkillHubIndexRefreshResponse, SkillHubIndexResponse,
+    SkillHubLifecycleResponse, SkillHubManagedDetachRequest, SkillHubManagedDetachResponse,
+    SkillHubManagedRemoveRequest, SkillHubManagedRemoveResponse, SkillHubManagedResponse,
+    SkillHubNegativeEntropyResponse, SkillHubPolicyResponse, SkillHubRemoteInstallApplyRequest,
+    SkillHubRemoteInstallPlanRequest, SkillHubRemoteUpdateApplyRequest,
+    SkillHubRemoteUpdatePlanRequest, SkillHubReviewCandidatesSyncRequest,
+    SkillHubReviewCandidatesSyncResponse, SkillHubSemanticConflictResponse,
+    SkillHubSyncApplyRequest, SkillHubSyncPlanRequest, SkillHubSyncPlanResponse,
+    SkillHubTimelineQuery, SkillHubTimelineResponse, SkillHubUsageLedgerResponse,
+    SkillHubVitalityUpdateRequest, SkillHubVitalityUpdateResponse, SkillRemoteInstallPlan,
+    SkillRemoteInstallResponse, SkillRetirementReason,
 };
 use std::sync::Arc;
 
@@ -31,6 +36,30 @@ pub(crate) fn skill_hub_routes() -> Router<Arc<ServerState>> {
         .route(
             "/review-candidates/sync",
             post(sync_negative_entropy_review_candidates),
+        )
+        .route(
+            "/composition/relationships",
+            get(list_composition_relationships),
+        )
+        .route(
+            "/composition/relationships/accept",
+            post(accept_composition_relationship),
+        )
+        .route(
+            "/composition/relationships/dismiss",
+            post(dismiss_composition_relationship),
+        )
+        .route(
+            "/composition/groups",
+            get(list_composition_groups).post(activate_composition_group),
+        )
+        .route(
+            "/composition/groups/member-role",
+            post(set_composition_group_member_role),
+        )
+        .route(
+            "/composition/groups/remove-member",
+            post(remove_composition_group_member),
         )
         .route(
             "/semantic-conflicts",
@@ -106,6 +135,221 @@ async fn list_negative_entropy_diagnostics(
         generated_at,
         candidates,
     }))
+}
+
+async fn list_composition_relationships(
+    State(state): State<Arc<ServerState>>,
+) -> Result<Json<SkillHubCompositionRelationshipsResponse>> {
+    let generated_at = chrono::Utc::now().timestamp();
+    let relationships = run_skill_hub_blocking(state, |authority| {
+        authority
+            .skill_composition_relationship_inspection()
+            .map_err(map_skill_error_to_api_error)
+    })
+    .await?;
+    Ok(Json(SkillHubCompositionRelationshipsResponse {
+        generated_at,
+        relationships,
+    }))
+}
+
+async fn list_composition_groups(
+    State(state): State<Arc<ServerState>>,
+) -> Result<Json<SkillHubCompositionGroupsResponse>> {
+    let generated_at = chrono::Utc::now().timestamp();
+    let groups = run_skill_hub_blocking(state, |authority| {
+        authority
+            .skill_capability_group_inspection()
+            .map_err(map_skill_error_to_api_error)
+    })
+    .await?;
+    Ok(Json(SkillHubCompositionGroupsResponse {
+        generated_at,
+        groups,
+    }))
+}
+
+async fn accept_composition_relationship(
+    State(state): State<Arc<ServerState>>,
+    Json(req): Json<SkillHubCompositionRelationshipAcceptRequest>,
+) -> Result<Json<SkillHubCompositionRelationshipWriteResponse>> {
+    let session_id = required_string(Some(req.session_id.clone()), "session_id")?;
+    let left_skill_name = required_string(Some(req.left_skill_name.clone()), "left_skill_name")?;
+    let right_skill_name = required_string(Some(req.right_skill_name.clone()), "right_skill_name")?;
+    request_permission(
+        state.clone(),
+        session_id,
+        PermissionRequest::new("skill_hub")
+            .with_patterns(vec![left_skill_name.clone(), right_skill_name.clone()])
+            .with_metadata(
+                "action",
+                serde_json::json!("composition_relationship_accept"),
+            )
+            .with_metadata("relation_kind", serde_json::json!(req.relation_kind)),
+    )
+    .await
+    .map_err(map_tool_error_to_api_error)?;
+
+    let preferred_skill_name = trimmed_option(req.preferred_skill_name.clone());
+    let relationship = run_skill_hub_blocking(state, move |authority| {
+        authority
+            .accept_skill_composition_relationship(
+                &left_skill_name,
+                &right_skill_name,
+                req.relation_kind,
+                preferred_skill_name.as_deref(),
+                "route:/skill/hub/composition/relationships/accept",
+            )
+            .map_err(map_skill_error_to_api_error)
+    })
+    .await?;
+    Ok(Json(SkillHubCompositionRelationshipWriteResponse {
+        relationship,
+    }))
+}
+
+async fn dismiss_composition_relationship(
+    State(state): State<Arc<ServerState>>,
+    Json(req): Json<SkillHubCompositionRelationshipDismissRequest>,
+) -> Result<Json<SkillHubCompositionRelationshipWriteResponse>> {
+    let session_id = required_string(Some(req.session_id.clone()), "session_id")?;
+    let left_skill_name = required_string(Some(req.left_skill_name.clone()), "left_skill_name")?;
+    let right_skill_name = required_string(Some(req.right_skill_name.clone()), "right_skill_name")?;
+    request_permission(
+        state.clone(),
+        session_id,
+        PermissionRequest::new("skill_hub")
+            .with_patterns(vec![left_skill_name.clone(), right_skill_name.clone()])
+            .with_metadata(
+                "action",
+                serde_json::json!("composition_relationship_dismiss"),
+            )
+            .with_metadata("relation_kind", serde_json::json!(req.relation_kind)),
+    )
+    .await
+    .map_err(map_tool_error_to_api_error)?;
+
+    let relationship = run_skill_hub_blocking(state, move |authority| {
+        authority
+            .dismiss_skill_composition_relationship(
+                &left_skill_name,
+                &right_skill_name,
+                req.relation_kind,
+                "route:/skill/hub/composition/relationships/dismiss",
+            )
+            .map_err(map_skill_error_to_api_error)
+    })
+    .await?;
+    Ok(Json(SkillHubCompositionRelationshipWriteResponse {
+        relationship,
+    }))
+}
+
+async fn activate_composition_group(
+    State(state): State<Arc<ServerState>>,
+    Json(req): Json<SkillHubCompositionGroupCreateRequest>,
+) -> Result<Json<SkillHubCompositionGroupWriteResponse>> {
+    let session_id = required_string(Some(req.session_id.clone()), "session_id")?;
+    let mut permission_patterns = req
+        .members
+        .iter()
+        .map(|member| member.skill_name.clone())
+        .collect::<Vec<_>>();
+    if let Some(capability_id) = trimmed_option(req.capability_id.clone()) {
+        permission_patterns.push(capability_id);
+    }
+    request_permission(
+        state.clone(),
+        session_id,
+        PermissionRequest::new("skill_hub")
+            .with_patterns(permission_patterns)
+            .with_metadata("action", serde_json::json!("composition_group_activate"))
+            .with_metadata("group_kind", serde_json::json!(req.group_kind)),
+    )
+    .await
+    .map_err(map_tool_error_to_api_error)?;
+
+    let capability_id = trimmed_option(req.capability_id.clone());
+    let canonical_skill_name = trimmed_option(req.canonical_skill_name.clone());
+    let group = run_skill_hub_blocking(state, move |authority| {
+        authority
+            .activate_skill_capability_group(
+                capability_id.as_deref(),
+                req.group_kind,
+                canonical_skill_name.as_deref(),
+                req.members,
+                req.reasons,
+                "route:/skill/hub/composition/groups",
+            )
+            .map_err(map_skill_error_to_api_error)
+    })
+    .await?;
+    Ok(Json(SkillHubCompositionGroupWriteResponse { group }))
+}
+
+async fn set_composition_group_member_role(
+    State(state): State<Arc<ServerState>>,
+    Json(req): Json<SkillHubCompositionGroupMemberRoleRequest>,
+) -> Result<Json<SkillHubCompositionGroupWriteResponse>> {
+    let session_id = required_string(Some(req.session_id.clone()), "session_id")?;
+    let capability_id = required_string(Some(req.capability_id.clone()), "capability_id")?;
+    let skill_name = required_string(Some(req.skill_name.clone()), "skill_name")?;
+    request_permission(
+        state.clone(),
+        session_id,
+        PermissionRequest::new("skill_hub")
+            .with_patterns(vec![capability_id.clone(), skill_name.clone()])
+            .with_metadata("action", serde_json::json!("composition_group_member_role"))
+            .with_metadata("role", serde_json::json!(req.role)),
+    )
+    .await
+    .map_err(map_tool_error_to_api_error)?;
+
+    let group = run_skill_hub_blocking(state, move |authority| {
+        authority
+            .set_skill_capability_group_member_role(
+                &capability_id,
+                &skill_name,
+                req.role,
+                "route:/skill/hub/composition/groups/member-role",
+            )
+            .map_err(map_skill_error_to_api_error)
+    })
+    .await?;
+    Ok(Json(SkillHubCompositionGroupWriteResponse { group }))
+}
+
+async fn remove_composition_group_member(
+    State(state): State<Arc<ServerState>>,
+    Json(req): Json<SkillHubCompositionGroupMemberRemoveRequest>,
+) -> Result<Json<SkillHubCompositionGroupWriteResponse>> {
+    let session_id = required_string(Some(req.session_id.clone()), "session_id")?;
+    let capability_id = required_string(Some(req.capability_id.clone()), "capability_id")?;
+    let skill_name = required_string(Some(req.skill_name.clone()), "skill_name")?;
+    request_permission(
+        state.clone(),
+        session_id,
+        PermissionRequest::new("skill_hub")
+            .with_patterns(vec![capability_id.clone(), skill_name.clone()])
+            .with_metadata(
+                "action",
+                serde_json::json!("composition_group_member_remove"),
+            ),
+    )
+    .await
+    .map_err(map_tool_error_to_api_error)?;
+
+    let group = run_skill_hub_blocking(state, move |authority| {
+        authority
+            .remove_skill_capability_group_member(
+                &capability_id,
+                &skill_name,
+                "route:/skill/hub/composition/groups/remove-member",
+            )
+            .map_err(map_skill_error_to_api_error)
+    })
+    .await?;
+    Ok(Json(SkillHubCompositionGroupWriteResponse { group }))
 }
 
 async fn sync_negative_entropy_review_candidates(
@@ -699,6 +943,12 @@ mod tests {
         }
     }
 
+    fn write_workspace_skill(project_dir: &std::path::Path, relative_dir: &str, content: &str) {
+        let skill_dir = project_dir.join(".rocode/skills").join(relative_dir);
+        fs::create_dir_all(&skill_dir).expect("skill dir");
+        fs::write(skill_dir.join("SKILL.md"), content).expect("skill file");
+    }
+
     #[tokio::test]
     async fn plan_skill_sync_returns_install_entry_for_local_source() {
         let dir = tempdir().expect("tempdir");
@@ -894,6 +1144,553 @@ Use for frontend tasks.
         assert!(entry
             .signals
             .contains(&rocode_types::SkillNegativeEntropySignal::NeverReused));
+    }
+
+    #[tokio::test]
+    async fn composition_relationship_route_returns_read_only_candidates() {
+        let dir = tempdir().expect("tempdir");
+        write_workspace_skill(
+            dir.path(),
+            "review/repo-review",
+            r#"---
+name: repo-review
+description: Review repository changes carefully with code search and file reads
+category: review
+metadata:
+  rocode:
+    requires_tools: [read, grep]
+    stage_filter: [implementation]
+---
+Review repository changes carefully and verify evidence before reporting.
+"#,
+        );
+        write_workspace_skill(
+            dir.path(),
+            "review/code-review",
+            r#"---
+name: code-review
+description: Review code changes carefully with code search and file reads
+category: review
+metadata:
+  rocode:
+    requires_tools: [read, grep]
+    stage_filter: [implementation]
+---
+Review code changes carefully and verify evidence before reporting.
+"#,
+        );
+        write_workspace_skill(
+            dir.path(),
+            "ops/provider-refresh",
+            r#"---
+name: provider-refresh
+description: Refresh provider credentials and configuration safely across integrations
+category: ops
+related_skills: [provider-refresh-gitlab]
+metadata:
+  rocode:
+    requires_tools: [read]
+---
+Refresh provider credentials and configuration safely across integrations.
+"#,
+        );
+        write_workspace_skill(
+            dir.path(),
+            "ops/provider-refresh-gitlab",
+            r#"---
+name: provider-refresh-gitlab
+description: Refresh provider credentials and configuration safely across GitLab integrations
+category: ops
+related_skills: [provider-refresh]
+metadata:
+  rocode:
+    requires_tools: [read, http]
+    stage_filter: [implementation]
+---
+Refresh provider credentials and configuration safely across GitLab integrations.
+"#,
+        );
+        write_workspace_skill(
+            dir.path(),
+            "frontend/frontend-ui-ux",
+            r#"---
+name: frontend-ui-ux
+description: Shape interface flow maps and layout decisions for shipped product screens
+category: frontend
+related_skills: [frontend-ui-a11y]
+metadata:
+  rocode:
+    requires_tools: [read]
+    stage_filter: [implementation]
+---
+Shape interface flow maps and layout decisions for shipped product screens.
+"#,
+        );
+        write_workspace_skill(
+            dir.path(),
+            "frontend/frontend-ui-a11y",
+            r#"---
+name: frontend-ui-a11y
+description: Audit accessibility semantics and keyboard focus behavior for shipped product screens
+category: frontend
+related_skills: [frontend-ui-ux]
+metadata:
+  rocode:
+    requires_tools: [grep]
+    stage_filter: [implementation]
+---
+Audit accessibility semantics and keyboard focus behavior for shipped product screens.
+"#,
+        );
+
+        let state = server_state_for_project(dir.path());
+        let authority = skill_governance_authority(&state);
+        authority
+            .record_runtime_skill_usage(
+                "repo-review",
+                "task",
+                Some("implementation"),
+                Some("review"),
+                false,
+            )
+            .expect("usage should record");
+        authority
+            .record_runtime_skill_usage(
+                "repo-review",
+                "task",
+                Some("implementation"),
+                Some("review"),
+                false,
+            )
+            .expect("second usage should record");
+
+        let Json(response) = list_composition_relationships(State(state))
+            .await
+            .expect("composition relationships should succeed");
+
+        assert!(response.generated_at > 0);
+        let redundant = response
+            .relationships
+            .iter()
+            .find(|edge| {
+                edge.relation_kind == rocode_types::SkillRelationshipKind::RedundantOverlap
+                    && edge.preferred_skill_name.as_deref() == Some("repo-review")
+            })
+            .expect("redundant overlap should be present");
+        assert!(redundant
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("usage ledger")));
+
+        let specialization = response
+            .relationships
+            .iter()
+            .find(|edge| {
+                edge.relation_kind == rocode_types::SkillRelationshipKind::SpecializationVariant
+                    && edge.preferred_skill_name.as_deref() == Some("provider-refresh")
+            })
+            .expect("specialization variant should be present");
+        assert!(specialization.reasons.iter().any(|reason| {
+            reason.contains("narrows runtime stage scope")
+                || reason.contains("narrower runtime tool")
+        }));
+
+        let complementary = response
+            .relationships
+            .iter()
+            .find(|edge| {
+                edge.relation_kind == rocode_types::SkillRelationshipKind::ComplementaryComponent
+                    && ((edge.left_skill_name == "frontend-ui-a11y"
+                        && edge.right_skill_name == "frontend-ui-ux")
+                        || (edge.left_skill_name == "frontend-ui-ux"
+                            && edge.right_skill_name == "frontend-ui-a11y"))
+            })
+            .expect("complementary component should be present");
+        assert!(complementary.preferred_skill_name.is_none());
+    }
+
+    #[tokio::test]
+    async fn composition_group_route_returns_family_and_bundle_candidates() {
+        let dir = tempdir().expect("tempdir");
+        write_workspace_skill(
+            dir.path(),
+            "review/repo-review",
+            r#"---
+name: repo-review
+description: Review repository changes carefully with code search and file reads
+category: review
+metadata:
+  rocode:
+    requires_tools: [read, grep]
+    stage_filter: [implementation]
+---
+Review repository changes carefully and verify evidence before reporting.
+"#,
+        );
+        write_workspace_skill(
+            dir.path(),
+            "review/code-review",
+            r#"---
+name: code-review
+description: Review code changes carefully with code search and file reads
+category: review
+metadata:
+  rocode:
+    requires_tools: [read, grep]
+    stage_filter: [implementation]
+---
+Review code changes carefully and verify evidence before reporting.
+"#,
+        );
+        write_workspace_skill(
+            dir.path(),
+            "frontend/frontend-ui-ux",
+            r#"---
+name: frontend-ui-ux
+description: Shape interface flow maps and layout decisions for shipped product screens
+category: frontend
+related_skills: [frontend-ui-a11y]
+metadata:
+  rocode:
+    requires_tools: [read]
+    stage_filter: [implementation]
+---
+Shape interface flow maps and layout decisions for shipped product screens.
+"#,
+        );
+        write_workspace_skill(
+            dir.path(),
+            "frontend/frontend-ui-a11y",
+            r#"---
+name: frontend-ui-a11y
+description: Audit accessibility semantics and keyboard focus behavior for shipped product screens
+category: frontend
+related_skills: [frontend-ui-ux]
+metadata:
+  rocode:
+    requires_tools: [grep]
+    stage_filter: [implementation]
+---
+Audit accessibility semantics and keyboard focus behavior for shipped product screens.
+"#,
+        );
+
+        let state = server_state_for_project(dir.path());
+        let authority = skill_governance_authority(&state);
+        authority
+            .record_runtime_skill_usage(
+                "repo-review",
+                "task",
+                Some("implementation"),
+                Some("review"),
+                false,
+            )
+            .expect("usage should record");
+        authority
+            .record_runtime_skill_usage(
+                "repo-review",
+                "task",
+                Some("implementation"),
+                Some("review"),
+                false,
+            )
+            .expect("second usage should record");
+
+        let Json(response) = list_composition_groups(State(state))
+            .await
+            .expect("composition groups should succeed");
+
+        assert!(response.generated_at > 0);
+        let family = response
+            .groups
+            .iter()
+            .find(|group| {
+                group.group_kind == rocode_types::SkillCapabilityGroupKind::CanonicalFamily
+                    && group.canonical_skill_name.as_deref() == Some("repo-review")
+            })
+            .expect("canonical family should be present");
+        assert!(family.members.iter().any(|member| {
+            member.skill_name == "code-review"
+                && member.role == rocode_types::SkillCapabilityMemberRole::MergeCandidate
+        }));
+
+        let bundle = response
+            .groups
+            .iter()
+            .find(|group| {
+                group.group_kind == rocode_types::SkillCapabilityGroupKind::ComplementaryBundle
+            })
+            .expect("complementary bundle should be present");
+        assert!(bundle.canonical_skill_name.is_none());
+        assert!(bundle.members.iter().any(|member| {
+            member.skill_name == "frontend-ui-ux"
+                && member.role == rocode_types::SkillCapabilityMemberRole::Complementary
+        }));
+        assert!(bundle.members.iter().any(|member| {
+            member.skill_name == "frontend-ui-a11y"
+                && member.role == rocode_types::SkillCapabilityMemberRole::Complementary
+        }));
+    }
+
+    #[tokio::test]
+    async fn accept_composition_relationship_route_persists_owner_judgment() {
+        let dir = tempdir().expect("tempdir");
+        let session_id = "skill-hub-composition-accept";
+        write_workspace_skill(
+            dir.path(),
+            "review/repo-review",
+            r#"---
+name: repo-review
+description: Review repository changes carefully with code search and file reads
+category: review
+metadata:
+  rocode:
+    requires_tools: [read, grep]
+    stage_filter: [implementation]
+---
+Review repository changes carefully and verify evidence before reporting.
+"#,
+        );
+        write_workspace_skill(
+            dir.path(),
+            "review/code-review",
+            r#"---
+name: code-review
+description: Review code changes carefully with code search and file reads
+category: review
+metadata:
+  rocode:
+    requires_tools: [read, grep]
+    stage_filter: [implementation]
+---
+Review code changes carefully and verify evidence before reporting.
+"#,
+        );
+
+        let state = server_state_for_project(dir.path());
+        let authority = skill_governance_authority(&state);
+        authority
+            .record_runtime_skill_usage(
+                "repo-review",
+                "task",
+                Some("implementation"),
+                Some("review"),
+                false,
+            )
+            .expect("usage should record");
+        authority
+            .record_runtime_skill_usage(
+                "repo-review",
+                "task",
+                Some("implementation"),
+                Some("review"),
+                false,
+            )
+            .expect("second usage should record");
+        PERMISSION_ENGINE.lock().await.clear_session(session_id);
+        PERMISSION_ENGINE.lock().await.grant_patterns(
+            session_id,
+            "skill_hub",
+            &["repo-review".to_string(), "code-review".to_string()],
+        );
+
+        let Json(response) = accept_composition_relationship(
+            State(state.clone()),
+            Json(rocode_types::SkillHubCompositionRelationshipAcceptRequest {
+                session_id: session_id.to_string(),
+                left_skill_name: "code-review".to_string(),
+                right_skill_name: "repo-review".to_string(),
+                relation_kind: rocode_types::SkillRelationshipKind::RedundantOverlap,
+                preferred_skill_name: Some("repo-review".to_string()),
+            }),
+        )
+        .await
+        .expect("accept relationship should succeed");
+        assert_eq!(
+            response.relationship.state,
+            rocode_types::SkillRelationshipState::Accepted
+        );
+
+        let Json(inspection) = list_composition_relationships(State(state.clone()))
+            .await
+            .expect("inspection should succeed");
+        assert!(inspection.relationships.iter().any(|edge| {
+            edge.relation_kind == rocode_types::SkillRelationshipKind::RedundantOverlap
+                && edge.preferred_skill_name.as_deref() == Some("repo-review")
+                && edge.state == rocode_types::SkillRelationshipState::Accepted
+        }));
+
+        let Json(timeline) = list_governance_timeline(
+            State(state),
+            Query(SkillHubTimelineQuery {
+                skill_name: Some("code-review".to_string()),
+                source_id: None,
+                limit: None,
+            }),
+        )
+        .await
+        .expect("timeline should succeed");
+        assert!(timeline.entries.iter().any(|entry| {
+            entry.kind == rocode_types::SkillGovernanceTimelineKind::CompositionRelationshipAccepted
+        }));
+        PERMISSION_ENGINE.lock().await.clear_session(session_id);
+    }
+
+    #[tokio::test]
+    async fn composition_group_mutation_routes_persist_owner_local_graph() {
+        let dir = tempdir().expect("tempdir");
+        let session_id = "skill-hub-composition-group";
+        write_workspace_skill(
+            dir.path(),
+            "review/repo-review",
+            r#"---
+name: repo-review
+description: Review repository changes carefully with code search and file reads
+category: review
+metadata:
+  rocode:
+    requires_tools: [read, grep]
+    stage_filter: [implementation]
+---
+Review repository changes carefully and verify evidence before reporting.
+"#,
+        );
+        write_workspace_skill(
+            dir.path(),
+            "review/code-review",
+            r#"---
+name: code-review
+description: Review code changes carefully with code search and file reads
+category: review
+metadata:
+  rocode:
+    requires_tools: [read, grep]
+    stage_filter: [implementation]
+---
+Review code changes carefully and verify evidence before reporting.
+"#,
+        );
+        write_workspace_skill(
+            dir.path(),
+            "review/security-review",
+            r#"---
+name: security-review
+description: Review security-sensitive code changes with evidence collection
+category: review
+metadata:
+  rocode:
+    requires_tools: [read, grep]
+    stage_filter: [implementation]
+---
+Review security-sensitive code changes with evidence collection.
+"#,
+        );
+
+        let state = server_state_for_project(dir.path());
+        PERMISSION_ENGINE.lock().await.clear_session(session_id);
+        PERMISSION_ENGINE.lock().await.grant_patterns(
+            session_id,
+            "skill_hub",
+            &[
+                "cap_review_family".to_string(),
+                "repo-review".to_string(),
+                "code-review".to_string(),
+                "security-review".to_string(),
+            ],
+        );
+
+        let Json(created) = activate_composition_group(
+            State(state.clone()),
+            Json(rocode_types::SkillHubCompositionGroupCreateRequest {
+                session_id: session_id.to_string(),
+                capability_id: Some("cap_review_family".to_string()),
+                group_kind: rocode_types::SkillCapabilityGroupKind::CanonicalFamily,
+                canonical_skill_name: Some("repo-review".to_string()),
+                members: vec![
+                    rocode_types::SkillCapabilityMember {
+                        skill_name: "repo-review".to_string(),
+                        role: rocode_types::SkillCapabilityMemberRole::Canonical,
+                    },
+                    rocode_types::SkillCapabilityMember {
+                        skill_name: "code-review".to_string(),
+                        role: rocode_types::SkillCapabilityMemberRole::MergeCandidate,
+                    },
+                ],
+                reasons: vec!["review family".to_string()],
+            }),
+        )
+        .await
+        .expect("group activate should succeed");
+        assert_eq!(
+            created.group.state,
+            rocode_types::SkillCapabilityGroupState::Active
+        );
+
+        let Json(updated) = set_composition_group_member_role(
+            State(state.clone()),
+            Json(rocode_types::SkillHubCompositionGroupMemberRoleRequest {
+                session_id: session_id.to_string(),
+                capability_id: "cap_review_family".to_string(),
+                skill_name: "security-review".to_string(),
+                role: rocode_types::SkillCapabilityMemberRole::Specialization,
+            }),
+        )
+        .await
+        .expect("member role update should succeed");
+        assert!(updated.group.members.iter().any(|member| {
+            member.skill_name == "security-review"
+                && member.role == rocode_types::SkillCapabilityMemberRole::Specialization
+        }));
+
+        let Json(removed) = remove_composition_group_member(
+            State(state.clone()),
+            Json(rocode_types::SkillHubCompositionGroupMemberRemoveRequest {
+                session_id: session_id.to_string(),
+                capability_id: "cap_review_family".to_string(),
+                skill_name: "code-review".to_string(),
+            }),
+        )
+        .await
+        .expect("member remove should succeed");
+        assert!(!removed
+            .group
+            .members
+            .iter()
+            .any(|member| member.skill_name == "code-review"));
+
+        let Json(inspection) = list_composition_groups(State(state.clone()))
+            .await
+            .expect("group inspection should succeed");
+        let group = inspection
+            .groups
+            .iter()
+            .find(|group| group.capability_id == "cap_review_family")
+            .expect("active group should be present");
+        assert_eq!(group.state, rocode_types::SkillCapabilityGroupState::Active);
+        assert!(group.members.iter().any(|member| {
+            member.skill_name == "repo-review"
+                && member.role == rocode_types::SkillCapabilityMemberRole::Canonical
+        }));
+        assert!(group.members.iter().any(|member| {
+            member.skill_name == "security-review"
+                && member.role == rocode_types::SkillCapabilityMemberRole::Specialization
+        }));
+
+        let Json(timeline) = list_governance_timeline(
+            State(state),
+            Query(SkillHubTimelineQuery {
+                skill_name: Some("security-review".to_string()),
+                source_id: None,
+                limit: None,
+            }),
+        )
+        .await
+        .expect("timeline should succeed");
+        assert!(timeline.entries.iter().any(|entry| {
+            entry.kind
+                == rocode_types::SkillGovernanceTimelineKind::CapabilityGroupMemberRoleUpdated
+        }));
+        PERMISSION_ENGINE.lock().await.clear_session(session_id);
     }
 
     #[tokio::test]

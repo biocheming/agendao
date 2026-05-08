@@ -77,10 +77,13 @@ mod tests {
     use rocode_types::{
         BundledSkillManifest, BundledSkillManifestEntry, ManagedSkillRecord,
         SkillArtifactCacheEntry, SkillArtifactCacheStatus, SkillArtifactKind, SkillArtifactRef,
-        SkillAuditEvent, SkillAuditKind, SkillDistributionRecord, SkillDistributionRelease,
-        SkillDistributionResolution, SkillDistributionResolverKind, SkillGovernanceTimelineKind,
-        SkillInstalledDistribution, SkillManagedLifecycleRecord, SkillManagedLifecycleState,
-        SkillOperationalSnapshot, SkillOperationalSourceScope, SkillSourceKind, SkillSourceRef,
+        SkillAuditEvent, SkillAuditKind, SkillCapabilityGroup, SkillCapabilityGroupKind,
+        SkillCapabilityGroupState, SkillCapabilityMember, SkillCapabilityMemberRole,
+        SkillDistributionRecord, SkillDistributionRelease, SkillDistributionResolution,
+        SkillDistributionResolverKind, SkillGovernanceTimelineKind, SkillInstalledDistribution,
+        SkillManagedLifecycleRecord, SkillManagedLifecycleState, SkillOperationalSnapshot,
+        SkillOperationalSourceScope, SkillRelationshipEdge, SkillRelationshipKind,
+        SkillRelationshipState, SkillSourceKind, SkillSourceRef,
     };
     use sha2::Digest;
     use std::fs;
@@ -384,6 +387,57 @@ Use the following explicit create or refresh mapping:
     }
 
     #[test]
+    fn hub_store_persists_composition_graph_state() {
+        let dir = tempdir().unwrap();
+        let store = SkillHubStore::new(dir.path());
+        store
+            .replace_composition_relationships(vec![SkillRelationshipEdge {
+                left_skill_name: "provider-refresh".to_string(),
+                right_skill_name: "provider-refresh-gitlab".to_string(),
+                relation_kind: SkillRelationshipKind::SpecializationVariant,
+                state: SkillRelationshipState::Observed,
+                score: 88,
+                reasons: vec!["shared provider refresh flow".to_string()],
+                preferred_skill_name: Some("provider-refresh".to_string()),
+                observed_at: Some(111),
+                updated_at: Some(111),
+            }])
+            .unwrap();
+        store
+            .replace_capability_groups(vec![SkillCapabilityGroup {
+                capability_id: "cap_provider_refresh".to_string(),
+                group_kind: SkillCapabilityGroupKind::CanonicalFamily,
+                state: SkillCapabilityGroupState::Candidate,
+                canonical_skill_name: Some("provider-refresh".to_string()),
+                members: vec![
+                    SkillCapabilityMember {
+                        skill_name: "provider-refresh".to_string(),
+                        role: SkillCapabilityMemberRole::Canonical,
+                    },
+                    SkillCapabilityMember {
+                        skill_name: "provider-refresh-gitlab".to_string(),
+                        role: SkillCapabilityMemberRole::Specialization,
+                    },
+                ],
+                reasons: vec!["shared provider refresh capability".to_string()],
+                updated_at: Some(222),
+            }])
+            .unwrap();
+
+        let reloaded = SkillHubStore::new(dir.path());
+        let relationships = reloaded.composition_relationships();
+        let groups = reloaded.capability_groups();
+        assert_eq!(relationships.len(), 1);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            relationships[0].relation_kind,
+            SkillRelationshipKind::SpecializationVariant
+        );
+        assert_eq!(groups[0].capability_id, "cap_provider_refresh");
+        assert_eq!(groups[0].members.len(), 2);
+    }
+
+    #[test]
     fn governance_authority_appends_audit_events_to_snapshot_tail() {
         let dir = tempdir().unwrap();
         let governance = SkillGovernanceAuthority::new(dir.path(), None);
@@ -403,6 +457,59 @@ Use the following explicit create or refresh mapping:
         assert_eq!(audit_tail.len(), 1);
         assert_eq!(audit_tail[0].event_id, "evt-1");
         assert_eq!(audit_tail[0].skill_name.as_deref(), Some("managed-skill"));
+    }
+
+    #[test]
+    fn governance_exposes_read_only_composition_graph_snapshot() {
+        let dir = tempdir().unwrap();
+        let store = SkillHubStore::new(dir.path());
+        store
+            .replace_composition_relationships(vec![SkillRelationshipEdge {
+                left_skill_name: "frontend-ui-ux".to_string(),
+                right_skill_name: "frontend-ui-a11y".to_string(),
+                relation_kind: SkillRelationshipKind::ComplementaryComponent,
+                state: SkillRelationshipState::Observed,
+                score: 72,
+                reasons: vec!["shared frontend category with distinct focus".to_string()],
+                preferred_skill_name: None,
+                observed_at: Some(100),
+                updated_at: Some(100),
+            }])
+            .unwrap();
+        store
+            .replace_capability_groups(vec![SkillCapabilityGroup {
+                capability_id: "cap_frontend_delivery".to_string(),
+                group_kind: SkillCapabilityGroupKind::ComplementaryBundle,
+                state: SkillCapabilityGroupState::Candidate,
+                canonical_skill_name: None,
+                members: vec![
+                    SkillCapabilityMember {
+                        skill_name: "frontend-ui-ux".to_string(),
+                        role: SkillCapabilityMemberRole::Complementary,
+                    },
+                    SkillCapabilityMember {
+                        skill_name: "frontend-ui-a11y".to_string(),
+                        role: SkillCapabilityMemberRole::Complementary,
+                    },
+                ],
+                reasons: vec!["bundle candidate for frontend delivery".to_string()],
+                updated_at: Some(200),
+            }])
+            .unwrap();
+
+        let governance = SkillGovernanceAuthority::new(dir.path(), None);
+        let relationships = governance.skill_composition_relationships();
+        let groups = governance.skill_capability_groups();
+        assert_eq!(relationships.len(), 1);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            relationships[0].relation_kind,
+            SkillRelationshipKind::ComplementaryComponent
+        );
+        assert_eq!(
+            groups[0].group_kind,
+            SkillCapabilityGroupKind::ComplementaryBundle
+        );
     }
 
     #[test]
@@ -637,6 +744,161 @@ Use the following explicit create or refresh mapping:
     }
 
     #[test]
+    fn governance_negative_entropy_downgrades_active_complementary_members() {
+        let dir = tempdir().unwrap();
+        let governance = SkillGovernanceAuthority::new(dir.path(), None);
+        for skill_name in ["frontend-ui-ux", "frontend-ui-a11y"] {
+            governance
+                .create_skill(
+                    CreateSkillRequest {
+                        name: skill_name.to_string(),
+                        description: format!("{skill_name} skill"),
+                        body: format!("Use {skill_name} during frontend review."),
+                        frontmatter: None,
+                        category: Some("frontend".to_string()),
+                        directory_name: None,
+                    },
+                    "test:create",
+                )
+                .unwrap();
+        }
+        governance
+            .activate_skill_capability_group(
+                Some("frontend-delivery-bundle"),
+                SkillCapabilityGroupKind::ComplementaryBundle,
+                None,
+                vec![
+                    SkillCapabilityMember {
+                        skill_name: "frontend-ui-ux".to_string(),
+                        role: SkillCapabilityMemberRole::Complementary,
+                    },
+                    SkillCapabilityMember {
+                        skill_name: "frontend-ui-a11y".to_string(),
+                        role: SkillCapabilityMemberRole::Complementary,
+                    },
+                ],
+                vec!["frontend delivery needs both ux and a11y coverage".to_string()],
+                "test:activate-group",
+            )
+            .unwrap();
+
+        let diagnostics = governance.skill_negative_entropy_diagnostics().unwrap();
+        let candidate = diagnostics
+            .iter()
+            .find(|entry| entry.skill_name == "frontend-ui-a11y")
+            .expect("negative entropy candidate should exist");
+        assert_eq!(
+            candidate.severity,
+            rocode_types::SkillGovernanceDiagnosticSeverity::Info
+        );
+        assert!(candidate.reasons.iter().any(|reason| {
+            reason.contains("complementary component")
+                && reason.contains("not treated as pure redundancy")
+        }));
+        assert!(governance
+            .sync_negative_entropy_review_candidates("test:review-sync")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn governance_negative_entropy_review_candidate_tracks_canonical_family_owner() {
+        let dir = tempdir().unwrap();
+        let governance = SkillGovernanceAuthority::new(dir.path(), None);
+        governance
+            .create_skill(
+                CreateSkillRequest {
+                    name: "provider-refresh".to_string(),
+                    description: "refresh provider".to_string(),
+                    body: "refresh provider".to_string(),
+                    frontmatter: None,
+                    category: Some("ops".to_string()),
+                    directory_name: None,
+                },
+                "test:create",
+            )
+            .unwrap();
+        governance
+            .create_skill(
+                CreateSkillRequest {
+                    name: "provider-refresh-gitlab".to_string(),
+                    description: "refresh gitlab provider".to_string(),
+                    body: "refresh gitlab provider".to_string(),
+                    frontmatter: None,
+                    category: Some("ops".to_string()),
+                    directory_name: None,
+                },
+                "test:create",
+            )
+            .unwrap();
+        governance
+            .record_runtime_skill_usage(
+                "provider-refresh",
+                "task",
+                Some("implementation"),
+                Some("ops"),
+                false,
+            )
+            .unwrap();
+        governance
+            .activate_skill_capability_group(
+                Some("provider-refresh-family"),
+                SkillCapabilityGroupKind::CanonicalFamily,
+                Some("provider-refresh"),
+                vec![
+                    SkillCapabilityMember {
+                        skill_name: "provider-refresh".to_string(),
+                        role: SkillCapabilityMemberRole::Canonical,
+                    },
+                    SkillCapabilityMember {
+                        skill_name: "provider-refresh-gitlab".to_string(),
+                        role: SkillCapabilityMemberRole::Specialization,
+                    },
+                ],
+                vec![
+                    "gitlab refresh remains a specialization of shared provider refresh"
+                        .to_string(),
+                ],
+                "test:activate-group",
+            )
+            .unwrap();
+
+        let diagnostics = governance.skill_negative_entropy_diagnostics().unwrap();
+        let candidate = diagnostics
+            .iter()
+            .find(|entry| entry.skill_name == "provider-refresh-gitlab")
+            .expect("negative entropy candidate should exist");
+        assert_eq!(
+            candidate.severity,
+            rocode_types::SkillGovernanceDiagnosticSeverity::Warn
+        );
+        assert!(candidate.reasons.iter().any(|reason| {
+            reason.contains("canonical family `provider-refresh-family`")
+                && reason.contains("`provider-refresh`")
+        }));
+
+        let updated = governance
+            .sync_negative_entropy_review_candidates("test:review-sync")
+            .unwrap();
+        let specialization = updated
+            .iter()
+            .find(|entry| entry.skill_name == "provider-refresh-gitlab")
+            .expect("specialization review candidate should be updated");
+        assert_eq!(
+            specialization
+                .vitality
+                .as_ref()
+                .and_then(|record| record.reason.related_skill_name.as_deref()),
+            Some("provider-refresh")
+        );
+        assert!(specialization
+            .vitality
+            .as_ref()
+            .map(|record| record.reason.summary.contains("specialization variant"))
+            .unwrap_or(false));
+    }
+
+    #[test]
     fn governance_runtime_availability_rejects_retired_skill() {
         let dir = tempdir().unwrap();
         let governance = SkillGovernanceAuthority::new(dir.path(), None);
@@ -867,6 +1129,327 @@ Review code changes carefully and verify evidence before reporting.
                 .and_then(|record| record.reason.related_skill_name.as_deref()),
             Some("repo-review")
         );
+    }
+
+    #[test]
+    fn governance_composition_relationship_candidates_emit_redundant_overlap() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join(".rocode/skills");
+        fs::create_dir_all(root.join("review/repo-review")).unwrap();
+        fs::write(
+            root.join("review/repo-review/SKILL.md"),
+            r#"---
+name: repo-review
+description: Review repository changes carefully with code search and file reads
+category: review
+metadata:
+  rocode:
+    requires_tools: [read, grep]
+    stage_filter: [implementation]
+---
+Review repository changes carefully and verify evidence before reporting.
+"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("review/code-review")).unwrap();
+        fs::write(
+            root.join("review/code-review/SKILL.md"),
+            r#"---
+name: code-review
+description: Review code changes carefully with code search and file reads
+category: review
+metadata:
+  rocode:
+    requires_tools: [read, grep]
+    stage_filter: [implementation]
+---
+Review code changes carefully and verify evidence before reporting.
+"#,
+        )
+        .unwrap();
+
+        let governance = SkillGovernanceAuthority::new(dir.path(), None);
+        governance
+            .record_runtime_skill_usage(
+                "repo-review",
+                "task",
+                Some("implementation"),
+                Some("review"),
+                false,
+            )
+            .unwrap();
+        governance
+            .record_runtime_skill_usage(
+                "repo-review",
+                "task",
+                Some("implementation"),
+                Some("review"),
+                false,
+            )
+            .unwrap();
+
+        let relationships = governance
+            .skill_composition_relationship_candidates()
+            .unwrap();
+        let edge = relationships
+            .iter()
+            .find(|edge| {
+                edge.relation_kind == SkillRelationshipKind::RedundantOverlap
+                    && ((edge.left_skill_name == "code-review"
+                        && edge.right_skill_name == "repo-review")
+                        || (edge.left_skill_name == "repo-review"
+                            && edge.right_skill_name == "code-review"))
+            })
+            .expect("redundant overlap should exist");
+        assert_eq!(edge.preferred_skill_name.as_deref(), Some("repo-review"));
+
+        let groups = governance.skill_capability_group_candidates().unwrap();
+        let family = groups
+            .iter()
+            .find(|group| group.group_kind == SkillCapabilityGroupKind::CanonicalFamily)
+            .expect("canonical family group should exist");
+        assert_eq!(family.canonical_skill_name.as_deref(), Some("repo-review"));
+        assert!(family.members.iter().any(|member| {
+            member.skill_name == "code-review"
+                && member.role == SkillCapabilityMemberRole::MergeCandidate
+        }));
+    }
+
+    #[test]
+    fn governance_composition_relationship_candidates_emit_specialization_variant() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join(".rocode/skills");
+        fs::create_dir_all(root.join("ops/provider-refresh")).unwrap();
+        fs::write(
+            root.join("ops/provider-refresh/SKILL.md"),
+            r#"---
+name: provider-refresh
+description: Refresh provider credentials and configuration safely across integrations
+category: ops
+related_skills: [provider-refresh-gitlab]
+metadata:
+  rocode:
+    requires_tools: [read]
+---
+Refresh provider credentials and configuration safely across integrations.
+"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("ops/provider-refresh-gitlab")).unwrap();
+        fs::write(
+            root.join("ops/provider-refresh-gitlab/SKILL.md"),
+            r#"---
+name: provider-refresh-gitlab
+description: Refresh provider credentials and configuration safely across GitLab integrations
+category: ops
+related_skills: [provider-refresh]
+metadata:
+  rocode:
+    requires_tools: [read, http]
+    stage_filter: [implementation]
+---
+Refresh provider credentials and configuration safely across GitLab integrations.
+"#,
+        )
+        .unwrap();
+
+        let governance = SkillGovernanceAuthority::new(dir.path(), None);
+        let relationships = governance
+            .skill_composition_relationship_candidates()
+            .unwrap();
+        let edge = relationships
+            .iter()
+            .find(|edge| {
+                edge.relation_kind == SkillRelationshipKind::SpecializationVariant
+                    && ((edge.left_skill_name == "provider-refresh"
+                        && edge.right_skill_name == "provider-refresh-gitlab")
+                        || (edge.left_skill_name == "provider-refresh-gitlab"
+                            && edge.right_skill_name == "provider-refresh"))
+            })
+            .expect("specialization variant should exist");
+        assert_eq!(
+            edge.preferred_skill_name.as_deref(),
+            Some("provider-refresh")
+        );
+        assert!(edge
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("narrows runtime stage scope")));
+
+        let groups = governance.skill_capability_group_candidates().unwrap();
+        let family = groups
+            .iter()
+            .find(|group| {
+                group.group_kind == SkillCapabilityGroupKind::CanonicalFamily
+                    && group.canonical_skill_name.as_deref() == Some("provider-refresh")
+            })
+            .expect("canonical family should exist");
+        assert!(family.members.iter().any(|member| {
+            member.skill_name == "provider-refresh-gitlab"
+                && member.role == SkillCapabilityMemberRole::Specialization
+        }));
+    }
+
+    #[test]
+    fn governance_composition_relationship_candidates_emit_complementary_bundle() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join(".rocode/skills");
+        fs::create_dir_all(root.join("frontend/frontend-ui-ux")).unwrap();
+        fs::write(
+            root.join("frontend/frontend-ui-ux/SKILL.md"),
+            r#"---
+name: frontend-ui-ux
+description: Shape interface flow maps and layout decisions for shipped product screens
+category: frontend
+related_skills: [frontend-ui-a11y]
+metadata:
+  rocode:
+    requires_tools: [read]
+    stage_filter: [implementation]
+---
+Shape interface flow maps and layout decisions for shipped product screens.
+"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("frontend/frontend-ui-a11y")).unwrap();
+        fs::write(
+            root.join("frontend/frontend-ui-a11y/SKILL.md"),
+            r#"---
+name: frontend-ui-a11y
+description: Audit accessibility semantics and keyboard focus behavior for shipped product screens
+category: frontend
+related_skills: [frontend-ui-ux]
+metadata:
+  rocode:
+    requires_tools: [grep]
+    stage_filter: [implementation]
+---
+Audit accessibility semantics and keyboard focus behavior for shipped product screens.
+"#,
+        )
+        .unwrap();
+
+        let governance = SkillGovernanceAuthority::new(dir.path(), None);
+        let relationships = governance
+            .skill_composition_relationship_candidates()
+            .unwrap();
+        let edge = relationships
+            .iter()
+            .find(|edge| {
+                edge.relation_kind == SkillRelationshipKind::ComplementaryComponent
+                    && ((edge.left_skill_name == "frontend-ui-a11y"
+                        && edge.right_skill_name == "frontend-ui-ux")
+                        || (edge.left_skill_name == "frontend-ui-ux"
+                            && edge.right_skill_name == "frontend-ui-a11y"))
+            })
+            .expect("complementary component should exist");
+        assert!(edge.preferred_skill_name.is_none());
+        assert!(edge
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("related_skills directly links")));
+
+        let groups = governance.skill_capability_group_candidates().unwrap();
+        let bundle = groups
+            .iter()
+            .find(|group| group.group_kind == SkillCapabilityGroupKind::ComplementaryBundle)
+            .expect("complementary bundle should exist");
+        assert_eq!(bundle.canonical_skill_name, None);
+        assert_eq!(bundle.members.len(), 2);
+        assert!(bundle
+            .members
+            .iter()
+            .all(|member| { member.role == SkillCapabilityMemberRole::Complementary }));
+    }
+
+    #[test]
+    fn governance_runtime_skill_composition_hints_surface_canonical_and_complementary_guidance() {
+        let dir = tempdir().unwrap();
+        let governance = SkillGovernanceAuthority::new(dir.path(), None);
+        for skill_name in [
+            "provider-refresh",
+            "provider-refresh-gitlab",
+            "frontend-ui-ux",
+            "frontend-ui-a11y",
+        ] {
+            governance
+                .create_skill(
+                    CreateSkillRequest {
+                        name: skill_name.to_string(),
+                        description: format!("{skill_name} skill"),
+                        body: format!("Use {skill_name}."),
+                        frontmatter: None,
+                        category: Some("test".to_string()),
+                        directory_name: None,
+                    },
+                    "test:create",
+                )
+                .unwrap();
+        }
+        governance
+            .activate_skill_capability_group(
+                Some("provider-refresh-family"),
+                SkillCapabilityGroupKind::CanonicalFamily,
+                Some("provider-refresh"),
+                vec![
+                    SkillCapabilityMember {
+                        skill_name: "provider-refresh".to_string(),
+                        role: SkillCapabilityMemberRole::Canonical,
+                    },
+                    SkillCapabilityMember {
+                        skill_name: "provider-refresh-gitlab".to_string(),
+                        role: SkillCapabilityMemberRole::Specialization,
+                    },
+                ],
+                vec!["gitlab refresh is governed by shared provider refresh".to_string()],
+                "test:activate-group",
+            )
+            .unwrap();
+        governance
+            .activate_skill_capability_group(
+                Some("frontend-delivery-bundle"),
+                SkillCapabilityGroupKind::ComplementaryBundle,
+                None,
+                vec![
+                    SkillCapabilityMember {
+                        skill_name: "frontend-ui-ux".to_string(),
+                        role: SkillCapabilityMemberRole::Complementary,
+                    },
+                    SkillCapabilityMember {
+                        skill_name: "frontend-ui-a11y".to_string(),
+                        role: SkillCapabilityMemberRole::Complementary,
+                    },
+                ],
+                vec!["frontend delivery needs both ux and a11y coverage".to_string()],
+                "test:activate-group",
+            )
+            .unwrap();
+
+        let hints = governance.runtime_skill_composition_hints(&[
+            "provider-refresh-gitlab".to_string(),
+            "frontend-ui-ux".to_string(),
+            "frontend-ui-a11y".to_string(),
+        ]);
+        assert_eq!(hints.len(), 2);
+        assert!(hints.iter().any(|hint| {
+            hint.kind == rocode_types::SkillRuntimeCompositionHintKind::PreferCanonicalSkill
+                && hint.skill_names == vec!["provider-refresh-gitlab".to_string()]
+                && hint.preferred_skill_name.as_deref() == Some("provider-refresh")
+                && hint
+                    .summary
+                    .contains("canonical workflow as the family owner")
+        }));
+        assert!(hints.iter().any(|hint| {
+            hint.kind == rocode_types::SkillRuntimeCompositionHintKind::ComplementaryBundle
+                && hint.skill_names.iter().any(|name| name == "frontend-ui-ux")
+                && hint
+                    .skill_names
+                    .iter()
+                    .any(|name| name == "frontend-ui-a11y")
+                && hint
+                    .summary
+                    .contains("Keep their responsibilities distinct")
+        }));
     }
 
     #[test]
