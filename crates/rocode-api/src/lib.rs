@@ -42,14 +42,17 @@ pub use rocode_types::{
     SkillHubManagedResponse, SkillHubNegativeEntropyResponse, SkillHubPolicy,
     SkillHubPolicyResponse, SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
     SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest,
+    SkillHubReviewCandidatesSyncRequest, SkillHubReviewCandidatesSyncResponse,
     SkillHubSemanticConflictResponse, SkillHubSyncApplyRequest, SkillHubSyncPlanRequest,
     SkillHubSyncPlanResponse, SkillHubTimelineQuery, SkillHubTimelineResponse,
-    SkillHubUsageLedgerResponse, SkillManagedLifecycleRecord, SkillNegativeEntropyDiagnostic,
-    SkillNegativeEntropySignal, SkillOperationalSnapshot, SkillOperationalSourceScope,
-    SkillRemoteInstallAction, SkillRemoteInstallEntry, SkillRemoteInstallPlan,
-    SkillRemoteInstallResponse, SkillSemanticConflictDiagnostic, SkillSemanticConflictKind,
-    SkillSourceIndexSnapshot, SkillSourceKind, SkillSourceRef, SkillSyncPlan,
-    SkillUsageLedgerEntry, SkillWriteLedgerAction, SkillWriteLedgerEntry,
+    SkillHubUsageLedgerResponse, SkillHubVitalityUpdateRequest, SkillHubVitalityUpdateResponse,
+    SkillManagedLifecycleRecord, SkillNegativeEntropyDiagnostic, SkillNegativeEntropySignal,
+    SkillOperationalSnapshot, SkillOperationalSourceScope, SkillRemoteInstallAction,
+    SkillRemoteInstallEntry, SkillRemoteInstallPlan, SkillRemoteInstallResponse,
+    SkillRetirementReason, SkillRetirementReasonKind, SkillSemanticConflictDiagnostic,
+    SkillSemanticConflictKind, SkillSourceIndexSnapshot, SkillSourceKind, SkillSourceRef,
+    SkillSyncPlan, SkillUsageLedgerEntry, SkillVitalityRecord, SkillVitalityState,
+    SkillWriteLedgerAction, SkillWriteLedgerEntry,
 };
 
 pub type PromptPart = rocode_session::prompt::PartInput;

@@ -16,9 +16,11 @@ use rocode_types::{
     SkillHubTimelineQuery, SkillManagedLifecycleRecord, SkillManagedLifecycleState,
     SkillNegativeEntropyDiagnostic, SkillNegativeEntropySignal, SkillOperationalSnapshot,
     SkillOperationalSourceScope, SkillRemoteInstallAction, SkillRemoteInstallEntry,
-    SkillRemoteInstallPlan, SkillRemoteInstallResponse, SkillSemanticConflictDiagnostic,
-    SkillSemanticConflictKind, SkillSourceIndexSnapshot, SkillSourceRef, SkillSyncAction,
-    SkillSyncPlan, SkillUsageLedgerEntry, SkillWriteLedgerAction, SkillWriteLedgerEntry,
+    SkillRemoteInstallPlan, SkillRemoteInstallResponse, SkillRetirementReason,
+    SkillRetirementReasonKind, SkillSemanticConflictDiagnostic, SkillSemanticConflictKind,
+    SkillSourceIndexSnapshot, SkillSourceRef, SkillSyncAction, SkillSyncPlan,
+    SkillUsageLedgerEntry, SkillVitalityRecord, SkillVitalityState, SkillWriteLedgerAction,
+    SkillWriteLedgerEntry,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -104,6 +106,111 @@ impl SkillGovernanceAuthority {
 
     pub fn skill_operational_snapshots(&self) -> Vec<SkillOperationalSnapshot> {
         self.hub_store.skill_operational_snapshots()
+    }
+
+    pub fn effective_skill_vitality_state(&self, skill_name: &str) -> SkillVitalityState {
+        self.hub_store
+            .skill_operational_snapshot(skill_name)
+            .as_ref()
+            .and_then(|snapshot| snapshot.vitality.as_ref())
+            .map(|record| record.state)
+            .unwrap_or(SkillVitalityState::Active)
+    }
+
+    pub fn ensure_skill_runtime_available(&self, skill_name: &str) -> Result<(), SkillError> {
+        match self.effective_skill_vitality_state(skill_name) {
+            SkillVitalityState::Retired | SkillVitalityState::Archived => Err(
+                SkillError::InvalidSkillContent {
+                    message: format!(
+                        "skill `{}` is not available for runtime resolution because it is marked {:?}",
+                        skill_name.trim(),
+                        self.effective_skill_vitality_state(skill_name)
+                    ),
+                },
+            ),
+            SkillVitalityState::Active | SkillVitalityState::ReviewCandidate => Ok(()),
+        }
+    }
+
+    pub fn sync_negative_entropy_review_candidates(
+        &self,
+        actor: &str,
+    ) -> Result<Vec<SkillOperationalSnapshot>, SkillError> {
+        let diagnostics = self.skill_negative_entropy_diagnostics()?;
+        let mut updated = Vec::new();
+        for diagnostic in diagnostics.into_iter().filter(|entry| {
+            entry.source_scope == SkillOperationalSourceScope::WorkspaceLocal
+                && entry.severity == SkillGovernanceDiagnosticSeverity::Warn
+        }) {
+            let current_state = self.effective_skill_vitality_state(&diagnostic.skill_name);
+            if matches!(
+                current_state,
+                SkillVitalityState::Retired | SkillVitalityState::Archived
+            ) {
+                continue;
+            }
+
+            let reason = SkillRetirementReason {
+                kind: SkillRetirementReasonKind::NegativeEntropy,
+                summary: diagnostic
+                    .reasons
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "negative entropy review candidate".to_string()),
+                noted_at: now_unix_timestamp(),
+                related_skill_name: None,
+            };
+            updated.push(self.set_skill_vitality_state(
+                &diagnostic.skill_name,
+                SkillVitalityState::ReviewCandidate,
+                reason,
+                actor,
+            )?);
+        }
+        Ok(updated)
+    }
+
+    pub fn set_skill_vitality_state(
+        &self,
+        skill_name: &str,
+        state: SkillVitalityState,
+        reason: SkillRetirementReason,
+        actor: &str,
+    ) -> Result<SkillOperationalSnapshot, SkillError> {
+        let mut snapshot = self.prepare_operational_snapshot(
+            skill_name,
+            None,
+            SkillOperationalSourceScope::Unknown,
+        )?;
+        if snapshot.source_scope != SkillOperationalSourceScope::WorkspaceLocal {
+            return Err(SkillError::InvalidSkillContent {
+                message: format!(
+                    "skill `{}` is not a workspace-local mutable skill and cannot change vitality state",
+                    skill_name.trim()
+                ),
+            });
+        }
+
+        let previous_state = snapshot
+            .vitality
+            .as_ref()
+            .map(|record| record.state)
+            .unwrap_or(SkillVitalityState::Active);
+        let vitality = SkillVitalityRecord {
+            state,
+            updated_at: reason.noted_at,
+            reason: reason.clone(),
+        };
+        snapshot.vitality = Some(vitality.clone());
+        self.hub_store
+            .upsert_skill_operational_snapshot(snapshot.clone())?;
+        self.append_audit_event(vitality_transition_audit_event(
+            &snapshot,
+            previous_state,
+            &vitality,
+            actor,
+        ))?;
+        Ok(snapshot)
     }
 
     pub fn skill_negative_entropy_diagnostics(
@@ -2542,6 +2649,36 @@ fn lifecycle_transition_audit_event(
     }
 }
 
+fn vitality_transition_audit_event(
+    snapshot: &SkillOperationalSnapshot,
+    previous_state: SkillVitalityState,
+    current: &SkillVitalityRecord,
+    actor: &str,
+) -> SkillAuditEvent {
+    let created_at = current.updated_at;
+    SkillAuditEvent {
+        event_id: format!(
+            "skill-vitality-{}-{}",
+            created_at,
+            snapshot
+                .skill_name
+                .replace(|ch: char| !ch.is_ascii_alphanumeric(), "_")
+        ),
+        kind: SkillAuditKind::VitalityTransitioned,
+        skill_name: Some(snapshot.skill_name.clone()),
+        source_id: snapshot.source_id.clone(),
+        actor: actor.to_string(),
+        created_at,
+        payload: json!({
+            "from_state": format_skill_vitality_state(previous_state),
+            "to_state": format_skill_vitality_state(current.state),
+            "reason_kind": format_skill_retirement_reason_kind(current.reason.kind),
+            "reason_summary": current.reason.summary,
+            "related_skill_name": current.reason.related_skill_name,
+        }),
+    }
+}
+
 fn write_audit_event(
     kind: SkillAuditKind,
     actor: &str,
@@ -3128,6 +3265,10 @@ fn audit_event_timeline_entry(
 
 fn audit_event_title(event: &SkillAuditEvent) -> String {
     match event.kind {
+        SkillAuditKind::VitalityTransitioned => format!(
+            "Vitality transitioned · {}",
+            event.skill_name.as_deref().unwrap_or("skill")
+        ),
         SkillAuditKind::SourceIndexRefreshed => format!(
             "Source index refreshed · {}",
             event.source_id.as_deref().unwrap_or("source")
@@ -3225,6 +3366,13 @@ fn audit_event_title(event: &SkillAuditEvent) -> String {
 
 fn audit_event_summary(event: &SkillAuditEvent) -> String {
     match event.kind {
+        SkillAuditKind::VitalityTransitioned => format!(
+            "{} -> {} · {}",
+            payload_string(&event.payload, "from_state").unwrap_or_else(|| "active".to_string()),
+            payload_string(&event.payload, "to_state").unwrap_or_else(|| "active".to_string()),
+            payload_string(&event.payload, "reason_summary")
+                .unwrap_or_else(|| "vitality change".to_string())
+        ),
         SkillAuditKind::SourceIndexRefreshed => {
             let entry_count = payload_usize(&event.payload, "entry_count").unwrap_or_default();
             let source_kind =
@@ -3316,6 +3464,7 @@ fn audit_event_summary(event: &SkillAuditEvent) -> String {
 
 fn audit_event_status(kind: &SkillAuditKind) -> SkillGovernanceTimelineStatus {
     match kind {
+        SkillAuditKind::VitalityTransitioned => SkillGovernanceTimelineStatus::Warn,
         SkillAuditKind::ArtifactEvicted => SkillGovernanceTimelineStatus::Info,
         SkillAuditKind::ArtifactFetchFailed => SkillGovernanceTimelineStatus::Error,
         SkillAuditKind::GuardBlocked => SkillGovernanceTimelineStatus::Error,
@@ -3389,6 +3538,24 @@ fn payload_first_guard_rule(payload: &Value) -> Option<String> {
         .get("rule_id")?
         .as_str()
         .map(|value| value.to_string())
+}
+
+fn format_skill_vitality_state(state: SkillVitalityState) -> &'static str {
+    match state {
+        SkillVitalityState::Active => "active",
+        SkillVitalityState::ReviewCandidate => "review_candidate",
+        SkillVitalityState::Retired => "retired",
+        SkillVitalityState::Archived => "archived",
+    }
+}
+
+fn format_skill_retirement_reason_kind(kind: SkillRetirementReasonKind) -> &'static str {
+    match kind {
+        SkillRetirementReasonKind::NegativeEntropy => "negative_entropy",
+        SkillRetirementReasonKind::SemanticConflict => "semantic_conflict",
+        SkillRetirementReasonKind::ManualOverride => "manual_override",
+        SkillRetirementReasonKind::Restored => "restored",
+    }
 }
 
 fn now_unix_timestamp() -> i64 {

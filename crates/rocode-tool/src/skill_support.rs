@@ -152,12 +152,15 @@ pub(crate) fn governance_authority_for(
 
 pub(crate) fn load_skill_with_runtime_materialization(
     authority: &SkillAuthority,
-    _base_dir: &Path,
-    _config_store: Option<Arc<ConfigStore>>,
+    base_dir: &Path,
+    config_store: Option<Arc<ConfigStore>>,
     requested_name: &str,
     filter: Option<&SkillFilter<'_>>,
     _extra: Option<&Metadata>,
 ) -> Result<LoadedSkill, ToolError> {
+    governance_authority_for(base_dir, config_store)
+        .ensure_skill_runtime_available(requested_name)
+        .map_err(map_skill_error)?;
     authority
         .load_skill(requested_name, filter)
         .map_err(map_skill_error)
@@ -165,15 +168,34 @@ pub(crate) fn load_skill_with_runtime_materialization(
 
 pub(crate) fn resolve_skill_with_runtime_materialization(
     authority: &SkillAuthority,
-    _base_dir: &Path,
-    _config_store: Option<Arc<ConfigStore>>,
+    base_dir: &Path,
+    config_store: Option<Arc<ConfigStore>>,
     requested_name: &str,
     filter: Option<&SkillFilter<'_>>,
     _extra: Option<&Metadata>,
 ) -> Result<rocode_skill::SkillMeta, ToolError> {
+    governance_authority_for(base_dir, config_store)
+        .ensure_skill_runtime_available(requested_name)
+        .map_err(map_skill_error)?;
     authority
         .resolve_skill(requested_name, filter)
         .map_err(map_skill_error)
+}
+
+pub(crate) fn filter_runtime_visible_skill_meta(
+    base_dir: &Path,
+    config_store: Option<Arc<ConfigStore>>,
+    skills: Vec<rocode_skill::SkillMetaView>,
+) -> Vec<rocode_skill::SkillMetaView> {
+    let governance = governance_authority_for(base_dir, config_store);
+    skills
+        .into_iter()
+        .filter(|skill| {
+            governance
+                .ensure_skill_runtime_available(&skill.name)
+                .is_ok()
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Default)]
@@ -503,6 +525,7 @@ mod tests {
         SkillMeta, SkillMetadataBlocks, SkillPrerequisites, SkillReadinessStatus,
         SkillRequiredEnvironmentVariable, SkillRocodeMetadata,
     };
+    use rocode_types::{SkillRetirementReason, SkillRetirementReasonKind, SkillVitalityState};
     use std::path::PathBuf;
     use tempfile::tempdir;
 
@@ -757,6 +780,108 @@ mod tests {
             Some(&serde_json::json!("setup_needed"))
         );
     }
+
+    #[test]
+    fn runtime_visibility_filter_excludes_retired_skills() {
+        let dir = tempdir().unwrap();
+        let governance = governance_authority_for(dir.path(), None);
+        governance
+            .create_skill(
+                rocode_skill::CreateSkillRequest {
+                    name: "active-skill".to_string(),
+                    description: "active".to_string(),
+                    body: "active".to_string(),
+                    frontmatter: None,
+                    category: Some("ops".to_string()),
+                    directory_name: None,
+                },
+                "test:create",
+            )
+            .unwrap();
+        governance
+            .create_skill(
+                rocode_skill::CreateSkillRequest {
+                    name: "retired-skill".to_string(),
+                    description: "retired".to_string(),
+                    body: "retired".to_string(),
+                    frontmatter: None,
+                    category: Some("ops".to_string()),
+                    directory_name: None,
+                },
+                "test:create",
+            )
+            .unwrap();
+        governance
+            .set_skill_vitality_state(
+                "retired-skill",
+                SkillVitalityState::Retired,
+                SkillRetirementReason {
+                    kind: SkillRetirementReasonKind::ManualOverride,
+                    summary: "manual retire".to_string(),
+                    noted_at: 123,
+                    related_skill_name: None,
+                },
+                "test:retire",
+            )
+            .unwrap();
+
+        let authority = authority_for(dir.path(), None);
+        let filtered = filter_runtime_visible_skill_meta(
+            dir.path(),
+            None,
+            authority.list_skill_meta(None).unwrap(),
+        );
+
+        assert!(filtered.iter().any(|skill| skill.name == "active-skill"));
+        assert!(!filtered.iter().any(|skill| skill.name == "retired-skill"));
+    }
+
+    #[test]
+    fn load_skill_with_runtime_materialization_rejects_retired_skill() {
+        let dir = tempdir().unwrap();
+        let governance = governance_authority_for(dir.path(), None);
+        governance
+            .create_skill(
+                rocode_skill::CreateSkillRequest {
+                    name: "retired-skill".to_string(),
+                    description: "retired".to_string(),
+                    body: "retired".to_string(),
+                    frontmatter: None,
+                    category: Some("ops".to_string()),
+                    directory_name: None,
+                },
+                "test:create",
+            )
+            .unwrap();
+        governance
+            .set_skill_vitality_state(
+                "retired-skill",
+                SkillVitalityState::Retired,
+                SkillRetirementReason {
+                    kind: SkillRetirementReasonKind::ManualOverride,
+                    summary: "manual retire".to_string(),
+                    noted_at: 123,
+                    related_skill_name: None,
+                },
+                "test:retire",
+            )
+            .unwrap();
+
+        let authority = authority_for(dir.path(), None);
+        let error = load_skill_with_runtime_materialization(
+            &authority,
+            dir.path(),
+            None,
+            "retired-skill",
+            None,
+            None,
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(error, ToolError::InvalidArguments(message) if message.contains("not available for runtime resolution"))
+        );
+    }
 }
 
 pub(crate) fn format_loaded_skill_file_output(file: &LoadedSkillFile) -> (String, Metadata) {
@@ -842,6 +967,29 @@ pub(crate) fn collect_skill_categories(skills: &[SkillMetaView]) -> Vec<String> 
         .filter(|category| !category.is_empty())
         .collect::<BTreeSet<_>>()
         .into_iter()
+        .collect()
+}
+
+pub(crate) fn collect_skill_category_views(skills: &[SkillMetaView]) -> Vec<SkillCategoryView> {
+    let mut counts = BTreeMap::<String, usize>::new();
+    for skill in skills {
+        if let Some(category) = skill
+            .category
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            *counts.entry(category.to_string()).or_default() += 1;
+        }
+    }
+
+    counts
+        .into_iter()
+        .map(|(name, skill_count)| SkillCategoryView {
+            name,
+            skill_count,
+            description: None,
+        })
         .collect()
 }
 

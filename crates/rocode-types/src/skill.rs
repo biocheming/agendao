@@ -278,6 +278,41 @@ pub struct SkillWriteLedgerEntry {
     pub last_supporting_file: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillVitalityState {
+    #[default]
+    Active,
+    ReviewCandidate,
+    Retired,
+    Archived,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillRetirementReasonKind {
+    NegativeEntropy,
+    SemanticConflict,
+    ManualOverride,
+    Restored,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillRetirementReason {
+    pub kind: SkillRetirementReasonKind,
+    pub summary: String,
+    pub noted_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub related_skill_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillVitalityRecord {
+    pub state: SkillVitalityState,
+    pub updated_at: i64,
+    pub reason: SkillRetirementReason,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct SkillOperationalSnapshot {
     pub skill_name: String,
@@ -289,6 +324,8 @@ pub struct SkillOperationalSnapshot {
     pub usage: Option<SkillUsageLedgerEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub writes: Option<SkillWriteLedgerEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vitality: Option<SkillVitalityRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -377,6 +414,17 @@ pub struct SkillHubNegativeEntropyResponse {
     pub candidates: Vec<SkillNegativeEntropyDiagnostic>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillHubReviewCandidatesSyncRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillHubReviewCandidatesSyncResponse {
+    #[serde(default)]
+    pub updated: Vec<SkillOperationalSnapshot>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillSemanticConflictKind {
@@ -412,6 +460,22 @@ pub struct SkillHubSemanticConflictResponse {
     pub generated_at: i64,
     #[serde(default)]
     pub conflicts: Vec<SkillSemanticConflictDiagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillHubVitalityUpdateRequest {
+    pub session_id: String,
+    pub skill_name: String,
+    pub state: SkillVitalityState,
+    pub reason_kind: SkillRetirementReasonKind,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub related_skill_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillHubVitalityUpdateResponse {
+    pub snapshot: SkillOperationalSnapshot,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -614,6 +678,7 @@ pub struct SkillHubGuardRunResponse {
 #[serde(rename_all = "snake_case")]
 pub enum SkillGovernanceTimelineKind {
     ManagedSnapshot,
+    VitalityTransitioned,
     SourceIndexRefreshed,
     SourceResolved,
     ArtifactFetched,
@@ -706,6 +771,7 @@ pub struct SkillGuardReport {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillAuditKind {
+    VitalityTransitioned,
     SourceIndexRefreshed,
     SourceResolved,
     ArtifactFetched,
@@ -733,6 +799,7 @@ pub enum SkillAuditKind {
 impl From<SkillAuditKind> for SkillGovernanceTimelineKind {
     fn from(value: SkillAuditKind) -> Self {
         match value {
+            SkillAuditKind::VitalityTransitioned => Self::VitalityTransitioned,
             SkillAuditKind::SourceIndexRefreshed => Self::SourceIndexRefreshed,
             SkillAuditKind::SourceResolved => Self::SourceResolved,
             SkillAuditKind::ArtifactFetched => Self::ArtifactFetched,

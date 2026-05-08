@@ -36,10 +36,12 @@ use crate::{
     SkillHubManagedResponse, SkillHubNegativeEntropyResponse, SkillHubPolicyResponse,
     SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
     SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest,
+    SkillHubReviewCandidatesSyncRequest, SkillHubReviewCandidatesSyncResponse,
     SkillHubSemanticConflictResponse, SkillHubSyncApplyRequest, SkillHubSyncPlanRequest,
     SkillHubSyncPlanResponse, SkillHubTimelineQuery, SkillHubTimelineResponse,
-    SkillHubUsageLedgerResponse, SkillManageRequest, SkillManageResponse, SkillRemoteInstallPlan,
-    SkillRemoteInstallResponse, UpdateSessionRequest,
+    SkillHubUsageLedgerResponse, SkillHubVitalityUpdateRequest, SkillHubVitalityUpdateResponse,
+    SkillManageRequest, SkillManageResponse, SkillRemoteInstallPlan, SkillRemoteInstallResponse,
+    UpdateSessionRequest,
 };
 
 #[derive(Clone)]
@@ -772,12 +774,32 @@ impl AsyncApiClient {
         Self::json_ok(resp, "get skill hub negative entropy diagnostics").await
     }
 
+    pub async fn sync_skill_hub_review_candidates(
+        &self,
+        req: &SkillHubReviewCandidatesSyncRequest,
+    ) -> anyhow::Result<SkillHubReviewCandidatesSyncResponse> {
+        self.post_json(
+            "/skill/hub/review-candidates/sync",
+            "sync skill hub review candidates",
+            req,
+        )
+        .await
+    }
+
     pub async fn list_skill_hub_semantic_conflicts(
         &self,
     ) -> anyhow::Result<SkillHubSemanticConflictResponse> {
         let url = server_url(&self.base_url, "/skill/hub/semantic-conflicts");
         let resp = self.client.get(&url).send().await?;
         Self::json_ok(resp, "get skill hub semantic conflict diagnostics").await
+    }
+
+    pub async fn update_skill_hub_vitality(
+        &self,
+        req: &SkillHubVitalityUpdateRequest,
+    ) -> anyhow::Result<SkillHubVitalityUpdateResponse> {
+        self.post_json("/skill/hub/vitality", "update skill hub vitality", req)
+            .await
     }
 
     pub async fn list_skill_hub_index(&self) -> anyhow::Result<SkillHubIndexResponse> {

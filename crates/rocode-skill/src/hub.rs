@@ -1094,6 +1094,7 @@ fn merge_operational_snapshot(
     }
     merge_skill_usage_entry(existing, incoming.usage);
     merge_skill_write_entry(existing, incoming.writes);
+    merge_skill_vitality_entry(existing, incoming.vitality);
 }
 
 fn merge_skill_usage_entry(
@@ -1170,6 +1171,22 @@ fn merge_skill_write_entry(
         current.delete_count += incoming.delete_count;
     } else {
         existing.writes = Some(incoming);
+    }
+}
+
+fn merge_skill_vitality_entry(
+    existing: &mut SkillOperationalSnapshot,
+    incoming: Option<rocode_types::SkillVitalityRecord>,
+) {
+    let Some(incoming) = incoming else {
+        return;
+    };
+    if let Some(current) = existing.vitality.as_mut() {
+        if incoming.updated_at >= current.updated_at {
+            *current = incoming;
+        }
+    } else {
+        existing.vitality = Some(incoming);
     }
 }
 

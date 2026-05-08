@@ -26,6 +26,9 @@ import {
 
 type SkillEditorMode = "methodology" | "raw";
 type SkillSubtabId = "overview" | "hub" | "catalog" | "governance";
+type SkillVitalityStateValue = NonNullable<
+  SkillOperationalSnapshotRecord["vitality"]
+>["state"];
 
 interface SkillsTabStyles {
   primaryButtonClass: string;
@@ -218,6 +221,32 @@ function governanceSeverityClass(severity: "info" | "warn"): string {
   return "border-border/40 bg-muted text-muted-foreground";
 }
 
+function formatVitalityStateLabel(state?: SkillVitalityStateValue | null): string {
+  switch (state ?? "active") {
+    case "review_candidate":
+      return "review candidate";
+    case "retired":
+      return "retired";
+    case "archived":
+      return "archived";
+    default:
+      return "active";
+  }
+}
+
+function vitalityStateClass(state?: SkillVitalityStateValue | null): string {
+  switch (state ?? "active") {
+    case "review_candidate":
+      return "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-950/60 dark:text-amber-200";
+    case "retired":
+      return "border-red-300 bg-red-50 text-red-800 dark:border-red-700 dark:bg-red-950/60 dark:text-red-300";
+    case "archived":
+      return "border-border/40 bg-muted text-muted-foreground";
+    default:
+      return "border-green-300 bg-green-50 text-green-800 dark:border-green-700 dark:bg-green-950 dark:text-green-300";
+  }
+}
+
 function negativeEntropySignalLabel(signal: string): string {
   return signal.replaceAll("_", " ");
 }
@@ -347,6 +376,14 @@ export function SkillsTab({
       skillUsageLedger.filter(
         (entry) => usageWriteCount(entry) > 0 && (entry.usage?.runtime_use_count ?? 0) === 0,
       ).length,
+    [skillUsageLedger],
+  );
+  const retiredSkillCount = useMemo(
+    () => skillUsageLedger.filter((entry) => entry.vitality?.state === "retired").length,
+    [skillUsageLedger],
+  );
+  const reviewCandidateCount = useMemo(
+    () => skillUsageLedger.filter((entry) => entry.vitality?.state === "review_candidate").length,
     [skillUsageLedger],
   );
   const topUsageEntries = useMemo(
@@ -1345,6 +1382,9 @@ export function SkillsTab({
               <div className="mt-1 text-sm text-muted-foreground">
                 {runtimeUsedSkillCount} runtime-used · {neverReusedSkillCount} never reused
               </div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                {reviewCandidateCount} review candidates · {retiredSkillCount} retired
+              </div>
             </div>
             <div className={summaryCardClass}>
               <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">
@@ -1392,15 +1432,30 @@ export function SkillsTab({
                     <div key={entry.skill_name} className="rounded-lg bg-muted/30 px-3 py-2 text-sm">
                       <div className="flex items-start justify-between gap-3">
                         <strong>{entry.skill_name}</strong>
-                        <span className="text-muted-foreground">
-                          {entry.usage?.runtime_use_count ?? 0} use
-                          {(entry.usage?.runtime_use_count ?? 0) === 1 ? "" : "s"}
-                        </span>
+                        <div className="flex flex-wrap items-center justify-end gap-1.5">
+                          <span
+                            className={cn(
+                              "rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                              vitalityStateClass(entry.vitality?.state),
+                            )}
+                          >
+                            {formatVitalityStateLabel(entry.vitality?.state)}
+                          </span>
+                          <span className="text-muted-foreground">
+                            {entry.usage?.runtime_use_count ?? 0} use
+                            {(entry.usage?.runtime_use_count ?? 0) === 1 ? "" : "s"}
+                          </span>
+                        </div>
                       </div>
                       <div className="mt-1 text-xs text-muted-foreground">
                         last used {unixTimeLabel(entry.usage?.last_used_at)} · last written{" "}
                         {unixTimeLabel(entry.writes?.last_write_at)}
                       </div>
+                      {entry.vitality?.reason?.summary ? (
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {entry.vitality.reason.summary}
+                        </div>
+                      ) : null}
                     </div>
                   ))
                 ) : (

@@ -5,20 +5,20 @@ use rocode_types::{
     ManagedSkillRecord, SkillArtifactCacheEntry, SkillDistributionRecord, SkillHubIndexResponse,
     SkillHubPolicy, SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
     SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest, SkillHubSyncApplyRequest,
-    SkillHubSyncPlanRequest, SkillHubUsageLedgerResponse, SkillManagedLifecycleRecord,
-    SkillNegativeEntropyDiagnostic, SkillRemoteInstallPlan, SkillRemoteInstallResponse,
-    SkillSemanticConflictDiagnostic, SkillSourceKind, SkillSourceRef, SkillSyncAction,
-    SkillSyncPlan,
+    SkillHubSyncPlanRequest, SkillHubUsageLedgerResponse, SkillHubVitalityUpdateRequest,
+    SkillManagedLifecycleRecord, SkillNegativeEntropyDiagnostic, SkillRemoteInstallPlan,
+    SkillRemoteInstallResponse, SkillRetirementReasonKind, SkillSemanticConflictDiagnostic,
+    SkillSourceKind, SkillSourceRef, SkillSyncAction, SkillSyncPlan, SkillVitalityState,
 };
 use serde::Serialize;
 
 use crate::api_client::{
     CliApiClient, SkillHubIndexRefreshRequest, SkillHubManagedDetachRequest,
-    SkillHubManagedRemoveRequest,
+    SkillHubManagedRemoveRequest, SkillHubReviewCandidatesSyncRequest,
 };
 use crate::cli::{
-    ProposalCommands, SkillCommands, SkillHubCommands, SkillHubOutputFormat, SkillSourceArgs,
-    SkillSourceKindArg,
+    ProposalCommands, SkillCommands, SkillHubCommands, SkillHubOutputFormat,
+    SkillRetirementReasonKindArg, SkillSourceArgs, SkillSourceKindArg, SkillVitalityStateArg,
 };
 use crate::import_export::{export_skill_data, import_skill_data};
 use crate::server_lifecycle::FrontendRuntimeContext;
@@ -102,12 +102,62 @@ async fn handle_skill_hub_command(
                 print_negative_entropy(response.candidates);
             }
         }
+        SkillHubCommands::ReviewCandidatesSync { session_id, output } => {
+            let response = client
+                .sync_skill_hub_review_candidates(&SkillHubReviewCandidatesSyncRequest {
+                    session_id,
+                })
+                .await?;
+            if matches!(output.format, SkillHubOutputFormat::Json) {
+                print_json(&response)?;
+            } else {
+                println!(
+                    "Marked {} workspace-local review candidate(s).",
+                    response.updated.len()
+                );
+                print_usage_ledger(SkillHubUsageLedgerResponse {
+                    entries: response.updated,
+                });
+            }
+        }
         SkillHubCommands::SemanticConflicts { output } => {
             let response = client.list_skill_hub_semantic_conflicts().await?;
             if matches!(output.format, SkillHubOutputFormat::Json) {
                 print_json(&response)?;
             } else {
                 print_semantic_conflicts(response.conflicts);
+            }
+        }
+        SkillHubCommands::VitalitySet {
+            session_id,
+            skill_name,
+            state,
+            reason_kind,
+            summary,
+            related_skill_name,
+            output,
+        } => {
+            let response = client
+                .update_skill_hub_vitality(&SkillHubVitalityUpdateRequest {
+                    session_id,
+                    skill_name,
+                    state: skill_vitality_state_from_arg(state),
+                    reason_kind: skill_retirement_reason_kind_from_arg(reason_kind, state),
+                    summary,
+                    related_skill_name,
+                })
+                .await?;
+            if matches!(output.format, SkillHubOutputFormat::Json) {
+                print_json(&response)?;
+            } else {
+                println!(
+                    "Updated vitality for {} -> {}.",
+                    response.snapshot.skill_name,
+                    format_vitality_state(response.snapshot.vitality.as_ref().map(|v| v.state))
+                );
+                print_usage_ledger(SkillHubUsageLedgerResponse {
+                    entries: vec![response.snapshot],
+                });
             }
         }
         SkillHubCommands::Index { output } => {
@@ -657,9 +707,10 @@ fn print_usage_ledger(mut response: SkillHubUsageLedgerResponse) {
             .map(total_usage_write_count)
             .unwrap_or(0);
         println!(
-            "  - {} · scope {} · use {} · writes {} · errors {}",
+            "  - {} · scope {} · vitality {} · use {} · writes {} · errors {}",
             entry.skill_name,
             format_source_scope(entry.source_scope),
+            format_vitality_state(entry.vitality.as_ref().map(|record| record.state)),
             runtime_use_count,
             write_count,
             runtime_error_count
@@ -674,6 +725,13 @@ fn print_usage_ledger(mut response: SkillHubUsageLedgerResponse) {
                     .and_then(|writes| writes.last_write_at)
             )
         );
+        if let Some(vitality) = entry.vitality.as_ref() {
+            println!(
+                "    Vitality reason: {} · updated {}",
+                vitality.reason.summary,
+                format_timestamp(vitality.updated_at)
+            );
+        }
     }
 }
 
@@ -1037,6 +1095,49 @@ fn format_source_scope(scope: rocode_types::SkillOperationalSourceScope) -> &'st
         rocode_types::SkillOperationalSourceScope::Managed => "managed",
         rocode_types::SkillOperationalSourceScope::DiscoveredReadOnly => "discovered_read_only",
         rocode_types::SkillOperationalSourceScope::Unknown => "unknown",
+    }
+}
+
+fn format_vitality_state(state: Option<SkillVitalityState>) -> &'static str {
+    match state.unwrap_or(SkillVitalityState::Active) {
+        SkillVitalityState::Active => "active",
+        SkillVitalityState::ReviewCandidate => "review_candidate",
+        SkillVitalityState::Retired => "retired",
+        SkillVitalityState::Archived => "archived",
+    }
+}
+
+fn skill_vitality_state_from_arg(state: SkillVitalityStateArg) -> SkillVitalityState {
+    match state {
+        SkillVitalityStateArg::Active => SkillVitalityState::Active,
+        SkillVitalityStateArg::ReviewCandidate => SkillVitalityState::ReviewCandidate,
+        SkillVitalityStateArg::Retired => SkillVitalityState::Retired,
+        SkillVitalityStateArg::Archived => SkillVitalityState::Archived,
+    }
+}
+
+fn skill_retirement_reason_kind_from_arg(
+    reason_kind: Option<SkillRetirementReasonKindArg>,
+    state: SkillVitalityStateArg,
+) -> SkillRetirementReasonKind {
+    match reason_kind {
+        Some(SkillRetirementReasonKindArg::NegativeEntropy) => {
+            SkillRetirementReasonKind::NegativeEntropy
+        }
+        Some(SkillRetirementReasonKindArg::SemanticConflict) => {
+            SkillRetirementReasonKind::SemanticConflict
+        }
+        Some(SkillRetirementReasonKindArg::ManualOverride) => {
+            SkillRetirementReasonKind::ManualOverride
+        }
+        Some(SkillRetirementReasonKindArg::Restored) => SkillRetirementReasonKind::Restored,
+        None => match state {
+            SkillVitalityStateArg::Active => SkillRetirementReasonKind::Restored,
+            SkillVitalityStateArg::ReviewCandidate => SkillRetirementReasonKind::NegativeEntropy,
+            SkillVitalityStateArg::Retired | SkillVitalityStateArg::Archived => {
+                SkillRetirementReasonKind::ManualOverride
+            }
+        },
     }
 }
 
