@@ -36,11 +36,12 @@ use crate::{
     SkillHubIndexRefreshRequest, SkillHubIndexRefreshResponse, SkillHubIndexResponse,
     SkillHubLifecycleResponse, SkillHubManagedDetachRequest, SkillHubManagedDetachResponse,
     SkillHubManagedRemoveRequest, SkillHubManagedRemoveResponse, SkillHubManagedResponse,
-    SkillHubPolicyResponse, SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
-    SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest, SkillHubSyncApplyRequest,
+    SkillHubNegativeEntropyResponse, SkillHubPolicyResponse, SkillHubRemoteInstallApplyRequest,
+    SkillHubRemoteInstallPlanRequest, SkillHubRemoteUpdateApplyRequest,
+    SkillHubRemoteUpdatePlanRequest, SkillHubSemanticConflictResponse, SkillHubSyncApplyRequest,
     SkillHubSyncPlanRequest, SkillHubSyncPlanResponse, SkillHubTimelineQuery,
-    SkillHubTimelineResponse, SkillManageRequest, SkillManageResponse, SkillRemoteInstallPlan,
-    SkillRemoteInstallResponse, UpdateSessionRequest,
+    SkillHubTimelineResponse, SkillHubUsageLedgerResponse, SkillManageRequest, SkillManageResponse,
+    SkillRemoteInstallPlan, SkillRemoteInstallResponse, UpdateSessionRequest,
 };
 
 pub struct BlockingApiClient {
@@ -700,6 +701,28 @@ impl BlockingApiClient {
 
     pub fn list_skill_hub_managed(&self) -> anyhow::Result<SkillHubManagedResponse> {
         self.get_json("/skill/hub/managed", "fetch skill hub managed state")
+    }
+
+    pub fn list_skill_hub_usage(&self) -> anyhow::Result<SkillHubUsageLedgerResponse> {
+        self.get_json("/skill/hub/usage", "fetch skill hub usage ledger")
+    }
+
+    pub fn list_skill_hub_negative_entropy(
+        &self,
+    ) -> anyhow::Result<SkillHubNegativeEntropyResponse> {
+        self.get_json(
+            "/skill/hub/negative-entropy",
+            "fetch skill hub negative entropy diagnostics",
+        )
+    }
+
+    pub fn list_skill_hub_semantic_conflicts(
+        &self,
+    ) -> anyhow::Result<SkillHubSemanticConflictResponse> {
+        self.get_json(
+            "/skill/hub/semantic-conflicts",
+            "fetch skill hub semantic conflict diagnostics",
+        )
     }
 
     pub fn list_skill_hub_index(&self) -> anyhow::Result<SkillHubIndexResponse> {

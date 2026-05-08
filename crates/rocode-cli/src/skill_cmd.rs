@@ -5,8 +5,10 @@ use rocode_types::{
     ManagedSkillRecord, SkillArtifactCacheEntry, SkillDistributionRecord, SkillHubIndexResponse,
     SkillHubPolicy, SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
     SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest, SkillHubSyncApplyRequest,
-    SkillHubSyncPlanRequest, SkillManagedLifecycleRecord, SkillRemoteInstallPlan,
-    SkillRemoteInstallResponse, SkillSourceKind, SkillSourceRef, SkillSyncAction, SkillSyncPlan,
+    SkillHubSyncPlanRequest, SkillHubUsageLedgerResponse, SkillManagedLifecycleRecord,
+    SkillNegativeEntropyDiagnostic, SkillRemoteInstallPlan, SkillRemoteInstallResponse,
+    SkillSemanticConflictDiagnostic, SkillSourceKind, SkillSourceRef, SkillSyncAction,
+    SkillSyncPlan,
 };
 use serde::Serialize;
 
@@ -42,28 +44,37 @@ async fn handle_skill_hub_command(
     match action {
         SkillHubCommands::Status { output } => {
             let managed = client.list_skill_hub_managed().await?;
+            let usage = client.list_skill_hub_usage().await?;
             let index = client.list_skill_hub_index().await?;
             let distributions = client.list_skill_hub_distributions().await?;
             let artifact_cache = client.list_skill_hub_artifact_cache().await?;
             let policy = client.list_skill_hub_policy().await?;
             let lifecycle = client.list_skill_hub_lifecycle().await?;
+            let negative_entropy = client.list_skill_hub_negative_entropy().await?;
+            let semantic_conflicts = client.list_skill_hub_semantic_conflicts().await?;
             if matches!(output.format, SkillHubOutputFormat::Json) {
                 print_json(&serde_json::json!({
                     "managed": managed,
+                    "usage": usage,
                     "index": index,
                     "distributions": distributions,
                     "artifact_cache": artifact_cache,
                     "policy": policy,
                     "lifecycle": lifecycle,
+                    "negative_entropy": negative_entropy,
+                    "semantic_conflicts": semantic_conflicts,
                 }))?;
             } else {
                 print_hub_status(
                     managed.managed_skills,
+                    usage,
                     index.source_indices,
                     distributions.distributions,
                     artifact_cache.artifact_cache,
                     policy.policy,
                     lifecycle.lifecycle,
+                    negative_entropy.candidates,
+                    semantic_conflicts.conflicts,
                 );
             }
         }
@@ -73,6 +84,30 @@ async fn handle_skill_hub_command(
                 print_json(&response)?;
             } else {
                 print_managed_skills(response.managed_skills);
+            }
+        }
+        SkillHubCommands::Usage { output } => {
+            let response = client.list_skill_hub_usage().await?;
+            if matches!(output.format, SkillHubOutputFormat::Json) {
+                print_json(&response)?;
+            } else {
+                print_usage_ledger(response);
+            }
+        }
+        SkillHubCommands::NegativeEntropy { output } => {
+            let response = client.list_skill_hub_negative_entropy().await?;
+            if matches!(output.format, SkillHubOutputFormat::Json) {
+                print_json(&response)?;
+            } else {
+                print_negative_entropy(response.candidates);
+            }
+        }
+        SkillHubCommands::SemanticConflicts { output } => {
+            let response = client.list_skill_hub_semantic_conflicts().await?;
+            if matches!(output.format, SkillHubOutputFormat::Json) {
+                print_json(&response)?;
+            } else {
+                print_semantic_conflicts(response.conflicts);
             }
         }
         SkillHubCommands::Index { output } => {
@@ -337,11 +372,14 @@ fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
 
 fn print_hub_status(
     managed: Vec<ManagedSkillRecord>,
+    usage: SkillHubUsageLedgerResponse,
     index: Vec<rocode_types::SkillSourceIndexSnapshot>,
     distributions: Vec<SkillDistributionRecord>,
     artifact_cache: Vec<SkillArtifactCacheEntry>,
     policy: SkillHubPolicy,
     lifecycle: Vec<SkillManagedLifecycleRecord>,
+    negative_entropy: Vec<SkillNegativeEntropyDiagnostic>,
+    semantic_conflicts: Vec<SkillSemanticConflictDiagnostic>,
 ) {
     let index_entry_count = index
         .iter()
@@ -355,9 +393,44 @@ fn print_hub_status(
         .iter()
         .filter(|record| record.error.as_deref().is_some())
         .count();
+    let runtime_used_count = usage
+        .entries
+        .iter()
+        .filter(|entry| {
+            entry
+                .usage
+                .as_ref()
+                .map(|usage| usage.runtime_use_count > 0)
+                .unwrap_or(false)
+        })
+        .count();
+    let never_reused_count = usage
+        .entries
+        .iter()
+        .filter(|entry| {
+            entry
+                .writes
+                .as_ref()
+                .map(total_usage_write_count)
+                .unwrap_or(0)
+                > 0
+                && entry
+                    .usage
+                    .as_ref()
+                    .map(|usage| usage.runtime_use_count)
+                    .unwrap_or(0)
+                    == 0
+        })
+        .count();
 
     println!("Skill hub status");
     println!("  Managed: {}", managed.len());
+    println!(
+        "  Usage ledger: {} entries ({} runtime-used, {} never reused)",
+        usage.entries.len(),
+        runtime_used_count,
+        never_reused_count
+    );
     println!(
         "  Indexed sources: {} ({} indexed skills)",
         index.len(),
@@ -380,6 +453,11 @@ fn print_hub_status(
         "  Lifecycle records: {} ({} failures)",
         lifecycle.len(),
         lifecycle_failures
+    );
+    println!(
+        "  Diagnostics: {} negative-entropy candidates · {} semantic overlap pairs",
+        negative_entropy.len(),
+        semantic_conflicts.len()
     );
 
     if !index.is_empty() {
@@ -449,6 +527,92 @@ fn print_hub_status(
             println!("  - {}: {}", artifact_id, error);
         }
     }
+
+    let mut top_runtime_used = usage.entries.clone();
+    top_runtime_used.sort_by(|left, right| {
+        right
+            .usage
+            .as_ref()
+            .map(|usage| usage.runtime_use_count)
+            .unwrap_or(0)
+            .cmp(
+                &left
+                    .usage
+                    .as_ref()
+                    .map(|usage| usage.runtime_use_count)
+                    .unwrap_or(0),
+            )
+            .then_with(|| left.skill_name.cmp(&right.skill_name))
+    });
+    let top_runtime_used = top_runtime_used
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .usage
+                .as_ref()
+                .map(|usage| usage.runtime_use_count > 0)
+                .unwrap_or(false)
+        })
+        .take(8)
+        .collect::<Vec<_>>();
+    if !top_runtime_used.is_empty() {
+        println!("\nTop runtime-used skills:");
+        for entry in top_runtime_used {
+            let use_count = entry
+                .usage
+                .as_ref()
+                .map(|usage| usage.runtime_use_count)
+                .unwrap_or(0);
+            println!(
+                "  - {} · {} use(s) · last used {}",
+                entry.skill_name,
+                use_count,
+                format_optional_timestamp(
+                    entry.usage.as_ref().and_then(|usage| usage.last_used_at)
+                )
+            );
+        }
+    }
+
+    if !negative_entropy.is_empty() {
+        println!("\nNegative entropy review candidates:");
+        for item in negative_entropy.into_iter().take(8) {
+            let signals = item
+                .signals
+                .iter()
+                .map(|signal| format_negative_entropy_signal(*signal).to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!(
+                "  - {} · {} · {}",
+                item.skill_name,
+                format_diagnostic_severity(item.severity),
+                signals
+            );
+            if let Some(reason) = item.reasons.first() {
+                println!("    {}", reason);
+            }
+        }
+    }
+
+    if !semantic_conflicts.is_empty() {
+        println!("\nSemantic overlap priorities:");
+        for item in semantic_conflicts.into_iter().take(8) {
+            println!(
+                "  - {} <> {} · {} · score {}",
+                item.left_skill_name,
+                item.right_skill_name,
+                format_semantic_conflict_kind(item.kind),
+                item.score
+            );
+            if let Some(preferred) = item.preferred_skill_name.as_deref() {
+                println!("    Preferred by ledger: {}", preferred);
+            }
+            if let Some(reason) = item.reasons.first() {
+                println!("    {}", reason);
+            }
+        }
+    }
 }
 
 fn print_policy(policy: &SkillHubPolicy) {
@@ -469,6 +633,107 @@ fn print_policy(policy: &SkillHubPolicy) {
         "  Max extract size: {}",
         format_bytes(policy.max_extract_bytes)
     );
+}
+
+fn print_usage_ledger(mut response: SkillHubUsageLedgerResponse) {
+    response
+        .entries
+        .sort_by(|left, right| left.skill_name.cmp(&right.skill_name));
+    println!("Skill usage ledger: {}", response.entries.len());
+    for entry in response.entries {
+        let runtime_use_count = entry
+            .usage
+            .as_ref()
+            .map(|usage| usage.runtime_use_count)
+            .unwrap_or(0);
+        let runtime_error_count = entry
+            .usage
+            .as_ref()
+            .map(|usage| usage.runtime_error_count)
+            .unwrap_or(0);
+        let write_count = entry
+            .writes
+            .as_ref()
+            .map(total_usage_write_count)
+            .unwrap_or(0);
+        println!(
+            "  - {} · scope {} · use {} · writes {} · errors {}",
+            entry.skill_name,
+            format_source_scope(entry.source_scope),
+            runtime_use_count,
+            write_count,
+            runtime_error_count
+        );
+        println!(
+            "    Last used: {} · last written: {}",
+            format_optional_timestamp(entry.usage.as_ref().and_then(|usage| usage.last_used_at)),
+            format_optional_timestamp(
+                entry
+                    .writes
+                    .as_ref()
+                    .and_then(|writes| writes.last_write_at)
+            )
+        );
+    }
+}
+
+fn print_negative_entropy(mut candidates: Vec<SkillNegativeEntropyDiagnostic>) {
+    candidates.sort_by(|left, right| left.skill_name.cmp(&right.skill_name));
+    println!("Negative entropy diagnostics: {}", candidates.len());
+    for item in candidates {
+        let signals = item
+            .signals
+            .iter()
+            .map(|signal| format_negative_entropy_signal(*signal).to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!(
+            "  - {} · {} · {}",
+            item.skill_name,
+            format_diagnostic_severity(item.severity),
+            signals
+        );
+        println!(
+            "    use {} · writes {} · last used {} · last written {}",
+            item.runtime_use_count,
+            item.write_count,
+            format_optional_timestamp(item.last_used_at),
+            format_optional_timestamp(item.last_write_at)
+        );
+        for reason in item.reasons.into_iter().take(2) {
+            println!("    {}", reason);
+        }
+    }
+}
+
+fn print_semantic_conflicts(mut conflicts: Vec<SkillSemanticConflictDiagnostic>) {
+    conflicts.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.left_skill_name.cmp(&right.left_skill_name))
+            .then_with(|| left.right_skill_name.cmp(&right.right_skill_name))
+    });
+    println!("Semantic conflict diagnostics: {}", conflicts.len());
+    for item in conflicts {
+        println!(
+            "  - {} <> {} · {} · score {}",
+            item.left_skill_name,
+            item.right_skill_name,
+            format_semantic_conflict_kind(item.kind),
+            item.score
+        );
+        println!(
+            "    ledger: {} use(s) vs {} use(s)",
+            item.left_runtime_use_count, item.right_runtime_use_count
+        );
+        if let Some(preferred) = item.preferred_skill_name.as_deref() {
+            println!("    preferred skill: {}", preferred);
+        }
+        for reason in item.reasons.into_iter().take(2) {
+            println!("    {}", reason);
+        }
+    }
 }
 
 fn print_managed_skills(mut records: Vec<ManagedSkillRecord>) {
@@ -745,6 +1010,62 @@ fn source_suffix(source: Option<&SkillSourceRef>, flags: &[&str]) -> String {
 
 fn optional_text(value: Option<&str>) -> &str {
     value.filter(|value| !value.is_empty()).unwrap_or("--")
+}
+
+fn total_usage_write_count(entry: &rocode_types::SkillWriteLedgerEntry) -> u64 {
+    entry.create_count
+        + entry.patch_count
+        + entry.edit_count
+        + entry.supporting_file_write_count
+        + entry.supporting_file_remove_count
+        + entry.install_count
+        + entry.update_count
+        + entry.detach_count
+        + entry.remove_count
+        + entry.delete_count
+}
+
+fn format_optional_timestamp(timestamp: Option<i64>) -> String {
+    timestamp
+        .map(format_timestamp)
+        .unwrap_or_else(|| "--".to_string())
+}
+
+fn format_source_scope(scope: rocode_types::SkillOperationalSourceScope) -> &'static str {
+    match scope {
+        rocode_types::SkillOperationalSourceScope::WorkspaceLocal => "workspace_local",
+        rocode_types::SkillOperationalSourceScope::Managed => "managed",
+        rocode_types::SkillOperationalSourceScope::DiscoveredReadOnly => "discovered_read_only",
+        rocode_types::SkillOperationalSourceScope::Unknown => "unknown",
+    }
+}
+
+fn format_diagnostic_severity(
+    severity: rocode_types::SkillGovernanceDiagnosticSeverity,
+) -> &'static str {
+    match severity {
+        rocode_types::SkillGovernanceDiagnosticSeverity::Info => "info",
+        rocode_types::SkillGovernanceDiagnosticSeverity::Warn => "warn",
+    }
+}
+
+fn format_negative_entropy_signal(
+    signal: rocode_types::SkillNegativeEntropySignal,
+) -> &'static str {
+    match signal {
+        rocode_types::SkillNegativeEntropySignal::NeverReused => "never_reused",
+        rocode_types::SkillNegativeEntropySignal::StaleUnused => "stale_unused",
+        rocode_types::SkillNegativeEntropySignal::WriteHeavyLowReuse => "write_heavy_low_reuse",
+        rocode_types::SkillNegativeEntropySignal::DormantManaged => "dormant_managed",
+    }
+}
+
+fn format_semantic_conflict_kind(kind: rocode_types::SkillSemanticConflictKind) -> &'static str {
+    match kind {
+        rocode_types::SkillSemanticConflictKind::NearDuplicate => "near_duplicate",
+        rocode_types::SkillSemanticConflictKind::TriggerOverlap => "trigger_overlap",
+        rocode_types::SkillSemanticConflictKind::ReplacementHint => "replacement_hint",
+    }
 }
 
 fn format_duration_seconds(value: u64) -> String {

@@ -959,12 +959,17 @@ mod tests {
         let db = Database::in_memory().await.expect("db should initialize");
         let repository = Arc::new(MemoryRepository::new(db.pool().clone()));
         state.config_store = config_store;
+        state.workspace_root = project_dir.to_path_buf();
         state.user_state = user_state.clone();
         state.resolved_context_authority = resolved_context_authority.clone();
-        state.runtime_memory = Arc::new(RuntimeMemoryAuthority::new(Arc::new(
-            MemoryAuthority::new(user_state, resolved_context_authority)
-                .with_repository(repository),
-        )));
+        state.runtime_memory = Arc::new(RuntimeMemoryAuthority::new(
+            Arc::new(
+                MemoryAuthority::new(user_state, resolved_context_authority)
+                    .with_repository(repository),
+            ),
+            project_dir,
+            Some(state.config_store.clone()),
+        ));
         Arc::new(state)
     }
 

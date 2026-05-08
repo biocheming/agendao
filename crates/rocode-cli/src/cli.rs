@@ -341,6 +341,21 @@ pub(crate) enum SkillHubCommands {
         #[command(flatten)]
         output: SkillHubOutputArgs,
     },
+    #[command(about = "Show canonical skill usage and write ledger inspection")]
+    Usage {
+        #[command(flatten)]
+        output: SkillHubOutputArgs,
+    },
+    #[command(about = "Show read-only negative entropy diagnostics")]
+    NegativeEntropy {
+        #[command(flatten)]
+        output: SkillHubOutputArgs,
+    },
+    #[command(about = "Show read-only semantic overlap diagnostics")]
+    SemanticConflicts {
+        #[command(flatten)]
+        output: SkillHubOutputArgs,
+    },
     #[command(about = "Show cached skill source indices")]
     Index {
         #[command(flatten)]

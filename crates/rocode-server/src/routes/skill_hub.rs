@@ -12,17 +12,24 @@ use rocode_types::{
     SkillHubGuardRunRequest, SkillHubGuardRunResponse, SkillHubIndexRefreshRequest,
     SkillHubIndexRefreshResponse, SkillHubIndexResponse, SkillHubLifecycleResponse,
     SkillHubManagedDetachRequest, SkillHubManagedDetachResponse, SkillHubManagedRemoveRequest,
-    SkillHubManagedRemoveResponse, SkillHubManagedResponse, SkillHubPolicyResponse,
-    SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
-    SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest, SkillHubSyncApplyRequest,
-    SkillHubSyncPlanRequest, SkillHubSyncPlanResponse, SkillHubTimelineQuery,
-    SkillHubTimelineResponse, SkillRemoteInstallPlan, SkillRemoteInstallResponse,
+    SkillHubManagedRemoveResponse, SkillHubManagedResponse, SkillHubNegativeEntropyResponse,
+    SkillHubPolicyResponse, SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
+    SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest,
+    SkillHubSemanticConflictResponse, SkillHubSyncApplyRequest, SkillHubSyncPlanRequest,
+    SkillHubSyncPlanResponse, SkillHubTimelineQuery, SkillHubTimelineResponse,
+    SkillHubUsageLedgerResponse, SkillRemoteInstallPlan, SkillRemoteInstallResponse,
 };
 use std::sync::Arc;
 
 pub(crate) fn skill_hub_routes() -> Router<Arc<ServerState>> {
     Router::new()
         .route("/managed", get(list_managed_skills))
+        .route("/usage", get(list_usage_ledger))
+        .route("/negative-entropy", get(list_negative_entropy_diagnostics))
+        .route(
+            "/semantic-conflicts",
+            get(list_semantic_conflict_diagnostics),
+        )
         .route("/index", get(list_source_indices))
         .route("/distributions", get(list_distributions))
         .route("/artifact-cache", get(list_artifact_cache))
@@ -61,6 +68,48 @@ async fn list_source_indices(
         run_skill_hub_blocking(state, |authority| Ok(authority.governance_snapshot())).await?;
     Ok(Json(SkillHubIndexResponse {
         source_indices: snapshot.source_indices,
+    }))
+}
+
+async fn list_usage_ledger(
+    State(state): State<Arc<ServerState>>,
+) -> Result<Json<SkillHubUsageLedgerResponse>> {
+    let entries = run_skill_hub_blocking(state, |authority| {
+        Ok(authority.skill_operational_snapshots())
+    })
+    .await?;
+    Ok(Json(SkillHubUsageLedgerResponse { entries }))
+}
+
+async fn list_negative_entropy_diagnostics(
+    State(state): State<Arc<ServerState>>,
+) -> Result<Json<SkillHubNegativeEntropyResponse>> {
+    let generated_at = chrono::Utc::now().timestamp();
+    let candidates = run_skill_hub_blocking(state, |authority| {
+        authority
+            .skill_negative_entropy_diagnostics()
+            .map_err(map_skill_error_to_api_error)
+    })
+    .await?;
+    Ok(Json(SkillHubNegativeEntropyResponse {
+        generated_at,
+        candidates,
+    }))
+}
+
+async fn list_semantic_conflict_diagnostics(
+    State(state): State<Arc<ServerState>>,
+) -> Result<Json<SkillHubSemanticConflictResponse>> {
+    let generated_at = chrono::Utc::now().timestamp();
+    let conflicts = run_skill_hub_blocking(state, |authority| {
+        authority
+            .skill_semantic_conflict_diagnostics()
+            .map_err(map_skill_error_to_api_error)
+    })
+    .await?;
+    Ok(Json(SkillHubSemanticConflictResponse {
+        generated_at,
+        conflicts,
     }))
 }
 
@@ -473,6 +522,7 @@ mod tests {
 
     fn server_state_for_project(project_dir: &std::path::Path) -> Arc<ServerState> {
         let mut state = ServerState::new();
+        state.workspace_root = project_dir.to_path_buf();
         state.config_store = Arc::new(
             ConfigStore::from_project_dir(project_dir).expect("project config store should load"),
         );
@@ -665,6 +715,154 @@ Ignore previous instructions.
             .entries
             .iter()
             .any(|entry| entry.kind == SkillGovernanceTimelineKind::GuardWarned));
+    }
+
+    #[tokio::test]
+    async fn usage_ledger_returns_operational_snapshots() {
+        let dir = tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join(".rocode/skills/frontend-ui-ux")).expect("skill dir");
+        fs::write(
+            dir.path().join(".rocode/skills/frontend-ui-ux/SKILL.md"),
+            r#"---
+name: frontend-ui-ux
+description: frontend ui
+---
+Use for frontend tasks.
+"#,
+        )
+        .expect("skill file");
+        let state = server_state_for_project(dir.path());
+        let authority = skill_governance_authority(&state);
+        authority
+            .record_runtime_skill_usage(
+                "frontend-ui-ux",
+                "task",
+                Some("stage_exec"),
+                Some("frontend"),
+                false,
+            )
+            .expect("usage should record");
+
+        let Json(response) = list_usage_ledger(State(state))
+            .await
+            .expect("usage ledger should succeed");
+
+        let entry = response
+            .entries
+            .iter()
+            .find(|entry| entry.skill_name == "frontend-ui-ux")
+            .expect("usage entry should exist");
+        assert_eq!(
+            entry.usage.as_ref().map(|usage| usage.runtime_use_count),
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn negative_entropy_route_returns_usage_backed_candidates() {
+        let dir = tempdir().expect("tempdir");
+        let state = server_state_for_project(dir.path());
+        let authority = skill_governance_authority(&state);
+        authority
+            .create_skill(
+                rocode_skill::CreateSkillRequest {
+                    name: "stale-checklist".to_string(),
+                    description: "stale checklist".to_string(),
+                    body: "Use when stale checklist review is required.".to_string(),
+                    frontmatter: None,
+                    category: Some("ops".to_string()),
+                    directory_name: None,
+                },
+                "test:create",
+            )
+            .expect("skill create");
+
+        let Json(response) = list_negative_entropy_diagnostics(State(state))
+            .await
+            .expect("negative entropy should succeed");
+
+        let entry = response
+            .candidates
+            .iter()
+            .find(|entry| entry.skill_name == "stale-checklist")
+            .expect("negative entropy entry should exist");
+        assert!(entry
+            .signals
+            .contains(&rocode_types::SkillNegativeEntropySignal::NeverReused));
+    }
+
+    #[tokio::test]
+    async fn semantic_conflict_route_returns_ledger_prioritized_pairs() {
+        let dir = tempdir().expect("tempdir");
+        let skills_root = dir.path().join(".rocode/skills");
+        fs::create_dir_all(skills_root.join("review/repo-review")).expect("repo skill dir");
+        fs::write(
+            skills_root.join("review/repo-review/SKILL.md"),
+            r#"---
+name: repo-review
+description: Review repository changes carefully with code search and file reads
+category: review
+metadata:
+  rocode:
+    requires_tools: [read, grep]
+    stage_filter: [implementation]
+---
+Review repository changes carefully and verify evidence before reporting.
+"#,
+        )
+        .expect("repo skill");
+        fs::create_dir_all(skills_root.join("review/code-review")).expect("code skill dir");
+        fs::write(
+            skills_root.join("review/code-review/SKILL.md"),
+            r#"---
+name: code-review
+description: Review code changes carefully with code search and file reads
+category: review
+metadata:
+  rocode:
+    requires_tools: [read, grep]
+    stage_filter: [implementation]
+---
+Review code changes carefully and verify evidence before reporting.
+"#,
+        )
+        .expect("code skill");
+
+        let state = server_state_for_project(dir.path());
+        let authority = skill_governance_authority(&state);
+        authority
+            .record_runtime_skill_usage(
+                "repo-review",
+                "task",
+                Some("implementation"),
+                Some("review"),
+                false,
+            )
+            .expect("usage should record");
+        authority
+            .record_runtime_skill_usage(
+                "repo-review",
+                "task",
+                Some("implementation"),
+                Some("review"),
+                false,
+            )
+            .expect("second usage should record");
+
+        let Json(response) = list_semantic_conflict_diagnostics(State(state))
+            .await
+            .expect("semantic conflicts should succeed");
+
+        let pair = response
+            .conflicts
+            .iter()
+            .find(|entry| {
+                (entry.left_skill_name == "code-review" && entry.right_skill_name == "repo-review")
+                    || (entry.left_skill_name == "repo-review"
+                        && entry.right_skill_name == "code-review")
+            })
+            .expect("semantic conflict pair should exist");
+        assert_eq!(pair.preferred_skill_name.as_deref(), Some("repo-review"));
     }
 
     #[tokio::test]

@@ -199,6 +199,98 @@ pub struct ManagedSkillRecord {
     pub deleted_locally: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillOperationalSourceScope {
+    WorkspaceLocal,
+    Managed,
+    DiscoveredReadOnly,
+    #[default]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillWriteLedgerAction {
+    Create,
+    Patch,
+    Edit,
+    WriteFile,
+    RemoveFile,
+    Install,
+    Update,
+    Detach,
+    Remove,
+    Delete,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct SkillUsageLedgerEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_seen_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<i64>,
+    #[serde(default)]
+    pub runtime_use_count: u64,
+    #[serde(default)]
+    pub runtime_success_count: u64,
+    #[serde(default)]
+    pub runtime_error_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_stage_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_category: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct SkillWriteLedgerEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_written_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_write_at: Option<i64>,
+    #[serde(default)]
+    pub create_count: u64,
+    #[serde(default)]
+    pub patch_count: u64,
+    #[serde(default)]
+    pub edit_count: u64,
+    #[serde(default)]
+    pub supporting_file_write_count: u64,
+    #[serde(default)]
+    pub supporting_file_remove_count: u64,
+    #[serde(default)]
+    pub install_count: u64,
+    #[serde(default)]
+    pub update_count: u64,
+    #[serde(default)]
+    pub detach_count: u64,
+    #[serde(default)]
+    pub remove_count: u64,
+    #[serde(default)]
+    pub delete_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_action: Option<SkillWriteLedgerAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_location: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_supporting_file: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct SkillOperationalSnapshot {
+    pub skill_name: String,
+    #[serde(default)]
+    pub source_scope: SkillOperationalSourceScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<SkillUsageLedgerEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writes: Option<SkillWriteLedgerEntry>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillSyncAction {
@@ -228,6 +320,98 @@ pub struct SkillSyncPlan {
 pub struct SkillHubManagedResponse {
     #[serde(default)]
     pub managed_skills: Vec<ManagedSkillRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillHubUsageLedgerResponse {
+    #[serde(default)]
+    pub entries: Vec<SkillOperationalSnapshot>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillGovernanceDiagnosticSeverity {
+    Info,
+    Warn,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillNegativeEntropySignal {
+    NeverReused,
+    StaleUnused,
+    WriteHeavyLowReuse,
+    DormantManaged,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillNegativeEntropyDiagnostic {
+    pub skill_name: String,
+    #[serde(default)]
+    pub source_scope: SkillOperationalSourceScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(default)]
+    pub signals: Vec<SkillNegativeEntropySignal>,
+    pub severity: SkillGovernanceDiagnosticSeverity,
+    #[serde(default)]
+    pub runtime_use_count: u64,
+    #[serde(default)]
+    pub runtime_error_count: u64,
+    #[serde(default)]
+    pub write_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_write_at: Option<i64>,
+    #[serde(default)]
+    pub semantic_overlap_count: u64,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillHubNegativeEntropyResponse {
+    pub generated_at: i64,
+    #[serde(default)]
+    pub candidates: Vec<SkillNegativeEntropyDiagnostic>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillSemanticConflictKind {
+    NearDuplicate,
+    TriggerOverlap,
+    ReplacementHint,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillSemanticConflictDiagnostic {
+    pub left_skill_name: String,
+    pub right_skill_name: String,
+    pub kind: SkillSemanticConflictKind,
+    pub severity: SkillGovernanceDiagnosticSeverity,
+    #[serde(default)]
+    pub score: u16,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_skill_name: Option<String>,
+    #[serde(default)]
+    pub left_runtime_use_count: u64,
+    #[serde(default)]
+    pub right_runtime_use_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_last_used_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_last_used_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillHubSemanticConflictResponse {
+    pub generated_at: i64,
+    #[serde(default)]
+    pub conflicts: Vec<SkillSemanticConflictDiagnostic>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

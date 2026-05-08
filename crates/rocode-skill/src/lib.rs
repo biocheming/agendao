@@ -80,7 +80,7 @@ mod tests {
         SkillAuditEvent, SkillAuditKind, SkillDistributionRecord, SkillDistributionRelease,
         SkillDistributionResolution, SkillDistributionResolverKind, SkillGovernanceTimelineKind,
         SkillInstalledDistribution, SkillManagedLifecycleRecord, SkillManagedLifecycleState,
-        SkillSourceKind, SkillSourceRef,
+        SkillOperationalSnapshot, SkillOperationalSourceScope, SkillSourceKind, SkillSourceRef,
     };
     use sha2::Digest;
     use std::fs;
@@ -323,6 +323,65 @@ Use the following explicit create or refresh mapping:
     }
 
     #[test]
+    fn hub_store_persists_operational_snapshots() {
+        let dir = tempdir().unwrap();
+        let store = SkillHubStore::new(dir.path());
+        store
+            .upsert_skill_operational_snapshot(SkillOperationalSnapshot {
+                skill_name: "frontend-ui-ux".to_string(),
+                source_scope: SkillOperationalSourceScope::WorkspaceLocal,
+                source_id: None,
+                usage: Some(rocode_types::SkillUsageLedgerEntry {
+                    first_seen_at: Some(100),
+                    last_used_at: Some(120),
+                    runtime_use_count: 2,
+                    runtime_success_count: 2,
+                    runtime_error_count: 0,
+                    last_stage_id: Some("stage_ui".to_string()),
+                    last_tool_name: Some("task".to_string()),
+                    last_category: Some("frontend".to_string()),
+                }),
+                writes: Some(rocode_types::SkillWriteLedgerEntry {
+                    first_written_at: Some(80),
+                    last_write_at: Some(90),
+                    create_count: 1,
+                    patch_count: 0,
+                    edit_count: 0,
+                    supporting_file_write_count: 0,
+                    supporting_file_remove_count: 0,
+                    install_count: 0,
+                    update_count: 0,
+                    detach_count: 0,
+                    remove_count: 0,
+                    delete_count: 0,
+                    last_action: Some(rocode_types::SkillWriteLedgerAction::Create),
+                    last_location: Some("/tmp/frontend-ui-ux".to_string()),
+                    last_supporting_file: None,
+                }),
+            })
+            .unwrap();
+
+        let reloaded = SkillHubStore::new(dir.path());
+        let snapshots = reloaded.skill_operational_snapshots();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].skill_name, "frontend-ui-ux");
+        assert_eq!(
+            snapshots[0]
+                .usage
+                .as_ref()
+                .map(|entry| entry.runtime_use_count),
+            Some(2)
+        );
+        assert_eq!(
+            snapshots[0]
+                .writes
+                .as_ref()
+                .and_then(|entry| entry.last_action),
+            Some(rocode_types::SkillWriteLedgerAction::Create)
+        );
+    }
+
+    #[test]
     fn governance_authority_appends_audit_events_to_snapshot_tail() {
         let dir = tempdir().unwrap();
         let governance = SkillGovernanceAuthority::new(dir.path(), None);
@@ -342,6 +401,197 @@ Use the following explicit create or refresh mapping:
         assert_eq!(audit_tail.len(), 1);
         assert_eq!(audit_tail[0].event_id, "evt-1");
         assert_eq!(audit_tail[0].skill_name.as_deref(), Some("managed-skill"));
+    }
+
+    #[test]
+    fn governance_records_runtime_skill_usage_in_operational_snapshot() {
+        let dir = tempdir().unwrap();
+        write_directory_skill(
+            &dir.path().join(".rocode/skills"),
+            "frontend/frontend-ui-ux",
+            "frontend-ui-ux",
+            "frontend ui",
+            "Use for frontend tasks.",
+            &[],
+        );
+        let governance = SkillGovernanceAuthority::new(dir.path(), None);
+
+        let snapshot = governance
+            .record_runtime_skill_usage(
+                "frontend-ui-ux",
+                "task",
+                Some("stage_exec"),
+                Some("frontend"),
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(snapshot.skill_name, "frontend-ui-ux");
+        assert_eq!(
+            snapshot.source_scope,
+            SkillOperationalSourceScope::WorkspaceLocal
+        );
+        assert_eq!(
+            snapshot.usage.as_ref().map(|entry| entry.runtime_use_count),
+            Some(1)
+        );
+        assert_eq!(
+            snapshot
+                .usage
+                .as_ref()
+                .and_then(|entry| entry.last_tool_name.as_deref()),
+            Some("task")
+        );
+    }
+
+    #[test]
+    fn governance_patch_rename_keeps_operational_write_history() {
+        let dir = tempdir().unwrap();
+        let governance = SkillGovernanceAuthority::new(dir.path(), None);
+        governance
+            .create_skill(
+                CreateSkillRequest {
+                    name: "provider-refresh".to_string(),
+                    description: "refresh".to_string(),
+                    body: "refresh provider".to_string(),
+                    frontmatter: None,
+                    category: Some("ops".to_string()),
+                    directory_name: None,
+                },
+                "test:create",
+            )
+            .unwrap();
+        governance
+            .patch_skill(
+                PatchSkillRequest {
+                    name: "provider-refresh".to_string(),
+                    new_name: Some("provider-refresh-v2".to_string()),
+                    description: None,
+                    body: None,
+                    frontmatter: None,
+                },
+                "test:patch",
+            )
+            .unwrap();
+
+        let snapshots = governance.skill_operational_snapshots();
+        assert!(!snapshots
+            .iter()
+            .any(|entry| entry.skill_name == "provider-refresh"));
+        let renamed = snapshots
+            .iter()
+            .find(|entry| entry.skill_name == "provider-refresh-v2")
+            .expect("renamed snapshot should exist");
+        let writes = renamed.writes.as_ref().expect("write ledger should exist");
+        assert_eq!(writes.create_count, 1);
+        assert_eq!(writes.patch_count, 1);
+    }
+
+    #[test]
+    fn governance_negative_entropy_diagnostics_flag_never_reused_workspace_skill() {
+        let dir = tempdir().unwrap();
+        let governance = SkillGovernanceAuthority::new(dir.path(), None);
+        governance
+            .create_skill(
+                CreateSkillRequest {
+                    name: "stale-checklist".to_string(),
+                    description: "stale checklist".to_string(),
+                    body: "Use when stale checklist review is required.".to_string(),
+                    frontmatter: None,
+                    category: Some("ops".to_string()),
+                    directory_name: None,
+                },
+                "test:create",
+            )
+            .unwrap();
+
+        let diagnostics = governance.skill_negative_entropy_diagnostics().unwrap();
+        let candidate = diagnostics
+            .iter()
+            .find(|entry| entry.skill_name == "stale-checklist")
+            .expect("negative entropy candidate should exist");
+        assert!(candidate
+            .signals
+            .contains(&rocode_types::SkillNegativeEntropySignal::NeverReused));
+        assert_eq!(
+            candidate.severity,
+            rocode_types::SkillGovernanceDiagnosticSeverity::Warn
+        );
+    }
+
+    #[test]
+    fn governance_semantic_conflict_diagnostics_use_usage_ledger_to_prioritize_pair() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join(".rocode/skills");
+        fs::create_dir_all(root.join("review/repo-review")).unwrap();
+        fs::write(
+            root.join("review/repo-review/SKILL.md"),
+            r#"---
+name: repo-review
+description: Review repository changes carefully with code search and file reads
+category: review
+metadata:
+  rocode:
+    requires_tools: [read, grep]
+    stage_filter: [implementation]
+---
+Review repository changes carefully and verify evidence before reporting.
+"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("review/code-review")).unwrap();
+        fs::write(
+            root.join("review/code-review/SKILL.md"),
+            r#"---
+name: code-review
+description: Review code changes carefully with code search and file reads
+category: review
+metadata:
+  rocode:
+    requires_tools: [read, grep]
+    stage_filter: [implementation]
+---
+Review code changes carefully and verify evidence before reporting.
+"#,
+        )
+        .unwrap();
+
+        let governance = SkillGovernanceAuthority::new(dir.path(), None);
+        governance
+            .record_runtime_skill_usage(
+                "repo-review",
+                "task",
+                Some("implementation"),
+                Some("review"),
+                false,
+            )
+            .unwrap();
+        governance
+            .record_runtime_skill_usage(
+                "repo-review",
+                "task",
+                Some("implementation"),
+                Some("review"),
+                false,
+            )
+            .unwrap();
+
+        let diagnostics = governance.skill_semantic_conflict_diagnostics().unwrap();
+        let pair = diagnostics
+            .iter()
+            .find(|entry| {
+                (entry.left_skill_name == "code-review" && entry.right_skill_name == "repo-review")
+                    || (entry.left_skill_name == "repo-review"
+                        && entry.right_skill_name == "code-review")
+            })
+            .expect("semantic conflict pair should exist");
+        assert!(matches!(
+            pair.kind,
+            rocode_types::SkillSemanticConflictKind::ReplacementHint
+                | rocode_types::SkillSemanticConflictKind::NearDuplicate
+        ));
+        assert_eq!(pair.preferred_skill_name.as_deref(), Some("repo-review"));
+        assert!(pair.score >= 70);
     }
 
     #[test]

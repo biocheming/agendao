@@ -8,8 +8,11 @@ import type {
   SkillGovernanceTimelineEntryRecord,
   SkillGuardReportRecord,
   SkillHubPolicyRecord,
+  SkillNegativeEntropyDiagnosticRecord,
   SkillManagedLifecycleRecord,
+  SkillOperationalSnapshotRecord,
   SkillRemoteInstallPlanRecord,
+  SkillSemanticConflictDiagnosticRecord,
   SkillSourceIndexSnapshotRecord,
   SkillSourceRefRecord,
   SkillSyncPlanRecord,
@@ -42,6 +45,9 @@ interface SkillsTabProps {
   busyKey: string | null;
   skillCatalog: SkillCatalogEntry[];
   managedSkills: ManagedSkillRecord[];
+  skillUsageLedger: SkillOperationalSnapshotRecord[];
+  skillNegativeEntropy: SkillNegativeEntropyDiagnosticRecord[];
+  skillSemanticConflicts: SkillSemanticConflictDiagnosticRecord[];
   skillSourceIndices: SkillSourceIndexSnapshotRecord[];
   skillDistributions: SkillDistributionRecord[];
   skillArtifactCache: SkillArtifactCacheEntryRecord[];
@@ -188,6 +194,38 @@ function unixTimeLabel(value?: number | null): string {
   }
 }
 
+function usageWriteCount(entry: SkillOperationalSnapshotRecord): number {
+  const writes = entry.writes;
+  if (!writes) return 0;
+  return (
+    writes.create_count +
+    writes.patch_count +
+    writes.edit_count +
+    writes.supporting_file_write_count +
+    writes.supporting_file_remove_count +
+    writes.install_count +
+    writes.update_count +
+    writes.detach_count +
+    writes.remove_count +
+    writes.delete_count
+  );
+}
+
+function governanceSeverityClass(severity: "info" | "warn"): string {
+  if (severity === "warn") {
+    return "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-950/60 dark:text-amber-200";
+  }
+  return "border-border/40 bg-muted text-muted-foreground";
+}
+
+function negativeEntropySignalLabel(signal: string): string {
+  return signal.replaceAll("_", " ");
+}
+
+function semanticConflictKindLabel(kind: string): string {
+  return kind.replaceAll("_", " ");
+}
+
 export function SkillsTab({
   workspaceRootPath,
   selectedSessionId,
@@ -197,6 +235,9 @@ export function SkillsTab({
   busyKey,
   skillCatalog,
   managedSkills,
+  skillUsageLedger,
+  skillNegativeEntropy,
+  skillSemanticConflicts,
   skillSourceIndices,
   skillDistributions,
   skillArtifactCache,
@@ -295,6 +336,54 @@ export function SkillsTab({
   const totalGuardViolations = skillGuardReports.reduce(
     (count, report) => count + report.violations.length,
     0,
+  );
+  const runtimeUsedSkillCount = useMemo(
+    () =>
+      skillUsageLedger.filter((entry) => (entry.usage?.runtime_use_count ?? 0) > 0).length,
+    [skillUsageLedger],
+  );
+  const neverReusedSkillCount = useMemo(
+    () =>
+      skillUsageLedger.filter(
+        (entry) => usageWriteCount(entry) > 0 && (entry.usage?.runtime_use_count ?? 0) === 0,
+      ).length,
+    [skillUsageLedger],
+  );
+  const topUsageEntries = useMemo(
+    () =>
+      [...skillUsageLedger]
+        .filter((entry) => (entry.usage?.runtime_use_count ?? 0) > 0)
+        .sort(
+          (left, right) =>
+            (right.usage?.runtime_use_count ?? 0) - (left.usage?.runtime_use_count ?? 0) ||
+            left.skill_name.localeCompare(right.skill_name),
+        )
+        .slice(0, 6),
+    [skillUsageLedger],
+  );
+  const negativeEntropyPreview = useMemo(
+    () =>
+      [...skillNegativeEntropy]
+        .sort(
+          (left, right) =>
+            (right.semantic_overlap_count ?? 0) - (left.semantic_overlap_count ?? 0) ||
+            right.write_count - left.write_count ||
+            left.skill_name.localeCompare(right.skill_name),
+        )
+        .slice(0, 6),
+    [skillNegativeEntropy],
+  );
+  const semanticConflictPreview = useMemo(
+    () =>
+      [...skillSemanticConflicts]
+        .sort(
+          (left, right) =>
+            right.score - left.score ||
+            left.left_skill_name.localeCompare(right.left_skill_name) ||
+            left.right_skill_name.localeCompare(right.right_skill_name),
+        )
+        .slice(0, 6),
+    [skillSemanticConflicts],
   );
   const recentGuardReports = [...skillGuardReports]
     .sort((left, right) => right.scanned_at - left.scanned_at)
@@ -1245,6 +1334,184 @@ export function SkillsTab({
 
       {activeSubtab === "governance" ? (
         <div className="grid gap-5">
+          <div className="grid gap-3 md:grid-cols-4">
+            <div className={summaryCardClass}>
+              <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">
+                Usage Ledger
+              </span>
+              <div className="mt-2 text-2xl font-semibold text-foreground">
+                {skillUsageLedger.length}
+              </div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                {runtimeUsedSkillCount} runtime-used · {neverReusedSkillCount} never reused
+              </div>
+            </div>
+            <div className={summaryCardClass}>
+              <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">
+                Negative Entropy
+              </span>
+              <div className="mt-2 text-2xl font-semibold text-foreground">
+                {skillNegativeEntropy.length}
+              </div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                review candidates from /skill/hub/negative-entropy
+              </div>
+            </div>
+            <div className={summaryCardClass}>
+              <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">
+                Semantic Overlap
+              </span>
+              <div className="mt-2 text-2xl font-semibold text-foreground">
+                {skillSemanticConflicts.length}
+              </div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                overlap pairs from /skill/hub/semantic-conflicts
+              </div>
+            </div>
+            <div className={summaryCardClass}>
+              <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">
+                Read Models
+              </span>
+              <div className="mt-2 text-sm text-muted-foreground leading-relaxed">
+                /skill/hub/usage · /negative-entropy · /semantic-conflicts · /timeline
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-3">
+            <div className={sectionCardClass}>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">
+                  Top Runtime Use
+                </span>
+                <span className="text-xs text-muted-foreground">{topUsageEntries.length} shown</span>
+              </div>
+              <div className="mt-3 grid gap-2">
+                {topUsageEntries.length ? (
+                  topUsageEntries.map((entry) => (
+                    <div key={entry.skill_name} className="rounded-lg bg-muted/30 px-3 py-2 text-sm">
+                      <div className="flex items-start justify-between gap-3">
+                        <strong>{entry.skill_name}</strong>
+                        <span className="text-muted-foreground">
+                          {entry.usage?.runtime_use_count ?? 0} use
+                          {(entry.usage?.runtime_use_count ?? 0) === 1 ? "" : "s"}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        last used {unixTimeLabel(entry.usage?.last_used_at)} · last written{" "}
+                        {unixTimeLabel(entry.writes?.last_write_at)}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-lg bg-muted/30 px-4 py-6 text-sm text-muted-foreground">
+                    No runtime usage has been recorded yet.
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className={sectionCardClass}>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">
+                  Negative Entropy
+                </span>
+                <span className="text-xs text-muted-foreground">{negativeEntropyPreview.length} shown</span>
+              </div>
+              <div className="mt-3 grid gap-2">
+                {negativeEntropyPreview.length ? (
+                  negativeEntropyPreview.map((item) => (
+                    <div key={item.skill_name} className="rounded-lg bg-muted/30 px-3 py-2 text-sm">
+                      <div className="flex items-start justify-between gap-3">
+                        <strong>{item.skill_name}</strong>
+                        <span
+                          className={cn(
+                            "rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                            governanceSeverityClass(item.severity),
+                          )}
+                        >
+                          {item.severity}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex flex-wrap gap-1.5 text-[10px]">
+                        {item.signals.map((signal) => (
+                          <span
+                            key={`${item.skill_name}:${signal}`}
+                            className="rounded-full border border-border/40 bg-muted px-2 py-0.5 text-muted-foreground"
+                          >
+                            {negativeEntropySignalLabel(signal)}
+                          </span>
+                        ))}
+                      </div>
+                      <div className="mt-2 text-xs text-muted-foreground">
+                        use {item.runtime_use_count} · writes {item.write_count} · overlap{" "}
+                        {item.semantic_overlap_count}
+                      </div>
+                      {item.reasons[0] ? (
+                        <div className="mt-1 text-xs text-muted-foreground">{item.reasons[0]}</div>
+                      ) : null}
+                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-lg bg-muted/30 px-4 py-6 text-sm text-muted-foreground">
+                    No negative entropy candidates currently meet the diagnostic threshold.
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className={sectionCardClass}>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">
+                  Semantic Overlap
+                </span>
+                <span className="text-xs text-muted-foreground">{semanticConflictPreview.length} shown</span>
+              </div>
+              <div className="mt-3 grid gap-2">
+                {semanticConflictPreview.length ? (
+                  semanticConflictPreview.map((item) => (
+                    <div
+                      key={`${item.left_skill_name}:${item.right_skill_name}`}
+                      className="rounded-lg bg-muted/30 px-3 py-2 text-sm"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <strong>
+                          {item.left_skill_name}
+                          {" <> "}
+                          {item.right_skill_name}
+                        </strong>
+                        <span
+                          className={cn(
+                            "rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                            governanceSeverityClass(item.severity),
+                          )}
+                        >
+                          {item.score}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {semanticConflictKindLabel(item.kind)} · {item.left_runtime_use_count} vs{" "}
+                        {item.right_runtime_use_count} runtime uses
+                      </div>
+                      {item.preferred_skill_name ? (
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          ledger prefers {item.preferred_skill_name}
+                        </div>
+                      ) : null}
+                      {item.reasons[0] ? (
+                        <div className="mt-1 text-xs text-muted-foreground">{item.reasons[0]}</div>
+                      ) : null}
+                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-lg bg-muted/30 px-4 py-6 text-sm text-muted-foreground">
+                    No semantic overlap pairs currently meet the diagnostic threshold.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
           <div>
             <div className="flex items-center justify-between gap-3 mb-3">
               <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">

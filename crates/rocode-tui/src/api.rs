@@ -150,6 +150,7 @@ impl RuntimeApiClient {
         fn list_memory_consolidation_runs(&self, query: Option<&MemoryConsolidationRunQuery>) -> MemoryConsolidationRunListResponse;
         fn run_memory_consolidation(&self, request: &MemoryConsolidationRequest) -> MemoryConsolidationResponse;
         fn list_skill_hub_managed(&self) -> SkillHubManagedResponse;
+        fn list_skill_hub_usage(&self) -> SkillHubUsageLedgerResponse;
         fn list_skill_hub_index(&self) -> SkillHubIndexResponse;
         fn list_skill_hub_distributions(&self) -> SkillHubDistributionResponse;
         fn list_skill_hub_artifact_cache(&self) -> SkillHubArtifactCacheResponse;
@@ -819,6 +820,12 @@ impl ApiClient {
     pub fn list_skill_hub_managed(&self) -> anyhow::Result<SkillHubManagedResponse> {
         self.call("list skill hub managed", |client| {
             client.list_skill_hub_managed()
+        })
+    }
+
+    pub fn list_skill_hub_usage(&self) -> anyhow::Result<SkillHubUsageLedgerResponse> {
+        self.call("list skill hub usage", |client| {
+            client.list_skill_hub_usage()
         })
     }
 

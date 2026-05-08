@@ -35,14 +35,20 @@ import type {
   SkillHubManagedDetachResponseRecord,
   SkillHubManagedRemoveResponseRecord,
   SkillHubManagedResponseRecord,
+  SkillHubNegativeEntropyResponseRecord,
   SkillHubPolicyRecord,
   SkillHubPolicyResponseRecord,
+  SkillHubSemanticConflictResponseRecord,
   SkillHubSyncPlanResponseRecord,
   SkillHubTimelineResponseRecord,
+  SkillHubUsageLedgerResponseRecord,
   SkillManagedLifecycleRecord,
   SkillManageResponseRecord,
   SkillMethodologyExtractResponseRecord,
   SkillMethodologyPreviewResponseRecord,
+  SkillNegativeEntropyDiagnosticRecord,
+  SkillOperationalSnapshotRecord,
+  SkillSemanticConflictDiagnosticRecord,
   SkillMethodologyTemplateRecord,
   SkillRemoteInstallPlanRecord,
   SkillRemoteInstallResponseRecord,
@@ -511,6 +517,9 @@ export function SettingsDrawer({
   const [skillArtifactCache, setSkillArtifactCache] = useState<SkillArtifactCacheEntryRecord[]>([]);
   const [skillHubPolicy, setSkillHubPolicy] = useState<SkillHubPolicyRecord | null>(null);
   const [skillLifecycle, setSkillLifecycle] = useState<SkillManagedLifecycleRecord[]>([]);
+  const [skillUsageLedger, setSkillUsageLedger] = useState<SkillOperationalSnapshotRecord[]>([]);
+  const [skillNegativeEntropy, setSkillNegativeEntropy] = useState<SkillNegativeEntropyDiagnosticRecord[]>([]);
+  const [skillSemanticConflicts, setSkillSemanticConflicts] = useState<SkillSemanticConflictDiagnosticRecord[]>([]);
   const [skillGovernanceTimeline, setSkillGovernanceTimeline] = useState<SkillGovernanceTimelineEntryRecord[]>([]);
   const [skillSyncSourceId, setSkillSyncSourceId] = useState("");
   const [skillSyncSourceKind, setSkillSyncSourceKind] = useState<SkillSourceRefRecord["source_kind"]>("local_path");
@@ -761,7 +770,7 @@ export function SettingsDrawer({
       const skillCatalogPath = selectedSessionId
         ? `/skill/catalog?session_id=${encodeURIComponent(selectedSessionId)}`
         : "/skill/catalog";
-      const [config, managed, scheduler, validation, mcp, plugins, lsp, formatter, skills, skillHubManaged, skillHubIndex, skillHubDistributions, skillHubArtifactCache, skillHubPolicyResponse, skillHubLifecycle, skillHubAudit, skillHubTimeline] =
+      const [config, managed, scheduler, validation, mcp, plugins, lsp, formatter, skills, skillHubManaged, skillHubUsage, skillHubNegativeEntropy, skillHubSemanticConflicts, skillHubIndex, skillHubDistributions, skillHubArtifactCache, skillHubPolicyResponse, skillHubLifecycle, skillHubAudit, skillHubTimeline] =
         await Promise.all([
           apiJson<AppConfigSnapshot>("/config"),
           apiJson<{ providers: ManagedProviderInfoRecord[] }>("/provider/managed"),
@@ -773,6 +782,9 @@ export function SettingsDrawer({
           apiJson<FormatterStatus>("/formatter"),
           apiJson<SkillCatalogEntry[]>(skillCatalogPath),
           apiJson<SkillHubManagedResponseRecord>("/skill/hub/managed"),
+          apiJson<SkillHubUsageLedgerResponseRecord>("/skill/hub/usage"),
+          apiJson<SkillHubNegativeEntropyResponseRecord>("/skill/hub/negative-entropy"),
+          apiJson<SkillHubSemanticConflictResponseRecord>("/skill/hub/semantic-conflicts"),
           apiJson<SkillHubIndexResponseRecord>("/skill/hub/index"),
           apiJson<SkillHubDistributionResponseRecord>("/skill/hub/distributions"),
           apiJson<SkillHubArtifactCacheResponseRecord>("/skill/hub/artifact-cache"),
@@ -803,6 +815,9 @@ export function SettingsDrawer({
       setFormatterStatus(formatter);
       setSkillCatalog(skills ?? []);
       setManagedSkills(skillHubManaged.managed_skills ?? []);
+      setSkillUsageLedger(skillHubUsage.entries ?? []);
+      setSkillNegativeEntropy(skillHubNegativeEntropy.candidates ?? []);
+      setSkillSemanticConflicts(skillHubSemanticConflicts.conflicts ?? []);
       setSkillSourceIndices(skillHubIndex.source_indices ?? []);
       setSkillDistributions(skillHubDistributions.distributions ?? []);
       setSkillArtifactCache(skillHubArtifactCache.artifact_cache ?? []);
@@ -2923,6 +2938,9 @@ export function SettingsDrawer({
               busyKey={busyKey}
               skillCatalog={skillCatalog}
               managedSkills={managedSkills}
+              skillUsageLedger={skillUsageLedger}
+              skillNegativeEntropy={skillNegativeEntropy}
+              skillSemanticConflicts={skillSemanticConflicts}
               skillSourceIndices={skillSourceIndices}
               skillDistributions={skillDistributions}
               skillArtifactCache={skillArtifactCache}
