@@ -4,7 +4,7 @@ use crate::runtime::events::{
     StepCheckpointSnapshot, StepUsage, ToolCallReady, ToolResult,
 };
 use crate::runtime::normalizer;
-use crate::runtime::policy::{LoopPolicy, ToolDedupScope, ToolErrorStrategy};
+use crate::runtime::policy::{LoopPolicy, ModelContextLimits, ToolDedupScope, ToolErrorStrategy};
 use crate::runtime::traits::{LoopSink, ModelCaller, ToolDispatcher};
 use futures::StreamExt;
 use std::collections::HashSet;
@@ -374,6 +374,98 @@ impl StepCheckpointCollector {
     }
 }
 
+async fn run_step_checkpoint_cycle<S: LoopSink>(
+    conversation: &mut LoopConversation<'_>,
+    sink: &mut S,
+    policy: &LoopPolicy,
+    model_context_limits: Option<ModelContextLimits>,
+    end_boundary: &StepBoundary,
+    step_usage: Option<&StepUsage>,
+    strict: bool,
+) -> Result<(), LoopError> {
+    let mut checkpoint_collector =
+        StepCheckpointCollector::new(policy.checkpoint_governance.max_assessments);
+    loop {
+        let checkpoint = checkpoint_collector.snapshot(conversation.messages());
+        let default_directive = policy.checkpoint_governance.default_directive(
+            model_context_limits,
+            step_usage,
+            &checkpoint,
+        );
+        let directive = sink
+            .on_step_checkpoint(
+                end_boundary,
+                conversation.messages(),
+                &checkpoint,
+                &default_directive,
+            )
+            .await?
+            .unwrap_or(default_directive);
+        match directive {
+            StepCheckpointDirective::Continue => break,
+            StepCheckpointDirective::Block { reason } => {
+                if strict {
+                    return Err(LoopError::Other(reason));
+                }
+                tracing::warn!(reason, "ignoring final step checkpoint block");
+                break;
+            }
+            StepCheckpointDirective::CompactRequestView { focus, reason } => {
+                if !checkpoint_collector.can_mutate_after_current_assessment() {
+                    if strict {
+                        return Err(LoopError::Other(reason.unwrap_or_else(|| {
+                            "step checkpoint exceeded the request-view compaction retry budget"
+                                .to_string()
+                        })));
+                    }
+                    tracing::warn!(
+                        "ignoring final step checkpoint compaction request after retry budget was exhausted"
+                    );
+                    break;
+                }
+                let before = checkpoint.current_view.clone();
+                let compacted = conversation.compact_for_checkpoint(
+                    focus.as_deref(),
+                    policy.checkpoint_governance.min_compactable_messages,
+                );
+                let Some(compacted) = compacted else {
+                    if strict {
+                        return Err(LoopError::Other(reason.unwrap_or_else(|| {
+                            "step checkpoint requested request-view compaction, but no compactable history was available".to_string()
+                        })));
+                    }
+                    tracing::warn!(
+                        "ignoring final step checkpoint compaction request because no compactable history was available"
+                    );
+                    break;
+                };
+                let after = request_view_metrics(conversation.messages());
+                checkpoint_collector.record_compaction(before, after, focus, reason, &compacted);
+            }
+            StepCheckpointDirective::ReplaceRequestView { messages, reason } => {
+                if !checkpoint_collector.can_mutate_after_current_assessment() {
+                    if strict {
+                        return Err(LoopError::Other(reason.unwrap_or_else(|| {
+                            "step checkpoint exceeded the request-view replacement retry budget"
+                                .to_string()
+                        })));
+                    }
+                    tracing::warn!(
+                        "ignoring final step checkpoint replacement request after retry budget was exhausted"
+                    );
+                    break;
+                }
+                let before = checkpoint.current_view.clone();
+                conversation.replace_messages(messages);
+                let after = request_view_metrics(conversation.messages());
+                checkpoint_collector.record_replacement(before, after, reason);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // run_loop – the single source of truth for the agentic execution cycle.
 //
@@ -522,16 +614,27 @@ pub async fn run_loop<S: LoopSink>(
         // ── No tool calls → model finished ───────────────────────────
         if step_tool_calls.is_empty() {
             conversation.add_assistant_turn(&step_reasoning, &step_content, &[]);
+            let end_step_usage = step_usage.clone();
             let end_boundary = StepBoundary::End {
                 step,
                 finish_reason: FinishReason::EndTurn,
                 tool_calls_count: 0,
                 had_error,
-                usage: step_usage,
+                usage: end_step_usage,
             };
             sink.on_step_boundary(&end_boundary)
                 .await
                 .map_err(|e| LoopError::SinkError(e.to_string()))?;
+            run_step_checkpoint_cycle(
+                &mut conversation,
+                sink,
+                policy,
+                model_context_limits,
+                &end_boundary,
+                step_usage.as_ref(),
+                false,
+            )
+            .await?;
 
             return Ok(LoopOutcome {
                 content,
@@ -673,66 +776,16 @@ pub async fn run_loop<S: LoopSink>(
         sink.on_step_boundary(&end_boundary)
             .await
             .map_err(|e| LoopError::SinkError(e.to_string()))?;
-
-        let mut checkpoint_collector =
-            StepCheckpointCollector::new(policy.checkpoint_governance.max_assessments);
-        loop {
-            let checkpoint = checkpoint_collector.snapshot(conversation.messages());
-            let default_directive = policy.checkpoint_governance.default_directive(
-                model_context_limits,
-                step_usage.as_ref(),
-                &checkpoint,
-            );
-            let directive = sink
-                .on_step_checkpoint(
-                    &end_boundary,
-                    conversation.messages(),
-                    &checkpoint,
-                    &default_directive,
-                )
-                .await
-                .map_err(|e| LoopError::SinkError(e.to_string()))?
-                .unwrap_or(default_directive);
-            match directive {
-                StepCheckpointDirective::Continue => break,
-                StepCheckpointDirective::Block { reason } => {
-                    return Err(LoopError::Other(reason));
-                }
-                StepCheckpointDirective::CompactRequestView { focus, reason } => {
-                    if !checkpoint_collector.can_mutate_after_current_assessment() {
-                        return Err(LoopError::Other(reason.unwrap_or_else(|| {
-                            "step checkpoint exceeded the request-view compaction retry budget"
-                                .to_string()
-                        })));
-                    }
-                    let before = checkpoint.current_view.clone();
-                    let compacted = conversation.compact_for_checkpoint(
-                        focus.as_deref(),
-                        policy.checkpoint_governance.min_compactable_messages,
-                    );
-                    let Some(compacted) = compacted else {
-                        return Err(LoopError::Other(reason.unwrap_or_else(|| {
-                            "step checkpoint requested request-view compaction, but no compactable history was available".to_string()
-                        })));
-                    };
-                    let after = request_view_metrics(conversation.messages());
-                    checkpoint_collector
-                        .record_compaction(before, after, focus, reason, &compacted);
-                }
-                StepCheckpointDirective::ReplaceRequestView { messages, reason } => {
-                    if !checkpoint_collector.can_mutate_after_current_assessment() {
-                        return Err(LoopError::Other(reason.unwrap_or_else(|| {
-                            "step checkpoint exceeded the request-view replacement retry budget"
-                                .to_string()
-                        })));
-                    }
-                    let before = checkpoint.current_view.clone();
-                    conversation.replace_messages(messages);
-                    let after = request_view_metrics(conversation.messages());
-                    checkpoint_collector.record_replacement(before, after, reason);
-                }
-            }
-        }
+        run_step_checkpoint_cycle(
+            &mut conversation,
+            sink,
+            policy,
+            model_context_limits,
+            &end_boundary,
+            step_usage.as_ref(),
+            true,
+        )
+        .await?;
     }
 
     // ── Max steps exceeded ────────────────────────────────────────────

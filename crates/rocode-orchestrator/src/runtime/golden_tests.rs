@@ -806,8 +806,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(outcome.finish_reason, FinishReason::EndTurn);
-        assert_eq!(sink.checkpoint_calls, 2);
-        assert_eq!(sink.checkpoints.len(), 2);
+        assert_eq!(sink.checkpoint_calls, 3);
+        assert_eq!(sink.checkpoints.len(), 3);
         assert_eq!(sink.checkpoints[0].assessment_index, 1);
         assert!(sink.checkpoints[0].prior_mutations.is_empty());
         assert_eq!(sink.checkpoints[1].assessment_index, 2);
@@ -828,6 +828,12 @@ mod tests {
         );
         assert_eq!(
             sink.checkpoints[1].current_view.checkpoint_summary_messages,
+            1
+        );
+        assert_eq!(sink.checkpoints[2].assessment_index, 1);
+        assert!(sink.checkpoints[2].prior_mutations.is_empty());
+        assert_eq!(
+            sink.checkpoints[2].current_view.checkpoint_summary_messages,
             1
         );
 

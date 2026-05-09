@@ -777,11 +777,12 @@ pub fn govern_pre_dispatch_session_context(
         return ContextPressureGovernanceOutcome::Proceed(summary);
     };
 
+    let force_compaction = SessionPrompt::should_force_compaction_for_reason(assessment.reason);
     let record = SessionPrompt::build_compaction_record(
         trigger,
         Some(phase),
         Some(assessment.reason),
-        false,
+        force_compaction,
         request_context_tokens,
         live_context_tokens,
         assessment.limit_tokens,
@@ -792,7 +793,7 @@ pub fn govern_pre_dispatch_session_context(
         &filtered,
         focus,
         Some(record),
-        false,
+        force_compaction,
     )
     .is_some();
 
