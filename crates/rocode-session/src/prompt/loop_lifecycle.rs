@@ -1345,13 +1345,20 @@ impl SessionPrompt {
         session_id: &str,
         session: &mut Session,
         filtered_messages: &[SessionMessage],
+        update_hook: Option<&super::SessionUpdateHook>,
+        compaction_lifecycle_hook: Option<&super::CompactionLifecycleHook>,
         output_block_hook: Option<&super::OutputBlockHook>,
         status_start: &'static str,
         status_success: &'static str,
         status_failure: &'static str,
+        lifecycle: rocode_types::ContextCompactionLifecycleSummary,
         record: serde_json::Value,
         force: bool,
     ) -> bool {
+        super::persist_context_compaction_lifecycle_summary(session, &lifecycle);
+        session.start_compacting();
+        Self::emit_session_update(update_hook, session);
+        super::emit_context_compaction_lifecycle(compaction_lifecycle_hook, &lifecycle);
         Self::emit_context_compaction_status(
             output_block_hook,
             session_id,
@@ -1367,6 +1374,13 @@ impl SessionPrompt {
             force,
         ) {
             tracing::info!(session_id = %session_id, summary, "context compacted");
+            let mut lifecycle = lifecycle.clone();
+            lifecycle.status = rocode_types::ContextCompactionLifecycleStatus::Installed;
+            super::install_compaction_lifecycle_summary(session, &mut lifecycle);
+            super::persist_context_compaction_lifecycle_summary(session, &lifecycle);
+            session.finish_compacting();
+            Self::emit_session_update(update_hook, session);
+            super::emit_context_compaction_lifecycle(compaction_lifecycle_hook, &lifecycle);
             Self::emit_context_compaction_status(
                 output_block_hook,
                 session_id,
@@ -1376,6 +1390,12 @@ impl SessionPrompt {
             return true;
         }
 
+        let mut lifecycle = lifecycle;
+        lifecycle.status = rocode_types::ContextCompactionLifecycleStatus::Failed;
+        super::persist_context_compaction_lifecycle_summary(session, &lifecycle);
+        session.finish_compacting();
+        Self::emit_session_update(update_hook, session);
+        super::emit_context_compaction_lifecycle(compaction_lifecycle_hook, &lifecycle);
         Self::emit_context_compaction_status(
             output_block_hook,
             session_id,
@@ -1393,6 +1413,8 @@ impl SessionPrompt {
         model_id: &str,
         compiled_request: &CompiledExecutionRequest,
         config_store: Option<&rocode_config::ConfigStore>,
+        update_hook: Option<&super::SessionUpdateHook>,
+        compaction_lifecycle_hook: Option<&super::CompactionLifecycleHook>,
         output_block_hook: Option<&super::OutputBlockHook>,
         request_context_tokens: Option<u64>,
         request_body_chars: Option<usize>,
@@ -1419,6 +1441,17 @@ impl SessionPrompt {
             "pre-request compaction triggered from request view"
         );
         let force_compaction = Self::should_force_compaction_for_reason(assessment.reason);
+        let lifecycle = super::context_compaction_lifecycle_summary(
+            "auto_preflight",
+            Some("prompt.pre_request"),
+            Some(assessment.reason),
+            rocode_types::ContextCompactionLifecycleStatus::Started,
+            force_compaction,
+            request_context_tokens,
+            None,
+            assessment.limit_tokens,
+            assessment.body_chars,
+        );
         let record = Self::build_compaction_record(
             "auto_preflight",
             Some("prompt.pre_request"),
@@ -1433,10 +1466,13 @@ impl SessionPrompt {
             session_id,
             session,
             filtered_messages,
+            update_hook,
+            compaction_lifecycle_hook,
             output_block_hook,
             "Auto-compacting context before the next provider request...",
             "Context compacted before the next provider request.",
             "Auto-compaction ran, but the context could not be reduced.",
+            lifecycle,
             record,
             force_compaction,
         )
@@ -1462,6 +1498,8 @@ impl SessionPrompt {
         session_id: &str,
         session: &mut Session,
         assistant_message_id: &str,
+        update_hook: Option<&super::SessionUpdateHook>,
+        compaction_lifecycle_hook: Option<&super::CompactionLifecycleHook>,
         output_block_hook: Option<&super::OutputBlockHook>,
         request_context_tokens: Option<u64>,
         request_body_chars: Option<usize>,
@@ -1477,6 +1515,17 @@ impl SessionPrompt {
         }
 
         let filtered_messages = Self::filter_compacted_messages(&session.messages);
+        let lifecycle = super::context_compaction_lifecycle_summary(
+            "overflow_recovery",
+            Some("prompt.provider_overflow"),
+            Some("provider_overflow"),
+            rocode_types::ContextCompactionLifecycleStatus::Started,
+            true,
+            request_context_tokens,
+            None,
+            None,
+            request_body_chars,
+        );
         let record = Self::build_compaction_record(
             "overflow_recovery",
             Some("prompt.provider_overflow"),
@@ -1491,10 +1540,13 @@ impl SessionPrompt {
             session_id,
             session,
             &filtered_messages,
+            update_hook,
+            compaction_lifecycle_hook,
             output_block_hook,
             "Provider rejected the request as too large. Compacting and retrying...",
             "Context compacted after provider overflow. Retrying the session.",
             "Provider overflow recovery could not reduce the context.",
+            lifecycle,
             record,
             true,
         )
@@ -2266,6 +2318,8 @@ impl SessionPrompt {
                 &prompt_ctx.model_id,
                 &prompt_ctx.compiled_request,
                 prompt_ctx.config_store.as_deref(),
+                prompt_ctx.hooks.update_hook.as_ref(),
+                prompt_ctx.hooks.compaction_lifecycle_hook.as_ref(),
                 prompt_ctx.hooks.output_block_hook.as_ref(),
                 request_context_tokens,
                 Some(request_body_chars),
@@ -2421,6 +2475,8 @@ impl SessionPrompt {
                             &session_id,
                             session,
                             &assistant_message_id,
+                            prompt_ctx.hooks.update_hook.as_ref(),
+                            prompt_ctx.hooks.compaction_lifecycle_hook.as_ref(),
                             prompt_ctx.hooks.output_block_hook.as_ref(),
                             request_context_tokens,
                             Some(request_body_chars),

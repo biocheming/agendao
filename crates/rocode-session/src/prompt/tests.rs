@@ -208,6 +208,8 @@ fn pre_dispatch_governance_is_ready_when_context_is_within_budget() {
         Some("short request"),
         "pre_dispatch_hard_gate",
         "scheduler.pre_dispatch",
+        None,
+        None,
     );
 
     let ContextPressureGovernanceOutcome::Proceed(summary) = outcome else {
@@ -239,6 +241,8 @@ fn pre_dispatch_governance_forces_compaction_for_small_overflowing_request_view(
         Some("second"),
         "pre_dispatch_hard_gate",
         "scheduler.pre_dispatch",
+        None,
+        None,
     );
 
     let ContextPressureGovernanceOutcome::Proceed(summary) = outcome else {
@@ -259,6 +263,32 @@ fn pre_dispatch_governance_forces_compaction_for_small_overflowing_request_view(
     let persisted: rocode_types::ContextPressureGovernanceSummary =
         serde_json::from_value(persisted).expect("persisted summary should parse");
     assert_eq!(persisted.status, ContextPressureGovernanceStatus::Compacted);
+    let lifecycle = session
+        .record()
+        .metadata
+        .get(CONTEXT_COMPACTION_LIFECYCLE_SUMMARY_METADATA_KEY)
+        .cloned()
+        .expect("compaction lifecycle should persist into session metadata");
+    let lifecycle: rocode_types::ContextCompactionLifecycleSummary =
+        serde_json::from_value(lifecycle).expect("persisted lifecycle should parse");
+    assert_eq!(
+        lifecycle.status,
+        rocode_types::ContextCompactionLifecycleStatus::Installed
+    );
+    let installed = lifecycle
+        .installed
+        .expect("installed diagnostics should be recorded");
+    assert!(installed
+        .request_context_tokens
+        .is_some_and(|value| value < 120));
+    assert!(installed
+        .live_context_tokens
+        .is_some_and(|value| value < 120));
+    assert!(installed.body_chars.is_some_and(|value| value < 480));
+    assert!(installed
+        .cache_explanation
+        .as_deref()
+        .is_some_and(|value| value.starts_with("boundary recorded")));
     let compaction_message = session
         .record()
         .messages
@@ -291,6 +321,8 @@ fn pre_dispatch_governance_blocks_when_single_message_remains_over_limit() {
         Some("only message"),
         "pre_dispatch_hard_gate",
         "scheduler.pre_dispatch",
+        None,
+        None,
     );
 
     let ContextPressureGovernanceOutcome::Blocked(summary) = outcome else {
@@ -301,6 +333,18 @@ fn pre_dispatch_governance_blocks_when_single_message_remains_over_limit() {
     assert!(summary.compaction_attempted);
     assert!(!summary.compaction_succeeded);
     assert!(summary.blocking);
+    let lifecycle = session
+        .record()
+        .metadata
+        .get(CONTEXT_COMPACTION_LIFECYCLE_SUMMARY_METADATA_KEY)
+        .cloned()
+        .expect("compaction lifecycle should persist into session metadata");
+    let lifecycle: rocode_types::ContextCompactionLifecycleSummary =
+        serde_json::from_value(lifecycle).expect("persisted lifecycle should parse");
+    assert_eq!(
+        lifecycle.status,
+        rocode_types::ContextCompactionLifecycleStatus::Failed
+    );
 }
 
 #[test]
@@ -325,6 +369,8 @@ fn pre_dispatch_governance_records_compaction_when_reduction_succeeds() {
         Some("message 9"),
         "pre_dispatch_hard_gate",
         "scheduler.pre_dispatch",
+        None,
+        None,
     );
 
     let ContextPressureGovernanceOutcome::Proceed(summary) = outcome else {
@@ -334,6 +380,28 @@ fn pre_dispatch_governance_records_compaction_when_reduction_succeeds() {
     assert!(summary.compaction_attempted);
     assert!(summary.compaction_succeeded);
     assert!(!summary.blocking);
+    let lifecycle = session
+        .record()
+        .metadata
+        .get(CONTEXT_COMPACTION_LIFECYCLE_SUMMARY_METADATA_KEY)
+        .cloned()
+        .expect("compaction lifecycle should persist into session metadata");
+    let lifecycle: rocode_types::ContextCompactionLifecycleSummary =
+        serde_json::from_value(lifecycle).expect("persisted lifecycle should parse");
+    assert_eq!(
+        lifecycle.status,
+        rocode_types::ContextCompactionLifecycleStatus::Installed
+    );
+    let installed = lifecycle
+        .installed
+        .expect("installed diagnostics should be recorded");
+    assert!(installed.request_context_tokens.is_some());
+    assert!(installed.live_context_tokens.is_some());
+    assert!(installed.body_chars.is_some());
+    assert!(installed
+        .cache_explanation
+        .as_deref()
+        .is_some_and(|value| value.contains("boundary recorded")));
 }
 
 struct MultiTurnScriptedProvider {

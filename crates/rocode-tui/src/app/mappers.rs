@@ -352,6 +352,9 @@ pub(super) fn map_mcp_status(server: &McpStatusInfo) -> McpConnectionStatus {
 
 pub(super) fn map_api_run_status(status: &crate::api::SessionStatusInfo) -> SessionStatus {
     if status.busy {
+        if status.status.eq_ignore_ascii_case("compacting") {
+            return SessionStatus::Compacting;
+        }
         if status.status.eq_ignore_ascii_case("retry") {
             return SessionStatus::Retrying {
                 message: status.message.clone().unwrap_or_default(),

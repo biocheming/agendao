@@ -181,6 +181,49 @@ pub struct ContextCompactionSummary {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum ContextCompactionLifecycleStatus {
+    Started,
+    Installed,
+    Failed,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextCompactionInstalledDiagnostics {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_context_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_context_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_chars: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_explanation: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextCompactionLifecycleSummary {
+    pub trigger: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub status: ContextCompactionLifecycleStatus,
+    #[serde(default)]
+    pub forced: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_context_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_context_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_chars: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed: Option<ContextCompactionInstalledDiagnostics>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum ContextPressureGovernanceStatus {
     Ready,
     Compacted,
@@ -326,6 +369,8 @@ pub struct SessionCompactionBoundaryContract {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_status: Option<ContextCompactionLifecycleStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub governance_status: Option<ContextPressureGovernanceStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_pressure_percent: Option<u64>,
@@ -337,6 +382,8 @@ pub struct SessionCompactionBoundaryContract {
     pub compaction_succeeded: bool,
     #[serde(default)]
     pub blocking: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed: Option<ContextCompactionInstalledDiagnostics>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]

@@ -107,6 +107,7 @@ pub enum SessionStatus {
     #[default]
     Idle,
     Running,
+    Compacting,
     Retrying {
         message: String,
         attempt: u32,

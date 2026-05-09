@@ -257,6 +257,9 @@ fn parse_server_event_value(value: serde_json::Value) -> Option<Event> {
                 Some("busy") => Some(Event::Custom(Box::new(CustomEvent::StateChanged(
                     StateChange::SessionStatusBusy(session_id.to_string()),
                 )))),
+                Some("compacting") => Some(Event::Custom(Box::new(CustomEvent::StateChanged(
+                    StateChange::SessionStatusCompacting(session_id.to_string()),
+                )))),
                 Some("idle") => Some(Event::Custom(Box::new(CustomEvent::StateChanged(
                     StateChange::SessionStatusIdle(session_id.to_string()),
                 )))),
@@ -595,5 +598,28 @@ mod tests {
         assert_eq!(session_id, "session-1");
         assert_eq!(permission.id, "permission-1");
         assert_eq!(permission.tool, "bash");
+    }
+
+    #[test]
+    fn compacting_session_status_event_is_forwarded() {
+        let event = forward_server_event(&[serde_json::json!({
+            "type": "session.status",
+            "sessionID": "session-1",
+            "status": {
+                "type": "compacting"
+            }
+        })
+        .to_string()])
+        .expect("compacting session status event");
+
+        let Event::Custom(custom) = event else {
+            panic!("expected custom event");
+        };
+        let CustomEvent::StateChanged(StateChange::SessionStatusCompacting(session_id)) = *custom
+        else {
+            panic!("expected compacting session status state change");
+        };
+
+        assert_eq!(session_id, "session-1");
     }
 }

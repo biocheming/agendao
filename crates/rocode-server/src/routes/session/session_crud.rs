@@ -6,13 +6,14 @@ use axum::{
     extract::{Path, Query, State},
     Json,
 };
+use rocode_api::CompactResponse;
 use rocode_session::{load_session_telemetry_snapshot, SessionForkError, SessionForkSpec};
 use rocode_types::{
     FileDiff, PermissionRulesetInfo, SessionForkHistoryMode, SessionInfo, SessionListContract,
     SessionListHints, SessionListItem, SessionListResponse, SessionListSummary, SessionRevertInfo,
     SessionShareInfo, SessionStatusInfo, SessionSummaryInfo, SessionTimeInfo, SessionTodoInfo,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::runtime_control::SessionRunStatus;
 use crate::session_runtime::events::broadcast_session_updated;
@@ -126,11 +127,6 @@ pub struct ExecuteCommandRequest {
     pub arguments: Option<String>,
     pub model: Option<String>,
     pub agent: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub(super) struct CompactSessionResponse {
-    success: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -450,6 +446,27 @@ pub(super) async fn set_session_run_status(
         .await;
 }
 
+pub(super) fn compaction_lifecycle_status_hook(
+    state: Arc<ServerState>,
+    session_id: String,
+    settled_status: SessionRunStatus,
+) -> rocode_session::prompt::CompactionLifecycleHook {
+    Arc::new(move |summary| {
+        let state = state.clone();
+        let session_id = session_id.clone();
+        let settled_status = settled_status.clone();
+        tokio::spawn(async move {
+            let next_status = match summary.status {
+                rocode_types::ContextCompactionLifecycleStatus::Started => {
+                    SessionRunStatus::Compacting
+                }
+                _ => settled_status,
+            };
+            set_session_run_status(&state, &session_id, next_status).await;
+        });
+    })
+}
+
 /// Drop guard that sets session status to idle when the prompt task exits.
 /// Mirrors the TS `defer(() => cancel(sessionID))` pattern to guarantee
 /// the spinner stops even if the spawned task panics.
@@ -515,6 +532,9 @@ pub(super) async fn session_status(
             let (status, idle, busy, attempt, message, next) = match run {
                 SessionRunStatus::Idle => {
                     (lifecycle_status.to_string(), true, false, None, None, None)
+                }
+                SessionRunStatus::Compacting => {
+                    ("compacting".to_string(), false, true, None, None, None)
                 }
                 SessionRunStatus::Busy => ("busy".to_string(), false, true, None, None, None),
                 SessionRunStatus::Retry {
@@ -1282,6 +1302,12 @@ mod tests {
         .expect("compaction route should succeed");
 
         assert!(response.success);
+        assert_eq!(
+            response.message,
+            "Session compacted (5 summarized, 5 kept)."
+        );
+        assert!(response.lifecycle.is_some());
+        assert!(response.compaction.is_some());
 
         let sessions = state.sessions.lock().await;
         let session = sessions
@@ -1334,6 +1360,17 @@ mod tests {
         .expect("focused compaction route should succeed");
 
         assert!(response.success);
+        assert_eq!(
+            response.message,
+            "Session compacted around focus: xterm (5 summarized, 5 kept)."
+        );
+        assert_eq!(
+            response
+                .lifecycle
+                .as_ref()
+                .map(|lifecycle| lifecycle.status),
+            Some(rocode_types::ContextCompactionLifecycleStatus::Installed)
+        );
 
         let sessions = state.sessions.lock().await;
         let session = sessions
@@ -1349,6 +1386,38 @@ mod tests {
             })
             .expect("focused compaction should append a compaction summary");
         assert!(summary.contains("Focused on `xterm`."));
+    }
+
+    #[tokio::test]
+    async fn start_compaction_route_reports_skipped_when_history_is_too_small() {
+        let state = Arc::new(ServerState::new());
+        let session_id = {
+            let mut sessions = state.sessions.lock().await;
+            let mut session = sessions.create("project", "/tmp/project");
+            session.push_message(SessionMessage::user(session.id.clone(), "only one message"));
+            let session_id = session.id.clone();
+            sessions.update(session);
+            session_id
+        };
+
+        let axum::Json(response) = start_compaction(
+            State(state.clone()),
+            Path(session_id.clone()),
+            Query(CompactRequest::default()),
+        )
+        .await
+        .expect("compaction route should succeed");
+
+        assert!(!response.success);
+        assert_eq!(response.message, "Nothing to compact yet.");
+        assert_eq!(
+            response
+                .lifecycle
+                .as_ref()
+                .map(|lifecycle| lifecycle.status),
+            Some(rocode_types::ContextCompactionLifecycleStatus::Skipped)
+        );
+        assert!(response.compaction.is_none());
     }
 }
 
@@ -1429,17 +1498,33 @@ pub(super) async fn start_compaction(
     State(state): State<Arc<ServerState>>,
     Path(id): Path<String>,
     Query(req): Query<CompactRequest>,
-) -> Result<Json<CompactSessionResponse>> {
+) -> Result<Json<CompactResponse>> {
+    if state.runtime_telemetry.has_prompt_run(&id).await {
+        return Err(ApiError::BadRequest(format!("Session {} is busy", id)));
+    }
+    {
+        let sessions = state.sessions.lock().await;
+        if sessions.get(&id).is_none() {
+            return Err(ApiError::SessionNotFound(id));
+        }
+    }
+    set_session_run_status(&state, &id, SessionRunStatus::Compacting).await;
     let mut sessions = state.sessions.lock().await;
     let session = sessions
         .get_mut(&id)
         .ok_or_else(|| ApiError::SessionNotFound(id.clone()))?;
-    let success =
-        rocode_session::compact_session_now_with_focus(session, req.focus.as_deref()).is_some();
+    let outcome =
+        rocode_session::compact_session_now_with_focus_result(session, req.focus.as_deref());
     drop(sessions);
+    set_session_run_status(&state, &id, SessionRunStatus::Idle).await;
     broadcast_session_updated(state.as_ref(), &id, "session.compact");
     persist_sessions_if_enabled(&state).await;
-    Ok(Json(CompactSessionResponse { success }))
+    Ok(Json(CompactResponse {
+        success: outcome.success(),
+        message: outcome.message(req.focus.as_deref()),
+        lifecycle: Some(outcome.lifecycle),
+        compaction: outcome.compaction,
+    }))
 }
 
 pub(super) async fn get_message(

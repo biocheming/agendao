@@ -63,7 +63,9 @@ use super::prompt::{
     propagate_output_projection_metadata, resolve_prompt_memory_context,
     SchedulerUserMessageContext, SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY,
 };
-use super::session_crud::{resolved_session_directory, set_session_run_status};
+use super::session_crud::{
+    compaction_lifecycle_status_hook, resolved_session_directory, set_session_run_status,
+};
 use super::telemetry::persist_session_telemetry_metadata;
 
 use super::cancel::abort_session_execution;
@@ -2083,6 +2085,8 @@ async fn prepare_scheduler_pre_dispatch_request_view(
     model_id: &str,
     max_output_tokens: Option<u64>,
 ) -> std::result::Result<SchedulerPreparedRequestView, ContextPressureGovernanceSummary> {
+    let compaction_lifecycle_hook =
+        compaction_lifecycle_status_hook(state.clone(), session.id.clone(), SessionRunStatus::Busy);
     for attempt in 0..2 {
         let (memory_frozen_snapshot_block, _memory_prefetch_packet, memory_prefetch_block) =
             resolve_prompt_memory_context(state, session, prompt_text).await;
@@ -2115,6 +2119,8 @@ async fn prepare_scheduler_pre_dispatch_request_view(
             } else {
                 "scheduler.pre_dispatch_retry"
             },
+            None,
+            Some(&compaction_lifecycle_hook),
         ) {
             ContextPressureGovernanceOutcome::Blocked(summary) => return Err(summary),
             ContextPressureGovernanceOutcome::Proceed(summary) => {

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use self::events::{broadcast_session_updated, emit_output_block_via_hook, DiffEntry};
-use crate::runtime_control::{ExecutionPatch, ExecutionStatus, FieldUpdate};
+use crate::runtime_control::{ExecutionPatch, ExecutionStatus, FieldUpdate, SessionRunStatus};
 use crate::ServerState;
 use rocode_command::output_blocks::{
     MessageBlock, MessageRole as OutputMessageRole, OutputBlock, ReasoningBlock,
@@ -1627,6 +1627,10 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
             preferred_directive,
             StepCheckpointDirective::CompactRequestView { .. }
         ) {
+            self.state
+                .runtime_telemetry
+                .set_session_run_status(&self.session_id, SessionRunStatus::Compacting)
+                .await;
             self.update_active_stage_message(
                 |message, _active| {
                     message.metadata.insert(
@@ -1648,6 +1652,10 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
 
         if matches!(preferred_directive, StepCheckpointDirective::Continue) {
             if compaction_attempted && compaction_succeeded {
+                self.state
+                    .runtime_telemetry
+                    .set_session_run_status(&self.session_id, SessionRunStatus::Busy)
+                    .await;
                 self.update_active_stage_message(
                     |message, _active| {
                         message.metadata.insert(
@@ -1666,6 +1674,12 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
             };
         }
 
+        if compaction_attempted {
+            self.state
+                .runtime_telemetry
+                .set_session_run_status(&self.session_id, SessionRunStatus::Busy)
+                .await;
+        }
         self.update_active_stage_message(
             |message, _active| {
                 message.metadata.insert(

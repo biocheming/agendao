@@ -77,7 +77,8 @@ use super::scheduler::{
     SessionSchedulerToolExecutor,
 };
 use super::session_crud::{
-    persist_sessions_if_enabled, resolved_session_directory, set_session_run_status, IdleGuard,
+    compaction_lifecycle_status_hook, persist_sessions_if_enabled, resolved_session_directory,
+    set_session_run_status, IdleGuard,
 };
 use super::telemetry::persist_session_telemetry_metadata;
 
@@ -2572,6 +2573,11 @@ async fn session_prompt_inner(
         let update_hook: rocode_session::SessionUpdateHook = Arc::new(move |snapshot| {
             let _ = update_tx.send(snapshot.clone());
         });
+        let compaction_lifecycle_hook = Some(compaction_lifecycle_status_hook(
+            task_state.clone(),
+            session_id.clone(),
+            SessionRunStatus::Busy,
+        ));
 
         let prompt_runner = task_state.prompt_runner.clone();
         let resolved_tool_surface =
@@ -2688,6 +2694,7 @@ async fn session_prompt_inner(
             hooks: rocode_session::prompt::PromptHooks {
                 update_hook: Some(update_hook),
                 event_broadcast,
+                compaction_lifecycle_hook,
                 output_block_hook,
                 agent_lookup,
                 ask_question_hook,

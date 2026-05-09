@@ -227,14 +227,19 @@ impl App {
         match client.compact_session(&session_id, focus) {
             Ok(response) => {
                 let _ = self.sync_session_from_server(&session_id);
-                let message = if response.success {
-                    focus
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(|value| format!("Session compacted around focus:\n{}", value))
-                        .unwrap_or_else(|| "Session compacted successfully.".to_string())
+                let response_message = response.message.trim();
+                let message = if response_message.is_empty() {
+                    if response.success {
+                        focus
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(|value| format!("Session compacted around focus:\n{}", value))
+                            .unwrap_or_else(|| "Session compacted successfully.".to_string())
+                    } else {
+                        "Nothing to compact yet.".to_string()
+                    }
                 } else {
-                    "Nothing to compact yet.".to_string()
+                    response_message.to_string()
                 };
                 self.alert_dialog.set_message(&message);
                 self.open_alert_dialog();

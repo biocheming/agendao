@@ -36,7 +36,7 @@ type LegacyToolResultMap = HashMap<String, LegacyToolResult>;
 const CONTEXT_AUTO_COMPACT_THRESHOLD_PERCENT: u64 = 90;
 const AUTO_COMPACTION_RECENT_WINDOW_MESSAGES: usize = 12;
 const AUTO_COMPACTION_MIN_MESSAGES_AFTER_LAST: usize = 4;
-const FORCE_COMPACTION_MIN_MESSAGES: usize = 2;
+pub(super) const FORCE_COMPACTION_MIN_MESSAGES: usize = 2;
 const AUTO_COMPACTION_MIN_MESSAGES: usize = 10;
 const MAX_BODY_CHARS: usize = 5_000_000;
 const MAX_CONTEXT_CHARS: usize = 200_000;
@@ -1178,14 +1178,6 @@ impl SessionPrompt {
         session.touch();
     }
 
-    pub(super) fn trigger_compaction(
-        session: &mut Session,
-        messages: &[SessionMessage],
-        focus: Option<&str>,
-    ) -> Option<String> {
-        Self::trigger_compaction_with_record(session, messages, focus, None, false)
-    }
-
     pub(crate) fn trigger_compaction_with_record(
         session: &mut Session,
         messages: &[SessionMessage],
@@ -1759,8 +1751,14 @@ mod tests {
             })
             .collect();
 
-        let summary = SessionPrompt::trigger_compaction(&mut session, &messages, Some("xterm"))
-            .expect("focused compaction should produce a summary");
+        let summary = SessionPrompt::trigger_compaction_with_record(
+            &mut session,
+            &messages,
+            Some("xterm"),
+            None,
+            false,
+        )
+        .expect("focused compaction should produce a summary");
         assert!(summary.contains("Focused on `xterm`."));
         assert!(summary.to_ascii_lowercase().contains("xterm"));
     }
