@@ -106,7 +106,7 @@ mod tests {
         let summary = provider_diagnostic_from_error_text(
             "deepseek",
             Some("deepseek-v4"),
-            "provider `deepseek` requires assistant reasoning replay in thinking mode, but no prior assistant reasoning continuation was found in request history",
+            "provider `deepseek` requires assistant reasoning replay in thinking mode for each prior assistant tool-call continuation, but at least one assistant tool-call turn in request history lacks typed reasoning replay",
         )
         .expect("diagnostic should be detected");
 

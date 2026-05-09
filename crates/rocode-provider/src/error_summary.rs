@@ -185,7 +185,7 @@ mod tests {
             "deepseek",
             Some("deepseek-reasoner"),
             &ProviderError::InvalidRequest(
-                "provider `deepseek` requires assistant reasoning replay in thinking mode, but no prior assistant reasoning continuation was found in request history".to_string(),
+                "provider `deepseek` requires assistant reasoning replay in thinking mode for each prior assistant tool-call continuation, but at least one assistant tool-call turn in request history lacks typed reasoning replay".to_string(),
             ),
         );
 
