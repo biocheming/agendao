@@ -11,6 +11,7 @@ use crate::{
 const SESSION_SANCTIONED_METADATA_KEYS: &[&str] = &[
     "agent",
     "auto_title_pending_refine",
+    "context_compaction_lifecycle_summary",
     "context_pressure_governance_summary",
     "fork_origin_message_id",
     "fork_origin_session_id",
@@ -265,6 +266,8 @@ pub struct SessionDiagnosticsSidecar {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_surface_state_snapshot: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_compaction_lifecycle_summary: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_pressure_governance_summary: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ingress_stabilization: Option<SessionIngressStabilizationSummary>,
@@ -287,6 +290,10 @@ impl SessionDiagnosticsSidecar {
 
     pub fn prompt_surface_state_snapshot_value(&self) -> Option<serde_json::Value> {
         self.prompt_surface_state_snapshot.clone()
+    }
+
+    pub fn context_compaction_lifecycle_summary_value(&self) -> Option<serde_json::Value> {
+        self.context_compaction_lifecycle_summary.clone()
     }
 
     pub fn context_pressure_governance_summary_value(&self) -> Option<serde_json::Value> {
@@ -427,6 +434,10 @@ impl SessionDiagnosticsSidecar {
             .get("prompt_surface_state_snapshot")
             .cloned()
             .or_else(|| latest_message_metadata_value(messages, "prompt_surface_state_snapshot"));
+        let context_compaction_lifecycle_summary = session
+            .metadata
+            .get("context_compaction_lifecycle_summary")
+            .cloned();
         let context_pressure_governance_summary = session
             .metadata
             .get("context_pressure_governance_summary")
@@ -445,6 +456,7 @@ impl SessionDiagnosticsSidecar {
             version: SessionDiagnosticsSidecarVersion::RocodeRustDiagnosticsV1,
             telemetry,
             prompt_surface_state_snapshot,
+            context_compaction_lifecycle_summary,
             context_pressure_governance_summary,
             ingress_stabilization,
             memory_frozen_snapshot,
@@ -458,6 +470,7 @@ impl SessionDiagnosticsSidecar {
     fn is_empty(&self) -> bool {
         self.telemetry.is_none()
             && self.prompt_surface_state_snapshot.is_none()
+            && self.context_compaction_lifecycle_summary.is_none()
             && self.context_pressure_governance_summary.is_none()
             && self.ingress_stabilization.is_none()
             && self.memory_frozen_snapshot.is_none()
@@ -957,6 +970,15 @@ mod tests {
             "prompt_surface_state_snapshot".to_string(),
             serde_json::json!({"stable_prefix_hash": "abc123"}),
         );
+        session.metadata.insert(
+            "context_compaction_lifecycle_summary".to_string(),
+            serde_json::json!({
+                "trigger": "auto_preflight",
+                "phase": "prompt.pre_request",
+                "reason": "request_view_threshold",
+                "status": "installed"
+            }),
+        );
         session
             .metadata
             .insert("last_ingress_source".to_string(), serde_json::json!("web"));
@@ -1049,6 +1071,10 @@ mod tests {
             serde_json::json!("abc123")
         );
         assert_eq!(
+            value["diagnostics_sidecar"]["context_compaction_lifecycle_summary"]["status"],
+            serde_json::json!("installed")
+        );
+        assert_eq!(
             value["diagnostics_sidecar"]["ingress_stabilization"]["source"],
             serde_json::json!("web")
         );
@@ -1125,6 +1151,28 @@ mod tests {
         assert_eq!(record["trigger"], serde_json::json!("overflow_recovery"));
         assert_eq!(record["forced"], serde_json::json!(true));
         assert_eq!(record["compacted_message_count"], serde_json::json!(3));
+    }
+
+    #[test]
+    fn diagnostics_sidecar_helper_reads_context_compaction_lifecycle_summary() {
+        let mut session = sample_session();
+        session.metadata.insert(
+            "context_compaction_lifecycle_summary".to_string(),
+            serde_json::json!({
+                "trigger": "auto_preflight",
+                "phase": "prompt.pre_request",
+                "status": "started"
+            }),
+        );
+
+        let sidecar = SessionDiagnosticsSidecar::derive_from_parts(&session, &[])
+            .expect("sidecar should exist");
+        let record = sidecar
+            .context_compaction_lifecycle_summary_value()
+            .expect("compaction lifecycle should exist");
+
+        assert_eq!(record["trigger"], serde_json::json!("auto_preflight"));
+        assert_eq!(record["status"], serde_json::json!("started"));
     }
 
     #[test]

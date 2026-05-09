@@ -231,6 +231,7 @@ impl CliRunStatusLabel for crate::api_client::SessionRunStatusKind {
         match self {
             crate::api_client::SessionRunStatusKind::Idle => "idle",
             crate::api_client::SessionRunStatusKind::Running => "running",
+            crate::api_client::SessionRunStatusKind::Compacting => "compacting",
             crate::api_client::SessionRunStatusKind::WaitingOnTool => "waiting_on_tool",
             crate::api_client::SessionRunStatusKind::WaitingOnUser => "waiting_on_user",
             crate::api_client::SessionRunStatusKind::Cancelling => "cancelling",
@@ -854,6 +855,36 @@ fn cli_usage_snapshot_lines(
                 cli_yes_no(boundary.compaction_succeeded),
                 cli_yes_no(boundary.blocking)
             ));
+            if let Some(installed) = boundary.installed.as_ref() {
+                let mut install_parts = Vec::new();
+                if let Some(request_context_tokens) = installed.request_context_tokens {
+                    install_parts.push(format!(
+                        "request {}",
+                        format_token_count(request_context_tokens)
+                    ));
+                }
+                if let Some(live_context_tokens) = installed.live_context_tokens {
+                    install_parts.push(format!(
+                        "live {}",
+                        format_token_count(live_context_tokens)
+                    ));
+                }
+                if let Some(body_chars) = installed.body_chars {
+                    install_parts.push(format!(
+                        "{} chars",
+                        format_token_count(body_chars as u64)
+                    ));
+                }
+                if !install_parts.is_empty() {
+                    lines.push(format!("  Installed: {}", install_parts.join(" · ")));
+                }
+                if let Some(explanation) = installed.cache_explanation.as_deref() {
+                    lines.push(format!(
+                        "  Install explain: {}",
+                        cli_context_closure_evidence_detail_label(explanation)
+                    ));
+                }
+            }
         } else {
             lines.push(format!(
                 "  Boundary: {}",
@@ -3015,15 +3046,25 @@ async fn cli_execute_compact_session_action(
 
     match api_client.compact_session(&session_id, focus).await {
         Ok(response) => {
+            let response_message = response.message.trim();
             let block = if response.success {
-                let label = focus
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(|value| format!("Session compacted around focus: {value}"))
-                    .unwrap_or_else(|| "Session compacted successfully.".to_string());
+                let label = if response_message.is_empty() {
+                    focus
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(|value| format!("Session compacted around focus: {value}"))
+                        .unwrap_or_else(|| "Session compacted successfully.".to_string())
+                } else {
+                    response_message.to_string()
+                };
                 StatusBlock::title(label)
             } else {
-                StatusBlock::warning("Nothing to compact yet.")
+                let label = if response_message.is_empty() {
+                    "Nothing to compact yet.".to_string()
+                } else {
+                    response_message.to_string()
+                };
+                StatusBlock::warning(label)
             };
             let _ = print_block(Some(runtime), OutputBlock::Status(block), repl_style);
             if let Ok(mut proj) = runtime.frontend_projection.lock() {
@@ -3970,12 +4011,14 @@ mod session_projection_tests {
                 phase: None,
                 trigger: None,
                 reason: None,
+                lifecycle_status: None,
                 governance_status: None,
                 request_pressure_percent: None,
                 live_pressure_percent: None,
                 compaction_attempted: true,
                 compaction_succeeded: true,
                 blocking: false,
+                installed: None,
             },
             cache_explainability: rocode_types::SessionCacheExplainabilityContract {
                 issue_present: true,
@@ -4129,6 +4172,28 @@ mod session_projection_tests {
                 kept_message_count: Some(8),
                 summary: Some("Compacted 7 messages.".to_string()),
             }),
+            context_compaction_lifecycle_summary: Some(
+                rocode_types::ContextCompactionLifecycleSummary {
+                    trigger: "auto_preflight".to_string(),
+                    phase: Some("prompt.pre_request".to_string()),
+                    reason: Some("request_view_threshold".to_string()),
+                    status: rocode_types::ContextCompactionLifecycleStatus::Installed,
+                    forced: false,
+                    request_context_tokens: Some(92_000),
+                    live_context_tokens: Some(82_000),
+                    limit_tokens: Some(100_000),
+                    body_chars: Some(360_000),
+                    installed: Some(rocode_types::ContextCompactionInstalledDiagnostics {
+                        request_context_tokens: Some(70_000),
+                        live_context_tokens: Some(67_000),
+                        body_chars: Some(250_000),
+                        cache_explanation: Some(
+                            "boundary recorded · 7 earlier messages trimmed from the API view"
+                                .to_string(),
+                        ),
+                    }),
+                },
+            ),
             context_pressure_governance_summary: None,
             cache_semantics: Some(rocode_types::SessionCacheSemanticsSummary {
                 basis: rocode_types::SessionCacheSemanticsBasis::ApiView,
@@ -4181,6 +4246,9 @@ mod session_projection_tests {
                     phase: Some("prompt.pre_request".to_string()),
                     trigger: Some("auto_preflight".to_string()),
                     reason: Some("request_view_threshold".to_string()),
+                    lifecycle_status: Some(
+                        rocode_types::ContextCompactionLifecycleStatus::Installed,
+                    ),
                     governance_status: Some(
                         rocode_types::ContextPressureGovernanceStatus::Compacted,
                     ),
@@ -4189,6 +4257,15 @@ mod session_projection_tests {
                     compaction_attempted: true,
                     compaction_succeeded: true,
                     blocking: false,
+                    installed: Some(rocode_types::ContextCompactionInstalledDiagnostics {
+                        request_context_tokens: Some(70_000),
+                        live_context_tokens: Some(67_000),
+                        body_chars: Some(250_000),
+                        cache_explanation: Some(
+                            "boundary recorded · 7 earlier messages trimmed from the API view"
+                                .to_string(),
+                        ),
+                    }),
                 },
                 cache_explainability: rocode_types::SessionCacheExplainabilityContract {
                     issue_present: true,
@@ -4254,6 +4331,12 @@ mod session_projection_tests {
         assert!(lines
             .iter()
             .any(|line| { line == "  Cache: cache explained" }));
+        assert!(lines
+            .iter()
+            .any(|line| { line == "  Installed: request 70K · live 67K · 250K chars" }));
+        assert!(lines.iter().any(|line| {
+            line == "  Install explain: boundary recorded · 7 earlier messages trimmed from the API view"
+        }));
         assert!(lines
             .iter()
             .any(|line| { line == "  Source: cache evidence · impact medium change" }));

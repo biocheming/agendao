@@ -405,6 +405,7 @@ pub(crate) async fn stream_message(
                     hooks: rocode_session::prompt::PromptHooks {
                         update_hook: Some(update_hook),
                         event_broadcast,
+                        compaction_lifecycle_hook: None,
                         output_block_hook,
                         agent_lookup,
                         ask_question_hook,

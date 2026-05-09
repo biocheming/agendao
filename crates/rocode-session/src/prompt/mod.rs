@@ -19,6 +19,8 @@ pub mod tools_and_output;
 pub const PROMPT_SURFACE_STATE_SNAPSHOT_METADATA_KEY: &str = "prompt_surface_state_snapshot";
 pub const PROMPT_SURFACE_EVIDENCE_METADATA_KEY: &str = "prompt_surface_evidence";
 pub const CONTEXT_COMPACTION_RECORD_METADATA_KEY: &str = "context_compaction_record";
+pub const CONTEXT_COMPACTION_LIFECYCLE_SUMMARY_METADATA_KEY: &str =
+    "context_compaction_lifecycle_summary";
 pub const CONTEXT_PRESSURE_GOVERNANCE_SUMMARY_METADATA_KEY: &str =
     "context_pressure_governance_summary";
 
@@ -67,7 +69,8 @@ use rocode_provider::{cache::CacheEvidenceSummary, Provider, ToolDefinition};
 use rocode_skill::{infer_runtime_skill_names, RuntimeInstructionSource, SkillGovernanceAuthority};
 use rocode_types::SkillRuntimeCompositionHintKind;
 use rocode_types::{
-    context_usage_percent, ContextCompactionSummary, ContextPressureGovernanceStatus,
+    context_usage_percent, ContextCompactionInstalledDiagnostics, ContextCompactionLifecycleStatus,
+    ContextCompactionLifecycleSummary, ContextCompactionSummary, ContextPressureGovernanceStatus,
     ContextPressureGovernanceSummary, MemoryRetrievalPacket, PromptSurfaceEvidenceSummary,
     SessionCacheBoundaryKind, SessionCacheBoundarySummary, SessionCacheEvidenceExplain,
     SessionCacheSemanticsBasis, SessionCacheSemanticsSummary, SessionCacheSeverity,
@@ -211,6 +214,8 @@ pub struct AgentParams {
 
 pub type SessionUpdateHook = Arc<dyn Fn(&Session) + Send + Sync + 'static>;
 pub type EventBroadcastHook = Arc<dyn Fn(serde_json::Value) + Send + Sync + 'static>;
+pub type CompactionLifecycleHook =
+    Arc<dyn Fn(ContextCompactionLifecycleSummary) + Send + Sync + 'static>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputBlockEvent {
     pub session_id: String,
@@ -252,6 +257,7 @@ pub type AskPermissionHook = Arc<
 pub struct PromptHooks {
     pub update_hook: Option<SessionUpdateHook>,
     pub event_broadcast: Option<EventBroadcastHook>,
+    pub compaction_lifecycle_hook: Option<CompactionLifecycleHook>,
     pub output_block_hook: Option<OutputBlockHook>,
     pub agent_lookup: Option<AgentLookup>,
     pub ask_question_hook: Option<AskQuestionHook>,
@@ -498,11 +504,157 @@ pub fn compact_session_now_with_focus(
     session: &mut Session,
     focus: Option<&str>,
 ) -> Option<String> {
+    compact_session_now_with_focus_result(session, focus).summary
+}
+
+#[derive(Debug, Clone)]
+pub struct ManualCompactionResult {
+    pub summary: Option<String>,
+    pub lifecycle: ContextCompactionLifecycleSummary,
+    pub compaction: Option<ContextCompactionSummary>,
+}
+
+impl ManualCompactionResult {
+    pub fn success(&self) -> bool {
+        self.lifecycle.status == ContextCompactionLifecycleStatus::Installed
+    }
+
+    pub fn message(&self, focus: Option<&str>) -> String {
+        match self.lifecycle.status {
+            ContextCompactionLifecycleStatus::Installed => {
+                let compacted = self
+                    .compaction
+                    .as_ref()
+                    .and_then(|record| record.compacted_message_count)
+                    .unwrap_or_default();
+                let kept = self
+                    .compaction
+                    .as_ref()
+                    .and_then(|record| record.kept_message_count)
+                    .unwrap_or_default();
+                if let Some(focus) = focus.map(str::trim).filter(|value| !value.is_empty()) {
+                    if compacted > 0 || kept > 0 {
+                        format!(
+                            "Session compacted around focus: {focus} ({compacted} summarized, {kept} kept)."
+                        )
+                    } else {
+                        format!("Session compacted around focus: {focus}")
+                    }
+                } else if compacted > 0 || kept > 0 {
+                    format!("Session compacted ({compacted} summarized, {kept} kept).")
+                } else {
+                    "Session compacted successfully.".to_string()
+                }
+            }
+            ContextCompactionLifecycleStatus::Skipped => match self.lifecycle.reason.as_deref() {
+                Some("session.manual_compact.no_prompt_continuity_owner") => {
+                    "This session does not own prompt continuity.".to_string()
+                }
+                Some("session.manual_compact.insufficient_messages") => {
+                    "Nothing to compact yet.".to_string()
+                }
+                _ => "Manual compaction skipped.".to_string(),
+            },
+            ContextCompactionLifecycleStatus::Failed => "Manual compaction failed.".to_string(),
+            ContextCompactionLifecycleStatus::Started => "Manual compaction started.".to_string(),
+        }
+    }
+}
+
+pub fn compact_session_now_with_focus_result(
+    session: &mut Session,
+    focus: Option<&str>,
+) -> ManualCompactionResult {
     if !session.context_kind().owns_prompt_continuity() {
-        return None;
+        let lifecycle = context_compaction_lifecycle_summary(
+            "manual",
+            Some("session.manual_compact"),
+            Some("session.manual_compact.no_prompt_continuity_owner"),
+            ContextCompactionLifecycleStatus::Skipped,
+            true,
+            None,
+            None,
+            None,
+            None,
+        );
+        persist_context_compaction_lifecycle_summary(session, &lifecycle);
+        return ManualCompactionResult {
+            summary: None,
+            lifecycle,
+            compaction: None,
+        };
     }
     let filtered = SessionPrompt::filter_compacted_messages(&session.messages);
-    SessionPrompt::trigger_compaction(session, &filtered, focus)
+    if filtered.len() < message_building::FORCE_COMPACTION_MIN_MESSAGES {
+        let lifecycle = context_compaction_lifecycle_summary(
+            "manual",
+            Some("session.manual_compact"),
+            Some("session.manual_compact.insufficient_messages"),
+            ContextCompactionLifecycleStatus::Skipped,
+            true,
+            None,
+            None,
+            None,
+            None,
+        );
+        persist_context_compaction_lifecycle_summary(session, &lifecycle);
+        return ManualCompactionResult {
+            summary: None,
+            lifecycle,
+            compaction: None,
+        };
+    }
+    let lifecycle = context_compaction_lifecycle_summary(
+        "manual",
+        Some("session.manual_compact"),
+        None,
+        ContextCompactionLifecycleStatus::Started,
+        true,
+        None,
+        None,
+        None,
+        None,
+    );
+    persist_context_compaction_lifecycle_summary(session, &lifecycle);
+    session.start_compacting();
+    let record = SessionPrompt::build_compaction_record(
+        "manual",
+        Some("session.manual_compact"),
+        None,
+        true,
+        None,
+        None,
+        None,
+        None,
+    );
+    let summary = SessionPrompt::trigger_compaction_with_record(
+        session,
+        &filtered,
+        focus,
+        Some(record),
+        true,
+    );
+    let mut lifecycle = lifecycle;
+    lifecycle.status = if summary.is_some() {
+        ContextCompactionLifecycleStatus::Installed
+    } else {
+        ContextCompactionLifecycleStatus::Failed
+    };
+    if summary.is_some() {
+        install_compaction_lifecycle_summary(session, &mut lifecycle);
+    }
+    persist_context_compaction_lifecycle_summary(session, &lifecycle);
+    session.finish_compacting();
+    let compaction = if summary.is_some() {
+        latest_context_compaction_summary_from_session(session)
+    } else {
+        None
+    };
+    ManualCompactionResult {
+        summary,
+        lifecycle,
+        compaction,
+    }
 }
 
 pub fn auto_compact_session_with_focus_if_needed(
@@ -563,11 +715,96 @@ fn persist_context_pressure_governance_summary(
     }
 }
 
+fn persist_context_compaction_lifecycle_summary(
+    session: &mut Session,
+    summary: &ContextCompactionLifecycleSummary,
+) {
+    if let Ok(value) = serde_json::to_value(summary) {
+        session.insert_metadata(
+            CONTEXT_COMPACTION_LIFECYCLE_SUMMARY_METADATA_KEY.to_string(),
+            value,
+        );
+    }
+}
+
+fn emit_context_compaction_lifecycle(
+    hook: Option<&CompactionLifecycleHook>,
+    summary: &ContextCompactionLifecycleSummary,
+) {
+    if let Some(hook) = hook {
+        hook(summary.clone());
+    }
+}
+
 pub fn record_context_pressure_governance_summary(
     session: &mut Session,
     summary: &ContextPressureGovernanceSummary,
 ) {
     persist_context_pressure_governance_summary(session, summary);
+}
+
+fn context_compaction_lifecycle_summary(
+    trigger: &str,
+    phase: Option<&str>,
+    reason: Option<&str>,
+    status: ContextCompactionLifecycleStatus,
+    forced: bool,
+    request_context_tokens: Option<u64>,
+    live_context_tokens: Option<u64>,
+    limit_tokens: Option<u64>,
+    body_chars: Option<usize>,
+) -> ContextCompactionLifecycleSummary {
+    ContextCompactionLifecycleSummary {
+        trigger: trigger.to_string(),
+        phase: phase.map(str::to_string),
+        reason: reason.map(str::to_string),
+        status,
+        forced,
+        request_context_tokens,
+        live_context_tokens,
+        limit_tokens,
+        body_chars,
+        installed: None,
+    }
+}
+
+fn latest_context_compaction_summary_from_session(
+    session: &Session,
+) -> Option<ContextCompactionSummary> {
+    session
+        .record()
+        .messages
+        .iter()
+        .rev()
+        .find_map(|message| {
+            message
+                .metadata
+                .get(CONTEXT_COMPACTION_RECORD_METADATA_KEY)
+                .cloned()
+        })
+        .and_then(|value| serde_json::from_value(value).ok())
+}
+
+fn installed_compaction_diagnostics(session: &Session) -> ContextCompactionInstalledDiagnostics {
+    let context_explain = explain_session_context(session, None);
+    let cache_explanation =
+        latest_context_compaction_summary_from_session(session).and_then(|summary| {
+            explain_session_cache_semantics(&context_explain, Some(&summary), None, None).label
+        });
+
+    ContextCompactionInstalledDiagnostics {
+        request_context_tokens: context_explain.api_view_estimated_input_tokens,
+        live_context_tokens: context_explain.live_context_tokens,
+        body_chars: context_explain.api_view_body_chars,
+        cache_explanation,
+    }
+}
+
+pub(super) fn install_compaction_lifecycle_summary(
+    session: &Session,
+    lifecycle: &mut ContextCompactionLifecycleSummary,
+) {
+    lifecycle.installed = Some(installed_compaction_diagnostics(session));
 }
 
 fn should_block_pre_dispatch_governance(
@@ -727,6 +964,8 @@ pub fn govern_pre_dispatch_session_context(
     focus: Option<&str>,
     trigger: &str,
     phase: &str,
+    update_hook: Option<&SessionUpdateHook>,
+    compaction_lifecycle_hook: Option<&CompactionLifecycleHook>,
 ) -> ContextPressureGovernanceOutcome {
     let live_context_tokens =
         live_context_tokens.or_else(|| estimate_current_context_tokens(&session.record().messages));
@@ -778,6 +1017,21 @@ pub fn govern_pre_dispatch_session_context(
     };
 
     let force_compaction = SessionPrompt::should_force_compaction_for_reason(assessment.reason);
+    let started = context_compaction_lifecycle_summary(
+        trigger,
+        Some(phase),
+        Some(assessment.reason),
+        ContextCompactionLifecycleStatus::Started,
+        force_compaction,
+        request_context_tokens,
+        live_context_tokens,
+        assessment.limit_tokens,
+        assessment.body_chars.or(request_body_chars),
+    );
+    persist_context_compaction_lifecycle_summary(session, &started);
+    session.start_compacting();
+    SessionPrompt::emit_session_update(update_hook, session);
+    emit_context_compaction_lifecycle(compaction_lifecycle_hook, &started);
     let record = SessionPrompt::build_compaction_record(
         trigger,
         Some(phase),
@@ -796,6 +1050,19 @@ pub fn govern_pre_dispatch_session_context(
         force_compaction,
     )
     .is_some();
+    let mut lifecycle = started.clone();
+    lifecycle.status = if compacted {
+        ContextCompactionLifecycleStatus::Installed
+    } else {
+        ContextCompactionLifecycleStatus::Failed
+    };
+    if compacted {
+        install_compaction_lifecycle_summary(session, &mut lifecycle);
+    }
+    persist_context_compaction_lifecycle_summary(session, &lifecycle);
+    session.finish_compacting();
+    SessionPrompt::emit_session_update(update_hook, session);
+    emit_context_compaction_lifecycle(compaction_lifecycle_hook, &lifecycle);
 
     let (request_context_tokens, request_body_chars, live_context_tokens, reassessment) =
         if compacted {
@@ -926,6 +1193,7 @@ pub fn explain_session_context(
     let (api_view_estimated_input_tokens, api_view_body_chars) =
         SessionPrompt::estimate_request_context_tokens_from_provider_messages(&api_view_messages);
     let usage = session.get_usage();
+    let live_context_tokens = estimate_current_context_tokens(&record.messages);
     let resolved_model = (provider_id != "default" || model_id != "default")
         .then(|| format!("{provider_id}/{model_id}"));
 
@@ -937,7 +1205,7 @@ pub fn explain_session_context(
         api_view_messages: api_view_messages.len(),
         api_view_estimated_input_tokens,
         api_view_body_chars: (api_view_body_chars > 0).then_some(api_view_body_chars),
-        live_context_tokens: usage.live_context_tokens(),
+        live_context_tokens,
         last_request_context_tokens: session.latest_request_context_tokens(),
         owner_session_cumulative_tokens: usage.session_cumulative_tokens(),
         workflow_cumulative_tokens: workflow_cumulative_tokens
@@ -1089,7 +1357,10 @@ fn cache_semantics_evidence_detail_label(detail: &str) -> String {
 
 #[cfg(test)]
 mod cache_semantics_tests {
-    use super::{compact_session_now, explain_session_cache_semantics};
+    use super::{
+        compact_session_now_with_focus_result, explain_session_cache_semantics,
+        ContextCompactionLifecycleStatus,
+    };
     use crate::Session;
     use rocode_provider::cache::{CacheEvidenceSeverity, CacheEvidenceSummary};
     use rocode_types::{
@@ -1201,10 +1472,37 @@ mod cache_semantics_tests {
         child.add_user_message("hello");
         child.add_assistant_message().add_text("world");
 
-        let summary = compact_session_now(&mut child);
+        let result = compact_session_now_with_focus_result(&mut child, None);
 
-        assert!(summary.is_none());
+        assert!(result.summary.is_none());
+        assert_eq!(
+            result.lifecycle.status,
+            ContextCompactionLifecycleStatus::Skipped
+        );
+        assert_eq!(
+            result.lifecycle.reason.as_deref(),
+            Some("session.manual_compact.no_prompt_continuity_owner")
+        );
         assert_eq!(child.record().messages.len(), 2);
+    }
+
+    #[test]
+    fn compact_session_now_reports_skipped_when_history_is_too_small() {
+        let mut session = Session::new("proj", ".");
+        session.add_user_message("hello");
+
+        let result = compact_session_now_with_focus_result(&mut session, None);
+
+        assert!(result.summary.is_none());
+        assert_eq!(
+            result.lifecycle.status,
+            ContextCompactionLifecycleStatus::Skipped
+        );
+        assert_eq!(
+            result.lifecycle.reason.as_deref(),
+            Some("session.manual_compact.insufficient_messages")
+        );
+        assert_eq!(result.message(None), "Nothing to compact yet.");
     }
 }
 

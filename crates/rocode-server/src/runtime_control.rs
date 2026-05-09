@@ -175,6 +175,7 @@ pub enum SessionRunStatus {
     #[default]
     Idle,
     Busy,
+    Compacting,
     Retry {
         attempt: u32,
         message: String,
@@ -278,6 +279,23 @@ impl RuntimeControlRegistry {
                 })
                 .await;
             }
+            SessionRunStatus::Compacting => {
+                self.upsert_execution(ExecutionRecord {
+                    id: execution_id,
+                    session_id: session_id.to_string(),
+                    kind: ExecutionKind::PromptRun,
+                    status: ExecutionStatus::Waiting,
+                    label: Some("Prompt run".to_string()),
+                    parent_id: None,
+                    stage_id: None,
+                    waiting_on: Some("compaction".to_string()),
+                    recent_event: Some("Compacting context".to_string()),
+                    started_at: now_millis(),
+                    updated_at: now_millis(),
+                    metadata: None,
+                })
+                .await;
+            }
             SessionRunStatus::Retry {
                 attempt,
                 message,
@@ -316,9 +334,16 @@ impl RuntimeControlRegistry {
             })
             .map(|record| {
                 let status = match record.status {
-                    ExecutionStatus::Running
-                    | ExecutionStatus::Waiting
-                    | ExecutionStatus::Cancelling => SessionRunStatus::Busy,
+                    ExecutionStatus::Running | ExecutionStatus::Cancelling => {
+                        SessionRunStatus::Busy
+                    }
+                    ExecutionStatus::Waiting => {
+                        if record.waiting_on.as_deref() == Some("compaction") {
+                            SessionRunStatus::Compacting
+                        } else {
+                            SessionRunStatus::Busy
+                        }
+                    }
                     ExecutionStatus::Retry => {
                         let metadata = record.metadata.as_ref();
                         SessionRunStatus::Retry {

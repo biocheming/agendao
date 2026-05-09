@@ -70,6 +70,7 @@ impl SessionRuntimeState {
 pub enum RunStatus {
     Idle,
     Running,
+    Compacting,
     WaitingOnTool,
     WaitingOnUser,
     Cancelling,
@@ -164,6 +165,15 @@ impl RuntimeStateStore {
         self.update(session_id, |s| {
             s.run_status = RunStatus::Running;
             s.current_message_id = message_id;
+        })
+        .await;
+    }
+
+    /// Mark the session as compacting without clearing the surrounding prompt
+    /// execution context.
+    pub async fn mark_compacting(&self, session_id: &str) {
+        self.update(session_id, |s| {
+            s.run_status = RunStatus::Compacting;
         })
         .await;
     }
@@ -360,6 +370,11 @@ mod tests {
             .await;
         let state = store.get("ses_1").await.unwrap();
         assert_eq!(state.run_status, RunStatus::Running);
+        assert_eq!(state.current_message_id.as_deref(), Some("msg_001"));
+
+        store.mark_compacting("ses_1").await;
+        let state = store.get("ses_1").await.unwrap();
+        assert_eq!(state.run_status, RunStatus::Compacting);
         assert_eq!(state.current_message_id.as_deref(), Some("msg_001"));
 
         store.tool_started("ses_1", "tc_1", "bash").await;

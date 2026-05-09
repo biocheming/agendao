@@ -282,6 +282,9 @@ impl SessionRenderSnapshot {
                 crate::context::SessionStatus::Running => {
                     (Some("RUNNING".to_string()), true, false)
                 }
+                crate::context::SessionStatus::Compacting => {
+                    (Some("COMPACTING".to_string()), true, false)
+                }
                 crate::context::SessionStatus::Retrying { attempt, .. } => {
                     (Some(format!("RETRY {}", attempt)), true, true)
                 }

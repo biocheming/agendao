@@ -67,6 +67,9 @@ impl RuntimeTelemetryAuthority {
             SessionRunStatus::Busy => {
                 self.runtime_state.mark_running(session_id, None).await;
             }
+            SessionRunStatus::Compacting => {
+                self.runtime_state.mark_compacting(session_id).await;
+            }
             SessionRunStatus::Idle => {
                 self.runtime_state.mark_idle(session_id).await;
             }

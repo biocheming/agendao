@@ -50,6 +50,7 @@ pub enum StateChange {
         source: Option<String>,
     },
     SessionStatusBusy(String),
+    SessionStatusCompacting(String),
     SessionStatusIdle(String),
     SessionStatusRetrying {
         session_id: String,

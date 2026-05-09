@@ -16,17 +16,18 @@ pub use rocode_session::{
 pub use rocode_types::{
     ConfigPolicyValidationEffect, ConfigPolicyValidationItem, ConfigPolicyValidationOwner,
     ConfigPolicyValidationScope, ConfigPolicyValidationScopeKind, ConfigPolicyValidationSeverity,
-    ConfigPolicyValidationSnapshot, ContextCompactionSummary, ContextPressureGovernanceSummary,
-    ExternalAdapterResolvedBinding, ExternalAdapterSource, ManagedSkillRecord,
-    MemoryConflictResponse, MemoryConsolidationRequest, MemoryConsolidationResponse,
-    MemoryConsolidationRunListResponse, MemoryConsolidationRunQuery, MemoryDetailView,
-    MemoryListQuery, MemoryListResponse, MemoryRetrievalPreviewResponse, MemoryRetrievalQuery,
-    MemoryRuleHitListResponse, MemoryRuleHitQuery, MemoryRulePackListResponse, MemoryScope,
-    MemoryValidationReportResponse, PromptSurfaceEvidenceSummary, ProposalStatus,
-    ProviderConnectionDescriptorCandidate, ProviderProfileDescriptorView,
-    SessionCacheSemanticsSummary, SessionContextClosureContract, SessionContextExplain,
-    SessionContextKind, SessionEffectiveCompactionPolicy, SessionEffectiveExternalAdapterPolicy,
-    SessionEffectiveMemoryPolicy, SessionEffectivePolicyView, SessionEffectiveProviderPolicy,
+    ConfigPolicyValidationSnapshot, ContextCompactionLifecycleSummary, ContextCompactionSummary,
+    ContextPressureGovernanceSummary, ExternalAdapterResolvedBinding, ExternalAdapterSource,
+    ManagedSkillRecord, MemoryConflictResponse, MemoryConsolidationRequest,
+    MemoryConsolidationResponse, MemoryConsolidationRunListResponse, MemoryConsolidationRunQuery,
+    MemoryDetailView, MemoryListQuery, MemoryListResponse, MemoryRetrievalPreviewResponse,
+    MemoryRetrievalQuery, MemoryRuleHitListResponse, MemoryRuleHitQuery,
+    MemoryRulePackListResponse, MemoryScope, MemoryValidationReportResponse,
+    PromptSurfaceEvidenceSummary, ProposalStatus, ProviderConnectionDescriptorCandidate,
+    ProviderProfileDescriptorView, SessionCacheSemanticsSummary, SessionContextClosureContract,
+    SessionContextExplain, SessionContextKind, SessionEffectiveCompactionPolicy,
+    SessionEffectiveExternalAdapterPolicy, SessionEffectiveMemoryPolicy,
+    SessionEffectivePolicyView, SessionEffectiveProviderPolicy,
     SessionEffectiveProviderRuntimeProfile, SessionEffectiveSchedulerPolicy,
     SessionEffectiveSchedulerTraceStep, SessionEffectiveSchedulerTraceStepKind,
     SessionEffectiveSkillTreePolicy, SessionForkExplain, SessionForkHistoryMode,
@@ -307,6 +308,7 @@ pub struct SessionRuntimeState {
 pub enum SessionRunStatusKind {
     Idle,
     Running,
+    Compacting,
     WaitingOnTool,
     WaitingOnUser,
     Cancelling,
@@ -429,6 +431,8 @@ pub struct SessionTelemetrySnapshot {
     pub ownership: Option<SessionOwnershipSummary>,
     #[serde(default)]
     pub context_compaction_summary: Option<ContextCompactionSummary>,
+    #[serde(default)]
+    pub context_compaction_lifecycle_summary: Option<ContextCompactionLifecycleSummary>,
     #[serde(default)]
     pub context_pressure_governance_summary: Option<ContextPressureGovernanceSummary>,
     #[serde(default)]
@@ -985,6 +989,12 @@ pub struct ShareResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactResponse {
     pub success: bool,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle: Option<ContextCompactionLifecycleSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<ContextCompactionSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

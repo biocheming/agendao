@@ -667,7 +667,9 @@ impl Prompt {
     fn shows_activity_row(&self) -> bool {
         matches!(
             self.current_session_status(),
-            Some(SessionStatus::Running | SessionStatus::Retrying { .. })
+            Some(
+                SessionStatus::Running | SessionStatus::Compacting | SessionStatus::Retrying { .. }
+            )
         )
     }
 
@@ -1144,6 +1146,26 @@ impl Prompt {
                     ));
                     spans.push(Span::raw("  "));
                 }
+                if self.interrupt_confirmation_active() {
+                    spans.push(Span::styled(interrupt, Style::default().fg(theme.warning)));
+                    spans.push(Span::styled(
+                        " again to interrupt",
+                        Style::default().fg(theme.warning),
+                    ));
+                } else {
+                    spans.push(Span::styled(interrupt, Style::default().fg(theme.text)));
+                    spans.push(Span::styled(
+                        " interrupt",
+                        Style::default().fg(theme.text_muted),
+                    ));
+                }
+                Line::from(spans)
+            }
+            SessionStatus::Compacting => {
+                let mut spans = vec![
+                    Span::styled("compacting context", Style::default().fg(theme.warning)),
+                    Span::raw("  "),
+                ];
                 if self.interrupt_confirmation_active() {
                     spans.push(Span::styled(interrupt, Style::default().fg(theme.warning)));
                     spans.push(Span::styled(

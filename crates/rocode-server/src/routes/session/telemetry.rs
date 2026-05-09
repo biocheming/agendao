@@ -10,11 +10,11 @@ use rocode_session::{
     session_last_run_status_label, Session, SessionUsage,
 };
 use rocode_types::{
-    ContextCompactionSummary, ContextPressureGovernanceSummary, PromptSurfaceEvidenceSummary,
-    SessionCacheSemanticsSummary, SessionContextClosureContract, SessionContextExplain,
-    SessionDiagnosticsSidecar, SessionInsightsResponse, SessionMemoryTelemetrySummary,
-    SessionMultimodalAttachmentInfo, SessionMultimodalInsight, SessionOwnershipSummary,
-    SessionUsageBooks, WorkflowUsageSummary,
+    ContextCompactionLifecycleSummary, ContextCompactionSummary, ContextPressureGovernanceSummary,
+    PromptSurfaceEvidenceSummary, SessionCacheSemanticsSummary, SessionContextClosureContract,
+    SessionContextExplain, SessionDiagnosticsSidecar, SessionInsightsResponse,
+    SessionMemoryTelemetrySummary, SessionMultimodalAttachmentInfo, SessionMultimodalInsight,
+    SessionOwnershipSummary, SessionUsageBooks, WorkflowUsageSummary,
 };
 use serde::Serialize;
 
@@ -44,6 +44,8 @@ pub struct SessionTelemetrySnapshot {
     pub ownership: Option<SessionOwnershipSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_compaction_summary: Option<ContextCompactionSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_compaction_lifecycle_summary: Option<ContextCompactionLifecycleSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_pressure_governance_summary: Option<ContextPressureGovernanceSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -148,13 +150,12 @@ pub(super) async fn build_session_telemetry_snapshot(
     session: &Session,
 ) -> Result<SessionTelemetrySnapshot> {
     let mut runtime = runtime_snapshot_or_default(state, session_id).await?;
-    let usage = runtime.usage.clone().unwrap_or_else(|| session.get_usage());
-    runtime.usage = Some(usage.clone());
+    let mut usage = runtime.usage.clone().unwrap_or_else(|| session.get_usage());
     let tree_observation = {
         let sessions = state.sessions.lock().await;
         session_tree_observation_for_session(&sessions, session_id)
     };
-    let usage_books = SessionUsageBooks {
+    let mut usage_books = SessionUsageBooks {
         request_context_tokens: session.latest_request_context_tokens(),
         live_context_tokens: usage.live_context_tokens(),
         workflow_cumulative: tree_observation.workflow_cumulative.clone(),
@@ -177,10 +178,22 @@ pub(super) async fn build_session_telemetry_snapshot(
         session,
         Some(usage_books.workflow_cumulative.total_tokens()),
     ));
+    if let Some(live_context_tokens) = context_explain
+        .as_ref()
+        .and_then(|explain| explain.live_context_tokens)
+    {
+        usage.context_tokens = live_context_tokens;
+        usage_books.live_context_tokens = Some(live_context_tokens);
+    }
+    runtime.usage = Some(usage.clone());
     let ownership = Some(session.ownership_summary());
     let context_compaction_summary = diagnostics
         .as_ref()
         .and_then(SessionDiagnosticsSidecar::latest_context_compaction_record_value)
+        .and_then(|value| serde_json::from_value(value).ok());
+    let context_compaction_lifecycle_summary = diagnostics
+        .as_ref()
+        .and_then(SessionDiagnosticsSidecar::context_compaction_lifecycle_summary_value)
         .and_then(|value| serde_json::from_value(value).ok());
     let context_pressure_governance_summary = diagnostics
         .as_ref()
@@ -203,6 +216,7 @@ pub(super) async fn build_session_telemetry_snapshot(
         &usage_books,
         cache_semantics.as_ref(),
         context_compaction_summary.as_ref(),
+        context_compaction_lifecycle_summary.as_ref(),
         context_pressure_governance_summary.as_ref(),
         tree_observation.attached_subtree_session_count,
     );
@@ -228,6 +242,7 @@ pub(super) async fn build_session_telemetry_snapshot(
         context_explain,
         ownership,
         context_compaction_summary,
+        context_compaction_lifecycle_summary,
         context_pressure_governance_summary,
         cache_semantics,
         context_closure_contract,
@@ -287,6 +302,7 @@ fn build_context_closure_contract(
     usage_books: &SessionUsageBooks,
     cache_semantics: Option<&SessionCacheSemanticsSummary>,
     context_compaction_summary: Option<&ContextCompactionSummary>,
+    context_compaction_lifecycle_summary: Option<&ContextCompactionLifecycleSummary>,
     context_pressure_governance_summary: Option<&ContextPressureGovernanceSummary>,
     attached_subtree_session_count: usize,
 ) -> Option<SessionContextClosureContract> {
@@ -318,6 +334,8 @@ fn build_context_closure_contract(
             .as_ref()
             .is_some_and(|summary| summary.severity > rocode_types::SessionCacheSeverity::Stable);
 
+    let installed_boundary =
+        context_compaction_lifecycle_summary.and_then(|summary| summary.installed.as_ref());
     let (request_pressure_percent, live_pressure_percent) =
         if let Some(summary) = context_pressure_governance_summary {
             (
@@ -327,6 +345,13 @@ fn build_context_closure_contract(
                 summary.live_pressure_percent.or_else(|| {
                     pressure_percent(summary.live_context_tokens, summary.limit_tokens)
                 }),
+            )
+        } else if let Some(installed) = installed_boundary {
+            let limit_tokens =
+                context_compaction_lifecycle_summary.and_then(|summary| summary.limit_tokens);
+            (
+                pressure_percent(installed.request_context_tokens, limit_tokens),
+                pressure_percent(installed.live_context_tokens, limit_tokens),
             )
         } else if let Some(summary) = context_compaction_summary {
             (
@@ -408,28 +433,50 @@ fn build_context_closure_contract(
         },
         compaction_boundary: rocode_types::SessionCompactionBoundaryContract {
             boundary_recorded: context_compaction_summary.is_some()
+                || context_compaction_lifecycle_summary.is_some()
                 || context_pressure_governance_summary.is_some(),
             phase: context_pressure_governance_summary
                 .map(|summary| summary.phase.clone())
+                .or_else(|| {
+                    context_compaction_lifecycle_summary.and_then(|summary| summary.phase.clone())
+                })
                 .or_else(|| context_compaction_summary.and_then(|summary| summary.phase.clone())),
             trigger: context_pressure_governance_summary
                 .map(|summary| summary.trigger.clone())
+                .or_else(|| {
+                    context_compaction_lifecycle_summary.map(|summary| summary.trigger.clone())
+                })
                 .or_else(|| context_compaction_summary.map(|summary| summary.trigger.clone())),
             reason: context_pressure_governance_summary
                 .and_then(|summary| summary.reason.clone())
+                .or_else(|| {
+                    context_compaction_lifecycle_summary.and_then(|summary| summary.reason.clone())
+                })
                 .or_else(|| context_compaction_summary.and_then(|summary| summary.reason.clone())),
+            lifecycle_status: context_compaction_lifecycle_summary.map(|summary| summary.status),
             governance_status: context_pressure_governance_summary.map(|summary| summary.status),
             request_pressure_percent,
             live_pressure_percent,
             compaction_attempted: context_pressure_governance_summary
                 .map(|summary| summary.compaction_attempted)
-                .unwrap_or_else(|| context_compaction_summary.is_some()),
+                .unwrap_or_else(|| {
+                    context_compaction_lifecycle_summary.is_some()
+                        || context_compaction_summary.is_some()
+                }),
             compaction_succeeded: context_pressure_governance_summary
                 .map(|summary| summary.compaction_succeeded)
-                .unwrap_or_else(|| context_compaction_summary.is_some()),
+                .unwrap_or_else(|| {
+                    context_compaction_lifecycle_summary.is_some_and(|summary| {
+                        matches!(
+                            summary.status,
+                            rocode_types::ContextCompactionLifecycleStatus::Installed
+                        )
+                    }) || context_compaction_summary.is_some()
+                }),
             blocking: context_pressure_governance_summary
                 .map(|summary| summary.blocking)
                 .unwrap_or(false),
+            installed: installed_boundary.cloned(),
         },
         cache_explainability: rocode_types::SessionCacheExplainabilityContract {
             issue_present: cache_issue_present,
@@ -466,6 +513,15 @@ fn latest_cache_evidence(session: &Session) -> Option<serde_json::Value> {
 fn latest_context_compaction_summary(session: &Session) -> Option<ContextCompactionSummary> {
     diagnostics_sidecar(session)
         .and_then(|sidecar| sidecar.latest_context_compaction_record_value())
+        .and_then(|value| serde_json::from_value(value).ok())
+}
+
+#[cfg(test)]
+fn latest_context_compaction_lifecycle_summary(
+    session: &Session,
+) -> Option<ContextCompactionLifecycleSummary> {
+    diagnostics_sidecar(session)
+        .and_then(|sidecar| sidecar.context_compaction_lifecycle_summary_value())
         .and_then(|value| serde_json::from_value(value).ok())
 }
 
@@ -855,12 +911,32 @@ mod tests {
             compaction_succeeded: true,
             blocking: false,
         };
+        let lifecycle_summary = ContextCompactionLifecycleSummary {
+            trigger: "step_checkpoint_gate".to_string(),
+            phase: Some("scheduler.step_checkpoint".to_string()),
+            reason: Some("request view exceeded safe checkpoint limit".to_string()),
+            status: rocode_types::ContextCompactionLifecycleStatus::Installed,
+            forced: false,
+            request_context_tokens: Some(95_000),
+            live_context_tokens: Some(82_000),
+            limit_tokens: Some(100_000),
+            body_chars: Some(360_000),
+            installed: Some(rocode_types::ContextCompactionInstalledDiagnostics {
+                request_context_tokens: Some(64_000),
+                live_context_tokens: Some(61_000),
+                body_chars: Some(240_000),
+                cache_explanation: Some(
+                    "boundary recorded · session compacted before the next request".to_string(),
+                ),
+            }),
+        };
 
         let contract = build_context_closure_contract(
             Some(&context_explain),
             &usage_books,
             Some(&cache_semantics),
             Some(&context_compaction_summary),
+            Some(&lifecycle_summary),
             Some(&governance_summary),
             2,
         )
@@ -876,6 +952,26 @@ mod tests {
         assert_eq!(
             contract.compaction_boundary.phase.as_deref(),
             Some("scheduler.step_checkpoint")
+        );
+        assert_eq!(
+            contract.compaction_boundary.lifecycle_status,
+            Some(rocode_types::ContextCompactionLifecycleStatus::Installed)
+        );
+        assert_eq!(
+            contract
+                .compaction_boundary
+                .installed
+                .as_ref()
+                .and_then(|installed| installed.request_context_tokens),
+            Some(64_000)
+        );
+        assert_eq!(
+            contract
+                .compaction_boundary
+                .installed
+                .as_ref()
+                .and_then(|installed| installed.live_context_tokens),
+            Some(61_000)
         );
         assert_eq!(
             contract.compaction_boundary.request_pressure_percent,
@@ -916,6 +1012,86 @@ mod tests {
     }
 
     #[test]
+    fn context_closure_contract_prefers_installed_boundary_metrics_without_governance_summary() {
+        let usage_books = SessionUsageBooks {
+            request_context_tokens: Some(88_000),
+            live_context_tokens: Some(82_000),
+            workflow_cumulative: WorkflowUsageSummary::default(),
+        };
+        let context_explain = SessionContextExplain {
+            resolved_model: Some("openai/gpt-4o".to_string()),
+            fork: None,
+            raw_history_messages: 18,
+            raw_model_visible_messages: 15,
+            api_view_messages: 8,
+            api_view_estimated_input_tokens: Some(71_000),
+            api_view_body_chars: Some(250_000),
+            live_context_tokens: Some(68_000),
+            last_request_context_tokens: Some(88_000),
+            owner_session_cumulative_tokens: 104_000,
+            workflow_cumulative_tokens: 104_000,
+        };
+        let context_compaction_summary = ContextCompactionSummary {
+            trigger: "auto_preflight".to_string(),
+            phase: Some("prompt.pre_request".to_string()),
+            reason: Some("request_view_threshold".to_string()),
+            forced: false,
+            request_context_tokens: Some(92_000),
+            live_context_tokens: Some(82_000),
+            limit_tokens: Some(100_000),
+            body_chars: Some(360_000),
+            message_count_before: Some(15),
+            compacted_message_count: Some(7),
+            kept_message_count: Some(8),
+            summary: Some("Compacted 7 messages.".to_string()),
+        };
+        let lifecycle_summary = ContextCompactionLifecycleSummary {
+            trigger: "auto_preflight".to_string(),
+            phase: Some("prompt.pre_request".to_string()),
+            reason: Some("request_view_threshold".to_string()),
+            status: rocode_types::ContextCompactionLifecycleStatus::Installed,
+            forced: false,
+            request_context_tokens: Some(92_000),
+            live_context_tokens: Some(82_000),
+            limit_tokens: Some(100_000),
+            body_chars: Some(360_000),
+            installed: Some(rocode_types::ContextCompactionInstalledDiagnostics {
+                request_context_tokens: Some(71_000),
+                live_context_tokens: Some(68_000),
+                body_chars: Some(250_000),
+                cache_explanation: Some(
+                    "boundary recorded · 7 earlier messages trimmed from the API view".to_string(),
+                ),
+            }),
+        };
+
+        let contract = build_context_closure_contract(
+            Some(&context_explain),
+            &usage_books,
+            None,
+            Some(&context_compaction_summary),
+            Some(&lifecycle_summary),
+            None,
+            0,
+        )
+        .expect("contract should build");
+
+        assert_eq!(
+            contract.compaction_boundary.request_pressure_percent,
+            Some(71)
+        );
+        assert_eq!(contract.compaction_boundary.live_pressure_percent, Some(68));
+        assert_eq!(
+            contract
+                .compaction_boundary
+                .installed
+                .as_ref()
+                .and_then(|installed| installed.request_context_tokens),
+            Some(71_000)
+        );
+    }
+
+    #[test]
     fn latest_context_compaction_summary_reads_assistant_metadata() {
         let mut session = Session::new("session-1".to_string(), ".".to_string());
         let assistant = session.add_assistant_message();
@@ -944,6 +1120,49 @@ mod tests {
         assert!(summary.forced);
         assert_eq!(summary.compacted_message_count, Some(3));
         assert_eq!(summary.summary.as_deref(), Some("Compacted 3 messages."));
+    }
+
+    #[test]
+    fn latest_context_compaction_lifecycle_summary_reads_session_metadata() {
+        let mut session = Session::new("session-1".to_string(), ".".to_string());
+        session.insert_metadata(
+            rocode_session::prompt::CONTEXT_COMPACTION_LIFECYCLE_SUMMARY_METADATA_KEY,
+            serde_json::json!({
+                "trigger": "auto_preflight",
+                "phase": "prompt.pre_request",
+                "reason": "request_view_threshold",
+                "status": "installed",
+                "forced": false,
+                "request_context_tokens": 92000_u64,
+                "live_context_tokens": 82000_u64,
+                "limit_tokens": 100000_u64,
+                "body_chars": 360000,
+                "installed": {
+                    "request_context_tokens": 71000_u64,
+                    "live_context_tokens": 68000_u64,
+                    "body_chars": 250000,
+                    "cache_explanation": "boundary recorded · 7 earlier messages trimmed from the API view"
+                }
+            }),
+        );
+
+        let summary = latest_context_compaction_lifecycle_summary(&session).expect("summary");
+
+        assert_eq!(summary.trigger, "auto_preflight");
+        assert_eq!(summary.phase.as_deref(), Some("prompt.pre_request"));
+        assert_eq!(summary.reason.as_deref(), Some("request_view_threshold"));
+        assert_eq!(
+            summary.status,
+            rocode_types::ContextCompactionLifecycleStatus::Installed
+        );
+        assert_eq!(summary.request_context_tokens, Some(92_000));
+        assert_eq!(
+            summary
+                .installed
+                .as_ref()
+                .and_then(|installed| installed.request_context_tokens),
+            Some(71_000)
+        );
     }
 
     #[test]
@@ -1171,6 +1390,26 @@ mod tests {
                 kept_message_count: Some(7),
                 summary: Some("Compacted 7 messages.".to_string()),
             }),
+            context_compaction_lifecycle_summary: Some(ContextCompactionLifecycleSummary {
+                trigger: "auto_preflight".to_string(),
+                phase: Some("prompt.pre_request".to_string()),
+                reason: Some("request_view_threshold".to_string()),
+                status: rocode_types::ContextCompactionLifecycleStatus::Installed,
+                forced: false,
+                request_context_tokens: Some(92_000),
+                live_context_tokens: None,
+                limit_tokens: Some(100_000),
+                body_chars: Some(360_000),
+                installed: Some(rocode_types::ContextCompactionInstalledDiagnostics {
+                    request_context_tokens: Some(71_000),
+                    live_context_tokens: Some(68_000),
+                    body_chars: Some(250_000),
+                    cache_explanation: Some(
+                        "boundary recorded · 7 earlier messages trimmed from the API view"
+                            .to_string(),
+                    ),
+                }),
+            }),
             context_pressure_governance_summary: None,
             cache_semantics: Some(SessionCacheSemanticsSummary {
                 basis: rocode_types::SessionCacheSemanticsBasis::ApiView,
@@ -1224,12 +1463,24 @@ mod tests {
                     phase: Some("prompt.pre_request".to_string()),
                     trigger: Some("auto_preflight".to_string()),
                     reason: Some("request_view_threshold".to_string()),
+                    lifecycle_status: Some(
+                        rocode_types::ContextCompactionLifecycleStatus::Installed,
+                    ),
                     governance_status: None,
                     request_pressure_percent: Some(92),
                     live_pressure_percent: None,
                     compaction_attempted: true,
                     compaction_succeeded: true,
                     blocking: false,
+                    installed: Some(rocode_types::ContextCompactionInstalledDiagnostics {
+                        request_context_tokens: Some(71_000),
+                        live_context_tokens: Some(68_000),
+                        body_chars: Some(250_000),
+                        cache_explanation: Some(
+                            "boundary recorded · 7 earlier messages trimmed from the API view"
+                                .to_string(),
+                        ),
+                    }),
                 },
                 cache_explainability: rocode_types::SessionCacheExplainabilityContract {
                     issue_present: true,

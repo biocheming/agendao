@@ -1405,6 +1405,11 @@ impl App {
                     self.refresh_session_telemetry(session_id);
                     self.sync_prompt_spinner_state();
                 }
+                CustomEvent::StateChanged(StateChange::SessionStatusCompacting(session_id)) => {
+                    self.set_session_status(session_id, SessionStatus::Compacting);
+                    self.refresh_session_telemetry(session_id);
+                    self.sync_prompt_spinner_state();
+                }
                 CustomEvent::StateChanged(StateChange::SessionStatusIdle(session_id)) => {
                     self.set_session_status(session_id, SessionStatus::Idle);
                     self.refresh_session_telemetry(session_id);
