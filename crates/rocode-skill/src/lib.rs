@@ -36,8 +36,9 @@ pub use methodology::{
 };
 pub use runtime::{
     infer_runtime_skill_names, RuntimeInstructionSource, RuntimeSkillBootstrapReport,
-    RuntimeSkillMaterialization, RuntimeSkillMaterializationAction, RuntimeSkillSourceKind,
-    SkillRuntimeResolutionDiagnostic, SkillRuntimeResolver,
+    RuntimeSkillMaterialization, RuntimeSkillMaterializationAction, RuntimeSkillPromptBodyKind,
+    RuntimeSkillPromptPacket, RuntimeSkillSourceKind, SkillRuntimeResolutionDiagnostic,
+    SkillRuntimeResolver,
 };
 pub use sync::SkillSyncPlanner;
 pub use types::{
@@ -144,7 +145,9 @@ Do a thorough review.
         .unwrap();
 
         let authority = SkillAuthority::new(dir.path(), None);
-        let parsed = authority.load_skill("reviewer", None).unwrap();
+        let parsed = authority
+            .load_skill_for_inspection("reviewer", None)
+            .unwrap();
         assert_eq!(parsed.meta.name, "reviewer");
         assert_eq!(parsed.meta.description, "Review code changes");
         assert!(parsed.content.contains("Do a thorough review."));
@@ -173,7 +176,9 @@ metadata:
         .unwrap();
 
         let authority = SkillAuthority::new(dir.path(), None);
-        let detail = authority.load_skill_detail("reviewer", None).unwrap();
+        let detail = authority
+            .load_skill_detail_for_inspection("reviewer", None)
+            .unwrap();
         assert_eq!(detail.tags, vec!["review", "rust"]);
         assert_eq!(detail.related_skills, vec!["formatter"]);
         assert_eq!(detail.required_commands, vec!["cargo"]);
@@ -287,7 +292,7 @@ Use the following explicit create or refresh mapping:
         }));
         let loaded = governance
             .skill_authority()
-            .load_skill("drug-discovery-evaluate-properties", None)
+            .load_skill_for_inspection("drug-discovery-evaluate-properties", None)
             .unwrap();
         assert!(loaded.content.contains("./tools/mol evaluate"));
     }
@@ -2114,12 +2119,12 @@ version one
         governance.apply_sync(&source, "test:bundled-sync").unwrap();
         let installed = governance
             .skill_authority()
-            .load_skill("bundled-reviewer", None)
+            .load_skill_for_inspection("bundled-reviewer", None)
             .unwrap();
         assert!(installed.content.contains("version one"));
         let installed_note = governance
             .skill_authority()
-            .load_skill_file("bundled-reviewer", "notes.md")
+            .load_skill_file_for_inspection("bundled-reviewer", "notes.md")
             .unwrap();
         assert_eq!(installed_note.content, "note v1");
 
@@ -2165,16 +2170,16 @@ version two
         governance.apply_sync(&source, "test:bundled-sync").unwrap();
         let updated = governance
             .skill_authority()
-            .load_skill("bundled-reviewer", None)
+            .load_skill_for_inspection("bundled-reviewer", None)
             .unwrap();
         assert!(updated.content.contains("version two"));
         assert!(governance
             .skill_authority()
-            .load_skill_file("bundled-reviewer", "notes.md")
+            .load_skill_file_for_inspection("bundled-reviewer", "notes.md")
             .is_err());
         let updated_note = governance
             .skill_authority()
-            .load_skill_file("bundled-reviewer", "guide.txt")
+            .load_skill_file_for_inspection("bundled-reviewer", "guide.txt")
             .unwrap();
         assert_eq!(updated_note.content, "note v2");
         assert_eq!(
@@ -2279,12 +2284,12 @@ beta v2
         governance.apply_sync(&source, "test:local-sync").unwrap();
         let alpha_loaded = governance
             .skill_authority()
-            .load_skill("alpha", None)
+            .load_skill_for_inspection("alpha", None)
             .unwrap();
         assert!(alpha_loaded.content.contains("workspace alpha override"));
         assert!(governance
             .skill_authority()
-            .load_skill("beta", None)
+            .load_skill_for_inspection("beta", None)
             .is_err());
 
         let managed = governance.managed_skills();
@@ -2343,7 +2348,7 @@ gamma v1
             .unwrap();
         assert!(governance
             .skill_authority()
-            .load_skill("gamma", None)
+            .load_skill_for_inspection("gamma", None)
             .is_err());
         assert!(governance
             .managed_skills()
@@ -3320,14 +3325,14 @@ extract limit body
         assert!(std::path::Path::new(&response.result.location).exists());
         assert!(governance
             .skill_authority()
-            .load_skill("remote-reviewer", None)
+            .load_skill_for_inspection("remote-reviewer", None)
             .unwrap()
             .content
             .contains("Review remote code carefully."));
         assert_eq!(
             governance
                 .skill_authority()
-                .load_skill_file("remote-reviewer", "notes.md")
+                .load_skill_file_for_inspection("remote-reviewer", "notes.md")
                 .unwrap()
                 .content,
             "remote notes"
@@ -3507,7 +3512,7 @@ extract limit body
             .unwrap();
         assert!(governance
             .skill_authority()
-            .load_skill("remote-updatable", None)
+            .load_skill_for_inspection("remote-updatable", None)
             .unwrap()
             .content
             .contains("version one body"));
@@ -3527,13 +3532,13 @@ extract limit body
             .unwrap();
         let updated = governance
             .skill_authority()
-            .load_skill("remote-updatable", None)
+            .load_skill_for_inspection("remote-updatable", None)
             .unwrap();
         assert!(updated.content.contains("version two body"));
         assert_eq!(
             governance
                 .skill_authority()
-                .load_skill_file("remote-updatable", "guide.md")
+                .load_skill_file_for_inspection("remote-updatable", "guide.md")
                 .unwrap()
                 .content,
             "guide-2.0.0"
@@ -3631,14 +3636,14 @@ extract limit body
         assert_eq!(response.result.skill_name, "archive-reviewer");
         assert!(governance
             .skill_authority()
-            .load_skill("archive-reviewer", None)
+            .load_skill_for_inspection("archive-reviewer", None)
             .unwrap()
             .content
             .contains("archive install body"));
         assert_eq!(
             governance
                 .skill_authority()
-                .load_skill_file("archive-reviewer", "notes.md")
+                .load_skill_file_for_inspection("archive-reviewer", "notes.md")
                 .unwrap()
                 .content,
             "archive notes"
@@ -3717,7 +3722,7 @@ extract limit body
         );
         assert!(governance
             .skill_authority()
-            .load_skill("git-reviewer", None)
+            .load_skill_for_inspection("git-reviewer", None)
             .unwrap()
             .content
             .contains("git install body v1"));
@@ -3784,20 +3789,20 @@ extract limit body
         );
         let updated = governance
             .skill_authority()
-            .load_skill("git-reviewer", None)
+            .load_skill_for_inspection("git-reviewer", None)
             .unwrap();
         assert!(updated.content.contains("git install body v2"));
         assert_eq!(
             governance
                 .skill_authority()
-                .load_skill_file("git-reviewer", "guide.md")
+                .load_skill_file_for_inspection("git-reviewer", "guide.md")
                 .unwrap()
                 .content,
             "guide-v2"
         );
         assert!(governance
             .skill_authority()
-            .load_skill_file("git-reviewer", "legacy.md")
+            .load_skill_file_for_inspection("git-reviewer", "legacy.md")
             .is_err());
         assert!(governance
             .audit_tail()
@@ -4060,7 +4065,7 @@ locally changed body
         assert!(governance.managed_skills().is_empty());
         assert!(governance
             .skill_authority()
-            .load_skill("remote-detach", None)
+            .load_skill_for_inspection("remote-detach", None)
             .is_ok());
         assert!(governance
             .audit_tail()
@@ -4142,7 +4147,7 @@ locally changed body
         assert!(governance.managed_skills().is_empty());
         assert!(governance
             .skill_authority()
-            .load_skill("remote-remove-clean", None)
+            .load_skill_for_inspection("remote-remove-clean", None)
             .is_err());
 
         let diverged_dir = tempdir().unwrap();
@@ -4236,7 +4241,7 @@ diverged local body
         assert!(diverged_governance.managed_skills().is_empty());
         assert!(diverged_governance
             .skill_authority()
-            .load_skill("remote-remove-diverged", None)
+            .load_skill_for_inspection("remote-remove-diverged", None)
             .is_ok());
         assert!(diverged_governance
             .lifecycle_records()
@@ -4272,7 +4277,9 @@ Only review here.
         .unwrap();
 
         let authority = SkillAuthority::new(dir.path(), None);
-        let loaded = authority.load_skill("reviewer", None).unwrap();
+        let loaded = authority
+            .load_skill_for_inspection("reviewer", None)
+            .unwrap();
         assert_eq!(
             loaded.meta.conditions.requires_tools,
             vec!["grep".to_string()]
@@ -4368,7 +4375,7 @@ custom content
     }
 
     #[test]
-    fn render_loaded_skills_context_resolves_and_renders_requested_skills() {
+    fn render_loaded_skills_context_for_inspection_resolves_and_renders_requested_skills() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let skill_path = root.join(".rocode/skills/review/SKILL.md");
@@ -4387,7 +4394,7 @@ Check correctness first.
 
         let authority = SkillAuthority::new(root, None);
         let (context, loaded) = authority
-            .render_loaded_skills_context(&[
+            .render_loaded_skills_context_for_inspection(&[
                 "rocode-test-review-skill".to_string(),
                 "ROCODE-TEST-REVIEW-SKILL".to_string(),
             ])
@@ -4417,7 +4424,7 @@ Check correctness first.
 
         let authority = SkillAuthority::new(root, None);
         let err = authority
-            .load_skill_file("review-skill", "../outside.md")
+            .load_skill_file_for_inspection("review-skill", "../outside.md")
             .unwrap_err();
         assert!(err.to_string().contains("invalid skill file path"));
     }
@@ -4477,7 +4484,9 @@ First body.
         .unwrap();
 
         let authority = SkillAuthority::new(root, None);
-        let first = authority.load_skill("review-cache", None).unwrap();
+        let first = authority
+            .load_skill_for_inspection("review-cache", None)
+            .unwrap();
         assert!(first.content.contains("First body."));
 
         fs::write(
@@ -4491,7 +4500,9 @@ Second body.
         )
         .unwrap();
 
-        let second = authority.load_skill("review-cache", None).unwrap();
+        let second = authority
+            .load_skill_for_inspection("review-cache", None)
+            .unwrap();
         assert!(second.content.contains("Second body."));
     }
 

@@ -2075,13 +2075,13 @@ Review code changes carefully and verify evidence before reporting.
         let authority = skill_governance_authority(&state);
         let loaded = authority
             .skill_authority()
-            .load_skill("remote-reviewer", None)
+            .load_skill_for_inspection("remote-reviewer", None)
             .expect("workspace skill should exist");
         assert!(loaded.content.contains("Review remote code carefully."));
         assert_eq!(
             authority
                 .skill_authority()
-                .load_skill_file("remote-reviewer", "notes.md")
+                .load_skill_file_for_inspection("remote-reviewer", "notes.md")
                 .expect("supporting file should exist")
                 .content,
             "notes-1.0.0"
@@ -2243,7 +2243,7 @@ Review code changes carefully and verify evidence before reporting.
         let authority = skill_governance_authority(&state);
         assert!(authority
             .skill_authority()
-            .load_skill("remote-reviewer", None)
+            .load_skill_for_inspection("remote-reviewer", None)
             .expect("updated workspace skill")
             .content
             .contains("new policy"));
@@ -2298,7 +2298,7 @@ Review code changes carefully and verify evidence before reporting.
         let authority = skill_governance_authority(&state);
         assert!(authority
             .skill_authority()
-            .load_skill("remote-reviewer", None)
+            .load_skill_for_inspection("remote-reviewer", None)
             .is_ok());
 
         PERMISSION_ENGINE.lock().await.clear_session(session_id);
@@ -2347,7 +2347,7 @@ Review code changes carefully and verify evidence before reporting.
         assert!(removed.deleted_from_workspace);
         assert!(skill_governance_authority(&remove_state)
             .skill_authority()
-            .load_skill("remote-reviewer", None)
+            .load_skill_for_inspection("remote-reviewer", None)
             .is_err());
 
         PERMISSION_ENGINE

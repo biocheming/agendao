@@ -278,13 +278,13 @@ mod tests {
 
         let authority = authority_for(&target);
         let skill = authority
-            .load_skill("reviewer", None)
+            .load_skill_for_inspection("reviewer", None)
             .expect("skill should load");
         assert_eq!(skill.meta.name, "reviewer");
         assert!(skill.content.contains("Inspect patches carefully."));
 
         let supporting = authority
-            .load_skill_file("reviewer", "templates/checklist.md")
+            .load_skill_file_for_inspection("reviewer", "templates/checklist.md")
             .expect("supporting file should load");
         assert_eq!(supporting.content, "- scope\n- tests\n");
 

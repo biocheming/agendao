@@ -587,7 +587,9 @@ mod tests {
 
         assert!(result.output.contains("structured-skill"));
         let authority = crate::skill_support::authority_for(dir.path(), None);
-        let loaded = authority.load_skill("structured-skill", None).unwrap();
+        let loaded = authority
+            .load_skill_for_inspection("structured-skill", None)
+            .unwrap();
         assert!(loaded.content.contains("## When To Use"));
         assert!(loaded.content.contains("## Core Steps"));
         assert!(loaded.content.contains("## Validation"));

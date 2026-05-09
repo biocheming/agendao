@@ -145,10 +145,10 @@ pub(crate) async fn get_skill_detail(
     let filter = build_skill_filter(&state, &query.catalog).await?;
     let authority_filter = filter.as_ref().map(OwnedSkillFilter::as_filter);
     let skill = authority
-        .load_skill(&name, authority_filter.as_ref())
+        .load_skill_for_inspection(&name, authority_filter.as_ref())
         .map_err(map_skill_error_to_api_error)?;
     let source = authority
-        .load_skill_source(&name, authority_filter.as_ref())
+        .load_skill_source_for_inspection(&name, authority_filter.as_ref())
         .map_err(map_skill_error_to_api_error)?;
     let writable = authority.is_skill_meta_writable(&skill.meta);
     let runtime_resolution =

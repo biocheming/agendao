@@ -1,8 +1,8 @@
 use rocode_config::ConfigStore;
 use rocode_skill::{
-    infer_toolsets_from_tools, LoadedSkill, LoadedSkillFile, SkillAuthority, SkillCategoryView,
-    SkillDetailView, SkillError, SkillFileRef, SkillFilter, SkillGovernanceAuthority,
-    SkillMetaView, SkillRuntimeResolver,
+    infer_toolsets_from_tools, LoadedSkillFile, RuntimeSkillPromptPacket, SkillAuthority,
+    SkillCategoryView, SkillDetailView, SkillError, SkillFileRef, SkillFilter,
+    SkillGovernanceAuthority, SkillMetaView, SkillRuntimeResolver,
 };
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
@@ -163,16 +163,30 @@ pub(crate) fn runtime_resolver_for(
     SkillRuntimeResolver::new(base.to_path_buf(), config_store)
 }
 
+#[cfg(test)]
 pub(crate) fn load_skill_with_runtime_materialization(
     base_dir: &Path,
     config_store: Option<Arc<ConfigStore>>,
     requested_name: &str,
     filter: Option<&SkillFilter<'_>>,
     _extra: Option<&Metadata>,
-) -> Result<LoadedSkill, ToolError> {
+) -> Result<rocode_skill::LoadedSkill, ToolError> {
     let resolver = runtime_resolver_for(base_dir, config_store);
     resolver
         .load_skill(requested_name, filter)
+        .map_err(map_skill_error)
+}
+
+pub(crate) fn load_skill_prompt_packet_with_runtime_materialization(
+    base_dir: &Path,
+    config_store: Option<Arc<ConfigStore>>,
+    requested_name: &str,
+    filter: Option<&SkillFilter<'_>>,
+    selected_skill_names: Option<&[String]>,
+) -> Result<RuntimeSkillPromptPacket, ToolError> {
+    let resolver = runtime_resolver_for(base_dir, config_store);
+    resolver
+        .load_skill_prompt_packet(requested_name, filter, selected_skill_names)
         .map_err(map_skill_error)
 }
 
@@ -276,7 +290,7 @@ pub(crate) fn load_skills_prompt_context(
     base_dir: &Path,
     config_store: Option<Arc<ConfigStore>>,
     requested_skills: Option<&[String]>,
-    extra: Option<&Metadata>,
+    _extra: Option<&Metadata>,
 ) -> Result<LoadedSkillsPromptContext, ToolError> {
     let Some(requested_skills) = requested_skills else {
         return Ok(LoadedSkillsPromptContext::default());
@@ -288,17 +302,18 @@ pub(crate) fn load_skills_prompt_context(
 
     let mut rendered = Vec::new();
     let mut loaded_skills = Vec::new();
+    let selected_skill_names = requested_skills.clone();
     for requested_skill in requested_skills {
-        let skill = load_skill_with_runtime_materialization(
+        let packet = load_skill_prompt_packet_with_runtime_materialization(
             base_dir,
             config_store.clone(),
             &requested_skill,
             None,
-            extra,
+            Some(selected_skill_names.as_slice()),
         )?;
-        let (output, _) = format_loaded_skill_output(&skill, None, base_dir, None, None);
+        let (output, _) = format_loaded_skill_output(&packet, None, None);
         rendered.push(output);
-        loaded_skills.push(SkillMetaView::from(&skill.meta));
+        loaded_skills.push(SkillMetaView::from(&packet.meta));
     }
 
     Ok(LoadedSkillsPromptContext {
@@ -311,92 +326,85 @@ pub(crate) fn load_skills_prompt_context(
 }
 
 pub(crate) fn format_loaded_skill_output(
-    skill: &LoadedSkill,
-    detail: Option<&SkillDetailView>,
-    base_dir: &Path,
+    packet: &RuntimeSkillPromptPacket,
     arguments: Option<&serde_json::Value>,
     prompt: Option<&str>,
 ) -> (String, Metadata) {
-    let detail = detail.cloned().unwrap_or_default();
-    let linked_files = build_linked_files(&skill.meta.supporting_files);
+    let linked_files = build_linked_files(&packet.meta.supporting_files);
     let usage_hint = (!linked_files.is_empty()).then_some(
         "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'",
     );
-
-    let mut output = format!("<skill_content name=\"{}\">\n\n", skill.meta.name);
-    output.push_str(&format!("# Skill: {}\n\n", skill.meta.name));
-    output.push_str(&skill.content);
-    output.push_str("\n\n");
-    output.push_str(&format!(
-        "Base directory for this skill: {}\n",
-        skill.meta.location.parent().unwrap_or(base_dir).display()
-    ));
-    output.push_str(
-        "Relative paths in this skill (e.g., scripts/, references/) are relative to this base directory.\n",
-    );
-    if !skill.meta.supporting_files.is_empty() {
-        output.push_str("Supporting files available via skill_view(name, file_path):\n\n");
-        output.push_str("<skill_files>\n");
-        for file in &skill.meta.supporting_files {
-            output.push_str(&format!("<file>{}</file>\n", file.relative_path));
-        }
-        output.push_str("</skill_files>\n");
-    }
-
-    if let Some(args) = arguments {
-        output.push_str(&format!(
-            "\n**Arguments:**\n```json\n{}\n```\n",
-            serde_json::to_string_pretty(args).unwrap_or_default()
-        ));
-    }
-
-    if let Some(prompt) = prompt.filter(|value| !value.trim().is_empty()) {
-        output.push_str(&format!("\n**Additional Instructions:**\n{}\n", prompt));
-    }
-
-    output.push_str("\n</skill_content>");
+    let arguments_block = arguments.and_then(|args| serde_json::to_string_pretty(args).ok());
+    let output = packet.render_prompt_block(arguments_block.as_deref(), prompt);
 
     let mut metadata = Metadata::new();
-    metadata.insert("name".to_string(), serde_json::json!(&skill.meta.name));
+    metadata.insert("name".to_string(), serde_json::json!(&packet.meta.name));
     metadata.insert(
         "dir".to_string(),
-        serde_json::json!(skill
+        serde_json::json!(packet
             .meta
             .location
             .parent()
-            .unwrap_or(base_dir)
+            .unwrap_or_else(|| Path::new("."))
             .to_string_lossy()
             .to_string()),
     );
     metadata.insert(
         "location".to_string(),
-        serde_json::json!(skill.meta.location.to_string_lossy().to_string()),
+        serde_json::json!(packet.meta.location.to_string_lossy().to_string()),
     );
     metadata.insert(
         "description".to_string(),
-        serde_json::json!(&skill.meta.description),
+        serde_json::json!(&packet.meta.description),
     );
-    metadata.insert("version".to_string(), serde_json::json!(detail.version));
-    metadata.insert("author".to_string(), serde_json::json!(detail.author));
-    metadata.insert("license".to_string(), serde_json::json!(detail.license));
-    metadata.insert("platforms".to_string(), serde_json::json!(detail.platforms));
-    metadata.insert("tags".to_string(), serde_json::json!(detail.tags));
+    metadata.insert(
+        "runtime_prompt_body_kind".to_string(),
+        serde_json::json!(packet.body_kind),
+    );
+    metadata.insert(
+        "runtime_vitality_state".to_string(),
+        serde_json::json!(packet.vitality_state),
+    );
+    metadata.insert(
+        "runtime_governance_hints".to_string(),
+        serde_json::to_value(&packet.governance_hints).unwrap_or_else(|_| serde_json::json!([])),
+    );
+    metadata.insert(
+        "version".to_string(),
+        serde_json::json!(packet.detail.version),
+    );
+    metadata.insert(
+        "author".to_string(),
+        serde_json::json!(packet.detail.author),
+    );
+    metadata.insert(
+        "license".to_string(),
+        serde_json::json!(packet.detail.license),
+    );
+    metadata.insert(
+        "platforms".to_string(),
+        serde_json::json!(packet.detail.platforms),
+    );
+    metadata.insert("tags".to_string(), serde_json::json!(packet.detail.tags));
     metadata.insert(
         "related_skills".to_string(),
-        serde_json::json!(detail.related_skills),
+        serde_json::json!(packet.detail.related_skills),
     );
     metadata.insert(
         "prerequisites".to_string(),
-        serde_json::json!(detail.prerequisites),
+        serde_json::json!(packet.detail.prerequisites),
     );
-    metadata.insert("metadata".to_string(), serde_json::json!(detail.metadata));
+    metadata.insert(
+        "metadata".to_string(),
+        serde_json::json!(packet.detail.metadata),
+    );
     metadata.insert(
         "path".to_string(),
-        serde_json::json!(skill.meta.location.to_string_lossy().to_string()),
+        serde_json::json!(packet.meta.location.to_string_lossy().to_string()),
     );
     metadata.insert(
         "supporting_files".to_string(),
-        serde_json::json!(skill
+        serde_json::json!(packet
             .meta
             .supporting_files
             .iter()
@@ -410,35 +418,35 @@ pub(crate) fn format_loaded_skill_output(
     metadata.insert("usage_hint".to_string(), serde_json::json!(usage_hint));
     metadata.insert(
         "required_environment_variables".to_string(),
-        serde_json::json!(detail.required_environment_variables),
+        serde_json::json!(packet.detail.required_environment_variables),
     );
     metadata.insert(
         "required_commands".to_string(),
-        serde_json::json!(detail.required_commands),
+        serde_json::json!(packet.detail.required_commands),
     );
     metadata.insert(
         "missing_required_environment_variables".to_string(),
-        serde_json::json!(detail.missing_required_environment_variables),
+        serde_json::json!(packet.detail.missing_required_environment_variables),
     );
     metadata.insert(
         "missing_required_commands".to_string(),
-        serde_json::json!(detail.missing_required_commands),
+        serde_json::json!(packet.detail.missing_required_commands),
     );
     metadata.insert(
         "setup_needed".to_string(),
-        serde_json::json!(detail.setup_needed),
+        serde_json::json!(packet.detail.setup_needed),
     );
     metadata.insert(
         "setup_skipped".to_string(),
-        serde_json::json!(detail.setup_skipped),
+        serde_json::json!(packet.detail.setup_skipped),
     );
     metadata.insert(
         "readiness_status".to_string(),
-        serde_json::json!(detail.readiness_status),
+        serde_json::json!(packet.detail.readiness_status),
     );
     metadata.insert(
         "display.summary".to_string(),
-        serde_json::json!(skill.meta.description.clone()),
+        serde_json::json!(packet.meta.description.clone()),
     );
 
     (output, metadata)
@@ -532,11 +540,14 @@ pub(crate) fn attach_skill_runtime_preflight(
 mod tests {
     use super::*;
     use rocode_skill::{
-        LoadedSkill, SkillConditions, SkillDetailView, SkillFileRef, SkillHermesMetadata,
-        SkillMeta, SkillMetadataBlocks, SkillPrerequisites, SkillReadinessStatus,
-        SkillRequiredEnvironmentVariable, SkillRocodeMetadata,
+        RuntimeSkillPromptBodyKind, RuntimeSkillPromptPacket, SkillConditions, SkillDetailView,
+        SkillFileRef, SkillHermesMetadata, SkillMeta, SkillMetadataBlocks, SkillPrerequisites,
+        SkillReadinessStatus, SkillRequiredEnvironmentVariable, SkillRocodeMetadata,
     };
-    use rocode_types::{SkillRetirementReason, SkillRetirementReasonKind, SkillVitalityState};
+    use rocode_types::{
+        SkillRetirementReason, SkillRetirementReasonKind, SkillRuntimeCompositionHint,
+        SkillRuntimeCompositionHintKind, SkillVitalityState,
+    };
     use std::path::PathBuf;
     use tempfile::tempdir;
 
@@ -581,7 +592,7 @@ mod tests {
     fn format_loaded_skill_output_exposes_hermes_style_linked_file_metadata() {
         let dir = tempdir().unwrap();
         let skill_dir = dir.path().join("example");
-        let skill = LoadedSkill {
+        let packet = RuntimeSkillPromptPacket {
             meta: SkillMeta {
                 name: "example".to_string(),
                 description: "Example skill".to_string(),
@@ -599,49 +610,62 @@ mod tests {
                 ],
                 conditions: SkillConditions::default(),
             },
-            content: "# Example".to_string(),
-        };
-        let detail = SkillDetailView {
-            version: Some("1.2.3".to_string()),
-            author: Some("Example Author".to_string()),
-            license: Some("MIT".to_string()),
-            platforms: vec!["linux".to_string(), "macos".to_string()],
-            tags: vec!["chemistry".to_string(), "design".to_string()],
-            related_skills: vec!["molecule-report".to_string()],
-            prerequisites: Some(SkillPrerequisites {
-                env_vars: vec!["LEGACY_API_KEY".to_string()],
-                commands: vec!["legacy-cli".to_string()],
-            }),
-            metadata: Some(SkillMetadataBlocks {
-                hermes: Some(SkillHermesMetadata {
-                    tags: vec!["chemistry".to_string(), "design".to_string()],
-                    related_skills: vec!["molecule-report".to_string()],
+            detail: SkillDetailView {
+                version: Some("1.2.3".to_string()),
+                author: Some("Example Author".to_string()),
+                license: Some("MIT".to_string()),
+                platforms: vec!["linux".to_string(), "macos".to_string()],
+                tags: vec!["chemistry".to_string(), "design".to_string()],
+                related_skills: vec!["molecule-report".to_string()],
+                prerequisites: Some(SkillPrerequisites {
+                    env_vars: vec!["LEGACY_API_KEY".to_string()],
+                    commands: vec!["legacy-cli".to_string()],
                 }),
-                rocode: Some(SkillRocodeMetadata {
-                    requires_tools: vec!["skill_manage".to_string()],
-                    fallback_for_tools: Vec::new(),
-                    requires_toolsets: Vec::new(),
-                    fallback_for_toolsets: Vec::new(),
-                    stage_filter: vec!["implementation".to_string()],
+                metadata: Some(SkillMetadataBlocks {
+                    hermes: Some(SkillHermesMetadata {
+                        tags: vec!["chemistry".to_string(), "design".to_string()],
+                        related_skills: vec!["molecule-report".to_string()],
+                    }),
+                    rocode: Some(SkillRocodeMetadata {
+                        requires_tools: vec!["skill_manage".to_string()],
+                        fallback_for_tools: Vec::new(),
+                        requires_toolsets: Vec::new(),
+                        fallback_for_toolsets: Vec::new(),
+                        stage_filter: vec!["implementation".to_string()],
+                    }),
                 }),
-            }),
-            required_environment_variables: vec![SkillRequiredEnvironmentVariable {
-                name: "DEMO_API_KEY".to_string(),
-                description: Some("Demo token".to_string()),
-                prompt: None,
-                help: None,
-                required_for: None,
+                required_environment_variables: vec![SkillRequiredEnvironmentVariable {
+                    name: "DEMO_API_KEY".to_string(),
+                    description: Some("Demo token".to_string()),
+                    prompt: None,
+                    help: None,
+                    required_for: None,
+                }],
+                required_commands: vec!["demo-cli".to_string()],
+                missing_required_environment_variables: vec!["DEMO_API_KEY".to_string()],
+                missing_required_commands: vec!["demo-cli".to_string()],
+                setup_needed: true,
+                setup_skipped: false,
+                readiness_status: SkillReadinessStatus::SetupNeeded,
+            },
+            vitality_state: SkillVitalityState::ReviewCandidate,
+            body_kind: RuntimeSkillPromptBodyKind::CompactBody,
+            methodology: None,
+            compact_body: Some("## Notes\n- Use the demo path.".to_string()),
+            governance_hints: vec![SkillRuntimeCompositionHint {
+                kind: SkillRuntimeCompositionHintKind::PreferCanonicalSkill,
+                skill_names: vec!["example".to_string()],
+                preferred_skill_name: Some("canonical-example".to_string()),
+                capability_id: Some("example-family".to_string()),
+                summary: "Prefer canonical-example for general work; keep example narrow."
+                    .to_string(),
             }],
-            required_commands: vec!["demo-cli".to_string()],
-            missing_required_environment_variables: vec!["DEMO_API_KEY".to_string()],
-            missing_required_commands: vec!["demo-cli".to_string()],
-            setup_needed: true,
-            setup_skipped: false,
-            readiness_status: SkillReadinessStatus::SetupNeeded,
         };
 
-        let (_, metadata) =
-            format_loaded_skill_output(&skill, Some(&detail), dir.path(), None, None);
+        let (output, metadata) = format_loaded_skill_output(&packet, None, None);
+        assert!(output.contains("<skill_runtime_packet"));
+        assert!(output.contains("## Governance Hints"));
+        assert!(output.contains("## Execution Notes"));
         assert_eq!(metadata.get("name"), Some(&serde_json::json!("example")));
         assert_eq!(metadata.get("version"), Some(&serde_json::json!("1.2.3")));
         assert_eq!(
@@ -715,6 +739,14 @@ mod tests {
                 .join("SKILL.md")
                 .to_string_lossy()
                 .to_string()))
+        );
+        assert_eq!(
+            metadata.get("runtime_prompt_body_kind"),
+            Some(&serde_json::json!("compact_body"))
+        );
+        assert_eq!(
+            metadata.get("runtime_vitality_state"),
+            Some(&serde_json::json!("review_candidate"))
         );
         assert_eq!(
             metadata.get("usage_hint"),
