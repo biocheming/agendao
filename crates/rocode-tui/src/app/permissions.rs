@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::components::{PermissionRequest, PermissionType};
+use crate::components::{PermissionLifetime, PermissionRequest, PermissionType};
 
 use super::App;
 
@@ -53,12 +53,30 @@ impl App {
                 })
             })
             .unwrap_or_else(|| permission.message.clone());
+        let supported_lifetimes = input
+            .get("supported_lifetimes")
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| match value.as_str() {
+                        Some("once") => Some(PermissionLifetime::Once),
+                        Some("turn") => Some(PermissionLifetime::Turn),
+                        Some("session") | Some("always") => Some(PermissionLifetime::Session),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .filter(|values| !values.is_empty())
+            .unwrap_or_else(|| vec![PermissionLifetime::Once, PermissionLifetime::Session]);
 
         PermissionRequest {
             id: permission.id.clone(),
             permission_type: Self::permission_type_from_name(permission_name),
             resource,
             tool_name: permission_name.to_string(),
+            permission_class: permission.permission_class.clone(),
+            supported_lifetimes,
         }
     }
 

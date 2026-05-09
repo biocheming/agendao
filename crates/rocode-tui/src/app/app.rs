@@ -641,15 +641,15 @@ impl App {
                 if self.permission_prompt.is_open {
                     match key.code {
                         KeyCode::Char('y') | KeyCode::Enter => {
-                            if let Some(request) = self.permission_prompt.approve() {
+                            if let Some(request) = self.permission_prompt.approve_once() {
                                 self.resolve_permission_request(
                                     &request.id,
                                     "once",
-                                    Some("approved".to_string()),
+                                    Some("approved once".to_string()),
                                 );
                             }
                         }
-                        KeyCode::Char('n') => {
+                        KeyCode::Char('0') | KeyCode::Char('n') => {
                             if let Some(request) = self.permission_prompt.deny() {
                                 self.resolve_permission_request(
                                     &request.id,
@@ -658,12 +658,30 @@ impl App {
                                 );
                             }
                         }
-                        KeyCode::Char('a') => {
-                            if let Some(request) = self.permission_prompt.approve_always() {
+                        KeyCode::Char('1') => {
+                            if let Some(request) = self.permission_prompt.approve_once() {
                                 self.resolve_permission_request(
                                     &request.id,
-                                    "always",
-                                    Some("approved always".to_string()),
+                                    "once",
+                                    Some("approved once".to_string()),
+                                );
+                            }
+                        }
+                        KeyCode::Char('2') => {
+                            if let Some(request) = self.permission_prompt.approve_turn() {
+                                self.resolve_permission_request(
+                                    &request.id,
+                                    "turn",
+                                    Some("approved for turn".to_string()),
+                                );
+                            }
+                        }
+                        KeyCode::Char('3') | KeyCode::Char('a') => {
+                            if let Some(request) = self.permission_prompt.approve_session() {
+                                self.resolve_permission_request(
+                                    &request.id,
+                                    "session",
+                                    Some("approved for session".to_string()),
                                 );
                             }
                         }
@@ -1137,12 +1155,34 @@ impl App {
                             self.permission_prompt.handle_click(col, row);
                             if let Some(action) = self.permission_prompt.take_pending_action() {
                                 match action {
-                                    PermissionAction::Approve => {
-                                        if let Some(request) = self.permission_prompt.approve() {
+                                    PermissionAction::ApproveOnce => {
+                                        if let Some(request) = self.permission_prompt.approve_once()
+                                        {
                                             self.resolve_permission_request(
                                                 &request.id,
                                                 "once",
-                                                Some("approved".to_string()),
+                                                Some("approved once".to_string()),
+                                            );
+                                        }
+                                    }
+                                    PermissionAction::ApproveTurn => {
+                                        if let Some(request) = self.permission_prompt.approve_turn()
+                                        {
+                                            self.resolve_permission_request(
+                                                &request.id,
+                                                "turn",
+                                                Some("approved for turn".to_string()),
+                                            );
+                                        }
+                                    }
+                                    PermissionAction::ApproveSession => {
+                                        if let Some(request) =
+                                            self.permission_prompt.approve_session()
+                                        {
+                                            self.resolve_permission_request(
+                                                &request.id,
+                                                "session",
+                                                Some("approved for session".to_string()),
                                             );
                                         }
                                     }
@@ -1152,17 +1192,6 @@ impl App {
                                                 &request.id,
                                                 "reject",
                                                 Some("rejected".to_string()),
-                                            );
-                                        }
-                                    }
-                                    PermissionAction::ApproveAlways => {
-                                        if let Some(request) =
-                                            self.permission_prompt.approve_always()
-                                        {
-                                            self.resolve_permission_request(
-                                                &request.id,
-                                                "always",
-                                                Some("approved always".to_string()),
                                             );
                                         }
                                     }

@@ -845,6 +845,29 @@ async fn handle_permission_from_sse(
                 .collect::<HashMap<_, _>>()
         })
         .unwrap_or_default();
+    let lifetimes = input
+        .get("supported_lifetimes")
+        .and_then(|value| value.as_array())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| match value.as_str() {
+                    Some("once") => Some(rocode_permission::PermissionLifetime::Once),
+                    Some("turn") => Some(rocode_permission::PermissionLifetime::Turn),
+                    Some("session") | Some("always") => {
+                        Some(rocode_permission::PermissionLifetime::Session)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .filter(|values| !values.is_empty())
+        .unwrap_or_else(|| {
+            vec![
+                rocode_permission::PermissionLifetime::Once,
+                rocode_permission::PermissionLifetime::Session,
+            ]
+        });
 
     {
         let memory = runtime.permission_memory.lock().await;
@@ -867,9 +890,10 @@ async fn handle_permission_from_sse(
         let permission = permission.clone();
         let patterns = patterns.clone();
         let metadata = metadata.clone();
+        let lifetimes = lifetimes.clone();
         tokio::task::spawn_blocking(move || {
             let style = CliStyle::detect();
-            prompt_permission(&permission, &patterns, &metadata, &style)
+            prompt_permission(&permission, &patterns, &metadata, &lifetimes, &style)
         })
         .await
     };
@@ -904,10 +928,15 @@ async fn handle_permission_from_sse(
 
     let (reply, message) = match decision {
         PermissionDecision::Allow => ("once", Some("approved".to_string())),
-        PermissionDecision::AllowAlways => {
+        PermissionDecision::AllowTurn => {
             let mut memory = runtime.permission_memory.lock().await;
-            memory.grant_always(&permission, &patterns);
-            ("always", Some("approved always".to_string()))
+            memory.grant_turn(&permission, &patterns);
+            ("turn", Some("approved for turn".to_string()))
+        }
+        PermissionDecision::AllowSession => {
+            let mut memory = runtime.permission_memory.lock().await;
+            memory.grant_session(&permission, &patterns);
+            ("session", Some("approved for session".to_string()))
         }
         PermissionDecision::Deny => ("reject", Some("rejected".to_string())),
     };

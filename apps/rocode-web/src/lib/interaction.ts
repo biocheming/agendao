@@ -21,6 +21,8 @@ export interface PermissionInteractionRecord {
   session_id?: string;
   message?: string;
   permission?: string;
+  permission_class?: string;
+  supported_lifetimes?: string[];
   command?: string;
   filepath?: string;
   patterns?: string[];
@@ -161,12 +163,18 @@ export function permissionInteractionFromEvent(
   const patterns = Array.isArray(input?.patterns)
     ? input?.patterns.map((value) => String(value ?? "")).filter(Boolean)
     : undefined;
+  const supported_lifetimes = Array.isArray(input?.supported_lifetimes)
+    ? input?.supported_lifetimes.map((value) => String(value ?? "")).filter(Boolean)
+    : undefined;
 
   return {
     permission_id: String(event.permissionID ?? ""),
     session_id: sessionId,
     message: typeof info.message === "string" ? info.message : undefined,
     permission: typeof info.tool === "string" ? info.tool : undefined,
+    permission_class:
+      typeof info.permission_class === "string" ? info.permission_class : undefined,
+    supported_lifetimes,
     command: typeof input?.command === "string" ? input.command : undefined,
     filepath: patterns?.[0],
     patterns,

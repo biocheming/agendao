@@ -2576,7 +2576,7 @@ export default function App() {
     }
   };
 
-  const replyPermission = async (reply: "once" | "always" | "reject") => {
+  const replyPermission = async (reply: "once" | "turn" | "session" | "reject") => {
     const currentPermission = permission;
     if (!currentPermission || permissionSubmitting) return;
     setPermissionSubmitting(true);

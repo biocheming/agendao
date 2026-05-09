@@ -1652,6 +1652,11 @@ async fn session_prompt_inner(
     req: SessionPromptRequest,
     verified_ingress: Option<VerifiedSessionIngress>,
 ) -> Result<Json<serde_json::Value>> {
+    super::super::permission::PERMISSION_ENGINE
+        .lock()
+        .await
+        .clear_turn(&id);
+
     if req.agent.is_some() && req.scheduler_profile.is_some() {
         return Err(ApiError::BadRequest(
             "`agent` and `scheduler_profile` are mutually exclusive".to_string(),
