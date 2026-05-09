@@ -2272,6 +2272,10 @@ pub async fn run_local_scheduler_prompt(
     )
     .await;
 
+    crate::routes::permission::PERMISSION_ENGINE
+        .lock()
+        .await
+        .clear_turn(&session_id);
     set_session_run_status(&state, &session_id, SessionRunStatus::Busy).await;
 
     session.insert_metadata("model_provider", serde_json::json!(&provider_id));

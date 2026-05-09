@@ -1,26 +1,29 @@
 //! CLI interactive permission approval UI.
 //!
 //! Displays permission requests from tool execution and lets the user
-//! choose `Allow`, `Allow Always`, or `Deny` via the interactive selector.
+//! choose `Allow Once`, `Allow Turn`, `Allow Session`, or `Deny` via the
+//! interactive selector.
 //!
-//! "Allow Always" remembers the permission type + pattern for the remainder
-//! of the session so subsequent identical requests are auto-approved.
+//! Turn/session grants remember the permission type + pattern so subsequent
+//! identical requests are auto-approved within the same scope.
 
 use crate::cli_select::{interactive_select, SelectOption, SelectResult};
 use crate::cli_spinner::SpinnerGuard;
 use crate::cli_style::CliStyle;
+use rocode_permission::PermissionLifetime;
 use std::collections::HashSet;
 use std::io::{self, Write};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// Stores permission grants that were approved with "Allow Always".
+/// Stores permission grants that were approved for a turn or session.
 ///
 /// Key format: `"{permission}:{pattern}"` (e.g. `"bash:ls"`, `"edit:src/main.rs"`).
 /// A wildcard key `"{permission}:*"` means the entire permission type was blanket-approved.
 #[derive(Debug, Clone, Default)]
 pub struct PermissionMemory {
-    granted: HashSet<String>,
+    turn_granted: HashSet<String>,
+    session_granted: HashSet<String>,
 }
 
 impl PermissionMemory {
@@ -28,22 +31,39 @@ impl PermissionMemory {
         Self::default()
     }
 
-    /// Record that a specific permission + patterns combination was always-approved.
-    pub fn grant_always(&mut self, permission: &str, patterns: &[String]) {
+    fn keys_for(permission: &str, patterns: &[String]) -> Vec<String> {
         if patterns.is_empty() {
-            // No patterns → blanket grant for the permission type
-            self.granted.insert(format!("{}:*", permission));
+            vec![format!("{}:*", permission)]
         } else {
-            for pattern in patterns {
-                self.granted.insert(format!("{}:{}", permission, pattern));
-            }
+            patterns
+                .iter()
+                .map(|pattern| format!("{}:{}", permission, pattern))
+                .collect()
         }
+    }
+
+    pub fn grant_turn(&mut self, permission: &str, patterns: &[String]) {
+        for key in Self::keys_for(permission, patterns) {
+            self.turn_granted.insert(key);
+        }
+    }
+
+    pub fn grant_session(&mut self, permission: &str, patterns: &[String]) {
+        for key in Self::keys_for(permission, patterns) {
+            self.session_granted.insert(key);
+        }
+    }
+
+    pub fn clear_turn(&mut self) {
+        self.turn_granted.clear();
     }
 
     /// Check whether the permission request is already auto-approved.
     pub fn is_granted(&self, permission: &str, patterns: &[String]) -> bool {
         // Blanket wildcard grant
-        if self.granted.contains(&format!("{}:*", permission)) {
+        if self.session_granted.contains(&format!("{}:*", permission))
+            || self.turn_granted.contains(&format!("{}:*", permission))
+        {
             return true;
         }
         // Check each pattern
@@ -52,15 +72,19 @@ impl PermissionMemory {
         }
         patterns
             .iter()
-            .all(|p| self.granted.contains(&format!("{}:{}", permission, p)))
+            .all(|p| {
+                let key = format!("{}:{}", permission, p);
+                self.session_granted.contains(&key) || self.turn_granted.contains(&key)
+            })
     }
 }
 
-/// The three possible user decisions for a permission request.
+/// The possible user decisions for a permission request.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PermissionDecision {
     Allow,
-    AllowAlways,
+    AllowTurn,
+    AllowSession,
     Deny,
 }
 
@@ -156,11 +180,12 @@ fn format_permission_summary(
 
 /// Present a permission approval prompt to the user.
 ///
-/// Returns the user's decision: Allow, Allow Always, or Deny.
+/// Returns the user's decision.
 pub fn prompt_permission(
     permission: &str,
     patterns: &[String],
     metadata: &std::collections::HashMap<String, serde_json::Value>,
+    lifetimes: &[PermissionLifetime],
     style: &CliStyle,
 ) -> io::Result<PermissionDecision> {
     let summary = format_permission_summary(permission, patterns, metadata, style);
@@ -170,20 +195,26 @@ pub fn prompt_permission(
     write!(stderr, "{}\n", summary)?;
     stderr.flush()?;
 
-    let options = vec![
-        SelectOption {
-            label: "Allow".to_string(),
-            description: Some("Allow this action once".to_string()),
-        },
-        SelectOption {
-            label: "Allow Always".to_string(),
+    let mut options = vec![SelectOption {
+        label: "Allow Once".to_string(),
+        description: Some("Allow this action once".to_string()),
+    }];
+    if lifetimes.contains(&PermissionLifetime::Turn) {
+        options.push(SelectOption {
+            label: "Allow Turn".to_string(),
+            description: Some("Allow this type for the current turn".to_string()),
+        });
+    }
+    if lifetimes.contains(&PermissionLifetime::Session) {
+        options.push(SelectOption {
+            label: "Allow Session".to_string(),
             description: Some("Allow this type for the rest of the session".to_string()),
-        },
-        SelectOption {
-            label: "Deny".to_string(),
-            description: Some("Block this action".to_string()),
-        },
-    ];
+        });
+    }
+    options.push(SelectOption {
+        label: "Deny".to_string(),
+        description: Some("Block this action".to_string()),
+    });
 
     let result = interactive_select("Permission required", None, &options, style)?;
 
@@ -191,8 +222,9 @@ pub fn prompt_permission(
         SelectResult::Selected(choices) => {
             let choice = choices.first().map(|s| s.as_str()).unwrap_or("Deny");
             match choice {
-                "Allow" => Ok(PermissionDecision::Allow),
-                "Allow Always" => Ok(PermissionDecision::AllowAlways),
+                "Allow Once" => Ok(PermissionDecision::Allow),
+                "Allow Turn" => Ok(PermissionDecision::AllowTurn),
+                "Allow Session" => Ok(PermissionDecision::AllowSession),
                 _ => Ok(PermissionDecision::Deny),
             }
         }
@@ -204,9 +236,9 @@ pub fn prompt_permission(
 /// Build a CLI permission callback that can be passed to `AgentExecutor::with_ask_permission()`.
 ///
 /// Returns a closure that:
-/// - Checks the session-scoped `PermissionMemory` for prior "Allow Always" grants
+/// - Checks the scoped `PermissionMemory` for prior grants
 /// - If not already granted, pauses the spinner, prompts the user interactively, then resumes
-/// - Records "Allow Always" decisions in memory for future auto-approval
+/// - Records turn/session decisions in memory for future auto-approval
 pub fn build_cli_permission_callback(
     spinner_guard: Arc<std::sync::Mutex<SpinnerGuard>>,
 ) -> impl Fn(
@@ -230,15 +262,6 @@ pub fn build_cli_permission_callback(
                 }
             }
 
-            // Check if the request itself declares always-allow patterns
-            // (e.g. grep with `always_allow()` — these are auto-approved)
-            if !request.always.is_empty() {
-                // The tool itself says this should always be allowed
-                let mut mem = memory.lock().await;
-                mem.grant_always(&request.permission, &request.patterns);
-                return Ok(());
-            }
-
             // Pause spinner so it doesn't trample the permission prompt
             let guard = spinner_guard
                 .lock()
@@ -250,10 +273,15 @@ pub fn build_cli_permission_callback(
             let permission = request.permission.clone();
             let patterns = request.patterns.clone();
             let metadata = request.metadata.clone();
+            let lifetimes = if request.supported_lifetimes.is_empty() {
+                vec![PermissionLifetime::Once, PermissionLifetime::Session]
+            } else {
+                request.supported_lifetimes.clone()
+            };
 
             let decision = tokio::task::spawn_blocking(move || {
                 let style = CliStyle::detect();
-                prompt_permission(&permission, &patterns, &metadata, &style)
+                prompt_permission(&permission, &patterns, &metadata, &lifetimes, &style)
             })
             .await
             .map_err(|e| {
@@ -269,9 +297,14 @@ pub fn build_cli_permission_callback(
 
             match decision {
                 PermissionDecision::Allow => Ok(()),
-                PermissionDecision::AllowAlways => {
+                PermissionDecision::AllowTurn => {
                     let mut mem = memory.lock().await;
-                    mem.grant_always(&request.permission, &request.patterns);
+                    mem.grant_turn(&request.permission, &request.patterns);
+                    Ok(())
+                }
+                PermissionDecision::AllowSession => {
+                    let mut mem = memory.lock().await;
+                    mem.grant_session(&request.permission, &request.patterns);
                     Ok(())
                 }
                 PermissionDecision::Deny => Err(rocode_tool::ToolError::PermissionDenied(format!(
@@ -294,7 +327,7 @@ mod tests {
 
         assert!(!mem.is_granted("bash", &["ls".to_string()]));
 
-        mem.grant_always("bash", &["ls".to_string()]);
+        mem.grant_session("bash", &["ls".to_string()]);
         assert!(mem.is_granted("bash", &["ls".to_string()]));
         assert!(!mem.is_granted("bash", &["rm -rf /".to_string()]));
     }
@@ -303,7 +336,7 @@ mod tests {
     fn permission_memory_wildcard_grant() {
         let mut mem = PermissionMemory::new();
 
-        mem.grant_always("edit", &[]);
+        mem.grant_session("edit", &[]);
         assert!(mem.is_granted("edit", &["any-file.rs".to_string()]));
         assert!(mem.is_granted("edit", &["another.rs".to_string()]));
     }
@@ -313,7 +346,7 @@ mod tests {
         let mut mem = PermissionMemory::new();
 
         let patterns = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
-        mem.grant_always("edit", &patterns);
+        mem.grant_session("edit", &patterns);
 
         assert!(mem.is_granted("edit", &["src/a.rs".to_string()]));
         assert!(mem.is_granted("edit", &["src/b.rs".to_string()]));

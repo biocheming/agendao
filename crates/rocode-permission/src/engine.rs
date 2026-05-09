@@ -8,11 +8,57 @@ use crate::{
     evaluate_permission_patterns, tool_to_permission, PermissionAction, PermissionRuleset,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionClass {
+    InspectRead,
+    WorkspaceWrite,
+    ExternalAccess,
+    DangerousExec,
+}
+
+impl PermissionClass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InspectRead => "inspect_read",
+            Self::WorkspaceWrite => "workspace_write",
+            Self::ExternalAccess => "external_access",
+            Self::DangerousExec => "dangerous_exec",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionLifetime {
+    Once,
+    Turn,
+    Session,
+}
+
+impl PermissionLifetime {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Once => "once",
+            Self::Turn => "turn",
+            Self::Session => "session",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermissionInfo {
     pub id: String,
     pub permission_type: String,
     pub pattern: Option<Pattern>,
+    #[serde(default)]
+    pub permission_class: Option<PermissionClass>,
+    #[serde(default)]
+    pub scope_key: Option<String>,
+    #[serde(default)]
+    pub origin_tool: Option<String>,
+    #[serde(default)]
+    pub supported_lifetimes: Vec<PermissionLifetime>,
     pub session_id: String,
     pub message_id: String,
     pub call_id: Option<String>,
@@ -36,6 +82,7 @@ pub enum Pattern {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Response {
     Once,
+    Turn,
     Always,
     Reject,
 }
@@ -54,6 +101,7 @@ pub enum AskOutcome {
 pub struct PermissionEngine {
     pending: HashMap<String, HashMap<String, PendingPermission>>,
     approved: HashMap<String, HashMap<String, bool>>,
+    turn_approved: HashMap<String, HashMap<String, bool>>,
 }
 
 impl PermissionEngine {
@@ -61,6 +109,7 @@ impl PermissionEngine {
         Self {
             pending: HashMap::new(),
             approved: HashMap::new(),
+            turn_approved: HashMap::new(),
         }
     }
 
@@ -119,10 +168,34 @@ impl PermissionEngine {
         Self::covered(&keys, approved_for_session)
     }
 
+    pub fn is_turn_approved(
+        &self,
+        session_id: &str,
+        pattern: Option<&Pattern>,
+        permission_type: &str,
+    ) -> bool {
+        let empty = HashMap::new();
+        let approved_for_turn = self.turn_approved.get(session_id).unwrap_or(&empty);
+        let keys = Self::to_keys(pattern, permission_type);
+        Self::covered(&keys, approved_for_turn)
+    }
+
     pub fn grant(&mut self, session_id: &str, permission_type: &str, pattern: Option<&Pattern>) {
         let approved_session = self.approved.entry(session_id.to_string()).or_default();
         for key in Self::to_keys(pattern, permission_type) {
             approved_session.insert(key, true);
+        }
+    }
+
+    pub fn grant_turn(
+        &mut self,
+        session_id: &str,
+        permission_type: &str,
+        pattern: Option<&Pattern>,
+    ) {
+        let approved_turn = self.turn_approved.entry(session_id.to_string()).or_default();
+        for key in Self::to_keys(pattern, permission_type) {
+            approved_turn.insert(key, true);
         }
     }
 
@@ -170,7 +243,15 @@ impl PermissionEngine {
         let permission_id = info.id.clone();
         let patterns = Self::patterns(info.pattern.as_ref());
 
+        if matches!(info.permission_class, Some(PermissionClass::InspectRead)) {
+            return Ok(AskOutcome::Granted);
+        }
+
         if self.is_approved(&session_id, info.pattern.as_ref(), &info.permission_type) {
+            return Ok(AskOutcome::Granted);
+        }
+
+        if self.is_turn_approved(&session_id, info.pattern.as_ref(), &info.permission_type) {
             return Ok(AskOutcome::Granted);
         }
 
@@ -250,12 +331,22 @@ impl PermissionEngine {
             });
         }
 
-        if response == Response::Always {
-            self.grant(
-                session_id,
-                &match_item.info.permission_type,
-                match_item.info.pattern.as_ref(),
-            );
+        match response {
+            Response::Always => {
+                self.grant(
+                    session_id,
+                    &match_item.info.permission_type,
+                    match_item.info.pattern.as_ref(),
+                );
+            }
+            Response::Turn => {
+                self.grant_turn(
+                    session_id,
+                    &match_item.info.permission_type,
+                    match_item.info.pattern.as_ref(),
+                );
+            }
+            Response::Once | Response::Reject => {}
         }
 
         Ok(())
@@ -299,6 +390,11 @@ impl PermissionEngine {
     pub fn clear_session(&mut self, session_id: &str) {
         self.pending.remove(session_id);
         self.approved.remove(session_id);
+        self.turn_approved.remove(session_id);
+    }
+
+    pub fn clear_turn(&mut self, session_id: &str) {
+        self.turn_approved.remove(session_id);
     }
 }
 
@@ -341,6 +437,10 @@ mod tests {
             id: "per_test".to_string(),
             permission_type: "bash".to_string(),
             pattern: Some(Pattern::Single("ls".to_string())),
+            permission_class: Some(PermissionClass::DangerousExec),
+            scope_key: Some("cmd:ls".to_string()),
+            origin_tool: Some("bash".to_string()),
+            supported_lifetimes: vec![PermissionLifetime::Once, PermissionLifetime::Turn, PermissionLifetime::Session],
             session_id: "ses_test".to_string(),
             message_id: "msg_test".to_string(),
             call_id: None,
@@ -356,6 +456,46 @@ mod tests {
             .respond("ses_test", "per_test", Response::Once)
             .unwrap();
         assert!(engine.list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn turn_grant_auto_approves_same_permission_until_cleared() {
+        let mut engine = PermissionEngine::new();
+
+        let info = PermissionInfo {
+            id: "per_turn".to_string(),
+            permission_type: "bash".to_string(),
+            pattern: Some(Pattern::Single("cargo test".to_string())),
+            permission_class: Some(PermissionClass::DangerousExec),
+            scope_key: Some("cmd:cargo *".to_string()),
+            origin_tool: Some("bash".to_string()),
+            supported_lifetimes: vec![PermissionLifetime::Once, PermissionLifetime::Turn, PermissionLifetime::Session],
+            session_id: "ses_turn".to_string(),
+            message_id: "msg_turn".to_string(),
+            call_id: None,
+            message: "Execute cargo test".to_string(),
+            metadata: HashMap::new(),
+            time: TimeInfo { created: 0 },
+        };
+
+        engine.ask(info).await.unwrap();
+        engine
+            .respond("ses_turn", "per_turn", Response::Turn)
+            .unwrap();
+
+        assert!(engine.is_turn_approved(
+            "ses_turn",
+            Some(&Pattern::Single("cargo test".to_string())),
+            "bash"
+        ));
+
+        engine.clear_turn("ses_turn");
+
+        assert!(!engine.is_turn_approved(
+            "ses_turn",
+            Some(&Pattern::Single("cargo test".to_string())),
+            "bash"
+        ));
     }
 
     #[test]

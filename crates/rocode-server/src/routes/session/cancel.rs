@@ -54,6 +54,11 @@ pub(super) async fn abort_session_execution(
     session_id: &str,
     scheduler_stage_only: bool,
 ) -> serde_json::Value {
+    crate::routes::permission::PERMISSION_ENGINE
+        .lock()
+        .await
+        .clear_turn(session_id);
+
     let mut prompt_running = false;
     let scheduler_running = state
         .runtime_telemetry

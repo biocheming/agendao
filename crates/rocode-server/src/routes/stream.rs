@@ -306,6 +306,10 @@ pub(crate) async fn stream_message(
         .with_config_store(stream_state.config_store.clone())
         .with_tool_runtime_config(rocode_tool::ToolRuntimeConfig::from_config(&stream_config));
         let mut session = stream_session;
+        super::permission::PERMISSION_ENGINE
+            .lock()
+            .await
+            .clear_turn(&stream_session_id);
         let input = rocode_session::PromptInput {
             session_id: stream_session_id.clone(),
             message_id: None,

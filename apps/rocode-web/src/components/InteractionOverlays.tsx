@@ -13,7 +13,7 @@ interface InteractionOverlaysProps {
   onQuestionAnswerChange: (index: number, value: QuestionAnswerValue) => void;
   onRejectQuestion: () => void;
   onSubmitQuestion: () => void;
-  onReplyPermission: (reply: "once" | "always" | "reject") => void;
+  onReplyPermission: (reply: "once" | "turn" | "session" | "reject") => void;
 }
 
 export function InteractionOverlays({
@@ -136,6 +136,12 @@ export function InteractionOverlays({
                     <dd>{permission.permission}</dd>
                   </div>
                 ) : null}
+                {permission.permission_class ? (
+                  <div>
+                    <dt>Class</dt>
+                    <dd>{permission.permission_class}</dd>
+                  </div>
+                ) : null}
                 {permission.command ? (
                   <div>
                     <dt>Command</dt>
@@ -160,15 +166,28 @@ export function InteractionOverlays({
               >
                 Reject
               </button>
-              <button
-                className="min-h-[36px] rounded-full px-4 border border-border bg-card/70 text-foreground text-sm inline-flex items-center justify-center cursor-pointer transition-all duration-150 hover:-translate-y-px hover:bg-accent"
-                type="button"
-                data-testid="permission-always"
-                disabled={permissionSubmitting}
-                onClick={() => onReplyPermission("always")}
-              >
-                Allow Always
-              </button>
+              {permission.supported_lifetimes?.includes("turn") ? (
+                <button
+                  className="min-h-[36px] rounded-full px-4 border border-border bg-card/70 text-foreground text-sm inline-flex items-center justify-center cursor-pointer transition-all duration-150 hover:-translate-y-px hover:bg-accent"
+                  type="button"
+                  data-testid="permission-turn"
+                  disabled={permissionSubmitting}
+                  onClick={() => onReplyPermission("turn")}
+                >
+                  Allow Turn
+                </button>
+              ) : null}
+              {permission.supported_lifetimes?.includes("session") ? (
+                <button
+                  className="min-h-[36px] rounded-full px-4 border border-border bg-card/70 text-foreground text-sm inline-flex items-center justify-center cursor-pointer transition-all duration-150 hover:-translate-y-px hover:bg-accent"
+                  type="button"
+                  data-testid="permission-session"
+                  disabled={permissionSubmitting}
+                  onClick={() => onReplyPermission("session")}
+                >
+                  Allow Session
+                </button>
+              ) : null}
               <button
                 className="min-h-[36px] rounded-full px-5 bg-foreground border-foreground text-background text-sm font-semibold inline-flex items-center justify-center cursor-pointer transition-all duration-150 hover:-translate-y-px"
                 type="button"

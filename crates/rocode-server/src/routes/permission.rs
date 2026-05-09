@@ -5,7 +5,7 @@ use axum::{
 };
 use once_cell::sync::Lazy;
 use rocode_permission::{
-    AskOutcome, Pattern, PermissionEngine, PermissionInfo, Response, TimeInfo,
+    AskOutcome, Pattern, PermissionEngine, PermissionInfo, PermissionLifetime, Response, TimeInfo,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -25,6 +25,14 @@ pub struct PermissionRequestInfo {
     pub id: String,
     pub session_id: String,
     pub tool: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_class: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin_tool: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_lifetimes: Vec<String>,
     pub input: serde_json::Value,
     pub message: String,
 }
@@ -70,8 +78,20 @@ fn permission_request_info(info: &PermissionInfo) -> PermissionRequestInfo {
         id: info.id.clone(),
         session_id: info.session_id.clone(),
         tool: info.permission_type.clone(),
+        permission_class: info.permission_class.map(|class| class.as_str().to_string()),
+        scope_key: info.scope_key.clone(),
+        origin_tool: info.origin_tool.clone(),
+        supported_lifetimes: info
+            .supported_lifetimes
+            .iter()
+            .map(|lifetime| lifetime.as_str().to_string())
+            .collect(),
         input: serde_json::json!({
             "permission": info.permission_type,
+            "permission_class": info.permission_class.map(|class| class.as_str()),
+            "scope_key": info.scope_key,
+            "origin_tool": info.origin_tool,
+            "supported_lifetimes": info.supported_lifetimes.iter().map(|lifetime| lifetime.as_str()).collect::<Vec<_>>(),
             "patterns": match &info.pattern {
                 Some(Pattern::Single(pattern)) => serde_json::json!([pattern]),
                 Some(Pattern::Multiple(patterns)) => serde_json::json!(patterns),
@@ -101,6 +121,14 @@ pub(crate) async fn request_permission(
         id: permission_id.clone(),
         permission_type: request.permission.clone(),
         pattern: request_pattern(&request),
+        permission_class: request.permission_class,
+        scope_key: request.scope_key.clone(),
+        origin_tool: request.origin_tool.clone(),
+        supported_lifetimes: if request.supported_lifetimes.is_empty() {
+            vec![PermissionLifetime::Once, PermissionLifetime::Session]
+        } else {
+            request.supported_lifetimes.clone()
+        },
         session_id: session_id.clone(),
         message_id: String::new(),
         call_id: None,
@@ -154,7 +182,7 @@ pub(crate) async fn request_permission(
 
     match wait_result {
         Ok(Ok(PermissionReply { reply, message })) => match reply.as_str() {
-            "once" | "always" => Ok(()),
+            "once" | "turn" | "session" | "always" => Ok(()),
             "reject" => Err(rocode_tool::ToolError::PermissionDenied(
                 message
                     .unwrap_or_else(|| format!("Permission rejected for {}", request.permission)),
@@ -209,11 +237,12 @@ pub(crate) async fn reply_permission(
 ) -> Result<Json<bool>> {
     let response = match req.reply.as_str() {
         "once" => Response::Once,
-        "always" => Response::Always,
+        "turn" => Response::Turn,
+        "session" | "always" => Response::Always,
         "reject" => Response::Reject,
         _ => {
             return Err(ApiError::BadRequest(
-                "Invalid reply; expected `once`, `always`, or `reject`".to_string(),
+                "Invalid reply; expected `once`, `turn`, `session`, or `reject`".to_string(),
             ));
         }
     };
@@ -310,9 +339,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reply_permission_always_remembers_future_requests() {
+    async fn reply_permission_session_remembers_future_requests() {
         let _guard = TEST_PERMISSION_LOCK.lock().await;
-        const SESSION_ID: &str = "session-always";
+        const SESSION_ID: &str = "session-grant";
         PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
 
         let state = Arc::new(ServerState::new());
@@ -321,7 +350,14 @@ mod tests {
             request_permission(
                 state_for_request,
                 SESSION_ID.to_string(),
-                rocode_tool::PermissionRequest::new("read").with_pattern("src/main.rs"),
+                rocode_tool::PermissionRequest::new("bash")
+                    .with_pattern("cargo test")
+                    .with_metadata("command", serde_json::json!("cargo test"))
+                    .with_supported_lifetimes(vec![
+                        PermissionLifetime::Once,
+                        PermissionLifetime::Turn,
+                        PermissionLifetime::Session,
+                    ]),
             )
             .await
         });
@@ -339,7 +375,7 @@ mod tests {
             State(state.clone()),
             Path(permission_id),
             Json(ReplyPermissionRequest {
-                reply: "always".to_string(),
+                reply: "session".to_string(),
                 message: None,
             }),
         )
@@ -354,7 +390,14 @@ mod tests {
         request_permission(
             state,
             SESSION_ID.to_string(),
-            rocode_tool::PermissionRequest::new("read").with_pattern("src/main.rs"),
+            rocode_tool::PermissionRequest::new("bash")
+                .with_pattern("cargo test")
+                .with_metadata("command", serde_json::json!("cargo test"))
+                .with_supported_lifetimes(vec![
+                    PermissionLifetime::Once,
+                    PermissionLifetime::Turn,
+                    PermissionLifetime::Session,
+                ]),
         )
         .await
         .expect("repeat request should be auto-approved");
@@ -411,6 +454,25 @@ mod tests {
             .await
             .expect("request task join")
             .expect("permission allowed");
+        PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
+    }
+
+    #[tokio::test]
+    async fn inspect_read_permission_is_auto_granted_without_pending_prompt() {
+        let _guard = TEST_PERMISSION_LOCK.lock().await;
+        const SESSION_ID: &str = "session-inspect-read";
+        PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
+
+        let state = Arc::new(ServerState::new());
+        request_permission(
+            state,
+            SESSION_ID.to_string(),
+            rocode_tool::PermissionRequest::new("read").with_pattern("src/lib.rs"),
+        )
+        .await
+        .expect("inspect_read should be auto-approved");
+
+        assert!(PERMISSION_ENGINE.lock().await.list().is_empty());
         PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
     }
 }

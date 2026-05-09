@@ -68,19 +68,39 @@ impl PermissionType {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum PermissionLifetime {
+    Once,
+    Turn,
+    Session,
+}
+
+impl PermissionLifetime {
+    pub fn label(&self) -> &'static str {
+        match self {
+            PermissionLifetime::Once => "once",
+            PermissionLifetime::Turn => "turn",
+            PermissionLifetime::Session => "session",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PermissionRequest {
     pub id: String,
     pub permission_type: PermissionType,
     pub resource: String,
     pub tool_name: String,
+    pub permission_class: Option<String>,
+    pub supported_lifetimes: Vec<PermissionLifetime>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PermissionAction {
-    Approve,
     Deny,
-    ApproveAlways,
+    ApproveOnce,
+    ApproveTurn,
+    ApproveSession,
 }
 
 pub struct PermissionPrompt {
@@ -135,7 +155,7 @@ impl PermissionPrompt {
         self.requests.get(self.current_index)
     }
 
-    pub fn approve(&mut self) -> Option<PermissionRequest> {
+    fn take_current_request(&mut self) -> Option<PermissionRequest> {
         if self.current_index < self.requests.len() {
             let request = self.requests.remove(self.current_index);
             if self.requests.is_empty() {
@@ -145,22 +165,22 @@ impl PermissionPrompt {
         } else {
             None
         }
+    }
+
+    pub fn approve_once(&mut self) -> Option<PermissionRequest> {
+        self.take_current_request()
+    }
+
+    pub fn approve_turn(&mut self) -> Option<PermissionRequest> {
+        self.take_current_request()
+    }
+
+    pub fn approve_session(&mut self) -> Option<PermissionRequest> {
+        self.take_current_request()
     }
 
     pub fn deny(&mut self) -> Option<PermissionRequest> {
-        if self.current_index < self.requests.len() {
-            let request = self.requests.remove(self.current_index);
-            if self.requests.is_empty() {
-                self.is_open = false;
-            }
-            Some(request)
-        } else {
-            None
-        }
-    }
-
-    pub fn approve_always(&mut self) -> Option<PermissionRequest> {
-        self.approve()
+        self.take_current_request()
     }
 
     pub fn close(&mut self) {
@@ -196,18 +216,33 @@ impl PermissionPrompt {
             // The button line is at the bottom of the content (area.y + area.height - 2 for border)
             let button_row = area.y + area.height - 2;
             if row == button_row {
-                // "[y] Allow  [n] Deny  [a] Always allow"
-                // Rough column ranges inside the border:
+                // "[1] Once [2] Turn [3] Session [0] Deny"
                 let inner_col = col.saturating_sub(area.x + 1);
-                if inner_col < 11 {
-                    // [y] Allow
-                    self.pending_action = Some(PermissionAction::Approve);
-                } else if inner_col < 21 {
-                    // [n] Deny
-                    self.pending_action = Some(PermissionAction::Deny);
+                let allow_turn = self
+                    .current_request()
+                    .map(|request| {
+                        request
+                            .supported_lifetimes
+                            .contains(&PermissionLifetime::Turn)
+                    })
+                    .unwrap_or(false);
+                let allow_session = self
+                    .current_request()
+                    .map(|request| {
+                        request
+                            .supported_lifetimes
+                            .contains(&PermissionLifetime::Session)
+                    })
+                    .unwrap_or(false);
+
+                if inner_col < 10 {
+                    self.pending_action = Some(PermissionAction::ApproveOnce);
+                } else if allow_turn && inner_col < 20 {
+                    self.pending_action = Some(PermissionAction::ApproveTurn);
+                } else if allow_session && inner_col < 34 {
+                    self.pending_action = Some(PermissionAction::ApproveSession);
                 } else {
-                    // [a] Always allow
-                    self.pending_action = Some(PermissionAction::ApproveAlways);
+                    self.pending_action = Some(PermissionAction::Deny);
                 }
             }
         }
@@ -248,6 +283,26 @@ impl PermissionPrompt {
             request.permission_type.icon(),
             request.permission_type.label()
         );
+        let mut actions = vec![Span::styled("[1] Once  ", Style::default().fg(theme.success))];
+        if request
+            .supported_lifetimes
+            .contains(&PermissionLifetime::Turn)
+        {
+            actions.push(Span::styled(
+                "[2] Turn  ",
+                Style::default().fg(theme.primary),
+            ));
+        }
+        if request
+            .supported_lifetimes
+            .contains(&PermissionLifetime::Session)
+        {
+            actions.push(Span::styled(
+                "[3] Session  ",
+                Style::default().fg(theme.primary),
+            ));
+        }
+        actions.push(Span::styled("[0] Deny", Style::default().fg(theme.error)));
 
         let content = vec![
             Line::from(Span::styled(
@@ -259,16 +314,24 @@ impl PermissionPrompt {
                 Span::styled("Tool: ", Style::default().fg(theme.text_muted)),
                 Span::styled(&request.tool_name, Style::default().fg(theme.text)),
             ]),
+            Line::from(
+                request
+                    .permission_class
+                    .as_ref()
+                    .map(|class| {
+                        vec![
+                            Span::styled("Class: ", Style::default().fg(theme.text_muted)),
+                            Span::styled(class, Style::default().fg(theme.text)),
+                        ]
+                    })
+                    .unwrap_or_default(),
+            ),
             Line::from(vec![
                 Span::styled("Resource: ", Style::default().fg(theme.text_muted)),
                 Span::styled(&request.resource, Style::default().fg(theme.text)),
             ]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("[y] Allow  ", Style::default().fg(theme.success)),
-                Span::styled("[n] Deny  ", Style::default().fg(theme.error)),
-                Span::styled("[a] Always allow", Style::default().fg(theme.primary)),
-            ]),
+            Line::from(actions),
         ];
 
         let paragraph = Paragraph::new(content)

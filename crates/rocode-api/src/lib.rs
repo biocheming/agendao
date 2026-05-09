@@ -575,6 +575,14 @@ pub struct PermissionRequestInfo {
     #[serde(alias = "sessionID", alias = "sessionId")]
     pub session_id: String,
     pub tool: String,
+    #[serde(default)]
+    pub permission_class: Option<String>,
+    #[serde(default)]
+    pub scope_key: Option<String>,
+    #[serde(default)]
+    pub origin_tool: Option<String>,
+    #[serde(default)]
+    pub supported_lifetimes: Vec<String>,
     pub input: serde_json::Value,
     pub message: String,
 }

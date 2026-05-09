@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use rocode_execution_types::{CompiledExecutionRequest, ExecutionRequestContext};
+use rocode_permission::{PermissionClass, PermissionLifetime};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::future::Future;
@@ -340,15 +341,28 @@ pub struct PermissionRequest {
     pub patterns: Vec<String>,
     pub metadata: HashMap<String, serde_json::Value>,
     pub always: Vec<String>,
+    #[serde(default)]
+    pub permission_class: Option<PermissionClass>,
+    #[serde(default)]
+    pub scope_key: Option<String>,
+    #[serde(default)]
+    pub origin_tool: Option<String>,
+    #[serde(default)]
+    pub supported_lifetimes: Vec<PermissionLifetime>,
 }
 
 impl PermissionRequest {
     pub fn new(permission: impl Into<String>) -> Self {
+        let permission = permission.into();
         Self {
-            permission: permission.into(),
+            origin_tool: Some(permission.clone()),
+            permission_class: Some(default_permission_class_for_name(&permission)),
+            permission,
             patterns: Vec::new(),
             metadata: HashMap::new(),
             always: Vec::new(),
+            scope_key: None,
+            supported_lifetimes: vec![PermissionLifetime::Once, PermissionLifetime::Session],
         }
     }
 
@@ -367,6 +381,29 @@ impl PermissionRequest {
         self
     }
 
+    pub fn with_permission_class(mut self, permission_class: PermissionClass) -> Self {
+        self.permission_class = Some(permission_class);
+        self
+    }
+
+    pub fn with_scope_key(mut self, scope_key: impl Into<String>) -> Self {
+        self.scope_key = Some(scope_key.into());
+        self
+    }
+
+    pub fn with_origin_tool(mut self, origin_tool: impl Into<String>) -> Self {
+        self.origin_tool = Some(origin_tool.into());
+        self
+    }
+
+    pub fn with_supported_lifetimes(
+        mut self,
+        supported_lifetimes: Vec<PermissionLifetime>,
+    ) -> Self {
+        self.supported_lifetimes = supported_lifetimes;
+        self
+    }
+
     pub fn with_always(mut self, always: impl Into<String>) -> Self {
         self.always.push(always.into());
         self
@@ -375,6 +412,19 @@ impl PermissionRequest {
     pub fn always_allow(mut self) -> Self {
         self.always.push("*".to_string());
         self
+    }
+}
+
+fn default_permission_class_for_name(permission: &str) -> PermissionClass {
+    match permission {
+        "read" | "grep" | "glob" | "list" | "lsp" | "repo_history" | "skill"
+        | "context_docs" | "media_inspect" | "todoread" => PermissionClass::InspectRead,
+        "write" | "edit" | "multiedit" | "apply_patch" | "patch" | "todowrite"
+        | "ast_grep_replace" | "skill_manage" => PermissionClass::WorkspaceWrite,
+        "external_directory" | "webfetch" | "websearch" | "browser_session"
+        | "github_research" | "skill_hub" | "codesearch" => PermissionClass::ExternalAccess,
+        "bash" | "shell_session" | "task" | "task_flow" => PermissionClass::DangerousExec,
+        _ => PermissionClass::DangerousExec,
     }
 }
 

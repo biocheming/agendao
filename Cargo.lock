@@ -3387,6 +3387,7 @@ dependencies = [
  "regex",
  "rocode-agent",
  "rocode-content",
+ "rocode-permission",
  "rocode-plugin",
  "rocode-tool",
  "serde",
