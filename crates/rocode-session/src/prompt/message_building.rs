@@ -304,14 +304,17 @@ impl SessionPrompt {
         }
 
         // Keep the latest user anchor before the compaction boundary so prompt
-        // loop invariants hold (`last_user_idx` must exist).
+        // loop invariants hold (`last_user_idx` must exist), and preserve the
+        // entire current turn chain between that user and the compaction
+        // boundary. Provider continuations may depend on assistant/tool rounds
+        // that occurred earlier in the same turn.
         if let Some(last_user_idx) = messages
             .iter()
             .rposition(|m| matches!(m.role, MessageRole::User))
         {
             if last_user_idx < start {
                 let mut anchored = Vec::with_capacity(messages.len() - last_user_idx);
-                anchored.push(messages[last_user_idx].clone());
+                anchored.extend_from_slice(&messages[last_user_idx..start]);
                 anchored.extend_from_slice(&messages[start..]);
                 return anchored;
             }
@@ -1442,6 +1445,101 @@ mod tests {
         assert_eq!(filtered.len(), 3);
         assert!(matches!(filtered[0].role, MessageRole::User));
         assert_eq!(filtered[0].id, user.id);
+    }
+
+    #[test]
+    fn filter_compacted_messages_preserves_current_turn_assistant_tool_chain_after_user_anchor() {
+        let session_id = "ses_test_turn_chain".to_string();
+        let user = SessionMessage::user(session_id.clone(), "continue the same turn");
+
+        let mut assistant_before = SessionMessage::assistant(session_id.clone());
+        assistant_before.add_reasoning("need to inspect build output");
+        assistant_before.add_tool_call(
+            "call_1",
+            "bash",
+            serde_json::json!({ "command": "npm install" }),
+        );
+
+        let mut tool_after = SessionMessage::tool(session_id.clone());
+        tool_after.add_tool_result("call_1", "installed", false);
+
+        let mut compact = SessionMessage::assistant(session_id.clone());
+        compact.parts.push(crate::MessagePart {
+            id: "prt_compact_turn_chain".to_string(),
+            part_type: PartType::Compaction {
+                summary: "summary".to_string(),
+            },
+            created_at: chrono::Utc::now(),
+            message_id: None,
+        });
+
+        let mut assistant_after = SessionMessage::assistant(session_id.clone());
+        assistant_after.add_reasoning("now run typecheck");
+        assistant_after.add_tool_call(
+            "call_2",
+            "bash",
+            serde_json::json!({ "command": "npx tsc --noEmit" }),
+        );
+
+        let mut tool_after_compaction = SessionMessage::tool(session_id);
+        tool_after_compaction.add_tool_result("call_2", "build failed", false);
+
+        let filtered = SessionPrompt::filter_compacted_messages(&[
+            user.clone(),
+            assistant_before,
+            tool_after,
+            compact.clone(),
+            assistant_after.clone(),
+            tool_after_compaction.clone(),
+        ]);
+
+        assert_eq!(filtered.len(), 6);
+        assert_eq!(filtered[0].id, user.id);
+        assert_eq!(filtered[1].parts.len(), 2);
+        assert_eq!(filtered[2].parts.len(), 1);
+        assert_eq!(filtered[3].id, compact.id);
+        assert_eq!(filtered[4].id, assistant_after.id);
+        assert_eq!(filtered[5].id, tool_after_compaction.id);
+    }
+
+    #[test]
+    fn filter_compacted_messages_preserves_current_turn_chain_when_compaction_is_latest_message() {
+        let session_id = "ses_test_turn_chain_latest_compact".to_string();
+        let user = SessionMessage::user(session_id.clone(), "continue the same turn");
+
+        let mut assistant = SessionMessage::assistant(session_id.clone());
+        assistant.add_reasoning("need to inspect build output");
+        assistant.add_tool_call(
+            "call_1",
+            "bash",
+            serde_json::json!({ "command": "npx tsc --noEmit" }),
+        );
+
+        let mut tool = SessionMessage::tool(session_id.clone());
+        tool.add_tool_result("call_1", "build failed", false);
+
+        let mut compact = SessionMessage::assistant(session_id);
+        compact.parts.push(crate::MessagePart {
+            id: "prt_compact_turn_chain_latest".to_string(),
+            part_type: PartType::Compaction {
+                summary: "summary".to_string(),
+            },
+            created_at: chrono::Utc::now(),
+            message_id: None,
+        });
+
+        let filtered = SessionPrompt::filter_compacted_messages(&[
+            user.clone(),
+            assistant.clone(),
+            tool.clone(),
+            compact.clone(),
+        ]);
+
+        assert_eq!(filtered.len(), 4);
+        assert_eq!(filtered[0].id, user.id);
+        assert_eq!(filtered[1].id, assistant.id);
+        assert_eq!(filtered[2].id, tool.id);
+        assert_eq!(filtered[3].id, compact.id);
     }
 
     #[test]
