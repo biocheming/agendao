@@ -161,9 +161,22 @@ fn message_has_reasoning_replay(message: &Message) -> bool {
     }
 }
 
-fn request_has_assistant_continuation(messages: &[Message]) -> bool {
+fn message_has_tool_calls(message: &Message) -> bool {
+    match &message.content {
+        crate::Content::Text(_) => false,
+        crate::Content::Parts(parts) => parts.iter().any(|part| {
+            part.content_type == "tool_use"
+                || part.tool_use.is_some()
+        }),
+    }
+}
+
+fn request_has_tool_call_continuation_missing_reasoning_replay(messages: &[Message]) -> bool {
     messages.iter().enumerate().any(|(index, message)| {
-        matches!(message.role, Role::Assistant) && index + 1 < messages.len()
+        matches!(message.role, Role::Assistant)
+            && index + 1 < messages.len()
+            && message_has_tool_calls(message)
+            && !message_has_reasoning_replay(message)
     })
 }
 
@@ -177,15 +190,12 @@ fn validate_thinking_replay_request(
     if !request_explicitly_enables_thinking(request) {
         return Ok(());
     }
-    if !request_has_assistant_continuation(&request.messages) {
-        return Ok(());
-    }
-    if request.messages.iter().any(message_has_reasoning_replay) {
+    if !request_has_tool_call_continuation_missing_reasoning_replay(&request.messages) {
         return Ok(());
     }
 
     Err(ProviderError::InvalidRequest(format!(
-        "provider `{}` requires assistant reasoning replay in thinking mode, but no prior assistant reasoning continuation was found in request history; preserve reasoning as typed `reasoning`/`thinking` parts or `providerOptions.openaiCompatible.reasoning_content`, or start a new continuation boundary before switching mode/provider",
+        "provider `{}` requires assistant reasoning replay in thinking mode for each prior assistant tool-call continuation, but at least one assistant tool-call turn in request history lacks typed reasoning replay; preserve reasoning as typed `reasoning`/`thinking` parts or `providerOptions.openaiCompatible.reasoning_content`, or start a new continuation boundary before switching mode/provider",
         config.provider_id
     )))
 }
@@ -839,7 +849,11 @@ mod tests {
             model: "deepseek-v4".to_string(),
             messages: vec![
                 Message::user("first turn"),
-                Message::assistant("assistant without replay"),
+                Message::assistant_parts(vec![crate::ContentPart::tool_use(
+                    "call_1",
+                    "bash",
+                    json!({ "command": "ls" }),
+                )]),
                 Message::user("follow up"),
             ],
             max_tokens: None,
@@ -860,7 +874,7 @@ mod tests {
 
         let err = validate_thinking_replay_request(&config, &request).unwrap_err();
         assert!(
-            matches!(err, ProviderError::InvalidRequest(message) if message.contains("requires assistant reasoning replay in thinking mode"))
+            matches!(err, ProviderError::InvalidRequest(message) if message.contains("requires assistant reasoning replay in thinking mode for each prior assistant tool-call continuation"))
         );
     }
 
@@ -901,12 +915,96 @@ mod tests {
     }
 
     #[test]
-    fn validate_thinking_replay_request_ignores_non_thinking_requests() {
+    fn validate_thinking_replay_request_rejects_latest_tool_call_turn_without_replay() {
+        let request = ChatRequest {
+            model: "deepseek-v4".to_string(),
+            messages: vec![
+                Message::user("first turn"),
+                Message::assistant_parts(vec![
+                    crate::ContentPart::reasoning("hidden trace"),
+                    crate::ContentPart::tool_use(
+                        "call_1",
+                        "bash",
+                        json!({ "command": "npm install" }),
+                    ),
+                ]),
+                Message::tool_parts(vec![crate::ContentPart::tool_result(
+                    "call_1",
+                    "ok",
+                    Some(false),
+                )]),
+                Message::assistant_parts(vec![crate::ContentPart::tool_use(
+                    "call_2",
+                    "bash",
+                    json!({ "command": "npx tsc --noEmit" }),
+                )]),
+                Message::tool_parts(vec![crate::ContentPart::tool_result(
+                    "call_2",
+                    "build failed",
+                    Some(false),
+                )]),
+            ],
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            system: None,
+            tools: None,
+            stream: None,
+            provider_options: Some(HashMap::from([(
+                "thinking".to_string(),
+                json!({"type": "enabled"}),
+            )])),
+            variant: None,
+        };
+
+        let config = ProviderConfig::new("deepseek", "https://api.deepseek.com/v1", "test-key")
+            .with_option("npm", json!("@ai-sdk/openai-compatible"));
+
+        let err = validate_thinking_replay_request(&config, &request).unwrap_err();
+        assert!(
+            matches!(err, ProviderError::InvalidRequest(message) if message.contains("tool-call continuation"))
+        );
+    }
+
+    #[test]
+    fn validate_thinking_replay_request_ignores_non_tool_call_assistant_continuation() {
         let request = ChatRequest {
             model: "deepseek-v4".to_string(),
             messages: vec![
                 Message::user("first turn"),
                 Message::assistant("assistant without replay"),
+                Message::user("follow up"),
+            ],
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            system: None,
+            tools: None,
+            stream: None,
+            provider_options: Some(HashMap::from([(
+                "thinking".to_string(),
+                json!({"type": "enabled"}),
+            )])),
+            variant: None,
+        };
+
+        let config = ProviderConfig::new("deepseek", "https://api.deepseek.com/v1", "test-key")
+            .with_option("npm", json!("@ai-sdk/openai-compatible"));
+
+        assert!(validate_thinking_replay_request(&config, &request).is_ok());
+    }
+
+    #[test]
+    fn validate_thinking_replay_request_ignores_non_thinking_requests() {
+        let request = ChatRequest {
+            model: "deepseek-v4".to_string(),
+            messages: vec![
+                Message::user("first turn"),
+                Message::assistant_parts(vec![crate::ContentPart::tool_use(
+                    "call_1",
+                    "bash",
+                    json!({ "command": "ls" }),
+                )]),
                 Message::user("follow up"),
             ],
             max_tokens: None,
