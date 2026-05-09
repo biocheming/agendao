@@ -219,7 +219,7 @@ fn pre_dispatch_governance_is_ready_when_context_is_within_budget() {
 }
 
 #[test]
-fn pre_dispatch_governance_blocks_when_request_view_remains_over_limit() {
+fn pre_dispatch_governance_forces_compaction_for_small_overflowing_request_view() {
     let provider = StaticModelProvider::with_model("ctx-model", 100, 20);
     let mut session = Session::new("proj", ".");
     session.insert_metadata("model_provider", serde_json::json!("mock"));
@@ -241,14 +241,14 @@ fn pre_dispatch_governance_blocks_when_request_view_remains_over_limit() {
         "scheduler.pre_dispatch",
     );
 
-    let ContextPressureGovernanceOutcome::Blocked(summary) = outcome else {
-        panic!("governance should block when context remains over limit");
+    let ContextPressureGovernanceOutcome::Proceed(summary) = outcome else {
+        panic!("governance should compact and proceed for small overflowing request views");
     };
-    assert_eq!(summary.status, ContextPressureGovernanceStatus::Blocked);
+    assert_eq!(summary.status, ContextPressureGovernanceStatus::Compacted);
     assert_eq!(summary.reason.as_deref(), Some("request_view_overflow"));
     assert!(summary.compaction_attempted);
-    assert!(!summary.compaction_succeeded);
-    assert!(summary.blocking);
+    assert!(summary.compaction_succeeded);
+    assert!(!summary.blocking);
 
     let persisted = session
         .record()
@@ -258,7 +258,49 @@ fn pre_dispatch_governance_blocks_when_request_view_remains_over_limit() {
         .expect("summary should persist into session metadata");
     let persisted: rocode_types::ContextPressureGovernanceSummary =
         serde_json::from_value(persisted).expect("persisted summary should parse");
-    assert_eq!(persisted.status, ContextPressureGovernanceStatus::Blocked);
+    assert_eq!(persisted.status, ContextPressureGovernanceStatus::Compacted);
+    let compaction_message = session
+        .record()
+        .messages
+        .last()
+        .expect("compaction message should be appended");
+    let diagnostics = compaction_message
+        .metadata
+        .get(CONTEXT_COMPACTION_RECORD_METADATA_KEY)
+        .expect("compaction diagnostics should be present");
+    assert_eq!(diagnostics["forced"], serde_json::json!(true));
+}
+
+#[test]
+fn pre_dispatch_governance_blocks_when_single_message_remains_over_limit() {
+    let provider = StaticModelProvider::with_model("ctx-model", 100, 20);
+    let mut session = Session::new("proj", ".");
+    session.insert_metadata("model_provider", serde_json::json!("mock"));
+    session.insert_metadata("model_id", serde_json::json!("ctx-model"));
+    session.add_user_message("only message");
+
+    let outcome = govern_pre_dispatch_session_context(
+        &mut session,
+        &provider,
+        "ctx-model",
+        Some(20),
+        None,
+        None,
+        Some(120),
+        Some(480),
+        Some("only message"),
+        "pre_dispatch_hard_gate",
+        "scheduler.pre_dispatch",
+    );
+
+    let ContextPressureGovernanceOutcome::Blocked(summary) = outcome else {
+        panic!("governance should block when there is no compactable history");
+    };
+    assert_eq!(summary.status, ContextPressureGovernanceStatus::Blocked);
+    assert_eq!(summary.reason.as_deref(), Some("request_view_overflow"));
+    assert!(summary.compaction_attempted);
+    assert!(!summary.compaction_succeeded);
+    assert!(summary.blocking);
 }
 
 #[test]

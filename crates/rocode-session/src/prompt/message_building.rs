@@ -668,6 +668,17 @@ impl SessionPrompt {
         .is_some()
     }
 
+    pub(crate) fn should_force_compaction_for_reason(reason: &str) -> bool {
+        matches!(
+            reason,
+            "usage_overflow"
+                | "live_context_overflow"
+                | "request_view_overflow"
+                | "session_content_overflow"
+                | "request_body_too_large"
+        )
+    }
+
     pub(super) async fn ensure_title(
         session: &mut Session,
         provider: Arc<dyn Provider>,

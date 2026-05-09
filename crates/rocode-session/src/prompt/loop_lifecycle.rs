@@ -1418,11 +1418,12 @@ impl SessionPrompt {
             request_body_chars,
             "pre-request compaction triggered from request view"
         );
+        let force_compaction = Self::should_force_compaction_for_reason(assessment.reason);
         let record = Self::build_compaction_record(
             "auto_preflight",
             Some("prompt.pre_request"),
             Some(assessment.reason),
-            false,
+            force_compaction,
             request_context_tokens,
             None,
             assessment.limit_tokens,
@@ -1437,7 +1438,7 @@ impl SessionPrompt {
             "Context compacted before the next provider request.",
             "Auto-compaction ran, but the context could not be reduced.",
             record,
-            false,
+            force_compaction,
         )
         .await
     }
