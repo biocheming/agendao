@@ -176,7 +176,7 @@ fn import_workspace_skill_entry(
     frontmatter.name = name.clone();
     frontmatter.description = description.clone();
 
-    let existing = match authority.resolve_skill(&name, None) {
+    let existing = match authority.resolve_skill_for_inspection(&name, None) {
         Ok(meta) => Some(meta),
         Err(SkillError::UnknownSkill { .. }) => None,
         Err(error) => return Err(error),
@@ -522,13 +522,13 @@ mod tests {
 
         assert_eq!(imported, 1);
         let loaded = authority
-            .load_skill("reviewer", None)
+            .load_skill_for_inspection("reviewer", None)
             .expect("skill should load");
         assert_eq!(loaded.meta.name, "reviewer");
         assert!(loaded.content.contains("Inspect patches carefully."));
 
         let supporting = authority
-            .load_skill_file("reviewer", "templates/checklist.md")
+            .load_skill_file_for_inspection("reviewer", "templates/checklist.md")
             .expect("supporting file should load");
         assert_eq!(supporting.content, "- scope\n- tests\n");
     }
@@ -639,7 +639,7 @@ mod tests {
         assert_eq!(imported, 1);
 
         let loaded = authority
-            .load_skill("legacy-reviewer", None)
+            .load_skill_for_inspection("legacy-reviewer", None)
             .expect("imported skill should load");
         assert_eq!(loaded.meta.name, "legacy-reviewer");
         assert!(loaded.content.contains("# Legacy"));

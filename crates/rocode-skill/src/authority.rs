@@ -120,7 +120,12 @@ impl SkillAuthority {
             .unwrap_or_default()
     }
 
-    pub fn resolve_skill(
+    /// Inspection-only skill meta resolution.
+    ///
+    /// This is the raw catalog/read path. Runtime-facing callers must resolve
+    /// through `SkillRuntimeResolver`, which layers vitality and governance
+    /// rules on top of this authority.
+    pub fn resolve_skill_for_inspection(
         &self,
         name: &str,
         filter: Option<&SkillFilter<'_>>,
@@ -132,16 +137,20 @@ impl SkillAuthority {
             .ok_or_else(|| unknown_skill_error(name, &self.discover_skills()))
     }
 
-    pub fn load_skill(
+    /// Inspection-only raw skill load.
+    pub fn load_skill_for_inspection(
         &self,
         name: &str,
         filter: Option<&SkillFilter<'_>>,
     ) -> Result<LoadedSkill, SkillError> {
-        let meta = self.resolve_skill(name, filter)?;
-        self.load_resolved_skill(meta)
+        let meta = self.resolve_skill_for_inspection(name, filter)?;
+        self.load_resolved_skill_for_inspection(meta)
     }
 
-    pub(crate) fn load_resolved_skill(&self, meta: SkillMeta) -> Result<LoadedSkill, SkillError> {
+    pub(crate) fn load_resolved_skill_for_inspection(
+        &self,
+        meta: SkillMeta,
+    ) -> Result<LoadedSkill, SkillError> {
         {
             let mut guard = self.write_cache()?;
             if let Some(loaded) = guard.cached_loaded_skill(&meta.name) {
@@ -161,16 +170,17 @@ impl SkillAuthority {
         Ok(loaded)
     }
 
-    pub fn load_skill_source(
+    /// Inspection-only raw markdown source load.
+    pub fn load_skill_source_for_inspection(
         &self,
         name: &str,
         filter: Option<&SkillFilter<'_>>,
     ) -> Result<String, SkillError> {
-        let meta = self.resolve_skill(name, filter)?;
-        self.load_resolved_skill_source(&meta)
+        let meta = self.resolve_skill_for_inspection(name, filter)?;
+        self.load_resolved_skill_source_for_inspection(&meta)
     }
 
-    pub(crate) fn load_resolved_skill_source(
+    pub(crate) fn load_resolved_skill_source_for_inspection(
         &self,
         meta: &SkillMeta,
     ) -> Result<String, SkillError> {
@@ -180,16 +190,17 @@ impl SkillAuthority {
         })
     }
 
-    pub fn load_skill_detail(
+    /// Inspection-only structured detail load.
+    pub fn load_skill_detail_for_inspection(
         &self,
         name: &str,
         filter: Option<&SkillFilter<'_>>,
     ) -> Result<SkillDetailView, SkillError> {
-        let meta = self.resolve_skill(name, filter)?;
-        self.load_skill_detail_for_meta(&meta)
+        let meta = self.resolve_skill_for_inspection(name, filter)?;
+        self.load_skill_detail_for_meta_for_inspection(&meta)
     }
 
-    pub fn load_skill_detail_for_meta(
+    pub fn load_skill_detail_for_meta_for_inspection(
         &self,
         meta: &SkillMeta,
     ) -> Result<SkillDetailView, SkillError> {
@@ -218,16 +229,17 @@ impl SkillAuthority {
                 .unwrap_or(false)
     }
 
-    pub fn load_skill_file(
+    /// Inspection-only supporting file load.
+    pub fn load_skill_file_for_inspection(
         &self,
         name: &str,
         file_path: &str,
     ) -> Result<LoadedSkillFile, SkillError> {
-        let meta = self.resolve_skill(name, None)?;
-        self.load_resolved_skill_file(&meta, file_path)
+        let meta = self.resolve_skill_for_inspection(name, None)?;
+        self.load_resolved_skill_file_for_inspection(&meta, file_path)
     }
 
-    pub(crate) fn load_resolved_skill_file(
+    pub(crate) fn load_resolved_skill_file_for_inspection(
         &self,
         meta: &SkillMeta,
         file_path: &str,
@@ -263,7 +275,13 @@ impl SkillAuthority {
         })
     }
 
-    pub fn render_loaded_skills_context(
+    /// Inspection-only raw skill rendering.
+    ///
+    /// This preserves full SKILL.md bodies for catalog / audit / debugging style
+    /// reads. Runtime-facing consumers must go through `SkillRuntimeResolver`
+    /// and consume the structured runtime prompt packet instead of bypassing
+    /// governance with raw markdown injection.
+    pub fn render_loaded_skills_context_for_inspection(
         &self,
         requested_names: &[String],
     ) -> Result<(String, Vec<String>), SkillError> {
@@ -276,7 +294,7 @@ impl SkillAuthority {
         let mut loaded = Vec::new();
         context.push_str("<loaded_skills>\n");
         for requested_name in &requested {
-            let skill = self.load_skill(requested_name, None)?;
+            let skill = self.load_skill_for_inspection(requested_name, None)?;
             context.push_str(&format!("<skill name=\"{}\">\n\n", skill.meta.name));
             context.push_str(&format!("# Skill: {}\n\n", skill.meta.name));
             context.push_str(&skill.content);
@@ -369,7 +387,7 @@ impl SkillAuthority {
     }
 
     pub fn patch_skill(&self, req: PatchSkillRequest) -> Result<SkillWriteResult, SkillError> {
-        let meta = self.resolve_skill(&req.name, None)?;
+        let meta = self.resolve_skill_for_inspection(&req.name, None)?;
         ensure_workspace_skill_markdown(&self.base_dir, &meta.name, &meta.location)?;
 
         if req.new_name.is_none()
@@ -434,7 +452,7 @@ impl SkillAuthority {
     }
 
     pub fn edit_skill(&self, req: EditSkillRequest) -> Result<SkillWriteResult, SkillError> {
-        let meta = self.resolve_skill(&req.name, None)?;
+        let meta = self.resolve_skill_for_inspection(&req.name, None)?;
         ensure_workspace_skill_markdown(&self.base_dir, &meta.name, &meta.location)?;
         validate_skill_markdown_size(&req.content, &meta.location.to_string_lossy())?;
 
@@ -480,7 +498,7 @@ impl SkillAuthority {
         &self,
         req: WriteSkillFileRequest,
     ) -> Result<SkillWriteResult, SkillError> {
-        let meta = self.resolve_skill(&req.name, None)?;
+        let meta = self.resolve_skill_for_inspection(&req.name, None)?;
         ensure_workspace_skill_markdown(&self.base_dir, &meta.name, &meta.location)?;
         let path =
             supporting_file_path(&meta.location, &req.file_path).map_err(|error| match error {
@@ -514,7 +532,7 @@ impl SkillAuthority {
         &self,
         req: RemoveSkillFileRequest,
     ) -> Result<SkillWriteResult, SkillError> {
-        let meta = self.resolve_skill(&req.name, None)?;
+        let meta = self.resolve_skill_for_inspection(&req.name, None)?;
         ensure_workspace_skill_markdown(&self.base_dir, &meta.name, &meta.location)?;
         let path =
             supporting_file_path(&meta.location, &req.file_path).map_err(|error| match error {
@@ -547,7 +565,7 @@ impl SkillAuthority {
     }
 
     pub fn delete_skill(&self, req: DeleteSkillRequest) -> Result<SkillWriteResult, SkillError> {
-        let meta = self.resolve_skill(&req.name, None)?;
+        let meta = self.resolve_skill_for_inspection(&req.name, None)?;
         ensure_workspace_skill_markdown(&self.base_dir, &meta.name, &meta.location)?;
         let skill_dir = meta
             .location

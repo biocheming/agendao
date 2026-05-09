@@ -802,7 +802,9 @@ mod tests {
         let skill = result.skill.unwrap();
         assert_eq!(skill.name, "review-skill-v2");
         assert_eq!(skill.description, "better review");
-        let loaded = authority.load_skill("review-skill-v2", None).unwrap();
+        let loaded = authority
+            .load_skill_for_inspection("review-skill-v2", None)
+            .unwrap();
         assert!(loaded.content.contains("New body."));
     }
 
@@ -927,6 +929,8 @@ mod tests {
         assert_eq!(deleted.action, SkillWriteAction::Deleted);
         assert_eq!(deleted.skill, None);
         assert!(!skill_dir.exists());
-        assert!(authority.resolve_skill("delete-me", None).is_err());
+        assert!(authority
+            .resolve_skill_for_inspection("delete-me", None)
+            .is_err());
     }
 }

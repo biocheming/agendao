@@ -1688,7 +1688,9 @@ impl SkillGovernanceAuthority {
         req: PatchSkillRequest,
         actor: &str,
     ) -> Result<SkillGovernedWriteResult, SkillError> {
-        let current = self.skill_authority.resolve_skill(&req.name, None)?;
+        let current = self
+            .skill_authority
+            .resolve_skill_for_inspection(&req.name, None)?;
         let next_name = req.new_name.as_deref().unwrap_or(current.name.as_str());
         let duplicate_conflict = !next_name.eq_ignore_ascii_case(&current.name)
             && self
@@ -1768,7 +1770,9 @@ impl SkillGovernanceAuthority {
         };
 
         for spec in specs {
-            let existing = self.skill_authority.resolve_skill(&spec.name, None);
+            let existing = self
+                .skill_authority
+                .resolve_skill_for_inspection(&spec.name, None);
             match existing {
                 Ok(meta) => {
                     if !self.skill_authority.is_skill_meta_writable(&meta) {
@@ -1785,7 +1789,9 @@ impl SkillGovernanceAuthority {
                         continue;
                     }
 
-                    let loaded = self.skill_authority.load_skill(&spec.name, None)?;
+                    let loaded = self
+                        .skill_authority
+                        .load_skill_for_inspection(&spec.name, None)?;
                     let description_matches = meta.description.trim() == spec.description.trim();
                     let body_matches = loaded.content.trim() == spec.body.trim();
                     if description_matches && body_matches {
@@ -1854,7 +1860,9 @@ impl SkillGovernanceAuthority {
         req: EditSkillRequest,
         actor: &str,
     ) -> Result<SkillGovernedWriteResult, SkillError> {
-        let current = self.skill_authority.resolve_skill(&req.name, None)?;
+        let current = self
+            .skill_authority
+            .resolve_skill_for_inspection(&req.name, None)?;
         let next_name = crate::write::parse_skill_document(&req.content)
             .ok()
             .and_then(|document| {
@@ -2016,8 +2024,12 @@ impl SkillGovernanceAuthority {
         skill_name: &str,
         actor: &str,
     ) -> Result<Vec<SkillGuardReport>, SkillError> {
-        let meta = self.skill_authority.resolve_skill(skill_name, None)?;
-        let markdown_content = self.skill_authority.load_skill_source(skill_name, None)?;
+        let meta = self
+            .skill_authority
+            .resolve_skill_for_inspection(skill_name, None)?;
+        let markdown_content = self
+            .skill_authority
+            .load_skill_source_for_inspection(skill_name, None)?;
         let supporting_files = meta
             .supporting_files
             .iter()
@@ -2726,7 +2738,7 @@ impl SkillGovernanceAuthority {
     ) -> Result<(), SkillError> {
         let existing = self
             .skill_authority
-            .resolve_skill(&package.skill_name, None)
+            .resolve_skill_for_inspection(&package.skill_name, None)
             .ok();
         let source_files = package
             .supporting_files
@@ -2828,7 +2840,7 @@ impl SkillGovernanceAuthority {
                 SkillRemoteInstallAction::Update
             ) {
                 self.skill_authority
-                    .resolve_skill(&package.skill_name, None)
+                    .resolve_skill_for_inspection(&package.skill_name, None)
                     .ok()
             } else {
                 None
@@ -2876,7 +2888,7 @@ impl SkillGovernanceAuthority {
 
             let resolved_meta = self
                 .skill_authority
-                .resolve_skill(&package.skill_name, None)?;
+                .resolve_skill_for_inspection(&package.skill_name, None)?;
             let local_hash = crate::sync::hash_skill_meta(&resolved_meta)?;
             let installed_at = now_unix_timestamp();
             let mut distribution = plan_for_apply.distribution.clone();
@@ -3221,7 +3233,10 @@ impl SkillGovernanceAuthority {
             );
         }
 
-        match self.skill_authority.resolve_skill(skill_name, None) {
+        match self
+            .skill_authority
+            .resolve_skill_for_inspection(skill_name, None)
+        {
             Ok(meta) => {
                 if meta
                     .location
@@ -3243,7 +3258,7 @@ impl SkillGovernanceAuthority {
     ) -> Result<SkillSemanticDescriptor, SkillError> {
         let detail = self
             .skill_authority
-            .load_skill_detail_for_meta(meta)
+            .load_skill_detail_for_meta_for_inspection(meta)
             .unwrap_or_default();
         Ok(build_skill_semantic_descriptor_from_parts(
             &meta.name,
@@ -3279,7 +3294,10 @@ impl SkillGovernanceAuthority {
 
     fn resolve_composition_skill_name(&self, skill_name: &str) -> Result<String, SkillError> {
         let requested = required_nonempty_text(skill_name, "skill_name")?;
-        Ok(self.skill_authority.resolve_skill(&requested, None)?.name)
+        Ok(self
+            .skill_authority
+            .resolve_skill_for_inspection(&requested, None)?
+            .name)
     }
 
     fn set_skill_composition_relationship_state(
@@ -3380,7 +3398,7 @@ impl SkillGovernanceAuthority {
     ) -> Result<ManagedSkillRecord, SkillError> {
         let meta = self
             .skill_authority
-            .resolve_skill(&entry.skill_name, None)?;
+            .resolve_skill_for_inspection(&entry.skill_name, None)?;
         let local_hash = crate::sync::hash_skill_meta(&meta)?;
         Ok(ManagedSkillRecord {
             skill_name: entry.skill_name.clone(),

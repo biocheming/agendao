@@ -1,9 +1,12 @@
 use crate::{
-    LoadedSkill, LoadedSkillFile, SkillDetailView, SkillError, SkillFilter,
-    SkillGovernanceAuthority, SkillMeta, SkillMetaView,
+    extract_methodology_template_from_markdown, write::parse_skill_document, LoadedSkill,
+    LoadedSkillFile, SkillConditions, SkillDetailView, SkillError, SkillFilter,
+    SkillGovernanceAuthority, SkillMeta, SkillMetaView, SkillMethodologyTemplate,
 };
 use rocode_config::ConfigStore;
-use rocode_types::SkillVitalityState;
+use rocode_types::{
+    SkillRuntimeCompositionHint, SkillRuntimeCompositionHintKind, SkillVitalityState,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -68,6 +71,111 @@ pub struct SkillRuntimeResolutionDiagnostic {
     pub vitality_state: SkillVitalityState,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeSkillPromptBodyKind {
+    Methodology,
+    CompactBody,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeSkillPromptPacket {
+    pub meta: SkillMeta,
+    pub detail: SkillDetailView,
+    pub vitality_state: SkillVitalityState,
+    pub body_kind: RuntimeSkillPromptBodyKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub methodology: Option<SkillMethodologyTemplate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_body: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub governance_hints: Vec<SkillRuntimeCompositionHint>,
+}
+
+impl RuntimeSkillPromptPacket {
+    pub fn render_prompt_block(
+        &self,
+        arguments_block: Option<&str>,
+        prompt_block: Option<&str>,
+    ) -> String {
+        let mut lines = vec![format!(
+            "<skill_runtime_packet name=\"{}\">",
+            self.meta.name
+        )];
+        lines.push(String::new());
+        lines.push(format!("# Skill: {}", self.meta.name));
+        lines.push(String::new());
+        lines.push(format!("Description: {}", self.meta.description));
+        lines.push(format!(
+            "Runtime vitality: {}",
+            runtime_vitality_label(self.vitality_state)
+        ));
+
+        if !self.governance_hints.is_empty() {
+            lines.push(String::new());
+            lines.push("## Governance Hints".to_string());
+            for hint in &self.governance_hints {
+                let label = match hint.kind {
+                    SkillRuntimeCompositionHintKind::PreferCanonicalSkill => "prefer canonical",
+                    SkillRuntimeCompositionHintKind::ComplementaryBundle => "keep complementary",
+                };
+                lines.push(format!("- {label}: {}", hint.summary));
+            }
+        }
+
+        append_runtime_conditions(&mut lines, &self.meta.conditions);
+        append_runtime_requirements(&mut lines, &self.detail);
+
+        if let Some(methodology) = &self.methodology {
+            append_methodology_sections(&mut lines, methodology);
+        } else if let Some(body) = self.compact_body.as_deref() {
+            lines.push(String::new());
+            lines.push("## Execution Notes".to_string());
+            lines.push(body.to_string());
+        }
+
+        if !self.meta.supporting_files.is_empty() {
+            lines.push(String::new());
+            lines.push("## Supporting Files".to_string());
+            lines.push(
+                "Use `skill_view(name, file_path)` to inspect linked files only when they are needed."
+                    .to_string(),
+            );
+            for file in &self.meta.supporting_files {
+                lines.push(format!("- {}", file.relative_path));
+            }
+        }
+
+        lines.push(String::new());
+        lines.push(format!(
+            "Base directory: {}",
+            self.meta
+                .location
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .display()
+        ));
+
+        if let Some(arguments) = arguments_block.filter(|value| !value.trim().is_empty()) {
+            lines.push(String::new());
+            lines.push("## Arguments".to_string());
+            lines.push("```json".to_string());
+            lines.push(arguments.trim().to_string());
+            lines.push("```".to_string());
+        }
+
+        if let Some(prompt) = prompt_block.filter(|value| !value.trim().is_empty()) {
+            lines.push(String::new());
+            lines.push("## Additional Instructions".to_string());
+            lines.push(prompt.trim().to_string());
+        }
+
+        lines.push(String::new());
+        lines.push("</skill_runtime_packet>".to_string());
+        lines.join("\n")
+    }
+}
+
 #[derive(Clone)]
 pub struct SkillRuntimeResolver {
     governance_authority: SkillGovernanceAuthority,
@@ -120,7 +228,7 @@ impl SkillRuntimeResolver {
         let meta = self
             .governance_authority
             .skill_authority()
-            .resolve_skill(name, filter)?;
+            .resolve_skill_for_inspection(name, filter)?;
         self.require_runtime_visible_meta(meta)
     }
 
@@ -132,7 +240,7 @@ impl SkillRuntimeResolver {
         let meta = self.resolve_skill(name, filter)?;
         self.governance_authority()
             .skill_authority()
-            .load_resolved_skill(meta)
+            .load_resolved_skill_for_inspection(meta)
     }
 
     pub fn load_skill_source(
@@ -143,7 +251,7 @@ impl SkillRuntimeResolver {
         let meta = self.resolve_skill(name, filter)?;
         self.governance_authority()
             .skill_authority()
-            .load_resolved_skill_source(&meta)
+            .load_resolved_skill_source_for_inspection(&meta)
     }
 
     pub fn load_skill_detail(
@@ -154,7 +262,69 @@ impl SkillRuntimeResolver {
         let meta = self.resolve_skill(name, filter)?;
         self.governance_authority()
             .skill_authority()
-            .load_skill_detail_for_meta(&meta)
+            .load_skill_detail_for_meta_for_inspection(&meta)
+    }
+
+    pub fn load_skill_prompt_packet(
+        &self,
+        name: &str,
+        filter: Option<&SkillFilter<'_>>,
+        selected_skill_names: Option<&[String]>,
+    ) -> Result<RuntimeSkillPromptPacket, SkillError> {
+        let skill = self.load_skill(name, filter)?;
+        let detail = self
+            .governance_authority()
+            .skill_authority()
+            .load_skill_detail_for_meta_for_inspection(&skill.meta)?;
+        Ok(self.build_prompt_packet_for_loaded_skill(&skill, &detail, selected_skill_names))
+    }
+
+    pub fn build_prompt_packet_for_loaded_skill(
+        &self,
+        skill: &LoadedSkill,
+        detail: &SkillDetailView,
+        selected_skill_names: Option<&[String]>,
+    ) -> RuntimeSkillPromptPacket {
+        let selected_skill_names = selected_skill_names
+            .map(normalize_selected_skill_names)
+            .unwrap_or_else(|| vec![skill.meta.name.clone()]);
+        let governance_hints = self
+            .governance_authority()
+            .runtime_skill_composition_hints(&selected_skill_names)
+            .into_iter()
+            .filter(|hint| {
+                hint.skill_names
+                    .iter()
+                    .any(|value| value.eq_ignore_ascii_case(&skill.meta.name))
+                    || hint
+                        .preferred_skill_name
+                        .as_deref()
+                        .map(|value| value.eq_ignore_ascii_case(&skill.meta.name))
+                        .unwrap_or(false)
+            })
+            .collect::<Vec<_>>();
+        let methodology = extract_methodology_template_from_markdown(&skill.content);
+        let body_kind = if methodology.is_some() {
+            RuntimeSkillPromptBodyKind::Methodology
+        } else {
+            RuntimeSkillPromptBodyKind::CompactBody
+        };
+        let compact_body = methodology
+            .is_none()
+            .then(|| compact_runtime_body(&skill.content))
+            .flatten();
+
+        RuntimeSkillPromptPacket {
+            meta: skill.meta.clone(),
+            detail: detail.clone(),
+            vitality_state: self
+                .governance_authority()
+                .effective_skill_vitality_state(&skill.meta.name),
+            body_kind,
+            methodology,
+            compact_body,
+            governance_hints,
+        }
     }
 
     pub fn load_skill_file(
@@ -166,7 +336,7 @@ impl SkillRuntimeResolver {
         let meta = self.resolve_skill(name, filter)?;
         self.governance_authority()
             .skill_authority()
-            .load_resolved_skill_file(&meta, file_path)
+            .load_resolved_skill_file_for_inspection(&meta, file_path)
     }
 
     pub fn runtime_resolution_diagnostic(
@@ -483,9 +653,218 @@ fn strip_wrapping_quotes(value: &str) -> String {
     trimmed.to_string()
 }
 
+fn normalize_selected_skill_names(values: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for value in values {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !out
+            .iter()
+            .any(|seen: &String| seen.eq_ignore_ascii_case(trimmed))
+        {
+            out.push(trimmed.to_string());
+        }
+    }
+    out
+}
+
+fn append_runtime_conditions(lines: &mut Vec<String>, conditions: &SkillConditions) {
+    let mut items = Vec::new();
+    if !conditions.requires_tools.is_empty() {
+        items.push(format!(
+            "required tools: {}",
+            conditions.requires_tools.join(", ")
+        ));
+    }
+    if !conditions.requires_toolsets.is_empty() {
+        items.push(format!(
+            "required toolsets: {}",
+            conditions.requires_toolsets.join(", ")
+        ));
+    }
+    if !conditions.stage_filter.is_empty() {
+        items.push(format!(
+            "stage filters: {}",
+            conditions.stage_filter.join(", ")
+        ));
+    }
+    if !conditions.fallback_for_tools.is_empty() {
+        items.push(format!(
+            "fallback when tools are absent: {}",
+            conditions.fallback_for_tools.join(", ")
+        ));
+    }
+    if !conditions.fallback_for_toolsets.is_empty() {
+        items.push(format!(
+            "fallback when toolsets are absent: {}",
+            conditions.fallback_for_toolsets.join(", ")
+        ));
+    }
+    if items.is_empty() {
+        return;
+    }
+    lines.push(String::new());
+    lines.push("## Runtime Conditions".to_string());
+    for item in items {
+        lines.push(format!("- {item}"));
+    }
+}
+
+fn append_runtime_requirements(lines: &mut Vec<String>, detail: &SkillDetailView) {
+    let mut items = Vec::new();
+    if !detail.required_environment_variables.is_empty() {
+        items.push(format!(
+            "environment variables: {}",
+            detail
+                .required_environment_variables
+                .iter()
+                .map(|item| item.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !detail.required_commands.is_empty() {
+        items.push(format!("commands: {}", detail.required_commands.join(", ")));
+    }
+    if !detail.missing_required_environment_variables.is_empty() {
+        items.push(format!(
+            "currently missing env vars: {}",
+            detail.missing_required_environment_variables.join(", ")
+        ));
+    }
+    if !detail.missing_required_commands.is_empty() {
+        items.push(format!(
+            "currently missing commands: {}",
+            detail.missing_required_commands.join(", ")
+        ));
+    }
+    if items.is_empty() {
+        return;
+    }
+    lines.push(String::new());
+    lines.push("## Runtime Requirements".to_string());
+    for item in items {
+        lines.push(format!("- {item}"));
+    }
+}
+
+fn append_methodology_sections(lines: &mut Vec<String>, methodology: &SkillMethodologyTemplate) {
+    if !methodology.when_to_use.is_empty() {
+        lines.push(String::new());
+        lines.push("## When To Use".to_string());
+        for item in &methodology.when_to_use {
+            lines.push(format!("- {item}"));
+        }
+    }
+    if !methodology.prerequisites.is_empty() {
+        lines.push(String::new());
+        lines.push("## Workflow Prerequisites".to_string());
+        for item in &methodology.prerequisites {
+            lines.push(format!("- {item}"));
+        }
+    }
+    if !methodology.core_steps.is_empty() {
+        lines.push(String::new());
+        lines.push("## Core Steps".to_string());
+        for (index, step) in methodology.core_steps.iter().enumerate() {
+            let mut line = format!("{}. **{}**: {}", index + 1, step.title, step.action);
+            if let Some(outcome) = step
+                .outcome
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                line.push_str(&format!(" Outcome: {outcome}"));
+            }
+            if !step.experienced_tools.is_empty() {
+                line.push_str(&format!(
+                    " Experienced tools: {}",
+                    step.experienced_tools.join(", ")
+                ));
+            }
+            lines.push(line);
+        }
+    }
+    if !methodology.success_criteria.is_empty() {
+        lines.push(String::new());
+        lines.push("## Success Criteria".to_string());
+        for item in &methodology.success_criteria {
+            lines.push(format!("- [ ] {item}"));
+        }
+    }
+    if !methodology.validation.is_empty() {
+        lines.push(String::new());
+        lines.push("## Validation".to_string());
+        for item in &methodology.validation {
+            lines.push(format!("- [ ] {item}"));
+        }
+    }
+    let mut boundaries = methodology.when_not_to_use.clone();
+    boundaries.extend(methodology.pitfalls.clone());
+    if !boundaries.is_empty() {
+        lines.push(String::new());
+        lines.push("## Boundaries and Pitfalls".to_string());
+        for item in boundaries {
+            lines.push(format!("- {item}"));
+        }
+    }
+    if !methodology.references.is_empty() {
+        lines.push(String::new());
+        lines.push("## References".to_string());
+        for reference in &methodology.references {
+            lines.push(format!("- `{}` - {}", reference.path, reference.label));
+        }
+    }
+}
+
+fn compact_runtime_body(content: &str) -> Option<String> {
+    let body = parse_skill_document(content)
+        .map(|document| document.body)
+        .unwrap_or_else(|_| content.trim().to_string());
+    let mut lines = Vec::new();
+    let mut char_count = 0usize;
+    let mut previous_blank = true;
+    for raw_line in body.lines() {
+        let line = raw_line.trim_end();
+        let is_blank = line.trim().is_empty();
+        if is_blank && previous_blank {
+            continue;
+        }
+        previous_blank = is_blank;
+        let normalized = if is_blank {
+            String::new()
+        } else {
+            line.trim().to_string()
+        };
+        let projected = char_count + normalized.len();
+        if lines.len() >= 36 || projected > 2_600 {
+            lines.push("...".to_string());
+            break;
+        }
+        char_count = projected;
+        lines.push(normalized);
+    }
+    let excerpt = lines.join("\n").trim().to_string();
+    (!excerpt.is_empty()).then_some(excerpt)
+}
+
+fn runtime_vitality_label(state: SkillVitalityState) -> &'static str {
+    match state {
+        SkillVitalityState::Active => "active",
+        SkillVitalityState::ReviewCandidate => "review_candidate",
+        SkillVitalityState::Retired => "retired",
+        SkillVitalityState::Archived => "archived",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render_methodology_skill_body;
+    use rocode_types::{
+        SkillCapabilityGroupKind, SkillCapabilityMember, SkillCapabilityMemberRole,
+    };
     use tempfile::tempdir;
 
     #[test]
@@ -566,5 +945,107 @@ Use the following explicit create or refresh mapping:
                 "drug-discovery-propose-modifications".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn load_skill_prompt_packet_prefers_methodology_and_governance_hints() {
+        let dir = tempdir().unwrap();
+        let governance = SkillGovernanceAuthority::new(dir.path(), None);
+        let methodology = render_methodology_skill_body(
+            "provider-refresh",
+            &SkillMethodologyTemplate {
+                when_to_use: vec!["refresh provider auth".to_string()],
+                prerequisites: vec!["provider must already exist".to_string()],
+                core_steps: vec![crate::SkillMethodologyStep {
+                    title: "Inspect".to_string(),
+                    action: "read provider config".to_string(),
+                    outcome: Some("resolved current state".to_string()),
+                    experienced_tools: vec!["provider".to_string()],
+                }],
+                success_criteria: vec!["auth validated".to_string()],
+                validation: vec!["config explains selected transport".to_string()],
+                pitfalls: vec!["do not rewrite unrelated providers".to_string()],
+                ..SkillMethodologyTemplate::default()
+            },
+        )
+        .unwrap();
+        governance
+            .create_skill(
+                crate::CreateSkillRequest {
+                    name: "provider-refresh".to_string(),
+                    description: "canonical provider refresh".to_string(),
+                    body: methodology,
+                    frontmatter: None,
+                    category: Some("ops".to_string()),
+                    directory_name: None,
+                },
+                "test:create",
+            )
+            .unwrap();
+        governance
+            .create_skill(
+                crate::CreateSkillRequest {
+                    name: "provider-refresh-gitlab".to_string(),
+                    description: "gitlab variant".to_string(),
+                    body: "Read gitlab provider state.\nThen refresh the token.".to_string(),
+                    frontmatter: None,
+                    category: Some("ops".to_string()),
+                    directory_name: None,
+                },
+                "test:create",
+            )
+            .unwrap();
+        governance
+            .activate_skill_capability_group(
+                Some("provider-refresh-family"),
+                SkillCapabilityGroupKind::CanonicalFamily,
+                Some("provider-refresh"),
+                vec![
+                    SkillCapabilityMember {
+                        skill_name: "provider-refresh".to_string(),
+                        role: SkillCapabilityMemberRole::Canonical,
+                    },
+                    SkillCapabilityMember {
+                        skill_name: "provider-refresh-gitlab".to_string(),
+                        role: SkillCapabilityMemberRole::Specialization,
+                    },
+                ],
+                vec!["gitlab variant should defer to canonical provider refresh".to_string()],
+                "test:activate",
+            )
+            .unwrap();
+
+        let resolver = SkillRuntimeResolver::from_governance(governance);
+        let packet = resolver
+            .load_skill_prompt_packet(
+                "provider-refresh-gitlab",
+                None,
+                Some(&[
+                    "provider-refresh-gitlab".to_string(),
+                    "provider-refresh".to_string(),
+                ]),
+            )
+            .unwrap();
+
+        assert_eq!(packet.body_kind, RuntimeSkillPromptBodyKind::CompactBody);
+        assert!(packet.compact_body.is_some());
+        assert!(packet.methodology.is_none());
+        assert!(packet
+            .governance_hints
+            .iter()
+            .any(|hint| hint.kind == SkillRuntimeCompositionHintKind::PreferCanonicalSkill));
+
+        let canonical_packet = resolver
+            .load_skill_prompt_packet("provider-refresh", None, None)
+            .unwrap();
+        assert_eq!(
+            canonical_packet.body_kind,
+            RuntimeSkillPromptBodyKind::Methodology
+        );
+        assert!(canonical_packet.methodology.is_some());
+        let rendered = canonical_packet.render_prompt_block(None, None);
+        assert!(rendered.contains("## Core Steps"));
+        assert!(rendered.contains("## Validation"));
+        assert!(rendered.contains("Runtime vitality: active"));
     }
 }

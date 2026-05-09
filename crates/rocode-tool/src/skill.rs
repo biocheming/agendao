@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::skill_support::{
-    attach_skill_runtime_preflight, authority_for, format_loaded_skill_output,
-    load_skill_with_runtime_materialization, resolve_skill_filter,
+    attach_skill_runtime_preflight, format_loaded_skill_output,
+    load_skill_prompt_packet_with_runtime_materialization, resolve_skill_filter,
 };
 use crate::{PermissionRequest, Tool, ToolContext, ToolError, ToolResult};
 
@@ -59,45 +59,36 @@ impl Tool for SkillTool {
         let input: SkillInput =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
-        let authority = authority_for(Path::new(&ctx.directory), ctx.config_store.clone());
         let resolved_filter = resolve_skill_filter(&ctx, None).await;
         let filter = resolved_filter.as_filter();
-        let skill = load_skill_with_runtime_materialization(
+        let packet = load_skill_prompt_packet_with_runtime_materialization(
             Path::new(&ctx.directory),
             ctx.config_store.clone(),
             &input.skill_name,
             Some(&filter),
-            Some(&ctx.extra),
+            Some(std::slice::from_ref(&input.skill_name)),
         )?;
 
         ctx.ask_permission(
             PermissionRequest::new("skill")
-                .with_pattern(&skill.meta.name)
-                .with_always(&skill.meta.name)
-                .with_metadata("description", serde_json::json!(&skill.meta.description)),
+                .with_pattern(&packet.meta.name)
+                .with_always(&packet.meta.name)
+                .with_metadata("description", serde_json::json!(&packet.meta.description)),
         )
         .await?;
-        let detail = authority
-            .load_skill_detail_for_meta(&skill.meta)
-            .map_err(crate::skill_support::map_skill_error)?;
 
-        let (output, mut metadata) = format_loaded_skill_output(
-            &skill,
-            Some(&detail),
-            Path::new(&ctx.directory),
-            input.arguments.as_ref(),
-            input.prompt.as_deref(),
-        );
+        let (output, mut metadata) =
+            format_loaded_skill_output(&packet, input.arguments.as_ref(), input.prompt.as_deref());
         attach_skill_runtime_preflight(
             &mut metadata,
-            &skill.meta.name,
-            &skill.meta.name,
-            &skill.meta.supporting_files,
-            &detail,
+            &packet.meta.name,
+            &packet.meta.name,
+            &packet.meta.supporting_files,
+            &packet.detail,
         );
 
         Ok(ToolResult {
-            title: format!("Loaded skill: {}", skill.meta.name),
+            title: format!("Loaded skill: {}", packet.meta.name),
             output,
             metadata,
             truncated: false,

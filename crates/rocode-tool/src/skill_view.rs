@@ -5,7 +5,7 @@ use std::path::Path;
 use crate::skill_support::{
     attach_skill_runtime_preflight, authority_for, format_loaded_skill_file_output,
     format_loaded_skill_output, load_skill_file_with_runtime_materialization,
-    load_skill_with_runtime_materialization, map_skill_error, resolve_skill_filter,
+    load_skill_prompt_packet_with_runtime_materialization, map_skill_error, resolve_skill_filter,
     resolve_skill_with_runtime_materialization,
 };
 use crate::{PermissionRequest, Tool, ToolContext, ToolError, ToolResult};
@@ -80,7 +80,7 @@ impl Tool for SkillViewTool {
                 Some(&ctx.extra),
             )?;
             let detail = authority
-                .load_skill_detail_for_meta(&meta)
+                .load_skill_detail_for_meta_for_inspection(&meta)
                 .map_err(map_skill_error)?;
             let (output, mut metadata) = format_loaded_skill_file_output(&loaded);
             attach_skill_runtime_preflight(
@@ -108,32 +108,23 @@ impl Tool for SkillViewTool {
         )
         .await?;
 
-        let loaded = load_skill_with_runtime_materialization(
+        let packet = load_skill_prompt_packet_with_runtime_materialization(
             Path::new(&ctx.directory),
             ctx.config_store.clone(),
             &input.name,
             Some(&filter),
-            Some(&ctx.extra),
+            Some(std::slice::from_ref(&input.name)),
         )?;
-        let detail = authority
-            .load_skill_detail_for_meta(&loaded.meta)
-            .map_err(map_skill_error)?;
-        let (output, mut metadata) = format_loaded_skill_output(
-            &loaded,
-            Some(&detail),
-            Path::new(&ctx.directory),
-            None,
-            None,
-        );
+        let (output, mut metadata) = format_loaded_skill_output(&packet, None, None);
         attach_skill_runtime_preflight(
             &mut metadata,
-            &loaded.meta.name,
-            &loaded.meta.name,
-            &loaded.meta.supporting_files,
-            &detail,
+            &packet.meta.name,
+            &packet.meta.name,
+            &packet.meta.supporting_files,
+            &packet.detail,
         );
         Ok(ToolResult {
-            title: format!("Loaded skill: {}", loaded.meta.name),
+            title: format!("Loaded skill: {}", packet.meta.name),
             output,
             metadata,
             truncated: false,

@@ -67,7 +67,7 @@ pub(super) fn prepare_skill_reflection(
         .into_iter()
         .map(|name| {
             let methodology = authority
-                .load_skill(&name, None)
+                .load_skill_for_inspection(&name, None)
                 .ok()
                 .and_then(|loaded| extract_methodology_template_from_markdown(&loaded.content));
             SkillUsageSummary { name, methodology }
