@@ -51,6 +51,19 @@ pub fn context_usage_percent(used: u64, limit: u64) -> Option<u64> {
     Some(((used as f64 / limit as f64) * 100.0).round() as u64)
 }
 
+pub fn context_usage_bar(percent: Option<u64>, width: usize) -> String {
+    let safe_percent = percent.unwrap_or(0).min(100) as usize;
+    let mut filled = ((safe_percent * width) + 50) / 100;
+    if safe_percent > 0 && filled == 0 {
+        filled = 1;
+    }
+    format!(
+        "[{}{}]",
+        "\u{2588}".repeat(filled),
+        "\u{2591}".repeat(width.saturating_sub(filled))
+    )
+}
+
 pub fn current_context_tokens_from_sources(
     usage_context_tokens: Option<u64>,
     active_stage_context_tokens: Option<u64>,
@@ -94,6 +107,14 @@ mod tests {
     fn context_usage_percent_uses_rounded_percentage() {
         assert_eq!(context_usage_percent(12_450, 200_000), Some(6));
         assert_eq!(context_usage_percent(0, 0), None);
+    }
+
+    #[test]
+    fn context_usage_bar_clamps_and_preserves_nonzero_visibility() {
+        assert_eq!(context_usage_bar(Some(0), 5), "[░░░░░]");
+        assert_eq!(context_usage_bar(Some(1), 5), "[█░░░░]");
+        assert_eq!(context_usage_bar(Some(50), 5), "[███░░]");
+        assert_eq!(context_usage_bar(Some(140), 5), "[█████]");
     }
 
     #[test]

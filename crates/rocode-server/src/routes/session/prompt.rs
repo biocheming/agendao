@@ -1640,7 +1640,6 @@ pub(super) async fn session_prompt(
     session_prompt_inner(state, headers, id, req, None).await
 }
 
-#[allow(dead_code)]
 pub(crate) async fn session_prompt_with_verified_ingress(
     state: Arc<ServerState>,
     headers: HeaderMap,

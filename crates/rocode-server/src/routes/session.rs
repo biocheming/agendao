@@ -4,7 +4,7 @@ mod effective_policy;
 mod events;
 mod executions;
 mod messages;
-mod prompt;
+pub(crate) mod prompt;
 mod recovery;
 mod scheduler;
 mod session_crud;
@@ -22,11 +22,6 @@ use crate::ServerState;
 
 // ─── Re-exports for sibling route modules (e.g. stream.rs) ─────────────────
 pub(crate) use self::messages::SendMessageRequest;
-#[allow(unused_imports)]
-pub(crate) use self::prompt::{
-    load_verified_external_adapter_binding, persist_verified_external_adapter_binding,
-    session_prompt_with_verified_ingress, SessionPromptRequest, VerifiedSessionIngress,
-};
 pub(crate) use self::scheduler::{
     apply_scheduler_selection_session_metadata, collect_skill_tree_validation,
     resolve_prompt_request_config, to_task_agent_info, PromptRequestConfigInput,

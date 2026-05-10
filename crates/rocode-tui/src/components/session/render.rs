@@ -1633,20 +1633,7 @@ fn context_usage_percent(used: u64, limit: u64) -> Option<u64> {
 }
 
 fn context_usage_bar(percent: Option<u64>, width: usize) -> String {
-    let safe_percent = percent.unwrap_or(0).min(100) as usize;
-    let mut filled = ((safe_percent * width) + 50) / 100;
-    if safe_percent > 0 && filled == 0 {
-        filled = 1;
-    }
-    format!(
-        "[{}{}]",
-        "█".repeat(filled),
-        "░".repeat(width.saturating_sub(filled))
-    )
-}
-
-fn context_pressure_suffix(percent: Option<u64>) -> Option<&'static str> {
-    rocode_types::context_pressure_label(percent)
+    rocode_types::context_usage_bar(percent, width)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -1662,7 +1649,7 @@ fn format_context_usage_label(used: u64, limit: Option<u64>) -> String {
         format_compact_number(limit),
         percent.unwrap_or(0)
     );
-    if let Some(suffix) = context_pressure_suffix(percent) {
+    if let Some(suffix) = rocode_types::context_pressure_label(percent) {
         label.push(' ');
         label.push_str(suffix);
     }
@@ -1679,7 +1666,7 @@ fn format_context_usage_meter(used: u64, limit: Option<u64>) -> Option<(String, 
         context_usage_bar(percent, 8),
         percent.unwrap_or(0)
     );
-    if let Some(suffix) = context_pressure_suffix(percent) {
+    if let Some(suffix) = rocode_types::context_pressure_label(percent) {
         label.push(' ');
         label.push_str(suffix);
     }

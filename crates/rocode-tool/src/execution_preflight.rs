@@ -110,12 +110,6 @@ impl ExecutionPreflightReport {
         self
     }
 
-    #[allow(dead_code)]
-    pub fn hard_fail(mut self, code: impl Into<String>, message: impl Into<String>) -> Self {
-        self.add_issue(ExecutionPreflightSeverity::HardFail, code, message);
-        self
-    }
-
     pub fn status(&self) -> ExecutionPreflightStatus {
         if self
             .issues
@@ -142,24 +136,6 @@ impl ExecutionPreflightReport {
 
     pub fn has_guidance(&self) -> bool {
         !self.output.trim().is_empty() || !self.metadata.is_empty() || !self.attachments.is_empty()
-    }
-
-    #[allow(dead_code)]
-    pub fn blocking_issue(&self) -> Option<&ExecutionPreflightIssue> {
-        self.issues
-            .iter()
-            .find(|issue| matches!(issue.severity, ExecutionPreflightSeverity::HardFail))
-    }
-
-    #[allow(dead_code)]
-    pub fn ensure_not_blocked(&self) -> Result<(), ToolError> {
-        let Some(issue) = self.blocking_issue() else {
-            return Ok(());
-        };
-        Err(ToolError::ExecutionError(format!(
-            "execution preflight blocked {} [{}]: {}",
-            self.subject, issue.code, issue.message
-        )))
     }
 
     pub fn metadata_projection(&self) -> ExecutionPreflightMetadata {
@@ -232,12 +208,12 @@ mod tests {
 
     #[test]
     fn status_uses_highest_severity_issue() {
-        let report = ExecutionPreflightReport::new("read", "/tmp/a")
+        let mut report = ExecutionPreflightReport::new("read", "/tmp/a")
             .advisory("registry_unavailable", "registry unavailable")
             .soft_warn("attachment_missing", "attachment missing");
         assert_eq!(report.status(), ExecutionPreflightStatus::SoftWarn);
 
-        let report = report.hard_fail("blocked", "blocked");
+        report.add_issue(ExecutionPreflightSeverity::HardFail, "blocked", "blocked");
         assert_eq!(report.status(), ExecutionPreflightStatus::HardFail);
     }
 
@@ -296,12 +272,13 @@ mod tests {
     }
 
     #[test]
-    fn ensure_not_blocked_returns_explicit_execution_error() {
-        let report =
-            ExecutionPreflightReport::new("read", "/tmp/sample.pdf").hard_fail("blocked", "denied");
-        let error = report
-            .ensure_not_blocked()
-            .expect_err("hard fail should block execution");
-        assert!(error.to_string().contains("execution preflight blocked"));
+    fn hard_fail_is_reflected_in_status_and_metadata_projection() {
+        let mut report = ExecutionPreflightReport::new("read", "/tmp/sample.pdf");
+        report.add_issue(ExecutionPreflightSeverity::HardFail, "blocked", "denied");
+        assert_eq!(report.status(), ExecutionPreflightStatus::HardFail);
+        let projection = report.metadata_projection();
+        assert_eq!(projection.status, ExecutionPreflightStatus::HardFail);
+        assert_eq!(projection.issues.len(), 1);
+        assert_eq!(projection.issues[0].code, "blocked");
     }
 }
