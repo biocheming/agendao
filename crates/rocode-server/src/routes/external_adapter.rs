@@ -22,11 +22,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
-use super::session::{
-    create_session_from_spec, load_verified_external_adapter_binding,
-    persist_verified_external_adapter_binding, session_prompt_with_verified_ingress,
-    session_to_info, CreateSessionSpec, SessionPromptRequest, VerifiedSessionIngress,
+use super::session::prompt::{
+    load_verified_external_adapter_binding, persist_verified_external_adapter_binding,
+    session_prompt_with_verified_ingress, SessionPromptRequest, VerifiedSessionIngress,
 };
+use super::session::{create_session_from_spec, session_to_info, CreateSessionSpec};
 use crate::{ApiError, Result, ServerState};
 
 pub(crate) fn external_adapter_routes() -> Router<Arc<ServerState>> {

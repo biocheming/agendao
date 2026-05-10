@@ -231,6 +231,17 @@ pub enum ContextPressureGovernanceStatus {
     Blocked,
 }
 
+impl ContextPressureGovernanceStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Compacted => "compacted",
+            Self::Deferred => "deferred",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContextPressureGovernanceSummary {
     pub trigger: String,
@@ -264,6 +275,17 @@ pub enum SessionCacheSeverity {
     LowChange,
     MediumChange,
     HighChange,
+}
+
+impl SessionCacheSeverity {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::LowChange => "low change",
+            Self::MediumChange => "medium change",
+            Self::HighChange => "high change",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -478,6 +500,17 @@ pub enum SessionCacheExplainabilitySource {
     BoundaryEvidence,
 }
 
+impl SessionCacheExplainabilitySource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "no evidence",
+            Self::CacheEvidence => "cache evidence",
+            Self::SurfaceEvidence => "surface evidence",
+            Self::BoundaryEvidence => "boundary evidence",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionCacheExplainabilityContract {
     #[serde(default)]
@@ -506,6 +539,70 @@ pub struct SessionChildHistoryIsolationContract {
     #[serde(default)]
     pub child_history_in_live_prefix_detected: bool,
     pub explanation: String,
+}
+
+impl SessionPrefixStabilityContract {
+    pub fn status_label(&self) -> &'static str {
+        if self.prefix_change_detected {
+            "prefix changed"
+        } else {
+            "stable prefix"
+        }
+    }
+}
+
+impl SessionCompactionBoundaryContract {
+    pub fn status_label(&self) -> &'static str {
+        if self.boundary_recorded {
+            "boundary recorded"
+        } else {
+            "boundary clear"
+        }
+    }
+}
+
+impl SessionCacheExplainabilityContract {
+    pub fn status_label(&self) -> &'static str {
+        if !self.issue_present {
+            "cache stable"
+        } else if self.explained {
+            "cache explained"
+        } else {
+            "cache unexplained"
+        }
+    }
+}
+
+impl SessionChildHistoryIsolationContract {
+    pub fn status_label(&self) -> &'static str {
+        if self.child_history_in_live_prefix_detected {
+            "leak detected"
+        } else if self.owner_local_live_prefix {
+            "isolated"
+        } else {
+            "not owner-local"
+        }
+    }
+}
+
+impl SessionContextClosureContract {
+    pub fn coarse_diagnostic_label(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if self.cache_explainability.issue_present {
+            parts.push(self.cache_explainability.status_label());
+        }
+        if self.prefix_stability.prefix_change_detected {
+            parts.push(self.prefix_stability.status_label());
+        } else if self.compaction_boundary.boundary_recorded {
+            parts.push(self.compaction_boundary.status_label());
+        }
+
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(" · "))
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

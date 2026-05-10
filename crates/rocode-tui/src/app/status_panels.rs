@@ -1630,81 +1630,40 @@ fn tui_session_handoff_mode_label(mode: rocode_types::SessionHandoffMode) -> &'s
     }
 }
 
-fn tui_context_pressure_governance_status_label(
-    status: rocode_types::ContextPressureGovernanceStatus,
-) -> &'static str {
-    match status {
-        rocode_types::ContextPressureGovernanceStatus::Ready => "ready",
-        rocode_types::ContextPressureGovernanceStatus::Compacted => "compacted",
-        rocode_types::ContextPressureGovernanceStatus::Deferred => "deferred",
-        rocode_types::ContextPressureGovernanceStatus::Blocked => "blocked",
-    }
-}
-
 fn tui_context_closure_prefix_status_label(
     prefix: &rocode_types::SessionPrefixStabilityContract,
 ) -> &'static str {
-    if prefix.prefix_change_detected {
-        "prefix changed"
-    } else {
-        "stable prefix"
-    }
+    prefix.status_label()
 }
 
 fn tui_context_closure_boundary_status_label(
     boundary: &rocode_types::SessionCompactionBoundaryContract,
 ) -> &'static str {
-    if boundary.boundary_recorded {
-        "boundary recorded"
-    } else {
-        "boundary clear"
-    }
+    boundary.status_label()
 }
 
 fn tui_context_closure_cache_status_label(
     cache: &rocode_types::SessionCacheExplainabilityContract,
 ) -> &'static str {
-    if !cache.issue_present {
-        "cache stable"
-    } else if cache.explained {
-        "cache explained"
-    } else {
-        "cache unexplained"
-    }
+    cache.status_label()
 }
 
 fn tui_context_closure_isolation_status_label(
     isolation: &rocode_types::SessionChildHistoryIsolationContract,
 ) -> &'static str {
-    if isolation.child_history_in_live_prefix_detected {
-        "leak detected"
-    } else if isolation.owner_local_live_prefix {
-        "isolated"
-    } else {
-        "not owner-local"
-    }
+    isolation.status_label()
 }
 
 fn tui_context_closure_evidence_impact_label(
     severity: rocode_types::SessionCacheSeverity,
 ) -> &'static str {
-    match severity {
-        rocode_types::SessionCacheSeverity::Stable => "stable",
-        rocode_types::SessionCacheSeverity::LowChange => "low change",
-        rocode_types::SessionCacheSeverity::MediumChange => "medium change",
-        rocode_types::SessionCacheSeverity::HighChange => "high change",
-    }
+    severity.label()
 }
 
 fn tui_context_closure_evidence_source_label(
     source: rocode_types::SessionCacheExplainabilitySource,
 ) -> &'static str {
-    match source {
-        rocode_types::SessionCacheExplainabilitySource::None => "no evidence",
-        rocode_types::SessionCacheExplainabilitySource::CacheEvidence => "cache evidence",
-        rocode_types::SessionCacheExplainabilitySource::SurfaceEvidence => "surface evidence",
-        rocode_types::SessionCacheExplainabilitySource::BoundaryEvidence => "boundary evidence",
-    }
+    source.label()
 }
 
 fn tui_context_closure_evidence_detail_label(detail: &str) -> String {
@@ -2134,7 +2093,7 @@ fn tui_usage_status_lines(
 
             let mut detail = Vec::new();
             if let Some(status) = boundary.governance_status {
-                detail.push(tui_context_pressure_governance_status_label(status).to_string());
+                detail.push(status.label().to_string());
             }
             if let Some(phase) = boundary.phase.as_deref() {
                 detail.push(phase.to_string());
@@ -2311,7 +2270,7 @@ fn tui_usage_status_lines(
         )));
         if let Some(limit) = current_context_limit.filter(|limit| *limit > 0) {
             if let Some(percent) = tui_context_usage_percent(current_tokens, limit) {
-                if let Some(note) = tui_context_pressure_note(Some(percent)) {
+                if let Some(note) = rocode_types::context_pressure_label(Some(percent)) {
                     lines.push(StatusLine::muted(format!("State: {}", note)));
                 }
             }
@@ -3768,10 +3727,6 @@ fn tui_total_session_tokens(usage: &rocode_session::SessionUsage) -> u64 {
 
 fn tui_context_usage_percent(used: u64, limit: u64) -> Option<u64> {
     rocode_types::context_usage_percent(used, limit)
-}
-
-fn tui_context_pressure_note(percent: Option<u64>) -> Option<&'static str> {
-    rocode_types::context_pressure_label(percent)
 }
 
 fn tui_format_context_usage_label(used: u64, limit: Option<u64>) -> String {

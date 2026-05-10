@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "generate:context-pressure": "node scripts/generate-context-pressure.mjs",
-    "check:generated": "node scripts/generate-context-pressure.mjs --check",
+    "generate:context-closure": "node scripts/generate-context-closure.mjs",
+    "check:generated": "node scripts/generate-context-pressure.mjs --check && node scripts/generate-context-closure.mjs --check",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "npm run check:generated && npm run typecheck && vite build",
     "preview": "vite preview",

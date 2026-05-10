@@ -38,7 +38,7 @@ pub use dialogs::{
 pub use diff::{DiffLine, DiffLineType, DiffMode, DiffView};
 pub use home::HomeView;
 pub use logo::{exit_logo_lines, Logo};
-pub use markdown::{CodeBlock, MarkdownBlock, MarkdownRenderer};
+pub use markdown::{CodeBlock, MarkdownRenderer};
 pub use permission::{
     PermissionAction, PermissionLifetime, PermissionPrompt, PermissionRequest, PermissionType,
 };

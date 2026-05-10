@@ -555,11 +555,6 @@ pub async fn should_trigger_agent_hooks(event: HookEvent, agent_name: Option<&st
     !is_builtin_agent(name)
 }
 
-/// Backward-compatible alias. Kept to avoid broad callsite churn.
-pub async fn should_trigger_script_hooks(event: HookEvent, agent_name: Option<&str>) -> bool {
-    should_trigger_agent_hooks(event, agent_name).await
-}
-
 /// Convenience: trigger a hook event on the global plugin system.
 /// Uses fire-and-forget for notification-only events, parallel execution otherwise.
 /// Errors from individual hooks are logged but do not propagate.

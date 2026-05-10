@@ -7,9 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use rocode_agent::{AgentInfo, AgentRegistry};
 #[cfg(test)]
-use rocode_command::cli_panel::{
-    display_width, pad_right_display, truncate_display, wrap_display_text,
-};
+use rocode_command::cli_panel::{truncate_display, wrap_display_text};
 use rocode_command::cli_permission::{prompt_permission, PermissionDecision, PermissionMemory};
 use rocode_command::cli_prompt::{
     PromptCompletion, PromptFrame, PromptSession, PromptSessionEvent,
@@ -38,7 +36,6 @@ use rocode_orchestrator::{
     SchedulerProfileConfig, SchedulerRequestDefaults, AUTO_SCHEDULER_PROFILE_NAME,
 };
 use rocode_provider::ProviderRegistry;
-use rocode_util::util::color::strip_ansi;
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
 use tokio_util::sync::CancellationToken;
 
@@ -325,8 +322,32 @@ enum CliUiActionOutcome {
 
 include!("run/ui_actions.rs");
 
+#[path = "run/frontend_state_types.rs"]
+mod frontend_state_types;
+#[path = "run/frontend_state_topology.rs"]
+mod frontend_state_topology;
+#[path = "run/frontend_state_projection.rs"]
+mod frontend_state_projection;
+#[path = "run/frontend_state_prompt.rs"]
+mod frontend_state_prompt;
+#[path = "run/frontend_state_surface.rs"]
+mod frontend_state_surface;
+use frontend_state_projection::CliFrontendPhase;
+use frontend_state_prompt::CliPromptChrome;
+use frontend_state_surface::{
+    cli_copy_target_transcript, cli_refresh_prompt, print_cli_list_on_surface, CliTerminalSurface,
+};
+use frontend_state_topology::{cli_print_execution_topology, CliObservedExecutionTopology};
 include!("run/frontend_state.rs");
 
+#[path = "run/session_projection_events.rs"]
+mod session_projection_events;
+#[path = "run/session_projection_insights.rs"]
+mod session_projection_insights;
+#[path = "run/session_projection_layout.rs"]
+mod session_projection_layout;
+#[path = "run/session_projection_usage.rs"]
+mod session_projection_usage;
 include!("run/session_projection.rs");
 include!("run/sse.rs");
 
@@ -684,15 +705,18 @@ mod tests {
     use super::{
         cli_cycle_attached_session, cli_focus_attached_session, cli_focus_root_session,
         cli_normalize_model_ref, cli_observe_terminal_stream_block, cli_prompt_agent_override,
-        cli_prompt_assist_view, cli_prompt_screen_lines, cli_recent_session_info_for_directory,
-        cli_render_retained_layout, cli_render_startup_banner, cli_resolve_registry_ui_action,
-        cli_resolve_show_thinking, cli_session_update_requires_refresh,
-        cli_set_root_server_session, cli_should_emit_scheduler_stage_block, CliExecutionRuntime,
-        CliFrontendPhase, CliFrontendProjection, CliLastTurnTokenStats,
-        CliObservedExecutionTopology, CliPromptCatalog, CliPromptSelectionState,
-        CliRecentSessionInfo, CliRetainedTranscript, CliSessionTokenStats, PermissionMemory,
-        TerminalStreamAccumulator,
+        cli_recent_session_info_for_directory, cli_render_retained_layout,
+        cli_render_startup_banner, cli_resolve_registry_ui_action, cli_resolve_show_thinking,
+        cli_session_update_requires_refresh, cli_set_root_server_session,
+        cli_should_emit_scheduler_stage_block, CliExecutionRuntime, CliFrontendPhase,
+        CliFrontendProjection, CliObservedExecutionTopology, CliRecentSessionInfo,
+        CliRetainedTranscript, CliSessionTokenStats, PermissionMemory, TerminalStreamAccumulator,
     };
+    use super::frontend_state_prompt::{
+        cli_prompt_assist_view, cli_prompt_screen_lines, CliPromptCatalog,
+        CliPromptSelectionState,
+    };
+    use super::frontend_state_types::CliLastTurnTokenStats;
     use crate::api_client::SessionListItem;
     use crate::api_client::{SessionListHints, SessionListTime};
     use chrono::Utc;

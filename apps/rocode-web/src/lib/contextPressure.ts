@@ -1,6 +1,7 @@
 import {
   CONTEXT_PRESSURE_LABELS,
   CONTEXT_PRESSURE_THRESHOLDS,
+  contextPressureLabel as generatedContextPressureLabel,
 } from "../generated/contextPressure.generated";
 
 export { CONTEXT_PRESSURE_LABELS, CONTEXT_PRESSURE_THRESHOLDS };
@@ -8,11 +9,7 @@ export { CONTEXT_PRESSURE_LABELS, CONTEXT_PRESSURE_THRESHOLDS };
 export type ContextPressureTone = "normal" | "warning" | "critical";
 
 export function contextPressureLabel(percent?: number | null) {
-  if (percent == null) return null;
-  if (percent >= CONTEXT_PRESSURE_THRESHOLDS.critical) return CONTEXT_PRESSURE_LABELS.critical;
-  if (percent >= CONTEXT_PRESSURE_THRESHOLDS.autoCompactSoon) return CONTEXT_PRESSURE_LABELS.autoCompactSoon;
-  if (percent >= CONTEXT_PRESSURE_THRESHOLDS.warning) return CONTEXT_PRESSURE_LABELS.warning;
-  return null;
+  return generatedContextPressureLabel(percent);
 }
 
 export function contextPressureTone(percent?: number | null): ContextPressureTone {

@@ -41,7 +41,17 @@ function generatedContent(source) {
     `  warning: ${warningLabel},\n` +
     `  autoCompactSoon: ${autoCompactSoonLabel},\n` +
     `  critical: ${criticalLabel},\n` +
-    `} as const;\n`;
+    `} as const;\n` +
+    `\n` +
+    `export type ContextPressureLabel = typeof CONTEXT_PRESSURE_LABELS[keyof typeof CONTEXT_PRESSURE_LABELS];\n` +
+    `\n` +
+    `export function contextPressureLabel(percent?: number | null): ContextPressureLabel | null {\n` +
+    `  if (percent == null || !Number.isFinite(percent)) return null;\n` +
+    `  if (percent >= CONTEXT_PRESSURE_THRESHOLDS.critical) return CONTEXT_PRESSURE_LABELS.critical;\n` +
+    `  if (percent >= CONTEXT_PRESSURE_THRESHOLDS.autoCompactSoon) return CONTEXT_PRESSURE_LABELS.autoCompactSoon;\n` +
+    `  if (percent >= CONTEXT_PRESSURE_THRESHOLDS.warning) return CONTEXT_PRESSURE_LABELS.warning;\n` +
+    `  return null;\n` +
+    `}\n`;
 }
 
 const check = process.argv.includes("--check");

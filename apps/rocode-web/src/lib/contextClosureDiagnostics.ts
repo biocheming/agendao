@@ -6,6 +6,17 @@ import type {
   SessionContextClosureContractRecord,
   SessionPrefixStabilityContractRecord,
 } from "./sessionActivity";
+import {
+  compactionContinuitySourceLabel as generatedCompactionContinuitySourceLabel,
+  contextClosureBoundaryStatusLabel as generatedContextClosureBoundaryStatusLabel,
+  contextClosureCacheStatusLabel as generatedContextClosureCacheStatusLabel,
+  contextClosureCoarseDiagnosticLabel as generatedContextClosureCoarseDiagnosticLabel,
+  contextClosureExplainabilitySourceLabel as generatedContextClosureExplainabilitySourceLabel,
+  contextClosureGovernanceStatusLabel as generatedContextClosureGovernanceStatusLabel,
+  contextClosureIsolationStatusLabel as generatedContextClosureIsolationStatusLabel,
+  contextClosurePrefixStatusLabel as generatedContextClosurePrefixStatusLabel,
+  contextClosureSeverityLabel as generatedContextClosureSeverityLabel,
+} from "../generated/contextClosure.generated";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -190,84 +201,54 @@ export function compactionContinuityFromTelemetry(
   return compactionContinuityRecord(telemetry.compaction_continuity);
 }
 
-function humanizeSnakeCase(value: string | null | undefined) {
-  return value?.replace(/[._-]+/g, " ").trim() || null;
-}
-
 export function contextClosureGovernanceStatusLabel(value: string | null | undefined) {
-  return humanizeSnakeCase(value) || "--";
+  return generatedContextClosureGovernanceStatusLabel(value);
 }
 
 export function contextClosureExplainabilitySourceLabel(
   value: string | null | undefined,
 ) {
-  return humanizeSnakeCase(value) || "--";
+  return generatedContextClosureExplainabilitySourceLabel(value);
 }
 
 export function contextClosureSeverityLabel(value: string | null | undefined) {
-  return humanizeSnakeCase(value) || "--";
+  return generatedContextClosureSeverityLabel(value);
 }
 
 export function contextClosurePrefixStatusLabel(
   prefix: SessionPrefixStabilityContractRecord,
 ) {
-  return prefix.prefix_change_detected ? "prefix changed" : "stable prefix";
+  return generatedContextClosurePrefixStatusLabel(prefix);
 }
 
 export function contextClosureBoundaryStatusLabel(
   boundary: SessionCompactionBoundaryContractRecord,
 ) {
-  return boundary.boundary_recorded ? "boundary recorded" : "boundary clear";
+  return generatedContextClosureBoundaryStatusLabel(boundary);
 }
 
 export function contextClosureCacheStatusLabel(
   cache: SessionCacheExplainabilityContractRecord,
 ) {
-  if (!cache.issue_present) return "cache stable";
-  return cache.explained ? "cache explained" : "cache unexplained";
+  return generatedContextClosureCacheStatusLabel(cache);
 }
 
 export function contextClosureIsolationStatusLabel(
   isolation: SessionChildHistoryIsolationContractRecord,
 ) {
-  if (isolation.child_history_in_live_prefix_detected) return "leak detected";
-  return isolation.owner_local_live_prefix ? "isolated" : "not owner-local";
+  return generatedContextClosureIsolationStatusLabel(isolation);
 }
 
 export function compactionContinuitySourceLabel(
   continuity: SessionCompactionContinuityInspectionRecord,
 ) {
-  switch (continuity.source) {
-    case "continuity_packet":
-      return "packet installed";
-    case "raw_summary_fallback":
-      return "legacy summary fallback";
-    default:
-      return humanizeSnakeCase(continuity.source) || "--";
-  }
+  return generatedCompactionContinuitySourceLabel(continuity);
 }
 
 export function contextClosureCoarseDiagnosticLabel(
   contract: SessionContextClosureContractRecord | null | undefined,
 ) {
-  if (!contract) return null;
-
-  const parts: string[] = [];
-  const cacheStatus = contextClosureCacheStatusLabel(contract.cache_explainability);
-  const prefixStatus = contextClosurePrefixStatusLabel(contract.prefix_stability);
-  const boundaryStatus = contextClosureBoundaryStatusLabel(contract.compaction_boundary);
-
-  if (contract.cache_explainability.issue_present) {
-    parts.push(cacheStatus);
-  }
-  if (contract.prefix_stability.prefix_change_detected) {
-    parts.push(prefixStatus);
-  } else if (contract.compaction_boundary.boundary_recorded) {
-    parts.push(boundaryStatus);
-  }
-
-  if (parts.length === 0) return null;
-  return Array.from(new Set(parts)).join(" · ");
+  return generatedContextClosureCoarseDiagnosticLabel(contract);
 }
 
 export const contextClosureCacheDiagnosticLabel = contextClosureCoarseDiagnosticLabel;

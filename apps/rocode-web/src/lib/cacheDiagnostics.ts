@@ -1,3 +1,8 @@
+import {
+  CONTEXT_CLOSURE_SEVERITY_LABELS,
+  CONTEXT_CLOSURE_STATUS_LABELS,
+} from "../generated/contextClosure.generated";
+
 export interface CacheEvidenceSummaryRecord {
   status?: string | null;
   severity?: string | null;
@@ -24,18 +29,18 @@ function severityLabel(value: string | null | undefined) {
     case "HighChange":
     case "hard_bust":
     case "hardBust":
-      return "high change";
+      return CONTEXT_CLOSURE_SEVERITY_LABELS.high_change;
     case "MediumChange":
     case "likely_bust":
     case "likelyBust":
-      return "medium change";
+      return CONTEXT_CLOSURE_SEVERITY_LABELS.medium_change;
     case "LowChange":
     case "soft_degradation":
     case "softDegradation":
-      return "low change";
+      return CONTEXT_CLOSURE_SEVERITY_LABELS.low_change;
     case "Stable":
     case "stable":
-      return "stable";
+      return CONTEXT_CLOSURE_SEVERITY_LABELS.stable;
     default:
       return value?.replace(/[_-]+/g, " ").trim() || null;
   }
@@ -70,7 +75,9 @@ export function cacheBustSummaryStatusLabel(
 ) {
   if (!summary) return null;
   if (summary.status === "stable" || summary.status === "cold_start") return null;
-  return summary.primary_cause?.trim() ? "cache explained" : "cache unexplained";
+  return summary.primary_cause?.trim()
+    ? CONTEXT_CLOSURE_STATUS_LABELS.cache_explained
+    : CONTEXT_CLOSURE_STATUS_LABELS.cache_unexplained;
 }
 
 export function promptSurfaceEvidenceFromTelemetry(

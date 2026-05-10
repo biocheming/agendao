@@ -762,7 +762,7 @@ impl Sidebar {
                         ));
                         if let Some(note) = context_limit
                             .and_then(|limit| context_usage_percent(shown_context_tokens, limit))
-                            .and_then(|percent| context_pressure_note(Some(percent)))
+                            .and_then(|percent| rocode_types::context_pressure_label(Some(percent)))
                         {
                             lines.push(Line::from(vec![
                                 Span::styled("State  ", Style::default().fg(theme.text_muted)),
@@ -1881,39 +1881,7 @@ fn cache_diagnostic_label(metadata: &Option<HashMap<String, serde_json::Value>>)
 fn context_closure_cache_diagnostic_label(
     contract: &rocode_types::SessionContextClosureContract,
 ) -> Option<String> {
-    let mut parts = Vec::new();
-    let cache_status = if !contract.cache_explainability.issue_present {
-        "cache stable"
-    } else if contract.cache_explainability.explained {
-        "cache explained"
-    } else {
-        "cache unexplained"
-    };
-    let prefix_status = if contract.prefix_stability.prefix_change_detected {
-        "prefix changed"
-    } else {
-        "stable prefix"
-    };
-    let boundary_status = if contract.compaction_boundary.boundary_recorded {
-        "boundary recorded"
-    } else {
-        "boundary clear"
-    };
-
-    if contract.cache_explainability.issue_present {
-        parts.push(cache_status);
-    }
-    if contract.prefix_stability.prefix_change_detected {
-        parts.push(prefix_status);
-    } else if contract.compaction_boundary.boundary_recorded {
-        parts.push(boundary_status);
-    }
-
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join(" · "))
-    }
+    contract.coarse_diagnostic_label()
 }
 
 fn cache_evidence_status_label(
@@ -1930,9 +1898,23 @@ fn cache_evidence_status_label(
         .is_some_and(|value| !value.is_empty());
     Some(
         if has_cause {
-            "cache explained"
+            rocode_types::SessionCacheExplainabilityContract {
+                issue_present: true,
+                explained: true,
+                source: rocode_types::SessionCacheExplainabilitySource::None,
+                severity: None,
+                explanation: None,
+            }
+            .status_label()
         } else {
-            "cache unexplained"
+            rocode_types::SessionCacheExplainabilityContract {
+                issue_present: true,
+                explained: false,
+                source: rocode_types::SessionCacheExplainabilitySource::None,
+                severity: None,
+                explanation: None,
+            }
+            .status_label()
         }
         .to_string(),
     )
@@ -2294,10 +2276,6 @@ fn context_usage_style(theme: &Theme, percent: Option<u64>) -> Style {
         rocode_types::ContextPressure::Normal => theme.text_muted,
     };
     Style::default().fg(color)
-}
-
-fn context_pressure_note(percent: Option<u64>) -> Option<&'static str> {
-    rocode_types::context_pressure_label(percent)
 }
 
 fn sidebar_usage_line(theme: &Theme, label: &str, used: u64, limit: Option<u64>) -> Line<'static> {

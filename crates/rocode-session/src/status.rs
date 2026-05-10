@@ -12,9 +12,6 @@ use rocode_core::bus::{Bus, BusEventDef};
 /// Event published when a session's run status changes.
 pub static SESSION_STATUS_EVENT: BusEventDef = BusEventDef::new("session.status");
 
-/// Deprecated event published when a session becomes idle.
-pub static SESSION_IDLE_EVENT: BusEventDef = BusEventDef::new("session.idle");
-
 // ============================================================================
 // Status types (matches TS SessionStatus.Info union type)
 // ============================================================================
@@ -89,13 +86,6 @@ impl SessionStatusManager {
         let mut state = self.state.write().await;
         match &status {
             SessionStatusInfo::Idle => {
-                // Publish deprecated idle event
-                if let Some(ref bus) = self.bus {
-                    let idle_data = serde_json::json!({
-                        "sessionID": session_id,
-                    });
-                    bus.publish(&SESSION_IDLE_EVENT, idle_data).await;
-                }
                 state.remove(session_id);
             }
             _ => {
