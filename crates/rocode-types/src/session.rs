@@ -343,6 +343,88 @@ pub struct SessionContextClosureContract {
     pub child_history_isolation: SessionChildHistoryIsolationContract,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionCompactionContinuityInspectionSource {
+    ContinuityPacket,
+    RawSummaryFallback,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionCompactionContinuityInspection {
+    pub source: SessionCompactionContinuityInspectionSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eligible_message_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact_recent_tail_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omitted_older_turns: Option<usize>,
+    #[serde(default)]
+    pub has_working_ledger: bool,
+    #[serde(default)]
+    pub has_memory_anchors: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recall_policy: Option<String>,
+}
+
+impl SessionCompactionContinuityInspection {
+    pub fn from_packet(packet: &SessionContinuityPacket) -> Self {
+        Self {
+            source: SessionCompactionContinuityInspectionSource::ContinuityPacket,
+            summary_message_id: packet
+                .latest_compaction_summary
+                .as_ref()
+                .map(|summary| summary.message_id.clone()),
+            summary_text: packet
+                .latest_compaction_summary
+                .as_ref()
+                .map(|summary| summary.summary.trim().to_string())
+                .filter(|summary| !summary.is_empty()),
+            eligible_message_count: Some(packet.eligible_message_count),
+            exact_recent_tail_count: Some(packet.exact_recent_tail_count),
+            omitted_older_turns: Some(packet.omitted_older_turns),
+            has_working_ledger: !packet.working_ledger.is_empty(),
+            has_memory_anchors: !packet.memory_anchors.is_empty(),
+            recall_policy: packet
+                .recall_policy
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string),
+        }
+    }
+
+    pub fn from_raw_summary(
+        summary: &ContextCompactionSummary,
+        summary_message_id: Option<String>,
+    ) -> Option<Self> {
+        let summary_text = summary
+            .summary
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string);
+        if summary_text.is_none() && summary_message_id.is_none() {
+            return None;
+        }
+        Some(Self {
+            source: SessionCompactionContinuityInspectionSource::RawSummaryFallback,
+            summary_message_id,
+            summary_text,
+            eligible_message_count: summary.message_count_before,
+            exact_recent_tail_count: summary.kept_message_count,
+            omitted_older_turns: summary.compacted_message_count,
+            has_working_ledger: false,
+            has_memory_anchors: false,
+            recall_policy: None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionPrefixStabilityContract {
     pub basis: SessionCacheSemanticsBasis,
@@ -697,7 +779,7 @@ impl SessionContinuityPacket {
         ids
     }
 
-    pub fn stable_refs_value(&self) -> serde_json::Value {
+pub fn stable_refs_value(&self) -> serde_json::Value {
         serde_json::json!({
             "version": self.version,
             "eligible_message_count": self.eligible_message_count,
@@ -901,6 +983,41 @@ not as a replacement for checking live files or rerunning verification when exac
             .collect::<Vec<_>>()
             .join("\n")
     }
+}
+
+pub const CONTEXT_COMPACTION_CONTINUITY_PACKET_METADATA_KEY: &str =
+    "context_compaction_continuity_packet";
+
+pub fn message_continuity_packet(
+    metadata: &std::collections::HashMap<String, serde_json::Value>,
+) -> Option<SessionContinuityPacket> {
+    metadata
+        .get(CONTEXT_COMPACTION_CONTINUITY_PACKET_METADATA_KEY)
+        .and_then(SessionContinuityPacket::from_value)
+}
+
+pub fn message_latest_compaction_summary(
+    metadata: &std::collections::HashMap<String, serde_json::Value>,
+    fallback_message_id: &str,
+    fallback_text: Option<&str>,
+) -> Option<SessionContinuityCompactionSummary> {
+    if let Some(summary) = message_continuity_packet(metadata)
+        .and_then(|packet| packet.latest_compaction_summary)
+    {
+        let trimmed = summary.summary.trim();
+        if !trimmed.is_empty() {
+            return Some(SessionContinuityCompactionSummary {
+                message_id: summary.message_id,
+                summary: trimmed.to_string(),
+            });
+        }
+    }
+
+    let trimmed = fallback_text.map(str::trim).filter(|value| !value.is_empty())?;
+    Some(SessionContinuityCompactionSummary {
+        message_id: fallback_message_id.to_string(),
+        summary: trimmed.to_string(),
+    })
 }
 
 fn truncate_chars(value: &str, limit: usize) -> String {
@@ -1542,6 +1659,8 @@ pub struct SessionTelemetrySnapshot {
     pub stage_summaries: Vec<PersistedStageTelemetrySummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<SessionMemoryTelemetrySummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_continuity: Option<SessionCompactionContinuityInspection>,
     pub last_run_status: String,
     pub updated_at: i64,
 }

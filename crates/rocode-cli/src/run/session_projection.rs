@@ -849,6 +849,41 @@ fn cli_usage_snapshot_lines(
             if !detail.is_empty() {
                 lines.push(format!("  Detail: {}", detail.join(" · ")));
             }
+            if let Some(continuity) = telemetry.compaction_continuity.as_ref() {
+                let mut continuity_parts = Vec::new();
+                continuity_parts.push(match continuity.source {
+                    rocode_types::SessionCompactionContinuityInspectionSource::ContinuityPacket => {
+                        "packet installed".to_string()
+                    }
+                    rocode_types::SessionCompactionContinuityInspectionSource::RawSummaryFallback => {
+                        "legacy summary fallback".to_string()
+                    }
+                });
+                if let Some(exact_recent_tail_count) = continuity.exact_recent_tail_count {
+                    continuity_parts.push(format!("tail {}", exact_recent_tail_count));
+                }
+                if let Some(omitted_older_turns) = continuity.omitted_older_turns {
+                    continuity_parts.push(format!("omitted {}", omitted_older_turns));
+                }
+                if continuity.has_working_ledger {
+                    continuity_parts.push("ledger".to_string());
+                }
+                if continuity.has_memory_anchors {
+                    continuity_parts.push("memory anchors".to_string());
+                }
+                if !continuity_parts.is_empty() {
+                    lines.push(format!("  Continuity: {}", continuity_parts.join(" · ")));
+                }
+                if let Some(recall_policy) = continuity.recall_policy.as_deref() {
+                    lines.push(format!("  Recall: {}", recall_policy));
+                }
+                if let Some(summary_text) = continuity.summary_text.as_deref() {
+                    lines.push(format!(
+                        "  Summary: {}",
+                        truncate_text(summary_text, 120)
+                    ));
+                }
+            }
             lines.push(format!(
                 "  Action: attempted {} · succeeded {} · blocking {}",
                 cli_yes_no(boundary.compaction_attempted),
@@ -4172,6 +4207,19 @@ mod session_projection_tests {
                 kept_message_count: Some(8),
                 summary: Some("Compacted 7 messages.".to_string()),
             }),
+            compaction_continuity: Some(
+                rocode_types::SessionCompactionContinuityInspection {
+                    source: rocode_types::SessionCompactionContinuityInspectionSource::ContinuityPacket,
+                    summary_message_id: Some("msg_compact".to_string()),
+                    summary_text: Some("Packet-owned continuity summary.".to_string()),
+                    eligible_message_count: Some(15),
+                    exact_recent_tail_count: Some(8),
+                    omitted_older_turns: Some(7),
+                    has_working_ledger: true,
+                    has_memory_anchors: false,
+                    recall_policy: Some("recent_tail_plus_memory".to_string()),
+                },
+            ),
             context_compaction_lifecycle_summary: Some(
                 rocode_types::ContextCompactionLifecycleSummary {
                     trigger: "auto_preflight".to_string(),
@@ -4331,6 +4379,15 @@ mod session_projection_tests {
         assert!(lines
             .iter()
             .any(|line| { line == "  Cache: cache explained" }));
+        assert!(lines.iter().any(|line| {
+            line == "  Continuity: packet installed · tail 8 · omitted 7 · ledger"
+        }));
+        assert!(lines
+            .iter()
+            .any(|line| { line == "  Recall: recent_tail_plus_memory" }));
+        assert!(lines.iter().any(|line| {
+            line == "  Summary: Packet-owned continuity summary."
+        }));
         assert!(lines
             .iter()
             .any(|line| { line == "  Installed: request 70K · live 67K · 250K chars" }));

@@ -45,7 +45,7 @@ use rocode_types::{
     ConfigPolicyValidationEffect, ConfigPolicyValidationItem, ConfigPolicyValidationOwner,
     ConfigPolicyValidationScope, ConfigPolicyValidationScopeKind, ConfigPolicyValidationSeverity,
     ContextPressureGovernanceSummary, MemoryDetailView, MemoryEvidenceRef, MemoryRecordId,
-    SessionContinuityPacket, SessionEffectiveSchedulerTraceStep,
+    message_latest_compaction_summary, SessionContinuityPacket, SessionEffectiveSchedulerTraceStep,
     SessionEffectiveSchedulerTraceStepKind,
 };
 
@@ -1295,11 +1295,18 @@ fn scheduler_context_hydratable_text(message: &SessionMessage) -> Option<String>
     if !text.is_empty() {
         parts.push(text.to_string());
     }
+    if let Some(summary) = message_latest_compaction_summary(&message.metadata, &message.id, None) {
+        parts.push(format!(
+            "[continuity compaction summary]\n{}",
+            summary.summary.trim()
+        ));
+        return (!parts.is_empty()).then(|| parts.join("\n\n"));
+    }
     for part in &message.parts {
         if let SessionPartType::Compaction { summary } = &part.part_type {
             let summary = summary.trim();
             if !summary.is_empty() {
-                parts.push(format!("[compaction summary]\n{summary}"));
+                parts.push(format!("[continuity compaction summary]\n{summary}"));
             }
         }
     }
@@ -2947,8 +2954,39 @@ mod tests {
 
         assert!(rendered.contains("assistant `msg_compaction`"));
         assert!(rendered.contains("visible text"));
-        assert!(rendered.contains("[compaction summary]"));
+        assert!(rendered.contains("[continuity compaction summary]"));
         assert!(rendered.contains("older findings"));
+    }
+
+    #[test]
+    fn scheduler_context_hydrate_prefers_packet_summary_text() {
+        let mut message = SessionMessage::assistant("session");
+        message.id = "msg_compaction_packet".to_string();
+        message.metadata.insert(
+            "context_compaction_continuity_packet".to_string(),
+            serde_json::json!({
+                "version": 1,
+                "latest_compaction_summary": {
+                    "message_id": "msg_compaction_packet",
+                    "summary": "packet owned continuity summary"
+                }
+            }),
+        );
+        message.parts.push(rocode_session::MessagePart {
+            id: "part_compaction_packet".to_string(),
+            part_type: SessionPartType::Compaction {
+                summary: "older raw summary".to_string(),
+            },
+            created_at: chrono::Utc::now(),
+            message_id: Some(message.id.clone()),
+        });
+
+        let rendered = render_scheduler_context_hydrated_message(&message, 4_000)
+            .expect("message should hydrate");
+
+        assert!(rendered.contains("[continuity compaction summary]"));
+        assert!(rendered.contains("packet owned continuity summary"));
+        assert!(!rendered.contains("older raw summary"));
     }
 
     #[test]

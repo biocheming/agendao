@@ -11,11 +11,15 @@ use rocode_session::{
 };
 use rocode_types::{
     ContextCompactionLifecycleSummary, ContextCompactionSummary, ContextPressureGovernanceSummary,
-    PromptSurfaceEvidenceSummary, SessionCacheSemanticsSummary, SessionContextClosureContract,
-    SessionContextExplain, SessionDiagnosticsSidecar, SessionInsightsResponse,
+    PromptSurfaceEvidenceSummary, SessionCacheSemanticsSummary,
+    SessionCompactionContinuityInspection, SessionContextClosureContract, SessionContextExplain,
+    SessionDiagnosticsSidecar, SessionInsightsResponse,
     SessionMemoryTelemetrySummary, SessionMultimodalAttachmentInfo, SessionMultimodalInsight,
     SessionOwnershipSummary, SessionUsageBooks, WorkflowUsageSummary,
 };
+use rocode_types::message_continuity_packet;
+#[cfg(test)]
+use rocode_types::message_latest_compaction_summary;
 use serde::Serialize;
 
 use crate::runtime_control::SessionExecutionTopology;
@@ -44,6 +48,8 @@ pub struct SessionTelemetrySnapshot {
     pub ownership: Option<SessionOwnershipSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_compaction_summary: Option<ContextCompactionSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_continuity: Option<SessionCompactionContinuityInspection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_compaction_lifecycle_summary: Option<ContextCompactionLifecycleSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -191,6 +197,8 @@ pub(super) async fn build_session_telemetry_snapshot(
         .as_ref()
         .and_then(SessionDiagnosticsSidecar::latest_context_compaction_record_value)
         .and_then(|value| serde_json::from_value(value).ok());
+    let compaction_continuity =
+        latest_compaction_continuity_inspection(session, context_compaction_summary.as_ref());
     let context_compaction_lifecycle_summary = diagnostics
         .as_ref()
         .and_then(SessionDiagnosticsSidecar::context_compaction_lifecycle_summary_value)
@@ -242,6 +250,7 @@ pub(super) async fn build_session_telemetry_snapshot(
         context_explain,
         ownership,
         context_compaction_summary,
+        compaction_continuity,
         context_compaction_lifecycle_summary,
         context_pressure_governance_summary,
         cache_semantics,
@@ -251,6 +260,43 @@ pub(super) async fn build_session_telemetry_snapshot(
         execution_preflight_summary,
         provider_diagnostic_summary,
     })
+}
+
+fn latest_compaction_continuity_inspection(
+    session: &Session,
+    raw_summary: Option<&ContextCompactionSummary>,
+) -> Option<SessionCompactionContinuityInspection> {
+    if let Some(packet) = session.record().messages.iter().rev().find_map(|message| {
+        if !matches!(message.role, rocode_types::MessageRole::Assistant) {
+            return None;
+        }
+        message_continuity_packet(&message.metadata)
+    }) {
+        return Some(SessionCompactionContinuityInspection::from_packet(&packet));
+    }
+
+    let (summary, message_id) = latest_context_compaction_summary_message(session, raw_summary)?;
+    SessionCompactionContinuityInspection::from_raw_summary(summary, Some(message_id))
+}
+
+fn latest_context_compaction_summary_message<'a>(
+    session: &'a Session,
+    raw_summary: Option<&'a ContextCompactionSummary>,
+) -> Option<(&'a ContextCompactionSummary, String)> {
+    let summary = raw_summary?;
+    let message_id = session
+        .record()
+        .messages
+        .iter()
+        .rev()
+        .find(|message| {
+            matches!(message.role, rocode_types::MessageRole::Assistant)
+                && message
+                    .metadata
+                    .contains_key(rocode_session::prompt::CONTEXT_COMPACTION_RECORD_METADATA_KEY)
+        })
+        .map(|message| message.id.clone())?;
+    Some((summary, message_id))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -511,9 +557,18 @@ fn latest_cache_evidence(session: &Session) -> Option<serde_json::Value> {
 
 #[cfg(test)]
 fn latest_context_compaction_summary(session: &Session) -> Option<ContextCompactionSummary> {
-    diagnostics_sidecar(session)
+    let mut summary = diagnostics_sidecar(session)
         .and_then(|sidecar| sidecar.latest_context_compaction_record_value())
-        .and_then(|value| serde_json::from_value(value).ok())
+        .and_then(|value| serde_json::from_value::<ContextCompactionSummary>(value).ok())?;
+    if let Some(packet_summary) = session.record().messages.iter().rev().find_map(|message| {
+        if !matches!(message.role, rocode_types::MessageRole::Assistant) {
+            return None;
+        }
+        message_latest_compaction_summary(&message.metadata, &message.id, summary.summary.as_deref())
+    }) {
+        summary.summary = Some(packet_summary.summary);
+    }
+    Some(summary)
 }
 
 #[cfg(test)]
@@ -586,13 +641,20 @@ pub(super) async fn persist_session_telemetry_metadata(
     let last_run_status = session_last_run_status_label(session);
     let session_id = session.record().id.clone();
     let memory = build_session_memory_telemetry(state, session).await;
-    let Some(snapshot) = state
+    let Some(mut snapshot) = state
         .runtime_telemetry
         .build_persisted_snapshot(&session_id, usage, last_run_status, memory)
         .await
     else {
         return;
     };
+
+    let raw_summary = SessionDiagnosticsSidecar::derive_from_session(session)
+        .as_ref()
+        .and_then(SessionDiagnosticsSidecar::latest_context_compaction_record_value)
+        .and_then(|value| serde_json::from_value::<ContextCompactionSummary>(value).ok());
+    snapshot.compaction_continuity =
+        latest_compaction_continuity_inspection(session, raw_summary.as_ref());
 
     if let Err(error) = persist_session_telemetry_snapshot(session, &snapshot) {
         tracing::warn!(
@@ -1123,6 +1185,82 @@ mod tests {
     }
 
     #[test]
+    fn latest_context_compaction_summary_prefers_packet_summary_text() {
+        let mut session = Session::new("session-1".to_string(), ".".to_string());
+        let assistant = session.add_assistant_message();
+        assistant.metadata.insert(
+            rocode_session::prompt::CONTEXT_COMPACTION_RECORD_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "trigger": "overflow_recovery",
+                "phase": "prompt.provider_overflow",
+                "reason": "provider_overflow",
+                "forced": true,
+                "summary": "Legacy summary text."
+            }),
+        );
+        assistant.metadata.insert(
+            rocode_session::prompt::CONTEXT_COMPACTION_CONTINUITY_PACKET_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "version": 1,
+                "latest_compaction_summary": {
+                    "message_id": assistant.id,
+                    "summary": "Packet-owned summary text."
+                }
+            }),
+        );
+
+        let summary = latest_context_compaction_summary(&session).expect("summary");
+        assert_eq!(summary.trigger, "overflow_recovery");
+        assert_eq!(summary.summary.as_deref(), Some("Packet-owned summary text."));
+    }
+
+    #[test]
+    fn latest_compaction_continuity_inspection_prefers_packet() {
+        let mut session = Session::new("session-1".to_string(), ".".to_string());
+        let assistant = session.add_assistant_message();
+        assistant.metadata.insert(
+            rocode_session::prompt::CONTEXT_COMPACTION_RECORD_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "trigger": "overflow_recovery",
+                "forced": true,
+                "summary": "Legacy summary text."
+            }),
+        );
+        assistant.metadata.insert(
+            rocode_session::prompt::CONTEXT_COMPACTION_CONTINUITY_PACKET_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "version": 1,
+                "eligible_message_count": 12,
+                "exact_recent_tail_count": 5,
+                "omitted_older_turns": 7,
+                "working_ledger": [{ "kind": "latest_user_turn", "text": "continue build" }],
+                "recall_policy": "recent_tail_plus_memory",
+                "latest_compaction_summary": {
+                    "message_id": assistant.id,
+                    "summary": "Packet-owned summary text."
+                }
+            }),
+        );
+
+        let raw_summary = latest_context_compaction_summary(&session).expect("summary");
+        let inspection = latest_compaction_continuity_inspection(&session, Some(&raw_summary))
+            .expect("inspection");
+
+        assert_eq!(
+            inspection.source,
+            rocode_types::SessionCompactionContinuityInspectionSource::ContinuityPacket
+        );
+        assert_eq!(inspection.summary_text.as_deref(), Some("Packet-owned summary text."));
+        assert_eq!(inspection.exact_recent_tail_count, Some(5));
+        assert_eq!(inspection.omitted_older_turns, Some(7));
+        assert!(inspection.has_working_ledger);
+        assert_eq!(
+            inspection.recall_policy.as_deref(),
+            Some("recent_tail_plus_memory")
+        );
+    }
+
+    #[test]
     fn latest_context_compaction_lifecycle_summary_reads_session_metadata() {
         let mut session = Session::new("session-1".to_string(), ".".to_string());
         session.insert_metadata(
@@ -1390,6 +1528,7 @@ mod tests {
                 kept_message_count: Some(7),
                 summary: Some("Compacted 7 messages.".to_string()),
             }),
+            compaction_continuity: None,
             context_compaction_lifecycle_summary: Some(ContextCompactionLifecycleSummary {
                 trigger: "auto_preflight".to_string(),
                 phase: Some("prompt.pre_request".to_string()),
@@ -1743,6 +1882,19 @@ mod tests {
                 &rocode_session::SessionTelemetrySnapshot {
                     version: SessionTelemetrySnapshotVersion::V1,
                     memory: None,
+                    compaction_continuity: Some(
+                        rocode_types::SessionCompactionContinuityInspection {
+                            source: rocode_types::SessionCompactionContinuityInspectionSource::ContinuityPacket,
+                            summary_message_id: Some("msg_compact".to_string()),
+                            summary_text: Some("Persisted packet-owned continuity summary.".to_string()),
+                            eligible_message_count: Some(12),
+                            exact_recent_tail_count: Some(5),
+                            omitted_older_turns: Some(7),
+                            has_working_ledger: true,
+                            has_memory_anchors: false,
+                            recall_policy: Some("recent_tail_plus_memory".to_string()),
+                        },
+                    ),
                     usage: rocode_types::SessionUsage {
                         input_tokens: 10,
                         output_tokens: 20,
@@ -1806,6 +1958,14 @@ mod tests {
                 .as_ref()
                 .map(|snapshot| snapshot.last_run_status.as_str()),
             Some("completed")
+        );
+        assert_eq!(
+            response
+                .telemetry
+                .as_ref()
+                .and_then(|snapshot| snapshot.compaction_continuity.as_ref())
+                .and_then(|continuity| continuity.summary_text.as_deref()),
+            Some("Persisted packet-owned continuity summary.")
         );
         assert_eq!(
             response
@@ -1883,6 +2043,21 @@ mod tests {
             context_tokens: 0,
             total_cost: 0.25,
         });
+        assistant.metadata.insert(
+            rocode_session::prompt::CONTEXT_COMPACTION_CONTINUITY_PACKET_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "version": 1,
+                "eligible_message_count": 12,
+                "exact_recent_tail_count": 5,
+                "omitted_older_turns": 7,
+                "working_ledger": [{ "kind": "latest_user_turn", "text": "continue build" }],
+                "recall_policy": "recent_tail_plus_memory",
+                "latest_compaction_summary": {
+                    "message_id": assistant.id.clone(),
+                    "summary": "Persisted continuity summary."
+                }
+            }),
+        );
 
         let exec_ctx = ExecutionContext {
             session_id: session_id.clone(),
@@ -1947,6 +2122,20 @@ mod tests {
                 .and_then(|value| value.as_array())
                 .map(Vec::len),
             Some(1)
+        );
+        assert_eq!(
+            hook_ctx
+                .get("snapshot")
+                .and_then(|value| value.get("compaction_continuity"))
+                .and_then(|value| value.get("source")),
+            Some(&serde_json::json!("continuity_packet"))
+        );
+        assert_eq!(
+            hook_ctx
+                .get("snapshot")
+                .and_then(|value| value.get("compaction_continuity"))
+                .and_then(|value| value.get("summary_text")),
+            Some(&serde_json::json!("Persisted continuity summary."))
         );
 
         let _ = global()

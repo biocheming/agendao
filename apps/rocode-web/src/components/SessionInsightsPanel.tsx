@@ -9,6 +9,7 @@ import {
   isLiveStageStatus,
 } from "../lib/contextPressure";
 import { multimodalCombinedWarnings, multimodalDisplayLabel } from "../lib/multimodal";
+import { CompactionContinuityCard } from "./CompactionContinuityCard";
 
 type ExecutionActivityState = ReturnType<typeof useExecutionActivity>;
 
@@ -234,6 +235,14 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
               <p className="text-sm text-muted-foreground leading-relaxed">
                 Updated {formatDateTime(telemetry.updated_at)}
               </p>
+              {telemetry.compaction_continuity ? (
+                <div className="grid gap-2 md:grid-cols-2">
+                  <CompactionContinuityCard
+                    continuity={telemetry.compaction_continuity}
+                    className={detailTileClass}
+                  />
+                </div>
+              ) : null}
             </div>
           ) : null}
 
