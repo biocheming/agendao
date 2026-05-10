@@ -38,7 +38,7 @@ import {
   type CacheEvidenceSummaryRecord,
 } from "./lib/cacheDiagnostics";
 import {
-  contextClosureCacheDiagnosticLabel,
+  contextClosureCoarseDiagnosticLabel,
   contextClosureContractFromTelemetry,
 } from "./lib/contextClosureDiagnostics";
 import {
@@ -1407,10 +1407,10 @@ export default function App() {
     }
     return null;
   }, [messageHistory]);
-  const latestCacheDiagnostic = useMemo(() => {
+  const latestClosureDiagnostic = useMemo(() => {
     const contextClosure = contextClosureContractFromTelemetry(executionActivity.telemetry);
     if (contextClosure) {
-      return contextClosureCacheDiagnosticLabel(contextClosure);
+      return contextClosureCoarseDiagnosticLabel(contextClosure);
     }
 
     const semanticsLabel = cacheSemanticsFromTelemetry(executionActivity.telemetry)?.label;
@@ -3114,7 +3114,7 @@ export default function App() {
               cacheReadTokens={sessionUsage?.cache_read_tokens ?? lastAssistantTurnTokens?.cacheRead ?? null}
               cacheMissTokens={sessionUsage?.cache_miss_tokens ?? lastAssistantTurnTokens?.cacheMiss ?? null}
               cacheWriteTokens={sessionUsage?.cache_write_tokens ?? lastAssistantTurnTokens?.cacheWrite ?? null}
-              cacheDiagnosticLabel={latestCacheDiagnostic}
+              closureDiagnosticLabel={latestClosureDiagnostic}
               ingressDiagnosticLabel={latestIngressDiagnostic}
               providerDiagnosticLabel={latestProviderDiagnostic}
               inputPricePerMillion={activeProviderModel?.cost_per_million_input ?? null}

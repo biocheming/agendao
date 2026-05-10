@@ -26,6 +26,18 @@ export interface PersistedStageTelemetrySummary {
   primary_attached_session_id?: string | null;
 }
 
+export interface PersistedCompactionContinuityInspectionRecord {
+  source: string;
+  summary_message_id?: string | null;
+  summary_text?: string | null;
+  eligible_message_count?: number | null;
+  exact_recent_tail_count?: number | null;
+  omitted_older_turns?: number | null;
+  has_working_ledger: boolean;
+  has_memory_anchors: boolean;
+  recall_policy?: string | null;
+}
+
 export interface PersistedSessionTelemetrySnapshot {
   version: string;
   usage: {
@@ -39,6 +51,7 @@ export interface PersistedSessionTelemetrySnapshot {
     total_cost: number;
   };
   stage_summaries: PersistedStageTelemetrySummary[];
+  compaction_continuity?: PersistedCompactionContinuityInspectionRecord | null;
   last_run_status: string;
   updated_at: number;
 }

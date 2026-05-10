@@ -33,7 +33,7 @@ interface ComposerSectionProps {
   cacheReadTokens?: number | null;
   cacheMissTokens?: number | null;
   cacheWriteTokens?: number | null;
-  cacheDiagnosticLabel?: string | null;
+  closureDiagnosticLabel?: string | null;
   ingressDiagnosticLabel?: string | null;
   providerDiagnosticLabel?: string | null;
   inputPricePerMillion?: number | null;

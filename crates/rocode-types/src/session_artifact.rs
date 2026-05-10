@@ -50,6 +50,7 @@ const MESSAGE_SANCTIONED_METADATA_KEYS: &[&str] = &[
     "cache_evidence_inspection",
     "cache_evidence",
     "cache_request_fingerprint",
+    "context_compaction_continuity_packet",
     "context_compaction_record",
     "continuationTargets",
     "cost",
@@ -239,6 +240,8 @@ pub struct SessionArtifactMessageDiagnosticsSidecar {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_compaction_record: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_compaction_continuity_packet: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_diagnostic: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_error_summary: Option<serde_json::Value>,
@@ -252,6 +255,7 @@ impl SessionArtifactMessageDiagnosticsSidecar {
             && self.cache_evidence.is_none()
             && self.prompt_surface_evidence.is_none()
             && self.context_compaction_record.is_none()
+            && self.context_compaction_continuity_packet.is_none()
             && self.provider_diagnostic.is_none()
             && self.provider_error_summary.is_none()
             && self.execution_preflights.is_empty()
@@ -345,6 +349,14 @@ impl SessionDiagnosticsSidecar {
             .rev()
             .filter(|message| matches!(message.role, MessageRole::Assistant))
             .find_map(|message| message.context_compaction_record.clone())
+    }
+
+    pub fn latest_context_compaction_continuity_packet_value(&self) -> Option<serde_json::Value> {
+        self.messages
+            .iter()
+            .rev()
+            .filter(|message| matches!(message.role, MessageRole::Assistant))
+            .find_map(|message| message.context_compaction_continuity_packet.clone())
     }
 
     pub fn latest_provider_error_summary_value(&self) -> Option<serde_json::Value> {
@@ -705,6 +717,10 @@ fn message_diagnostics_sidecar(
         cache_evidence: message.metadata.get("cache_evidence").cloned(),
         prompt_surface_evidence: message.metadata.get("prompt_surface_evidence").cloned(),
         context_compaction_record: message.metadata.get("context_compaction_record").cloned(),
+        context_compaction_continuity_packet: message
+            .metadata
+            .get("context_compaction_continuity_packet")
+            .cloned(),
         provider_diagnostic: message.metadata.get("provider_diagnostic").cloned(),
         provider_error_summary: message.metadata.get("provider_error_summary").cloned(),
         execution_preflights: execution_preflights_from_message(message, tool_names),
@@ -858,6 +874,7 @@ mod tests {
             usage: SessionUsage::default(),
             stage_summaries: Vec::new(),
             memory: None,
+            compaction_continuity: None,
             last_run_status: "completed".to_string(),
             updated_at: 123,
         }
@@ -922,6 +939,10 @@ mod tests {
             "context_compaction_record".to_string(),
             serde_json::json!({"trigger": "auto_preflight"}),
         );
+        message.metadata.insert(
+            "context_compaction_continuity_packet".to_string(),
+            serde_json::json!({"version": 1}),
+        );
         message
             .metadata
             .insert("custom_message_key".to_string(), serde_json::json!(1));
@@ -943,7 +964,11 @@ mod tests {
         );
         assert_eq!(
             value["metadata_authority"]["messages"][0]["keys"]["sanctioned_keys"],
-            serde_json::json!(["context_compaction_record", "provider_diagnostic"])
+            serde_json::json!([
+                "context_compaction_continuity_packet",
+                "context_compaction_record",
+                "provider_diagnostic"
+            ])
         );
         assert_eq!(
             value["metadata_authority"]["messages"][0]["keys"]["passthrough_keys"],
@@ -1151,6 +1176,36 @@ mod tests {
         assert_eq!(record["trigger"], serde_json::json!("overflow_recovery"));
         assert_eq!(record["forced"], serde_json::json!(true));
         assert_eq!(record["compacted_message_count"], serde_json::json!(3));
+    }
+
+    #[test]
+    fn diagnostics_sidecar_helper_reads_latest_context_compaction_continuity_packet() {
+        let session = sample_session();
+        let mut message = sample_message();
+        message.metadata.insert(
+            "context_compaction_continuity_packet".to_string(),
+            serde_json::json!({
+                "version": 1,
+                "eligible_message_count": 4,
+                "exact_recent_tail_count": 2,
+                "latest_compaction_summary": {
+                    "message_id": "message-1",
+                    "summary": "Compacted packet-backed summary."
+                }
+            }),
+        );
+
+        let sidecar = SessionDiagnosticsSidecar::derive_from_parts(&session, &[message])
+            .expect("sidecar should exist");
+        let packet = sidecar
+            .latest_context_compaction_continuity_packet_value()
+            .expect("packet should exist");
+
+        assert_eq!(packet["version"], serde_json::json!(1));
+        assert_eq!(
+            packet["latest_compaction_summary"]["summary"],
+            serde_json::json!("Compacted packet-backed summary.")
+        );
     }
 
     #[test]

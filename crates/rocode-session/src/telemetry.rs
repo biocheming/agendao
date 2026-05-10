@@ -108,6 +108,7 @@ mod tests {
                 primary_attached_session_id: None,
             }],
             memory: None,
+            compaction_continuity: None,
             last_run_status: "completed".to_string(),
             updated_at: 123,
         }

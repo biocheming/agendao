@@ -15,13 +15,22 @@ use crate::message_v2::{
     StepStartPart, StepTokens, UserTime,
 };
 use crate::summary::{summarize_into_session, SummarizeInput};
+use crate::session::sanitize_display_text;
 use crate::{MessageRole, PartType, Session, SessionMessage};
 
 use super::surface_contract::{
     parse_hidden_runtime_hint, sanctioned_model_context_projection_for_message,
 };
 use super::tools_and_output::{compose_session_title_source, generate_session_title_for_session};
-use super::{SessionPrompt, CONTEXT_COMPACTION_RECORD_METADATA_KEY};
+use super::{
+    SessionPrompt, CONTEXT_COMPACTION_CONTINUITY_PACKET_METADATA_KEY,
+    CONTEXT_COMPACTION_RECORD_METADATA_KEY,
+};
+use rocode_types::{
+    SessionContinuityCompactionSummary, SessionContinuityLedgerEntry,
+    SessionContinuityLedgerKind, SessionContinuityLimits, SessionContinuityPacket,
+    SessionContinuityTurn,
+};
 
 type LegacyToolResult = (
     String,
@@ -40,6 +49,9 @@ pub(super) const FORCE_COMPACTION_MIN_MESSAGES: usize = 2;
 const AUTO_COMPACTION_MIN_MESSAGES: usize = 10;
 const MAX_BODY_CHARS: usize = 5_000_000;
 const MAX_CONTEXT_CHARS: usize = 200_000;
+const COMPACTION_CONTINUITY_RECENT_TAIL_MESSAGES: usize = 6;
+const COMPACTION_CONTINUITY_CONTEXT_TEXT_LIMIT: usize = 6_000;
+const COMPACTION_CONTINUITY_TURN_TEXT_LIMIT: usize = 1_200;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CompactionAssessment {
@@ -290,15 +302,88 @@ impl SessionPrompt {
     }
 
     pub(super) fn filter_compacted_messages(messages: &[SessionMessage]) -> Vec<SessionMessage> {
-        let start = messages
+        let Some(compaction_index) = messages.iter().rposition(|m| {
+            m.parts
+                .iter()
+                .any(|p| matches!(p.part_type, PartType::Compaction { .. }))
+        }) else {
+            return messages.to_vec();
+        };
+
+        let tail = messages[compaction_index..].to_vec();
+        let Some(compaction_message) = messages.get(compaction_index) else {
+            return tail;
+        };
+
+        if let Some(filtered) =
+            Self::filter_compacted_messages_from_continuity_packet(messages, compaction_message)
+        {
+            return filtered;
+        }
+
+        Self::filter_compacted_messages_legacy(messages, compaction_index)
+    }
+
+    fn filter_compacted_messages_from_continuity_packet(
+        messages: &[SessionMessage],
+        compaction_message: &SessionMessage,
+    ) -> Option<Vec<SessionMessage>> {
+        let packet = compaction_message
+            .metadata
+            .get(CONTEXT_COMPACTION_CONTINUITY_PACKET_METADATA_KEY)
+            .and_then(SessionContinuityPacket::from_value)?;
+        let allowed_ids = packet.allowed_message_ids();
+        if allowed_ids.is_empty() {
+            return None;
+        }
+        let allowed_set = allowed_ids.into_iter().collect::<HashSet<_>>();
+        let filtered = messages
             .iter()
-            .rposition(|m| {
-                m.parts
-                    .iter()
-                    .any(|p| matches!(p.part_type, PartType::Compaction { .. }))
-            })
-            .unwrap_or(0);
-        let tail = messages[start..].to_vec();
+            .filter(|message| allowed_set.contains(&message.id))
+            .cloned()
+            .collect::<Vec<_>>();
+        Self::filter_compacted_messages_packet_result_valid(messages, &filtered)
+            .then_some(filtered)
+    }
+
+    fn filter_compacted_messages_packet_result_valid(
+        all_messages: &[SessionMessage],
+        filtered: &[SessionMessage],
+    ) -> bool {
+        if filtered.is_empty() {
+            return false;
+        }
+        if !filtered
+            .iter()
+            .any(|message| matches!(message.role, MessageRole::User))
+        {
+            return false;
+        }
+        let Some(last_filtered_idx) = filtered
+            .iter()
+            .enumerate()
+            .rfind(|(_, message)| matches!(message.role, MessageRole::User))
+            .map(|(index, _)| index)
+        else {
+            return false;
+        };
+        let Some(last_user_id) = filtered.get(last_filtered_idx).map(|message| message.id.as_str()) else {
+            return false;
+        };
+        let Some(start_idx) = all_messages.iter().position(|message| message.id == last_user_id) else {
+            return false;
+        };
+        let expected_current_turn = &all_messages[start_idx..];
+        expected_current_turn
+            .iter()
+            .all(|message| filtered.iter().any(|candidate| candidate.id == message.id))
+    }
+
+    fn filter_compacted_messages_legacy(
+        messages: &[SessionMessage],
+        compaction_index: usize,
+    ) -> Vec<SessionMessage> {
+        let tail = messages[compaction_index..].to_vec();
         if tail.iter().any(|m| matches!(m.role, MessageRole::User)) {
             return tail;
         }
@@ -312,15 +397,167 @@ impl SessionPrompt {
             .iter()
             .rposition(|m| matches!(m.role, MessageRole::User))
         {
-            if last_user_idx < start {
+            if last_user_idx < compaction_index {
                 let mut anchored = Vec::with_capacity(messages.len() - last_user_idx);
-                anchored.extend_from_slice(&messages[last_user_idx..start]);
-                anchored.extend_from_slice(&messages[start..]);
+                anchored.extend_from_slice(&messages[last_user_idx..compaction_index]);
+                anchored.extend_from_slice(&messages[compaction_index..]);
                 return anchored;
             }
         }
 
         tail
+    }
+
+    fn build_compaction_continuity_packet(
+        session: &Session,
+        messages: &[SessionMessage],
+        summary: &str,
+        compaction_message_id: &str,
+    ) -> Option<SessionContinuityPacket> {
+        let exact_recent_tail = Self::collect_compaction_recent_tail(messages);
+        let eligible_message_count = Self::count_compaction_context_messages(messages);
+        let working_ledger = Self::build_compaction_working_ledger(session, &exact_recent_tail);
+
+        if exact_recent_tail.is_empty() && working_ledger.is_empty() && summary.trim().is_empty() {
+            return None;
+        }
+
+        let exact_recent_tail_count = exact_recent_tail.len();
+        Some(SessionContinuityPacket {
+            eligible_message_count,
+            exact_recent_tail_count,
+            omitted_older_turns: eligible_message_count.saturating_sub(exact_recent_tail_count),
+            exact_recent_tail,
+            memory_anchors: Vec::new(),
+            working_ledger,
+            latest_compaction_summary: (!summary.trim().is_empty()).then(|| {
+                SessionContinuityCompactionSummary {
+                    message_id: compaction_message_id.to_string(),
+                    summary: summary.trim().to_string(),
+                }
+            }),
+            limits: Some(SessionContinuityLimits {
+                recent_tail_messages: COMPACTION_CONTINUITY_RECENT_TAIL_MESSAGES,
+                context_text_chars: COMPACTION_CONTINUITY_CONTEXT_TEXT_LIMIT,
+                turn_text_chars: COMPACTION_CONTINUITY_TURN_TEXT_LIMIT,
+            }),
+            recall_policy: Some(
+                "exact_tail_for_recent_followups; working_ledger_and_compaction_summary_are_lossy; use live session history or tools when exact prior text, current files, diagnostics, or verification evidence matters."
+                    .to_string(),
+            ),
+            ..SessionContinuityPacket::default()
+        })
+    }
+
+    fn collect_compaction_recent_tail(messages: &[SessionMessage]) -> Vec<SessionContinuityTurn> {
+        let mut turns = messages
+            .iter()
+            .rev()
+            .filter(|message| Self::is_compaction_context_message(message))
+            .filter_map(|message| {
+                let text = sanitize_display_text(&message.get_text());
+                let text = text.trim();
+                (!text.is_empty()).then(|| SessionContinuityTurn {
+                    message_id: message.id.clone(),
+                    role: Self::compaction_role_label(&message.role).to_string(),
+                    text: Self::truncate_chars(text, COMPACTION_CONTINUITY_TURN_TEXT_LIMIT),
+                    projected: false,
+                })
+            })
+            .take(COMPACTION_CONTINUITY_RECENT_TAIL_MESSAGES)
+            .collect::<Vec<_>>();
+        turns.reverse();
+        turns
+    }
+
+    fn count_compaction_context_messages(messages: &[SessionMessage]) -> usize {
+        messages
+            .iter()
+            .filter(|message| Self::is_compaction_context_message(message))
+            .filter(|message| !sanitize_display_text(&message.get_text()).trim().is_empty())
+            .count()
+    }
+
+    fn is_compaction_context_message(message: &SessionMessage) -> bool {
+        matches!(message.role, MessageRole::User | MessageRole::Assistant)
+    }
+
+    fn build_compaction_working_ledger(
+        session: &Session,
+        recent_tail: &[SessionContinuityTurn],
+    ) -> Vec<SessionContinuityLedgerEntry> {
+        let mut ledger = Vec::new();
+        let title = session.title.trim();
+        if !title.is_empty() && !session.is_default_title() {
+            ledger.push(SessionContinuityLedgerEntry::new(
+                SessionContinuityLedgerKind::SessionTitle,
+                format!("session_title: {}", Self::truncate_chars(title, 160)),
+            ));
+        }
+        if let Some(summary) = session.summary.as_ref() {
+            ledger.push(SessionContinuityLedgerEntry::new(
+                SessionContinuityLedgerKind::SessionDiff,
+                format!(
+                    "session_diff: files={} additions={} deletions={}",
+                    summary.files, summary.additions, summary.deletions
+                ),
+            ));
+        }
+        if let Some(turn) = recent_tail.iter().rev().find(|turn| turn.role == "user") {
+            ledger.push(SessionContinuityLedgerEntry::with_source_id(
+                SessionContinuityLedgerKind::LatestUserTurn,
+                turn.message_id.clone(),
+                format!(
+                    "latest_user_turn `{}`: {}",
+                    turn.message_id,
+                    Self::single_line(&Self::truncate_chars(&turn.text, 240))
+                ),
+            ));
+        }
+        if let Some(turn) = recent_tail.iter().rev().find(|turn| turn.role == "assistant") {
+            ledger.push(SessionContinuityLedgerEntry::with_source_id(
+                SessionContinuityLedgerKind::LatestAssistantOutcome,
+                turn.message_id.clone(),
+                format!(
+                    "latest_assistant_outcome `{}`: {}",
+                    turn.message_id,
+                    Self::single_line(&Self::truncate_chars(&turn.text, 360))
+                ),
+            ));
+        }
+        if !ledger.is_empty() {
+            ledger.push(SessionContinuityLedgerEntry::new(
+                SessionContinuityLedgerKind::SourcePolicy,
+                "source_policy: use Exact Recent Tail for prior same-session outputs; compaction summary and ledger are lossy continuity aids, not exact replay; use live files, diagnostics, or tools when exact current state matters."
+                    .to_string(),
+            ));
+        }
+        ledger
+    }
+
+    fn compaction_role_label(role: &MessageRole) -> &'static str {
+        match role {
+            MessageRole::User => "user",
+            MessageRole::Assistant => "assistant",
+            MessageRole::System => "system",
+            MessageRole::Tool => "tool",
+        }
+    }
+
+    fn single_line(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    fn truncate_chars(value: &str, limit: usize) -> String {
+        if value.chars().count() <= limit {
+            return value.to_string();
+        }
+        let mut truncated = value
+            .chars()
+            .take(limit.saturating_sub(24))
+            .collect::<String>();
+        truncated.push_str("\n...[truncated]...");
+        truncated
     }
 
     pub(super) fn token_usage_from_messages(messages: &[SessionMessage]) -> TokenUsage {
@@ -1296,6 +1533,17 @@ impl SessionPrompt {
             created_at: chrono::Utc::now(),
             message_id: None,
         });
+        if let Some(packet) = Self::build_compaction_continuity_packet(
+            session,
+            messages,
+            &summary,
+            &compaction_msg.id,
+        ) {
+            compaction_msg.metadata.insert(
+                CONTEXT_COMPACTION_CONTINUITY_PACKET_METADATA_KEY.to_string(),
+                packet.metadata_value(),
+            );
+        }
         session.messages_mut().push(compaction_msg);
 
         // Set the compacting timestamp on the session.
@@ -1394,6 +1642,50 @@ mod tests {
             .parts
             .iter()
             .any(|p| matches!(p.part_type, PartType::Compaction { .. })));
+    }
+
+    #[test]
+    fn filter_compacted_messages_prefers_continuity_packet_allowed_ids() {
+        let session_id = "ses_test_packet_owner".to_string();
+        let before = SessionMessage::user(session_id.clone(), "before");
+        let user_after = SessionMessage::user(session_id.clone(), "after");
+        let mut compact = SessionMessage::assistant(session_id.clone());
+        compact.parts.push(crate::MessagePart {
+            id: "prt_compact_packet_owner".to_string(),
+            part_type: PartType::Compaction {
+                summary: "summary".to_string(),
+            },
+            created_at: chrono::Utc::now(),
+            message_id: None,
+        });
+        compact.metadata.insert(
+            CONTEXT_COMPACTION_CONTINUITY_PACKET_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "version": 1,
+                "eligible_message_count": 2,
+                "exact_recent_tail_count": 1,
+                "omitted_older_turns": 1,
+                "exact_recent_tail": [
+                    {
+                        "message_id": user_after.id,
+                        "role": "user",
+                        "text": "after",
+                        "projected": false
+                    }
+                ],
+                "latest_compaction_summary": {
+                    "message_id": compact.id,
+                    "summary": "summary"
+                }
+            }),
+        );
+
+        let filtered =
+            SessionPrompt::filter_compacted_messages(&[before.clone(), compact.clone(), user_after.clone()]);
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].id, compact.id);
+        assert_eq!(filtered[1].id, user_after.id);
+        assert!(!filtered.iter().any(|message| message.id == before.id));
     }
 
     #[test]
@@ -1540,6 +1832,80 @@ mod tests {
         assert_eq!(filtered[1].id, assistant.id);
         assert_eq!(filtered[2].id, tool.id);
         assert_eq!(filtered[3].id, compact.id);
+    }
+
+    #[test]
+    fn filter_compacted_messages_falls_back_when_packet_omits_current_turn_chain() {
+        let session_id = "ses_test_packet_fallback".to_string();
+        let user = SessionMessage::user(session_id.clone(), "continue the same turn");
+
+        let mut assistant_before = SessionMessage::assistant(session_id.clone());
+        assistant_before.add_reasoning("need to inspect build output");
+        assistant_before.add_tool_call(
+            "call_1",
+            "bash",
+            serde_json::json!({ "command": "npm install" }),
+        );
+
+        let mut tool_after = SessionMessage::tool(session_id.clone());
+        tool_after.add_tool_result("call_1", "installed", false);
+
+        let mut compact = SessionMessage::assistant(session_id.clone());
+        compact.parts.push(crate::MessagePart {
+            id: "prt_compact_packet_fallback".to_string(),
+            part_type: PartType::Compaction {
+                summary: "summary".to_string(),
+            },
+            created_at: chrono::Utc::now(),
+            message_id: None,
+        });
+        compact.metadata.insert(
+            CONTEXT_COMPACTION_CONTINUITY_PACKET_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "version": 1,
+                "eligible_message_count": 2,
+                "exact_recent_tail_count": 1,
+                "omitted_older_turns": 1,
+                "exact_recent_tail": [
+                    {
+                        "message_id": user.id,
+                        "role": "user",
+                        "text": "continue the same turn",
+                        "projected": false
+                    }
+                ],
+                "latest_compaction_summary": {
+                    "message_id": compact.id,
+                    "summary": "summary"
+                }
+            }),
+        );
+
+        let mut assistant_after = SessionMessage::assistant(session_id.clone());
+        assistant_after.add_reasoning("now run typecheck");
+        assistant_after.add_tool_call(
+            "call_2",
+            "bash",
+            serde_json::json!({ "command": "npx tsc --noEmit" }),
+        );
+
+        let mut tool_after_compaction = SessionMessage::tool(session_id);
+        tool_after_compaction.add_tool_result("call_2", "build failed", false);
+
+        let filtered = SessionPrompt::filter_compacted_messages(&[
+            user.clone(),
+            assistant_before,
+            tool_after,
+            compact.clone(),
+            assistant_after.clone(),
+            tool_after_compaction.clone(),
+        ]);
+
+        assert_eq!(filtered.len(), 6);
+        assert_eq!(filtered[0].id, user.id);
+        assert_eq!(filtered[3].id, compact.id);
+        assert_eq!(filtered[4].id, assistant_after.id);
+        assert_eq!(filtered[5].id, tool_after_compaction.id);
     }
 
     #[test]
@@ -1864,9 +2230,13 @@ mod tests {
     #[test]
     fn forced_compaction_bypasses_auto_minimum_and_records_diagnostics() {
         let mut session = Session::new("proj", ".");
+        session.record_mut().title = "Voicecraft build session".to_string();
         let session_id = session.id.clone();
+        let mut assistant = SessionMessage::assistant(session_id.clone());
+        assistant.add_text("Implemented the initial world bootstrap and wrote src/game/World.ts");
         let messages = vec![
             SessionMessage::user(session_id.clone(), "first"),
+            assistant,
             SessionMessage::user(session_id, "second"),
         ];
         let record = SessionPrompt::build_compaction_record(
@@ -1904,10 +2274,41 @@ mod tests {
             serde_json::json!("overflow_recovery")
         );
         assert_eq!(diagnostics["forced"], serde_json::json!(true));
-        assert_eq!(diagnostics["compacted_message_count"], serde_json::json!(1));
+        assert_eq!(diagnostics["compacted_message_count"], serde_json::json!(2));
         assert_eq!(diagnostics["kept_message_count"], serde_json::json!(1));
-        assert_eq!(diagnostics["message_count_before"], serde_json::json!(2));
+        assert_eq!(diagnostics["message_count_before"], serde_json::json!(3));
         assert_eq!(diagnostics["summary"], serde_json::json!(summary));
+
+        let packet = compaction_message
+            .metadata
+            .get(CONTEXT_COMPACTION_CONTINUITY_PACKET_METADATA_KEY)
+            .and_then(SessionContinuityPacket::from_value)
+            .expect("continuity packet metadata should exist");
+        assert_eq!(packet.version, 1);
+        assert_eq!(packet.exact_recent_tail_count, 3);
+        assert_eq!(packet.eligible_message_count, 3);
+        assert!(packet
+            .working_ledger
+            .iter()
+            .any(|entry| entry.kind == SessionContinuityLedgerKind::SessionTitle));
+        assert!(packet
+            .working_ledger
+            .iter()
+            .any(|entry| entry.kind == SessionContinuityLedgerKind::LatestUserTurn));
+        assert_eq!(
+            packet
+                .latest_compaction_summary
+                .as_ref()
+                .map(|item| item.message_id.as_str()),
+            Some(compaction_message.id.as_str())
+        );
+        assert_eq!(
+            packet
+                .latest_compaction_summary
+                .as_ref()
+                .map(|item| item.summary.as_str()),
+            Some(summary.as_str())
+        );
     }
 
     #[test]

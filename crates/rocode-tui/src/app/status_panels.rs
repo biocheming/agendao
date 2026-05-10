@@ -1751,6 +1751,17 @@ fn tui_prompt_surface_evidence_label(fields: &[String]) -> String {
     }
 }
 
+fn tui_truncate_text(value: &str, limit: usize) -> String {
+    let char_count = value.chars().count();
+    if char_count <= limit {
+        return value.to_string();
+    }
+    let keep = limit.saturating_sub(3);
+    let mut truncated = value.chars().take(keep).collect::<String>();
+    truncated.push_str("...");
+    truncated
+}
+
 fn tui_yes_no(value: bool) -> &'static str {
     if value {
         "yes"
@@ -2136,6 +2147,44 @@ fn tui_usage_status_lines(
             }
             if !detail.is_empty() {
                 lines.push(StatusLine::muted(format!("Detail: {}", detail.join(" · "))));
+            }
+            if let Some(continuity) = telemetry.compaction_continuity.as_ref() {
+                let mut continuity_parts = Vec::new();
+                continuity_parts.push(match continuity.source {
+                    rocode_types::SessionCompactionContinuityInspectionSource::ContinuityPacket => {
+                        "packet installed".to_string()
+                    }
+                    rocode_types::SessionCompactionContinuityInspectionSource::RawSummaryFallback => {
+                        "legacy summary fallback".to_string()
+                    }
+                });
+                if let Some(exact_recent_tail_count) = continuity.exact_recent_tail_count {
+                    continuity_parts.push(format!("tail {}", exact_recent_tail_count));
+                }
+                if let Some(omitted_older_turns) = continuity.omitted_older_turns {
+                    continuity_parts.push(format!("omitted {}", omitted_older_turns));
+                }
+                if continuity.has_working_ledger {
+                    continuity_parts.push("ledger".to_string());
+                }
+                if continuity.has_memory_anchors {
+                    continuity_parts.push("memory anchors".to_string());
+                }
+                if !continuity_parts.is_empty() {
+                    lines.push(StatusLine::muted(format!(
+                        "Continuity: {}",
+                        continuity_parts.join(" · ")
+                    )));
+                }
+                if let Some(recall_policy) = continuity.recall_policy.as_deref() {
+                    lines.push(StatusLine::muted(format!("Recall: {}", recall_policy)));
+                }
+                if let Some(summary_text) = continuity.summary_text.as_deref() {
+                    lines.push(StatusLine::muted(format!(
+                        "Summary: {}",
+                        tui_truncate_text(summary_text, 120)
+                    )));
+                }
             }
             lines.push(StatusLine::muted(format!(
                 "Action: attempted {} · succeeded {} · blocking {}",
@@ -3261,6 +3310,19 @@ mod tests {
                 kept_message_count: Some(8),
                 summary: Some("Compacted 7 messages.".to_string()),
             }),
+            compaction_continuity: Some(
+                rocode_types::SessionCompactionContinuityInspection {
+                    source: rocode_types::SessionCompactionContinuityInspectionSource::ContinuityPacket,
+                    summary_message_id: Some("msg_compact".to_string()),
+                    summary_text: Some("Packet-owned continuity summary.".to_string()),
+                    eligible_message_count: Some(15),
+                    exact_recent_tail_count: Some(8),
+                    omitted_older_turns: Some(7),
+                    has_working_ledger: true,
+                    has_memory_anchors: false,
+                    recall_policy: Some("recent_tail_plus_memory".to_string()),
+                },
+            ),
             context_compaction_lifecycle_summary: Some(
                 rocode_types::ContextCompactionLifecycleSummary {
                     trigger: "auto_preflight".to_string(),
@@ -3434,6 +3496,15 @@ mod tests {
         assert!(texts
             .iter()
             .any(|line| { line == "Cache: cache explained" }));
+        assert!(texts.iter().any(|line| {
+            line == "Continuity: packet installed · tail 8 · omitted 7 · ledger"
+        }));
+        assert!(texts
+            .iter()
+            .any(|line| { line == "Recall: recent_tail_plus_memory" }));
+        assert!(texts.iter().any(|line| {
+            line == "Summary: Packet-owned continuity summary."
+        }));
         assert!(texts
             .iter()
             .any(|line| { line == "Installed: request 70K · live 67K · 250K chars" }));

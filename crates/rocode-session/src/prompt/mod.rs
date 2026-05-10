@@ -19,6 +19,8 @@ pub mod tools_and_output;
 pub const PROMPT_SURFACE_STATE_SNAPSHOT_METADATA_KEY: &str = "prompt_surface_state_snapshot";
 pub const PROMPT_SURFACE_EVIDENCE_METADATA_KEY: &str = "prompt_surface_evidence";
 pub const CONTEXT_COMPACTION_RECORD_METADATA_KEY: &str = "context_compaction_record";
+pub const CONTEXT_COMPACTION_CONTINUITY_PACKET_METADATA_KEY: &str =
+    "context_compaction_continuity_packet";
 pub const CONTEXT_COMPACTION_LIFECYCLE_SUMMARY_METADATA_KEY: &str =
     "context_compaction_lifecycle_summary";
 pub const CONTEXT_PRESSURE_GOVERNANCE_SUMMARY_METADATA_KEY: &str =
@@ -72,6 +74,7 @@ use rocode_types::{
     context_usage_percent, ContextCompactionInstalledDiagnostics, ContextCompactionLifecycleStatus,
     ContextCompactionLifecycleSummary, ContextCompactionSummary, ContextPressureGovernanceStatus,
     ContextPressureGovernanceSummary, MemoryRetrievalPacket, PromptSurfaceEvidenceSummary,
+    message_latest_compaction_summary,
     SessionCacheBoundaryKind, SessionCacheBoundarySummary, SessionCacheEvidenceExplain,
     SessionCacheSemanticsBasis, SessionCacheSemanticsSummary, SessionCacheSeverity,
     SessionContextExplain, SessionContextKind, SubsessionHandoffPacket, SubsessionResultEnvelope,
@@ -782,7 +785,22 @@ fn latest_context_compaction_summary_from_session(
                 .get(CONTEXT_COMPACTION_RECORD_METADATA_KEY)
                 .cloned()
         })
-        .and_then(|value| serde_json::from_value(value).ok())
+        .and_then(|value| serde_json::from_value::<ContextCompactionSummary>(value).ok())
+        .map(|mut summary| {
+            if let Some(packet_summary) = session.record().messages.iter().rev().find_map(|message| {
+                if !matches!(message.role, MessageRole::Assistant) {
+                    return None;
+                }
+                message_latest_compaction_summary(
+                    &message.metadata,
+                    &message.id,
+                    summary.summary.as_deref(),
+                )
+            }) {
+                summary.summary = Some(packet_summary.summary);
+            }
+            summary
+        })
 }
 
 fn installed_compaction_diagnostics(session: &Session) -> ContextCompactionInstalledDiagnostics {

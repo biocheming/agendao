@@ -7,6 +7,7 @@ import {
 } from "../lib/contextPressure";
 import { promptSurfaceEvidenceFromTelemetry } from "../lib/cacheDiagnostics";
 import {
+  compactionContinuityFromTelemetry,
   contextClosureBoundaryStatusLabel,
   contextClosureCacheStatusLabel,
   contextClosureContractFromTelemetry,
@@ -19,6 +20,8 @@ import {
 import { humanizeStageEvent, humanizeStageWaitTarget } from "../lib/stageSignals";
 import { cn } from "@/lib/utils";
 import { memoryRecordIdValue } from "../lib/memory";
+import { CompactionContinuityCard } from "./CompactionContinuityCard";
+import { ReadOnlyDiagnosticCard } from "./ReadOnlyDiagnosticCard";
 import { StructuredDataView } from "./StructuredDataView";
 
 type ExecutionActivityState = ReturnType<typeof useExecutionActivity>;
@@ -129,19 +132,6 @@ function stageSummaryMeta(stage: ExecutionActivityState["stageSummaries"][number
     parts.push(`ctx ${formatCompactTokenCount(stage.estimated_context_tokens)}`);
   }
   return parts;
-}
-
-function diagnosticToneClass(tone: "good" | "warn" | "critical" | "neutral") {
-  switch (tone) {
-    case "good":
-      return "bg-green-500/10 text-green-700 dark:text-green-300";
-    case "warn":
-      return "bg-amber-500/10 text-amber-700 dark:text-amber-300";
-    case "critical":
-      return "bg-rose-500/10 text-rose-700 dark:text-rose-300";
-    default:
-      return "bg-muted text-muted-foreground";
-  }
 }
 
 function metadataValue(record: Record<string, unknown> | null | undefined, key: string) {
@@ -303,6 +293,7 @@ export function ExecutionActivityPanel({
       (item) => item.linked_skill_name || item.derived_skill_name,
     );
   const contextClosure = contextClosureContractFromTelemetry(activity.telemetry);
+  const compactionContinuity = compactionContinuityFromTelemetry(activity.telemetry);
   const promptSurfaceEvidence = promptSurfaceEvidenceFromTelemetry(activity.telemetry);
 
   return (
@@ -418,53 +409,41 @@ export function ExecutionActivityPanel({
                 <p className="roc-rail-section-note">Authority-backed telemetry snapshot</p>
               </div>
               <div className="grid gap-3 xl:grid-cols-2">
-                <div className="roc-rail-item grid gap-2 bg-card/45 p-4">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <strong>Prefix</strong>
-                    <span
-                      className={cn(
-                        "roc-badge px-2.5 py-1 text-xs",
-                        diagnosticToneClass(
-                          contextClosure.prefix_stability.prefix_change_detected ? "warn" : "good",
-                        ),
-                      )}
-                    >
-                      {contextClosurePrefixStatusLabel(contextClosure.prefix_stability)}
-                    </span>
-                  </div>
+                <ReadOnlyDiagnosticCard
+                  title="Prefix"
+                  statusLabel={contextClosurePrefixStatusLabel(contextClosure.prefix_stability)}
+                  statusTone={
+                    contextClosure.prefix_stability.prefix_change_detected ? "warn" : "good"
+                  }
+                >
                   <p className="text-xs text-muted-foreground">
                     Basis API view · {contextClosure.prefix_stability.api_view_messages} messages · trimmed {contextClosure.prefix_stability.trimmed_model_visible_messages}
                   </p>
                   <p className="text-xs text-muted-foreground">
                     {contextClosure.prefix_stability.explanation || "No prefix instability explanation recorded."}
                   </p>
-                </div>
+                </ReadOnlyDiagnosticCard>
 
-                <div className="roc-rail-item grid gap-2 bg-card/45 p-4">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <strong>Boundary</strong>
-                    <span
-                      className={cn(
-                        "roc-badge px-2.5 py-1 text-xs",
-                        diagnosticToneClass(
-                          contextClosure.compaction_boundary.blocking
-                            ? "critical"
-                            : contextClosure.compaction_boundary.boundary_recorded
-                              ? "warn"
-                              : "neutral",
-                        ),
-                      )}
-                    >
-                      {contextClosureBoundaryStatusLabel(contextClosure.compaction_boundary)}
-                    </span>
-                    {contextClosure.compaction_boundary.governance_status ? (
-                      <span className="roc-badge px-2.5 py-1 text-xs">
-                        {contextClosureGovernanceStatusLabel(
-                          contextClosure.compaction_boundary.governance_status,
-                        )}
-                      </span>
-                    ) : null}
-                  </div>
+                <ReadOnlyDiagnosticCard
+                  title="Boundary"
+                  statusLabel={contextClosureBoundaryStatusLabel(contextClosure.compaction_boundary)}
+                  statusTone={
+                    contextClosure.compaction_boundary.blocking
+                      ? "critical"
+                      : contextClosure.compaction_boundary.boundary_recorded
+                        ? "warn"
+                        : "neutral"
+                  }
+                  badges={
+                    contextClosure.compaction_boundary.governance_status
+                      ? [
+                          contextClosureGovernanceStatusLabel(
+                            contextClosure.compaction_boundary.governance_status,
+                          ),
+                        ]
+                      : []
+                  }
+                >
                   <p className="text-xs text-muted-foreground">
                     Detail {contextClosure.compaction_boundary.phase || "--"} · {contextClosure.compaction_boundary.trigger || "--"} · {contextClosure.compaction_boundary.reason || "--"}
                   </p>
@@ -475,28 +454,29 @@ export function ExecutionActivityPanel({
                       ? `${contextClosure.compaction_boundary.live_pressure_percent}%`
                       : "--"} · attempted {contextClosure.compaction_boundary.compaction_attempted ? "yes" : "no"} · succeeded {contextClosure.compaction_boundary.compaction_succeeded ? "yes" : "no"} · blocking {contextClosure.compaction_boundary.blocking ? "yes" : "no"}
                   </p>
-                </div>
+                </ReadOnlyDiagnosticCard>
 
-                <div className="roc-rail-item grid gap-2 bg-card/45 p-4">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <strong>Cache</strong>
-                    <span
-                      className={cn(
-                        "roc-badge px-2.5 py-1 text-xs",
-                        diagnosticToneClass(
-                          !contextClosure.cache_explainability.issue_present
-                            ? "good"
-                            : contextClosure.cache_explainability.explained
-                              ? "warn"
-                              : "critical",
-                        ),
-                      )}
-                    >
-                      {contextClosureCacheStatusLabel(
-                        contextClosure.cache_explainability,
-                      )}
-                    </span>
-                  </div>
+                {compactionContinuity ? (
+                  <CompactionContinuityCard
+                    continuity={compactionContinuity}
+                    title="Continuity"
+                    className="roc-rail-item bg-card/45 p-4"
+                  />
+                ) : null}
+
+                <ReadOnlyDiagnosticCard
+                  title="Cache"
+                  statusLabel={contextClosureCacheStatusLabel(
+                    contextClosure.cache_explainability,
+                  )}
+                  statusTone={
+                    !contextClosure.cache_explainability.issue_present
+                      ? "good"
+                      : contextClosure.cache_explainability.explained
+                        ? "warn"
+                        : "critical"
+                  }
+                >
                   <p className="text-xs text-muted-foreground">
                     Source {contextClosureExplainabilitySourceLabel(
                       contextClosure.cache_explainability.source,
@@ -513,28 +493,21 @@ export function ExecutionActivityPanel({
                       Evidence prompt surface {promptSurfaceEvidence.changed_fields.join(", ")}
                     </p>
                   ) : null}
-                </div>
+                </ReadOnlyDiagnosticCard>
 
-                <div className="roc-rail-item grid gap-2 bg-card/45 p-4">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <strong>Isolation</strong>
-                    <span
-                      className={cn(
-                        "roc-badge px-2.5 py-1 text-xs",
-                        diagnosticToneClass(
-                          contextClosure.child_history_isolation.child_history_in_live_prefix_detected
-                            ? "critical"
-                            : contextClosure.child_history_isolation.owner_local_live_prefix
-                              ? "good"
-                              : "warn",
-                        ),
-                      )}
-                    >
-                      {contextClosureIsolationStatusLabel(
-                        contextClosure.child_history_isolation,
-                      )}
-                    </span>
-                  </div>
+                <ReadOnlyDiagnosticCard
+                  title="Isolation"
+                  statusLabel={contextClosureIsolationStatusLabel(
+                    contextClosure.child_history_isolation,
+                  )}
+                  statusTone={
+                    contextClosure.child_history_isolation.child_history_in_live_prefix_detected
+                      ? "critical"
+                      : contextClosure.child_history_isolation.owner_local_live_prefix
+                        ? "good"
+                        : "warn"
+                  }
+                >
                   <p className="text-xs text-muted-foreground">
                     Usage attached subtree {contextClosure.child_history_isolation.attached_subtree_session_count} · subtree cumulative {formatCompactTokenCount(
                       contextClosure.child_history_isolation.attached_subtree_cumulative_tokens,
@@ -552,7 +525,7 @@ export function ExecutionActivityPanel({
                   <p className="text-xs text-muted-foreground">
                     {contextClosure.child_history_isolation.explanation}
                   </p>
-                </div>
+                </ReadOnlyDiagnosticCard>
               </div>
             </div>
           ) : null}

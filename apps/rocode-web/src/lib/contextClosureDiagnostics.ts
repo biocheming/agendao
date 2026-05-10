@@ -1,6 +1,7 @@
 import type {
   SessionCacheExplainabilityContractRecord,
   SessionChildHistoryIsolationContractRecord,
+  SessionCompactionContinuityInspectionRecord,
   SessionCompactionBoundaryContractRecord,
   SessionContextClosureContractRecord,
   SessionPrefixStabilityContractRecord,
@@ -131,6 +132,29 @@ function childHistoryIsolationRecord(
   };
 }
 
+function compactionContinuityRecord(
+  value: unknown,
+): SessionCompactionContinuityInspectionRecord | null {
+  if (!isRecord(value)) return null;
+  const source = readString(value.source);
+  const hasWorkingLedger = readBoolean(value.has_working_ledger);
+  const hasMemoryAnchors = readBoolean(value.has_memory_anchors);
+  if (!source || hasWorkingLedger == null || hasMemoryAnchors == null) {
+    return null;
+  }
+  return {
+    source,
+    summary_message_id: readString(value.summary_message_id),
+    summary_text: readString(value.summary_text),
+    eligible_message_count: readNumber(value.eligible_message_count),
+    exact_recent_tail_count: readNumber(value.exact_recent_tail_count),
+    omitted_older_turns: readNumber(value.omitted_older_turns),
+    has_working_ledger: hasWorkingLedger,
+    has_memory_anchors: hasMemoryAnchors,
+    recall_policy: readString(value.recall_policy),
+  };
+}
+
 export function contextClosureContractFromTelemetry(
   telemetry: unknown,
 ): SessionContextClosureContractRecord | null {
@@ -157,6 +181,13 @@ export function contextClosureContractFromTelemetry(
     cache_explainability: cacheExplainability,
     child_history_isolation: childHistoryIsolation,
   };
+}
+
+export function compactionContinuityFromTelemetry(
+  telemetry: unknown,
+): SessionCompactionContinuityInspectionRecord | null {
+  if (!isRecord(telemetry)) return null;
+  return compactionContinuityRecord(telemetry.compaction_continuity);
 }
 
 function humanizeSnakeCase(value: string | null | undefined) {
@@ -203,7 +234,20 @@ export function contextClosureIsolationStatusLabel(
   return isolation.owner_local_live_prefix ? "isolated" : "not owner-local";
 }
 
-export function contextClosureCacheDiagnosticLabel(
+export function compactionContinuitySourceLabel(
+  continuity: SessionCompactionContinuityInspectionRecord,
+) {
+  switch (continuity.source) {
+    case "continuity_packet":
+      return "packet installed";
+    case "raw_summary_fallback":
+      return "legacy summary fallback";
+    default:
+      return humanizeSnakeCase(continuity.source) || "--";
+  }
+}
+
+export function contextClosureCoarseDiagnosticLabel(
   contract: SessionContextClosureContractRecord | null | undefined,
 ) {
   if (!contract) return null;
@@ -225,3 +269,5 @@ export function contextClosureCacheDiagnosticLabel(
   if (parts.length === 0) return null;
   return Array.from(new Set(parts)).join(" · ");
 }
+
+export const contextClosureCacheDiagnosticLabel = contextClosureCoarseDiagnosticLabel;

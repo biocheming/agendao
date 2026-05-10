@@ -25,7 +25,8 @@ pub use rocode_types::{
     MemoryRulePackListResponse, MemoryScope, MemoryValidationReportResponse,
     PromptSurfaceEvidenceSummary, ProposalStatus, ProviderConnectionDescriptorCandidate,
     ProviderProfileDescriptorView, SessionCacheSemanticsSummary, SessionContextClosureContract,
-    SessionContextExplain, SessionContextKind, SessionEffectiveCompactionPolicy,
+    SessionCompactionContinuityInspection, SessionContextExplain, SessionContextKind,
+    SessionEffectiveCompactionPolicy,
     SessionEffectiveExternalAdapterPolicy, SessionEffectiveMemoryPolicy,
     SessionEffectivePolicyView, SessionEffectiveProviderPolicy,
     SessionEffectiveProviderRuntimeProfile, SessionEffectiveSchedulerPolicy,
@@ -431,6 +432,8 @@ pub struct SessionTelemetrySnapshot {
     pub ownership: Option<SessionOwnershipSummary>,
     #[serde(default)]
     pub context_compaction_summary: Option<ContextCompactionSummary>,
+    #[serde(default)]
+    pub compaction_continuity: Option<SessionCompactionContinuityInspection>,
     #[serde(default)]
     pub context_compaction_lifecycle_summary: Option<ContextCompactionLifecycleSummary>,
     #[serde(default)]

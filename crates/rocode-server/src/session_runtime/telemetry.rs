@@ -703,6 +703,7 @@ impl RuntimeTelemetryAuthority {
             usage,
             stage_summaries: stage_summaries.into_iter().map(Into::into).collect(),
             memory,
+            compaction_continuity: None,
             last_run_status: last_run_status.into(),
             updated_at: chrono::Utc::now().timestamp_millis(),
         })

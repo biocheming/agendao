@@ -172,6 +172,18 @@ export interface SessionContextClosureContractRecord {
   child_history_isolation: SessionChildHistoryIsolationContractRecord;
 }
 
+export interface SessionCompactionContinuityInspectionRecord {
+  source: string;
+  summary_message_id?: string | null;
+  summary_text?: string | null;
+  eligible_message_count?: number | null;
+  exact_recent_tail_count?: number | null;
+  omitted_older_turns?: number | null;
+  has_working_ledger: boolean;
+  has_memory_anchors: boolean;
+  recall_policy?: string | null;
+}
+
 export interface SessionTelemetrySnapshotRecord {
   runtime: SessionRuntimeRecord;
   stages: StageSummaryRecord[];
@@ -181,6 +193,7 @@ export interface SessionTelemetrySnapshotRecord {
   cache_evidence?: Record<string, unknown> | null;
   cache_semantics?: Record<string, unknown> | null;
   context_closure_contract?: SessionContextClosureContractRecord | null;
+  compaction_continuity?: SessionCompactionContinuityInspectionRecord | null;
   prompt_surface_evidence?: Record<string, unknown> | null;
   ingress_stabilization?: Record<string, unknown> | null;
   provider_diagnostic_summary?: Record<string, unknown> | null;

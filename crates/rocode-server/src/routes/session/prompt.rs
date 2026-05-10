@@ -15,9 +15,10 @@ use rocode_memory::{
 };
 use rocode_types::{
     ExternalAdapterResolvedBinding, MemoryRetrievalPacket, MemoryRetrievalQuery, MessageRole,
-    PartType as SessionPartType, SessionContinuityCompactionSummary, SessionContinuityLedgerEntry,
-    SessionContinuityLedgerKind, SessionContinuityLimits, SessionContinuityMemoryAnchor,
-    SessionContinuityPacket, SessionContinuityTurn, SessionMessage,
+    message_latest_compaction_summary, PartType as SessionPartType,
+    SessionContinuityCompactionSummary, SessionContinuityLedgerEntry, SessionContinuityLedgerKind,
+    SessionContinuityLimits, SessionContinuityMemoryAnchor, SessionContinuityPacket,
+    SessionContinuityTurn, SessionMessage,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
@@ -583,6 +584,10 @@ fn latest_compaction_summary(
     session.messages.iter().rev().find_map(|message| {
         if !matches!(message.role, MessageRole::Assistant) {
             return None;
+        }
+        if let Some(summary) = message_latest_compaction_summary(&message.metadata, &message.id, None)
+        {
+            return Some(summary);
         }
         for part in message.parts.iter().rev() {
             if let SessionPartType::Compaction { summary } = &part.part_type {
