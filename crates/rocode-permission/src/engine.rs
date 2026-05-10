@@ -193,7 +193,10 @@ impl PermissionEngine {
         permission_type: &str,
         pattern: Option<&Pattern>,
     ) {
-        let approved_turn = self.turn_approved.entry(session_id.to_string()).or_default();
+        let approved_turn = self
+            .turn_approved
+            .entry(session_id.to_string())
+            .or_default();
         for key in Self::to_keys(pattern, permission_type) {
             approved_turn.insert(key, true);
         }
@@ -440,7 +443,11 @@ mod tests {
             permission_class: Some(PermissionClass::DangerousExec),
             scope_key: Some("cmd:ls".to_string()),
             origin_tool: Some("bash".to_string()),
-            supported_lifetimes: vec![PermissionLifetime::Once, PermissionLifetime::Turn, PermissionLifetime::Session],
+            supported_lifetimes: vec![
+                PermissionLifetime::Once,
+                PermissionLifetime::Turn,
+                PermissionLifetime::Session,
+            ],
             session_id: "ses_test".to_string(),
             message_id: "msg_test".to_string(),
             call_id: None,
@@ -469,7 +476,11 @@ mod tests {
             permission_class: Some(PermissionClass::DangerousExec),
             scope_key: Some("cmd:cargo *".to_string()),
             origin_tool: Some("bash".to_string()),
-            supported_lifetimes: vec![PermissionLifetime::Once, PermissionLifetime::Turn, PermissionLifetime::Session],
+            supported_lifetimes: vec![
+                PermissionLifetime::Once,
+                PermissionLifetime::Turn,
+                PermissionLifetime::Session,
+            ],
             session_id: "ses_turn".to_string(),
             message_id: "msg_turn".to_string(),
             call_id: None,

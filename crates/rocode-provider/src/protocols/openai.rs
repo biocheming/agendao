@@ -164,10 +164,9 @@ fn message_has_reasoning_replay(message: &Message) -> bool {
 fn message_has_tool_calls(message: &Message) -> bool {
     match &message.content {
         crate::Content::Text(_) => false,
-        crate::Content::Parts(parts) => parts.iter().any(|part| {
-            part.content_type == "tool_use"
-                || part.tool_use.is_some()
-        }),
+        crate::Content::Parts(parts) => parts
+            .iter()
+            .any(|part| part.content_type == "tool_use" || part.tool_use.is_some()),
     }
 }
 

@@ -14,8 +14,8 @@ use rocode_memory::{
     render_prefetch_packet_block, PersistedMemorySnapshot, MEMORY_LAST_PREFETCH_METADATA_KEY,
 };
 use rocode_types::{
-    ExternalAdapterResolvedBinding, MemoryRetrievalPacket, MemoryRetrievalQuery, MessageRole,
-    message_latest_compaction_summary, PartType as SessionPartType,
+    message_latest_compaction_summary, ExternalAdapterResolvedBinding, MemoryRetrievalPacket,
+    MemoryRetrievalQuery, MessageRole, PartType as SessionPartType,
     SessionContinuityCompactionSummary, SessionContinuityLedgerEntry, SessionContinuityLedgerKind,
     SessionContinuityLimits, SessionContinuityMemoryAnchor, SessionContinuityPacket,
     SessionContinuityTurn, SessionMessage,
@@ -585,7 +585,8 @@ fn latest_compaction_summary(
         if !matches!(message.role, MessageRole::Assistant) {
             return None;
         }
-        if let Some(summary) = message_latest_compaction_summary(&message.metadata, &message.id, None)
+        if let Some(summary) =
+            message_latest_compaction_summary(&message.metadata, &message.id, None)
         {
             return Some(summary);
         }

@@ -417,12 +417,12 @@ impl PermissionRequest {
 
 fn default_permission_class_for_name(permission: &str) -> PermissionClass {
     match permission {
-        "read" | "grep" | "glob" | "list" | "lsp" | "repo_history" | "skill"
-        | "context_docs" | "media_inspect" | "todoread" => PermissionClass::InspectRead,
+        "read" | "grep" | "glob" | "list" | "lsp" | "repo_history" | "skill" | "context_docs"
+        | "media_inspect" | "todoread" => PermissionClass::InspectRead,
         "write" | "edit" | "multiedit" | "apply_patch" | "patch" | "todowrite"
         | "ast_grep_replace" | "skill_manage" => PermissionClass::WorkspaceWrite,
-        "external_directory" | "webfetch" | "websearch" | "browser_session"
-        | "github_research" | "skill_hub" | "codesearch" => PermissionClass::ExternalAccess,
+        "external_directory" | "webfetch" | "websearch" | "browser_session" | "github_research"
+        | "skill_hub" | "codesearch" => PermissionClass::ExternalAccess,
         "bash" | "shell_session" | "task" | "task_flow" => PermissionClass::DangerousExec,
         _ => PermissionClass::DangerousExec,
     }

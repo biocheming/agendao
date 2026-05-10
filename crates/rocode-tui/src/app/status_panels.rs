@@ -3502,9 +3502,9 @@ mod tests {
         assert!(texts
             .iter()
             .any(|line| { line == "Recall: recent_tail_plus_memory" }));
-        assert!(texts.iter().any(|line| {
-            line == "Summary: Packet-owned continuity summary."
-        }));
+        assert!(texts
+            .iter()
+            .any(|line| { line == "Summary: Packet-owned continuity summary." }));
         assert!(texts
             .iter()
             .any(|line| { line == "Installed: request 70K · live 67K · 250K chars" }));

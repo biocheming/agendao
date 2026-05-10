@@ -9,17 +9,17 @@ use rocode_session::{
     load_session_telemetry_snapshot, persist_session_telemetry_snapshot,
     session_last_run_status_label, Session, SessionUsage,
 };
+use rocode_types::message_continuity_packet;
+#[cfg(test)]
+use rocode_types::message_latest_compaction_summary;
 use rocode_types::{
     ContextCompactionLifecycleSummary, ContextCompactionSummary, ContextPressureGovernanceSummary,
     PromptSurfaceEvidenceSummary, SessionCacheSemanticsSummary,
     SessionCompactionContinuityInspection, SessionContextClosureContract, SessionContextExplain,
-    SessionDiagnosticsSidecar, SessionInsightsResponse,
-    SessionMemoryTelemetrySummary, SessionMultimodalAttachmentInfo, SessionMultimodalInsight,
-    SessionOwnershipSummary, SessionUsageBooks, WorkflowUsageSummary,
+    SessionDiagnosticsSidecar, SessionInsightsResponse, SessionMemoryTelemetrySummary,
+    SessionMultimodalAttachmentInfo, SessionMultimodalInsight, SessionOwnershipSummary,
+    SessionUsageBooks, WorkflowUsageSummary,
 };
-use rocode_types::message_continuity_packet;
-#[cfg(test)]
-use rocode_types::message_latest_compaction_summary;
 use serde::Serialize;
 
 use crate::runtime_control::SessionExecutionTopology;
@@ -564,7 +564,11 @@ fn latest_context_compaction_summary(session: &Session) -> Option<ContextCompact
         if !matches!(message.role, rocode_types::MessageRole::Assistant) {
             return None;
         }
-        message_latest_compaction_summary(&message.metadata, &message.id, summary.summary.as_deref())
+        message_latest_compaction_summary(
+            &message.metadata,
+            &message.id,
+            summary.summary.as_deref(),
+        )
     }) {
         summary.summary = Some(packet_summary.summary);
     }
@@ -1211,7 +1215,10 @@ mod tests {
 
         let summary = latest_context_compaction_summary(&session).expect("summary");
         assert_eq!(summary.trigger, "overflow_recovery");
-        assert_eq!(summary.summary.as_deref(), Some("Packet-owned summary text."));
+        assert_eq!(
+            summary.summary.as_deref(),
+            Some("Packet-owned summary text.")
+        );
     }
 
     #[test]
@@ -1250,7 +1257,10 @@ mod tests {
             inspection.source,
             rocode_types::SessionCompactionContinuityInspectionSource::ContinuityPacket
         );
-        assert_eq!(inspection.summary_text.as_deref(), Some("Packet-owned summary text."));
+        assert_eq!(
+            inspection.summary_text.as_deref(),
+            Some("Packet-owned summary text.")
+        );
         assert_eq!(inspection.exact_recent_tail_count, Some(5));
         assert_eq!(inspection.omitted_older_turns, Some(7));
         assert!(inspection.has_working_ledger);

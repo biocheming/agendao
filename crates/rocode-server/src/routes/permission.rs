@@ -78,7 +78,9 @@ fn permission_request_info(info: &PermissionInfo) -> PermissionRequestInfo {
         id: info.id.clone(),
         session_id: info.session_id.clone(),
         tool: info.permission_type.clone(),
-        permission_class: info.permission_class.map(|class| class.as_str().to_string()),
+        permission_class: info
+            .permission_class
+            .map(|class| class.as_str().to_string()),
         scope_key: info.scope_key.clone(),
         origin_tool: info.origin_tool.clone(),
         supported_lifetimes: info

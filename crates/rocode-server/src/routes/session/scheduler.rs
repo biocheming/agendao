@@ -42,10 +42,10 @@ use rocode_session::prompt::{
 };
 use rocode_session::{MessageRole, PartType as SessionPartType, SessionMessage};
 use rocode_types::{
-    ConfigPolicyValidationEffect, ConfigPolicyValidationItem, ConfigPolicyValidationOwner,
-    ConfigPolicyValidationScope, ConfigPolicyValidationScopeKind, ConfigPolicyValidationSeverity,
-    ContextPressureGovernanceSummary, MemoryDetailView, MemoryEvidenceRef, MemoryRecordId,
-    message_latest_compaction_summary, SessionContinuityPacket, SessionEffectiveSchedulerTraceStep,
+    message_latest_compaction_summary, ConfigPolicyValidationEffect, ConfigPolicyValidationItem,
+    ConfigPolicyValidationOwner, ConfigPolicyValidationScope, ConfigPolicyValidationScopeKind,
+    ConfigPolicyValidationSeverity, ContextPressureGovernanceSummary, MemoryDetailView,
+    MemoryEvidenceRef, MemoryRecordId, SessionContinuityPacket, SessionEffectiveSchedulerTraceStep,
     SessionEffectiveSchedulerTraceStepKind,
 };
 
