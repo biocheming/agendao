@@ -703,6 +703,29 @@ pub struct SessionContinuityLimits {
     pub turn_text_chars: usize,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionContinuityDependencyKind {
+    AssistantToolCallContinuation,
+}
+
+impl SessionContinuityDependencyKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::AssistantToolCallContinuation => "assistant_tool_call_continuation",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionContinuityDependency {
+    pub kind: SessionContinuityDependencyKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub message_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionContinuityPacket {
     #[serde(default = "default_session_continuity_packet_version")]
@@ -719,6 +742,8 @@ pub struct SessionContinuityPacket {
     pub memory_anchors: Vec<SessionContinuityMemoryAnchor>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub working_ledger: Vec<SessionContinuityLedgerEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub continuation_dependencies: Vec<SessionContinuityDependency>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_compaction_summary: Option<SessionContinuityCompactionSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -737,6 +762,7 @@ impl Default for SessionContinuityPacket {
             exact_recent_tail: Vec::new(),
             memory_anchors: Vec::new(),
             working_ledger: Vec::new(),
+            continuation_dependencies: Vec::new(),
             latest_compaction_summary: None,
             limits: None,
             recall_policy: None,
@@ -760,6 +786,11 @@ impl SessionContinuityPacket {
             .iter()
             .map(|turn| turn.message_id.clone())
             .collect::<Vec<_>>();
+        ids.extend(
+            self.continuation_dependencies
+                .iter()
+                .flat_map(|dependency| dependency.message_ids.iter().cloned()),
+        );
         if let Some(compaction) = self.latest_compaction_summary.as_ref() {
             ids.push(compaction.message_id.clone());
         }
@@ -779,7 +810,7 @@ impl SessionContinuityPacket {
         ids
     }
 
-pub fn stable_refs_value(&self) -> serde_json::Value {
+    pub fn stable_refs_value(&self) -> serde_json::Value {
         serde_json::json!({
             "version": self.version,
             "eligible_message_count": self.eligible_message_count,
@@ -802,6 +833,17 @@ pub fn stable_refs_value(&self) -> serde_json::Value {
                         "record_id": anchor.record_id,
                         "kind": anchor.kind,
                         "status": anchor.status,
+                    })
+                })
+                .collect::<Vec<_>>(),
+            "continuation_dependencies": self
+                .continuation_dependencies
+                .iter()
+                .map(|dependency| {
+                    serde_json::json!({
+                        "kind": dependency.kind,
+                        "anchor_message_id": dependency.anchor_message_id,
+                        "message_ids": dependency.message_ids,
                     })
                 })
                 .collect::<Vec<_>>(),
@@ -828,6 +870,12 @@ not as a replacement for checking live files or rerunning verification when exac
         let memory_anchors = self.render_memory_anchors();
         if !memory_anchors.is_empty() {
             sections.push(format!("## Memory Anchors\n{memory_anchors}"));
+        }
+        let continuation_dependencies = self.render_continuation_dependencies();
+        if !continuation_dependencies.is_empty() {
+            sections.push(format!(
+                "## Continuation Dependencies\n{continuation_dependencies}"
+            ));
         }
 
         sections.push(self.render_hydration_guidance());
@@ -900,6 +948,10 @@ not as a replacement for checking live files or rerunning verification when exac
             self.memory_anchors.len()
         ));
         rows.push(format!(
+            "- continuation_dependencies: {} exact chain(s)",
+            self.continuation_dependencies.len()
+        ));
+        rows.push(format!(
             "- recall_policy: {}",
             self.recall_policy.as_deref().unwrap_or(
                 "use exact tail for recent follow-up references; treat ledger and compaction as lossy summaries; use `scheduler_context_hydrate` for authorized Source Anchors when prior exact text is needed; use `scheduler_memory_hydrate` for authorized Memory Anchors when exact memory detail is needed; use memory, artifacts, or other tools for facts outside the anchors."
@@ -919,6 +971,11 @@ not as a replacement for checking live files or rerunning verification when exac
             "- Prefer the visible Exact Recent Tail when it already contains the needed prior output.".to_string(),
             "- Use `scheduler_memory_hydrate({\"record_ids\":[...]})` only with ids listed in Memory Anchors when exact recalled memory details matter.".to_string(),
         ];
+        if !self.continuation_dependencies.is_empty() {
+            rows.push(
+                "- Preserve Continuation Dependency message ids as exact assistant/tool history when provider continuation or reasoning replay depends on them.".to_string(),
+            );
+        }
         if omitted_count > 0 {
             rows.push(format!(
                 "- omitted_older_turns is {omitted_count}; if the user refers to older context outside Source Anchors, recover it through memory, artifacts, or other tools before acting."
@@ -945,7 +1002,47 @@ not as a replacement for checking live files or rerunning verification when exac
                 compaction.message_id
             ));
         }
+        for dependency in &self.continuation_dependencies {
+            let ids = dependency
+                .message_ids
+                .iter()
+                .map(|id| format!("`{id}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let anchor = dependency
+                .anchor_message_id
+                .as_deref()
+                .map(|id| format!(" anchored at `{id}`"))
+                .unwrap_or_default();
+            anchors.push(format!(
+                "- continuation_dependency [{}]{}: {}",
+                dependency.kind.label(),
+                anchor,
+                ids
+            ));
+        }
         anchors.join("\n")
+    }
+
+    fn render_continuation_dependencies(&self) -> String {
+        self.continuation_dependencies
+            .iter()
+            .map(|dependency| {
+                let anchor = dependency
+                    .anchor_message_id
+                    .as_deref()
+                    .map(|id| format!("anchor `{id}`"))
+                    .unwrap_or_else(|| "no explicit anchor".to_string());
+                let ids = dependency
+                    .message_ids
+                    .iter()
+                    .map(|id| format!("`{id}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("- {} ({anchor}): {ids}", dependency.kind.label())
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn render_memory_anchors(&self) -> String {
@@ -1001,8 +1098,8 @@ pub fn message_latest_compaction_summary(
     fallback_message_id: &str,
     fallback_text: Option<&str>,
 ) -> Option<SessionContinuityCompactionSummary> {
-    if let Some(summary) = message_continuity_packet(metadata)
-        .and_then(|packet| packet.latest_compaction_summary)
+    if let Some(summary) =
+        message_continuity_packet(metadata).and_then(|packet| packet.latest_compaction_summary)
     {
         let trimmed = summary.summary.trim();
         if !trimmed.is_empty() {
@@ -1013,7 +1110,9 @@ pub fn message_latest_compaction_summary(
         }
     }
 
-    let trimmed = fallback_text.map(str::trim).filter(|value| !value.is_empty())?;
+    let trimmed = fallback_text
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
     Some(SessionContinuityCompactionSummary {
         message_id: fallback_message_id.to_string(),
         summary: trimmed.to_string(),
