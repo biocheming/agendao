@@ -1917,6 +1917,8 @@ fn runtime_skill_save_suggestion_triggers_for_methodology_shaped_turns() {
             &part.part_type,
             PartType::Text { text, .. }
                 if text.contains("reusable triggers, steps, validation, and boundaries")
+                    && text.contains("skill_manage({ action: \"create\", name, description, methodology })")
+                    && text.contains("Do not call the `invalid` tool directly.")
         )
     }));
 }

@@ -203,7 +203,12 @@ pub async fn resolve_tool_surface_with_mcp(
     tool_registry: &rocode_tool::ToolRegistry,
     mcp_tools: Vec<ToolDefinition>,
 ) -> ResolvedToolSurface {
-    let schemas = tool_registry.list_schemas().await;
+    let schemas = tool_registry
+        .list_schemas()
+        .await
+        .into_iter()
+        .filter(|schema| schema.name != "invalid")
+        .collect::<Vec<_>>();
     let mut built_in = Vec::new();
     let mut mcp = Vec::new();
     let mut plugin = Vec::new();
@@ -541,6 +546,21 @@ mod title_tests {
         assert!(sources.contains(&ToolSurfaceSourceKind::Plugin));
         assert!(sources.contains(&ToolSurfaceSourceKind::Dynamic));
         assert_eq!(names, vec!["read", "plugin_lookup", "dynamic_plan"]);
+    }
+
+    #[tokio::test]
+    async fn resolve_tool_surface_hides_invalid_tool_from_model_surface() {
+        let registry = rocode_tool::create_default_registry().await;
+        let surface = resolve_tool_surface(&registry).await;
+        let names = surface
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            !names.contains(&"invalid"),
+            "invalid should remain available for fallback execution but not be exposed on the model tool surface"
+        );
     }
 }
 

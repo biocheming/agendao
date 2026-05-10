@@ -1904,7 +1904,7 @@ impl SessionPrompt {
             serde_json::json!(HiddenRuntimeHint::SkillSaveSuggestion.as_str()),
         );
         note.add_text(
-            "System suggestion: this turn may be a good skill candidate. Save it only if you can express reusable triggers, steps, validation, and boundaries with `skill_manage`.",
+            "System suggestion: this turn may be a good skill candidate. Save it only if you can express reusable triggers, steps, validation, and boundaries with `skill_manage`. Start with a minimal valid shape such as `skill_manage({ action: \"create\", name, description, methodology })` or `skill_manage({ action: \"create\", name, description, body })`. Do not call the `invalid` tool directly.",
         );
     }
 
