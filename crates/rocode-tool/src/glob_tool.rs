@@ -112,6 +112,7 @@ impl Tool for GlobTool {
             ctx.ask_permission(
                 crate::PermissionRequest::new("external_directory")
                     .with_pattern(format!("{}/*", base_dir_str))
+                    .with_scope_key(crate::external_fs_scope_key(&base_dir_str))
                     .with_metadata("path", serde_json::json!(&base_dir_str)),
             )
             .await?;
@@ -120,6 +121,7 @@ impl Tool for GlobTool {
         ctx.ask_permission(
             crate::PermissionRequest::new("glob")
                 .with_pattern(&pattern)
+                .with_scope_key(crate::workspace_scope_key(&ctx.project_root, &base_dir_str))
                 .with_metadata("path", serde_json::json!(&base_dir_str))
                 .always_allow(),
         )

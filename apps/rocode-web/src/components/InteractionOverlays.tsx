@@ -136,10 +136,22 @@ export function InteractionOverlays({
                     <dd>{permission.permission}</dd>
                   </div>
                 ) : null}
-                {permission.permission_class ? (
+                {permission.permission_class_label ? (
                   <div>
                     <dt>Class</dt>
-                    <dd>{permission.permission_class}</dd>
+                    <dd>{permission.permission_class_label}</dd>
+                  </div>
+                ) : null}
+                {permission.scope_label || permission.scope_key ? (
+                  <div>
+                    <dt>Scope</dt>
+                    <dd>{permission.scope_label ?? permission.scope_key}</dd>
+                  </div>
+                ) : null}
+                {permission.grant_hint ? (
+                  <div>
+                    <dt>Grant</dt>
+                    <dd>{permission.grant_hint}</dd>
                   </div>
                 ) : null}
                 {permission.command ? (

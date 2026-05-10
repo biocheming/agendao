@@ -164,10 +164,14 @@ pub(crate) async fn authorize_bash_command(
     }
 
     if !parsed.patterns.is_empty() {
+        let scope_key = parsed
+            .command_family_scope_key()
+            .unwrap_or_else(|| "cmd:unknown".to_string());
         let patterns: Vec<String> = parsed.patterns.into_iter().collect();
         let always: Vec<String> = parsed.always.into_iter().collect();
         let mut req = crate::PermissionRequest::new("bash")
             .with_patterns(patterns)
+            .with_scope_key(scope_key)
             .with_metadata("description", serde_json::json!(description));
         for a in always {
             req = req.with_always(a);
@@ -455,6 +459,35 @@ pub(crate) struct ParsedCommand {
     directories: Vec<String>,
 }
 
+pub(crate) fn command_family_scope_key(command: &str) -> Option<String> {
+    parse_bash_command(command).command_family_scope_key()
+}
+
+impl ParsedCommand {
+    pub(crate) fn command_family_scope_key(&self) -> Option<String> {
+        let mut family = self
+            .patterns
+            .iter()
+            .filter_map(|pattern| {
+                let head = pattern.split_whitespace().next()?.trim();
+                if head.is_empty() {
+                    None
+                } else {
+                    Some(head.to_ascii_lowercase())
+                }
+            })
+            .collect::<Vec<_>>();
+        family.sort();
+        family.dedup();
+
+        if family.is_empty() {
+            None
+        } else {
+            Some(format!("cmd:{}", family.join("+")))
+        }
+    }
+}
+
 const PATH_COMMANDS: &[&str] = &[
     "cd", "rm", "cp", "mv", "mkdir", "touch", "chmod", "chown", "cat",
 ];
@@ -570,5 +603,19 @@ fn process_command_node(node: tree_sitter::Node, source: &[u8], result: &mut Par
         result.patterns.insert(command_text);
         let prefix = BashArity::prefix(&tokens);
         result.always.insert(format!("{} *", prefix.join(" ")));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_family_scope_key_uses_command_heads() {
+        let parsed = parse_bash_command("cargo test && git status");
+        assert_eq!(
+            parsed.command_family_scope_key().as_deref(),
+            Some("cmd:cargo+git")
+        );
     }
 }

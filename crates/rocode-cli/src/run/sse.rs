@@ -78,6 +78,32 @@ fn provider_diagnostic_label(
     }
 }
 
+fn permission_class_label(value: &str) -> Option<String> {
+    match value {
+        "inspect_read" => Some("Inspect read".to_string()),
+        "workspace_write" => Some("Workspace write".to_string()),
+        "external_access" => Some("External access".to_string()),
+        "dangerous_exec" => Some("Dangerous execution".to_string()),
+        other => Some(other.replace('_', " ")),
+    }
+}
+
+fn default_permission_lifetimes(
+    permission_class: Option<&str>,
+) -> Vec<rocode_permission::PermissionLifetime> {
+    match permission_class {
+        Some("workspace_write" | "external_access") => vec![
+            rocode_permission::PermissionLifetime::Once,
+            rocode_permission::PermissionLifetime::Turn,
+            rocode_permission::PermissionLifetime::Session,
+        ],
+        Some("inspect_read" | "dangerous_exec") => {
+            vec![rocode_permission::PermissionLifetime::Once]
+        }
+        Some(_) | None => vec![rocode_permission::PermissionLifetime::Once],
+    }
+}
+
 fn merge_pending_command_arguments(
     pending: &crate::api_client::PendingCommandInvocation,
     answers: &[Vec<String>],
@@ -845,29 +871,41 @@ async fn handle_permission_from_sse(
                 .collect::<HashMap<_, _>>()
         })
         .unwrap_or_default();
-    let lifetimes = input
-        .get("supported_lifetimes")
-        .and_then(|value| value.as_array())
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(|value| match value.as_str() {
-                    Some("once") => Some(rocode_permission::PermissionLifetime::Once),
-                    Some("turn") => Some(rocode_permission::PermissionLifetime::Turn),
-                    Some("session") | Some("always") => {
-                        Some(rocode_permission::PermissionLifetime::Session)
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
+    let permission_class = info.permission_class.as_deref().and_then(permission_class_label);
+    let scope_key = info.scope_key.clone();
+    let scope_label = info.scope_label.clone();
+    let lifetimes = info
+        .supported_lifetimes
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let lifetimes = if lifetimes.is_empty() {
+        input.get("supported_lifetimes")
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    } else {
+        lifetimes
+    };
+    let lifetimes = lifetimes
+        .iter()
+        .filter_map(|value| match *value {
+            "once" => Some(rocode_permission::PermissionLifetime::Once),
+            "turn" => Some(rocode_permission::PermissionLifetime::Turn),
+            "session" | "always" => Some(rocode_permission::PermissionLifetime::Session),
+            _ => None,
         })
-        .filter(|values| !values.is_empty())
-        .unwrap_or_else(|| {
-            vec![
-                rocode_permission::PermissionLifetime::Once,
-                rocode_permission::PermissionLifetime::Session,
-            ]
-        });
+        .collect::<Vec<_>>();
+    let lifetimes = if lifetimes.is_empty() {
+        default_permission_lifetimes(info.permission_class.as_deref())
+    } else {
+        lifetimes
+    };
 
     {
         let memory = runtime.permission_memory.lock().await;
@@ -890,10 +928,22 @@ async fn handle_permission_from_sse(
         let permission = permission.clone();
         let patterns = patterns.clone();
         let metadata = metadata.clone();
+        let permission_class = permission_class.clone();
+        let scope_key = scope_key.clone();
+        let scope_label = scope_label.clone();
         let lifetimes = lifetimes.clone();
         tokio::task::spawn_blocking(move || {
             let style = CliStyle::detect();
-            prompt_permission(&permission, &patterns, &metadata, &lifetimes, &style)
+            prompt_permission(
+                &permission,
+                permission_class.as_deref(),
+                scope_key.as_deref(),
+                scope_label.as_deref(),
+                &patterns,
+                &metadata,
+                &lifetimes,
+                &style,
+            )
         })
         .await
     };

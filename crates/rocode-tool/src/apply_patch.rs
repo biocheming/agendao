@@ -108,7 +108,9 @@ impl Tool for ApplyPatchTool {
             let file_path_str = file_path.to_string_lossy().to_string();
             if ctx.is_external_path(&file_path_str) {
                 ctx.ask_permission(
-                    PermissionRequest::new("external_directory").with_pattern(&file_path_str),
+                    PermissionRequest::new("external_directory")
+                        .with_pattern(&file_path_str)
+                        .with_scope_key(crate::external_fs_scope_key(&file_path_str)),
                 )
                 .await?;
             }
@@ -150,6 +152,7 @@ impl Tool for ApplyPatchTool {
         ctx.ask_permission(
             PermissionRequest::new("edit")
                 .with_patterns(relative_paths.clone())
+                .with_scope_key(format!("workspace:batch:{}", relative_paths.join(",")))
                 .with_metadata("diff", serde_json::json!(&total_diff))
                 .with_metadata("filepath", serde_json::json!(relative_paths.join(", ")))
                 .with_metadata("files", serde_json::json!(&files_metadata))

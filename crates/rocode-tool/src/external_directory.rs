@@ -52,6 +52,7 @@ pub async fn assert_external_directory(
 
     let request = PermissionRequest::new("external_directory")
         .with_pattern(&glob_pattern)
+        .with_scope_key(crate::external_fs_scope_key(&parent_dir))
         .with_metadata("filepath", serde_json::json!(target))
         .with_metadata("parentDir", serde_json::json!(&parent_dir));
 

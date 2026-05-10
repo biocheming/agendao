@@ -582,6 +582,8 @@ pub struct PermissionRequestInfo {
     #[serde(default)]
     pub scope_key: Option<String>,
     #[serde(default)]
+    pub scope_label: Option<String>,
+    #[serde(default)]
     pub origin_tool: Option<String>,
     #[serde(default)]
     pub supported_lifetimes: Vec<String>,

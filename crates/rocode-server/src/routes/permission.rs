@@ -7,6 +7,7 @@ use once_cell::sync::Lazy;
 use rocode_permission::{
     AskOutcome, Pattern, PermissionEngine, PermissionInfo, PermissionLifetime, Response, TimeInfo,
 };
+use rocode_tool::default_supported_lifetimes_for_class;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -29,6 +30,8 @@ pub struct PermissionRequestInfo {
     pub permission_class: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin_tool: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -73,6 +76,82 @@ fn permission_request_message(request: &rocode_tool::PermissionRequest) -> Strin
         .unwrap_or_else(|| format!("Permission required: {}", request.permission))
 }
 
+fn permission_scope_label(scope_key: Option<&str>) -> Option<String> {
+    let scope_key = scope_key?.trim();
+    if scope_key.is_empty() {
+        return None;
+    }
+
+    if let Some(rest) = scope_key.strip_prefix("cmd:") {
+        let families = rest
+            .split('+')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        if families.is_empty() {
+            return Some("Shell command family".to_string());
+        }
+        return Some(format!("Shell commands: {}", families.join(", ")));
+    }
+
+    if let Some(rest) = scope_key.strip_prefix("task:agent:") {
+        return Some(format!("Task agent: {rest}"));
+    }
+    if let Some(rest) = scope_key.strip_prefix("task:category:") {
+        return Some(format!("Task category: {rest}"));
+    }
+    if let Some(rest) = scope_key.strip_prefix("task_flow:") {
+        let label = match rest {
+            "create" => "create task",
+            "resume" => "resume task",
+            "get" => "inspect task",
+            "list" => "list tasks",
+            "cancel" => "cancel task",
+            _ => rest,
+        };
+        return Some(format!("Task flow: {label}"));
+    }
+    if let Some(rest) = scope_key.strip_prefix("shell_session:") {
+        let label = match rest {
+            "start" => "start session",
+            "write" => "send input",
+            "read" => "read output",
+            "status" => "inspect session",
+            "terminate" => "terminate session",
+            _ => rest,
+        };
+        return Some(format!("Shell session: {label}"));
+    }
+    if let Some(rest) = scope_key.strip_prefix("workspace:batch:") {
+        let count = rest
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .count();
+        return Some(format!("Workspace batch edit ({count} files)"));
+    }
+    if let Some(rest) = scope_key.strip_prefix("workspace:/") {
+        return Some(format!("Workspace path: /{rest}"));
+    }
+    if scope_key == "workspace:/" {
+        return Some("Workspace root".to_string());
+    }
+    if let Some(rest) = scope_key.strip_prefix("workspace:") {
+        return Some(format!("Workspace path: {rest}"));
+    }
+    if let Some(rest) = scope_key.strip_prefix("fs:") {
+        return Some(format!("External path: {rest}"));
+    }
+    if let Some(rest) = scope_key.strip_prefix("net:") {
+        if rest == "search" {
+            return Some("Web search".to_string());
+        }
+        return Some(format!("Network host: {rest}"));
+    }
+
+    Some(scope_key.to_string())
+}
+
 fn permission_request_info(info: &PermissionInfo) -> PermissionRequestInfo {
     PermissionRequestInfo {
         id: info.id.clone(),
@@ -82,6 +161,7 @@ fn permission_request_info(info: &PermissionInfo) -> PermissionRequestInfo {
             .permission_class
             .map(|class| class.as_str().to_string()),
         scope_key: info.scope_key.clone(),
+        scope_label: permission_scope_label(info.scope_key.as_deref()),
         origin_tool: info.origin_tool.clone(),
         supported_lifetimes: info
             .supported_lifetimes
@@ -127,7 +207,10 @@ pub(crate) async fn request_permission(
         scope_key: request.scope_key.clone(),
         origin_tool: request.origin_tool.clone(),
         supported_lifetimes: if request.supported_lifetimes.is_empty() {
-            vec![PermissionLifetime::Once, PermissionLifetime::Session]
+            request
+                .permission_class
+                .map(default_supported_lifetimes_for_class)
+                .unwrap_or_else(|| vec![PermissionLifetime::Once])
         } else {
             request.supported_lifetimes.clone()
         },
@@ -475,6 +558,59 @@ mod tests {
         .expect("inspect_read should be auto-approved");
 
         assert!(PERMISSION_ENGINE.lock().await.list().is_empty());
+        PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
+    }
+
+    #[tokio::test]
+    async fn request_permission_uses_class_default_lifetimes_when_missing() {
+        let _guard = TEST_PERMISSION_LOCK.lock().await;
+        const SESSION_ID: &str = "session-default-lifetimes";
+        PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
+
+        let state = Arc::new(ServerState::new());
+        let state_for_request = state.clone();
+        let request_task = tokio::spawn(async move {
+            request_permission(
+                state_for_request,
+                SESSION_ID.to_string(),
+                rocode_tool::PermissionRequest::new("edit").with_pattern("src/lib.rs"),
+            )
+            .await
+        });
+
+        let permission = loop {
+            let engine = PERMISSION_ENGINE.lock().await;
+            if let Some(info) = engine.list().first().cloned().cloned() {
+                break info;
+            }
+            drop(engine);
+            tokio::task::yield_now().await;
+        };
+
+        assert_eq!(
+            permission.supported_lifetimes,
+            vec![
+                PermissionLifetime::Once,
+                PermissionLifetime::Turn,
+                PermissionLifetime::Session,
+            ]
+        );
+
+        let _ = reply_permission(
+            State(state.clone()),
+            Path(permission.id.clone()),
+            Json(ReplyPermissionRequest {
+                reply: "once".to_string(),
+                message: None,
+            }),
+        )
+        .await
+        .expect("reply should succeed");
+
+        request_task
+            .await
+            .expect("request task join")
+            .expect("permission allowed");
         PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
     }
 }

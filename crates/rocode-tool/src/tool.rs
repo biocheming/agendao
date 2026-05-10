@@ -354,15 +354,16 @@ pub struct PermissionRequest {
 impl PermissionRequest {
     pub fn new(permission: impl Into<String>) -> Self {
         let permission = permission.into();
+        let permission_class = default_permission_class_for_name(&permission);
         Self {
             origin_tool: Some(permission.clone()),
-            permission_class: Some(default_permission_class_for_name(&permission)),
+            permission_class: Some(permission_class),
             permission,
             patterns: Vec::new(),
             metadata: HashMap::new(),
             always: Vec::new(),
             scope_key: None,
-            supported_lifetimes: vec![PermissionLifetime::Once, PermissionLifetime::Session],
+            supported_lifetimes: default_supported_lifetimes_for_class(permission_class),
         }
     }
 
@@ -383,6 +384,7 @@ impl PermissionRequest {
 
     pub fn with_permission_class(mut self, permission_class: PermissionClass) -> Self {
         self.permission_class = Some(permission_class);
+        self.supported_lifetimes = default_supported_lifetimes_for_class(permission_class);
         self
     }
 
@@ -426,6 +428,45 @@ fn default_permission_class_for_name(permission: &str) -> PermissionClass {
         "bash" | "shell_session" | "task" | "task_flow" => PermissionClass::DangerousExec,
         _ => PermissionClass::DangerousExec,
     }
+}
+
+pub fn default_supported_lifetimes_for_class(
+    permission_class: PermissionClass,
+) -> Vec<PermissionLifetime> {
+    match permission_class {
+        PermissionClass::InspectRead => vec![PermissionLifetime::Once],
+        PermissionClass::WorkspaceWrite | PermissionClass::ExternalAccess => vec![
+            PermissionLifetime::Once,
+            PermissionLifetime::Turn,
+            PermissionLifetime::Session,
+        ],
+        PermissionClass::DangerousExec => vec![PermissionLifetime::Once],
+    }
+}
+
+pub fn workspace_scope_key(project_root: &str, path: &str) -> String {
+    let project_root = std::path::Path::new(project_root);
+    let path = std::path::Path::new(path);
+    if let Ok(relative) = path.strip_prefix(project_root) {
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        if relative.is_empty() {
+            "workspace:/".to_string()
+        } else {
+            format!("workspace:/{}", relative)
+        }
+    } else {
+        format!("workspace:{}", path.to_string_lossy().replace('\\', "/"))
+    }
+}
+
+pub fn external_fs_scope_key(path: &str) -> String {
+    format!("fs:{}", path.replace('\\', "/"))
+}
+
+pub fn network_scope_key(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    Some(format!("net:{host}"))
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1204,5 +1245,61 @@ mod tests {
         assert_eq!(compiled.top_p, Some(0.3));
         assert_eq!(compiled.variant.as_deref(), Some("slow"));
         assert!(compiled.provider_options.is_none());
+    }
+
+    #[test]
+    fn permission_request_defaults_workspace_write_to_once_turn_session() {
+        let request = PermissionRequest::new("edit");
+        assert_eq!(
+            request.supported_lifetimes,
+            vec![
+                PermissionLifetime::Once,
+                PermissionLifetime::Turn,
+                PermissionLifetime::Session,
+            ]
+        );
+    }
+
+    #[test]
+    fn permission_request_defaults_external_access_to_once_turn_session() {
+        let request = PermissionRequest::new("webfetch");
+        assert_eq!(
+            request.supported_lifetimes,
+            vec![
+                PermissionLifetime::Once,
+                PermissionLifetime::Turn,
+                PermissionLifetime::Session,
+            ]
+        );
+    }
+
+    #[test]
+    fn permission_request_defaults_dangerous_exec_to_once_only() {
+        let request = PermissionRequest::new("bash");
+        assert_eq!(request.supported_lifetimes, vec![PermissionLifetime::Once]);
+    }
+
+    #[test]
+    fn workspace_scope_key_uses_project_relative_path() {
+        assert_eq!(
+            workspace_scope_key("/repo", "/repo/src/main.rs"),
+            "workspace:/src/main.rs"
+        );
+    }
+
+    #[test]
+    fn external_fs_scope_key_normalizes_prefix() {
+        assert_eq!(
+            external_fs_scope_key("/tmp/demo"),
+            "fs:/tmp/demo"
+        );
+    }
+
+    #[test]
+    fn network_scope_key_uses_host() {
+        assert_eq!(
+            network_scope_key("https://docs.example.com/path?q=1").as_deref(),
+            Some("net:docs.example.com")
+        );
     }
 }

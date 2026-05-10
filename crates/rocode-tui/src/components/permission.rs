@@ -85,6 +85,37 @@ impl PermissionLifetime {
     }
 }
 
+fn permission_class_label(value: &str) -> String {
+    match value {
+        "inspect_read" => "Inspect read".to_string(),
+        "workspace_write" => "Workspace write".to_string(),
+        "external_access" => "External access".to_string(),
+        "dangerous_exec" => "Dangerous execution".to_string(),
+        other => other.replace('_', " "),
+    }
+}
+
+fn lifetime_hint(scope: Option<&str>, supported_lifetimes: &[PermissionLifetime]) -> Option<String> {
+    if supported_lifetimes.is_empty() {
+        return None;
+    }
+
+    let mut parts = vec!["once = this request".to_string()];
+    if supported_lifetimes.contains(&PermissionLifetime::Turn) {
+        parts.push(match scope {
+            Some(scope) => format!("turn = current turn for {scope}"),
+            None => "turn = current turn".to_string(),
+        });
+    }
+    if supported_lifetimes.contains(&PermissionLifetime::Session) {
+        parts.push(match scope {
+            Some(scope) => format!("session = this session for {scope}"),
+            None => "session = this session".to_string(),
+        });
+    }
+    Some(parts.join("  |  "))
+}
+
 #[derive(Clone, Debug)]
 pub struct PermissionRequest {
     pub id: String,
@@ -92,6 +123,8 @@ pub struct PermissionRequest {
     pub resource: String,
     pub tool_name: String,
     pub permission_class: Option<String>,
+    pub scope_key: Option<String>,
+    pub scope_label: Option<String>,
     pub supported_lifetimes: Vec<PermissionLifetime>,
 }
 
@@ -262,27 +295,7 @@ impl PermissionPrompt {
             None => return,
         };
 
-        let height = 8u16;
         let width = area.width.saturating_sub(2).min(80);
-
-        // Render inline at the bottom of the session area
-        let popup_area = Rect::new(
-            area.x + 1,
-            area.y + area.height.saturating_sub(height + 1),
-            width,
-            height,
-        );
-
-        self.last_rendered_area.set(Some(popup_area));
-
-        // Clear underlying content so no text bleeds through
-        surface.render_widget(Clear, popup_area);
-
-        let title = format!(
-            "{} {} - Permission Request",
-            request.permission_type.icon(),
-            request.permission_type.label()
-        );
         let mut actions = vec![Span::styled(
             "[1] Once  ",
             Style::default().fg(theme.success),
@@ -307,7 +320,13 @@ impl PermissionPrompt {
         }
         actions.push(Span::styled("[0] Deny", Style::default().fg(theme.error)));
 
-        let content = vec![
+        let title = format!(
+            "{} {} - Permission Request",
+            request.permission_type.icon(),
+            request.permission_type.label()
+        );
+
+        let mut content = vec![
             Line::from(Span::styled(
                 &title,
                 Style::default().fg(theme.primary).bold(),
@@ -317,25 +336,52 @@ impl PermissionPrompt {
                 Span::styled("Tool: ", Style::default().fg(theme.text_muted)),
                 Span::styled(&request.tool_name, Style::default().fg(theme.text)),
             ]),
-            Line::from(
-                request
-                    .permission_class
-                    .as_ref()
-                    .map(|class| {
-                        vec![
-                            Span::styled("Class: ", Style::default().fg(theme.text_muted)),
-                            Span::styled(class, Style::default().fg(theme.text)),
-                        ]
-                    })
-                    .unwrap_or_default(),
-            ),
+        ];
+        if let Some(class) = request.permission_class.as_ref() {
+            content.push(Line::from(vec![
+                Span::styled("Class: ", Style::default().fg(theme.text_muted)),
+                Span::styled(permission_class_label(class), Style::default().fg(theme.text)),
+            ]));
+        }
+        if let Some(scope_label) = request.scope_label.as_ref().or(request.scope_key.as_ref()) {
+            content.push(Line::from(vec![
+                Span::styled("Scope: ", Style::default().fg(theme.text_muted)),
+                Span::styled(scope_label, Style::default().fg(theme.text)),
+            ]));
+        }
+        if let Some(hint) = lifetime_hint(
+            request.scope_label.as_deref().or(request.scope_key.as_deref()),
+            &request.supported_lifetimes,
+        )
+        {
+            content.push(Line::from(vec![
+                Span::styled("Grant: ", Style::default().fg(theme.text_muted)),
+                Span::styled(hint, Style::default().fg(theme.text)),
+            ]));
+        }
+        content.extend([
             Line::from(vec![
                 Span::styled("Resource: ", Style::default().fg(theme.text_muted)),
                 Span::styled(&request.resource, Style::default().fg(theme.text)),
             ]),
             Line::from(""),
             Line::from(actions),
-        ];
+        ]);
+
+        let height = (content.len() as u16).saturating_add(2).min(area.height.saturating_sub(1));
+
+        // Render inline at the bottom of the session area
+        let popup_area = Rect::new(
+            area.x + 1,
+            area.y + area.height.saturating_sub(height + 1),
+            width,
+            height,
+        );
+
+        self.last_rendered_area.set(Some(popup_area));
+
+        // Clear underlying content so no text bleeds through
+        surface.render_widget(Clear, popup_area);
 
         let paragraph = Paragraph::new(content)
             .block(

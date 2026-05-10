@@ -83,6 +83,10 @@ impl Tool for WebFetchTool {
         ctx.ask_permission(
             crate::PermissionRequest::new("webfetch")
                 .with_pattern(&url)
+                .with_scope_key(
+                    crate::network_scope_key(&url)
+                        .unwrap_or_else(|| format!("net:{url}")),
+                )
                 .always_allow(),
         )
         .await?;

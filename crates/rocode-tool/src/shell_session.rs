@@ -6,7 +6,7 @@ use std::io::{Read as _, Write as _};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use tokio::sync::{Notify, RwLock};
 
-use crate::bash::authorize_bash_command;
+use crate::bash::{authorize_bash_command, command_family_scope_key};
 use crate::{Metadata, PermissionRequest, Tool, ToolContext, ToolError, ToolResult};
 use rocode_core::process_registry::{global_registry, ProcessKind};
 
@@ -675,10 +675,17 @@ async fn authorize_cwd(cwd: &str, ctx: &ToolContext) -> Result<(), ToolError> {
     ctx.ask_permission(
         PermissionRequest::new("external_directory")
             .with_pattern(format!("{}/*", parent))
+            .with_scope_key(crate::external_fs_scope_key(&parent))
             .with_metadata("filepath", serde_json::json!(cwd))
             .with_metadata("parentDir", serde_json::json!(parent)),
     )
     .await
+}
+
+fn shell_session_scope(operation: &str, command: Option<&str>) -> String {
+    command
+        .and_then(command_family_scope_key)
+        .unwrap_or_else(|| format!("shell_session:{operation}"))
 }
 
 fn format_command_line(command: &str, args: &[String]) -> String {
@@ -742,6 +749,10 @@ fn validate_input(input: &ShellSessionInput) -> Result<(), ToolError> {
 fn shell_metadata(operation: &str, session: &ShellSessionView) -> Metadata {
     let mut metadata = Metadata::new();
     metadata.insert("operation".to_string(), serde_json::json!(operation));
+    metadata.insert(
+        "scope_key".to_string(),
+        serde_json::json!(shell_session_scope(operation, Some(&session.command))),
+    );
     metadata.insert(
         "session".to_string(),
         shell_metadata_value("session", session),
@@ -915,6 +926,24 @@ mod tests {
         assert!(operations.iter().any(|value| value == "read"));
         assert!(operations.iter().any(|value| value == "status"));
         assert!(operations.iter().any(|value| value == "terminate"));
+    }
+
+    #[test]
+    fn shell_metadata_includes_scope_key() {
+        let session = ShellSessionView {
+            id: "shell_1".to_string(),
+            command: "bash".to_string(),
+            args: vec!["-lc".to_string()],
+            cwd: "/repo".to_string(),
+            pid: 42,
+            created_at: 0,
+            state: ShellSessionState::Running,
+            exit_code: None,
+            error: None,
+        };
+
+        let metadata = shell_metadata("start", &session);
+        assert_eq!(metadata.get("scope_key"), Some(&serde_json::json!("cmd:bash")));
     }
 
     #[tokio::test]

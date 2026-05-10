@@ -131,6 +131,11 @@ impl Tool for LsTool {
         ctx.ask_permission(
             PermissionRequest::new("list")
                 .with_pattern(&base_dir_str)
+                .with_scope_key(if ctx.is_external_path(&base_dir_str) {
+                    crate::external_fs_scope_key(&base_dir_str)
+                } else {
+                    crate::workspace_scope_key(&ctx.project_root, &base_dir_str)
+                })
                 .with_metadata("path", serde_json::json!(&base_dir_str))
                 .always_allow(),
         )
