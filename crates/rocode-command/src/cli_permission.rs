@@ -70,12 +70,10 @@ impl PermissionMemory {
         if patterns.is_empty() {
             return false;
         }
-        patterns
-            .iter()
-            .all(|p| {
-                let key = format!("{}:{}", permission, p);
-                self.session_granted.contains(&key) || self.turn_granted.contains(&key)
-            })
+        patterns.iter().all(|p| {
+            let key = format!("{}:{}", permission, p);
+            self.session_granted.contains(&key) || self.turn_granted.contains(&key)
+        })
     }
 }
 

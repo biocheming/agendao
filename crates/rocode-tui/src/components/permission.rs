@@ -283,7 +283,10 @@ impl PermissionPrompt {
             request.permission_type.icon(),
             request.permission_type.label()
         );
-        let mut actions = vec![Span::styled("[1] Once  ", Style::default().fg(theme.success))];
+        let mut actions = vec![Span::styled(
+            "[1] Once  ",
+            Style::default().fg(theme.success),
+        )];
         if request
             .supported_lifetimes
             .contains(&PermissionLifetime::Turn)

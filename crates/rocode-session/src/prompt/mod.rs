@@ -71,10 +71,10 @@ use rocode_provider::{cache::CacheEvidenceSummary, Provider, ToolDefinition};
 use rocode_skill::{infer_runtime_skill_names, RuntimeInstructionSource, SkillGovernanceAuthority};
 use rocode_types::SkillRuntimeCompositionHintKind;
 use rocode_types::{
-    context_usage_percent, ContextCompactionInstalledDiagnostics, ContextCompactionLifecycleStatus,
+    context_usage_percent, message_latest_compaction_summary,
+    ContextCompactionInstalledDiagnostics, ContextCompactionLifecycleStatus,
     ContextCompactionLifecycleSummary, ContextCompactionSummary, ContextPressureGovernanceStatus,
     ContextPressureGovernanceSummary, MemoryRetrievalPacket, PromptSurfaceEvidenceSummary,
-    message_latest_compaction_summary,
     SessionCacheBoundaryKind, SessionCacheBoundarySummary, SessionCacheEvidenceExplain,
     SessionCacheSemanticsBasis, SessionCacheSemanticsSummary, SessionCacheSeverity,
     SessionContextExplain, SessionContextKind, SubsessionHandoffPacket, SubsessionResultEnvelope,
@@ -787,16 +787,18 @@ fn latest_context_compaction_summary_from_session(
         })
         .and_then(|value| serde_json::from_value::<ContextCompactionSummary>(value).ok())
         .map(|mut summary| {
-            if let Some(packet_summary) = session.record().messages.iter().rev().find_map(|message| {
-                if !matches!(message.role, MessageRole::Assistant) {
-                    return None;
-                }
-                message_latest_compaction_summary(
-                    &message.metadata,
-                    &message.id,
-                    summary.summary.as_deref(),
-                )
-            }) {
+            if let Some(packet_summary) =
+                session.record().messages.iter().rev().find_map(|message| {
+                    if !matches!(message.role, MessageRole::Assistant) {
+                        return None;
+                    }
+                    message_latest_compaction_summary(
+                        &message.metadata,
+                        &message.id,
+                        summary.summary.as_deref(),
+                    )
+                })
+            {
                 summary.summary = Some(packet_summary.summary);
             }
             summary
