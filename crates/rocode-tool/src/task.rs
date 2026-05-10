@@ -73,6 +73,13 @@ impl TaskDispatchKind {
             Self::Category(cat) => cat,
         }
     }
+
+    fn scope_key(&self) -> String {
+        match self {
+            Self::Agent(name) => format!("task:agent:{}", name.trim().to_ascii_lowercase()),
+            Self::Category(cat) => format!("task:category:{}", cat.trim().to_ascii_lowercase()),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -297,6 +304,7 @@ impl Tool for TaskTool {
             ctx.ask_permission(
                 PermissionRequest::new("task")
                     .with_pattern(&dispatch_label)
+                    .with_scope_key(input.dispatch.scope_key())
                     .with_metadata("description", serde_json::json!(&input.description))
                     .with_metadata("subagent_type", serde_json::json!(&dispatch_label))
                     .always_allow(),
@@ -1339,5 +1347,17 @@ Use clear visual hierarchy.
         // Without build_agent callback, the unknown agent name still works
         // (existing fallback behavior is preserved)
         assert!(result.output.contains("fallback output"));
+    }
+
+    #[test]
+    fn task_dispatch_scope_key_is_stable() {
+        assert_eq!(
+            TaskDispatchKind::Agent("Build".to_string()).scope_key(),
+            "task:agent:build"
+        );
+        assert_eq!(
+            TaskDispatchKind::Category("Research".to_string()).scope_key(),
+            "task:category:research"
+        );
     }
 }

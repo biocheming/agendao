@@ -107,6 +107,7 @@ impl Tool for LspTool {
             ctx.ask_permission(
                 crate::PermissionRequest::new("external_directory")
                     .with_pattern(&path_str)
+                    .with_scope_key(crate::external_fs_scope_key(&path_str))
                     .with_metadata("filepath", serde_json::json!(&path_str)),
             )
             .await?;
@@ -114,6 +115,7 @@ impl Tool for LspTool {
 
         ctx.ask_permission(
             crate::PermissionRequest::new("lsp")
+                .with_scope_key(crate::workspace_scope_key(&ctx.project_root, &path_str))
                 .with_patterns(vec!["*".to_string()])
                 .always_allow(),
         )

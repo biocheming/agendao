@@ -338,6 +338,7 @@ impl Tool for TaskFlowTool {
         validate_input(&input)?;
 
         let mut permission = PermissionRequest::new("task_flow")
+            .with_scope_key(format!("task_flow:{}", input.operation.as_str()))
             .with_metadata("operation", serde_json::json!(input.operation.as_str()))
             .always_allow();
         if let Some(task_id) = input.task_id.as_ref() {
@@ -1462,6 +1463,10 @@ mod tests {
         assert_eq!(
             task_flow_request.metadata.get("sync_todo"),
             Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            task_flow_request.scope_key.as_deref(),
+            Some("task_flow:create")
         );
     }
 

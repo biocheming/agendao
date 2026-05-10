@@ -10,7 +10,7 @@
 use crate::cli_select::{interactive_select, SelectOption, SelectResult};
 use crate::cli_spinner::SpinnerGuard;
 use crate::cli_style::CliStyle;
-use rocode_permission::PermissionLifetime;
+use rocode_permission::{PermissionClass, PermissionLifetime};
 use std::collections::HashSet;
 use std::io::{self, Write};
 use std::sync::Arc;
@@ -86,11 +86,57 @@ pub enum PermissionDecision {
     Deny,
 }
 
+fn default_lifetimes_for_class(
+    permission_class: Option<PermissionClass>,
+) -> Vec<PermissionLifetime> {
+    match permission_class {
+        Some(PermissionClass::InspectRead) => vec![PermissionLifetime::Once],
+        Some(PermissionClass::WorkspaceWrite | PermissionClass::ExternalAccess) => vec![
+            PermissionLifetime::Once,
+            PermissionLifetime::Turn,
+            PermissionLifetime::Session,
+        ],
+        Some(PermissionClass::DangerousExec) => vec![PermissionLifetime::Once],
+        None => vec![PermissionLifetime::Once],
+    }
+}
+
+fn lifetime_hint(scope: Option<&str>, lifetimes: &[PermissionLifetime]) -> Option<String> {
+    if lifetimes.is_empty() {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    parts.push("once = this request".to_string());
+    if lifetimes.contains(&PermissionLifetime::Turn) {
+        parts.push(match scope {
+            Some(scope) => format!("turn = current turn for {scope}"),
+            None => "turn = current turn".to_string(),
+        });
+    }
+    if lifetimes.contains(&PermissionLifetime::Session) {
+        parts.push(match scope {
+            Some(scope) => format!("session = this session for {scope}"),
+            None => "session = this session".to_string(),
+        });
+    }
+
+    Some(parts.join("  |  "))
+}
+
+fn display_scope<'a>(scope_key: Option<&'a str>, scope_label: Option<&'a str>) -> Option<&'a str> {
+    scope_label.or(scope_key)
+}
+
 /// Format a permission request into a human-readable summary block for the terminal.
 fn format_permission_summary(
     permission: &str,
+    permission_class: Option<&str>,
+    scope_key: Option<&str>,
+    scope_label: Option<&str>,
     patterns: &[String],
     metadata: &std::collections::HashMap<String, serde_json::Value>,
+    lifetimes: &[PermissionLifetime],
     style: &CliStyle,
 ) -> String {
     let mut lines = Vec::new();
@@ -120,6 +166,21 @@ fn format_permission_summary(
         style.bold(label),
         style.dim(&format!("({})", permission))
     ));
+
+    if let Some(permission_class) = permission_class {
+        lines.push(format!(
+            "    {} {}",
+            style.dim("class:"),
+            permission_class
+        ));
+    }
+
+    if let Some(scope) = display_scope(scope_key, scope_label) {
+        lines.push(format!("    {} {}", style.dim("scope:"), scope));
+    }
+    if let Some(hint) = lifetime_hint(display_scope(scope_key, scope_label), lifetimes) {
+        lines.push(format!("    {} {}", style.dim("grant:"), hint));
+    }
 
     // Show patterns (file paths, commands, etc.)
     if !patterns.is_empty() {
@@ -181,12 +242,25 @@ fn format_permission_summary(
 /// Returns the user's decision.
 pub fn prompt_permission(
     permission: &str,
+    permission_class: Option<&str>,
+    scope_key: Option<&str>,
+    scope_label: Option<&str>,
     patterns: &[String],
     metadata: &std::collections::HashMap<String, serde_json::Value>,
     lifetimes: &[PermissionLifetime],
     style: &CliStyle,
 ) -> io::Result<PermissionDecision> {
-    let summary = format_permission_summary(permission, patterns, metadata, style);
+    let summary =
+        format_permission_summary(
+            permission,
+            permission_class,
+            scope_key,
+            scope_label,
+            patterns,
+            metadata,
+            lifetimes,
+            style,
+        );
 
     // Print the summary block to stderr
     let mut stderr = io::stderr();
@@ -272,14 +346,29 @@ pub fn build_cli_permission_callback(
             let patterns = request.patterns.clone();
             let metadata = request.metadata.clone();
             let lifetimes = if request.supported_lifetimes.is_empty() {
-                vec![PermissionLifetime::Once, PermissionLifetime::Session]
+                default_lifetimes_for_class(request.permission_class)
             } else {
                 request.supported_lifetimes.clone()
             };
 
             let decision = tokio::task::spawn_blocking(move || {
                 let style = CliStyle::detect();
-                prompt_permission(&permission, &patterns, &metadata, &lifetimes, &style)
+                let permission_class = request.permission_class.map(|class| match class {
+                    rocode_permission::PermissionClass::InspectRead => "Inspect read",
+                    rocode_permission::PermissionClass::WorkspaceWrite => "Workspace write",
+                    rocode_permission::PermissionClass::ExternalAccess => "External access",
+                    rocode_permission::PermissionClass::DangerousExec => "Dangerous execution",
+                });
+                prompt_permission(
+                    &permission,
+                    permission_class,
+                    request.scope_key.as_deref(),
+                    None,
+                    &patterns,
+                    &metadata,
+                    &lifetimes,
+                    &style,
+                )
             })
             .await
             .map_err(|e| {
@@ -364,8 +453,16 @@ mod tests {
         let mut metadata = std::collections::HashMap::new();
         metadata.insert("command".to_string(), serde_json::json!("cargo test --all"));
 
-        let summary =
-            format_permission_summary("bash", &["cargo test --all".to_string()], &metadata, &style);
+        let summary = format_permission_summary(
+            "bash",
+            None,
+            None,
+            None,
+            &["cargo test --all".to_string()],
+            &metadata,
+            &[PermissionLifetime::Once],
+            &style,
+        );
 
         assert!(summary.contains("Execute Command"));
         assert!(summary.contains("cargo test --all"));
@@ -382,7 +479,16 @@ mod tests {
         metadata.insert("filepath".to_string(), serde_json::json!("src/main.rs"));
 
         let summary =
-            format_permission_summary("edit", &["src/main.rs".to_string()], &metadata, &style);
+            format_permission_summary(
+                "edit",
+                None,
+                None,
+                None,
+                &["src/main.rs".to_string()],
+                &metadata,
+                &[PermissionLifetime::Once, PermissionLifetime::Session],
+                &style,
+            );
 
         assert!(summary.contains("Edit File"));
         assert!(summary.contains("-old line"));

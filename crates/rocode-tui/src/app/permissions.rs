@@ -5,6 +5,18 @@ use crate::components::{PermissionLifetime, PermissionRequest, PermissionType};
 use super::App;
 
 impl App {
+    fn default_supported_lifetimes(permission_class: Option<&str>) -> Vec<PermissionLifetime> {
+        match permission_class {
+            Some("workspace_write" | "external_access") => vec![
+                PermissionLifetime::Once,
+                PermissionLifetime::Turn,
+                PermissionLifetime::Session,
+            ],
+            Some("inspect_read" | "dangerous_exec") => vec![PermissionLifetime::Once],
+            Some(_) | None => vec![PermissionLifetime::Once],
+        }
+    }
+
     fn permission_type_from_name(name: &str) -> PermissionType {
         match name {
             "read" => PermissionType::ReadFile,
@@ -53,22 +65,28 @@ impl App {
                 })
             })
             .unwrap_or_else(|| permission.message.clone());
-        let supported_lifetimes = input
-            .get("supported_lifetimes")
-            .and_then(|value| value.as_array())
-            .map(|values| {
-                values
-                    .iter()
-                    .filter_map(|value| match value.as_str() {
-                        Some("once") => Some(PermissionLifetime::Once),
-                        Some("turn") => Some(PermissionLifetime::Turn),
-                        Some("session") | Some("always") => Some(PermissionLifetime::Session),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .filter(|values| !values.is_empty())
-            .unwrap_or_else(|| vec![PermissionLifetime::Once, PermissionLifetime::Session]);
+        let supported_lifetimes = if !permission.supported_lifetimes.is_empty() {
+            Some(permission.supported_lifetimes.iter().map(String::as_str).collect::<Vec<_>>())
+        } else {
+            input.get("supported_lifetimes")
+                .and_then(|value| value.as_array())
+                .map(|values| values.iter().filter_map(|value| value.as_str()).collect::<Vec<_>>())
+        }
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| match *value {
+                    "once" => Some(PermissionLifetime::Once),
+                    "turn" => Some(PermissionLifetime::Turn),
+                    "session" | "always" => Some(PermissionLifetime::Session),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .filter(|values| !values.is_empty())
+        .unwrap_or_else(|| {
+            Self::default_supported_lifetimes(permission.permission_class.as_deref())
+        });
 
         PermissionRequest {
             id: permission.id.clone(),
@@ -76,6 +94,8 @@ impl App {
             resource,
             tool_name: permission_name.to_string(),
             permission_class: permission.permission_class.clone(),
+            scope_key: permission.scope_key.clone(),
+            scope_label: permission.scope_label.clone(),
             supported_lifetimes,
         }
     }

@@ -22,10 +22,39 @@ export interface PermissionInteractionRecord {
   message?: string;
   permission?: string;
   permission_class?: string;
+  permission_class_label?: string;
+  scope_key?: string;
+  scope_label?: string;
   supported_lifetimes?: string[];
+  grant_hint?: string;
   command?: string;
   filepath?: string;
   patterns?: string[];
+}
+
+function defaultSupportedLifetimes(permissionClass?: string): string[] {
+  switch (permissionClass) {
+    case "workspace_write":
+    case "external_access":
+      return ["once", "turn", "session"];
+    case "inspect_read":
+    case "dangerous_exec":
+      return ["once"];
+    default:
+      return ["once"];
+  }
+}
+
+function permissionGrantHint(scope?: string, supportedLifetimes: string[] = []): string | undefined {
+  if (supportedLifetimes.length === 0) return undefined;
+  const parts = ["once = this request"];
+  if (supportedLifetimes.includes("turn")) {
+    parts.push(scope ? `turn = current turn for ${scope}` : "turn = current turn");
+  }
+  if (supportedLifetimes.includes("session")) {
+    parts.push(scope ? `session = this session for ${scope}` : "session = this session");
+  }
+  return parts.join(" | ");
 }
 
 export interface PromptResponseRecord {
@@ -160,23 +189,70 @@ export function permissionInteractionFromEvent(
   const info = (event.info ?? {}) as Record<string, unknown>;
   const input =
     typeof info.input === "object" && info.input ? (info.input as Record<string, unknown>) : null;
+  const metadata =
+    typeof input?.metadata === "object" && input.metadata
+      ? (input.metadata as Record<string, unknown>)
+      : null;
   const patterns = Array.isArray(input?.patterns)
     ? input?.patterns.map((value) => String(value ?? "")).filter(Boolean)
     : undefined;
-  const supported_lifetimes = Array.isArray(input?.supported_lifetimes)
-    ? input?.supported_lifetimes.map((value) => String(value ?? "")).filter(Boolean)
-    : undefined;
+  const permission_class =
+    typeof info.permission_class === "string" ? info.permission_class : undefined;
+  const supported_lifetimes_source = Array.isArray(info.supported_lifetimes)
+    ? info.supported_lifetimes
+    : Array.isArray(input?.supported_lifetimes)
+      ? input.supported_lifetimes
+      : undefined;
+  const supported_lifetimes =
+    supported_lifetimes_source
+      ?.map((value) => String(value ?? ""))
+      .filter(Boolean) ?? defaultSupportedLifetimes(permission_class);
 
   return {
     permission_id: String(event.permissionID ?? ""),
     session_id: sessionId,
     message: typeof info.message === "string" ? info.message : undefined,
     permission: typeof info.tool === "string" ? info.tool : undefined,
-    permission_class:
-      typeof info.permission_class === "string" ? info.permission_class : undefined,
+    permission_class,
+    permission_class_label: permissionClassLabel(permission_class),
+    scope_key: typeof info.scope_key === "string" ? info.scope_key : undefined,
+    scope_label: typeof info.scope_label === "string" ? info.scope_label : undefined,
     supported_lifetimes,
-    command: typeof input?.command === "string" ? input.command : undefined,
-    filepath: patterns?.[0],
+    grant_hint: permissionGrantHint(
+      typeof info.scope_label === "string"
+        ? info.scope_label
+        : typeof info.scope_key === "string"
+          ? info.scope_key
+          : undefined,
+      supported_lifetimes,
+    ),
+    command:
+      typeof metadata?.command === "string"
+        ? metadata.command
+        : typeof input?.command === "string"
+          ? input.command
+          : undefined,
+    filepath:
+      typeof metadata?.filepath === "string"
+        ? metadata.filepath
+        : typeof metadata?.path === "string"
+          ? metadata.path
+          : patterns?.[0],
     patterns,
   };
+}
+
+function permissionClassLabel(value?: string): string | undefined {
+  switch (value) {
+    case "inspect_read":
+      return "Inspect read";
+    case "workspace_write":
+      return "Workspace write";
+    case "external_access":
+      return "External access";
+    case "dangerous_exec":
+      return "Dangerous execution";
+    default:
+      return value ? value.replaceAll("_", " ") : undefined;
+  }
 }

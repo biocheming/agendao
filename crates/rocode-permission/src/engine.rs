@@ -134,7 +134,26 @@ impl PermissionEngine {
             .find_map(|items| items.get(permission_id).map(|item| &item.info))
     }
 
-    fn to_keys(pattern: Option<&Pattern>, permission_type: &str) -> Vec<String> {
+    fn scope_namespace(permission_class: Option<PermissionClass>, permission_type: &str) -> String {
+        permission_class
+            .map(|class| class.as_str().to_string())
+            .unwrap_or_else(|| permission_type.to_string())
+    }
+
+    fn to_keys(
+        permission_class: Option<PermissionClass>,
+        scope_key: Option<&str>,
+        pattern: Option<&Pattern>,
+        permission_type: &str,
+    ) -> Vec<String> {
+        if let Some(scope_key) = scope_key.filter(|value| !value.trim().is_empty()) {
+            return vec![format!(
+                "{}|{}",
+                Self::scope_namespace(permission_class, permission_type),
+                scope_key
+            )];
+        }
+
         match pattern {
             None => vec![permission_type.to_string()],
             Some(Pattern::Single(s)) => vec![s.clone()],
@@ -159,30 +178,41 @@ impl PermissionEngine {
     pub fn is_approved(
         &self,
         session_id: &str,
+        permission_class: Option<PermissionClass>,
+        scope_key: Option<&str>,
         pattern: Option<&Pattern>,
         permission_type: &str,
     ) -> bool {
         let empty = HashMap::new();
         let approved_for_session = self.approved.get(session_id).unwrap_or(&empty);
-        let keys = Self::to_keys(pattern, permission_type);
+        let keys = Self::to_keys(permission_class, scope_key, pattern, permission_type);
         Self::covered(&keys, approved_for_session)
     }
 
     pub fn is_turn_approved(
         &self,
         session_id: &str,
+        permission_class: Option<PermissionClass>,
+        scope_key: Option<&str>,
         pattern: Option<&Pattern>,
         permission_type: &str,
     ) -> bool {
         let empty = HashMap::new();
         let approved_for_turn = self.turn_approved.get(session_id).unwrap_or(&empty);
-        let keys = Self::to_keys(pattern, permission_type);
+        let keys = Self::to_keys(permission_class, scope_key, pattern, permission_type);
         Self::covered(&keys, approved_for_turn)
     }
 
-    pub fn grant(&mut self, session_id: &str, permission_type: &str, pattern: Option<&Pattern>) {
+    pub fn grant(
+        &mut self,
+        session_id: &str,
+        permission_class: Option<PermissionClass>,
+        scope_key: Option<&str>,
+        permission_type: &str,
+        pattern: Option<&Pattern>,
+    ) {
         let approved_session = self.approved.entry(session_id.to_string()).or_default();
-        for key in Self::to_keys(pattern, permission_type) {
+        for key in Self::to_keys(permission_class, scope_key, pattern, permission_type) {
             approved_session.insert(key, true);
         }
     }
@@ -190,6 +220,8 @@ impl PermissionEngine {
     pub fn grant_turn(
         &mut self,
         session_id: &str,
+        permission_class: Option<PermissionClass>,
+        scope_key: Option<&str>,
         permission_type: &str,
         pattern: Option<&Pattern>,
     ) {
@@ -197,7 +229,7 @@ impl PermissionEngine {
             .turn_approved
             .entry(session_id.to_string())
             .or_default();
-        for key in Self::to_keys(pattern, permission_type) {
+        for key in Self::to_keys(permission_class, scope_key, pattern, permission_type) {
             approved_turn.insert(key, true);
         }
     }
@@ -208,7 +240,7 @@ impl PermissionEngine {
             [single] => Some(Pattern::Single(single.clone())),
             _ => Some(Pattern::Multiple(patterns.to_vec())),
         };
-        self.grant(session_id, permission_type, pattern.as_ref());
+        self.grant(session_id, None, None, permission_type, pattern.as_ref());
     }
 
     pub fn evaluate_tool(
@@ -250,11 +282,23 @@ impl PermissionEngine {
             return Ok(AskOutcome::Granted);
         }
 
-        if self.is_approved(&session_id, info.pattern.as_ref(), &info.permission_type) {
+        if self.is_approved(
+            &session_id,
+            info.permission_class,
+            info.scope_key.as_deref(),
+            info.pattern.as_ref(),
+            &info.permission_type,
+        ) {
             return Ok(AskOutcome::Granted);
         }
 
-        if self.is_turn_approved(&session_id, info.pattern.as_ref(), &info.permission_type) {
+        if self.is_turn_approved(
+            &session_id,
+            info.permission_class,
+            info.scope_key.as_deref(),
+            info.pattern.as_ref(),
+            &info.permission_type,
+        ) {
             return Ok(AskOutcome::Granted);
         }
 
@@ -338,6 +382,8 @@ impl PermissionEngine {
             Response::Always => {
                 self.grant(
                     session_id,
+                    match_item.info.permission_class,
+                    match_item.info.scope_key.as_deref(),
                     &match_item.info.permission_type,
                     match_item.info.pattern.as_ref(),
                 );
@@ -345,6 +391,8 @@ impl PermissionEngine {
             Response::Turn => {
                 self.grant_turn(
                     session_id,
+                    match_item.info.permission_class,
+                    match_item.info.scope_key.as_deref(),
                     &match_item.info.permission_type,
                     match_item.info.pattern.as_ref(),
                 );
@@ -496,6 +544,8 @@ mod tests {
 
         assert!(engine.is_turn_approved(
             "ses_turn",
+            Some(PermissionClass::DangerousExec),
+            Some("cmd:cargo *"),
             Some(&Pattern::Single("cargo test".to_string())),
             "bash"
         ));
@@ -504,9 +554,63 @@ mod tests {
 
         assert!(!engine.is_turn_approved(
             "ses_turn",
+            Some(PermissionClass::DangerousExec),
+            Some("cmd:cargo *"),
             Some(&Pattern::Single("cargo test".to_string())),
             "bash"
         ));
+    }
+
+    #[tokio::test]
+    async fn scope_key_grant_applies_across_different_patterns_in_same_scope() {
+        let mut engine = PermissionEngine::new();
+
+        let first = PermissionInfo {
+            id: "per_scope_a".to_string(),
+            permission_type: "edit".to_string(),
+            pattern: Some(Pattern::Single("/repo/src/a.rs".to_string())),
+            permission_class: Some(PermissionClass::WorkspaceWrite),
+            scope_key: Some("workspace:/src".to_string()),
+            origin_tool: Some("edit".to_string()),
+            supported_lifetimes: vec![
+                PermissionLifetime::Once,
+                PermissionLifetime::Turn,
+                PermissionLifetime::Session,
+            ],
+            session_id: "ses_scope".to_string(),
+            message_id: "msg_scope_a".to_string(),
+            call_id: None,
+            message: "Edit src/a.rs".to_string(),
+            metadata: HashMap::new(),
+            time: TimeInfo { created: 0 },
+        };
+
+        engine.ask(first).await.unwrap();
+        engine
+            .respond("ses_scope", "per_scope_a", Response::Always)
+            .unwrap();
+
+        let second = PermissionInfo {
+            id: "per_scope_b".to_string(),
+            permission_type: "edit".to_string(),
+            pattern: Some(Pattern::Single("/repo/src/b.rs".to_string())),
+            permission_class: Some(PermissionClass::WorkspaceWrite),
+            scope_key: Some("workspace:/src".to_string()),
+            origin_tool: Some("edit".to_string()),
+            supported_lifetimes: vec![
+                PermissionLifetime::Once,
+                PermissionLifetime::Turn,
+                PermissionLifetime::Session,
+            ],
+            session_id: "ses_scope".to_string(),
+            message_id: "msg_scope_b".to_string(),
+            call_id: None,
+            message: "Edit src/b.rs".to_string(),
+            metadata: HashMap::new(),
+            time: TimeInfo { created: 0 },
+        };
+
+        assert!(matches!(engine.ask(second).await, Ok(AskOutcome::Granted)));
     }
 
     #[test]

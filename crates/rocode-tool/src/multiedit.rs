@@ -132,6 +132,7 @@ impl Tool for MultiEditTool {
                 ctx.ask_permission(
                     crate::PermissionRequest::new("external_directory")
                         .with_pattern(format!("{}/*", parent))
+                        .with_scope_key(crate::external_fs_scope_key(&parent))
                         .with_metadata("filepath", serde_json::json!(&file_path_str))
                         .with_metadata("parentDir", serde_json::json!(parent)),
                 )
@@ -183,6 +184,10 @@ impl Tool for MultiEditTool {
                 ctx.ask_permission(
                     PermissionRequest::new("edit")
                         .with_pattern(&file_path_str)
+                        .with_scope_key(crate::workspace_scope_key(
+                            &ctx.project_root,
+                            &file_path_str,
+                        ))
                         .with_metadata("diff", serde_json::json!(diff))
                         .always_allow(),
                 )
