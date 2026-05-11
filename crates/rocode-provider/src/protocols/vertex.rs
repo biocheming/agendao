@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json;
 use std::collections::VecDeque;
 
+use super::request_sanitizer::sanitize_messages_for_protocol;
 use crate::runtime::runtime_pipeline_enabled;
 use crate::{
     ChatRequest, ChatResponse, Choice, Content, ContentPart, Message, ProviderAdapter,
@@ -64,8 +65,12 @@ impl VertexGeminiAdapter {
     fn convert_request(request: ChatRequest) -> VertexRequest {
         let mut contents = Vec::new();
         let mut system_instruction = None;
+        let sanitized = sanitize_messages_for_protocol(
+            &request.messages,
+            super::request_sanitizer::SanitizerOptions::default(),
+        );
 
-        for msg in request.messages {
+        for msg in sanitized {
             match msg.role {
                 Role::System => {
                     if let Content::Text(text) = msg.content {
@@ -472,6 +477,45 @@ fn parse_vertex_sse(data: &str) -> Option<StreamEvent> {
         .clone()?;
 
     Some(StreamEvent::TextDelta(text))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ContentPart;
+    use serde_json::json;
+
+    #[test]
+    fn convert_request_injects_interrupted_tool_result_for_vertex_tool_protocol() {
+        let request = ChatRequest {
+            model: "vertex-test".to_string(),
+            messages: vec![Message::assistant_parts(vec![ContentPart::tool_use(
+                "call-1",
+                "ls",
+                json!({ "path": "." }),
+            )])],
+            max_tokens: Some(512),
+            temperature: None,
+            top_p: None,
+            system: None,
+            tools: None,
+            stream: None,
+            provider_options: None,
+            variant: None,
+        };
+
+        let converted = VertexGeminiAdapter::convert_request(request);
+        assert_eq!(converted.contents.len(), 2);
+        assert_eq!(converted.contents[0].role, "model");
+        assert!(converted.contents[0].parts[0].function_call.is_some());
+        assert_eq!(converted.contents[1].role, "user");
+        assert!(matches!(
+            converted.contents[1].parts[0].function_response.as_ref(),
+            Some(response)
+                if response.name == "call-1"
+                    && response.response == json!({ "content": "[Tool execution was interrupted]" })
+        ));
+    }
 }
 
 fn parse_vertex_sse_line(line: &str) -> Option<StreamEvent> {

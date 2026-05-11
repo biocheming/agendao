@@ -1,29 +1,14 @@
 use serde_json::{json, Map, Value};
-use std::collections::HashSet;
 
+use super::request_sanitizer::{interrupted_tool_result_text, sanitize_messages_for_protocol, SanitizerOptions};
 use super::openai_tool_recovery::normalize_tool_call_arguments_for_request;
 use crate::{ChatRequest, Message, ProviderError, Role};
 
 pub(super) fn to_openai_compatible_chat_messages(messages: &[Message]) -> Vec<Value> {
+    let sanitized = sanitize_messages_for_protocol(messages, SanitizerOptions::default());
     let mut converted = Vec::new();
-    let mut assistant_tool_call_ids: HashSet<String> = HashSet::new();
-    let historical_tool_result_ids: HashSet<String> = messages
-        .iter()
-        .filter(|m| matches!(m.role, Role::Tool))
-        .flat_map(|message| match &message.content {
-            crate::Content::Parts(parts) => parts
-                .iter()
-                .filter_map(|part| {
-                    part.tool_result
-                        .as_ref()
-                        .map(|tool_result| tool_result.tool_use_id.clone())
-                })
-                .collect::<Vec<_>>(),
-            crate::Content::Text(_) => Vec::new(),
-        })
-        .collect();
 
-    for message in messages {
+    for message in &sanitized {
         match message.role {
             Role::System => {
                 converted.push(json!({
@@ -38,34 +23,15 @@ pub(super) fn to_openai_compatible_chat_messages(messages: &[Message]) -> Vec<Va
                 }));
             }
             Role::Assistant => {
-                let (assistant_msg, emitted_tool_calls) = assistant_message_to_openai(message);
-                assistant_tool_call_ids.extend(emitted_tool_calls.iter().cloned());
+                let (assistant_msg, _emitted_tool_calls) = assistant_message_to_openai(message);
                 converted.push(assistant_msg);
-                for tool_call_id in emitted_tool_calls {
-                    if historical_tool_result_ids.contains(&tool_call_id) {
-                        continue;
-                    }
-                    converted.push(interrupted_tool_result_to_openai(&tool_call_id));
-                }
             }
             Role::Tool => {
-                converted.extend(tool_messages_to_openai(
-                    &message.content,
-                    &assistant_tool_call_ids,
-                ));
+                converted.extend(tool_messages_to_openai(&message.content));
             }
         }
     }
-
     converted
-}
-
-fn interrupted_tool_result_to_openai(tool_call_id: &str) -> Value {
-    json!({
-        "role": "tool",
-        "tool_call_id": tool_call_id,
-        "content": "[Tool execution was interrupted]",
-    })
 }
 
 fn content_text_lossy(content: &crate::Content) -> String {
@@ -243,7 +209,6 @@ fn assistant_message_to_openai(message: &Message) -> (Value, Vec<String>) {
 
 fn tool_messages_to_openai(
     content: &crate::Content,
-    assistant_tool_call_ids: &HashSet<String>,
 ) -> Vec<Value> {
     match content {
         crate::Content::Text(text) => {
@@ -260,17 +225,14 @@ fn tool_messages_to_openai(
             let mut messages = Vec::new();
             for part in parts {
                 if let Some(tool_result) = &part.tool_result {
-                    if !assistant_tool_call_ids.contains(&tool_result.tool_use_id) {
-                        tracing::warn!(
-                            tool_call_id = %tool_result.tool_use_id,
-                            "dropping orphan historical tool message without matching assistant tool_call"
-                        );
-                        continue;
-                    }
                     messages.push(json!({
                         "role": "tool",
                         "tool_call_id": tool_result.tool_use_id,
-                        "content": tool_result.content,
+                        "content": if tool_result.content == interrupted_tool_result_text() {
+                            interrupted_tool_result_text().to_string()
+                        } else {
+                            tool_result.content.clone()
+                        },
                     }));
                 } else if let Some(text) = &part.text {
                     if !text.is_empty() {

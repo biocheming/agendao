@@ -8,6 +8,10 @@ use tracing;
 
 use crate::bootstrap::should_use_copilot_responses_api;
 use crate::custom_fetch::get_custom_fetch_proxy;
+use super::request_sanitizer::{
+    content_visible_text_lossy, sanitize_messages_for_protocol, sanitize_messages_for_text_protocol,
+    SanitizerOptions,
+};
 use crate::responses::{
     FinishReason, GenerateOptions, OpenAIResponsesConfig, OpenAIResponsesLanguageModel,
     ResponsesProviderOptions, StreamOptions,
@@ -72,8 +76,7 @@ impl GitHubCopilotCloseAiAdapter {
     }
 
     fn convert_request(request: ChatRequest) -> CopilotRequest {
-        let messages: Vec<CopilotMessage> = request
-            .messages
+        let messages: Vec<CopilotMessage> = sanitize_messages_for_text_protocol(&request.messages)
             .into_iter()
             .map(|msg| CopilotMessage {
                 role: match msg.role {
@@ -85,30 +88,16 @@ impl GitHubCopilotCloseAiAdapter {
                 content: match msg.content {
                     Content::Text(t) => CopilotContent::Text(t),
                     Content::Parts(parts) => {
-                        let contents: Vec<CopilotContentPart> = parts
-                            .into_iter()
-                            .filter_map(|p| {
-                                if let Some(text) = p.text {
-                                    Some(CopilotContentPart {
-                                        content_type: "text".to_string(),
-                                        text: Some(text),
-                                        image_url: p
-                                            .image_url
-                                            .map(|iu| CopilotImageUrl { url: iu.url }),
-                                    })
-                                } else if p.image_url.is_some() {
-                                    Some(CopilotContentPart {
-                                        content_type: "image_url".to_string(),
-                                        text: None,
-                                        image_url: p
-                                            .image_url
-                                            .map(|iu| CopilotImageUrl { url: iu.url }),
-                                    })
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
+                        let visible_text = content_visible_text_lossy(&Content::Parts(parts));
+                        let contents: Vec<CopilotContentPart> = if visible_text.is_empty() {
+                            Vec::new()
+                        } else {
+                            vec![CopilotContentPart {
+                                content_type: "text".to_string(),
+                                text: Some(visible_text),
+                                image_url: None,
+                            }]
+                        };
                         CopilotContent::Parts(contents)
                     }
                 },
@@ -184,7 +173,12 @@ impl GitHubCopilotCloseAiAdapter {
         request: &ChatRequest,
         _config: &ProviderConfig,
     ) -> GenerateOptions {
-        let mut prompt = request.messages.clone();
+        let mut prompt = sanitize_messages_for_protocol(
+            &request.messages,
+            SanitizerOptions {
+                drop_thinking_only_assistant: false,
+            },
+        );
         if let Some(system) = &request.system {
             let has_system = prompt.iter().any(|m| matches!(m.role, Role::System));
             if !has_system {
@@ -722,8 +716,10 @@ mod tests {
         register_custom_fetch_proxy, unregister_custom_fetch_proxy, CustomFetchProxy,
         CustomFetchRequest, CustomFetchResponse, CustomFetchStreamResponse,
     };
+    use crate::ContentPart;
     use async_trait::async_trait;
     use futures::stream;
+    use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -758,6 +754,67 @@ mod tests {
     fn select_route_uses_responses_for_gpt5_models() {
         assert_eq!(select_copilot_route("gpt-5"), CopilotRoute::Responses);
         assert_eq!(select_copilot_route("gpt-5-codex"), CopilotRoute::Responses);
+    }
+
+    #[test]
+    fn convert_request_drops_tool_only_history_from_text_protocol() {
+        let request = ChatRequest {
+            model: "copilot-test".to_string(),
+            messages: vec![
+                Message::user("before"),
+                Message::assistant_parts(vec![ContentPart::tool_use("call-1", "ls", json!({}))]),
+                Message::tool_parts(vec![ContentPart::tool_result("call-1", "ok", None)]),
+                Message::user("after"),
+            ],
+            max_tokens: Some(512),
+            temperature: None,
+            top_p: None,
+            system: None,
+            tools: None,
+            stream: None,
+            provider_options: None,
+            variant: None,
+        };
+
+        let converted = GitHubCopilotCloseAiAdapter::convert_request(request);
+        assert_eq!(converted.messages.len(), 1);
+        assert_eq!(converted.messages[0].role, "user");
+        match &converted.messages[0].content {
+            CopilotContent::Text(text) => assert_eq!(text, "before\n\nafter"),
+            CopilotContent::Parts(parts) => {
+                assert_eq!(parts.len(), 1);
+                assert_eq!(parts[0].text.as_deref(), Some("before\n\nafter"));
+            }
+        }
+    }
+
+    #[test]
+    fn responses_generate_options_preserve_tool_continuity_stub() {
+        let request = ChatRequest {
+            model: "gpt-5".to_string(),
+            messages: vec![Message::assistant_parts(vec![ContentPart::tool_use(
+                "call-1",
+                "ls",
+                json!({ "path": "." }),
+            )])],
+            max_tokens: Some(512),
+            temperature: None,
+            top_p: None,
+            system: None,
+            tools: None,
+            stream: None,
+            provider_options: None,
+            variant: None,
+        };
+
+        let options = GitHubCopilotCloseAiAdapter::responses_generate_options(
+            &request,
+            &ProviderConfig::new("github-copilot", "", "test-key"),
+        );
+
+        assert_eq!(options.prompt.len(), 2);
+        assert!(matches!(options.prompt[0].role, Role::Assistant));
+        assert!(matches!(options.prompt[1].role, Role::Tool));
     }
 
     #[test]

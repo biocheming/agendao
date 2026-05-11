@@ -3,6 +3,7 @@ use futures::StreamExt;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
+use super::request_sanitizer::{content_visible_text_lossy, sanitize_messages_for_text_protocol};
 use crate::{
     ChatRequest, ChatResponse, Choice, Content, Message, ProviderAdapter, ProviderConfig,
     ProviderError, Role, StreamEvent, StreamResult, Usage,
@@ -63,8 +64,9 @@ impl BedrockConverseAdapter {
     fn convert_request(request: ChatRequest) -> BedrockConverseRequest {
         let mut messages = Vec::new();
         let mut system = Vec::new();
+        let sanitized = sanitize_messages_for_text_protocol(&request.messages);
 
-        for msg in request.messages {
+        for msg in sanitized {
             match msg.role {
                 Role::System => {
                     if let Content::Text(text) = msg.content {
@@ -72,26 +74,16 @@ impl BedrockConverseAdapter {
                     }
                 }
                 Role::User => {
-                    let content = match msg.content {
-                        Content::Text(t) => vec![BedrockContentBlock::text(&t)],
-                        Content::Parts(parts) => parts
-                            .iter()
-                            .filter_map(|p| p.text.as_ref().map(|t| BedrockContentBlock::text(t)))
-                            .collect(),
-                    };
+                    let text = content_visible_text_lossy(&msg.content);
+                    let content = vec![BedrockContentBlock::text(&text)];
                     messages.push(BedrockMessage {
                         role: "user".to_string(),
                         content,
                     });
                 }
                 Role::Assistant => {
-                    let content = match msg.content {
-                        Content::Text(t) => vec![BedrockContentBlock::text(&t)],
-                        Content::Parts(parts) => parts
-                            .iter()
-                            .filter_map(|p| p.text.as_ref().map(|t| BedrockContentBlock::text(t)))
-                            .collect(),
-                    };
+                    let text = content_visible_text_lossy(&msg.content);
+                    let content = vec![BedrockContentBlock::text(&text)];
                     messages.push(BedrockMessage {
                         role: "assistant".to_string(),
                         content,
@@ -415,6 +407,8 @@ fn parse_bedrock_stream(text: &str) -> Result<StreamEvent, ProviderError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ContentPart, Message};
+    use serde_json::json;
 
     #[test]
     fn endpoint_url_and_signing_path_respects_custom_endpoint_prefix() {
@@ -472,5 +466,31 @@ mod tests {
                 .unwrap(),
             "localhost:4566"
         );
+    }
+
+    #[test]
+    fn convert_request_drops_tool_only_history_from_text_protocol() {
+        let request = ChatRequest {
+            model: "bedrock-test".to_string(),
+            messages: vec![
+                Message::user("before"),
+                Message::assistant_parts(vec![ContentPart::tool_use("call-1", "ls", json!({}))]),
+                Message::tool_parts(vec![ContentPart::tool_result("call-1", "ok", None)]),
+                Message::user("after"),
+            ],
+            max_tokens: Some(512),
+            temperature: None,
+            top_p: None,
+            system: None,
+            tools: None,
+            stream: None,
+            provider_options: None,
+            variant: None,
+        };
+
+        let converted = BedrockConverseAdapter::convert_request(request);
+        assert_eq!(converted.messages.len(), 1);
+        assert_eq!(converted.messages[0].role, "user");
+        assert_eq!(converted.messages[0].content[0].text, "before\n\nafter");
     }
 }

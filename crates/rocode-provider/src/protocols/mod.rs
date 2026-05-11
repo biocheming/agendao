@@ -8,6 +8,7 @@ mod openai_request_body;
 mod openai_response;
 mod openai_tool_recovery;
 mod openai_usage;
+mod request_sanitizer;
 mod vertex;
 
 use std::sync::Arc;

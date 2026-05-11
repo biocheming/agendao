@@ -3,6 +3,7 @@ use futures::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
+use super::request_sanitizer::{content_visible_text_lossy, sanitize_messages_for_text_protocol};
 use crate::runtime::runtime_pipeline_enabled;
 use crate::{
     ChatRequest, ChatResponse, Choice, Content, Message, ProviderAdapter, ProviderConfig,
@@ -27,8 +28,9 @@ impl GeminiAdapter {
     fn convert_request(request: ChatRequest) -> GoogleRequest {
         let mut contents = Vec::new();
         let mut system_instruction = None;
+        let sanitized = sanitize_messages_for_text_protocol(&request.messages);
 
-        for msg in request.messages {
+        for msg in sanitized {
             match msg.role {
                 Role::System => {
                     if let Content::Text(text) = msg.content {
@@ -39,28 +41,14 @@ impl GeminiAdapter {
                     }
                 }
                 Role::User => {
-                    let text_content = match &msg.content {
-                        Content::Text(t) => t.clone(),
-                        Content::Parts(parts) => parts
-                            .iter()
-                            .filter_map(|p| p.text.clone())
-                            .collect::<Vec<_>>()
-                            .join(" "),
-                    };
+                    let text_content = content_visible_text_lossy(&msg.content);
                     contents.push(GoogleContent {
                         parts: vec![GooglePart::text(&text_content)],
                         role: "user".to_string(),
                     });
                 }
                 Role::Assistant => {
-                    let text_content = match &msg.content {
-                        Content::Text(t) => t.clone(),
-                        Content::Parts(parts) => parts
-                            .iter()
-                            .filter_map(|p| p.text.clone())
-                            .collect::<Vec<_>>()
-                            .join(" "),
-                    };
+                    let text_content = content_visible_text_lossy(&msg.content);
                     contents.push(GoogleContent {
                         parts: vec![GooglePart::text(&text_content)],
                         role: "model".to_string(),
@@ -356,4 +344,61 @@ fn drain_google_sse_events(buffer: &mut String, flush: bool) -> Vec<StreamEvent>
     }
 
     events
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ContentPart;
+    use serde_json::json;
+
+    #[test]
+    fn convert_request_drops_tool_only_history_from_text_protocol() {
+        let request = ChatRequest {
+            model: "gemini-test".to_string(),
+            messages: vec![
+                Message::user("before"),
+                Message::assistant_parts(vec![ContentPart::tool_use("call-1", "ls", json!({}))]),
+                Message::tool_parts(vec![ContentPart::tool_result("call-1", "ok", None)]),
+                Message::user("after"),
+            ],
+            max_tokens: Some(512),
+            temperature: None,
+            top_p: None,
+            system: None,
+            tools: None,
+            stream: None,
+            provider_options: None,
+            variant: None,
+        };
+
+        let converted = GeminiAdapter::convert_request(request);
+        assert_eq!(converted.contents.len(), 1);
+        assert_eq!(converted.contents[0].role, "user");
+        assert_eq!(converted.contents[0].parts[0].text.as_deref(), Some("before\n\nafter"));
+    }
+
+    #[test]
+    fn convert_request_drops_thinking_only_assistant_from_text_protocol() {
+        let request = ChatRequest {
+            model: "gemini-test".to_string(),
+            messages: vec![
+                Message::user("first"),
+                Message::assistant_parts(vec![ContentPart::reasoning("hidden")]),
+                Message::user("second"),
+            ],
+            max_tokens: Some(512),
+            temperature: None,
+            top_p: None,
+            system: None,
+            tools: None,
+            stream: None,
+            provider_options: None,
+            variant: None,
+        };
+
+        let converted = GeminiAdapter::convert_request(request);
+        assert_eq!(converted.contents.len(), 1);
+        assert_eq!(converted.contents[0].parts[0].text.as_deref(), Some("first\n\nsecond"));
+    }
 }
