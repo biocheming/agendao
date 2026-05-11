@@ -45,6 +45,7 @@ type LegacyToolResultMap = HashMap<String, LegacyToolResult>;
 const CONTEXT_AUTO_COMPACT_THRESHOLD_PERCENT: u64 = 90;
 const AUTO_COMPACTION_RECENT_WINDOW_MESSAGES: usize = 12;
 const AUTO_COMPACTION_MIN_MESSAGES_AFTER_LAST: usize = 4;
+const AUTO_COMPACTION_MIN_USER_TURNS_AFTER_LAST: usize = 1;
 pub(super) const FORCE_COMPACTION_MIN_MESSAGES: usize = 2;
 const AUTO_COMPACTION_MIN_MESSAGES: usize = 10;
 const MAX_BODY_CHARS: usize = 5_000_000;
@@ -52,6 +53,9 @@ const MAX_CONTEXT_CHARS: usize = 200_000;
 const COMPACTION_CONTINUITY_RECENT_TAIL_MESSAGES: usize = 6;
 const COMPACTION_CONTINUITY_CONTEXT_TEXT_LIMIT: usize = 6_000;
 const COMPACTION_CONTINUITY_TURN_TEXT_LIMIT: usize = 1_200;
+const LIGHTWEIGHT_TOOL_RESULT_TRIM_SNIPPET_CHARS: usize = 240;
+const LIGHTWEIGHT_TOOL_RESULT_TRIM_MIN_TOKENS: usize = 4_000;
+const LIGHTWEIGHT_TOOL_RESULT_TRIM_TARGET_TOKENS: usize = 12_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CompactionAssessment {
@@ -732,6 +736,14 @@ impl SessionPrompt {
         if messages_since_last < AUTO_COMPACTION_MIN_MESSAGES_AFTER_LAST {
             return true;
         }
+        let user_turns_since_last = messages
+            .iter()
+            .skip(last_compaction_index + 1)
+            .filter(|message| matches!(message.role, MessageRole::User))
+            .count();
+        if user_turns_since_last < AUTO_COMPACTION_MIN_USER_TURNS_AFTER_LAST {
+            return true;
+        }
 
         messages
             .iter()
@@ -745,6 +757,95 @@ impl SessionPrompt {
             })
             .count()
             >= 2
+    }
+
+    fn lightweight_trim_tool_result_content(
+        content: &str,
+        tool_name: Option<&str>,
+        tool_call_id: &str,
+    ) -> Option<String> {
+        let estimated_tokens = content.chars().count() / 4;
+        if estimated_tokens < LIGHTWEIGHT_TOOL_RESULT_TRIM_MIN_TOKENS {
+            return None;
+        }
+
+        let snippet: String = content
+            .chars()
+            .take(LIGHTWEIGHT_TOOL_RESULT_TRIM_SNIPPET_CHARS)
+            .collect();
+        let snippet = snippet.trim();
+        let tool_name = tool_name.unwrap_or("tool");
+
+        Some(format!(
+            "[tool result collapsed before compaction: tool={tool_name}, call_id={tool_call_id}, original_tokens~{estimated_tokens}]\n{snippet}"
+        ))
+    }
+
+    pub(crate) fn apply_lightweight_tool_result_trim(session: &mut Session) -> bool {
+        let mut tool_name_by_call: HashMap<String, String> = HashMap::new();
+        for message in &session.messages {
+            for part in &message.parts {
+                if let PartType::ToolCall { id, name, .. } = &part.part_type {
+                    tool_name_by_call.insert(id.clone(), name.clone());
+                }
+            }
+        }
+
+        let last_user_index = session
+            .messages
+            .iter()
+            .rposition(|message| matches!(message.role, MessageRole::User));
+
+        let mut trimmed_tokens = 0usize;
+        let mut changed = false;
+
+        for (message_index, message) in session.messages_mut().iter_mut().enumerate() {
+            if last_user_index.is_some_and(|idx| message_index >= idx) {
+                continue;
+            }
+            for part in &mut message.parts {
+                let PartType::ToolResult {
+                    tool_call_id,
+                    content,
+                    ..
+                } = &mut part.part_type
+                else {
+                    continue;
+                };
+
+                if content.starts_with("[tool result compacted]")
+                    || content.starts_with("[tool result collapsed before compaction:")
+                {
+                    continue;
+                }
+
+                let Some(trimmed) = Self::lightweight_trim_tool_result_content(
+                    content,
+                    tool_name_by_call.get(tool_call_id).map(String::as_str),
+                    tool_call_id,
+                ) else {
+                    continue;
+                };
+
+                trimmed_tokens += content.chars().count() / 4;
+                *content = trimmed;
+                changed = true;
+
+                if trimmed_tokens >= LIGHTWEIGHT_TOOL_RESULT_TRIM_TARGET_TOKENS {
+                    break;
+                }
+            }
+
+            if trimmed_tokens >= LIGHTWEIGHT_TOOL_RESULT_TRIM_TARGET_TOKENS {
+                break;
+            }
+        }
+
+        if changed {
+            session.touch();
+        }
+
+        changed
     }
 
     fn provider_content_part_char_len(part: &ContentPart) -> usize {
@@ -2595,6 +2696,92 @@ mod tests {
 
         assert_eq!(assessment.reason, "request_view_threshold");
         assert_eq!(assessment.body_chars, Some(152_000));
+    }
+
+    #[test]
+    fn assess_compaction_backs_off_until_new_user_turn_after_compaction() {
+        let provider = StaticModelProvider::with_model("test-model", 200_000, 8_192);
+        let mut compaction_message = SessionMessage::assistant("ses_test");
+        compaction_message.parts.push(crate::MessagePart {
+            id: "prt_compaction".to_string(),
+            part_type: PartType::Compaction {
+                summary: "summary".to_string(),
+            },
+            created_at: chrono::Utc::now(),
+            message_id: None,
+        });
+
+        let mut assistant_after = SessionMessage::assistant("ses_test");
+        assistant_after.add_text(&"A".repeat(240_000));
+
+        let messages = vec![compaction_message, assistant_after];
+        let assessment = SessionPrompt::assess_compaction(
+            &messages,
+            &provider,
+            "test-model",
+            None,
+            &CompactionConfig::default(),
+            Some(180_000),
+            None,
+            None,
+        );
+
+        assert!(
+            assessment.is_none(),
+            "auto full compaction should back off until a new user turn exists"
+        );
+    }
+
+    #[test]
+    fn lightweight_tool_trim_skips_latest_user_turn_and_collapses_old_tool_results() {
+        let mut session = Session::new("proj", ".");
+        let session_id = session.id.clone();
+
+        session
+            .messages_mut()
+            .push(SessionMessage::user(session_id.clone(), "earlier user"));
+        let mut old_assistant = SessionMessage::assistant(session_id.clone());
+        old_assistant.add_tool_call(
+            "call_old",
+            "bash",
+            serde_json::json!({"command": "npm test"}),
+        );
+        old_assistant.add_tool_result("call_old", &"X".repeat(20_000), false);
+        session.messages_mut().push(old_assistant);
+
+        session
+            .messages_mut()
+            .push(SessionMessage::user(session_id.clone(), "latest user"));
+        let mut latest_assistant = SessionMessage::assistant(session_id.clone());
+        latest_assistant.add_tool_call(
+            "call_new",
+            "bash",
+            serde_json::json!({"command": "npm run build"}),
+        );
+        latest_assistant.add_tool_result("call_new", &"Y".repeat(20_000), false);
+        session.messages_mut().push(latest_assistant);
+
+        let changed = SessionPrompt::apply_lightweight_tool_result_trim(&mut session);
+        assert!(changed, "expected old tool result to be collapsed");
+
+        let tool_results: Vec<String> = session
+            .messages
+            .iter()
+            .flat_map(|message| message.parts.iter())
+            .filter_map(|part| match &part.part_type {
+                PartType::ToolResult { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            tool_results[0].starts_with("[tool result collapsed before compaction:"),
+            "older tool result should be replaced with a lightweight collapse marker"
+        );
+        assert!(
+            !tool_results[1].starts_with("[tool result collapsed before compaction:"),
+            "latest user turn's tool result must remain raw"
+        );
     }
 
     #[test]
