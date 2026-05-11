@@ -57,6 +57,7 @@ const LIGHTWEIGHT_TOOL_RESULT_TRIM_SNIPPET_CHARS: usize = 240;
 const LIGHTWEIGHT_TOOL_RESULT_TRIM_MIN_TOKENS: usize = 4_000;
 const LIGHTWEIGHT_TOOL_RESULT_TRIM_TARGET_TOKENS: usize = 12_000;
 const LIGHTWEIGHT_TOOL_CALL_TRIM_TARGET_TOKENS: usize = 4_000;
+const LIGHTWEIGHT_TOOL_ROUND_TRIM_MAX_RESULTS: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CompactionAssessment {
@@ -804,6 +805,84 @@ impl SessionPrompt {
         ))
     }
 
+    fn tool_round_calls(message: &SessionMessage) -> Vec<(String, String, serde_json::Value)> {
+        message
+            .parts
+            .iter()
+            .filter_map(|part| match &part.part_type {
+                PartType::ToolCall {
+                    id, name, input, ..
+                } => Some((id.clone(), name.clone(), input.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn tool_round_results(message: &SessionMessage) -> Vec<(String, String, bool)> {
+        message
+            .parts
+            .iter()
+            .filter_map(|part| match &part.part_type {
+                PartType::ToolResult {
+                    tool_call_id,
+                    content,
+                    is_error,
+                    ..
+                } => Some((tool_call_id.clone(), content.clone(), *is_error)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn collapsed_tool_round_summary(
+        calls: &[(String, String, serde_json::Value)],
+        results: &[(String, String, bool)],
+    ) -> Option<(String, Option<String>, usize, usize)> {
+        if calls.is_empty() {
+            return None;
+        }
+
+        let mut call_texts = Vec::new();
+        let mut result_texts = Vec::new();
+        let mut call_tokens = 0usize;
+        let mut result_tokens = 0usize;
+
+        for (call_id, tool_name, input) in calls {
+            let Some(text) = Self::lightweight_trim_tool_call_text(tool_name, call_id, input)
+            else {
+                continue;
+            };
+            call_tokens +=
+                serde_json::to_string(input).map_or(0, |value| value.chars().count() / 4);
+            call_texts.push(text);
+        }
+
+        for (call_id, content, is_error) in
+            results.iter().take(LIGHTWEIGHT_TOOL_ROUND_TRIM_MAX_RESULTS)
+        {
+            let tool_name = calls
+                .iter()
+                .find(|(candidate_id, _, _)| candidate_id == call_id)
+                .map(|(_, name, _)| name.as_str());
+            let Some(text) =
+                Self::lightweight_trim_tool_result_content(content, tool_name, call_id)
+            else {
+                continue;
+            };
+            result_tokens += content.chars().count() / 4;
+            let prefix = if *is_error { "[error] " } else { "" };
+            result_texts.push(format!("{prefix}{text}"));
+        }
+
+        if call_texts.is_empty() && result_texts.is_empty() {
+            return None;
+        }
+
+        let assistant_summary = call_texts.join("\n");
+        let tool_summary = (!result_texts.is_empty()).then(|| result_texts.join("\n"));
+        Some((assistant_summary, tool_summary, call_tokens, result_tokens))
+    }
+
     pub(crate) fn apply_lightweight_tool_result_trim(session: &mut Session) -> bool {
         let mut tool_name_by_call: HashMap<String, String> = HashMap::new();
         for message in &session.messages {
@@ -822,6 +901,68 @@ impl SessionPrompt {
         let mut trimmed_tokens = 0usize;
         let mut trimmed_tool_call_tokens = 0usize;
         let mut changed = false;
+        let mut message_index = 0usize;
+
+        while message_index < session.messages.len() {
+            if last_user_index.is_some_and(|idx| message_index >= idx) {
+                break;
+            }
+
+            let calls = Self::tool_round_calls(&session.messages[message_index]);
+            if calls.is_empty() {
+                message_index += 1;
+                continue;
+            }
+
+            let next_index = message_index + 1;
+            let results = session
+                .messages
+                .get(next_index)
+                .filter(|message| matches!(message.role, MessageRole::Tool))
+                .map(Self::tool_round_results)
+                .unwrap_or_default();
+
+            if let Some((assistant_summary, tool_summary, call_tokens, result_tokens)) =
+                Self::collapsed_tool_round_summary(&calls, &results)
+            {
+                if call_tokens > 0
+                    && trimmed_tool_call_tokens < LIGHTWEIGHT_TOOL_CALL_TRIM_TARGET_TOKENS
+                {
+                    let assistant_message = &mut session.messages_mut()[message_index];
+                    assistant_message
+                        .parts
+                        .retain(|part| !matches!(part.part_type, PartType::ToolCall { .. }));
+                    assistant_message.add_text(assistant_summary);
+                    assistant_message.mark_text_parts_synthetic();
+                    trimmed_tool_call_tokens += call_tokens;
+                    changed = true;
+                }
+
+                if let Some(tool_summary) = tool_summary {
+                    if result_tokens > 0
+                        && trimmed_tokens < LIGHTWEIGHT_TOOL_RESULT_TRIM_TARGET_TOKENS
+                    {
+                        if let Some(tool_message) = session.messages_mut().get_mut(next_index) {
+                            tool_message.parts.retain(|part| {
+                                !matches!(part.part_type, PartType::ToolResult { .. })
+                            });
+                            tool_message.add_text(tool_summary);
+                            tool_message.mark_text_parts_synthetic();
+                            trimmed_tokens += result_tokens;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+
+            if trimmed_tokens >= LIGHTWEIGHT_TOOL_RESULT_TRIM_TARGET_TOKENS
+                && trimmed_tool_call_tokens >= LIGHTWEIGHT_TOOL_CALL_TRIM_TARGET_TOKENS
+            {
+                break;
+            }
+
+            message_index += 1;
+        }
 
         for (message_index, message) in session.messages_mut().iter_mut().enumerate() {
             if last_user_index.is_some_and(|idx| message_index >= idx) {
@@ -2851,6 +2992,47 @@ mod tests {
             old_parts.first().map(|part| &part.part_type),
             Some(PartType::Text { text, synthetic, .. })
                 if text.starts_with("[tool call collapsed before compaction:")
+                    && synthetic == &Some(true)
+        ));
+    }
+
+    #[test]
+    fn lightweight_tool_trim_collapses_assistant_and_tool_round_together() {
+        let mut session = Session::new("proj", ".");
+        let session_id = session.id.clone();
+
+        session
+            .messages_mut()
+            .push(SessionMessage::user(session_id.clone(), "earlier user"));
+        let mut assistant = SessionMessage::assistant(session_id.clone());
+        assistant.add_tool_call(
+            "call_round",
+            "write_file",
+            serde_json::json!({"path": "src/main.rs", "content": "Q".repeat(30_000)}),
+        );
+        session.messages_mut().push(assistant);
+
+        let mut tool = SessionMessage::tool(session_id.clone());
+        tool.add_tool_result("call_round", &"R".repeat(20_000), false);
+        session.messages_mut().push(tool);
+
+        session
+            .messages_mut()
+            .push(SessionMessage::user(session_id.clone(), "latest user"));
+
+        let changed = SessionPrompt::apply_lightweight_tool_result_trim(&mut session);
+        assert!(changed, "expected old assistant/tool round to be collapsed");
+
+        assert!(matches!(
+            session.messages[1].parts.last().map(|part| &part.part_type),
+            Some(PartType::Text { text, synthetic, .. })
+                if text.starts_with("[tool call collapsed before compaction:")
+                    && synthetic == &Some(true)
+        ));
+        assert!(matches!(
+            session.messages[2].parts.last().map(|part| &part.part_type),
+            Some(PartType::Text { text, synthetic, .. })
+                if text.starts_with("[tool result collapsed before compaction:")
                     && synthetic == &Some(true)
         ));
     }
