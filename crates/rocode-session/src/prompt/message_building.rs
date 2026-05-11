@@ -2520,6 +2520,48 @@ mod tests {
     }
 
     #[test]
+    fn continuity_allowed_message_ids_excludes_projected_tail_turns() {
+        let packet = SessionContinuityPacket {
+            exact_recent_tail: vec![
+                SessionContinuityTurn {
+                    message_id: "msg_user".to_string(),
+                    role: "user".to_string(),
+                    text: "latest question".to_string(),
+                    projected: false,
+                },
+                SessionContinuityTurn {
+                    message_id: "msg_projected_assistant".to_string(),
+                    role: "assistant".to_string(),
+                    text: "projected assistant output".to_string(),
+                    projected: true,
+                },
+            ],
+            continuation_dependencies: vec![SessionContinuityDependency {
+                kind: SessionContinuityDependencyKind::AssistantToolCallContinuation,
+                anchor_message_id: Some("msg_user".to_string()),
+                message_ids: vec![
+                    "msg_user".to_string(),
+                    "msg_assistant_tool".to_string(),
+                    "msg_tool_result".to_string(),
+                ],
+            }],
+            latest_compaction_summary: Some(SessionContinuityCompactionSummary {
+                message_id: "msg_compact".to_string(),
+                summary: "summary".to_string(),
+            }),
+            ..SessionContinuityPacket::default()
+        };
+
+        let allowed = packet.allowed_message_ids();
+
+        assert!(allowed.contains(&"msg_user".to_string()));
+        assert!(allowed.contains(&"msg_assistant_tool".to_string()));
+        assert!(allowed.contains(&"msg_tool_result".to_string()));
+        assert!(allowed.contains(&"msg_compact".to_string()));
+        assert!(!allowed.contains(&"msg_projected_assistant".to_string()));
+    }
+
+    #[test]
     fn assess_compaction_prefers_request_view_thresholds() {
         let provider = StaticModelProvider {
             model: Some(ModelInfo {

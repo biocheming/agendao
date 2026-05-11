@@ -881,6 +881,7 @@ impl SessionContinuityPacket {
         let mut ids = self
             .exact_recent_tail
             .iter()
+            .filter(|turn| !turn.projected)
             .map(|turn| turn.message_id.clone())
             .collect::<Vec<_>>();
         ids.extend(

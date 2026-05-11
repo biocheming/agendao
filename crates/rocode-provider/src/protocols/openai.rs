@@ -9,6 +9,7 @@ use tracing;
 
 use super::openai_request_body::{build_request_body, openai_reasoning_effort};
 use super::openai_response::{reassemble_sse_chunks, RawChatResponse};
+use super::request_sanitizer::{sanitize_messages_for_protocol, SanitizerOptions};
 use crate::custom_fetch::get_custom_fetch_proxy;
 use crate::responses::*;
 use crate::runtime::runtime_pipeline_enabled;
@@ -352,7 +353,12 @@ fn responses_chat_response(
 }
 
 fn responses_generate_options(_config: &ProviderConfig, request: &ChatRequest) -> GenerateOptions {
-    let mut prompt = request.messages.clone();
+    let mut prompt = sanitize_messages_for_protocol(
+        &request.messages,
+        SanitizerOptions {
+            drop_thinking_only_assistant: false,
+        },
+    );
     if let Some(system) = &request.system {
         let has_system = prompt.iter().any(|m| matches!(m.role, Role::System));
         if !has_system {
@@ -1168,6 +1174,74 @@ mod tests {
     }
 
     #[test]
+    fn injects_interrupted_tool_result_per_assistant_segment_even_with_reused_call_id() {
+        let first_assistant = Message {
+            role: Role::Assistant,
+            content: crate::Content::Parts(vec![crate::ContentPart {
+                content_type: "tool_use".to_string(),
+                tool_use: Some(crate::ToolUse {
+                    id: "tool-call-0".to_string(),
+                    name: "invalid".to_string(),
+                    input: serde_json::json!({ "tool": "skill_manage" }),
+                }),
+                ..Default::default()
+            }]),
+            cache_control: None,
+            provider_options: None,
+        };
+
+        let user = Message::user("follow up");
+
+        let second_assistant = Message {
+            role: Role::Assistant,
+            content: crate::Content::Parts(vec![crate::ContentPart {
+                content_type: "tool_use".to_string(),
+                tool_use: Some(crate::ToolUse {
+                    id: "tool-call-0".to_string(),
+                    name: "skills_list".to_string(),
+                    input: serde_json::json!({}),
+                }),
+                ..Default::default()
+            }]),
+            cache_control: None,
+            provider_options: None,
+        };
+
+        let second_tool_result = Message {
+            role: Role::Tool,
+            content: crate::Content::Parts(vec![crate::ContentPart {
+                content_type: "tool_result".to_string(),
+                tool_result: Some(crate::ToolResult {
+                    tool_use_id: "tool-call-0".to_string(),
+                    content: "<available_skills />".to_string(),
+                    is_error: Some(false),
+                }),
+                ..Default::default()
+            }]),
+            cache_control: None,
+            provider_options: None,
+        };
+
+        let converted = to_openai_compatible_chat_messages(&[
+            first_assistant,
+            user,
+            second_assistant,
+            second_tool_result,
+        ]);
+
+        assert_eq!(converted.len(), 5);
+        assert_eq!(converted[0]["role"], "assistant");
+        assert_eq!(converted[1]["role"], "tool");
+        assert_eq!(converted[1]["tool_call_id"], "tool-call-0");
+        assert_eq!(converted[1]["content"], "[Tool execution was interrupted]");
+        assert_eq!(converted[2]["role"], "user");
+        assert_eq!(converted[3]["role"], "assistant");
+        assert_eq!(converted[4]["role"], "tool");
+        assert_eq!(converted[4]["tool_call_id"], "tool-call-0");
+        assert_eq!(converted[4]["content"], "<available_skills />");
+    }
+
+    #[test]
     fn raw_chat_response_parses_valid_tool_arguments_as_object() {
         let raw = RawChatResponse {
             id: Some("resp_1".to_string()),
@@ -1460,6 +1534,31 @@ mod tests {
         let provider_options = options.provider_options.expect("provider options");
         assert_eq!(provider_options.reasoning_effort.as_deref(), Some("medium"));
         assert_eq!(provider_options.reasoning_summary.as_deref(), Some("auto"));
+    }
+
+    #[test]
+    fn responses_generate_options_preserve_tool_continuity_stub() {
+        let request = ChatRequest {
+            model: "gpt-5".to_string(),
+            messages: vec![Message::assistant_parts(vec![crate::ContentPart::tool_use(
+                "call-1",
+                "ls",
+                json!({ "path": "." }),
+            )])],
+            system: None,
+            tools: None,
+            max_tokens: Some(512),
+            temperature: None,
+            top_p: None,
+            stream: None,
+            provider_options: None,
+            variant: None,
+        };
+
+        let options = responses_generate_options(&ProviderConfig::new("openai", "", ""), &request);
+        assert_eq!(options.prompt.len(), 2);
+        assert!(matches!(options.prompt[0].role, Role::Assistant));
+        assert!(matches!(options.prompt[1].role, Role::Tool));
     }
 
     #[test]

@@ -3,6 +3,7 @@ use futures::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
+use super::request_sanitizer::{content_visible_text_lossy, sanitize_messages_for_text_protocol};
 use crate::runtime::runtime_pipeline_enabled;
 use crate::{
     ChatRequest, ChatResponse, Choice, Content, Message, ProviderAdapter, ProviderConfig,
@@ -34,8 +35,7 @@ impl GitLabCloseAiAdapter {
     }
 
     fn convert_request(request: ChatRequest) -> GitLabRequest {
-        let messages: Vec<GitLabMessage> = request
-            .messages
+        let messages: Vec<GitLabMessage> = sanitize_messages_for_text_protocol(&request.messages)
             .into_iter()
             .map(|msg| GitLabMessage {
                 role: match msg.role {
@@ -46,15 +46,7 @@ impl GitLabCloseAiAdapter {
                 },
                 content: match msg.content {
                     Content::Text(t) => GitLabContent::Text(t),
-                    Content::Parts(parts) => {
-                        let text = parts
-                            .iter()
-                            .filter_map(|p| p.text.as_ref())
-                            .cloned()
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        GitLabContent::Text(text)
-                    }
+                    Content::Parts(_) => GitLabContent::Text(content_visible_text_lossy(&msg.content)),
                 },
             })
             .collect();
@@ -354,4 +346,39 @@ fn drain_gitlab_sse_events(buffer: &mut String, flush: bool) -> Vec<StreamEvent>
     }
 
     events
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ContentPart;
+    use serde_json::json;
+
+    #[test]
+    fn convert_request_drops_tool_only_history_from_text_protocol() {
+        let request = ChatRequest {
+            model: "gitlab-test".to_string(),
+            messages: vec![
+                Message::user("before"),
+                Message::assistant_parts(vec![ContentPart::tool_use("call-1", "ls", json!({}))]),
+                Message::tool_parts(vec![ContentPart::tool_result("call-1", "ok", None)]),
+                Message::user("after"),
+            ],
+            max_tokens: Some(512),
+            temperature: None,
+            top_p: None,
+            system: None,
+            tools: None,
+            stream: None,
+            provider_options: None,
+            variant: None,
+        };
+
+        let converted = GitLabCloseAiAdapter::convert_request(request);
+        assert_eq!(converted.messages.len(), 1);
+        assert_eq!(converted.messages[0].role, "user");
+        match &converted.messages[0].content {
+            GitLabContent::Text(text) => assert_eq!(text, "before\n\nafter"),
+        }
+    }
 }
