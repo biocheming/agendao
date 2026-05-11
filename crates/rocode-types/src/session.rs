@@ -269,6 +269,42 @@ pub struct ContextPressureGovernanceSummary {
     pub blocking: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lightweight_trim: Option<LightweightTrimSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_trace: Option<ContextCompactionDecisionTrace>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ContextCompactionDecisionTrace {
+    pub path: String,
+    pub mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assessment: Option<ContextCompactionAssessmentSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backoff: Option<ContextCompactionBackoffSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lightweight_trim: Option<LightweightTrimSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ContextCompactionAssessmentSummary {
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_chars: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ContextCompactionBackoffSummary {
+    pub last_compaction_index: usize,
+    pub messages_since_last: usize,
+    pub user_turns_since_last: usize,
+    pub recent_compaction_count: usize,
+    pub min_messages_after_last: usize,
+    pub min_user_turns_after_last: usize,
+    pub recent_window_messages: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]

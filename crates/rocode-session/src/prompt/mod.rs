@@ -72,7 +72,8 @@ use rocode_provider::{cache::CacheEvidenceSummary, Provider, ToolDefinition};
 use rocode_skill::{infer_runtime_skill_names, RuntimeInstructionSource, SkillGovernanceAuthority};
 use rocode_types::SkillRuntimeCompositionHintKind;
 use rocode_types::{
-    context_usage_percent, message_latest_compaction_summary,
+    context_usage_percent, message_latest_compaction_summary, ContextCompactionAssessmentSummary,
+    ContextCompactionBackoffSummary, ContextCompactionDecisionTrace,
     ContextCompactionInstalledDiagnostics, ContextCompactionLifecycleStatus,
     ContextCompactionLifecycleSummary, ContextCompactionSummary, ContextPressureGovernanceStatus,
     ContextPressureGovernanceSummary, LightweightTrimSummary, MemoryRetrievalPacket,
@@ -880,6 +881,34 @@ fn request_view_metrics_for_governance(
     )
 }
 
+fn context_compaction_assessment_summary(
+    assessment: &message_building::CompactionAssessment,
+) -> ContextCompactionAssessmentSummary {
+    ContextCompactionAssessmentSummary {
+        reason: assessment.reason.to_string(),
+        limit_tokens: assessment.limit_tokens,
+        body_chars: assessment.body_chars,
+    }
+}
+
+fn context_compaction_decision_trace(
+    path: &str,
+    mode: &str,
+    reason: Option<&str>,
+    assessment: Option<&message_building::CompactionAssessment>,
+    backoff: Option<ContextCompactionBackoffSummary>,
+    lightweight_trim: Option<LightweightTrimSummary>,
+) -> ContextCompactionDecisionTrace {
+    ContextCompactionDecisionTrace {
+        path: path.to_string(),
+        mode: mode.to_string(),
+        reason: reason.map(str::to_string),
+        assessment: assessment.map(context_compaction_assessment_summary),
+        backoff,
+        lightweight_trim,
+    }
+}
+
 fn context_pressure_governance_summary(
     trigger: &str,
     phase: &str,
@@ -893,6 +922,7 @@ fn context_pressure_governance_summary(
     compaction_succeeded: bool,
     blocking: bool,
     lightweight_trim: Option<LightweightTrimSummary>,
+    decision_trace: Option<ContextCompactionDecisionTrace>,
 ) -> ContextPressureGovernanceSummary {
     ContextPressureGovernanceSummary {
         trigger: trigger.to_string(),
@@ -913,6 +943,7 @@ fn context_pressure_governance_summary(
         compaction_succeeded,
         blocking,
         lightweight_trim,
+        decision_trace,
     }
 }
 
@@ -972,6 +1003,14 @@ pub fn assess_request_view_context_governance(
                 compaction_succeeded,
                 blocking,
                 None,
+                Some(context_compaction_decision_trace(
+                    phase,
+                    "assessment",
+                    Some(assessment.reason),
+                    Some(&assessment),
+                    None,
+                    None,
+                )),
             )
         }
         None => context_pressure_governance_summary(
@@ -990,6 +1029,7 @@ pub fn assess_request_view_context_governance(
             compaction_attempted,
             compaction_succeeded,
             false,
+            None,
             None,
         ),
     }
@@ -1026,6 +1066,7 @@ pub fn govern_pre_dispatch_session_context(
             false,
             false,
             None,
+            None,
         );
         persist_context_pressure_governance_summary(session, &summary);
         persist_lightweight_trim_summary(session, None);
@@ -1050,6 +1091,14 @@ pub fn govern_pre_dispatch_session_context(
             true,
             false,
             Some(trim_summary.clone()),
+            Some(context_compaction_decision_trace(
+                phase,
+                "lightweight_trim",
+                Some("lightweight_tool_result_trim"),
+                None,
+                None,
+                Some(trim_summary.clone()),
+            )),
         );
         persist_context_pressure_governance_summary(session, &summary);
         persist_lightweight_trim_summary(session, Some(&trim_summary));
@@ -1066,11 +1115,16 @@ pub fn govern_pre_dispatch_session_context(
         request_context_tokens,
         request_body_chars,
     ) else {
+        let backoff = SessionPrompt::auto_compaction_backoff_summary(&filtered);
         let summary = context_pressure_governance_summary(
             trigger,
             phase,
-            ContextPressureGovernanceStatus::Ready,
-            None,
+            if backoff.is_some() {
+                ContextPressureGovernanceStatus::Deferred
+            } else {
+                ContextPressureGovernanceStatus::Ready
+            },
+            backoff.as_ref().map(|_| "auto_compaction_backoff"),
             request_context_tokens,
             live_context_tokens,
             None,
@@ -1079,6 +1133,16 @@ pub fn govern_pre_dispatch_session_context(
             false,
             false,
             None,
+            backoff.clone().map(|summary| {
+                context_compaction_decision_trace(
+                    phase,
+                    "auto_compaction_backoff",
+                    Some("auto_compaction_backoff"),
+                    None,
+                    Some(summary),
+                    None,
+                )
+            }),
         );
         persist_context_pressure_governance_summary(session, &summary);
         return ContextPressureGovernanceOutcome::Proceed(summary);
@@ -1196,6 +1260,20 @@ pub fn govern_pre_dispatch_session_context(
             compacted,
             blocking,
             None,
+            Some(context_compaction_decision_trace(
+                phase,
+                if compacted {
+                    "full_compaction"
+                } else if blocking {
+                    "blocked_after_compaction_attempt"
+                } else {
+                    "deferred_after_compaction_attempt"
+                },
+                Some(assessment.reason),
+                Some(&assessment),
+                None,
+                None,
+            )),
         )
     } else {
         context_pressure_governance_summary(
@@ -1211,6 +1289,14 @@ pub fn govern_pre_dispatch_session_context(
             true,
             false,
             None,
+            Some(context_compaction_decision_trace(
+                phase,
+                "full_compaction",
+                Some(assessment.reason),
+                Some(&assessment),
+                None,
+                None,
+            )),
         )
     };
     persist_context_pressure_governance_summary(session, &summary);

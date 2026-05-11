@@ -356,6 +356,12 @@ fn pre_dispatch_governance_persists_lightweight_trim_summary_when_trim_succeeds(
         .expect("lightweight trim summary should be attached");
     assert_eq!(trim.trimmed_rounds, 1);
     assert!(trim.used_round_grouping);
+    let trace = summary
+        .decision_trace
+        .as_ref()
+        .expect("decision trace should be attached");
+    assert_eq!(trace.mode, "lightweight_trim");
+    assert!(trace.lightweight_trim.is_some());
 
     let persisted = session
         .record()
@@ -367,6 +373,66 @@ fn pre_dispatch_governance_persists_lightweight_trim_summary_when_trim_succeeds(
         serde_json::from_value(persisted).expect("persisted trim summary should parse");
     assert_eq!(persisted.trimmed_rounds, 1);
     assert!(persisted.used_round_grouping);
+}
+
+#[test]
+fn pre_dispatch_governance_records_auto_compaction_backoff_reason() {
+    let provider = StaticModelProvider::with_model("ctx-model", 100, 20);
+    let mut session = Session::new("proj", ".");
+    session.insert_metadata("model_provider", serde_json::json!("mock"));
+    session.insert_metadata("model_id", serde_json::json!("ctx-model"));
+    let session_id = session.id.clone();
+
+    session
+        .messages_mut()
+        .push(SessionMessage::user(session_id.clone(), "before compact"));
+    let mut compacted = SessionMessage::assistant(session_id.clone());
+    compacted.parts.push(MessagePart {
+        id: "prt_compact".to_string(),
+        part_type: PartType::Compaction {
+            summary: "older context compacted".to_string(),
+        },
+        created_at: chrono::Utc::now(),
+        message_id: None,
+    });
+    session.messages_mut().push(compacted);
+    session
+        .messages_mut()
+        .push(SessionMessage::user(session_id.clone(), "after compact"));
+
+    let outcome = govern_pre_dispatch_session_context(
+        &mut session,
+        &provider,
+        "ctx-model",
+        Some(20),
+        None,
+        None,
+        Some(120),
+        Some(480),
+        Some("after compact"),
+        "pre_dispatch_hard_gate",
+        "scheduler.pre_dispatch",
+        None,
+        None,
+    );
+
+    let ContextPressureGovernanceOutcome::Proceed(summary) = outcome else {
+        panic!("governance should defer when auto compaction backs off");
+    };
+    assert_eq!(summary.status, ContextPressureGovernanceStatus::Deferred);
+    assert_eq!(summary.reason.as_deref(), Some("auto_compaction_backoff"));
+    let trace = summary
+        .decision_trace
+        .as_ref()
+        .expect("decision trace should be recorded");
+    assert_eq!(trace.mode, "auto_compaction_backoff");
+    let backoff = trace
+        .backoff
+        .as_ref()
+        .expect("backoff details should be recorded");
+    assert_eq!(backoff.messages_since_last, 1);
+    assert_eq!(backoff.user_turns_since_last, 1);
+    assert_eq!(backoff.min_messages_after_last, 4);
 }
 
 #[test]
