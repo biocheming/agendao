@@ -17,10 +17,10 @@ use rocode_skill::{RuntimeInstructionSource, SkillGovernanceAuthority};
 use rocode_storage::{Database, SkillEvolutionProposalRepository};
 use rocode_tool::{Tool, ToolContext, ToolError, ToolResult};
 use rocode_types::{
-    ContextPressureGovernanceStatus, MemoryEvidenceRef, MemoryKind, MemoryRecord, MemoryRecordId,
-    MemoryScope, MemoryStatus, MemoryValidationStatus, ProposalStatus, SkillCapabilityGroupKind,
-    SkillCapabilityMember, SkillCapabilityMemberRole, SkillRetirementReason,
-    SkillRetirementReasonKind, SkillVitalityState,
+    ContextPressureGovernanceStatus, LightweightTrimSummary, MemoryEvidenceRef, MemoryKind,
+    MemoryRecord, MemoryRecordId, MemoryScope, MemoryStatus, MemoryValidationStatus,
+    ProposalStatus, SkillCapabilityGroupKind, SkillCapabilityMember, SkillCapabilityMemberRole,
+    SkillRetirementReason, SkillRetirementReasonKind, SkillVitalityState,
 };
 use std::fs;
 use std::sync::Arc;
@@ -299,6 +299,120 @@ fn pre_dispatch_governance_forces_compaction_for_small_overflowing_request_view(
         .get(CONTEXT_COMPACTION_RECORD_METADATA_KEY)
         .expect("compaction diagnostics should be present");
     assert_eq!(diagnostics["forced"], serde_json::json!(true));
+}
+
+#[test]
+fn pre_dispatch_governance_persists_lightweight_trim_summary_when_trim_succeeds() {
+    let provider = StaticModelProvider::with_model("ctx-model", 100, 20);
+    let mut session = Session::new("proj", ".");
+    session.insert_metadata("model_provider", serde_json::json!("mock"));
+    session.insert_metadata("model_id", serde_json::json!("ctx-model"));
+    let session_id = session.id.clone();
+
+    session
+        .messages_mut()
+        .push(SessionMessage::user(session_id.clone(), "earlier user"));
+    let mut assistant = SessionMessage::assistant(session_id.clone());
+    assistant.add_tool_call(
+        "call_round",
+        "write_file",
+        serde_json::json!({"path": "src/main.rs", "content": "Q".repeat(30_000)}),
+    );
+    session.messages_mut().push(assistant);
+    let mut tool = SessionMessage::tool(session_id.clone());
+    tool.add_tool_result("call_round", &"R".repeat(20_000), false);
+    session.messages_mut().push(tool);
+    session
+        .messages_mut()
+        .push(SessionMessage::user(session_id.clone(), "latest user"));
+
+    let outcome = govern_pre_dispatch_session_context(
+        &mut session,
+        &provider,
+        "ctx-model",
+        Some(20),
+        None,
+        None,
+        Some(120),
+        Some(480),
+        Some("latest user"),
+        "pre_dispatch_hard_gate",
+        "scheduler.pre_dispatch",
+        None,
+        None,
+    );
+
+    let ContextPressureGovernanceOutcome::Proceed(summary) = outcome else {
+        panic!("governance should proceed after lightweight trim");
+    };
+    assert_eq!(summary.status, ContextPressureGovernanceStatus::Compacted);
+    assert_eq!(
+        summary.reason.as_deref(),
+        Some("lightweight_tool_result_trim")
+    );
+    let trim = summary
+        .lightweight_trim
+        .as_ref()
+        .expect("lightweight trim summary should be attached");
+    assert_eq!(trim.trimmed_rounds, 1);
+    assert!(trim.used_round_grouping);
+
+    let persisted = session
+        .record()
+        .metadata
+        .get(CONTEXT_LIGHTWEIGHT_TRIM_SUMMARY_METADATA_KEY)
+        .cloned()
+        .expect("trim summary should persist into session metadata");
+    let persisted: LightweightTrimSummary =
+        serde_json::from_value(persisted).expect("persisted trim summary should parse");
+    assert_eq!(persisted.trimmed_rounds, 1);
+    assert!(persisted.used_round_grouping);
+}
+
+#[test]
+fn pre_dispatch_governance_clears_stale_lightweight_trim_summary_when_no_trim_occurs() {
+    let provider = StaticModelProvider::with_model("ctx-model", 100, 20);
+    let mut session = Session::new("proj", ".");
+    session.insert_metadata("model_provider", serde_json::json!("mock"));
+    session.insert_metadata("model_id", serde_json::json!("ctx-model"));
+    session.insert_metadata(
+        CONTEXT_LIGHTWEIGHT_TRIM_SUMMARY_METADATA_KEY.to_string(),
+        serde_json::to_value(LightweightTrimSummary {
+            trimmed_rounds: 9,
+            trimmed_tool_calls: 9,
+            trimmed_tool_results: 9,
+            trimmed_call_tokens: 999,
+            trimmed_result_tokens: 999,
+            used_round_grouping: true,
+        })
+        .expect("summary serializes"),
+    );
+    session.add_user_message("only message");
+
+    let _ = govern_pre_dispatch_session_context(
+        &mut session,
+        &provider,
+        "ctx-model",
+        Some(20),
+        None,
+        None,
+        Some(40),
+        Some(120),
+        Some("only message"),
+        "pre_dispatch_hard_gate",
+        "scheduler.pre_dispatch",
+        None,
+        None,
+    );
+
+    assert!(
+        session
+            .record()
+            .metadata
+            .get(CONTEXT_LIGHTWEIGHT_TRIM_SUMMARY_METADATA_KEY)
+            .is_none(),
+        "stale trim summary should be removed when no trim occurs"
+    );
 }
 
 #[test]

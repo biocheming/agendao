@@ -1420,9 +1420,14 @@ impl SessionPrompt {
         request_body_chars: Option<usize>,
     ) -> bool {
         let compaction_config = Self::runtime_compaction_config(config_store);
-        if Self::apply_lightweight_tool_result_trim(session) {
+        if let Some(trim_summary) = Self::apply_lightweight_tool_result_trim(session) {
             tracing::info!(
                 session_id = %session_id,
+                trimmed_rounds = trim_summary.trimmed_rounds,
+                trimmed_tool_calls = trim_summary.trimmed_tool_calls,
+                trimmed_tool_results = trim_summary.trimmed_tool_results,
+                trimmed_call_tokens = trim_summary.trimmed_call_tokens,
+                trimmed_result_tokens = trim_summary.trimmed_result_tokens,
                 "applied lightweight tool-result trim before pre-request compaction"
             );
             return true;

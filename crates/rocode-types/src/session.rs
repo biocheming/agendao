@@ -267,6 +267,24 @@ pub struct ContextPressureGovernanceSummary {
     pub compaction_succeeded: bool,
     #[serde(default)]
     pub blocking: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lightweight_trim: Option<LightweightTrimSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct LightweightTrimSummary {
+    #[serde(default)]
+    pub trimmed_rounds: usize,
+    #[serde(default)]
+    pub trimmed_tool_calls: usize,
+    #[serde(default)]
+    pub trimmed_tool_results: usize,
+    #[serde(default)]
+    pub trimmed_call_tokens: usize,
+    #[serde(default)]
+    pub trimmed_result_tokens: usize,
+    #[serde(default)]
+    pub used_round_grouping: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]

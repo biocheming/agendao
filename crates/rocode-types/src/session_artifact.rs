@@ -12,6 +12,7 @@ const SESSION_SANCTIONED_METADATA_KEYS: &[&str] = &[
     "agent",
     "auto_title_pending_refine",
     "context_compaction_lifecycle_summary",
+    "context_lightweight_trim_summary",
     "context_pressure_governance_summary",
     "fork_origin_message_id",
     "fork_origin_session_id",
