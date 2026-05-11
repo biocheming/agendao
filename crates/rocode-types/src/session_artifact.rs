@@ -275,6 +275,8 @@ pub struct SessionDiagnosticsSidecar {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_pressure_governance_summary: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_compaction_decision_trace: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ingress_stabilization: Option<SessionIngressStabilizationSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_frozen_snapshot: Option<serde_json::Value>,
@@ -303,6 +305,12 @@ impl SessionDiagnosticsSidecar {
 
     pub fn context_pressure_governance_summary_value(&self) -> Option<serde_json::Value> {
         self.context_pressure_governance_summary.clone()
+    }
+
+    pub fn latest_context_compaction_decision_trace_value(&self) -> Option<serde_json::Value> {
+        self.context_pressure_governance_summary
+            .as_ref()
+            .and_then(|summary| summary.get("decision_trace").cloned())
     }
 
     pub fn ingress_stabilization_value(&self) -> Option<serde_json::Value> {
@@ -455,6 +463,9 @@ impl SessionDiagnosticsSidecar {
             .metadata
             .get("context_pressure_governance_summary")
             .cloned();
+        let context_compaction_decision_trace = context_pressure_governance_summary
+            .as_ref()
+            .and_then(|summary| summary.get("decision_trace").cloned());
         let ingress_stabilization = ingress_stabilization_from_session(session);
         let memory_frozen_snapshot = session.metadata.get("memory_frozen_snapshot").cloned();
         let memory_last_prefetch_packet =
@@ -471,6 +482,7 @@ impl SessionDiagnosticsSidecar {
             prompt_surface_state_snapshot,
             context_compaction_lifecycle_summary,
             context_pressure_governance_summary,
+            context_compaction_decision_trace,
             ingress_stabilization,
             memory_frozen_snapshot,
             memory_last_prefetch_packet,
@@ -485,6 +497,7 @@ impl SessionDiagnosticsSidecar {
             && self.prompt_surface_state_snapshot.is_none()
             && self.context_compaction_lifecycle_summary.is_none()
             && self.context_pressure_governance_summary.is_none()
+            && self.context_compaction_decision_trace.is_none()
             && self.ingress_stabilization.is_none()
             && self.memory_frozen_snapshot.is_none()
             && self.memory_last_prefetch_packet.is_none()
@@ -1229,6 +1242,33 @@ mod tests {
 
         assert_eq!(record["trigger"], serde_json::json!("auto_preflight"));
         assert_eq!(record["status"], serde_json::json!("started"));
+    }
+
+    #[test]
+    fn diagnostics_sidecar_helper_reads_context_compaction_decision_trace() {
+        let mut session = sample_session();
+        session.metadata.insert(
+            "context_pressure_governance_summary".to_string(),
+            serde_json::json!({
+                "trigger": "auto_preflight",
+                "phase": "prompt.pre_request",
+                "status": "compacted",
+                "decision_trace": {
+                    "path": "prompt.pre_request",
+                    "mode": "lightweight_trim",
+                    "reason": "lightweight_tool_result_trim"
+                }
+            }),
+        );
+
+        let sidecar = SessionDiagnosticsSidecar::derive_from_parts(&session, &[])
+            .expect("sidecar should exist");
+        let trace = sidecar
+            .latest_context_compaction_decision_trace_value()
+            .expect("decision trace should exist");
+
+        assert_eq!(trace["path"], serde_json::json!("prompt.pre_request"));
+        assert_eq!(trace["mode"], serde_json::json!("lightweight_trim"));
     }
 
     #[test]

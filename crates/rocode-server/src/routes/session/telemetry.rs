@@ -13,8 +13,8 @@ use rocode_types::message_continuity_packet;
 #[cfg(test)]
 use rocode_types::message_latest_compaction_summary;
 use rocode_types::{
-    ContextCompactionLifecycleSummary, ContextCompactionSummary, ContextPressureGovernanceSummary,
-    PromptSurfaceEvidenceSummary, SessionCacheSemanticsSummary,
+    ContextCompactionDecisionTrace, ContextCompactionLifecycleSummary, ContextCompactionSummary,
+    ContextPressureGovernanceSummary, PromptSurfaceEvidenceSummary, SessionCacheSemanticsSummary,
     SessionCompactionContinuityInspection, SessionContextClosureContract, SessionContextExplain,
     SessionDiagnosticsSidecar, SessionInsightsResponse, SessionMemoryTelemetrySummary,
     SessionMultimodalAttachmentInfo, SessionMultimodalInsight, SessionOwnershipSummary,
@@ -54,6 +54,8 @@ pub struct SessionTelemetrySnapshot {
     pub context_compaction_lifecycle_summary: Option<ContextCompactionLifecycleSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_pressure_governance_summary: Option<ContextPressureGovernanceSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_trace: Option<ContextCompactionDecisionTrace>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_semantics: Option<SessionCacheSemanticsSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -207,6 +209,15 @@ pub(super) async fn build_session_telemetry_snapshot(
         .as_ref()
         .and_then(SessionDiagnosticsSidecar::context_pressure_governance_summary_value)
         .and_then(|value| serde_json::from_value(value).ok());
+    let decision_trace = diagnostics
+        .as_ref()
+        .and_then(SessionDiagnosticsSidecar::latest_context_compaction_decision_trace_value)
+        .and_then(|value| serde_json::from_value(value).ok())
+        .or_else(|| {
+            context_pressure_governance_summary.as_ref().and_then(
+                |summary: &ContextPressureGovernanceSummary| summary.decision_trace.clone(),
+            )
+        });
     let prompt_surface_evidence = diagnostics
         .as_ref()
         .and_then(SessionDiagnosticsSidecar::latest_prompt_surface_evidence_value)
@@ -253,6 +264,7 @@ pub(super) async fn build_session_telemetry_snapshot(
         compaction_continuity,
         context_compaction_lifecycle_summary,
         context_pressure_governance_summary,
+        decision_trace,
         cache_semantics,
         context_closure_contract,
         prompt_surface_evidence,
@@ -976,6 +988,8 @@ mod tests {
             compaction_attempted: true,
             compaction_succeeded: true,
             blocking: false,
+            lightweight_trim: None,
+            decision_trace: None,
         };
         let lifecycle_summary = ContextCompactionLifecycleSummary {
             trigger: "step_checkpoint_gate".to_string(),
@@ -1560,6 +1574,7 @@ mod tests {
                 }),
             }),
             context_pressure_governance_summary: None,
+            decision_trace: None,
             cache_semantics: Some(SessionCacheSemanticsSummary {
                 basis: rocode_types::SessionCacheSemanticsBasis::ApiView,
                 api_view_messages: 8,
@@ -2157,7 +2172,7 @@ mod tests {
     async fn telemetry_snapshot_usage_books_keep_owner_local_context_and_subtree_cumulative() {
         let state = Arc::new(ServerState::new());
 
-        let (root_id, root_session, root_usage, child_usage) = {
+        let (root_id, mut root_session, root_usage, child_usage) = {
             let mut sessions = state.sessions.lock().await;
 
             let mut root = sessions.create("project", "/tmp/project");
@@ -2195,6 +2210,33 @@ mod tests {
 
             (root.id.clone(), root, root_usage, child_usage)
         };
+        root_session.insert_metadata(
+            rocode_session::prompt::CONTEXT_PRESSURE_GOVERNANCE_SUMMARY_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "trigger": "auto_preflight",
+                "phase": "prompt.pre_request",
+                "status": "compacted",
+                "reason": "lightweight_tool_result_trim",
+                "request_context_tokens": 120_u64,
+                "live_context_tokens": 96_u64,
+                "compaction_attempted": true,
+                "compaction_succeeded": true,
+                "blocking": false,
+                "decision_trace": {
+                    "path": "prompt.pre_request",
+                    "mode": "lightweight_trim",
+                    "reason": "lightweight_tool_result_trim",
+                    "lightweight_trim": {
+                        "trimmed_rounds": 1,
+                        "trimmed_tool_calls": 1,
+                        "trimmed_tool_results": 1,
+                        "trimmed_call_tokens": 240,
+                        "trimmed_result_tokens": 480,
+                        "used_round_grouping": true
+                    }
+                }
+            }),
+        );
 
         let snapshot = build_session_telemetry_snapshot(&state, &root_id, &root_session)
             .await
@@ -2242,6 +2284,13 @@ mod tests {
                 - (root_usage.total_cost + child_usage.total_cost))
                 .abs()
                 < f64::EPSILON
+        );
+        assert_eq!(
+            snapshot
+                .decision_trace
+                .as_ref()
+                .map(|trace| trace.mode.as_str()),
+            Some("lightweight_trim")
         );
         let explain = snapshot
             .context_explain
