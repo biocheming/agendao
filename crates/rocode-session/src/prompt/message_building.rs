@@ -1140,7 +1140,6 @@ impl SessionPrompt {
             return None;
         }
 
-        let usage = Self::token_usage_from_messages(messages);
         let model = provider.get_model(model_id);
         let limits = ModelLimits {
             context: model
@@ -1153,38 +1152,15 @@ impl SessionPrompt {
         };
         let engine = CompactionEngine::new(compaction_config.clone());
         let compaction_limit = Self::effective_compaction_limit(&limits, compaction_config);
-        if engine.is_overflow(&usage, &limits) {
-            return Some(CompactionAssessment {
-                reason: "usage_overflow",
-                limit_tokens: Some(compaction_limit),
-                body_chars: None,
-            });
-        }
-
+        let usage = Self::token_usage_from_messages(messages);
+        let request_context_tokens = request_context_tokens.filter(|tokens| *tokens > 0);
         let usage_count = if usage.total > 0 {
             usage.total
         } else {
             usage.input + usage.output + usage.cache_read + usage.cache_miss + usage.cache_write
         };
         let live_context_tokens = live_context_tokens.filter(|tokens| *tokens > 0);
-        if let Some(live_context_tokens) = live_context_tokens {
-            let live_usage = TokenUsage {
-                input: live_context_tokens,
-                output: 0,
-                cache_read: 0,
-                cache_miss: 0,
-                cache_write: 0,
-                total: live_context_tokens,
-            };
-            if engine.is_overflow(&live_usage, &limits) {
-                return Some(CompactionAssessment {
-                    reason: "live_context_overflow",
-                    limit_tokens: Some(compaction_limit),
-                    body_chars: None,
-                });
-            }
-        }
-        if let Some(request_context_tokens) = request_context_tokens.filter(|tokens| *tokens > 0) {
+        if let Some(request_context_tokens) = request_context_tokens {
             let request_usage = TokenUsage {
                 input: request_context_tokens,
                 output: 0,
@@ -1211,17 +1187,22 @@ impl SessionPrompt {
                     body_chars: request_body_chars,
                 });
             }
-        }
-        if usage_count > 0
-            && Self::should_trigger_proactive_compaction(usage_count, &limits, compaction_config)
-        {
-            return Some(CompactionAssessment {
-                reason: "usage_threshold",
-                limit_tokens: Some(compaction_limit),
-                body_chars: None,
-            });
-        }
-        if let Some(live_context_tokens) = live_context_tokens {
+        } else if let Some(live_context_tokens) = live_context_tokens {
+            let live_usage = TokenUsage {
+                input: live_context_tokens,
+                output: 0,
+                cache_read: 0,
+                cache_miss: 0,
+                cache_write: 0,
+                total: live_context_tokens,
+            };
+            if engine.is_overflow(&live_usage, &limits) {
+                return Some(CompactionAssessment {
+                    reason: "live_context_overflow",
+                    limit_tokens: Some(compaction_limit),
+                    body_chars: None,
+                });
+            }
             if Self::should_trigger_proactive_compaction(
                 live_context_tokens,
                 &limits,
@@ -1233,6 +1214,39 @@ impl SessionPrompt {
                     body_chars: None,
                 });
             }
+        }
+
+        // When a request-view or live-context estimate is available, treat it
+        // as the authoritative "what will actually be sent" signal. Historical
+        // cumulative usage is still useful for telemetry, but it should not
+        // force an early auto-compaction while the current request remains
+        // comfortably below the active context budget.
+        if request_context_tokens.is_some() || live_context_tokens.is_some() {
+            if request_body_chars.is_some_and(|chars| chars > MAX_BODY_CHARS) {
+                return Some(CompactionAssessment {
+                    reason: "request_body_too_large",
+                    limit_tokens: Some(compaction_limit),
+                    body_chars: request_body_chars,
+                });
+            }
+            return None;
+        }
+
+        if engine.is_overflow(&usage, &limits) {
+            return Some(CompactionAssessment {
+                reason: "usage_overflow",
+                limit_tokens: Some(compaction_limit),
+                body_chars: None,
+            });
+        }
+        if usage_count > 0
+            && Self::should_trigger_proactive_compaction(usage_count, &limits, compaction_config)
+        {
+            return Some(CompactionAssessment {
+                reason: "usage_threshold",
+                limit_tokens: Some(compaction_limit),
+                body_chars: None,
+            });
         }
 
         // Estimate total content size across ALL part types (not just text).
@@ -2925,6 +2939,53 @@ mod tests {
 
         assert_eq!(assessment.reason, "request_view_threshold");
         assert_eq!(assessment.body_chars, Some(152_000));
+    }
+
+    #[test]
+    fn assess_compaction_ignores_historical_usage_when_request_view_is_small() {
+        let provider = StaticModelProvider {
+            model: Some(ModelInfo {
+                id: "request-view-model".to_string(),
+                name: "Request View Model".to_string(),
+                provider: "mock".to_string(),
+                context_window: 1_000_000,
+                max_input_tokens: Some(50_000),
+                max_output_tokens: 8_192,
+                supports_vision: false,
+                supports_tools: false,
+                cost_per_million_input: 0.0,
+                cost_per_million_output: 0.0,
+                cost_per_million_cache_read: None,
+                cost_per_million_cache_write: None,
+            }),
+        };
+        let mut msg = SessionMessage::assistant("ses_test");
+        msg.usage = Some(crate::message::MessageUsage {
+            input_tokens: 40_000,
+            output_tokens: 8_000,
+            reasoning_tokens: 0,
+            cache_read_tokens: 0,
+            cache_miss_tokens: 0,
+            cache_write_tokens: 0,
+            context_tokens: 40_000,
+            total_cost: 0.0,
+        });
+
+        let assessment = SessionPrompt::assess_compaction(
+            &[msg],
+            &provider,
+            "request-view-model",
+            None,
+            &CompactionConfig::default(),
+            None,
+            Some(12_000),
+            Some(48_000),
+        );
+
+        assert!(
+            assessment.is_none(),
+            "current request view should suppress history-only usage overflow"
+        );
     }
 
     #[test]
