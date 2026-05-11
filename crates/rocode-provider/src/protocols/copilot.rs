@@ -6,12 +6,12 @@ use std::future::Future;
 use std::sync::Arc;
 use tracing;
 
+use super::request_sanitizer::{
+    content_visible_text_lossy, sanitize_messages_for_protocol,
+    sanitize_messages_for_text_protocol, SanitizerOptions,
+};
 use crate::bootstrap::should_use_copilot_responses_api;
 use crate::custom_fetch::get_custom_fetch_proxy;
-use super::request_sanitizer::{
-    content_visible_text_lossy, sanitize_messages_for_protocol, sanitize_messages_for_text_protocol,
-    SanitizerOptions,
-};
 use crate::responses::{
     FinishReason, GenerateOptions, OpenAIResponsesConfig, OpenAIResponsesLanguageModel,
     ResponsesProviderOptions, StreamOptions,

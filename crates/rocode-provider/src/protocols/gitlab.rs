@@ -46,7 +46,9 @@ impl GitLabCloseAiAdapter {
                 },
                 content: match msg.content {
                     Content::Text(t) => GitLabContent::Text(t),
-                    Content::Parts(_) => GitLabContent::Text(content_visible_text_lossy(&msg.content)),
+                    Content::Parts(_) => {
+                        GitLabContent::Text(content_visible_text_lossy(&msg.content))
+                    }
                 },
             })
             .collect();

@@ -146,12 +146,18 @@ Only review here.
     let loaded = authority
         .load_skill_for_inspection("reviewer", None)
         .unwrap();
-    assert_eq!(loaded.meta.conditions.requires_tools, vec!["grep".to_string()]);
+    assert_eq!(
+        loaded.meta.conditions.requires_tools,
+        vec!["grep".to_string()]
+    );
     assert_eq!(
         loaded.meta.conditions.requires_toolsets,
         vec!["search".to_string()]
     );
-    assert_eq!(loaded.meta.conditions.stage_filter, vec!["review".to_string()]);
+    assert_eq!(
+        loaded.meta.conditions.stage_filter,
+        vec!["review".to_string()]
+    );
 
     let available_tools = std::collections::HashSet::from(["grep".to_string()]);
     let available_toolsets = std::collections::HashSet::from(["search".to_string()]);

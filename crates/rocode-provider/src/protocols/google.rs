@@ -375,7 +375,10 @@ mod tests {
         let converted = GeminiAdapter::convert_request(request);
         assert_eq!(converted.contents.len(), 1);
         assert_eq!(converted.contents[0].role, "user");
-        assert_eq!(converted.contents[0].parts[0].text.as_deref(), Some("before\n\nafter"));
+        assert_eq!(
+            converted.contents[0].parts[0].text.as_deref(),
+            Some("before\n\nafter")
+        );
     }
 
     #[test]
@@ -399,6 +402,9 @@ mod tests {
 
         let converted = GeminiAdapter::convert_request(request);
         assert_eq!(converted.contents.len(), 1);
-        assert_eq!(converted.contents[0].parts[0].text.as_deref(), Some("first\n\nsecond"));
+        assert_eq!(
+            converted.contents[0].parts[0].text.as_deref(),
+            Some("first\n\nsecond")
+        );
     }
 }

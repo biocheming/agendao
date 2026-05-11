@@ -168,11 +168,7 @@ fn format_permission_summary(
     ));
 
     if let Some(permission_class) = permission_class {
-        lines.push(format!(
-            "    {} {}",
-            style.dim("class:"),
-            permission_class
-        ));
+        lines.push(format!("    {} {}", style.dim("class:"), permission_class));
     }
 
     if let Some(scope) = display_scope(scope_key, scope_label) {
@@ -250,17 +246,16 @@ pub fn prompt_permission(
     lifetimes: &[PermissionLifetime],
     style: &CliStyle,
 ) -> io::Result<PermissionDecision> {
-    let summary =
-        format_permission_summary(
-            permission,
-            permission_class,
-            scope_key,
-            scope_label,
-            patterns,
-            metadata,
-            lifetimes,
-            style,
-        );
+    let summary = format_permission_summary(
+        permission,
+        permission_class,
+        scope_key,
+        scope_label,
+        patterns,
+        metadata,
+        lifetimes,
+        style,
+    );
 
     // Print the summary block to stderr
     let mut stderr = io::stderr();
@@ -478,17 +473,16 @@ mod tests {
         );
         metadata.insert("filepath".to_string(), serde_json::json!("src/main.rs"));
 
-        let summary =
-            format_permission_summary(
-                "edit",
-                None,
-                None,
-                None,
-                &["src/main.rs".to_string()],
-                &metadata,
-                &[PermissionLifetime::Once, PermissionLifetime::Session],
-                &style,
-            );
+        let summary = format_permission_summary(
+            "edit",
+            None,
+            None,
+            None,
+            &["src/main.rs".to_string()],
+            &metadata,
+            &[PermissionLifetime::Once, PermissionLifetime::Session],
+            &style,
+        );
 
         assert!(summary.contains("Edit File"));
         assert!(summary.contains("-old line"));

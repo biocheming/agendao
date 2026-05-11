@@ -618,9 +618,7 @@ fn governance_negative_entropy_review_candidate_tracks_canonical_family_owner() 
                     role: SkillCapabilityMemberRole::Specialization,
                 },
             ],
-            vec![
-                "gitlab refresh remains a specialization of shared provider refresh".to_string(),
-            ],
+            vec!["gitlab refresh remains a specialization of shared provider refresh".to_string()],
             "test:activate-group",
         )
         .unwrap();
@@ -1182,7 +1180,10 @@ Refresh provider credentials and configuration safely across GitLab integrations
                         && edge.right_skill_name == "provider-refresh"))
         })
         .expect("specialization variant should exist");
-    assert_eq!(edge.preferred_skill_name.as_deref(), Some("provider-refresh"));
+    assert_eq!(
+        edge.preferred_skill_name.as_deref(),
+        Some("provider-refresh")
+    );
     assert!(edge
         .reasons
         .iter()
@@ -1354,7 +1355,10 @@ fn governance_runtime_skill_composition_hints_surface_canonical_and_complementar
     assert!(hints.iter().any(|hint| {
         hint.kind == rocode_types::SkillRuntimeCompositionHintKind::ComplementaryBundle
             && hint.skill_names.iter().any(|name| name == "frontend-ui-ux")
-            && hint.skill_names.iter().any(|name| name == "frontend-ui-a11y")
+            && hint
+                .skill_names
+                .iter()
+                .any(|name| name == "frontend-ui-a11y")
             && hint
                 .summary
                 .contains("Keep their responsibilities distinct")
@@ -1579,7 +1583,10 @@ fn governance_timeline_merges_managed_provenance_and_audit_entries() {
             .map(|report| report.violations.len()),
         Some(1)
     );
-    assert_eq!(entries[1].kind, SkillGovernanceTimelineKind::ManagedSnapshot);
+    assert_eq!(
+        entries[1].kind,
+        SkillGovernanceTimelineKind::ManagedSnapshot
+    );
     assert!(entries[1]
         .managed_record
         .as_ref()
@@ -1614,7 +1621,9 @@ fn governance_create_returns_guard_warning_and_audits_it() {
     assert!(audit
         .iter()
         .any(|event| event.kind == SkillAuditKind::GuardWarned));
-    assert!(audit.iter().any(|event| event.kind == SkillAuditKind::Create));
+    assert!(audit
+        .iter()
+        .any(|event| event.kind == SkillAuditKind::Create));
 }
 
 #[test]
@@ -1660,8 +1669,7 @@ fn methodology_rendered_skill_can_pass_guard_without_quality_warnings() {
             prerequisites: vec!["Provider auth is already configured.".to_string()],
             core_steps: vec![SkillMethodologyStep {
                 title: "Refresh provider state".to_string(),
-                action: "Run the refresh entrypoint and capture provider/model deltas."
-                    .to_string(),
+                action: "Run the refresh entrypoint and capture provider/model deltas.".to_string(),
                 outcome: Some("The catalog reflects the latest provider source.".to_string()),
                 experienced_tools: vec![],
             }],
@@ -1683,8 +1691,7 @@ fn methodology_rendered_skill_can_pass_guard_without_quality_warnings() {
         .create_skill(
             CreateSkillRequest {
                 name: "provider-refresh".to_string(),
-                description: "Refresh provider inventory with a repeatable workflow."
-                    .to_string(),
+                description: "Refresh provider inventory with a repeatable workflow.".to_string(),
                 body,
                 frontmatter: None,
                 category: None,

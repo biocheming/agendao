@@ -1,6 +1,6 @@
 use super::{
-    cli_available_presets, cli_mode_label, CliExecutionRuntime, CliFrontendProjection, CliStyle,
-    AgentRegistry, Config, Path, PromptCompletion, PromptFrame, ProviderRegistry,
+    cli_available_presets, cli_mode_label, AgentRegistry, CliExecutionRuntime,
+    CliFrontendProjection, CliStyle, Config, Path, PromptCompletion, PromptFrame, ProviderRegistry,
 };
 use std::sync::{Arc, Mutex};
 

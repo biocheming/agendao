@@ -322,16 +322,16 @@ enum CliUiActionOutcome {
 
 include!("run/ui_actions.rs");
 
-#[path = "run/frontend_state_types.rs"]
-mod frontend_state_types;
-#[path = "run/frontend_state_topology.rs"]
-mod frontend_state_topology;
 #[path = "run/frontend_state_projection.rs"]
 mod frontend_state_projection;
 #[path = "run/frontend_state_prompt.rs"]
 mod frontend_state_prompt;
 #[path = "run/frontend_state_surface.rs"]
 mod frontend_state_surface;
+#[path = "run/frontend_state_topology.rs"]
+mod frontend_state_topology;
+#[path = "run/frontend_state_types.rs"]
+mod frontend_state_types;
 use frontend_state_projection::CliFrontendPhase;
 use frontend_state_prompt::CliPromptChrome;
 use frontend_state_surface::{
@@ -702,6 +702,10 @@ fn format_session_time(timestamp: i64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::frontend_state_prompt::{
+        cli_prompt_assist_view, cli_prompt_screen_lines, CliPromptCatalog, CliPromptSelectionState,
+    };
+    use super::frontend_state_types::CliLastTurnTokenStats;
     use super::{
         cli_cycle_attached_session, cli_focus_attached_session, cli_focus_root_session,
         cli_normalize_model_ref, cli_observe_terminal_stream_block, cli_prompt_agent_override,
@@ -712,11 +716,6 @@ mod tests {
         CliFrontendProjection, CliObservedExecutionTopology, CliRecentSessionInfo,
         CliRetainedTranscript, CliSessionTokenStats, PermissionMemory, TerminalStreamAccumulator,
     };
-    use super::frontend_state_prompt::{
-        cli_prompt_assist_view, cli_prompt_screen_lines, CliPromptCatalog,
-        CliPromptSelectionState,
-    };
-    use super::frontend_state_types::CliLastTurnTokenStats;
     use crate::api_client::SessionListItem;
     use crate::api_client::{SessionListHints, SessionListTime};
     use chrono::Utc;

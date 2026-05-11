@@ -943,7 +943,10 @@ mod tests {
         };
 
         let metadata = shell_metadata("start", &session);
-        assert_eq!(metadata.get("scope_key"), Some(&serde_json::json!("cmd:bash")));
+        assert_eq!(
+            metadata.get("scope_key"),
+            Some(&serde_json::json!("cmd:bash"))
+        );
     }
 
     #[tokio::test]

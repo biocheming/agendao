@@ -95,7 +95,10 @@ fn permission_class_label(value: &str) -> String {
     }
 }
 
-fn lifetime_hint(scope: Option<&str>, supported_lifetimes: &[PermissionLifetime]) -> Option<String> {
+fn lifetime_hint(
+    scope: Option<&str>,
+    supported_lifetimes: &[PermissionLifetime],
+) -> Option<String> {
     if supported_lifetimes.is_empty() {
         return None;
     }
@@ -340,7 +343,10 @@ impl PermissionPrompt {
         if let Some(class) = request.permission_class.as_ref() {
             content.push(Line::from(vec![
                 Span::styled("Class: ", Style::default().fg(theme.text_muted)),
-                Span::styled(permission_class_label(class), Style::default().fg(theme.text)),
+                Span::styled(
+                    permission_class_label(class),
+                    Style::default().fg(theme.text),
+                ),
             ]));
         }
         if let Some(scope_label) = request.scope_label.as_ref().or(request.scope_key.as_ref()) {
@@ -350,10 +356,12 @@ impl PermissionPrompt {
             ]));
         }
         if let Some(hint) = lifetime_hint(
-            request.scope_label.as_deref().or(request.scope_key.as_deref()),
+            request
+                .scope_label
+                .as_deref()
+                .or(request.scope_key.as_deref()),
             &request.supported_lifetimes,
-        )
-        {
+        ) {
             content.push(Line::from(vec![
                 Span::styled("Grant: ", Style::default().fg(theme.text_muted)),
                 Span::styled(hint, Style::default().fg(theme.text)),
@@ -368,7 +376,9 @@ impl PermissionPrompt {
             Line::from(actions),
         ]);
 
-        let height = (content.len() as u16).saturating_add(2).min(area.height.saturating_sub(1));
+        let height = (content.len() as u16)
+            .saturating_add(2)
+            .min(area.height.saturating_sub(1));
 
         // Render inline at the bottom of the session area
         let popup_area = Rect::new(
