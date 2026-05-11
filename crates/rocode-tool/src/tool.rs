@@ -1289,10 +1289,7 @@ mod tests {
 
     #[test]
     fn external_fs_scope_key_normalizes_prefix() {
-        assert_eq!(
-            external_fs_scope_key("/tmp/demo"),
-            "fs:/tmp/demo"
-        );
+        assert_eq!(external_fs_scope_key("/tmp/demo"), "fs:/tmp/demo");
     }
 
     #[test]

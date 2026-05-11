@@ -1,7 +1,9 @@
 use serde_json::{json, Map, Value};
 
-use super::request_sanitizer::{interrupted_tool_result_text, sanitize_messages_for_protocol, SanitizerOptions};
 use super::openai_tool_recovery::normalize_tool_call_arguments_for_request;
+use super::request_sanitizer::{
+    interrupted_tool_result_text, sanitize_messages_for_protocol, SanitizerOptions,
+};
 use crate::{ChatRequest, Message, ProviderError, Role};
 
 pub(super) fn to_openai_compatible_chat_messages(messages: &[Message]) -> Vec<Value> {
@@ -207,9 +209,7 @@ fn assistant_message_to_openai(message: &Message) -> (Value, Vec<String>) {
     }
 }
 
-fn tool_messages_to_openai(
-    content: &crate::Content,
-) -> Vec<Value> {
+fn tool_messages_to_openai(content: &crate::Content) -> Vec<Value> {
     match content {
         crate::Content::Text(text) => {
             if text.is_empty() {

@@ -1540,11 +1540,9 @@ mod tests {
     fn responses_generate_options_preserve_tool_continuity_stub() {
         let request = ChatRequest {
             model: "gpt-5".to_string(),
-            messages: vec![Message::assistant_parts(vec![crate::ContentPart::tool_use(
-                "call-1",
-                "ls",
-                json!({ "path": "." }),
-            )])],
+            messages: vec![Message::assistant_parts(vec![
+                crate::ContentPart::tool_use("call-1", "ls", json!({ "path": "." })),
+            ])],
             system: None,
             tools: None,
             max_tokens: Some(512),

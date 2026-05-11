@@ -178,12 +178,20 @@ fn is_thinking_only_assistant(message: &Message) -> bool {
             for part in parts {
                 match part.content_type.as_str() {
                     "reasoning" | "thinking" => {
-                        if part.text.as_ref().is_some_and(|text| !text.trim().is_empty()) {
+                        if part
+                            .text
+                            .as_ref()
+                            .is_some_and(|text| !text.trim().is_empty())
+                        {
                             has_reasoning = true;
                         }
                     }
                     "text" => {
-                        if part.text.as_ref().is_some_and(|text| !text.trim().is_empty()) {
+                        if part
+                            .text
+                            .as_ref()
+                            .is_some_and(|text| !text.trim().is_empty())
+                        {
                             has_visible_text = true;
                         }
                     }
@@ -193,7 +201,10 @@ fn is_thinking_only_assistant(message: &Message) -> bool {
                         }
                     }
                     _ => {
-                        if part.text.as_ref().is_some_and(|text| !text.trim().is_empty())
+                        if part
+                            .text
+                            .as_ref()
+                            .is_some_and(|text| !text.trim().is_empty())
                             || part.image_url.is_some()
                             || part.tool_result.is_some()
                         {

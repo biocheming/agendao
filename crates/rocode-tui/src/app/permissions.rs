@@ -66,11 +66,23 @@ impl App {
             })
             .unwrap_or_else(|| permission.message.clone());
         let supported_lifetimes = if !permission.supported_lifetimes.is_empty() {
-            Some(permission.supported_lifetimes.iter().map(String::as_str).collect::<Vec<_>>())
+            Some(
+                permission
+                    .supported_lifetimes
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+            )
         } else {
-            input.get("supported_lifetimes")
+            input
+                .get("supported_lifetimes")
                 .and_then(|value| value.as_array())
-                .map(|values| values.iter().filter_map(|value| value.as_str()).collect::<Vec<_>>())
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_str())
+                        .collect::<Vec<_>>()
+                })
         }
         .map(|values| {
             values
