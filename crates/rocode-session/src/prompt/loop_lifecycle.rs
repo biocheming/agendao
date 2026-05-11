@@ -1421,6 +1421,32 @@ impl SessionPrompt {
     ) -> bool {
         let compaction_config = Self::runtime_compaction_config(config_store);
         if let Some(trim_summary) = Self::apply_lightweight_tool_result_trim(session) {
+            let live_context_tokens =
+                super::estimate_current_context_tokens(&session.record().messages);
+            let summary = super::context_pressure_governance_summary(
+                "auto_preflight",
+                "prompt.pre_request",
+                rocode_types::ContextPressureGovernanceStatus::Compacted,
+                Some("lightweight_tool_result_trim"),
+                request_context_tokens,
+                live_context_tokens,
+                None,
+                request_body_chars,
+                true,
+                true,
+                false,
+                Some(trim_summary.clone()),
+                Some(super::context_compaction_decision_trace(
+                    "prompt.pre_request",
+                    "lightweight_trim",
+                    Some("lightweight_tool_result_trim"),
+                    None,
+                    None,
+                    Some(trim_summary.clone()),
+                )),
+            );
+            super::record_context_pressure_governance_summary(session, &summary);
+            super::persist_lightweight_trim_summary(session, Some(&trim_summary));
             tracing::info!(
                 session_id = %session_id,
                 trimmed_rounds = trim_summary.trimmed_rounds,
@@ -1432,6 +1458,7 @@ impl SessionPrompt {
             );
             return true;
         }
+        super::persist_lightweight_trim_summary(session, None);
         let Some(assessment) = Self::assess_compaction(
             filtered_messages,
             provider.as_ref(),
@@ -1442,6 +1469,31 @@ impl SessionPrompt {
             request_context_tokens,
             request_body_chars,
         ) else {
+            if let Some(backoff) = Self::auto_compaction_backoff_summary(filtered_messages) {
+                let summary = super::context_pressure_governance_summary(
+                    "auto_preflight",
+                    "prompt.pre_request",
+                    rocode_types::ContextPressureGovernanceStatus::Deferred,
+                    Some("auto_compaction_backoff"),
+                    request_context_tokens,
+                    None,
+                    None,
+                    request_body_chars,
+                    false,
+                    false,
+                    false,
+                    None,
+                    Some(super::context_compaction_decision_trace(
+                        "prompt.pre_request",
+                        "auto_compaction_backoff",
+                        Some("auto_compaction_backoff"),
+                        None,
+                        Some(backoff),
+                        None,
+                    )),
+                );
+                super::record_context_pressure_governance_summary(session, &summary);
+            }
             return false;
         };
 
@@ -1474,7 +1526,7 @@ impl SessionPrompt {
             assessment.limit_tokens,
             assessment.body_chars,
         );
-        Self::compact_context_for_reason(
+        let compacted = Self::compact_context_for_reason(
             session_id,
             session,
             filtered_messages,
@@ -1488,7 +1540,41 @@ impl SessionPrompt {
             record,
             force_compaction,
         )
-        .await
+        .await;
+        let live_context_tokens =
+            super::estimate_current_context_tokens(&session.record().messages);
+        let summary = super::context_pressure_governance_summary(
+            "auto_preflight",
+            "prompt.pre_request",
+            if compacted {
+                rocode_types::ContextPressureGovernanceStatus::Compacted
+            } else {
+                rocode_types::ContextPressureGovernanceStatus::Deferred
+            },
+            Some(assessment.reason),
+            request_context_tokens,
+            live_context_tokens,
+            assessment.limit_tokens,
+            assessment.body_chars.or(request_body_chars),
+            true,
+            compacted,
+            false,
+            None,
+            Some(super::context_compaction_decision_trace(
+                "prompt.pre_request",
+                if compacted {
+                    "full_compaction"
+                } else {
+                    "deferred_after_compaction_attempt"
+                },
+                Some(assessment.reason),
+                Some(&assessment),
+                None,
+                None,
+            )),
+        );
+        super::record_context_pressure_governance_summary(session, &summary);
+        compacted
     }
 
     fn provider_failure_is_overflow(error: &anyhow::Error) -> bool {

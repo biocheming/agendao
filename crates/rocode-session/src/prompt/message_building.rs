@@ -27,9 +27,10 @@ use super::{
     CONTEXT_COMPACTION_RECORD_METADATA_KEY,
 };
 use rocode_types::{
-    LightweightTrimSummary, SessionContinuityCompactionSummary, SessionContinuityDependency,
-    SessionContinuityDependencyKind, SessionContinuityLedgerEntry, SessionContinuityLedgerKind,
-    SessionContinuityLimits, SessionContinuityPacket, SessionContinuityTurn,
+    ContextCompactionBackoffSummary, LightweightTrimSummary, SessionContinuityCompactionSummary,
+    SessionContinuityDependency, SessionContinuityDependencyKind, SessionContinuityLedgerEntry,
+    SessionContinuityLedgerKind, SessionContinuityLimits, SessionContinuityPacket,
+    SessionContinuityTurn,
 };
 
 type LegacyToolResult = (
@@ -717,7 +718,9 @@ impl SessionPrompt {
             .unwrap_or(false)
     }
 
-    fn should_back_off_auto_compaction(messages: &[SessionMessage]) -> bool {
+    pub(crate) fn auto_compaction_backoff_summary(
+        messages: &[SessionMessage],
+    ) -> Option<ContextCompactionBackoffSummary> {
         let recent_compaction_offsets: Vec<usize> = messages
             .iter()
             .enumerate()
@@ -731,23 +734,16 @@ impl SessionPrompt {
             .collect();
 
         let Some(last_compaction_index) = recent_compaction_offsets.last().copied() else {
-            return false;
+            return None;
         };
 
         let messages_since_last = messages.len().saturating_sub(last_compaction_index + 1);
-        if messages_since_last < AUTO_COMPACTION_MIN_MESSAGES_AFTER_LAST {
-            return true;
-        }
         let user_turns_since_last = messages
             .iter()
             .skip(last_compaction_index + 1)
             .filter(|message| matches!(message.role, MessageRole::User))
             .count();
-        if user_turns_since_last < AUTO_COMPACTION_MIN_USER_TURNS_AFTER_LAST {
-            return true;
-        }
-
-        messages
+        let recent_compaction_count = messages
             .iter()
             .rev()
             .take(AUTO_COMPACTION_RECENT_WINDOW_MESSAGES)
@@ -757,8 +753,28 @@ impl SessionPrompt {
                     .iter()
                     .any(|part| matches!(part.part_type, PartType::Compaction { .. }))
             })
-            .count()
-            >= 2
+            .count();
+
+        if messages_since_last < AUTO_COMPACTION_MIN_MESSAGES_AFTER_LAST
+            || user_turns_since_last < AUTO_COMPACTION_MIN_USER_TURNS_AFTER_LAST
+            || recent_compaction_count >= 2
+        {
+            return Some(ContextCompactionBackoffSummary {
+                last_compaction_index,
+                messages_since_last,
+                user_turns_since_last,
+                recent_compaction_count,
+                min_messages_after_last: AUTO_COMPACTION_MIN_MESSAGES_AFTER_LAST,
+                min_user_turns_after_last: AUTO_COMPACTION_MIN_USER_TURNS_AFTER_LAST,
+                recent_window_messages: AUTO_COMPACTION_RECENT_WINDOW_MESSAGES,
+            });
+        }
+
+        None
+    }
+
+    fn should_back_off_auto_compaction(messages: &[SessionMessage]) -> bool {
+        Self::auto_compaction_backoff_summary(messages).is_some()
     }
 
     fn lightweight_trim_tool_result_content(
