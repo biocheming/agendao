@@ -7,6 +7,9 @@ pub fn persist_session_telemetry_snapshot(
     session: &mut Session,
     snapshot: &SessionTelemetrySnapshot,
 ) -> anyhow::Result<()> {
+    // Keep the session row in sync with the final end-of-turn telemetry
+    // snapshot instead of writing usage incrementally on every token event.
+    session.update_usage(snapshot.usage.clone());
     let value = serde_json::to_value(snapshot)?;
     session.insert_metadata(SESSION_TELEMETRY_METADATA_KEY.to_string(), value);
     Ok(())
@@ -122,6 +125,16 @@ mod tests {
 
         let loaded = load_session_telemetry_snapshot(&session).expect("snapshot should load");
         assert_eq!(loaded, snapshot);
+    }
+
+    #[test]
+    fn telemetry_snapshot_syncs_usage_into_session_record() {
+        let mut session = Session::new("proj", ".");
+        let snapshot = sample_snapshot();
+
+        persist_session_telemetry_snapshot(&mut session, &snapshot).expect("persist should work");
+
+        assert_eq!(session.record().usage.as_ref(), Some(&snapshot.usage));
     }
 
     #[test]
