@@ -25,6 +25,7 @@ pub const CONTEXT_COMPACTION_LIFECYCLE_SUMMARY_METADATA_KEY: &str =
     "context_compaction_lifecycle_summary";
 pub const CONTEXT_PRESSURE_GOVERNANCE_SUMMARY_METADATA_KEY: &str =
     "context_pressure_governance_summary";
+pub const CONTEXT_LIGHTWEIGHT_TRIM_SUMMARY_METADATA_KEY: &str = "context_lightweight_trim_summary";
 
 pub fn sanctioned_model_context_summary(message: &SessionMessage) -> Option<&str> {
     surface_contract::sanctioned_model_context_projection_for_message(message)
@@ -74,10 +75,11 @@ use rocode_types::{
     context_usage_percent, message_latest_compaction_summary,
     ContextCompactionInstalledDiagnostics, ContextCompactionLifecycleStatus,
     ContextCompactionLifecycleSummary, ContextCompactionSummary, ContextPressureGovernanceStatus,
-    ContextPressureGovernanceSummary, MemoryRetrievalPacket, PromptSurfaceEvidenceSummary,
-    SessionCacheBoundaryKind, SessionCacheBoundarySummary, SessionCacheEvidenceExplain,
-    SessionCacheSemanticsBasis, SessionCacheSemanticsSummary, SessionCacheSeverity,
-    SessionContextExplain, SessionContextKind, SubsessionHandoffPacket, SubsessionResultEnvelope,
+    ContextPressureGovernanceSummary, LightweightTrimSummary, MemoryRetrievalPacket,
+    PromptSurfaceEvidenceSummary, SessionCacheBoundaryKind, SessionCacheBoundarySummary,
+    SessionCacheEvidenceExplain, SessionCacheSemanticsBasis, SessionCacheSemanticsSummary,
+    SessionCacheSeverity, SessionContextExplain, SessionContextKind, SubsessionHandoffPacket,
+    SubsessionResultEnvelope,
 };
 
 use crate::instruction::{InstructionLoader, InstructionSource};
@@ -718,6 +720,23 @@ fn persist_context_pressure_governance_summary(
     }
 }
 
+fn persist_lightweight_trim_summary(
+    session: &mut Session,
+    summary: Option<&LightweightTrimSummary>,
+) {
+    match summary.and_then(|value| serde_json::to_value(value).ok()) {
+        Some(value) => {
+            session.insert_metadata(
+                CONTEXT_LIGHTWEIGHT_TRIM_SUMMARY_METADATA_KEY.to_string(),
+                value,
+            );
+        }
+        None => {
+            session.remove_metadata(CONTEXT_LIGHTWEIGHT_TRIM_SUMMARY_METADATA_KEY);
+        }
+    }
+}
+
 fn persist_context_compaction_lifecycle_summary(
     session: &mut Session,
     summary: &ContextCompactionLifecycleSummary,
@@ -873,6 +892,7 @@ fn context_pressure_governance_summary(
     compaction_attempted: bool,
     compaction_succeeded: bool,
     blocking: bool,
+    lightweight_trim: Option<LightweightTrimSummary>,
 ) -> ContextPressureGovernanceSummary {
     ContextPressureGovernanceSummary {
         trigger: trigger.to_string(),
@@ -892,6 +912,7 @@ fn context_pressure_governance_summary(
         compaction_attempted,
         compaction_succeeded,
         blocking,
+        lightweight_trim,
     }
 }
 
@@ -950,6 +971,7 @@ pub fn assess_request_view_context_governance(
                 compaction_attempted,
                 compaction_succeeded,
                 blocking,
+                None,
             )
         }
         None => context_pressure_governance_summary(
@@ -968,6 +990,7 @@ pub fn assess_request_view_context_governance(
             compaction_attempted,
             compaction_succeeded,
             false,
+            None,
         ),
     }
 }
@@ -1002,14 +1025,16 @@ pub fn govern_pre_dispatch_session_context(
             false,
             false,
             false,
+            None,
         );
         persist_context_pressure_governance_summary(session, &summary);
+        persist_lightweight_trim_summary(session, None);
         return ContextPressureGovernanceOutcome::Proceed(summary);
     }
 
     let filtered = SessionPrompt::filter_compacted_messages(&session.record().messages);
     let compaction_config = SessionPrompt::runtime_compaction_config(config_store);
-    if SessionPrompt::apply_lightweight_tool_result_trim(session) {
+    if let Some(trim_summary) = SessionPrompt::apply_lightweight_tool_result_trim(session) {
         let live_context_tokens =
             estimate_current_context_tokens(&session.record().messages).or(live_context_tokens);
         let summary = context_pressure_governance_summary(
@@ -1024,10 +1049,13 @@ pub fn govern_pre_dispatch_session_context(
             true,
             true,
             false,
+            Some(trim_summary.clone()),
         );
         persist_context_pressure_governance_summary(session, &summary);
+        persist_lightweight_trim_summary(session, Some(&trim_summary));
         return ContextPressureGovernanceOutcome::Proceed(summary);
     }
+    persist_lightweight_trim_summary(session, None);
     let Some(assessment) = SessionPrompt::assess_compaction(
         &filtered,
         provider,
@@ -1050,6 +1078,7 @@ pub fn govern_pre_dispatch_session_context(
             false,
             false,
             false,
+            None,
         );
         persist_context_pressure_governance_summary(session, &summary);
         return ContextPressureGovernanceOutcome::Proceed(summary);
@@ -1166,6 +1195,7 @@ pub fn govern_pre_dispatch_session_context(
             true,
             compacted,
             blocking,
+            None,
         )
     } else {
         context_pressure_governance_summary(
@@ -1180,6 +1210,7 @@ pub fn govern_pre_dispatch_session_context(
             true,
             true,
             false,
+            None,
         )
     };
     persist_context_pressure_governance_summary(session, &summary);

@@ -27,7 +27,7 @@ use super::{
     CONTEXT_COMPACTION_RECORD_METADATA_KEY,
 };
 use rocode_types::{
-    SessionContinuityCompactionSummary, SessionContinuityDependency,
+    LightweightTrimSummary, SessionContinuityCompactionSummary, SessionContinuityDependency,
     SessionContinuityDependencyKind, SessionContinuityLedgerEntry, SessionContinuityLedgerKind,
     SessionContinuityLimits, SessionContinuityPacket, SessionContinuityTurn,
 };
@@ -883,7 +883,9 @@ impl SessionPrompt {
         Some((assistant_summary, tool_summary, call_tokens, result_tokens))
     }
 
-    pub(crate) fn apply_lightweight_tool_result_trim(session: &mut Session) -> bool {
+    pub(crate) fn apply_lightweight_tool_result_trim(
+        session: &mut Session,
+    ) -> Option<LightweightTrimSummary> {
         let mut tool_name_by_call: HashMap<String, String> = HashMap::new();
         for message in &session.messages {
             for part in &message.parts {
@@ -900,6 +902,10 @@ impl SessionPrompt {
 
         let mut trimmed_tokens = 0usize;
         let mut trimmed_tool_call_tokens = 0usize;
+        let mut trimmed_rounds = 0usize;
+        let mut trimmed_tool_calls = 0usize;
+        let mut trimmed_tool_results = 0usize;
+        let mut used_round_grouping = false;
         let mut changed = false;
         let mut message_index = 0usize;
 
@@ -929,12 +935,18 @@ impl SessionPrompt {
                     && trimmed_tool_call_tokens < LIGHTWEIGHT_TOOL_CALL_TRIM_TARGET_TOKENS
                 {
                     let assistant_message = &mut session.messages_mut()[message_index];
+                    let before_count = assistant_message
+                        .parts
+                        .iter()
+                        .filter(|part| matches!(part.part_type, PartType::ToolCall { .. }))
+                        .count();
                     assistant_message
                         .parts
                         .retain(|part| !matches!(part.part_type, PartType::ToolCall { .. }));
                     assistant_message.add_text(assistant_summary);
                     assistant_message.mark_text_parts_synthetic();
                     trimmed_tool_call_tokens += call_tokens;
+                    trimmed_tool_calls += before_count;
                     changed = true;
                 }
 
@@ -943,12 +955,23 @@ impl SessionPrompt {
                         && trimmed_tokens < LIGHTWEIGHT_TOOL_RESULT_TRIM_TARGET_TOKENS
                     {
                         if let Some(tool_message) = session.messages_mut().get_mut(next_index) {
+                            let before_count = tool_message
+                                .parts
+                                .iter()
+                                .filter(|part| {
+                                    matches!(part.part_type, PartType::ToolResult { .. })
+                                })
+                                .count();
                             tool_message.parts.retain(|part| {
                                 !matches!(part.part_type, PartType::ToolResult { .. })
                             });
                             tool_message.add_text(tool_summary);
                             tool_message.mark_text_parts_synthetic();
                             trimmed_tokens += result_tokens;
+                            trimmed_tool_results +=
+                                before_count.min(LIGHTWEIGHT_TOOL_ROUND_TRIM_MAX_RESULTS);
+                            trimmed_rounds += 1;
+                            used_round_grouping = true;
                             changed = true;
                         }
                     }
@@ -990,6 +1013,7 @@ impl SessionPrompt {
                         };
 
                         trimmed_tokens += content.chars().count() / 4;
+                        trimmed_tool_results += 1;
                         *content = trimmed;
                         changed = true;
                     }
@@ -1005,6 +1029,7 @@ impl SessionPrompt {
                         };
                         trimmed_tool_call_tokens += serde_json::to_string(input)
                             .map_or(0, |value| value.chars().count() / 4);
+                        trimmed_tool_calls += 1;
                         part.part_type = PartType::Text {
                             text: trimmed,
                             synthetic: Some(true),
@@ -1023,9 +1048,17 @@ impl SessionPrompt {
 
         if changed {
             session.touch();
+            return Some(LightweightTrimSummary {
+                trimmed_rounds,
+                trimmed_tool_calls,
+                trimmed_tool_results,
+                trimmed_call_tokens: trimmed_tool_call_tokens,
+                trimmed_result_tokens: trimmed_tokens,
+                used_round_grouping,
+            });
         }
 
-        changed
+        None
     }
 
     fn provider_content_part_char_len(part: &ContentPart) -> usize {
@@ -2941,8 +2974,11 @@ mod tests {
         latest_assistant.add_tool_result("call_new", &"Y".repeat(20_000), false);
         session.messages_mut().push(latest_assistant);
 
-        let changed = SessionPrompt::apply_lightweight_tool_result_trim(&mut session);
-        assert!(changed, "expected old tool result to be collapsed");
+        let summary = SessionPrompt::apply_lightweight_tool_result_trim(&mut session);
+        assert!(
+            summary.is_some(),
+            "expected old tool result to be collapsed"
+        );
 
         let tool_results: Vec<String> = session
             .messages
@@ -2984,8 +3020,8 @@ mod tests {
             .messages_mut()
             .push(SessionMessage::user(session_id.clone(), "latest user"));
 
-        let changed = SessionPrompt::apply_lightweight_tool_result_trim(&mut session);
-        assert!(changed, "expected old tool call to be collapsed");
+        let summary = SessionPrompt::apply_lightweight_tool_result_trim(&mut session);
+        assert!(summary.is_some(), "expected old tool call to be collapsed");
 
         let old_parts = &session.messages[1].parts;
         assert!(matches!(
@@ -3020,8 +3056,10 @@ mod tests {
             .messages_mut()
             .push(SessionMessage::user(session_id.clone(), "latest user"));
 
-        let changed = SessionPrompt::apply_lightweight_tool_result_trim(&mut session);
-        assert!(changed, "expected old assistant/tool round to be collapsed");
+        let summary = SessionPrompt::apply_lightweight_tool_result_trim(&mut session)
+            .expect("expected old assistant/tool round to be collapsed");
+        assert_eq!(summary.trimmed_rounds, 1);
+        assert!(summary.used_round_grouping);
 
         assert!(matches!(
             session.messages[1].parts.last().map(|part| &part.part_type),
