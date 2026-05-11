@@ -1009,6 +1009,25 @@ pub fn govern_pre_dispatch_session_context(
 
     let filtered = SessionPrompt::filter_compacted_messages(&session.record().messages);
     let compaction_config = SessionPrompt::runtime_compaction_config(config_store);
+    if SessionPrompt::apply_lightweight_tool_result_trim(session) {
+        let live_context_tokens =
+            estimate_current_context_tokens(&session.record().messages).or(live_context_tokens);
+        let summary = context_pressure_governance_summary(
+            trigger,
+            phase,
+            ContextPressureGovernanceStatus::Compacted,
+            Some("lightweight_tool_result_trim"),
+            request_context_tokens,
+            live_context_tokens,
+            None,
+            request_body_chars,
+            true,
+            true,
+            false,
+        );
+        persist_context_pressure_governance_summary(session, &summary);
+        return ContextPressureGovernanceOutcome::Proceed(summary);
+    }
     let Some(assessment) = SessionPrompt::assess_compaction(
         &filtered,
         provider,

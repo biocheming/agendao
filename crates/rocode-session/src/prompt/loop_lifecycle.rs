@@ -1420,6 +1420,13 @@ impl SessionPrompt {
         request_body_chars: Option<usize>,
     ) -> bool {
         let compaction_config = Self::runtime_compaction_config(config_store);
+        if Self::apply_lightweight_tool_result_trim(session) {
+            tracing::info!(
+                session_id = %session_id,
+                "applied lightweight tool-result trim before pre-request compaction"
+            );
+            return true;
+        }
         let Some(assessment) = Self::assess_compaction(
             filtered_messages,
             provider.as_ref(),
@@ -1560,10 +1567,7 @@ impl SessionPrompt {
         mut filtered_messages: Vec<SessionMessage>,
         provider_type: ProviderType,
     ) -> anyhow::Result<PreparedChatMessages> {
-        if rocode_plugin::should_trigger_agent_hooks(
-            HookEvent::ChatMessagesTransform,
-            agent_name,
-        )
+        if rocode_plugin::should_trigger_agent_hooks(HookEvent::ChatMessagesTransform, agent_name)
             .await
         {
             let hook_messages = serde_json::Value::Array(
