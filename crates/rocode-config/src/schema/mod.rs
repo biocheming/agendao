@@ -1094,11 +1094,14 @@ pub struct ModelVariantConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PluginConfig {
-    /// Plugin type: "npm", "pip", "cargo", "file", "dylib"
+    /// Plugin type schema.
+    ///
+    /// Runtime auto-loading is currently wired for "npm", "file", and "dylib".
+    /// "pip" / "cargo" remain accepted here for compatibility and future expansion.
     #[serde(rename = "type")]
     pub plugin_type: String,
 
-    /// Package name (npm package, pip package, cargo crate)
+    /// Package name for package-based plugin specs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub package: Option<String>,
 
