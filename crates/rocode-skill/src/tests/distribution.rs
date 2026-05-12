@@ -995,6 +995,7 @@ fn search_source_indices_returns_stale_for_old_index() {
             revision: Some("rev-old".to_string()),
             manifest_path: None,
             checksum: None,
+            ..Default::default()
         }],
     };
     governance
@@ -1011,6 +1012,312 @@ fn search_source_indices_returns_stale_for_old_index() {
 
     assert_eq!(response.matches.len(), 1);
     assert!(response.matches[0].stale);
+}
+
+#[test]
+fn search_source_indices_assigns_trust_official_for_bundled() {
+    let dir = tempdir().unwrap();
+    let governance = SkillGovernanceAuthority::new(dir.path(), None);
+
+    // Inject a bundled source index.
+    let snapshot = rocode_types::SkillSourceIndexSnapshot {
+        source: SkillSourceRef {
+            source_id: "bundled:core".to_string(),
+            source_kind: SkillSourceKind::Bundled,
+            locator: "builtin".to_string(),
+            revision: None,
+        },
+        updated_at: 1_800_000_000,
+        entries: vec![rocode_types::SkillSourceIndexEntry {
+            skill_name: "bundled-skill".to_string(),
+            description: Some("built-in skill".to_string()),
+            ..Default::default()
+        }],
+    };
+    governance
+        .hub_store()
+        .upsert_source_index(snapshot)
+        .unwrap();
+
+    let response = governance.search_source_indices(&SkillHubSearchRequest {
+        query: Some("bundled".to_string()),
+        source_id: None,
+        source_kind: None,
+        limit: Some(5),
+    });
+
+    assert_eq!(response.matches.len(), 1);
+    assert_eq!(
+        response.matches[0].trust_level,
+        rocode_types::SkillTrustLevel::Official
+    );
+    assert!(response.matches[0].score >= 200);
+}
+
+#[test]
+fn search_source_indices_trust_ranking_boosts_official_over_community() {
+    let dir = tempdir().unwrap();
+    let governance = SkillGovernanceAuthority::new(dir.path(), None);
+
+    // Community Git source with exact name match.
+    governance
+        .hub_store()
+        .upsert_source_index(rocode_types::SkillSourceIndexSnapshot {
+            source: SkillSourceRef {
+                source_id: "git:community".to_string(),
+                source_kind: SkillSourceKind::Git,
+                locator: "https://git.example.test/skills.git".to_string(),
+                revision: None,
+            },
+            updated_at: 1_800_000_000,
+            entries: vec![rocode_types::SkillSourceIndexEntry {
+                skill_name: "security-reviewer".to_string(),
+                description: Some("community version".to_string()),
+                ..Default::default()
+            }],
+        })
+        .unwrap();
+
+    // Official bundled source with same skill name.
+    governance
+        .hub_store()
+        .upsert_source_index(rocode_types::SkillSourceIndexSnapshot {
+            source: SkillSourceRef {
+                source_id: "bundled:core".to_string(),
+                source_kind: SkillSourceKind::Bundled,
+                locator: "builtin".to_string(),
+                revision: None,
+            },
+            updated_at: 1_800_000_000,
+            entries: vec![rocode_types::SkillSourceIndexEntry {
+                skill_name: "security-reviewer".to_string(),
+                description: Some("official version".to_string()),
+                ..Default::default()
+            }],
+        })
+        .unwrap();
+
+    let response = governance.search_source_indices(&SkillHubSearchRequest {
+        query: Some("security-reviewer".to_string()),
+        source_id: None,
+        source_kind: None,
+        limit: Some(10),
+    });
+
+    assert_eq!(response.matches.len(), 2);
+    // Official should rank above community due to trust score boost.
+    assert_eq!(
+        response.matches[0].trust_level,
+        rocode_types::SkillTrustLevel::Official
+    );
+    assert_eq!(
+        response.matches[1].trust_level,
+        rocode_types::SkillTrustLevel::Community
+    );
+    assert!(
+        response.matches[0].score > response.matches[1].score,
+        "official trust score ({}) should exceed community ({})",
+        response.matches[0].score,
+        response.matches[1].score
+    );
+}
+
+#[test]
+fn search_source_indices_includes_web_fallback_when_no_sources_indexed() {
+    let dir = tempdir().unwrap();
+    let governance = SkillGovernanceAuthority::new(dir.path(), None);
+
+    let response = governance.search_source_indices(&SkillHubSearchRequest {
+        query: Some("security review".to_string()),
+        source_id: None,
+        source_kind: None,
+        limit: Some(10),
+    });
+
+    assert!(response.matches.is_empty());
+    assert_eq!(
+        response.web_fallback_query,
+        Some("security review".to_string())
+    );
+}
+
+#[test]
+fn search_source_indices_omits_web_fallback_when_matches_exist() {
+    let dir = tempdir().unwrap();
+    let index_path = dir.path().join("catalog.json");
+    fs::write(
+        &index_path,
+        serde_json::json!({
+            "entries": [{ "skill_name": "test-skill", "description": "test" }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let governance = SkillGovernanceAuthority::new(dir.path(), None);
+    governance
+        .refresh_source_index(
+            &SkillSourceRef {
+                source_id: "registry:test/web".to_string(),
+                source_kind: SkillSourceKind::Registry,
+                locator: index_path.to_string_lossy().to_string(),
+                revision: None,
+            },
+            "test:search-web-fallback",
+        )
+        .unwrap();
+
+    let response = governance.search_source_indices(&SkillHubSearchRequest {
+        query: Some("test".to_string()),
+        source_id: None,
+        source_kind: None,
+        limit: Some(10),
+    });
+
+    assert_eq!(response.matches.len(), 1);
+    assert!(response.web_fallback_query.is_none());
+}
+
+#[test]
+fn search_source_indices_omits_web_fallback_when_no_query() {
+    let dir = tempdir().unwrap();
+    let governance = SkillGovernanceAuthority::new(dir.path(), None);
+
+    let response = governance.search_source_indices(&SkillHubSearchRequest {
+        query: None,
+        source_id: None,
+        source_kind: None,
+        limit: Some(10),
+    });
+
+    assert!(response.matches.is_empty());
+    assert!(response.web_fallback_query.is_none());
+}
+
+#[test]
+fn search_source_indices_includes_maintenance_status_for_stale_and_active() {
+    let dir = tempdir().unwrap();
+    let config = Config {
+        skills: Some(SkillsConfig {
+            hub: Some(SkillHubConfig {
+                index_freshness_max_age_seconds: Some(1),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let governance =
+        SkillGovernanceAuthority::new(dir.path(), Some(Arc::new(ConfigStore::new(config))));
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    // Stale entry — updated long ago.
+    governance
+        .hub_store()
+        .upsert_source_index(rocode_types::SkillSourceIndexSnapshot {
+            source: SkillSourceRef {
+                source_id: "registry:test/stale-status".to_string(),
+                source_kind: SkillSourceKind::Registry,
+                locator: "https://stale.test/catalog.json".to_string(),
+                revision: None,
+            },
+            updated_at: 1,
+            entries: vec![rocode_types::SkillSourceIndexEntry {
+                skill_name: "stale-skill".to_string(),
+                ..Default::default()
+            }],
+        })
+        .unwrap();
+
+    // Active entry — updated recently.
+    governance
+        .hub_store()
+        .upsert_source_index(rocode_types::SkillSourceIndexSnapshot {
+            source: SkillSourceRef {
+                source_id: "registry:test/active-status".to_string(),
+                source_kind: SkillSourceKind::Registry,
+                locator: "https://active.test/catalog.json".to_string(),
+                revision: None,
+            },
+            updated_at: now,
+            entries: vec![rocode_types::SkillSourceIndexEntry {
+                skill_name: "active-skill".to_string(),
+                ..Default::default()
+            }],
+        })
+        .unwrap();
+
+    let response = governance.search_source_indices(&SkillHubSearchRequest {
+        query: None,
+        source_id: None,
+        source_kind: None,
+        limit: Some(10),
+    });
+
+    assert_eq!(response.matches.len(), 2);
+    let stale_match = response
+        .matches
+        .iter()
+        .find(|m| m.entry.skill_name == "stale-skill")
+        .unwrap();
+    let active_match = response
+        .matches
+        .iter()
+        .find(|m| m.entry.skill_name == "active-skill")
+        .unwrap();
+
+    assert!(stale_match.stale);
+    assert!(stale_match
+        .maintenance_status
+        .as_deref()
+        .is_some_and(|s| s.starts_with("stale")));
+
+    assert!(!active_match.stale);
+    assert_eq!(active_match.maintenance_status.as_deref(), Some("active"));
+}
+
+#[test]
+fn search_source_indices_trust_ignores_source_id_naming_convention() {
+    let dir = tempdir().unwrap();
+    let governance = SkillGovernanceAuthority::new(dir.path(), None);
+
+    // A registry source with a source_id that looks "official" should
+    // still only get Community trust — source_id is not an identity proof.
+    governance
+        .hub_store()
+        .upsert_source_index(rocode_types::SkillSourceIndexSnapshot {
+            source: SkillSourceRef {
+                source_id: "registry:rocode/official-trust-me".to_string(),
+                source_kind: SkillSourceKind::Registry,
+                locator: "https://evil.example.test/catalog.json".to_string(),
+                revision: None,
+            },
+            updated_at: 1_800_000_000,
+            entries: vec![rocode_types::SkillSourceIndexEntry {
+                skill_name: "totally-official".to_string(),
+                description: Some("not really official".to_string()),
+                ..Default::default()
+            }],
+        })
+        .unwrap();
+
+    let response = governance.search_source_indices(&SkillHubSearchRequest {
+        query: Some("official".to_string()),
+        source_id: None,
+        source_kind: None,
+        limit: Some(5),
+    });
+
+    assert_eq!(response.matches.len(), 1);
+    assert_eq!(
+        response.matches[0].trust_level,
+        rocode_types::SkillTrustLevel::Community,
+        "Registry source trust must not be elevated by source_id spelling"
+    );
 }
 
 #[test]

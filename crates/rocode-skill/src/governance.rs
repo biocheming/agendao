@@ -1043,6 +1043,43 @@ impl SkillGovernanceAuthority {
         now.saturating_sub(source_updated_at) > threshold
     }
 
+    fn trust_level_for_source(source: &SkillSourceRef) -> rocode_types::SkillTrustLevel {
+        // Trust is derived from source_kind, not source_id.
+        // source_id is user-configurable and trivially spoofable;
+        // source_kind is a code-level enum that reflects how the source
+        // was registered (bundled at build time, configured as a registry,
+        // or resolved from a git/archive locator).
+        match source.source_kind {
+            rocode_types::SkillSourceKind::Bundled => rocode_types::SkillTrustLevel::Official,
+            rocode_types::SkillSourceKind::Registry
+            | rocode_types::SkillSourceKind::Git => rocode_types::SkillTrustLevel::Community,
+            _ => rocode_types::SkillTrustLevel::Unknown,
+        }
+    }
+
+    fn trust_score(trust_level: rocode_types::SkillTrustLevel) -> i64 {
+        match trust_level {
+            rocode_types::SkillTrustLevel::Official => 200,
+            rocode_types::SkillTrustLevel::Community => 100,
+            rocode_types::SkillTrustLevel::Unknown => 0,
+        }
+    }
+
+    fn maintenance_status_label(stale: bool, source_updated_at: i64) -> Option<String> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let age_days = (now.saturating_sub(source_updated_at)).max(1) / 86_400;
+        if stale {
+            Some(format!("stale ({} days)", age_days.max(1)))
+        } else if age_days < 30 {
+            Some("active".to_string())
+        } else {
+            None
+        }
+    }
+
     pub fn search_source_indices(&self, request: &SkillHubSearchRequest) -> SkillHubSearchResponse {
         let normalized_query = trimmed_option(request.query.as_deref());
         let query_terms = search_query_terms(normalized_query.as_deref());
@@ -1070,16 +1107,20 @@ impl SkillGovernanceAuthority {
             })
         {
             let stale = self.compute_stale(snapshot.updated_at);
+            let trust_level = Self::trust_level_for_source(&snapshot.source);
             for entry in snapshot.entries {
-                let Some((score, match_reasons)) =
+                let Some((base_score, match_reasons)) =
                     score_source_index_entry(&entry, normalized_query.as_deref(), &query_terms)
                 else {
                     continue;
                 };
+                let score = base_score + Self::trust_score(trust_level);
                 let managed_record = managed_by_name.get(&normalize_name(&entry.skill_name));
                 let managed_for_source = managed_record
                     .and_then(|record| record.source.as_ref())
                     .is_some_and(|source| source == &snapshot.source);
+                let maintenance_status =
+                    Self::maintenance_status_label(stale, snapshot.updated_at);
                 matches.push(SkillHubSearchMatch {
                     source: snapshot.source.clone(),
                     entry,
@@ -1099,6 +1140,8 @@ impl SkillGovernanceAuthority {
                         .filter(|_| managed_for_source)
                         .and_then(|record| record.installed_revision.clone()),
                     stale,
+                    trust_level,
+                    maintenance_status,
                 });
             }
         }
@@ -1128,10 +1171,18 @@ impl SkillGovernanceAuthority {
             Vec::new()
         };
 
+        let web_fallback_query =
+            if matches.is_empty() && !has_indexed_sources && normalized_query.is_some() {
+                normalized_query.clone()
+            } else {
+                None
+            };
+
         SkillHubSearchResponse {
             query: normalized_query,
             matches,
             suggested_refresh_sources,
+            web_fallback_query,
         }
     }
 
