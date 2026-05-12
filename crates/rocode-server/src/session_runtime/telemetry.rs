@@ -4,14 +4,15 @@ use tokio::sync::{broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::runtime_control::{
-    build_session_execution_topology, ExecutionKind, ExecutionRecord, QuestionInfo, QuestionReply,
-    RuntimeControlRegistry, SessionExecutionTopology, SessionRunStatus, TopologyChangeContext,
+    ExecutionKind, ExecutionRecord, QuestionInfo, QuestionReply, RuntimeControlRegistry,
+    SessionExecutionTopology, SessionRunStatus, TopologyChangeContext,
+    build_session_execution_topology,
 };
 use crate::session_runtime::events::{DiffEntry, QuestionResolutionKind, ServerEvent};
 use crate::session_runtime::stage_summary::StageSummaryStore;
 use crate::session_runtime::state::{RuntimeStateStore, SessionRuntimeState};
 use crate::stage_event_log::{EventFilter, StageEventLog};
-use rocode_command::stage_protocol::{telemetry_event_names, EventScope, StageEvent, StageSummary};
+use rocode_command::stage_protocol::{EventScope, StageEvent, StageSummary, telemetry_event_names};
 use rocode_plugin::{HookContext, HookEvent};
 use rocode_session::{
     SessionMessage, SessionTelemetrySnapshot, SessionTelemetrySnapshotVersion, SessionUsage,
@@ -799,14 +800,14 @@ impl RuntimeTelemetryAuthority {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_runtime::{emit_scheduler_stage_message, SchedulerStageMessageInput};
     use crate::ServerState;
+    use crate::session_runtime::{SchedulerStageMessageInput, emit_scheduler_stage_message};
     use rocode_orchestrator::ExecutionContext;
-    use rocode_plugin::{global, Hook, HookContext};
+    use rocode_plugin::{Hook, HookContext, global};
     use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::sync::mpsc;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     async fn recv_stage_summary_hook_for_session(
         rx: &mut mpsc::UnboundedReceiver<HookContext>,
@@ -886,11 +887,13 @@ mod tests {
             hook_ctx.get("summary").and_then(|v| v.get("stage_name")),
             Some(&serde_json::json!("plan"))
         );
-        assert!(hook_ctx
-            .get("summary")
-            .and_then(|value| value.get("stage_id"))
-            .and_then(|value| value.as_str())
-            .is_some());
+        assert!(
+            hook_ctx
+                .get("summary")
+                .and_then(|value| value.get("stage_id"))
+                .and_then(|value| value.as_str())
+                .is_some()
+        );
 
         let message_snapshot = {
             let sessions = state.sessions.lock().await;
@@ -906,13 +909,11 @@ mod tests {
             .runtime_telemetry
             .refresh_stage_summary_from_message(&session_id, &message_snapshot)
             .await;
-        assert!(recv_stage_summary_hook_for_session(
-            &mut rx,
-            &session_id,
-            Duration::from_millis(200)
-        )
-        .await
-        .is_none());
+        assert!(
+            recv_stage_summary_hook_for_session(&mut rx, &session_id, Duration::from_millis(200))
+                .await
+                .is_none()
+        );
 
         let _ = global()
             .remove(&HookEvent::StageSummaryUpdated, &hook_name)

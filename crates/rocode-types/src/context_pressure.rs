@@ -71,12 +71,7 @@ pub fn current_context_tokens_from_sources(
     let usage_context_tokens = usage_context_tokens.filter(|tokens| *tokens > 0);
     let active_stage_context_tokens = active_stage_context_tokens.filter(|tokens| *tokens > 0);
 
-    match (usage_context_tokens, active_stage_context_tokens) {
-        (Some(usage), Some(active_stage)) => Some(usage.max(active_stage)),
-        (Some(usage), None) => Some(usage),
-        (None, Some(active_stage)) => Some(active_stage),
-        (None, None) => None,
-    }
+    usage_context_tokens.or(active_stage_context_tokens)
 }
 
 pub fn context_pressure_for_percent(percent: Option<u64>) -> ContextPressure {
@@ -118,7 +113,7 @@ mod tests {
     }
 
     #[test]
-    fn current_context_tokens_prefers_live_max_without_cumulative_fallback() {
+    fn current_context_tokens_prefers_root_usage_and_only_falls_back_to_stage() {
         assert_eq!(current_context_tokens_from_sources(Some(0), Some(0)), None);
         assert_eq!(
             current_context_tokens_from_sources(Some(80), None),
@@ -130,7 +125,7 @@ mod tests {
         );
         assert_eq!(
             current_context_tokens_from_sources(Some(80), Some(90)),
-            Some(90)
+            Some(80)
         );
         assert_eq!(
             current_context_tokens_from_sources(Some(120), Some(90)),

@@ -134,6 +134,7 @@ impl CliSessionTokenStats {
         self.context_tokens = usage_books
             .and_then(|books| books.live_context_tokens)
             .or_else(|| usage.live_context_tokens())
+            .or_else(|| usage_books.and_then(|books| books.request_context_tokens))
             .unwrap_or(0);
         self.total_tokens = workflow.total_tokens();
         self.total_cost = workflow.total_cost;
@@ -228,5 +229,30 @@ impl Default for CliFrontendProjection {
             mcp_servers: Vec::new(),
             lsp_servers: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CliSessionTokenStats;
+    use rocode_session::SessionUsage;
+    use rocode_types::{SessionUsageBooks, WorkflowUsageSummary};
+
+    #[test]
+    fn sync_from_snapshot_uses_request_context_when_live_is_missing() {
+        let usage = SessionUsage {
+            context_tokens: 0,
+            ..SessionUsage::default()
+        };
+        let usage_books = SessionUsageBooks {
+            request_context_tokens: Some(48_000),
+            live_context_tokens: None,
+            workflow_cumulative: WorkflowUsageSummary::default(),
+        };
+        let mut stats = CliSessionTokenStats::default();
+
+        stats.sync_from_snapshot(&usage, Some(&usage_books));
+
+        assert_eq!(stats.context_tokens, 48_000);
     }
 }

@@ -526,6 +526,7 @@ mod tests {
         cli_context_usage_bar, cli_current_context_tokens, cli_format_context_meter,
         cli_usage_snapshot_lines,
     };
+    use rocode_command::stage_protocol::{StageStatus, StageSummary};
     use rocode_types::{SessionContextExplain, SessionUsageBooks, WorkflowUsageSummary};
 
     #[test]
@@ -549,6 +550,54 @@ mod tests {
         projection.last_turn_tokens.input_tokens = 1_388_907;
 
         assert_eq!(cli_current_context_tokens(&projection), None);
+    }
+
+    #[test]
+    fn current_context_prefers_root_usage_over_active_stage_estimate() {
+        let mut projection = CliFrontendProjection::default();
+        projection.token_stats.context_tokens = 52_830;
+        projection.session_runtime = Some(crate::api_client::SessionRuntimeState {
+            session_id: "sess_123".to_string(),
+            run_status: crate::api_client::SessionRunStatusKind::Running,
+            current_message_id: None,
+            usage: None,
+            active_stage_id: Some("stage-exec".to_string()),
+            active_stage_count: 1,
+            active_tools: Vec::new(),
+            pending_question: None,
+            pending_permission: None,
+            attached_sessions: Vec::new(),
+        });
+        projection.stage_summaries = vec![StageSummary {
+            stage_id: "stage-exec".to_string(),
+            stage_name: "Execution".to_string(),
+            index: None,
+            total: None,
+            step: None,
+            step_total: None,
+            status: StageStatus::Running,
+            prompt_tokens: None,
+            context_tokens: None,
+            completion_tokens: None,
+            reasoning_tokens: None,
+            cache_read_tokens: None,
+            cache_miss_tokens: None,
+            cache_write_tokens: None,
+            focus: None,
+            last_event: None,
+            waiting_on: None,
+            estimated_context_tokens: Some(1_105_000),
+            skill_tree_budget: None,
+            skill_tree_truncation_strategy: None,
+            skill_tree_truncated: None,
+            retry_attempt: None,
+            active_agent_count: 0,
+            active_tool_count: 0,
+            attached_session_count: 0,
+            primary_attached_session_id: None,
+        }];
+
+        assert_eq!(cli_current_context_tokens(&projection), Some(52_830));
     }
 
     #[test]

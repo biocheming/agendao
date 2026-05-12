@@ -4,7 +4,7 @@ use std::sync::Arc;
 use axum::response::sse::Event;
 use rocode_command::agent_presenter::output_block_to_web;
 use rocode_command::output_blocks::OutputBlock;
-use rocode_command::stage_protocol::{telemetry_event_names, StageEvent};
+use rocode_command::stage_protocol::{StageEvent, telemetry_event_names};
 use rocode_session::prompt::{OutputBlockEvent, OutputBlockHook};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -454,7 +454,7 @@ pub(crate) fn broadcast_config_updated(state: &ServerState) {
 mod tests {
     use super::{DiffEntry, QuestionResolutionKind, ServerEvent, ToolCallPhase};
     use rocode_command::output_blocks::{OutputBlock, StatusBlock};
-    use rocode_command::stage_protocol::{telemetry_event_names, StageEvent};
+    use rocode_command::stage_protocol::{StageEvent, telemetry_event_names};
 
     #[test]
     fn server_event_serializes_output_block_wrapper() {

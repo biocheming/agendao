@@ -1081,6 +1081,9 @@ impl AppContext {
 }
 
 fn current_context_tokens_from_state(state: &SessionState) -> Option<u64> {
+    // Keep the primary TUI context meter aligned with root-session governance.
+    // Stage estimates remain visible in runtime/status views, but they should
+    // not override the owner session's authoritative live/request counters.
     let usage_context_tokens = state
         .session_usage_books
         .as_ref()
@@ -1090,6 +1093,12 @@ fn current_context_tokens_from_state(state: &SessionState) -> Option<u64> {
                 .session_usage
                 .as_ref()
                 .and_then(|usage| usage.live_context_tokens())
+        })
+        .or_else(|| {
+            state
+                .session_usage_books
+                .as_ref()
+                .and_then(|books| books.request_context_tokens)
         })
         .filter(|tokens| *tokens > 0);
     let active_stage_id = state
@@ -1204,7 +1213,11 @@ fn split_theme_variant(name: &str) -> Option<(&str, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use super::AppContext;
+    use super::{current_context_tokens_from_state, AppContext, SessionState};
+    use crate::api::SessionRuntimeState;
+    use rocode_command::stage_protocol::{StageStatus, StageSummary};
+    use rocode_session::SessionUsage;
+    use rocode_types::{SessionUsageBooks, WorkflowUsageSummary};
 
     #[test]
     fn session_view_handle_follows_route_lifecycle() {
@@ -1229,5 +1242,110 @@ mod tests {
 
         context.navigate_home();
         assert!(context.session_view_handle().is_none());
+    }
+
+    #[test]
+    fn current_context_tokens_prefers_root_usage_over_active_stage_estimate() {
+        let mut state = SessionState::default();
+        state.session_usage_books = Some(SessionUsageBooks {
+            request_context_tokens: Some(52_830),
+            live_context_tokens: Some(52_830),
+            workflow_cumulative: WorkflowUsageSummary::default(),
+        });
+        state.session_runtime = Some(SessionRuntimeState {
+            session_id: "sess_123".to_string(),
+            run_status: crate::api::SessionRunStatusKind::Running,
+            current_message_id: None,
+            usage: None,
+            active_stage_id: Some("stage-exec".to_string()),
+            active_stage_count: 1,
+            active_tools: Vec::new(),
+            pending_question: None,
+            pending_permission: None,
+            attached_sessions: Vec::new(),
+        });
+        state.stage_summaries = vec![stage_summary("stage-exec", Some(1_105_000))];
+
+        assert_eq!(current_context_tokens_from_state(&state), Some(52_830));
+    }
+
+    #[test]
+    fn current_context_tokens_falls_back_to_request_usage_before_stage_estimate() {
+        let mut state = SessionState::default();
+        state.session_usage_books = Some(SessionUsageBooks {
+            request_context_tokens: Some(48_000),
+            live_context_tokens: None,
+            workflow_cumulative: WorkflowUsageSummary::default(),
+        });
+        state.session_runtime = Some(SessionRuntimeState {
+            session_id: "sess_456".to_string(),
+            run_status: crate::api::SessionRunStatusKind::Running,
+            current_message_id: None,
+            usage: None,
+            active_stage_id: Some("stage-exec".to_string()),
+            active_stage_count: 1,
+            active_tools: Vec::new(),
+            pending_question: None,
+            pending_permission: None,
+            attached_sessions: Vec::new(),
+        });
+        state.stage_summaries = vec![stage_summary("stage-exec", Some(990_000))];
+
+        assert_eq!(current_context_tokens_from_state(&state), Some(48_000));
+    }
+
+    #[test]
+    fn current_context_tokens_uses_stage_estimate_only_when_root_usage_missing() {
+        let mut state = SessionState::default();
+        state.session_usage = Some(SessionUsage {
+            context_tokens: 0,
+            ..SessionUsage::default()
+        });
+        state.session_runtime = Some(SessionRuntimeState {
+            session_id: "sess_789".to_string(),
+            run_status: crate::api::SessionRunStatusKind::Running,
+            current_message_id: None,
+            usage: None,
+            active_stage_id: Some("stage-exec".to_string()),
+            active_stage_count: 1,
+            active_tools: Vec::new(),
+            pending_question: None,
+            pending_permission: None,
+            attached_sessions: Vec::new(),
+        });
+        state.stage_summaries = vec![stage_summary("stage-exec", Some(256_000))];
+
+        assert_eq!(current_context_tokens_from_state(&state), Some(256_000));
+    }
+
+    fn stage_summary(stage_id: &str, estimated_context_tokens: Option<u64>) -> StageSummary {
+        StageSummary {
+            stage_id: stage_id.to_string(),
+            stage_name: "Execution".to_string(),
+            index: None,
+            total: None,
+            step: None,
+            step_total: None,
+            status: StageStatus::Running,
+            prompt_tokens: None,
+            context_tokens: None,
+            completion_tokens: None,
+            reasoning_tokens: None,
+            cache_read_tokens: None,
+            cache_miss_tokens: None,
+            cache_write_tokens: None,
+            focus: None,
+            last_event: None,
+            waiting_on: None,
+            estimated_context_tokens,
+            skill_tree_budget: None,
+            skill_tree_truncation_strategy: None,
+            skill_tree_truncated: None,
+            retry_attempt: None,
+            active_agent_count: 0,
+            active_tool_count: 0,
+            attached_session_count: 0,
+            primary_attached_session_id: None,
+        }
     }
 }
