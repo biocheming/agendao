@@ -9,6 +9,7 @@ use rocode_execution_types::{
 use rocode_provider::{
     Content, ContentPart, Message, Provider, ProviderProfileResolver, ProviderQuirk, Role,
     ToolDefinition, ToolResult as ProviderToolResult,
+    strip_reasoning_provider_options_for_new_continuation,
 };
 use rocode_tool::{ToolContext, ToolError};
 use rocode_types::SubsessionHandoffPacket;
@@ -21,16 +22,6 @@ const TASK_STATUS_COMPLETED: &str = "completed";
 const TASK_NO_TEXT_OUTPUT_MESSAGE: &str =
     "Task completed successfully. No textual output was returned by subagent.";
 const MAX_STEPS_SUMMARY_PROMPT: &str = "You have reached the maximum allowed steps for this subtask. Do NOT make any more tool calls. Return a concise final summary of work completed and any remaining work.";
-const SUBSESSION_REASONING_OPTION_KEYS: &[&str] = &[
-    "reasoning",
-    "reasoning_effort",
-    "reasoningEffort",
-    "thinking",
-    "include_reasoning",
-    "includeReasoning",
-    "enable_thinking",
-    "thinkingConfig",
-];
 
 #[derive(Debug, Clone)]
 struct InlineToolCall {
@@ -87,31 +78,6 @@ fn provider_requires_thinking_replay_for_options(
         .unwrap_or(false)
 }
 
-fn strip_reasoning_provider_options_for_new_continuation(
-    mut provider_options: HashMap<String, Value>,
-) -> (Option<HashMap<String, Value>>, Vec<String>) {
-    let mut removed = Vec::new();
-
-    for key in SUBSESSION_REASONING_OPTION_KEYS {
-        if provider_options.remove(*key).is_some() {
-            removed.push((*key).to_string());
-        }
-    }
-
-    if provider_options.contains_key("chat_template_args") {
-        provider_options.remove("chat_template_args");
-        removed.push("chat_template_args".to_string());
-    }
-
-    let provider_options = if provider_options.is_empty() {
-        None
-    } else {
-        Some(provider_options)
-    };
-
-    (provider_options, removed)
-}
-
 fn sanitize_compiled_request_for_new_subsession_boundary(
     provider_id: &str,
     compiled_request: CompiledExecutionRequest,
@@ -128,7 +94,7 @@ fn sanitize_compiled_request_for_new_subsession_boundary(
     };
 
     let (provider_options, removed) =
-        strip_reasoning_provider_options_for_new_continuation(provider_options);
+        strip_reasoning_provider_options_for_new_continuation(Some(provider_options), None);
     if removed.is_empty() {
         return compiled_request;
     }

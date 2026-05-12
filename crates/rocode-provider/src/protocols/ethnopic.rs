@@ -3,6 +3,7 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use super::request_sanitizer::{sanitize_messages_for_protocol, SanitizerOptions};
+use super::thinking_continuation::request_effectively_enables_thinking;
 use crate::runtime::runtime_pipeline_enabled;
 use crate::{
     ChatRequest, ChatResponse, Choice, Message, ProviderAdapter, ProviderConfig, ProviderError,
@@ -44,6 +45,7 @@ impl EthnopicAdapter {
 
     fn convert_request(request: ChatRequest) -> MessagesRequest {
         let max_tokens = request.max_tokens.unwrap_or(16_000);
+        let thinking_enabled = request_effectively_enables_thinking(&request, true);
         let mut messages = Vec::new();
         let mut system = request.system;
         let sanitized = sanitize_messages_for_protocol(
@@ -100,7 +102,11 @@ impl EthnopicAdapter {
             system,
             tools,
             stream: request.stream,
-            thinking: messages_thinking_config(request.variant.as_deref(), max_tokens),
+            thinking: messages_thinking_config(
+                request.variant.as_deref(),
+                max_tokens,
+                thinking_enabled,
+            ),
         }
     }
 }
@@ -449,7 +455,15 @@ enum MessagesThinking {
     },
 }
 
-fn messages_thinking_config(variant: Option<&str>, max_tokens: u64) -> Option<MessagesThinking> {
+fn messages_thinking_config(
+    variant: Option<&str>,
+    max_tokens: u64,
+    thinking_enabled: bool,
+) -> Option<MessagesThinking> {
+    if !thinking_enabled {
+        return None;
+    }
+
     let target = if let Some(v) = variant {
         let v = v.trim().to_ascii_lowercase();
         match v.as_str() {
@@ -588,6 +602,28 @@ mod tests {
             &converted.messages[0].content[1],
             MessagesContent::Text { text } if text == "second"
         ));
+    }
+
+    #[test]
+    fn respects_explicit_thinking_disable_in_provider_options() {
+        let request = ChatRequest {
+            model: "claude-test".to_string(),
+            messages: vec![Message::user("first")],
+            max_tokens: Some(1024),
+            temperature: None,
+            top_p: None,
+            system: None,
+            tools: None,
+            stream: None,
+            provider_options: Some(std::collections::HashMap::from([(
+                "thinking".to_string(),
+                json!({"type": "disabled"}),
+            )])),
+            variant: Some("high".to_string()),
+        };
+
+        let converted = EthnopicAdapter::convert_request(request);
+        assert!(converted.thinking.is_none());
     }
 
     #[test]
