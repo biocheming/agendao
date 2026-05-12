@@ -218,7 +218,7 @@ Scheduler 通过 JSON/JSONC 文件配置。JSONC 支持注释和尾逗号。
 ```jsonc
 {
   "$schema": "https://rocode.dev/schemas/scheduler-profile.schema.json",
-  "version": "2026-05-08",
+  "version": "2026-05-12",
   "defaults": {
     "profile": "my-default"       // 默认激活的 profile 名
   },

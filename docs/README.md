@@ -1,6 +1,6 @@
 # ROCode Docs
 
-文档基线：`v2026.5.8`（更新日期：`2026-05-08`）
+文档基线：`v2026.5.12`（更新日期：`2026-05-12`）
 
 This directory contains product-facing examples and design references for ROCode features.
 
@@ -21,6 +21,12 @@ This directory contains product-facing examples and design references for ROCode
 - **Skill 治理收口**
   - `skill hub` 不只看 managed/distribution，还新增 usage ledger、negative entropy、semantic conflict、composition relationship 和 runtime resolution
   - draft proposal、review candidate、retired 状态、runtime gate 都进入统一 inspection / runtime 分层
+- **前端同步收口**
+  - Web 会把 persisted history 与 live streaming block 统一投影到同一组 message / reasoning block id，避免 stale live snapshot 覆盖最终消息
+  - TUI 依赖 authoritative `session.updated` 触发最终 session sync，`prompt.final` / `prompt.completed` / `prompt.scheduler.completed` 都已进入正式同步路径
+- **在线 Skill 发现进入正式读面**
+  - `skill hub search` 已支持多 source 聚合搜索、stale index 提示、默认 registry 建议、trust / maintenance metadata
+  - 搜索结果直接返回安装所需的 source / entry 结构，而不是只给人类看的文本列表
 
 如果你想顺着这些治理线读代码和界面，优先看下面四份文档：
 
@@ -44,7 +50,7 @@ This directory contains product-facing examples and design references for ROCode
 - `../USER_GUIDE.md`
   - 面向使用者的命令、scheduler、TUI 交互说明，以及 memory / skill 自进化使用心智
 - `skills.md`
-  - Skill lifecycle、skill reflection、`skill_manage` 写入与 memory linkage
+  - Skill lifecycle、skill reflection、`skill_manage` 写入与 memory linkage，以及 skill hub search / trust / stale index 发现链路
 - `tools.md`
   - 工具层参考，包括 `skill_manage` 与 memory 可观测面入口
 - `configuration.md`

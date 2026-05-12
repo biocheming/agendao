@@ -2,7 +2,7 @@
 
 ROCode（RockyCode）是一个用 Rust 编写的高性能 AI 编码编排器。它将终端原生交互、多 Agent 协调、可扩展技能系统和多模型 Provider 整合为一个统一的开发工作流引擎。
 
-> **版本:** 2026.5.8 · **许可证:** MIT · **作者:** Biocheming
+> **版本:** 2026.5.12 · **许可证:** MIT · **作者:** Biocheming
 
 ---
 
@@ -113,6 +113,8 @@ rocode skill hub install-plan --source-id <id> --source-kind registry --locator 
 
 这一层现在不只做“装 skill”。它还维护 usage ledger、negative entropy、semantic conflict、composition relationship、proposal inbox 和 runtime gate。
 
+现在它还多了一层正式 discoverability：`skill hub search` 可以按 indexed source 搜索在线 skill，并返回 source、entry、trust、maintenance、staleness 与 refresh 建议，方便 agent 直接串联 search → install。
+
 ### Skill 运行与治理
 
 ROCode 不把 skill 看成静态目录。它更关心一个 skill 在真实运行里是不是还有效、是不是和别的 skill 重叠、是不是已经该退出主要运行面：
@@ -147,12 +149,14 @@ rocode mcp connect my-server
 ### TUI 终端界面
 
 基于 reratui reactive 渲染主线与 ratatui 兼容层的终端 UI，支持实时流式输出、语法高亮、diff 查看、权限对话、斜杠命令自动补全、会话浏览和更细粒度的消息渲染。
+在 provider 输出结束后，TUI 现在会通过 authoritative `session.updated` 重新同步 session，确保最后一条 assistant message 能从流式半成品回到最终持久化版本。
 
 ### Web 界面
 
 内置 React 前端，通过 `rocode web` 启动；当前版本已补齐更高密度的消息阅读节奏、可过滤 model picker、批量 session 删除与更统一的 workspace / session / activity 视觉体系。
 
 Web 现在也直接消费 context closure、effective policy、provider descriptor、external adapter provisioning 和 skill proposal 这些正式读面，而不是再从大响应里侧取零散字段。
+Web 的最终 assistant message 同步链路也已收口：persisted history 与 live streaming block 现在会按统一的 message / reasoning block id 合并，避免 stale live snapshot 覆盖已落库的最终文本。
 
 ### HTTP Server
 

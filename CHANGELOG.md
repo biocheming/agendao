@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026.5.12
+
+- 同步工作区版本到 `v2026.5.12`，更新 ROCode 自有包元数据、Web 根包版本与相关 lock 文件中的 ROCode 自身条目。
+- 修复最终 assistant message 在不同前端间的同步不一致：Web 现在会把 history 与 live block 的 message/reasoning id 统一归一，避免已落库的最终文本被 stale live snapshot 覆盖。
+- `rocode-server` 现在会真正广播 `session.updated` 事件，而不只是记录 telemetry；TUI 能在 `prompt.final`、`prompt.completed`、`prompt.scheduler.completed` 之后触发 authoritative session sync。
+- 最近这一轮收口后，ROCode 的产品面已经从“终端聊天 + 多 provider”扩展为统一 authority 的本地编码智能体运行时：provider descriptor / config validation、session telemetry 三本账、context closure diagnostics、scheduler continuity、skill hub 治理与 memory consolidation 都已经进入正式读写路径。
+- skill hub 已具备远程 discoverability 的基础形态：支持多 source 聚合搜索、stale index 提示、默认 registry 建议、trust / maintenance metadata，以及为 agent 侧 search → install 流程返回可直接消费的结构化结果。
+- 子 session / agent handoff 在 thinking-sensitive provider 上的边界更清晰：shared sanitizer、effective thinking mode 与 continuation boundary 逻辑完成收口，避免不同协议族和子 agent 路径各自维护近似实现。
+
 ## 2026.5.8
 
 - 同步工作区版本到 `v2026.5.8`，更新 ROCode 自有包元数据、Web 根包版本与相关 lock 文件中的 ROCode 自身条目。

@@ -1,6 +1,6 @@
 {
   "$schema": "https://rocode.dev/schemas/scheduler-profile.schema.json",
-  "version": "2026-05-08",
+  "version": "2026-05-12",
 
   "defaults": {
     "profile": "book-authoring-run"
