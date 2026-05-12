@@ -438,9 +438,16 @@ pub(crate) fn broadcast_session_updated(
     session_id: impl Into<String>,
     source: impl Into<String>,
 ) {
-    let telemetry = state.runtime_telemetry.clone();
     let session_id = session_id.into();
     let source = source.into();
+    broadcast_server_event(
+        state,
+        &ServerEvent::SessionUpdated {
+            session_id: session_id.clone(),
+            source: source.clone(),
+        },
+    );
+    let telemetry = state.runtime_telemetry.clone();
     tokio::spawn(async move {
         telemetry.record_session_updated(&session_id, &source).await;
     });
@@ -452,9 +459,12 @@ pub(crate) fn broadcast_config_updated(state: &ServerState) {
 
 #[cfg(test)]
 mod tests {
-    use super::{DiffEntry, QuestionResolutionKind, ServerEvent, ToolCallPhase};
+    use super::{
+        DiffEntry, QuestionResolutionKind, ServerEvent, ToolCallPhase, broadcast_session_updated,
+    };
     use rocode_command::output_blocks::{OutputBlock, StatusBlock};
     use rocode_command::stage_protocol::{StageEvent, telemetry_event_names};
+    use crate::ServerState;
 
     #[test]
     fn server_event_serializes_output_block_wrapper() {
@@ -591,6 +601,41 @@ mod tests {
         let value = mapped.to_json_value().expect("event json");
         assert_eq!(value["type"], "session.updated");
         assert_eq!(value["source"], "prompt.completed");
+    }
+
+    #[test]
+    fn session_updated_serializes_as_tagged_type() {
+        let value = ServerEvent::SessionUpdated {
+            session_id: "session-1".to_string(),
+            source: "prompt.final".to_string(),
+        }
+        .to_json_value()
+        .expect("event json");
+
+        assert_eq!(value["type"], "session.updated");
+        assert_eq!(value["sessionID"], "session-1");
+        assert_eq!(value["source"], "prompt.final");
+    }
+
+    #[test]
+    fn broadcast_session_updated_emits_server_event_payload() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        runtime.block_on(async {
+            let state = ServerState::new();
+            let mut rx = state.event_bus.subscribe();
+
+            broadcast_session_updated(&state, "session-1", "prompt.final");
+
+            let payload = rx.recv().await.expect("session.updated payload");
+            let value: serde_json::Value =
+                serde_json::from_str(&payload).expect("valid json payload");
+            assert_eq!(value["type"], "session.updated");
+            assert_eq!(value["sessionID"], "session-1");
+            assert_eq!(value["source"], "prompt.final");
+        });
     }
 
     #[test]

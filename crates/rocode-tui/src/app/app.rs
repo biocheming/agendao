@@ -1731,6 +1731,17 @@ mod tests {
     use chrono::Utc;
 
     #[test]
+    fn session_update_requires_sync_for_prompt_final_sources() {
+        assert!(session_update_requires_sync(Some("prompt.final")));
+        assert!(session_update_requires_sync(Some("prompt.completed")));
+        assert!(session_update_requires_sync(Some("prompt.scheduler.completed")));
+        assert!(!session_update_requires_sync(Some("prompt.stream")));
+        assert!(!session_update_requires_sync(Some(
+            "prompt.scheduler.stage.reasoning"
+        )));
+    }
+
+    #[test]
     fn incremental_session_sync_refreshes_title_and_revert_metadata() {
         let now = Utc::now().timestamp_millis();
         let session_id = "session-1";

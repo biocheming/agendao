@@ -668,24 +668,58 @@ function mergeOptimisticMessages(
   };
 }
 
+function historyTextBlockId(messageId: string, kind: "message" | "reasoning"): string {
+  return `${messageId}:${kind}`;
+}
+
+function normalizeStreamingBlockId(block: OutputBlock): string | undefined {
+  const raw = typeof block.id === "string" ? block.id.trim() : "";
+  if (!raw) return undefined;
+  if (block.kind !== "message" && block.kind !== "reasoning") {
+    return raw;
+  }
+  if (raw.endsWith(":message") || raw.endsWith(":reasoning")) {
+    return raw;
+  }
+  return historyTextBlockId(raw, block.kind);
+}
+
+function normalizeOutputBlock(block: OutputBlock): OutputBlock {
+  const id = normalizeStreamingBlockId(block);
+  if (id === block.id) {
+    return block;
+  }
+  return { ...block, id };
+}
+
+function reconcileStreamingText(authoritativeText: string, liveText: string): string {
+  if (!liveText) return authoritativeText;
+  if (!authoritativeText) return liveText;
+  if (liveText === authoritativeText) return authoritativeText;
+  if (liveText.startsWith(authoritativeText)) return liveText;
+  if (authoritativeText.startsWith(liveText)) return authoritativeText;
+  return authoritativeText.length >= liveText.length ? authoritativeText : liveText;
+}
+
 function upsertFeedMessage(
   messages: FeedMessage[],
   block: OutputBlock,
   overrides: Partial<FeedMessage> = {},
 ): FeedMessage[] {
-  if (!block.id) {
+  const normalizedBlock = normalizeOutputBlock(block);
+  if (!normalizedBlock.id) {
     return insertFeedMessageByPresentation(messages, {
-      ...toFeedMessage(block),
+      ...toFeedMessage(normalizedBlock),
       ...overrides,
     });
   }
 
   const index = messages.findIndex(
-    (message) => message.kind === block.kind && message.id === block.id,
+    (message) => message.kind === normalizedBlock.kind && message.id === normalizedBlock.id,
   );
   if (index < 0) {
     return insertFeedMessageByPresentation(messages, {
-      ...toFeedMessage(block),
+      ...toFeedMessage(normalizedBlock),
       ...overrides,
     });
   }
@@ -693,10 +727,10 @@ function upsertFeedMessage(
   const next = [...messages];
   next[index] = {
     ...next[index],
-    ...block,
+    ...normalizedBlock,
     ...overrides,
     feedId: next[index].feedId,
-    anchorId: next[index].anchorId ?? block.id,
+    anchorId: next[index].anchorId ?? normalizedBlock.id,
   };
   return next;
 }
@@ -721,26 +755,27 @@ function appendStreamingDelta(
   block: OutputBlock,
   predicate: (message: FeedMessage) => boolean,
 ): FeedMessage[] {
-  const incomingText = block.text ?? "";
-  if (block.id) {
+  const normalizedBlock = normalizeOutputBlock(block);
+  const incomingText = normalizedBlock.text ?? "";
+  if (normalizedBlock.id) {
     const index = messages.findIndex(
-      (message) => message.kind === block.kind && message.id === block.id,
+      (message) => message.kind === normalizedBlock.kind && message.id === normalizedBlock.id,
     );
     if (index >= 0) {
       const next = [...messages];
       const candidate = next[index];
       next[index] = {
         ...candidate,
-        ...block,
+        ...normalizedBlock,
         text: `${candidate.text}${incomingText}`,
         feedId: candidate.feedId,
-        anchorId: candidate.anchorId ?? block.id,
+        anchorId: candidate.anchorId ?? normalizedBlock.id,
       };
       return next;
     }
 
     return insertFeedMessageByPresentation(messages, {
-      ...toFeedMessage({ ...block, text: incomingText }),
+      ...toFeedMessage({ ...normalizedBlock, text: incomingText }),
       text: incomingText,
     });
   }
@@ -753,54 +788,55 @@ function applyOutputBlock(
   block: OutputBlock,
   showThinking: boolean,
 ): FeedMessage[] {
-  if (block.kind === "reasoning" && !showThinking) {
+  const normalizedBlock = normalizeOutputBlock(block);
+  if (normalizedBlock.kind === "reasoning" && !showThinking) {
     return messages;
   }
-  if (block.kind === "status" && block.silent) {
+  if (normalizedBlock.kind === "status" && normalizedBlock.silent) {
     return messages;
   }
 
-  if (block.kind === "message") {
-    if (block.phase === "start") {
-      return upsertFeedMessage(messages, block, { text: "" });
+  if (normalizedBlock.kind === "message") {
+    if (normalizedBlock.phase === "start") {
+      return upsertFeedMessage(messages, normalizedBlock, { text: "" });
     }
-    if (block.phase === "delta") {
+    if (normalizedBlock.phase === "delta") {
       return appendStreamingDelta(
         messages,
-        block,
-        (message) => message.kind === "message" && message.role === block.role,
+        normalizedBlock,
+        (message) => message.kind === "message" && message.role === normalizedBlock.role,
       );
     }
-    if (block.phase === "end") {
+    if (normalizedBlock.phase === "end") {
       return messages;
     }
-    return insertFeedMessageByPresentation(messages, toFeedMessage(block));
+    return insertFeedMessageByPresentation(messages, toFeedMessage(normalizedBlock));
   }
 
-  if (block.kind === "reasoning") {
-    if (block.phase === "start") {
-      return upsertFeedMessage(messages, block, { text: "" });
+  if (normalizedBlock.kind === "reasoning") {
+    if (normalizedBlock.phase === "start") {
+      return upsertFeedMessage(messages, normalizedBlock, { text: "" });
     }
-    if (block.phase === "delta") {
+    if (normalizedBlock.phase === "delta") {
       return appendStreamingDelta(
         messages,
-        block,
+        normalizedBlock,
         (message) => message.kind === "reasoning",
       );
     }
-    if (block.phase === "end") {
+    if (normalizedBlock.phase === "end") {
       return messages;
     }
-    return insertFeedMessageByPresentation(messages, toFeedMessage(block));
+    return insertFeedMessageByPresentation(messages, toFeedMessage(normalizedBlock));
   }
 
-  if (block.id) {
-    return upsertFeedMessage(messages, block, {
-      text: normalizeBlockText(block),
+  if (normalizedBlock.id) {
+    return upsertFeedMessage(messages, normalizedBlock, {
+      text: normalizeBlockText(normalizedBlock),
     });
   }
 
-  return insertFeedMessageByPresentation(messages, toFeedMessage(block));
+  return insertFeedMessageByPresentation(messages, toFeedMessage(normalizedBlock));
 }
 
 function buildFeedFromHistory(history: MessageRecord[], showThinking: boolean): FeedMessage[] {
@@ -827,7 +863,7 @@ function buildFeedFromHistory(history: MessageRecord[], showThinking: boolean): 
       }
 
       if (part.type === "reasoning" && part.text) {
-        const blockId = `${message.id}:reasoning`;
+        const blockId = historyTextBlockId(message.id, "reasoning");
         if (!startedReasoning) {
           messages = applyOutputBlock(
             messages,
@@ -858,7 +894,7 @@ function buildFeedFromHistory(history: MessageRecord[], showThinking: boolean): 
       }
 
       if (part.type === "text" && part.text) {
-        const blockId = `${message.id}:message`;
+        const blockId = historyTextBlockId(message.id, "message");
         if (!startedText) {
           messages = applyOutputBlock(
             messages,
@@ -902,7 +938,7 @@ function buildFeedFromHistory(history: MessageRecord[], showThinking: boolean): 
       messages = applyOutputBlock(
         messages,
         {
-          id: `${message.id}:reasoning`,
+          id: historyTextBlockId(message.id, "reasoning"),
           kind: "reasoning",
           phase: "end",
           role: message.role,
@@ -916,7 +952,7 @@ function buildFeedFromHistory(history: MessageRecord[], showThinking: boolean): 
       messages = applyOutputBlock(
         messages,
         {
-          id: `${message.id}:message`,
+          id: historyTextBlockId(message.id, "message"),
           kind: "message",
           phase: "end",
           role: message.role,
@@ -971,7 +1007,7 @@ function isStreamingTextBlock(block: OutputBlock): boolean {
 }
 
 function shouldRetainLiveBlock(block: OutputBlock): boolean {
-  return Boolean(block.id);
+  return Boolean(normalizeStreamingBlockId(block));
 }
 
 function liveTextSnapshot(block: OutputBlock, previous?: OutputBlock): OutputBlock {
@@ -993,15 +1029,16 @@ function liveTextSnapshot(block: OutputBlock, previous?: OutputBlock): OutputBlo
 }
 
 function appendLiveBlock(blocks: OutputBlock[], block: OutputBlock): OutputBlock[] {
-  if (!shouldRetainLiveBlock(block)) {
+  const normalizedBlock = normalizeOutputBlock(block);
+  if (!shouldRetainLiveBlock(normalizedBlock)) {
     return blocks;
   }
 
   const next = blocks.slice();
   const existingIndex = next.findIndex(
-    (candidate) => candidate.kind === block.kind && candidate.id === block.id,
+    (candidate) => candidate.kind === normalizedBlock.kind && candidate.id === normalizedBlock.id,
   );
-  if (block.phase === "end") {
+  if (normalizedBlock.phase === "end") {
     if (existingIndex >= 0) {
       next.splice(existingIndex, 1);
     }
@@ -1009,7 +1046,9 @@ function appendLiveBlock(blocks: OutputBlock[], block: OutputBlock): OutputBlock
   }
 
   const previous = existingIndex >= 0 ? next[existingIndex] : undefined;
-  const retained = isStreamingTextBlock(block) ? liveTextSnapshot(block, previous) : block;
+  const retained = isStreamingTextBlock(normalizedBlock)
+    ? liveTextSnapshot(normalizedBlock, previous)
+    : normalizedBlock;
   if (existingIndex >= 0) {
     next[existingIndex] = retained;
     return next;
@@ -1019,42 +1058,47 @@ function appendLiveBlock(blocks: OutputBlock[], block: OutputBlock): OutputBlock
 }
 
 function mergeLiveTextBlock(messages: FeedMessage[], block: OutputBlock, showThinking: boolean): FeedMessage[] {
-  if (block.kind === "reasoning" && !showThinking) {
+  const normalizedBlock = normalizeOutputBlock(block);
+  if (normalizedBlock.kind === "reasoning" && !showThinking) {
     return messages;
   }
 
-  const blockText = block.text ?? "";
-  const matchIndex = block.id
-    ? messages.findIndex((message) => message.kind === block.kind && message.id === block.id)
+  const blockText = normalizedBlock.text ?? "";
+  const matchIndex = normalizedBlock.id
+    ? messages.findIndex((message) => message.kind === normalizedBlock.kind && message.id === normalizedBlock.id)
     : -1;
-  const fallbackIndex =
-    matchIndex >= 0
-      ? matchIndex
-      : (() => {
-          for (let index = messages.length - 1; index >= 0; index -= 1) {
-            const candidate = messages[index];
-            if (candidate.kind !== block.kind) continue;
-            if (block.kind === "message" && candidate.role !== block.role) continue;
-            return index;
-          }
-          return -1;
-        })();
-
-  if (fallbackIndex >= 0) {
+  if (matchIndex >= 0) {
     const next = [...messages];
-    const candidate = next[fallbackIndex];
-    next[fallbackIndex] = {
+    const candidate = next[matchIndex];
+    next[matchIndex] = {
       ...candidate,
-      ...block,
-      text: blockText,
+      ...normalizedBlock,
+      text: reconcileStreamingText(candidate.text ?? "", blockText),
       feedId: candidate.feedId,
-      anchorId: candidate.anchorId ?? block.id,
+      anchorId: candidate.anchorId ?? normalizedBlock.id,
     };
     return next;
   }
 
+  if (!normalizedBlock.id) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const candidate = messages[index];
+      if (candidate.kind !== normalizedBlock.kind) continue;
+      if (normalizedBlock.kind === "message" && candidate.role !== normalizedBlock.role) continue;
+      const next = [...messages];
+      next[index] = {
+        ...candidate,
+        ...normalizedBlock,
+        text: reconcileStreamingText(candidate.text ?? "", blockText),
+        feedId: candidate.feedId,
+        anchorId: candidate.anchorId ?? normalizedBlock.id,
+      };
+      return next;
+    }
+  }
+
   return insertFeedMessageByPresentation(messages, {
-    ...toFeedMessage(block),
+    ...toFeedMessage(normalizedBlock),
     text: blockText,
   });
 }
@@ -1084,7 +1128,7 @@ function applyPreferences(config: Record<string, unknown>) {
     theme: String(ui.webTheme ?? ui.web_theme ?? "daylight") as ThemeId,
     mode: String(ui.webMode ?? ui.web_mode ?? ""),
     model: String(ui.webModel ?? ui.web_model ?? ""),
-    showThinking: Boolean(ui.showThinking ?? ui.show_thinking ?? false),
+    showThinking: Boolean(ui.showThinking ?? ui.show_thinking ?? true),
   };
 }
 
@@ -1170,7 +1214,7 @@ export default function App() {
   const [connectResolveError, setConnectResolveError] = useState<string | null>(null);
   const [connectBusy, setConnectBusy] = useState(false);
   const [theme, setTheme] = useState<ThemeId>("daylight");
-  const [showThinking, setShowThinking] = useState(false);
+  const [showThinking, setShowThinking] = useState(true);
   const [streaming, setStreaming] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [statusLine, setStatusLine] = useState("ready");
