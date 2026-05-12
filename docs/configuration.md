@@ -361,7 +361,9 @@ CLI：`rocode mcp add <name> --command <cmd>`、`rocode mcp add <name> --url <ur
 
 ## Plugin 配置
 
-支持 `npm`、`pip`、`cargo`、`file`、`dylib` 五种类型：
+当前真实接通的插件运行面是 `npm`、`file`、`dylib`。
+
+`pip` / `cargo` 字段仍然保留在 schema 里，用于兼容和未来扩展，但今天的自动加载器不会把它们转成可执行 loader spec，所以不要把它们当成已经接通的用户插件主路径。
 
 ```jsonc
 {
@@ -379,7 +381,7 @@ CLI：`rocode mcp add <name> --command <cmd>`、`rocode mcp add <name> --url <ur
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `type` | string | `"npm"`、`"pip"`、`"cargo"`、`"file"`、`"dylib"` |
+| `type` | string | 当前真实运行面：`"npm"`、`"file"`、`"dylib"`；兼容 / 预留字段：`"pip"`、`"cargo"` |
 | `package` | string | 包名 |
 | `version` | string | 版本约束 |
 | `path` | string | 文件路径（`file` 或 `dylib`） |
@@ -387,6 +389,8 @@ CLI：`rocode mcp add <name> --command <cmd>`、`rocode mcp add <name> --url <ur
 | `options` | object | 插件特定选项 |
 
 自动发现路径：`~/.config/rocode/plugins/`、`~/.rocode/plugins/`、`<project>/.rocode/plugins/`，以及 `pluginPaths` 中配置的自定义路径。
+
+如果你要看一张更硬的“插件类型 -> 是否真实可用 -> hook 面”矩阵，见 [plugins-capability-matrix](plugins-capability-matrix)。
 
 ---
 
