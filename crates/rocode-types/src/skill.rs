@@ -19,7 +19,7 @@ pub struct SkillSourceRef {
     pub revision: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct SkillSourceIndexEntry {
     pub skill_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -34,6 +34,28 @@ pub struct SkillSourceIndexEntry {
     pub manifest_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checksum: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maintainer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compatible_providers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compatible_tools: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillTrustLevel {
+    Official,
+    Community,
+    Unknown,
+}
+
+impl Default for SkillTrustLevel {
+    fn default() -> Self {
+        Self::Unknown
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -810,6 +832,10 @@ pub struct SkillHubSearchMatch {
     pub installed_revision: Option<String>,
     #[serde(default)]
     pub stale: bool,
+    #[serde(default)]
+    pub trust_level: SkillTrustLevel,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maintenance_status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -820,6 +846,8 @@ pub struct SkillHubSearchResponse {
     pub matches: Vec<SkillHubSearchMatch>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub suggested_refresh_sources: Vec<SkillSourceRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_fallback_query: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

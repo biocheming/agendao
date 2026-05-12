@@ -233,6 +233,7 @@ impl SkillSyncPlanner {
                         .or_else(|| Some(entry.content_hash.clone())),
                     manifest_path: None,
                     checksum: None,
+                    ..Default::default()
                 })
                 .collect(),
         }

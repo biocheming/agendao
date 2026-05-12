@@ -631,6 +631,14 @@ struct RemoteSkillIndexEntry {
     manifest_path: Option<String>,
     #[serde(default)]
     checksum: Option<String>,
+    #[serde(default)]
+    maintainer: Option<String>,
+    #[serde(default)]
+    license: Option<String>,
+    #[serde(default)]
+    compatible_providers: Vec<String>,
+    #[serde(default)]
+    compatible_tools: Vec<String>,
 }
 
 pub(crate) fn governance_dir(base_dir: &Path) -> PathBuf {
@@ -749,6 +757,26 @@ fn remote_index_document_to_snapshot(
                     .checksum
                     .map(|value| value.trim().to_string())
                     .filter(|value| !value.is_empty()),
+                maintainer: entry
+                    .maintainer
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+                license: entry
+                    .license
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+                compatible_providers: entry
+                    .compatible_providers
+                    .into_iter()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+                    .collect(),
+                compatible_tools: entry
+                    .compatible_tools
+                    .into_iter()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+                    .collect(),
             })
         })
         .collect::<Vec<_>>();
