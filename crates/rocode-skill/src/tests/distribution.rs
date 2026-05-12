@@ -728,6 +728,292 @@ fn search_source_indices_does_not_mark_same_name_from_other_source_as_managed() 
 }
 
 #[test]
+fn search_source_indices_marks_stale_when_index_exceeds_freshness_threshold() {
+    let dir = tempdir().unwrap();
+    let index_path = dir.path().join("catalog.json");
+    fs::write(
+        &index_path,
+        serde_json::json!({
+            "entries": [{ "skill_name": "recent-skill", "description": "recent" }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let governance = SkillGovernanceAuthority::new(dir.path(), None);
+    let source = SkillSourceRef {
+        source_id: "registry:test/stale".to_string(),
+        source_kind: SkillSourceKind::Registry,
+        locator: index_path.to_string_lossy().to_string(),
+        revision: Some("rev-1".to_string()),
+    };
+    governance
+        .refresh_source_index(&source, "test:search-stale")
+        .unwrap();
+
+    let response = governance.search_source_indices(&SkillHubSearchRequest {
+        query: Some("recent".to_string()),
+        source_id: None,
+        source_kind: None,
+        limit: Some(5),
+    });
+
+    assert_eq!(response.matches.len(), 1);
+    assert!(!response.matches[0].stale);
+}
+
+#[test]
+fn search_source_indices_suggests_default_registries_when_no_sources_indexed() {
+    let dir = tempdir().unwrap();
+    let config = Config {
+        skills: Some(SkillsConfig {
+            hub: Some(SkillHubConfig {
+                default_registries: Some(vec![rocode_config::SkillHubRegistrySourceConfig {
+                    source_id: "registry:rocode/official".to_string(),
+                    source_kind: SkillSourceKind::Registry,
+                    locator: "https://skills.example.test/catalog.json".to_string(),
+                    description: Some("Official ROCode skill registry".to_string()),
+                }]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let governance =
+        SkillGovernanceAuthority::new(dir.path(), Some(Arc::new(ConfigStore::new(config))));
+
+    let response = governance.search_source_indices(&SkillHubSearchRequest {
+        query: Some("security".to_string()),
+        source_id: None,
+        source_kind: None,
+        limit: Some(10),
+    });
+
+    assert!(response.matches.is_empty());
+    assert_eq!(response.suggested_refresh_sources.len(), 1);
+    assert_eq!(
+        response.suggested_refresh_sources[0].source_id,
+        "registry:rocode/official"
+    );
+    assert_eq!(
+        response.suggested_refresh_sources[0].locator,
+        "https://skills.example.test/catalog.json"
+    );
+    assert_eq!(
+        response.suggested_refresh_sources[0].source_kind,
+        SkillSourceKind::Registry
+    );
+}
+
+#[test]
+fn search_source_indices_omits_suggested_refresh_when_matches_exist() {
+    let dir = tempdir().unwrap();
+    let index_path = dir.path().join("catalog.json");
+    fs::write(
+        &index_path,
+        serde_json::json!({
+            "entries": [{ "skill_name": "auth-helper", "description": "auth" }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let config = Config {
+        skills: Some(SkillsConfig {
+            hub: Some(SkillHubConfig {
+                default_registries: Some(vec![rocode_config::SkillHubRegistrySourceConfig {
+                    source_id: "registry:test/default".to_string(),
+                    source_kind: SkillSourceKind::Registry,
+                    locator: "https://skills.example.test/catalog.json".to_string(),
+                    description: None,
+                }]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let governance =
+        SkillGovernanceAuthority::new(dir.path(), Some(Arc::new(ConfigStore::new(config))));
+    let source = SkillSourceRef {
+        source_id: "registry:test/main".to_string(),
+        source_kind: SkillSourceKind::Registry,
+        locator: index_path.to_string_lossy().to_string(),
+        revision: Some("rev-1".to_string()),
+    };
+    governance
+        .refresh_source_index(&source, "test:search-refresh-hint")
+        .unwrap();
+
+    let response = governance.search_source_indices(&SkillHubSearchRequest {
+        query: Some("auth".to_string()),
+        source_id: None,
+        source_kind: None,
+        limit: Some(5),
+    });
+
+    assert_eq!(response.matches.len(), 1);
+    assert!(response.suggested_refresh_sources.is_empty());
+}
+
+#[test]
+fn search_source_indices_filters_suggested_refresh_sources_by_search_scope() {
+    let dir = tempdir().unwrap();
+    let config = Config {
+        skills: Some(SkillsConfig {
+            hub: Some(SkillHubConfig {
+                default_registries: Some(vec![
+                    rocode_config::SkillHubRegistrySourceConfig {
+                        source_id: "registry:alpha".to_string(),
+                        source_kind: SkillSourceKind::Registry,
+                        locator: "https://alpha.test/catalog.json".to_string(),
+                        description: None,
+                    },
+                    rocode_config::SkillHubRegistrySourceConfig {
+                        source_id: "registry:beta".to_string(),
+                        source_kind: SkillSourceKind::Registry,
+                        locator: "https://beta.test/catalog.json".to_string(),
+                        description: None,
+                    },
+                ]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let governance =
+        SkillGovernanceAuthority::new(dir.path(), Some(Arc::new(ConfigStore::new(config))));
+
+    // Search with a source_id filter — no matches, so suggestions are returned,
+    // but only the one matching the filter.
+    let response = governance.search_source_indices(&SkillHubSearchRequest {
+        query: Some("security".to_string()),
+        source_id: Some("registry:beta".to_string()),
+        source_kind: None,
+        limit: Some(10),
+    });
+
+    assert!(response.matches.is_empty());
+    assert_eq!(response.suggested_refresh_sources.len(), 1);
+    assert_eq!(
+        response.suggested_refresh_sources[0].source_id,
+        "registry:beta"
+    );
+}
+
+#[test]
+fn search_source_indices_filters_suggested_refresh_by_source_kind() {
+    let dir = tempdir().unwrap();
+    let config = Config {
+        skills: Some(SkillsConfig {
+            hub: Some(SkillHubConfig {
+                default_registries: Some(vec![
+                    rocode_config::SkillHubRegistrySourceConfig {
+                        source_id: "registry:main".to_string(),
+                        source_kind: SkillSourceKind::Registry,
+                        locator: "https://registry.test/catalog.json".to_string(),
+                        description: None,
+                    },
+                    rocode_config::SkillHubRegistrySourceConfig {
+                        source_id: "git:fallback".to_string(),
+                        source_kind: SkillSourceKind::Git,
+                        locator: "https://git.test/skills.git".to_string(),
+                        description: None,
+                    },
+                ]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let governance =
+        SkillGovernanceAuthority::new(dir.path(), Some(Arc::new(ConfigStore::new(config))));
+
+    let response = governance.search_source_indices(&SkillHubSearchRequest {
+        query: Some("security".to_string()),
+        source_id: None,
+        source_kind: Some(SkillSourceKind::Git),
+        limit: Some(10),
+    });
+
+    assert!(response.matches.is_empty());
+    assert_eq!(response.suggested_refresh_sources.len(), 1);
+    assert_eq!(
+        response.suggested_refresh_sources[0].source_id,
+        "git:fallback"
+    );
+    assert_eq!(
+        response.suggested_refresh_sources[0].source_kind,
+        SkillSourceKind::Git
+    );
+}
+
+#[test]
+fn search_source_indices_returns_stale_for_old_index() {
+    let dir = tempdir().unwrap();
+    let index_path = dir.path().join("old-catalog.json");
+    fs::write(
+        &index_path,
+        serde_json::json!({
+            "entries": [{ "skill_name": "legacy-skill", "description": "very old" }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let config = Config {
+        skills: Some(SkillsConfig {
+            hub: Some(SkillHubConfig {
+                index_freshness_max_age_seconds: Some(1),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let governance =
+        SkillGovernanceAuthority::new(dir.path(), Some(Arc::new(ConfigStore::new(config))));
+    let source = SkillSourceRef {
+        source_id: "registry:test/old".to_string(),
+        source_kind: SkillSourceKind::Registry,
+        locator: index_path.to_string_lossy().to_string(),
+        revision: Some("rev-old".to_string()),
+    };
+
+    // Inject an index snapshot with a timestamp that is definitely stale.
+    let old_snapshot = rocode_types::SkillSourceIndexSnapshot {
+        source: source.clone(),
+        updated_at: 1, // Unix epoch + 1 second — always stale
+        entries: vec![rocode_types::SkillSourceIndexEntry {
+            skill_name: "legacy-skill".to_string(),
+            description: Some("very old".to_string()),
+            category: None,
+            version: None,
+            revision: Some("rev-old".to_string()),
+            manifest_path: None,
+            checksum: None,
+        }],
+    };
+    governance
+        .hub_store()
+        .upsert_source_index(old_snapshot)
+        .unwrap();
+
+    let response = governance.search_source_indices(&SkillHubSearchRequest {
+        query: Some("legacy".to_string()),
+        source_id: None,
+        source_kind: None,
+        limit: Some(5),
+    });
+
+    assert_eq!(response.matches.len(), 1);
+    assert!(response.matches[0].stale);
+}
+
+#[test]
 fn resolve_remote_distribution_persists_distribution_and_lifecycle() {
     let dir = tempdir().unwrap();
     let registry_root = dir.path().join("registry");

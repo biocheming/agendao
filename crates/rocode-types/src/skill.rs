@@ -808,6 +808,8 @@ pub struct SkillHubSearchMatch {
     pub deleted_locally: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installed_revision: Option<String>,
+    #[serde(default)]
+    pub stale: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -816,6 +818,8 @@ pub struct SkillHubSearchResponse {
     pub query: Option<String>,
     #[serde(default)]
     pub matches: Vec<SkillHubSearchMatch>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggested_refresh_sources: Vec<SkillSourceRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

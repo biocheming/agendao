@@ -754,6 +754,25 @@ pub struct SkillsConfig {
     pub hub: Option<SkillHubConfig>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SkillHubRegistrySourceConfig {
+    #[serde(rename = "sourceId", alias = "source_id")]
+    pub source_id: String,
+    #[serde(
+        rename = "sourceKind",
+        alias = "source_kind",
+        default = "default_registry_source_kind"
+    )]
+    pub source_kind: rocode_types::SkillSourceKind,
+    pub locator: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+fn default_registry_source_kind() -> rocode_types::SkillSourceKind {
+    rocode_types::SkillSourceKind::Registry
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SkillHubConfig {
     #[serde(
@@ -780,6 +799,19 @@ pub struct SkillHubConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub max_extract_bytes: Option<u64>,
+    #[serde(
+        rename = "defaultRegistries",
+        alias = "default_registries",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub default_registries: Option<Vec<SkillHubRegistrySourceConfig>>,
+    #[serde(
+        rename = "indexFreshnessMaxAgeSeconds",
+        alias = "index_freshness_max_age_seconds",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub index_freshness_max_age_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
