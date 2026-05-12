@@ -3185,6 +3185,54 @@ mod tests {
     }
 
     #[test]
+    fn lightweight_trim_placeholders_do_not_reenter_next_turn_model_context() {
+        let mut session = Session::new("proj", ".");
+        let session_id = session.id.clone();
+
+        session
+            .messages_mut()
+            .push(SessionMessage::user(session_id.clone(), "earlier user"));
+
+        let mut old_assistant = SessionMessage::assistant(session_id.clone());
+        old_assistant.add_text("先检查旧文件。");
+        old_assistant.add_tool_call(
+            "call_old",
+            "read",
+            serde_json::json!({"file_path": "/tmp/demo.txt", "offset": 0, "limit": 50000}),
+        );
+        session.messages_mut().push(old_assistant);
+
+        let mut old_tool = SessionMessage::tool(session_id.clone());
+        old_tool.add_tool_result("call_old", &"R".repeat(20_000), false);
+        session.messages_mut().push(old_tool);
+
+        session
+            .messages_mut()
+            .push(SessionMessage::user(session_id.clone(), "latest user"));
+
+        let summary = SessionPrompt::apply_lightweight_tool_result_trim(&mut session)
+            .expect("expected lightweight trim to collapse the old round");
+        assert!(summary.trimmed_rounds >= 1 || summary.trimmed_tool_calls >= 1);
+
+        let provider_messages =
+            SessionPrompt::build_chat_messages(&session.messages, None).expect("provider messages");
+        let serialized = serde_json::to_string(&provider_messages).expect("serialize messages");
+
+        assert!(
+            serialized.contains("先检查旧文件"),
+            "ordinary assistant narration should remain model-visible"
+        );
+        assert!(
+            !serialized.contains("[tool call collapsed before compaction:"),
+            "lightweight trim placeholder must not reenter next-turn model context"
+        );
+        assert!(
+            !serialized.contains("[tool result collapsed before compaction:"),
+            "collapsed tool-result placeholder must not reenter next-turn model context"
+        );
+    }
+
+    #[test]
     fn prune_after_loop_respects_disabled_prune() {
         let mut session = Session::new("proj", ".");
         let session_id = session.id.clone();
