@@ -20,11 +20,11 @@ use rocode_types::{
     SkillHubNegativeEntropyResponse, SkillHubPolicyResponse, SkillHubRemoteInstallApplyRequest,
     SkillHubRemoteInstallPlanRequest, SkillHubRemoteUpdateApplyRequest,
     SkillHubRemoteUpdatePlanRequest, SkillHubReviewCandidatesSyncRequest,
-    SkillHubReviewCandidatesSyncResponse, SkillHubSemanticConflictResponse,
-    SkillHubSyncApplyRequest, SkillHubSyncPlanRequest, SkillHubSyncPlanResponse,
-    SkillHubTimelineQuery, SkillHubTimelineResponse, SkillHubUsageLedgerResponse,
-    SkillHubVitalityUpdateRequest, SkillHubVitalityUpdateResponse, SkillRemoteInstallPlan,
-    SkillRemoteInstallResponse, SkillRetirementReason,
+    SkillHubReviewCandidatesSyncResponse, SkillHubSearchRequest, SkillHubSearchResponse,
+    SkillHubSemanticConflictResponse, SkillHubSyncApplyRequest, SkillHubSyncPlanRequest,
+    SkillHubSyncPlanResponse, SkillHubTimelineQuery, SkillHubTimelineResponse,
+    SkillHubUsageLedgerResponse, SkillHubVitalityUpdateRequest, SkillHubVitalityUpdateResponse,
+    SkillRemoteInstallPlan, SkillRemoteInstallResponse, SkillRetirementReason,
 };
 use std::sync::Arc;
 
@@ -70,6 +70,7 @@ pub(crate) fn skill_hub_routes() -> Router<Arc<ServerState>> {
             post(sync_semantic_conflict_review_candidates),
         )
         .route("/vitality", post(update_skill_vitality))
+        .route("/search", get(search_source_indices))
         .route("/index", get(list_source_indices))
         .route("/distributions", get(list_distributions))
         .route("/artifact-cache", get(list_artifact_cache))
@@ -109,6 +110,17 @@ async fn list_source_indices(
     Ok(Json(SkillHubIndexResponse {
         source_indices: snapshot.source_indices,
     }))
+}
+
+async fn search_source_indices(
+    State(state): State<Arc<ServerState>>,
+    Query(query): Query<SkillHubSearchRequest>,
+) -> Result<Json<SkillHubSearchResponse>> {
+    let response = run_skill_hub_blocking(state, move |authority| {
+        Ok(authority.search_source_indices(&query))
+    })
+    .await?;
+    Ok(Json(response))
 }
 
 async fn list_usage_ledger(
@@ -864,8 +876,9 @@ mod tests {
         SkillHubIndexRefreshRequest, SkillHubManagedDetachRequest, SkillHubManagedRemoveRequest,
         SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
         SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest,
-        SkillHubReviewCandidatesSyncRequest, SkillHubTimelineQuery, SkillHubVitalityUpdateRequest,
-        SkillRetirementReasonKind, SkillSourceKind, SkillSourceRef, SkillVitalityState,
+        SkillHubReviewCandidatesSyncRequest, SkillHubSearchRequest, SkillHubTimelineQuery,
+        SkillHubVitalityUpdateRequest, SkillRetirementReasonKind, SkillSourceKind, SkillSourceRef,
+        SkillVitalityState,
     };
     use std::fs;
     use tempfile::tempdir;
@@ -2001,6 +2014,66 @@ Review code changes carefully and verify evidence before reporting.
         assert_eq!(response.snapshot.source.source_id, "registry:test/remote");
         assert_eq!(response.snapshot.entries.len(), 1);
         assert_eq!(response.snapshot.entries[0].skill_name, "remote-alpha");
+    }
+
+    #[tokio::test]
+    async fn search_source_indices_returns_ranked_registry_matches() {
+        let dir = tempdir().expect("tempdir");
+        let index_path = dir.path().join("registry-index.json");
+        fs::write(
+            &index_path,
+            serde_json::json!({
+                "entries": [
+                    {
+                        "skill_name": "security-reviewer",
+                        "description": "Review code for security issues",
+                        "category": "development/review"
+                    },
+                    {
+                        "skill_name": "rust-auditor",
+                        "description": "Rust security review workflow",
+                        "category": "development/security"
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .expect("index file");
+        let state = server_state_for_project(dir.path());
+        let source = SkillSourceRef {
+            source_id: "registry:test/search".to_string(),
+            source_kind: SkillSourceKind::Registry,
+            locator: index_path.to_string_lossy().to_string(),
+            revision: None,
+        };
+
+        let _ = refresh_source_index(
+            State(state.clone()),
+            Json(SkillHubIndexRefreshRequest {
+                source: source.clone(),
+            }),
+        )
+        .await
+        .expect("index refresh should succeed");
+
+        let Json(response) = search_source_indices(
+            State(state),
+            Query(SkillHubSearchRequest {
+                query: Some("rust security review".to_string()),
+                source_id: Some(source.source_id.clone()),
+                source_kind: Some(SkillSourceKind::Registry),
+                limit: Some(10),
+            }),
+        )
+        .await
+        .expect("search should succeed");
+
+        assert_eq!(response.matches[0].entry.skill_name, "rust-auditor");
+        assert_eq!(response.matches[0].source.source_id, source.source_id);
+        assert!(response
+            .matches
+            .iter()
+            .any(|item| item.entry.skill_name == "security-reviewer"));
     }
 
     #[tokio::test]

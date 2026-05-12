@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::anyhow;
@@ -7,10 +7,12 @@ use rocode_execution_types::{
     ExecutionRequestContext,
 };
 use rocode_provider::{
-    Content, ContentPart, Message, Provider, Role, ToolDefinition, ToolResult as ProviderToolResult,
+    Content, ContentPart, Message, Provider, ProviderProfileResolver, ProviderQuirk, Role,
+    ToolDefinition, ToolResult as ProviderToolResult,
 };
 use rocode_tool::{ToolContext, ToolError};
 use rocode_types::SubsessionHandoffPacket;
+use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use super::{AgentParams, AskPermissionHook, AskQuestionHook, ModelRef};
@@ -19,6 +21,16 @@ const TASK_STATUS_COMPLETED: &str = "completed";
 const TASK_NO_TEXT_OUTPUT_MESSAGE: &str =
     "Task completed successfully. No textual output was returned by subagent.";
 const MAX_STEPS_SUMMARY_PROMPT: &str = "You have reached the maximum allowed steps for this subtask. Do NOT make any more tool calls. Return a concise final summary of work completed and any remaining work.";
+const SUBSESSION_REASONING_OPTION_KEYS: &[&str] = &[
+    "reasoning",
+    "reasoning_effort",
+    "reasoningEffort",
+    "thinking",
+    "include_reasoning",
+    "includeReasoning",
+    "enable_thinking",
+    "thinkingConfig",
+];
 
 #[derive(Debug, Clone)]
 struct InlineToolCall {
@@ -59,6 +71,78 @@ fn build_inline_tool_definitions(
         })
         .collect();
     tool_defs
+}
+
+fn provider_requires_thinking_replay_for_options(
+    provider_id: &str,
+    provider_options: Option<&HashMap<String, Value>>,
+) -> bool {
+    let options = provider_options.cloned().unwrap_or_default();
+    ProviderProfileResolver::try_resolve_with_options(provider_id, &options)
+        .map(|profile| {
+            profile
+                .quirks
+                .contains(ProviderQuirk::RequiresThinkingReplay)
+        })
+        .unwrap_or(false)
+}
+
+fn strip_reasoning_provider_options_for_new_continuation(
+    mut provider_options: HashMap<String, Value>,
+) -> (Option<HashMap<String, Value>>, Vec<String>) {
+    let mut removed = Vec::new();
+
+    for key in SUBSESSION_REASONING_OPTION_KEYS {
+        if provider_options.remove(*key).is_some() {
+            removed.push((*key).to_string());
+        }
+    }
+
+    if provider_options.contains_key("chat_template_args") {
+        provider_options.remove("chat_template_args");
+        removed.push("chat_template_args".to_string());
+    }
+
+    let provider_options = if provider_options.is_empty() {
+        None
+    } else {
+        Some(provider_options)
+    };
+
+    (provider_options, removed)
+}
+
+fn sanitize_compiled_request_for_new_subsession_boundary(
+    provider_id: &str,
+    compiled_request: CompiledExecutionRequest,
+) -> CompiledExecutionRequest {
+    if !provider_requires_thinking_replay_for_options(
+        provider_id,
+        compiled_request.provider_options.as_ref(),
+    ) {
+        return compiled_request;
+    }
+
+    let Some(provider_options) = compiled_request.provider_options.clone() else {
+        return compiled_request;
+    };
+
+    let (provider_options, removed) =
+        strip_reasoning_provider_options_for_new_continuation(provider_options);
+    if removed.is_empty() {
+        return compiled_request;
+    }
+
+    tracing::info!(
+        provider_id = provider_id,
+        removed_keys = ?removed,
+        "starting delegated subtask at a fresh continuation boundary; stripping replay-sensitive reasoning options"
+    );
+
+    CompiledExecutionRequest {
+        provider_options,
+        ..compiled_request
+    }
 }
 
 pub struct SubtaskExecutor {
@@ -238,7 +322,10 @@ impl SubtaskExecutor {
             });
         let mut messages = vec![Message::user(&self.prompt)];
         let mut executed_tool_calls: u32 = 0;
-        let compiled_request = self.compiled_request_for_model(&model);
+        let compiled_request = sanitize_compiled_request_for_new_subsession_boundary(
+            provider.id(),
+            self.compiled_request_for_model(&model),
+        );
 
         let mut step: u32 = 0;
         loop {
@@ -492,6 +579,58 @@ mod tests {
         let tool_defs = build_inline_tool_definitions(tools, &disabled);
         let names: Vec<&str> = tool_defs.iter().map(|tool| tool.name.as_str()).collect();
         assert_eq!(names, vec!["websearch", "task", "task_flow"]);
+    }
+
+    #[test]
+    fn sanitize_compiled_request_strips_reasoning_options_for_replay_sensitive_provider() {
+        let compiled = CompiledExecutionRequest {
+            model_id: "deepseek-reasoner".to_string(),
+            provider_options: Some(HashMap::from([
+                (
+                    "thinking".to_string(),
+                    serde_json::json!({"type": "enabled"}),
+                ),
+                ("reasoningEffort".to_string(), serde_json::json!("high")),
+                (
+                    "chat_template_args".to_string(),
+                    serde_json::json!({"foo": "bar"}),
+                ),
+                (
+                    "tool_choice".to_string(),
+                    serde_json::json!({"type":"function","function":{"name":"read"}}),
+                ),
+            ])),
+            ..Default::default()
+        };
+
+        let sanitized = sanitize_compiled_request_for_new_subsession_boundary("deepseek", compiled);
+        let options = sanitized
+            .provider_options
+            .expect("tool_choice should remain after sanitization");
+
+        assert!(!options.contains_key("thinking"));
+        assert!(!options.contains_key("reasoningEffort"));
+        assert!(!options.contains_key("chat_template_args"));
+        assert!(options.contains_key("tool_choice"));
+    }
+
+    #[test]
+    fn sanitize_compiled_request_preserves_reasoning_options_for_regular_provider() {
+        let compiled = CompiledExecutionRequest {
+            model_id: "gpt-4.1".to_string(),
+            provider_options: Some(HashMap::from([(
+                "thinking".to_string(),
+                serde_json::json!({"type": "enabled"}),
+            )])),
+            ..Default::default()
+        };
+
+        let sanitized = sanitize_compiled_request_for_new_subsession_boundary("openai", compiled);
+        let options = sanitized
+            .provider_options
+            .expect("provider options should be preserved");
+
+        assert!(options.contains_key("thinking"));
     }
 
     #[test]

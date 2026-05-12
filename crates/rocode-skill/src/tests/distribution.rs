@@ -1,4 +1,5 @@
 use super::*;
+use rocode_types::SkillHubSearchRequest;
 
 #[test]
 fn hub_store_persists_bundled_manifest() {
@@ -579,6 +580,151 @@ fn remote_source_index_cache_recovers_snapshot_when_hub_lock_is_stale() {
     assert_eq!(restored.entries.len(), 1);
     assert_eq!(restored.entries[0].skill_name, "registry-only");
     assert_eq!(restored.entries[0].revision.as_deref(), Some("cache-rev"));
+}
+
+#[test]
+fn search_source_indices_returns_ranked_matches_with_managed_state() {
+    let dir = tempdir().unwrap();
+    let index_path = dir.path().join("registry-index.json");
+    fs::write(
+        &index_path,
+        serde_json::json!({
+            "entries": [
+                {
+                    "skill_name": "security-reviewer",
+                    "description": "Review code for security issues",
+                    "category": "development/review",
+                    "revision": "1.3.0"
+                },
+                {
+                    "skill_name": "rust-auditor",
+                    "description": "Rust security review workflow",
+                    "category": "development/security",
+                    "revision": "1.1.0"
+                },
+                {
+                    "skill_name": "frontend-polish",
+                    "description": "Improve visual quality",
+                    "category": "design/ui"
+                }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let governance = SkillGovernanceAuthority::new(dir.path(), None);
+    let source = SkillSourceRef {
+        source_id: "registry:test/search".to_string(),
+        source_kind: SkillSourceKind::Registry,
+        locator: index_path.to_string_lossy().to_string(),
+        revision: Some("search-rev".to_string()),
+    };
+    governance
+        .refresh_source_index(&source, "test:search-source-index")
+        .unwrap();
+    governance
+        .upsert_managed_skill(ManagedSkillRecord {
+            skill_name: "rust-auditor".to_string(),
+            source: Some(source.clone()),
+            installed_revision: Some("1.1.0".to_string()),
+            local_hash: None,
+            last_synced_at: Some(1_712_345_680),
+            locally_modified: true,
+            deleted_locally: false,
+        })
+        .unwrap();
+
+    let response = governance.search_source_indices(&SkillHubSearchRequest {
+        query: Some("rust security review".to_string()),
+        source_id: Some(source.source_id.clone()),
+        source_kind: Some(SkillSourceKind::Registry),
+        limit: Some(5),
+    });
+
+    assert_eq!(response.matches[0].entry.skill_name, "rust-auditor");
+    assert_eq!(response.matches[0].source.source_id, source.source_id);
+    assert!(response.matches[0].managed);
+    assert!(response.matches[0].locally_modified);
+    assert_eq!(
+        response.matches[0].installed_revision.as_deref(),
+        Some("1.1.0")
+    );
+    assert!(response.matches[0]
+        .match_reasons
+        .iter()
+        .any(|reason| reason == "description"));
+    assert!(response
+        .matches
+        .iter()
+        .any(|item| item.entry.skill_name == "security-reviewer"));
+}
+
+#[test]
+fn search_source_indices_does_not_mark_same_name_from_other_source_as_managed() {
+    let dir = tempdir().unwrap();
+    let first_index_path = dir.path().join("registry-a.json");
+    let second_index_path = dir.path().join("registry-b.json");
+    fs::write(
+        &first_index_path,
+        serde_json::json!({
+            "entries": [{ "skill_name": "shared-reviewer", "description": "from source a" }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        &second_index_path,
+        serde_json::json!({
+            "entries": [{ "skill_name": "shared-reviewer", "description": "from source b" }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let governance = SkillGovernanceAuthority::new(dir.path(), None);
+    let source_a = SkillSourceRef {
+        source_id: "registry:test/source-a".to_string(),
+        source_kind: SkillSourceKind::Registry,
+        locator: first_index_path.to_string_lossy().to_string(),
+        revision: Some("rev-a".to_string()),
+    };
+    let source_b = SkillSourceRef {
+        source_id: "registry:test/source-b".to_string(),
+        source_kind: SkillSourceKind::Registry,
+        locator: second_index_path.to_string_lossy().to_string(),
+        revision: Some("rev-b".to_string()),
+    };
+    governance
+        .refresh_source_index(&source_a, "test:search-source-a")
+        .unwrap();
+    governance
+        .refresh_source_index(&source_b, "test:search-source-b")
+        .unwrap();
+    governance
+        .upsert_managed_skill(ManagedSkillRecord {
+            skill_name: "shared-reviewer".to_string(),
+            source: Some(source_a.clone()),
+            installed_revision: Some("rev-a".to_string()),
+            local_hash: None,
+            last_synced_at: Some(1_712_345_681),
+            locally_modified: true,
+            deleted_locally: false,
+        })
+        .unwrap();
+
+    let response = governance.search_source_indices(&SkillHubSearchRequest {
+        query: Some("shared-reviewer".to_string()),
+        source_id: Some(source_b.source_id.clone()),
+        source_kind: Some(SkillSourceKind::Registry),
+        limit: Some(5),
+    });
+
+    assert_eq!(response.matches.len(), 1);
+    assert_eq!(response.matches[0].source.source_id, source_b.source_id);
+    assert!(!response.matches[0].managed);
+    assert!(!response.matches[0].locally_modified);
+    assert!(response.matches[0].installed_revision.is_none());
 }
 
 #[test]

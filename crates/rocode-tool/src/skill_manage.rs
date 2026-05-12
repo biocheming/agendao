@@ -3,6 +3,7 @@ use rocode_skill::{
     CreateSkillRequest, DeleteSkillRequest, EditSkillRequest, PatchSkillRequest,
     RemoveSkillFileRequest, SkillGovernedWriteResult, SkillWriteAction, WriteSkillFileRequest,
 };
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use std::path::Path;
 
@@ -33,9 +34,15 @@ struct SkillManageInput {
     description: Option<String>,
     #[serde(default)]
     body: Option<String>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_json_object_or_string"
+    )]
     methodology: Option<rocode_skill::SkillMethodologyTemplate>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_json_object_or_string"
+    )]
     frontmatter: Option<rocode_skill::SkillFrontmatterPatch>,
     #[serde(default)]
     content: Option<String>,
@@ -47,6 +54,38 @@ struct SkillManageInput {
     file_path: Option<String>,
 }
 
+fn deserialize_optional_json_object_or_string<'de, D, T>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+
+    match value {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::String(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+
+            let parsed = rocode_util::json::try_parse_json_object_robust(trimmed)
+                .ok_or_else(|| serde::de::Error::custom("expected JSON object string"))?;
+            serde_json::from_value(parsed)
+                .map(Some)
+                .map_err(serde::de::Error::custom)
+        }
+        other => serde_json::from_value(other)
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+    }
+}
+
 #[async_trait]
 impl Tool for SkillManageTool {
     fn id(&self) -> &str {
@@ -54,7 +93,7 @@ impl Tool for SkillManageTool {
     }
 
     fn description(&self) -> &str {
-        "Create, patch, edit, delete, or manage supporting files for workspace-local skills under .rocode/skills. Create when a complex task succeeded (5+ tool calls), you overcame errors, a user-corrected approach worked, you discovered a non-trivial workflow, or the user asks you to remember a procedure. Prefer the structured `methodology` shape when creating or patching a skill so the result includes trigger conditions, core steps, success criteria, validation, and boundaries. When creating or patching a methodology skill with core steps, review the current session's tool call history and fill each step's optional `experienced_tools` field with the tool names actually used in that step. For commands invoked through bash, use the command name you actually ran, such as `docker` or `cargo`, instead of `bash`; leave `experienced_tools` empty if you are unsure. Patch when instructions are stale or wrong, a skill fails on a specific OS or environment, steps or pitfalls are missing, or you used a skill and found gaps not covered by it. After difficult or iterative tasks, offer to save the approach as a skill. Skip simple one-offs. Confirm with the user before creating or deleting skills."
+        "Create, patch, edit, delete, or manage supporting files for workspace-local skills under .rocode/skills. Create when a complex task succeeded (5+ tool calls), you overcame errors, a user-corrected approach worked, you discovered a non-trivial workflow, or the user asks you to remember a procedure. For create, the most reliable minimal shape is {\"action\":\"create\",\"name\":\"skill-name\",\"description\":\"what it does\",\"methodology\":{...}} or {\"action\":\"create\",\"name\":\"skill-name\",\"description\":\"what it does\",\"body\":\"# Skill...\"}. Prefer the structured `methodology` shape when creating or patching a skill so the result includes trigger conditions, core steps, success criteria, validation, and boundaries. `methodology` and `frontmatter` may be provided either as nested objects or as JSON strings containing objects. When creating or patching a methodology skill with core steps, review the current session's tool call history and fill each step's optional `experienced_tools` field with the tool names actually used in that step. For commands invoked through bash, use the command name you actually ran, such as `docker` or `cargo`, instead of `bash`; leave `experienced_tools` empty if you are unsure. Patch when instructions are stale or wrong, a skill fails on a specific OS or environment, steps or pitfalls are missing, or you used a skill and found gaps not covered by it. After difficult or iterative tasks, offer to save the approach as a skill. Skip simple one-offs. Confirm with the user before creating or deleting skills."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -64,11 +103,11 @@ impl Tool for SkillManageTool {
                 "action": {
                     "type": "string",
                     "enum": ["create", "patch", "edit", "write_file", "remove_file", "delete"],
-                    "description": "Mutation to perform."
+                    "description": "Mutation to perform. Pick exactly one of: create, patch, edit, write_file, remove_file, delete."
                 },
                 "name": {
                     "type": "string",
-                    "description": "Existing skill name for patch/edit/write_file/remove_file/delete, or new skill name for create."
+                    "description": "For create: new skill name. For patch/edit/write_file/remove_file/delete: existing skill name."
                 },
                 "new_name": {
                     "type": "string",
@@ -76,19 +115,25 @@ impl Tool for SkillManageTool {
                 },
                 "description": {
                     "type": "string",
-                    "description": "Skill description for create or patch."
+                    "description": "Short one-line skill description for create or patch."
                 },
                 "body": {
                     "type": "string",
-                    "description": "Skill markdown body for create or patch."
+                    "description": "Full SKILL.md markdown body for create or patch. Use this OR `methodology`, not both."
                 },
                 "methodology": {
-                    "type": "object",
-                    "description": "Structured methodology template for create or patch. Use this when you want skill_manage to generate a rubric-shaped SKILL body with trigger conditions, core steps, success criteria, validation, and boundaries. Each core step may also include an optional experienced_tools array of tool names actually used in that step based on the current session history."
+                    "description": "Structured methodology template for create or patch. Use this OR `body`, not both. May be either a nested object or a JSON string containing that object. Recommended minimal shape: {\"when_to_use\":[...],\"core_steps\":[{\"title\":\"...\",\"action\":\"...\",\"outcome\":\"...\"}],\"success_criteria\":[...],\"validation\":[...]}",
+                    "oneOf": [
+                        { "type": "object" },
+                        { "type": "string" }
+                    ]
                 },
                 "frontmatter": {
-                    "type": "object",
-                    "description": "Optional structured YAML frontmatter patch for rich skill metadata such as version, author, license, tags, prerequisites, required_commands, and metadata blocks."
+                    "description": "Optional structured YAML frontmatter patch for rich metadata such as version, author, license, tags, prerequisites, required_commands, and metadata blocks. May be either a nested object or a JSON string containing that object.",
+                    "oneOf": [
+                        { "type": "object" },
+                        { "type": "string" }
+                    ]
                 },
                 "content": {
                     "type": "string",
@@ -100,14 +145,65 @@ impl Tool for SkillManageTool {
                 },
                 "directory_name": {
                     "type": "string",
-                    "description": "Optional leaf directory name to use under .rocode/skills for create."
+                    "description": "Optional leaf directory name to use under .rocode/skills for create. If omitted, ROCode derives it from the name."
                 },
                 "file_path": {
                     "type": "string",
                     "description": "Supporting file path relative to the skill directory."
                 }
             },
-            "required": ["action"]
+            "required": ["action"],
+            "allOf": [
+                {
+                    "if": { "properties": { "action": { "const": "create" } } },
+                    "then": { "required": ["action", "name", "description"] }
+                },
+                {
+                    "if": { "properties": { "action": { "const": "patch" } } },
+                    "then": { "required": ["action", "name"] }
+                },
+                {
+                    "if": { "properties": { "action": { "const": "edit" } } },
+                    "then": { "required": ["action", "name", "content"] }
+                },
+                {
+                    "if": { "properties": { "action": { "const": "write_file" } } },
+                    "then": { "required": ["action", "name", "file_path", "content"] }
+                },
+                {
+                    "if": { "properties": { "action": { "const": "remove_file" } } },
+                    "then": { "required": ["action", "name", "file_path"] }
+                },
+                {
+                    "if": { "properties": { "action": { "const": "delete" } } },
+                    "then": { "required": ["action", "name"] }
+                }
+            ],
+            "examples": [
+                {
+                    "action": "create",
+                    "name": "code-audit-methodology",
+                    "description": "Reusable code audit workflow",
+                    "methodology": {
+                        "when_to_use": ["Use when a project needs a repeatable audit workflow."],
+                        "core_steps": [
+                            {
+                                "title": "Survey",
+                                "action": "Read the project structure and identify risk surfaces.",
+                                "outcome": "The audit scope is clear."
+                            }
+                        ],
+                        "success_criteria": ["The workflow is reusable across projects."],
+                        "validation": ["Apply it to a second repo and confirm the steps still fit."]
+                    }
+                },
+                {
+                    "action": "patch",
+                    "name": "code-audit-methodology",
+                    "description": "Update the workflow with missing validation",
+                    "methodology": "{\"when_to_use\":[\"Use when the old skill is incomplete.\"],\"core_steps\":[{\"title\":\"Update\",\"action\":\"Add the missing validation steps.\",\"outcome\":\"The skill is more reliable.\"}],\"success_criteria\":[\"The new steps are present.\"],\"validation\":[\"Reload the skill and inspect the rendered sections.\"]}"
+                }
+            ]
         })
     }
 
@@ -595,15 +691,86 @@ mod tests {
         assert!(loaded.content.contains("## Validation"));
     }
 
+    #[tokio::test]
+    async fn create_accepts_stringified_methodology_and_frontmatter() {
+        let dir = tempdir().unwrap();
+        let tool = SkillManageTool;
+        let ctx = ToolContext::new(
+            "session".to_string(),
+            "message".to_string(),
+            dir.path().to_string_lossy().to_string(),
+        )
+        .with_ask(|_| async { Ok(()) });
+
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "action": "create",
+                    "name": "stringified-skill",
+                    "description": "structured from strings",
+                    "methodology": "{\"when_to_use\":[\"Use when the model stringifies nested JSON.\"],\"core_steps\":[{\"title\":\"Parse\",\"action\":\"Accept stringified methodology objects.\",\"outcome\":\"Create succeeds.\"}],\"success_criteria\":[\"The skill is created.\"],\"validation\":[\"Load the generated skill.\"],\"pitfalls\":[\"Do not require the model to emit a raw nested object every time.\"]}",
+                    "frontmatter": "{\"author\":\"rocode\",\"license\":\"MIT\",\"tags\":[\"skills\",\"ergonomics\"]}"
+                }),
+                ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.output.contains("stringified-skill"));
+        let authority = crate::skill_support::authority_for(dir.path(), None);
+        let loaded = authority
+            .load_skill_for_inspection("stringified-skill", None)
+            .unwrap();
+        let source = authority
+            .load_skill_source_for_inspection("stringified-skill", None)
+            .unwrap();
+        assert!(loaded.content.contains("## Core Steps"));
+        assert!(loaded
+            .content
+            .contains("Use when the model stringifies nested JSON."));
+        assert!(source.contains("author: rocode"));
+        assert!(source.contains("license: MIT"));
+        assert!(source.contains("tags:"));
+        assert!(source.contains("- skills"));
+    }
+
     #[test]
     fn description_includes_self_improvement_guidance() {
         let description = SkillManageTool.description();
         assert!(description.contains("complex task succeeded (5+ tool calls)"));
+        assert!(description.contains("most reliable minimal shape"));
         assert!(description.contains("structured `methodology` shape"));
+        assert!(description.contains("may be provided either as nested objects or as JSON strings"));
         assert!(description.contains("current session's tool call history"));
         assert!(description.contains("optional `experienced_tools` field"));
         assert!(description.contains("After difficult or iterative tasks"));
         assert!(description.contains("Patch when instructions are stale or wrong"));
         assert!(description.contains("Confirm with the user before creating or deleting"));
+    }
+
+    #[test]
+    fn parameters_include_action_aware_requirements_and_examples() {
+        let schema = SkillManageTool.parameters();
+        let all_of = schema
+            .get("allOf")
+            .and_then(|value| value.as_array())
+            .expect("skill_manage schema should expose action-aware requirements");
+        assert!(!all_of.is_empty());
+
+        let examples = schema
+            .get("examples")
+            .and_then(|value| value.as_array())
+            .expect("skill_manage schema should expose examples");
+        assert!(examples.len() >= 2);
+
+        let methodology = schema
+            .get("properties")
+            .and_then(|value| value.get("methodology"))
+            .expect("methodology property should exist");
+        let methodology_one_of = methodology
+            .get("oneOf")
+            .and_then(|value| value.as_array())
+            .expect("methodology should accept object or string");
+        assert_eq!(methodology_one_of.len(), 2);
     }
 }

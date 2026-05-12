@@ -1,7 +1,6 @@
 use crate::traits::ToolExecutor;
 use crate::types::{ExecutionContext, ToolOutput};
 use crate::ToolExecError;
-use serde_json::json;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -41,10 +40,6 @@ impl ToolRunner {
             return Some(lower);
         }
 
-        if available_tools.iter().any(|tool| tool == "invalid") {
-            return Some("invalid".to_string());
-        }
-
         None
     }
 
@@ -57,38 +52,12 @@ impl ToolRunner {
         let repaired_name =
             Self::repair_tool_call_name(&call.name, &available).unwrap_or(call.name.clone());
 
-        let (effective_name, effective_args) =
-            if repaired_name == "invalid" && call.name != "invalid" {
-                (
-                    "invalid".to_string(),
-                    json!({
-                        "tool": call.name,
-                        "error": format!("Unknown tool requested by model: {}", call.name),
-                    }),
-                )
-            } else {
-                (repaired_name, call.arguments)
-            };
-
         let result = self
             .executor
-            .execute(&effective_name, effective_args, exec_ctx)
+            .execute(&repaired_name, call.arguments, exec_ctx)
             .await;
 
-        match result {
-            Err(ToolExecError::InvalidArguments(message)) if effective_name != "invalid" => {
-                let invalid_args = json!({
-                    "tool": effective_name,
-                    "error": message,
-                });
-                let fallback = self
-                    .executor
-                    .execute("invalid", invalid_args, exec_ctx)
-                    .await;
-                Self::to_output(&call.id, "invalid", fallback)
-            }
-            other => Self::to_output(&call.id, &effective_name, other),
-        }
+        Self::to_output(&call.id, &repaired_name, result)
     }
 
     fn to_output(
@@ -129,9 +98,9 @@ mod tests {
     }
 
     #[test]
-    fn repair_tool_call_name_falls_back_to_invalid_tool() {
+    fn repair_tool_call_name_preserves_unknown_tool_name() {
         let available = vec!["read".to_string(), "invalid".to_string()];
         let repaired = ToolRunner::repair_tool_call_name("missing_tool", &available);
-        assert_eq!(repaired, Some("invalid".to_string()));
+        assert_eq!(repaired, None);
     }
 }

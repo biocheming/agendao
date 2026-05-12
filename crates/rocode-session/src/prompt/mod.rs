@@ -2040,7 +2040,7 @@ impl SessionPrompt {
             serde_json::json!(HiddenRuntimeHint::SkillSaveSuggestion.as_str()),
         );
         note.add_text(
-            "System suggestion: this turn may be a good skill candidate. Save it only if you can express reusable triggers, steps, validation, and boundaries with `skill_manage`. Start with a minimal valid shape such as `skill_manage({ action: \"create\", name, description, methodology })` or `skill_manage({ action: \"create\", name, description, body })`. Do not call the `invalid` tool directly.",
+            "System suggestion: this turn may be a good skill candidate. Save it only if you can express reusable triggers, steps, validation, and boundaries with `skill_manage`. Copy this JSON shape and fill in the values when you are ready: {\"action\":\"create\",\"name\":\"skill-name\",\"description\":\"one-line summary\",\"methodology\":{\"when_to_use\":[\"...\"],\"core_steps\":[{\"title\":\"...\",\"action\":\"...\",\"outcome\":\"...\"}],\"success_criteria\":[\"...\"],\"validation\":[\"...\"]}}. If you already wrote the full markdown body, use {\"action\":\"create\",\"name\":\"skill-name\",\"description\":\"one-line summary\",\"body\":\"# Skill...\"} instead. Use `skill_manage` when you are ready to save it.",
         );
     }
 
