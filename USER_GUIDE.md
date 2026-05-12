@@ -4,7 +4,7 @@
 
 ## 0. 版本
 
-- 当前版本：`v2026.5.8`
+- 当前版本：`v2026.5.12`
 - 当前 CLI 命令：`rocode`
 
 ## 1. 先选运行方式
@@ -144,6 +144,7 @@ ROCode 现在区分：
 - 如果系统需要你回答，它应通过正式 question UI 发起
 - scheduler stage transcript 会被投影到主 session，而不是只藏在内部日志里
 - 当前 TUI 主会话视图已经迁入 reratui reactive session subtree，滚动、reasoning、sidebar 与消息流体验已按新渲染边界收口
+- provider 完成最后一轮输出后，TUI 现在会在 `prompt.final` / `prompt.completed` / `prompt.scheduler.completed` 这些 authoritative 更新上重新同步 session，避免最后一条 assistant message 长时间停留在流式半成品状态
 
 ### 4.2 Slash Command
 
@@ -169,6 +170,22 @@ ROCode 现在区分：
 
 写操作也已经在 TUI 里闭环，包括 install / update / detach / remove / sync，以及 review-candidate / runtime-gate 相关治理判断。
 
+### 4.4 在线 Skill 搜索
+
+现在的 skill hub 已经支持面向 indexed source 的正式搜索，而不只是“知道 URL 之后才能安装”：
+
+```bash
+rocode skill hub search --query "rust security review"
+rocode skill hub search --query "code audit" --source-id registry:official
+```
+
+搜索结果会带上：
+
+- `source` / `entry`，可直接进入 install plan / apply
+- `managed` / `installed_revision` / `locally_modified`
+- `stale` 与 `suggested_refresh_sources`
+- `trust_level` 与 `maintenance_status`
+
 ## 5. Web 里会看到什么
 
 当前 Web 以当前 workspace 为中心：
@@ -182,6 +199,7 @@ ROCode 现在区分：
 - isolated workspace 模式下会明确提示“当前不会继承 global config”
 - composer 现在默认单行起始、最多扩展到 10 行，并提供按 provider 分组、可过滤的 model picker
 - provider inspection 走独立 descriptor 读面；config validation、effective policy、context closure diagnostics 也都有只读解释入口
+- final assistant message 的 history / live merge 现在会统一 message / reasoning block id；如果最终文本已经落库，Web 会优先保住 authoritative 历史，而不是被 stale live snapshot 覆盖
 
 如果你在 settings 里改的是全局配置，Web 也会提示这些修改是否影响当前 sandbox runtime。
 
