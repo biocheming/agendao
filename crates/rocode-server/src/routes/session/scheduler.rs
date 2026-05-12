@@ -10,58 +10,59 @@ use rocode_config::{Config as AppConfig, SkillTreeNodeConfig};
 use rocode_execution_types::{CompiledExecutionRequest, ExecutionRequestContext};
 use rocode_orchestrator::output_metadata::output_usage;
 use rocode_orchestrator::{
+    AUTO_SCHEDULER_PROFILE_NAME, AgentResolver, AvailableAgentMeta, AvailableCategoryMeta,
+    ExecutionContext as OrchestratorExecutionContext, ModelRef as OrchestratorModelRef,
+    ModelResolver, Orchestrator, OrchestratorContext, OrchestratorError, SchedulerConfig,
+    SchedulerPresetKind, SchedulerProfileConfig, SchedulerRequestDefaults, SkillTreeNode,
+    SkillTreeRequestPlan, SkillTreeTruncationStrategy, ToolExecError as OrchestratorToolExecError,
+    ToolExecutor as OrchestratorToolExecutor, ToolOutput as OrchestratorToolOutput, ToolRunner,
     resolve_skill_markdown_repo, runtime::policy::ModelContextLimits,
     scheduler_auto_profile_config, scheduler_orchestrator_from_plan, scheduler_plan_from_profile,
     scheduler_request_defaults_from_file, scheduler_request_defaults_from_plan,
-    stage_policy_available_tools, stage_policy_from_label, AgentResolver, AvailableAgentMeta,
-    AvailableCategoryMeta, ExecutionContext as OrchestratorExecutionContext,
-    ModelRef as OrchestratorModelRef, ModelResolver, Orchestrator, OrchestratorContext,
-    OrchestratorError, SchedulerConfig, SchedulerPresetKind, SchedulerProfileConfig,
-    SchedulerRequestDefaults, SkillTreeNode, SkillTreeRequestPlan, SkillTreeTruncationStrategy,
-    ToolExecError as OrchestratorToolExecError, ToolExecutor as OrchestratorToolExecutor,
-    ToolOutput as OrchestratorToolOutput, ToolRunner, AUTO_SCHEDULER_PROFILE_NAME,
+    stage_policy_available_tools, stage_policy_from_label,
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::request_options::{resolve_compiled_execution_request, ExecutionResolutionContext};
+use crate::request_options::{ExecutionResolutionContext, resolve_compiled_execution_request};
 use crate::routes::skill_catalog::enrich_scheduler_plan_skills;
 use crate::runtime_control::SessionRunStatus;
 use crate::session_runtime::events::{
     broadcast_session_updated, emit_output_block_via_hook, server_output_block_hook,
 };
 use crate::session_runtime::{
-    assistant_visible_text, ensure_default_session_title,
-    finalize_active_scheduler_stage_cancelled, first_user_message_text,
-    visible_assistant_text_from_orchestrator_output, ModelPricing, SessionSchedulerLifecycleHook,
+    ModelPricing, SCHEDULER_STAGE_PENDING_COMPACTION_PHASE_KEY,
+    SCHEDULER_STAGE_PENDING_LAST_EVENT_KEY, SessionSchedulerLifecycleHook, assistant_visible_text,
+    ensure_default_session_title, finalize_active_scheduler_stage_cancelled,
+    first_user_message_text, visible_assistant_text_from_orchestrator_output,
 };
 use crate::{ApiError, Result, ServerState};
-use rocode_provider::transform::{apply_caching, ProviderType};
+use rocode_provider::transform::{ProviderType, apply_caching};
 use rocode_session::prompt::{
-    auto_compact_session_with_focus_if_needed, govern_pre_dispatch_session_context,
     ContextPressureGovernanceOutcome, OutputBlockEvent, OutputBlockHook,
+    auto_compact_session_with_focus_if_needed, govern_pre_dispatch_session_context,
 };
 use rocode_session::{MessageRole, PartType as SessionPartType, SessionMessage};
 use rocode_types::{
-    message_latest_compaction_summary, ConfigPolicyValidationEffect, ConfigPolicyValidationItem,
-    ConfigPolicyValidationOwner, ConfigPolicyValidationScope, ConfigPolicyValidationScopeKind,
-    ConfigPolicyValidationSeverity, ContextPressureGovernanceSummary, MemoryDetailView,
-    MemoryEvidenceRef, MemoryRecordId, SessionContinuityPacket, SessionEffectiveSchedulerTraceStep,
-    SessionEffectiveSchedulerTraceStepKind,
+    ConfigPolicyValidationEffect, ConfigPolicyValidationItem, ConfigPolicyValidationOwner,
+    ConfigPolicyValidationScope, ConfigPolicyValidationScopeKind, ConfigPolicyValidationSeverity,
+    ContextPressureGovernanceSummary, MemoryDetailView, MemoryEvidenceRef, MemoryRecordId,
+    SessionContinuityPacket, SessionEffectiveSchedulerTraceStep,
+    SessionEffectiveSchedulerTraceStepKind, message_latest_compaction_summary,
 };
 
 use super::super::permission::request_permission;
 use super::super::tui::request_question_answers;
 use super::autoresearch_target::{
-    AutoresearchProfileOverrideRecord, AUTORESEARCH_PROFILE_NAME,
-    AUTORESEARCH_PROFILE_OVERRIDE_METADATA_KEY,
+    AUTORESEARCH_PROFILE_NAME, AUTORESEARCH_PROFILE_OVERRIDE_METADATA_KEY,
+    AutoresearchProfileOverrideRecord,
 };
 use super::cancel::is_scheduler_cancellation_error;
 use super::messages::resolve_provider_and_model;
 use super::prompt::{
+    SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY, SchedulerUserMessageContext,
     build_scheduler_session_context_packet, create_scheduler_user_message,
     merge_scheduler_prompt_with_memory, move_scheduler_final_answer_after_stage_messages,
     propagate_output_projection_metadata, resolve_prompt_memory_context,
-    SchedulerUserMessageContext, SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY,
 };
 use super::session_crud::{
     compaction_lifecycle_status_hook, resolved_session_directory, set_session_run_status,
@@ -1987,7 +1988,8 @@ pub(crate) fn apply_skill_tree_telemetry_metadata(
     );
 }
 
-fn maybe_auto_compact_scheduler_session(
+async fn maybe_auto_compact_scheduler_session(
+    state: &Arc<ServerState>,
     session: &mut rocode_session::Session,
     provider: &dyn rocode_provider::Provider,
     model_id: &str,
@@ -2022,9 +2024,63 @@ fn maybe_auto_compact_scheduler_session(
             serde_json::json!("Context compacted"),
         );
     }
+    if let Some(message_snapshot) = annotate_scheduler_stage_compaction(session, phase) {
+        let _ = state
+            .runtime_telemetry
+            .refresh_stage_summary_from_message(&session.record().id, &message_snapshot)
+            .await;
+    }
 
     tracing::info!(phase, summary, "scheduler context compacted");
     true
+}
+
+fn annotate_scheduler_stage_compaction(
+    session: &mut rocode_session::Session,
+    phase: &str,
+) -> Option<SessionMessage> {
+    let notice = scheduler_stage_compaction_notice(phase);
+    match phase {
+        "scheduler.pre_run" => {
+            session.insert_metadata(
+                SCHEDULER_STAGE_PENDING_LAST_EVENT_KEY,
+                serde_json::json!(notice),
+            );
+            session.insert_metadata(
+                SCHEDULER_STAGE_PENDING_COMPACTION_PHASE_KEY,
+                serde_json::json!(phase),
+            );
+            None
+        }
+        _ => session
+            .messages_mut()
+            .iter_mut()
+            .rev()
+            .find(|message| message.metadata.contains_key("scheduler_stage_id"))
+            .map(|message| {
+                message.metadata.insert(
+                    "scheduler_stage_last_event".to_string(),
+                    serde_json::json!(notice),
+                );
+                message.metadata.insert(
+                    "context_compaction_phase".to_string(),
+                    serde_json::json!(phase),
+                );
+                message.metadata.insert(
+                    "context_compaction_notice".to_string(),
+                    serde_json::json!("Context compacted"),
+                );
+                message.clone()
+            }),
+    }
+}
+
+fn scheduler_stage_compaction_notice(phase: &str) -> &'static str {
+    match phase {
+        "scheduler.pre_run" => "Session context compacted before stage execution",
+        "scheduler.post_run" => "Session context compacted after stage execution",
+        _ => "Session context compacted",
+    }
 }
 
 fn format_pre_dispatch_context_pressure_error(
@@ -2304,6 +2360,7 @@ pub async fn run_local_scheduler_prompt(
         .as_ref()
         .map(|plan| plan.estimated_tokens() as u64);
     if maybe_auto_compact_scheduler_session(
+        &state,
         &mut session,
         provider.as_ref(),
         &model_id,
@@ -2312,7 +2369,9 @@ pub async fn run_local_scheduler_prompt(
         pre_compact_live_tokens,
         Some(&req.prompt_text),
         "scheduler.pre_run",
-    ) {
+    )
+    .await
+    {
         let mut sessions = state.sessions.lock().await;
         sessions.update(session.clone());
     }
@@ -2698,6 +2757,7 @@ pub async fn run_local_scheduler_prompt(
         .unwrap_or_default();
 
     maybe_auto_compact_scheduler_session(
+        &state,
         &mut session,
         provider.as_ref(),
         &model_id,
@@ -2708,7 +2768,8 @@ pub async fn run_local_scheduler_prompt(
             .or_else(|| (prompt_tokens > 0).then_some(prompt_tokens)),
         Some(&req.prompt_text),
         "scheduler.post_run",
-    );
+    )
+    .await;
 
     let _ = state
         .runtime_telemetry
@@ -2865,6 +2926,61 @@ mod tests {
     }
 
     #[test]
+    fn annotate_scheduler_stage_compaction_queues_pending_notice_for_pre_run() {
+        let mut session = rocode_session::Session::new("project", ".");
+
+        assert!(annotate_scheduler_stage_compaction(&mut session, "scheduler.pre_run").is_none());
+        assert_eq!(
+            session
+                .record()
+                .metadata
+                .get(SCHEDULER_STAGE_PENDING_LAST_EVENT_KEY)
+                .and_then(|value| value.as_str()),
+            Some("Session context compacted before stage execution")
+        );
+        assert_eq!(
+            session
+                .record()
+                .metadata
+                .get(SCHEDULER_STAGE_PENDING_COMPACTION_PHASE_KEY)
+                .and_then(|value| value.as_str()),
+            Some("scheduler.pre_run")
+        );
+    }
+
+    #[test]
+    fn annotate_scheduler_stage_compaction_updates_latest_stage_message_for_post_run() {
+        let mut session = rocode_session::Session::new("project", ".");
+        let message = session.add_assistant_message();
+        message.metadata.insert(
+            "scheduler_stage_id".to_string(),
+            serde_json::json!("stage_123"),
+        );
+        message.metadata.insert(
+            "scheduler_stage_last_event".to_string(),
+            serde_json::json!("Stage completed"),
+        );
+
+        let snapshot = annotate_scheduler_stage_compaction(&mut session, "scheduler.post_run")
+            .expect("stage message should be updated");
+
+        assert_eq!(
+            snapshot
+                .metadata
+                .get("scheduler_stage_last_event")
+                .and_then(|value| value.as_str()),
+            Some("Session context compacted after stage execution")
+        );
+        assert_eq!(
+            snapshot
+                .metadata
+                .get("context_compaction_phase")
+                .and_then(|value| value.as_str()),
+            Some("scheduler.post_run")
+        );
+    }
+
+    #[test]
     fn scheduler_context_hydrate_only_allows_packet_anchors() {
         let exec_ctx = OrchestratorExecutionContext {
             session_id: "session".to_string(),
@@ -2923,10 +3039,12 @@ mod tests {
         .expect("valid message ids should parse");
 
         assert_eq!(ids, vec!["msg_1".to_string(), "msg_2".to_string()]);
-        assert!(scheduler_context_hydrate_message_ids(&serde_json::json!({
-            "message_ids": []
-        }))
-        .is_err());
+        assert!(
+            scheduler_context_hydrate_message_ids(&serde_json::json!({
+                "message_ids": []
+            }))
+            .is_err()
+        );
         assert_eq!(
             scheduler_context_hydrate_message_limit(&serde_json::json!({
                 "max_chars_per_message": 99_999
@@ -3040,10 +3158,12 @@ mod tests {
         .expect("valid record ids should parse");
 
         assert_eq!(ids, vec!["mem_1".to_string(), "mem_2".to_string()]);
-        assert!(scheduler_memory_hydrate_record_ids(&serde_json::json!({
-            "record_ids": []
-        }))
-        .is_err());
+        assert!(
+            scheduler_memory_hydrate_record_ids(&serde_json::json!({
+                "record_ids": []
+            }))
+            .is_err()
+        );
         assert_eq!(
             scheduler_memory_hydrate_record_limit(&serde_json::json!({
                 "max_chars_per_record": 99_999

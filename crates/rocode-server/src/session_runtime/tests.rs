@@ -302,6 +302,76 @@ async fn emit_scheduler_stage_message_appends_assistant_stage_message() {
     );
 }
 
+#[tokio::test]
+async fn emit_scheduler_stage_message_consumes_pending_compaction_notice() {
+    let state = Arc::new(ServerState::new());
+    let session_id = {
+        let mut sessions = state.sessions.lock().await;
+        let session_id = sessions.create("project", ".").id.clone();
+        let mut session = sessions
+            .get(&session_id)
+            .cloned()
+            .expect("session should exist");
+        session.insert_metadata(
+            SCHEDULER_STAGE_PENDING_LAST_EVENT_KEY,
+            serde_json::json!("Session context compacted before stage execution"),
+        );
+        session.insert_metadata(
+            SCHEDULER_STAGE_PENDING_COMPACTION_PHASE_KEY,
+            serde_json::json!("scheduler.pre_run"),
+        );
+        sessions.update(session);
+        session_id
+    };
+    let exec_ctx = OrchestratorExecutionContext {
+        session_id: session_id.clone(),
+        workdir: ".".to_string(),
+        agent_name: "prometheus".to_string(),
+        metadata: HashMap::new(),
+    };
+
+    emit_scheduler_stage_message(SchedulerStageMessageInput {
+        state: &state,
+        session_id: &session_id,
+        scheduler_profile: "prometheus",
+        stage_name: "plan",
+        stage_index: 1,
+        stage_total: 2,
+        content: "## Plan\n- compacted before start",
+        exec_ctx: &exec_ctx,
+        output_hook: None,
+    })
+    .await;
+
+    let sessions = state.sessions.lock().await;
+    let session = sessions.get(&session_id).expect("session should exist");
+    let message = session
+        .record()
+        .messages
+        .last()
+        .expect("stage message should exist");
+    assert_eq!(
+        message
+            .metadata
+            .get("scheduler_stage_last_event")
+            .and_then(|value| value.as_str()),
+        Some("Session context compacted before stage execution")
+    );
+    assert_eq!(
+        message
+            .metadata
+            .get("context_compaction_phase")
+            .and_then(|value| value.as_str()),
+        Some("scheduler.pre_run")
+    );
+    assert!(
+        !session
+            .record()
+            .metadata
+            .contains_key(SCHEDULER_STAGE_PENDING_LAST_EVENT_KEY)
+    );
+}
+
 #[test]
 fn gate_decision_block_does_not_duplicate_final_response_section() {
     let mut metadata = std::collections::HashMap::new();
@@ -1189,9 +1259,11 @@ async fn lifecycle_hook_step_checkpoint_prefers_observed_usage_over_low_estimate
         summary.status,
         rocode_types::ContextPressureGovernanceStatus::Deferred
     );
-    assert!(summary
-        .request_pressure_percent
-        .is_some_and(|percent| percent >= 100));
+    assert!(
+        summary
+            .request_pressure_percent
+            .is_some_and(|percent| percent >= 100)
+    );
 }
 
 #[tokio::test]
@@ -1539,9 +1611,11 @@ async fn lifecycle_hook_emits_scheduler_stage_and_reasoning_blocks_for_non_attac
             "reasoning:end",
         ]
     );
-    assert!(!session_blocks
-        .iter()
-        .any(|block| matches!(block, OutputBlock::Message(_))));
+    assert!(
+        !session_blocks
+            .iter()
+            .any(|block| matches!(block, OutputBlock::Message(_)))
+    );
 }
 
 #[tokio::test]

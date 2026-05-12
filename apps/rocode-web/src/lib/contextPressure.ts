@@ -49,6 +49,5 @@ export function currentContextTokensFromSources(
       ? activeStageContextTokens
       : null;
 
-  if (usage != null && activeStage != null) return Math.max(usage, activeStage);
   return usage ?? activeStage;
 }

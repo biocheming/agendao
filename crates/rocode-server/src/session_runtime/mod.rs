@@ -8,9 +8,9 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use self::events::{broadcast_session_updated, emit_output_block_via_hook, DiffEntry};
-use crate::runtime_control::{ExecutionPatch, ExecutionStatus, FieldUpdate, SessionRunStatus};
+use self::events::{DiffEntry, broadcast_session_updated, emit_output_block_via_hook};
 use crate::ServerState;
+use crate::runtime_control::{ExecutionPatch, ExecutionStatus, FieldUpdate, SessionRunStatus};
 use rocode_command::output_blocks::{
     MessageBlock, MessageRole as OutputMessageRole, OutputBlock, ReasoningBlock,
     SchedulerDecisionBlock, SchedulerDecisionField, SchedulerDecisionRenderSpec,
@@ -18,10 +18,10 @@ use rocode_command::output_blocks::{
 };
 use rocode_orchestrator::runtime::StepCheckpointDirective;
 use rocode_orchestrator::{
-    parse_execution_gate_decision, parse_route_decision, scheduler_stage_observability,
     ExecutionContext as OrchestratorExecutionContext, LifecycleHook, RouteDecision,
     SchedulerExecutionGateDecision, SchedulerStageCapabilities,
-    ToolOutput as OrchestratorToolOutput,
+    ToolOutput as OrchestratorToolOutput, parse_execution_gate_decision, parse_route_decision,
+    scheduler_stage_observability,
 };
 use rocode_provider::Provider;
 use rocode_session::prompt::{OutputBlockEvent, OutputBlockHook};
@@ -2742,11 +2742,7 @@ fn extract_todo_items_from_args(
             })
         })
         .collect::<Vec<_>>();
-    if items.is_empty() {
-        None
-    } else {
-        Some(items)
-    }
+    if items.is_empty() { None } else { Some(items) }
 }
 
 fn apply_scheduler_decision_metadata(stage_name: &str, message: &mut SessionMessage) {
@@ -3019,6 +3015,11 @@ pub(crate) fn scheduler_stage_focus(stage_name: &str) -> &'static str {
     }
 }
 
+pub(crate) const SCHEDULER_STAGE_PENDING_LAST_EVENT_KEY: &str =
+    "scheduler_stage_pending_last_event";
+pub(crate) const SCHEDULER_STAGE_PENDING_COMPACTION_PHASE_KEY: &str =
+    "scheduler_stage_pending_compaction_phase";
+
 fn pretty_scheduler_stage_name(stage_name: &str) -> String {
     prettify_token(stage_name)
 }
@@ -3064,6 +3065,7 @@ pub(crate) async fn emit_scheduler_stage_message(input: SchedulerStageMessageInp
     let Some(mut session) = sessions.get(session_id).cloned() else {
         return;
     };
+    let pending_compaction_notice = take_pending_scheduler_stage_compaction_notice(&mut session);
 
     let message = session.add_assistant_message();
     let stage_id = format!("stage_{}", uuid::Uuid::new_v4().simple());
@@ -3114,6 +3116,22 @@ pub(crate) async fn emit_scheduler_stage_message(input: SchedulerStageMessageInp
             "Stage completed"
         }),
     );
+    if let Some((notice, phase)) = pending_compaction_notice {
+        message.metadata.insert(
+            "scheduler_stage_last_event".to_string(),
+            serde_json::json!(notice),
+        );
+        message.metadata.insert(
+            "context_compaction_notice".to_string(),
+            serde_json::json!("Context compacted"),
+        );
+        if let Some(phase) = phase {
+            message.metadata.insert(
+                "context_compaction_phase".to_string(),
+                serde_json::json!(phase),
+            );
+        }
+    }
     message.metadata.insert(
         "scheduler_stage_waiting_on".to_string(),
         serde_json::json!("none"),
@@ -3154,6 +3172,18 @@ pub(crate) async fn emit_scheduler_stage_message(input: SchedulerStageMessageInp
         )
         .await;
     }
+}
+
+fn take_pending_scheduler_stage_compaction_notice(
+    session: &mut rocode_session::Session,
+) -> Option<(String, Option<String>)> {
+    let notice = session
+        .remove_metadata(SCHEDULER_STAGE_PENDING_LAST_EVENT_KEY)
+        .and_then(|value| value.as_str().map(str::to_string))?;
+    let phase = session
+        .remove_metadata(SCHEDULER_STAGE_PENDING_COMPACTION_PHASE_KEY)
+        .and_then(|value| value.as_str().map(str::to_string));
+    Some((notice, phase))
 }
 
 pub(crate) struct SchedulerStageMessageInput<'a> {
