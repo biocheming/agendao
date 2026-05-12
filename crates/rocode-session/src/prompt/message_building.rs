@@ -138,10 +138,10 @@ impl SessionPrompt {
 
             // Skip messages with no parts — empty Tool/Assistant messages
             // confuse providers, especially the Ethnopic-compatible family
-            // which rejects empty content.
-            if msg.parts.is_empty() {
-                continue;
-            }
+                // which rejects empty content.
+                if msg.parts.is_empty() {
+                    continue;
+                }
 
             if let Some(summary) = Self::projected_model_context_summary(msg) {
                 messages.push(Message::assistant(summary));
@@ -161,9 +161,13 @@ impl SessionPrompt {
                 let mut tool_parts = Vec::new();
                 for part in &msg.parts {
                     if matches!(part.part_type, PartType::ToolResult { .. }) {
-                        tool_parts.push(part.clone());
+                        if Self::is_model_visible_part(part) {
+                            tool_parts.push(part.clone());
+                        }
                     } else {
-                        assistant_parts.push(part.clone());
+                        if Self::is_model_visible_part(part) {
+                            assistant_parts.push(part.clone());
+                        }
                     }
                 }
 
@@ -186,7 +190,17 @@ impl SessionPrompt {
                 continue;
             }
 
-            let content = Self::parts_to_content(&msg.parts);
+            let visible_parts: Vec<_> = msg
+                .parts
+                .iter()
+                .filter(|part| Self::is_model_visible_part(part))
+                .cloned()
+                .collect();
+            if visible_parts.is_empty() {
+                continue;
+            }
+
+            let content = Self::parts_to_content(&visible_parts);
             let role = match msg.role {
                 MessageRole::User => Role::User,
                 MessageRole::Assistant => Role::Assistant,
@@ -222,6 +236,7 @@ impl SessionPrompt {
         message
             .parts
             .iter()
+            .filter(|part| Self::is_model_visible_part(part))
             .map(|p| match &p.part_type {
                 PartType::Text { text, .. } => text.len(),
                 PartType::ToolResult { content, title, .. } => {
@@ -235,6 +250,23 @@ impl SessionPrompt {
                 _ => 0,
             })
             .sum()
+    }
+
+    fn is_model_visible_part(part: &crate::MessagePart) -> bool {
+        match &part.part_type {
+            PartType::Text { text, ignored, .. } => {
+                if ignored.unwrap_or(false) {
+                    return false;
+                }
+                !Self::is_lightweight_compaction_placeholder_text(text)
+            }
+            _ => true,
+        }
+    }
+
+    fn is_lightweight_compaction_placeholder_text(text: &str) -> bool {
+        text.starts_with("[tool call collapsed before compaction:")
+            || text.starts_with("[tool result collapsed before compaction:")
     }
 
     pub(super) fn parts_to_content(parts: &[crate::MessagePart]) -> Content {
@@ -3358,6 +3390,55 @@ mod tests {
         assert!(matches!(
             &messages[0].content,
             Content::Text(text) if text == "exact user instruction"
+        ));
+    }
+
+    #[test]
+    fn build_chat_messages_skips_lightweight_compaction_placeholder_text() {
+        let sid = "sid".to_string();
+        let mut assistant = SessionMessage::assistant(sid);
+        assistant.add_text("visible answer");
+        assistant.parts.push(crate::MessagePart {
+            id: "part_trim".to_string(),
+            created_at: chrono::Utc::now(),
+            message_id: None,
+            part_type: PartType::Text {
+                text: "[tool call collapsed before compaction: tool=read, call_id=tool-call-0, input_tokens~21] {\"file_path\":\"/tmp/a\"}".to_string(),
+                synthetic: Some(true),
+                ignored: None,
+            },
+        });
+
+        let messages = SessionPrompt::build_chat_messages(&[assistant], None).unwrap();
+
+        assert_eq!(messages.len(), 1);
+        assert!(matches!(
+            &messages[0].content,
+            Content::Text(text) if text == "visible answer"
+        ));
+    }
+
+    #[test]
+    fn build_chat_messages_keeps_non_compaction_synthetic_text() {
+        let sid = "sid".to_string();
+        let mut assistant = SessionMessage::assistant(sid);
+        assistant.parts.push(crate::MessagePart {
+            id: "part_note".to_string(),
+            created_at: chrono::Utc::now(),
+            message_id: None,
+            part_type: PartType::Text {
+                text: "synthetic note that should stay model-visible".to_string(),
+                synthetic: Some(true),
+                ignored: None,
+            },
+        });
+
+        let messages = SessionPrompt::build_chat_messages(&[assistant], None).unwrap();
+
+        assert_eq!(messages.len(), 1);
+        assert!(matches!(
+            &messages[0].content,
+            Content::Text(text) if text == "synthetic note that should stay model-visible"
         ));
     }
 
