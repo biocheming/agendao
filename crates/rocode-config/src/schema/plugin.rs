@@ -114,8 +114,11 @@ impl PluginConfig {
         )
     }
 
-    /// Convert this config back to a loader-compatible spec string.
-    /// Returns None for types that bypass the subprocess loader (pip, cargo, dylib).
+    /// Convert this config back to a subprocess-loader-compatible spec string.
+    ///
+    /// Only the current subprocess-backed runtime paths (`npm` and `file`) map to
+    /// loader specs. Types such as `pip`, `cargo`, and `dylib` are accepted by the
+    /// schema but do not flow through this loader path today.
     pub fn to_loader_spec(&self, name: &str) -> Option<String> {
         match self.plugin_type.as_str() {
             "npm" => {
