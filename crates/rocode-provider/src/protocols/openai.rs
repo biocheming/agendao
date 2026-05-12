@@ -10,6 +10,12 @@ use tracing;
 use super::openai_request_body::{build_request_body, openai_reasoning_effort};
 use super::openai_response::{reassemble_sse_chunks, RawChatResponse};
 use super::request_sanitizer::{sanitize_messages_for_protocol, SanitizerOptions};
+use super::thinking_continuation::{
+    request_effectively_enables_thinking, request_explicitly_disables_thinking,
+    request_explicitly_enables_thinking,
+    request_has_tool_call_continuation_missing_reasoning_replay,
+    strip_reasoning_provider_options_for_new_continuation,
+};
 use crate::custom_fetch::get_custom_fetch_proxy;
 use crate::responses::*;
 use crate::runtime::runtime_pipeline_enabled;
@@ -79,105 +85,39 @@ fn provider_requires_thinking_replay(config: &ProviderConfig) -> bool {
     }
 }
 
-fn thinking_value_enabled(value: &Value) -> bool {
-    match value {
-        Value::Bool(enabled) => *enabled,
-        Value::String(text) => !matches!(
-            text.trim().to_ascii_lowercase().as_str(),
-            "" | "0" | "false" | "off" | "no" | "none" | "disabled"
-        ),
-        Value::Number(number) => number.as_i64().unwrap_or(0) != 0,
-        Value::Object(map) => {
-            if let Some(enabled) = map.get("enabled") {
-                return thinking_value_enabled(enabled);
-            }
-            if let Some(enabled) = map.get("enable_thinking") {
-                return thinking_value_enabled(enabled);
-            }
-            if let Some(value) = map.get("includeThoughts") {
-                return thinking_value_enabled(value);
-            }
-            if let Some(value) = map.get("type") {
-                return thinking_value_enabled(value);
-            }
-            if let Some(value) = map.get("effort") {
-                return thinking_value_enabled(value);
-            }
-            !map.is_empty()
-        }
-        Value::Array(values) => !values.is_empty(),
-        Value::Null => false,
-    }
+fn provider_defaults_thinking_enabled(config: &ProviderConfig) -> bool {
+    config.provider_id.eq_ignore_ascii_case("deepseek")
 }
 
-fn request_explicitly_enables_thinking(request: &ChatRequest) -> bool {
-    let Some(options) = request.provider_options.as_ref() else {
-        return false;
-    };
-
-    for key in [
-        "thinking",
-        "reasoning",
-        "enable_thinking",
-        "thinkingConfig",
-        "reasoningEffort",
-        "reasoning_effort",
-    ] {
-        if options.get(key).is_some_and(thinking_value_enabled) {
-            return true;
-        }
-    }
-
-    options
-        .get("chat_template_args")
-        .is_some_and(thinking_value_enabled)
+fn start_fresh_non_thinking_continuation_boundary(request: &mut ChatRequest) -> Vec<String> {
+    let (provider_options, removed) = strip_reasoning_provider_options_for_new_continuation(
+        request.provider_options.take(),
+        Some(("thinking", serde_json::json!({"type": "disabled"}))),
+    );
+    request.provider_options = provider_options;
+    removed
 }
 
-fn message_has_reasoning_replay(message: &Message) -> bool {
-    let has_wire_field = |provider_options: &Option<HashMap<String, Value>>| {
-        provider_options
-            .as_ref()
-            .and_then(|options| options.get("openaiCompatible"))
-            .and_then(Value::as_object)
-            .is_some_and(|options| {
-                options.contains_key("reasoning_content")
-                    || options.contains_key("reasoning_details")
-            })
-    };
-
-    if has_wire_field(&message.provider_options) {
-        return true;
+fn maybe_start_new_continuation_boundary(config: &ProviderConfig, request: &mut ChatRequest) {
+    if !provider_requires_thinking_replay(config) {
+        return;
+    }
+    if !provider_defaults_thinking_enabled(config) {
+        return;
+    }
+    if request_explicitly_enables_thinking(request) || request_explicitly_disables_thinking(request) {
+        return;
+    }
+    if !request_has_tool_call_continuation_missing_reasoning_replay(&request.messages) {
+        return;
     }
 
-    match &message.content {
-        crate::Content::Text(_) => false,
-        crate::Content::Parts(parts) => parts.iter().any(|part| {
-            matches!(part.content_type.as_str(), "reasoning" | "thinking")
-                && part
-                    .text
-                    .as_ref()
-                    .is_some_and(|text| !text.trim().is_empty())
-                || has_wire_field(&part.provider_options)
-        }),
-    }
-}
-
-fn message_has_tool_calls(message: &Message) -> bool {
-    match &message.content {
-        crate::Content::Text(_) => false,
-        crate::Content::Parts(parts) => parts
-            .iter()
-            .any(|part| part.content_type == "tool_use" || part.tool_use.is_some()),
-    }
-}
-
-fn request_has_tool_call_continuation_missing_reasoning_replay(messages: &[Message]) -> bool {
-    messages.iter().enumerate().any(|(index, message)| {
-        matches!(message.role, Role::Assistant)
-            && index + 1 < messages.len()
-            && message_has_tool_calls(message)
-            && !message_has_reasoning_replay(message)
-    })
+    let removed = start_fresh_non_thinking_continuation_boundary(request);
+    tracing::warn!(
+        provider_id = %config.provider_id,
+        removed_keys = ?removed,
+        "starting a fresh non-thinking continuation boundary because prior assistant tool-call history lacks required reasoning replay"
+    );
 }
 
 fn validate_thinking_replay_request(
@@ -187,7 +127,7 @@ fn validate_thinking_replay_request(
     if !provider_requires_thinking_replay(config) {
         return Ok(());
     }
-    if !request_explicitly_enables_thinking(request) {
+    if !request_effectively_enables_thinking(request, provider_defaults_thinking_enabled(config)) {
         return Ok(());
     }
     if !request_has_tool_call_continuation_missing_reasoning_replay(&request.messages) {
@@ -451,8 +391,9 @@ where
 async fn chat_completions_chat(
     client: &Client,
     config: &ProviderConfig,
-    request: ChatRequest,
+    mut request: ChatRequest,
 ) -> Result<ChatResponse, ProviderError> {
+    maybe_start_new_continuation_boundary(config, &mut request);
     validate_thinking_replay_request(config, &request)?;
     let base = chat_completions_base_url(config)?;
     let url = chat_completions_url(base);
@@ -530,6 +471,7 @@ async fn chat_stream_openai_compatible(
     mut request: ChatRequest,
     use_pipeline: bool,
 ) -> Result<StreamResult, ProviderError> {
+    maybe_start_new_continuation_boundary(config, &mut request);
     validate_thinking_replay_request(config, &request)?;
     let base = chat_completions_base_url(config)?;
     let url = chat_completions_url(base);
@@ -1025,7 +967,100 @@ mod tests {
         let config = ProviderConfig::new("deepseek", "https://api.deepseek.com/v1", "test-key")
             .with_option("npm", json!("@ai-sdk/openai-compatible"));
 
+        let err = validate_thinking_replay_request(&config, &request).unwrap_err();
+        assert!(
+            matches!(err, ProviderError::InvalidRequest(message) if message.contains("requires assistant reasoning replay in thinking mode"))
+        );
+    }
+
+    #[test]
+    fn maybe_start_new_continuation_boundary_disables_implicit_deepseek_thinking() {
+        let mut request = ChatRequest {
+            model: "deepseek-v4".to_string(),
+            messages: vec![
+                Message::user("first turn"),
+                Message::assistant_parts(vec![crate::ContentPart::tool_use(
+                    "call_1",
+                    "bash",
+                    json!({ "command": "ls" }),
+                )]),
+                Message::tool_parts(vec![crate::ContentPart::tool_result(
+                    "call_1",
+                    "ok",
+                    Some(false),
+                )]),
+            ],
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            system: None,
+            tools: None,
+            stream: None,
+            provider_options: None,
+            variant: None,
+        };
+
+        let config = ProviderConfig::new("deepseek", "https://api.deepseek.com/v1", "test-key")
+            .with_option("npm", json!("@ai-sdk/openai-compatible"));
+
+        maybe_start_new_continuation_boundary(&config, &mut request);
+
+        assert_eq!(
+            request
+                .provider_options
+                .as_ref()
+                .and_then(|options| options.get("thinking")),
+            Some(&json!({"type": "disabled"}))
+        );
         assert!(validate_thinking_replay_request(&config, &request).is_ok());
+    }
+
+    #[test]
+    fn maybe_start_new_continuation_boundary_preserves_explicit_thinking_requests() {
+        let mut request = ChatRequest {
+            model: "deepseek-v4".to_string(),
+            messages: vec![
+                Message::user("first turn"),
+                Message::assistant_parts(vec![crate::ContentPart::tool_use(
+                    "call_1",
+                    "bash",
+                    json!({ "command": "ls" }),
+                )]),
+                Message::tool_parts(vec![crate::ContentPart::tool_result(
+                    "call_1",
+                    "ok",
+                    Some(false),
+                )]),
+            ],
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            system: None,
+            tools: None,
+            stream: None,
+            provider_options: Some(HashMap::from([(
+                "thinking".to_string(),
+                json!({"type": "enabled"}),
+            )])),
+            variant: None,
+        };
+
+        let config = ProviderConfig::new("deepseek", "https://api.deepseek.com/v1", "test-key")
+            .with_option("npm", json!("@ai-sdk/openai-compatible"));
+
+        maybe_start_new_continuation_boundary(&config, &mut request);
+
+        assert_eq!(
+            request
+                .provider_options
+                .as_ref()
+                .and_then(|options| options.get("thinking")),
+            Some(&json!({"type": "enabled"}))
+        );
+        let err = validate_thinking_replay_request(&config, &request).unwrap_err();
+        assert!(
+            matches!(err, ProviderError::InvalidRequest(message) if message.contains("requires assistant reasoning replay in thinking mode"))
+        );
     }
 
     #[test]
