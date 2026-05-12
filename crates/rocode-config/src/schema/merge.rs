@@ -300,6 +300,11 @@ impl DeepMerge for SkillHubConfig {
         merge_option_replace(&mut self.fetch_timeout_ms, other.fetch_timeout_ms);
         merge_option_replace(&mut self.max_download_bytes, other.max_download_bytes);
         merge_option_replace(&mut self.max_extract_bytes, other.max_extract_bytes);
+        merge_option_replace(
+            &mut self.index_freshness_max_age_seconds,
+            other.index_freshness_max_age_seconds,
+        );
+        merge_option_replace(&mut self.default_registries, other.default_registries);
     }
 }
 

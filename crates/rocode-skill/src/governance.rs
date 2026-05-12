@@ -49,6 +49,8 @@ pub struct SkillGovernedSyncResult {
     pub guard_reports: Vec<SkillGuardReport>,
 }
 
+const DEFAULT_INDEX_FRESHNESS_MAX_AGE_SECONDS: u64 = 604_800; // 7 days
+
 #[derive(Clone)]
 pub struct SkillGovernanceAuthority {
     skill_authority: SkillAuthority,
@@ -58,6 +60,7 @@ pub struct SkillGovernanceAuthority {
     distribution_resolver: Arc<SkillDistributionResolver>,
     artifact_store: Arc<SkillArtifactStore>,
     lifecycle: Arc<SkillLifecycleCoordinator>,
+    config_store: Option<Arc<ConfigStore>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -89,8 +92,9 @@ impl SkillGovernanceAuthority {
             sync_planner: Arc::new(SkillSyncPlanner::new()),
             guard_engine: Arc::new(SkillGuardEngine::new()),
             distribution_resolver: Arc::new(SkillDistributionResolver::new()),
-            artifact_store: Arc::new(SkillArtifactStore::new(base_dir.clone(), config_store)),
+            artifact_store: Arc::new(SkillArtifactStore::new(base_dir.clone(), config_store.clone())),
             lifecycle: Arc::new(SkillLifecycleCoordinator::new()),
+            config_store,
         }
     }
 
@@ -999,6 +1003,46 @@ impl SkillGovernanceAuthority {
         Ok(snapshot)
     }
 
+    fn index_freshness_max_age_seconds(&self) -> u64 {
+        self.config_store
+            .as_deref()
+            .map(|store| store.config())
+            .and_then(|config| config.skills.as_ref()?.hub.as_ref()?.index_freshness_max_age_seconds)
+            .unwrap_or(DEFAULT_INDEX_FRESHNESS_MAX_AGE_SECONDS)
+    }
+
+    fn default_registry_sources(&self) -> Vec<SkillSourceRef> {
+        let Some(config) = self.config_store.as_deref().map(|store| store.config()) else {
+            return Vec::new();
+        };
+        let Some(registries) = config
+            .skills
+            .as_ref()
+            .and_then(|skills| skills.hub.as_ref())
+            .and_then(|hub| hub.default_registries.as_deref())
+        else {
+            return Vec::new();
+        };
+        registries
+            .iter()
+            .map(|entry| SkillSourceRef {
+                source_id: entry.source_id.clone(),
+                source_kind: entry.source_kind.clone(),
+                locator: entry.locator.clone(),
+                revision: None,
+            })
+            .collect()
+    }
+
+    fn compute_stale(&self, source_updated_at: i64) -> bool {
+        let threshold = self.index_freshness_max_age_seconds() as i64;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        now.saturating_sub(source_updated_at) > threshold
+    }
+
     pub fn search_source_indices(&self, request: &SkillHubSearchRequest) -> SkillHubSearchResponse {
         let normalized_query = trimmed_option(request.query.as_deref());
         let query_terms = search_query_terms(normalized_query.as_deref());
@@ -1010,10 +1054,11 @@ impl SkillGovernanceAuthority {
             .into_iter()
             .map(|record| (normalize_name(&record.skill_name), record))
             .collect::<BTreeMap<_, _>>();
+        let governance_snapshot = self.governance_snapshot();
+        let has_indexed_sources = !governance_snapshot.source_indices.is_empty();
         let mut matches = Vec::new();
 
-        for snapshot in self
-            .governance_snapshot()
+        for snapshot in governance_snapshot
             .source_indices
             .into_iter()
             .filter(|snapshot| {
@@ -1024,6 +1069,7 @@ impl SkillGovernanceAuthority {
                 )
             })
         {
+            let stale = self.compute_stale(snapshot.updated_at);
             for entry in snapshot.entries {
                 let Some((score, match_reasons)) =
                     score_source_index_entry(&entry, normalized_query.as_deref(), &query_terms)
@@ -1052,6 +1098,7 @@ impl SkillGovernanceAuthority {
                     installed_revision: managed_record
                         .filter(|_| managed_for_source)
                         .and_then(|record| record.installed_revision.clone()),
+                    stale,
                 });
             }
         }
@@ -1066,9 +1113,25 @@ impl SkillGovernanceAuthority {
         });
         matches.truncate(limit);
 
+        let suggested_refresh_sources: Vec<SkillSourceRef> = if matches.is_empty() || !has_indexed_sources {
+            self.default_registry_sources()
+                .into_iter()
+                .filter(|source| {
+                    search_source_matches_filters(
+                        source,
+                        normalized_source_id.as_deref(),
+                        source_kind.clone(),
+                    )
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         SkillHubSearchResponse {
             query: normalized_query,
             matches,
+            suggested_refresh_sources,
         }
     }
 
@@ -4228,6 +4291,24 @@ fn search_snapshot_matches_filters(
     }
     if let Some(source_kind_filter) = source_kind_filter {
         if snapshot.source.source_kind != source_kind_filter {
+            return false;
+        }
+    }
+    true
+}
+
+fn search_source_matches_filters(
+    source: &SkillSourceRef,
+    source_id_filter: Option<&str>,
+    source_kind_filter: Option<rocode_types::SkillSourceKind>,
+) -> bool {
+    if let Some(source_id_filter) = source_id_filter {
+        if source.source_id.trim() != source_id_filter {
+            return false;
+        }
+    }
+    if let Some(source_kind_filter) = source_kind_filter {
+        if source.source_kind != source_kind_filter {
             return false;
         }
     }

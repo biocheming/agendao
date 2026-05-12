@@ -445,6 +445,7 @@ fn skills_hub_config_merge_replaces_phase_seven_policy_fields() {
                 fetch_timeout_ms: Some(10000),
                 max_download_bytes: Some(1_000_000),
                 max_extract_bytes: None,
+                ..Default::default()
             }),
             ..Default::default()
         }),
@@ -458,6 +459,7 @@ fn skills_hub_config_merge_replaces_phase_seven_policy_fields() {
                 fetch_timeout_ms: None,
                 max_download_bytes: None,
                 max_extract_bytes: Some(2_000_000),
+                ..Default::default()
             }),
             ..Default::default()
         }),
