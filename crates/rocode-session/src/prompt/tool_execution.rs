@@ -209,68 +209,28 @@ impl SessionPrompt {
                 tool_ctx.call_id = Some(call_id.clone());
                 let repaired_tool_name =
                     Self::repair_tool_call_name(&tool_name, &available_tool_ids);
-                let mut effective_tool_name = repaired_tool_name.clone();
-                let mut effective_input =
-                    if repaired_tool_name == "invalid" && tool_name != "invalid" {
-                        Self::invalid_tool_payload(
-                            &tool_name,
-                            &format!("Unknown tool requested by model: {}", tool_name),
-                        )
-                    } else {
-                        input
-                    };
+                let effective_tool_name = repaired_tool_name.clone();
+                let mut effective_input = input;
                 effective_input =
                     rocode_tool::normalize_tool_arguments(&effective_tool_name, effective_input);
-                if effective_tool_name != "invalid" {
-                    if let Some(payload) =
-                        Self::prevalidate_tool_arguments(&effective_tool_name, &effective_input)
-                    {
-                        tracing::warn!(
-                            tool_name = %tool_name,
-                            normalized_tool = %effective_tool_name,
-                            "tool arguments failed prevalidation, routing to invalid tool"
-                        );
-                        effective_tool_name = "invalid".to_string();
-                        effective_input = payload;
-                    }
+                if let Some(payload) =
+                    Self::prevalidate_tool_arguments(&effective_tool_name, &effective_input)
+                {
+                    tracing::warn!(
+                        tool_name = %tool_name,
+                        normalized_tool = %effective_tool_name,
+                        "tool arguments failed prevalidation; preserving original tool name"
+                    );
+                    effective_input = payload;
                 }
 
-                let mut execution = tool_registry
+                let execution = tool_registry
                     .execute(
                         &effective_tool_name,
                         effective_input.clone(),
                         tool_ctx.clone(),
                     )
                     .await;
-
-                if effective_tool_name != "invalid"
-                    && available_tool_ids.contains("invalid")
-                    && matches!(&execution, Err(rocode_tool::ToolError::InvalidArguments(_)))
-                {
-                    let validation_error = execution
-                        .as_ref()
-                        .err()
-                        .map(|e| e.to_string())
-                        .unwrap_or_else(|| "Invalid arguments".to_string());
-                    tracing::info!(
-                        tool_name = %tool_name,
-                        error = %validation_error,
-                        "tool call validation failed, routing to invalid tool"
-                    );
-                    effective_tool_name = "invalid".to_string();
-                    effective_input = Self::invalid_tool_payload(&tool_name, &validation_error);
-                    effective_input = rocode_tool::normalize_tool_arguments(
-                        &effective_tool_name,
-                        effective_input,
-                    );
-                    execution = tool_registry
-                        .execute(
-                            &effective_tool_name,
-                            effective_input.clone(),
-                            tool_ctx.clone(),
-                        )
-                        .await;
-                }
 
                 let (content, is_error, title, metadata, attachments, state_attachments) =
                     match execution {
@@ -439,14 +399,10 @@ impl SessionPrompt {
             return lower;
         }
 
-        if available_tool_ids.contains("invalid") {
-            tracing::warn!(
-                tool_name = tool_name,
-                "unknown tool call, routing to invalid tool"
-            );
-            return "invalid".to_string();
-        }
-
+        tracing::warn!(
+            tool_name = tool_name,
+            "unknown tool call; preserving original name for error reporting"
+        );
         tool_name.to_string()
     }
 
@@ -1228,7 +1184,7 @@ mod tests {
     }
 
     #[test]
-    fn repair_tool_call_name_routes_unknown_to_invalid() {
+    fn repair_tool_call_name_preserves_unknown_name() {
         let tools = HashSet::from([
             "read".to_string(),
             "glob".to_string(),
@@ -1236,7 +1192,7 @@ mod tests {
         ]);
         assert_eq!(
             SessionPrompt::repair_tool_call_name("read_html_file", &tools),
-            "invalid"
+            "read_html_file"
         );
     }
 

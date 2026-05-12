@@ -780,6 +780,44 @@ pub struct SkillHubIndexResponse {
     pub source_indices: Vec<SkillSourceIndexSnapshot>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct SkillHubSearchRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<SkillSourceKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillHubSearchMatch {
+    pub source: SkillSourceRef,
+    pub entry: SkillSourceIndexEntry,
+    pub source_updated_at: i64,
+    pub score: i64,
+    #[serde(default)]
+    pub match_reasons: Vec<String>,
+    #[serde(default)]
+    pub managed: bool,
+    #[serde(default)]
+    pub locally_modified: bool,
+    #[serde(default)]
+    pub deleted_locally: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_revision: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillHubSearchResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    #[serde(default)]
+    pub matches: Vec<SkillHubSearchMatch>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SkillHubIndexRefreshRequest {
     pub source: SkillSourceRef,

@@ -17,6 +17,7 @@ pub struct SkillHubTool;
 #[serde(rename_all = "snake_case")]
 enum SkillHubAction {
     Managed,
+    Search,
     Index,
     DistributionList,
     ArtifactCache,
@@ -38,6 +39,8 @@ enum SkillHubAction {
 struct SkillHubInput {
     action: SkillHubAction,
     #[serde(default)]
+    query: Option<String>,
+    #[serde(default)]
     source_id: Option<String>,
     #[serde(default)]
     source_kind: Option<SkillSourceKind>,
@@ -47,6 +50,8 @@ struct SkillHubInput {
     revision: Option<String>,
     #[serde(default)]
     skill_name: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
 }
 
 #[async_trait]
@@ -56,7 +61,7 @@ impl Tool for SkillHubTool {
     }
 
     fn description(&self) -> &str {
-        "Inspect managed skill governance state, refresh source indices, and create/apply hub sync plans for supported sources."
+        "Search indexed skill sources by name, description, category, version, and revision; inspect managed skill governance state; refresh source indices; and create/apply hub sync plans for supported sources."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -65,7 +70,11 @@ impl Tool for SkillHubTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["managed", "index", "distribution_list", "artifact_cache", "lifecycle", "index_refresh", "install_plan", "install_apply", "update_plan", "update_apply", "detach", "remove", "audit", "guard_run", "sync_plan", "sync_apply"]
+                    "enum": ["managed", "search", "index", "distribution_list", "artifact_cache", "lifecycle", "index_refresh", "install_plan", "install_apply", "update_plan", "update_apply", "detach", "remove", "audit", "guard_run", "sync_plan", "sync_apply"]
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Optional free-text query matched against skill name, description, category, version, and revision across indexed sources."
                 },
                 "skill_name": {
                     "type": "string",
@@ -86,6 +95,10 @@ impl Tool for SkillHubTool {
                 "revision": {
                     "type": "string",
                     "description": "Optional revision label recorded in managed records and audit."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Optional max number of search results to return. Defaults to 20 and caps at 100."
                 }
             },
             "required": ["action"]
@@ -115,6 +128,23 @@ impl Tool for SkillHubTool {
                 .with_metadata(
                     "managed_skills",
                     serde_json::to_value(&response.managed_skills).unwrap_or_default(),
+                ))
+            }
+            SkillHubAction::Search => {
+                let response =
+                    authority.search_source_indices(&rocode_types::SkillHubSearchRequest {
+                        query: optional_trimmed(input.query.clone()),
+                        source_id: optional_trimmed(input.source_id.clone()),
+                        source_kind: input.source_kind.clone(),
+                        limit: input.limit,
+                    });
+                Ok(ToolResult::simple(
+                    "Skill hub search",
+                    serde_json::to_string_pretty(&response).unwrap_or_default(),
+                )
+                .with_metadata(
+                    "matches",
+                    serde_json::to_value(&response.matches).unwrap_or_default(),
                 ))
             }
             SkillHubAction::Index => {

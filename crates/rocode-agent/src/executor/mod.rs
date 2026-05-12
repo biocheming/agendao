@@ -799,10 +799,10 @@ mod tests {
     }
 
     #[test]
-    fn repair_tool_call_name_falls_back_to_invalid_tool() {
+    fn repair_tool_call_name_preserves_unknown_tool_name() {
         let available = vec!["read".to_string(), "invalid".to_string()];
         let repaired = ToolRunner::repair_tool_call_name("missing_tool", &available);
-        assert_eq!(repaired.as_deref(), Some("invalid"));
+        assert!(repaired.is_none());
     }
 
     /// Build a mock stream from a sequence of StreamEvents.

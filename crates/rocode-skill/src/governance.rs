@@ -16,15 +16,16 @@ use rocode_types::{
     SkillGovernanceTimelineKind, SkillGovernanceTimelineStatus, SkillGovernanceWriteResult,
     SkillGuardReport, SkillGuardSeverity, SkillGuardStatus, SkillGuardViolation,
     SkillHubManagedDetachResponse, SkillHubManagedRemoveResponse, SkillHubPolicy,
-    SkillHubTimelineQuery, SkillManagedLifecycleRecord, SkillManagedLifecycleState,
-    SkillNegativeEntropyDiagnostic, SkillNegativeEntropySignal, SkillOperationalSnapshot,
-    SkillOperationalSourceScope, SkillRelationshipEdge, SkillRelationshipKind,
-    SkillRelationshipState, SkillRemoteInstallAction, SkillRemoteInstallEntry,
-    SkillRemoteInstallPlan, SkillRemoteInstallResponse, SkillRetirementReason,
-    SkillRetirementReasonKind, SkillRuntimeCompositionHint, SkillRuntimeCompositionHintKind,
-    SkillSemanticConflictDiagnostic, SkillSemanticConflictKind, SkillSourceIndexSnapshot,
-    SkillSourceRef, SkillSyncAction, SkillSyncPlan, SkillUsageLedgerEntry, SkillVitalityRecord,
-    SkillVitalityState, SkillWriteLedgerAction, SkillWriteLedgerEntry,
+    SkillHubSearchMatch, SkillHubSearchRequest, SkillHubSearchResponse, SkillHubTimelineQuery,
+    SkillManagedLifecycleRecord, SkillManagedLifecycleState, SkillNegativeEntropyDiagnostic,
+    SkillNegativeEntropySignal, SkillOperationalSnapshot, SkillOperationalSourceScope,
+    SkillRelationshipEdge, SkillRelationshipKind, SkillRelationshipState, SkillRemoteInstallAction,
+    SkillRemoteInstallEntry, SkillRemoteInstallPlan, SkillRemoteInstallResponse,
+    SkillRetirementReason, SkillRetirementReasonKind, SkillRuntimeCompositionHint,
+    SkillRuntimeCompositionHintKind, SkillSemanticConflictDiagnostic, SkillSemanticConflictKind,
+    SkillSourceIndexEntry, SkillSourceIndexSnapshot, SkillSourceRef, SkillSyncAction,
+    SkillSyncPlan, SkillUsageLedgerEntry, SkillVitalityRecord, SkillVitalityState,
+    SkillWriteLedgerAction, SkillWriteLedgerEntry,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -996,6 +997,79 @@ impl SkillGovernanceAuthority {
         }
         self.append_audit_event(source_index_refresh_audit_event(source, actor, &snapshot))?;
         Ok(snapshot)
+    }
+
+    pub fn search_source_indices(&self, request: &SkillHubSearchRequest) -> SkillHubSearchResponse {
+        let normalized_query = trimmed_option(request.query.as_deref());
+        let query_terms = search_query_terms(normalized_query.as_deref());
+        let normalized_source_id = trimmed_option(request.source_id.as_deref());
+        let source_kind = request.source_kind.clone();
+        let limit = request.limit.unwrap_or(20).clamp(1, 100);
+        let managed_by_name = self
+            .managed_skills()
+            .into_iter()
+            .map(|record| (normalize_name(&record.skill_name), record))
+            .collect::<BTreeMap<_, _>>();
+        let mut matches = Vec::new();
+
+        for snapshot in self
+            .governance_snapshot()
+            .source_indices
+            .into_iter()
+            .filter(|snapshot| {
+                search_snapshot_matches_filters(
+                    snapshot,
+                    normalized_source_id.as_deref(),
+                    source_kind.clone(),
+                )
+            })
+        {
+            for entry in snapshot.entries {
+                let Some((score, match_reasons)) =
+                    score_source_index_entry(&entry, normalized_query.as_deref(), &query_terms)
+                else {
+                    continue;
+                };
+                let managed_record = managed_by_name.get(&normalize_name(&entry.skill_name));
+                let managed_for_source = managed_record
+                    .and_then(|record| record.source.as_ref())
+                    .is_some_and(|source| source == &snapshot.source);
+                matches.push(SkillHubSearchMatch {
+                    source: snapshot.source.clone(),
+                    entry,
+                    source_updated_at: snapshot.updated_at,
+                    score,
+                    match_reasons,
+                    managed: managed_for_source,
+                    locally_modified: managed_record
+                        .filter(|_| managed_for_source)
+                        .map(|record| record.locally_modified)
+                        .unwrap_or(false),
+                    deleted_locally: managed_record
+                        .filter(|_| managed_for_source)
+                        .map(|record| record.deleted_locally)
+                        .unwrap_or(false),
+                    installed_revision: managed_record
+                        .filter(|_| managed_for_source)
+                        .and_then(|record| record.installed_revision.clone()),
+                });
+            }
+        }
+
+        matches.sort_by(|left, right| {
+            right
+                .score
+                .cmp(&left.score)
+                .then_with(|| right.source_updated_at.cmp(&left.source_updated_at))
+                .then_with(|| left.entry.skill_name.cmp(&right.entry.skill_name))
+                .then_with(|| left.source.source_id.cmp(&right.source.source_id))
+        });
+        matches.truncate(limit);
+
+        SkillHubSearchResponse {
+            query: normalized_query,
+            matches,
+        }
     }
 
     pub fn governance_timeline(
@@ -4122,6 +4196,129 @@ fn trimmed_option(value: Option<&str>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn normalize_search_text(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
+}
+
+fn search_query_terms(query: Option<&str>) -> Vec<String> {
+    query
+        .into_iter()
+        .flat_map(|query| {
+            query
+                .split(|ch: char| ch.is_whitespace() || ch == '/' || ch == '-' || ch == '_')
+                .map(str::trim)
+                .filter(|term| !term.is_empty())
+                .map(|term| term.to_ascii_lowercase())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn search_snapshot_matches_filters(
+    snapshot: &SkillSourceIndexSnapshot,
+    source_id_filter: Option<&str>,
+    source_kind_filter: Option<rocode_types::SkillSourceKind>,
+) -> bool {
+    if let Some(source_id_filter) = source_id_filter {
+        if snapshot.source.source_id.trim() != source_id_filter {
+            return false;
+        }
+    }
+    if let Some(source_kind_filter) = source_kind_filter {
+        if snapshot.source.source_kind != source_kind_filter {
+            return false;
+        }
+    }
+    true
+}
+
+fn score_source_index_entry(
+    entry: &SkillSourceIndexEntry,
+    normalized_query: Option<&str>,
+    query_terms: &[String],
+) -> Option<(i64, Vec<String>)> {
+    if normalized_query.is_none() {
+        return Some((0, Vec::new()));
+    }
+
+    let name = normalize_search_text(&entry.skill_name);
+    let description = entry
+        .description
+        .as_deref()
+        .map(normalize_search_text)
+        .unwrap_or_default();
+    let category = entry
+        .category
+        .as_deref()
+        .map(normalize_search_text)
+        .unwrap_or_default();
+    let version = entry
+        .version
+        .as_deref()
+        .map(normalize_search_text)
+        .unwrap_or_default();
+    let revision = entry
+        .revision
+        .as_deref()
+        .map(normalize_search_text)
+        .unwrap_or_default();
+    let query = normalized_query.unwrap_or_default();
+
+    let mut score = 0_i64;
+    let mut reasons = Vec::new();
+
+    if name == query {
+        score += 1_000;
+        reasons.push("exact_skill_name".to_string());
+    } else if name.starts_with(query) {
+        score += 700;
+        reasons.push("prefix_skill_name".to_string());
+    } else if name.contains(query) {
+        score += 500;
+        reasons.push("skill_name".to_string());
+    }
+
+    if !description.is_empty() && description.contains(query) {
+        score += 250;
+        reasons.push("description".to_string());
+    }
+    if !category.is_empty() && category.contains(query) {
+        score += 200;
+        reasons.push("category".to_string());
+    }
+    if (!version.is_empty() && version.contains(query))
+        || (!revision.is_empty() && revision.contains(query))
+    {
+        score += 80;
+        reasons.push("release".to_string());
+    }
+
+    if !query_terms.is_empty() {
+        let minimum_term_matches = std::cmp::max(1, query_terms.len().div_ceil(2));
+        let mut matched_terms = 0_usize;
+        for term in query_terms {
+            if name.contains(term) {
+                score += 120;
+                matched_terms += 1;
+            } else if description.contains(term) {
+                score += 60;
+                matched_terms += 1;
+            } else if category.contains(term) {
+                score += 50;
+                matched_terms += 1;
+            } else if version.contains(term) || revision.contains(term) {
+                score += 20;
+                matched_terms += 1;
+            }
+        }
+        if matched_terms < minimum_term_matches {
+            return None;
+        }
+    }
+
+    (score > 0).then_some((score, reasons))
 }
 
 fn timeline_matches_filters(
