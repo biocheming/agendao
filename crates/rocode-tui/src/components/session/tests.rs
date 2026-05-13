@@ -455,9 +455,13 @@ fn scroll_only_reuses_render_model_and_skips_message_rebuilds() {
 fn reasoning_toggle_rebuilds_only_affected_message_output() {
     let (_context, _session_id, snapshot) = perf_snapshot_with_messages();
     let area = Rect::new(0, 0, 72, 10);
+    let mut completed_snapshot = snapshot.clone();
+    if let Some(message) = completed_snapshot.messages.get_mut(1) {
+        message.completed_at = Some(Utc::now());
+    }
     let first = render_perf_session_messages(
         area,
-        &snapshot,
+        &completed_snapshot,
         &SessionMessageViewportState::default(),
         &SessionReasoningState::default(),
         &SessionMessageOutputCache::default(),
@@ -475,7 +479,7 @@ fn reasoning_toggle_rebuilds_only_affected_message_output() {
     reset_session_render_perf_counters();
     let second = render_perf_session_messages(
         area,
-        &snapshot,
+        &completed_snapshot,
         &first.viewport,
         &expanded_reasoning,
         &first.message_cache,
@@ -499,6 +503,30 @@ fn reasoning_toggle_rebuilds_only_affected_message_output() {
     assert!(
         second.viewport.rendered_line_count > first.viewport.rendered_line_count,
         "expanded reasoning should increase rendered line count"
+    );
+}
+
+#[test]
+fn live_reasoning_defaults_to_expanded_without_toggle() {
+    let (_context, _session_id, snapshot) = perf_snapshot_with_messages();
+    let area = Rect::new(0, 0, 72, 18);
+
+    let output = render_perf_session_messages(
+        area,
+        &snapshot,
+        &SessionMessageViewportState::default(),
+        &SessionReasoningState::default(),
+        &SessionMessageOutputCache::default(),
+        &SessionRenderModelCache::default(),
+    );
+
+    assert!(
+        output.viewport.rendered_line_count > 18,
+        "live reasoning should render expanded body lines by default"
+    );
+    assert!(
+        output.reasoning.toggle_hits.iter().any(|hit| hit.reasoning_id.starts_with("assistant-1:")),
+        "live reasoning should remain toggleable"
     );
 }
 

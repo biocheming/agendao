@@ -3924,11 +3924,37 @@ fn active_stage_status_blocks(
         "Active Stage Detail ({})",
         stage.stage_name
     ))];
+    blocks.push(StatusBlock::normal(format!(
+        "Status: {}",
+        format_stage_status(stage.status.clone())
+    )));
     if let Some(waiting_on) = stage.waiting_on.as_deref() {
         blocks.push(StatusBlock::warning(format!("Waiting on: {}", waiting_on)));
     }
+    if let Some(focus) = stage.focus.as_deref().filter(|value| !value.trim().is_empty()) {
+        blocks.push(StatusBlock::normal(format!("Focus: {}", focus)));
+    }
     if let Some(last_event) = stage.last_event.as_deref() {
         blocks.push(StatusBlock::muted(format!("Last event: {}", last_event)));
+    }
+    if let Some(activity) = stage
+        .activity
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        blocks.push(StatusBlock::muted(format!("Activity: {}", activity)));
+    }
+    if stage.attached_session_count > 0 {
+        blocks.push(StatusBlock::normal(format!(
+            "Attached sessions: {}",
+            stage.attached_session_count
+        )));
+    }
+    if stage.active_agent_count > 0 || stage.active_tool_count > 0 {
+        blocks.push(StatusBlock::normal(format!(
+            "Runtime: agents {} · tools {}",
+            stage.active_agent_count, stage.active_tool_count
+        )));
     }
     if let Some(budget) = stage.skill_tree_budget {
         blocks.push(StatusBlock::normal(format!(
@@ -3955,10 +3981,11 @@ fn active_stage_status_blocks(
     }
     if let Some(prompt_tokens) = stage.prompt_tokens {
         blocks.push(StatusBlock::normal(format!(
-            "Stage usage: in {} out {} reasoning {}",
+            "Stage usage: in {} out {} reasoning {} cache-read {}",
             tui_format_token_count(prompt_tokens),
             tui_format_token_count(stage.completion_tokens.unwrap_or(0)),
-            tui_format_token_count(stage.reasoning_tokens.unwrap_or(0))
+            tui_format_token_count(stage.reasoning_tokens.unwrap_or(0)),
+            tui_format_token_count(stage.cache_read_tokens.unwrap_or(0))
         )));
     }
     blocks

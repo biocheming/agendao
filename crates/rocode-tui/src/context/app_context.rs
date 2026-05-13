@@ -1,5 +1,6 @@
 use parking_lot::RwLock;
 use rocode_command::interactive::InteractiveEventsQuery;
+use rocode_command::output_blocks::SchedulerStageBlock;
 use rocode_command::stage_protocol::StageSummary;
 use rocode_session::SessionUsage;
 use rocode_types::SessionUsageBooks;
@@ -389,6 +390,35 @@ impl AppContext {
         session.session_cache_semantics = telemetry.cache_semantics;
         session.session_context_closure_contract = telemetry.context_closure_contract;
         session.session_runtime = Some(telemetry.runtime);
+    }
+
+    pub fn apply_scheduler_stage_summary(&self, session_id: &str, block: &SchedulerStageBlock) {
+        let mut session = self.session.write();
+        if session.current_session_id.as_deref() != Some(session_id) {
+            return;
+        }
+
+        let summary = block.to_summary();
+        if summary.stage_id.is_empty() {
+            return;
+        }
+
+        if let Some(existing) = session
+            .stage_summaries
+            .iter_mut()
+            .find(|stage| stage.stage_id == summary.stage_id)
+        {
+            *existing = summary;
+        } else {
+            session.stage_summaries.push(summary);
+            session.stage_summaries.sort_by(|left, right| {
+                let left_index = left.index.unwrap_or(u64::MAX);
+                let right_index = right.index.unwrap_or(u64::MAX);
+                left_index
+                    .cmp(&right_index)
+                    .then_with(|| left.stage_id.cmp(&right.stage_id))
+            });
+        }
     }
 
     pub fn navigate(&self, route: crate::router::Route) {
@@ -1215,6 +1245,7 @@ fn split_theme_variant(name: &str) -> Option<(&str, &str)> {
 mod tests {
     use super::{current_context_tokens_from_state, AppContext, SessionState};
     use crate::api::SessionRuntimeState;
+    use rocode_command::output_blocks::SchedulerStageBlock;
     use rocode_command::stage_protocol::{StageStatus, StageSummary};
     use rocode_session::SessionUsage;
     use rocode_types::{SessionUsageBooks, WorkflowUsageSummary};
@@ -1318,6 +1349,107 @@ mod tests {
         assert_eq!(current_context_tokens_from_state(&state), Some(256_000));
     }
 
+    #[test]
+    fn apply_scheduler_stage_summary_upserts_current_session_stage() {
+        let context = AppContext::new();
+        context.navigate_session("session-1");
+
+        context.apply_scheduler_stage_summary(
+            "session-1",
+            &SchedulerStageBlock {
+                stage_id: Some("stage-1".to_string()),
+                profile: Some("atlas".to_string()),
+                stage: "plan".to_string(),
+                title: "Plan".to_string(),
+                text: "planning".to_string(),
+                stage_index: Some(1),
+                stage_total: Some(3),
+                step: Some(1),
+                status: Some("running".to_string()),
+                focus: Some("inspect".to_string()),
+                last_event: Some("Step 1 started".to_string()),
+                waiting_on: Some("model".to_string()),
+                estimated_context_tokens: Some(1234),
+                skill_tree_budget: None,
+                skill_tree_truncation_strategy: None,
+                skill_tree_truncated: None,
+                retry_attempt: None,
+                activity: Some("Inspecting repository".to_string()),
+                loop_budget: Some("step-limit:5".to_string()),
+                available_skill_count: None,
+                available_agent_count: None,
+                available_category_count: None,
+                active_skills: Vec::new(),
+                active_agents: vec!["planner".to_string()],
+                active_categories: Vec::new(),
+                done_agent_count: 0,
+                total_agent_count: 1,
+                prompt_tokens: Some(100),
+                context_tokens: Some(100),
+                completion_tokens: Some(50),
+                reasoning_tokens: Some(25),
+                cache_read_tokens: Some(10),
+                cache_miss_tokens: Some(0),
+                cache_write_tokens: Some(5),
+                decision: None,
+                attached_session_id: None,
+            },
+        );
+
+        let summaries = context.stage_summaries();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].stage_id, "stage-1");
+        assert_eq!(summaries[0].activity.as_deref(), Some("Inspecting repository"));
+
+        context.apply_scheduler_stage_summary(
+            "session-1",
+            &SchedulerStageBlock {
+                stage_id: Some("stage-1".to_string()),
+                profile: Some("atlas".to_string()),
+                stage: "plan".to_string(),
+                title: "Plan".to_string(),
+                text: "planning".to_string(),
+                stage_index: Some(1),
+                stage_total: Some(3),
+                step: Some(2),
+                status: Some("waiting".to_string()),
+                focus: Some("inspect".to_string()),
+                last_event: Some("Tool started: Read".to_string()),
+                waiting_on: Some("tool".to_string()),
+                estimated_context_tokens: Some(2345),
+                skill_tree_budget: None,
+                skill_tree_truncation_strategy: None,
+                skill_tree_truncated: None,
+                retry_attempt: None,
+                activity: Some("Reading Cargo.toml".to_string()),
+                loop_budget: Some("step-limit:5".to_string()),
+                available_skill_count: None,
+                available_agent_count: None,
+                available_category_count: None,
+                active_skills: Vec::new(),
+                active_agents: vec!["planner".to_string()],
+                active_categories: Vec::new(),
+                done_agent_count: 0,
+                total_agent_count: 1,
+                prompt_tokens: Some(120),
+                context_tokens: Some(120),
+                completion_tokens: Some(50),
+                reasoning_tokens: Some(25),
+                cache_read_tokens: Some(20),
+                cache_miss_tokens: Some(0),
+                cache_write_tokens: Some(5),
+                decision: None,
+                attached_session_id: None,
+            },
+        );
+
+        let summaries = context.stage_summaries();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].step, Some(2));
+        assert_eq!(summaries[0].waiting_on.as_deref(), Some("tool"));
+        assert_eq!(summaries[0].activity.as_deref(), Some("Reading Cargo.toml"));
+    }
+
     fn stage_summary(stage_id: &str, estimated_context_tokens: Option<u64>) -> StageSummary {
         StageSummary {
             stage_id: stage_id.to_string(),
@@ -1337,6 +1469,7 @@ mod tests {
             focus: None,
             last_event: None,
             waiting_on: None,
+            activity: None,
             estimated_context_tokens,
             skill_tree_budget: None,
             skill_tree_truncation_strategy: None,

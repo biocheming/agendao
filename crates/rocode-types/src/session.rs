@@ -1854,6 +1854,8 @@ pub struct PersistedStageTelemetrySummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting_on: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_context_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_tree_budget: Option<u64>,
@@ -1888,6 +1890,7 @@ impl From<rocode_content::stage_protocol::StageSummary> for PersistedStageTeleme
             focus: value.focus,
             last_event: value.last_event,
             waiting_on: value.waiting_on,
+            activity: value.activity,
             estimated_context_tokens: value.estimated_context_tokens,
             skill_tree_budget: value.skill_tree_budget,
             skill_tree_truncation_strategy: value.skill_tree_truncation_strategy,

@@ -385,6 +385,11 @@ export function ExecutionActivityPanel({
                           }`
                         : humanizeStageEvent(activity.activeStageSummary.last_event) || "No active wait signal"}
                     </p>
+                    {activity.activeStageSummary.activity ? (
+                      <p className="text-sm text-muted-foreground leading-relaxed">
+                        Activity: {activity.activeStageSummary.activity.replace(/\n+/g, " · ")}
+                      </p>
+                    ) : null}
                     {activity.activeStageSummary.skill_tree_truncated ? (
                       <p className="text-sm text-amber-700 dark:text-amber-300 leading-relaxed">
                         Skill tree truncated{activity.activeStageSummary.skill_tree_truncation_strategy
@@ -709,10 +714,11 @@ export function ExecutionActivityPanel({
                     {typeof stage.cache_miss_tokens === "number" ? <span>cache miss {formatCompactTokenCount(stage.cache_miss_tokens)}</span> : null}
                     {typeof stage.cache_write_tokens === "number" ? <span>cache write {formatCompactTokenCount(stage.cache_write_tokens)}</span> : null}
                   </div>
-                  {stage.last_event || stage.focus ? (
+                  {stage.last_event || stage.focus || stage.activity ? (
                     <div className="grid gap-1 text-xs text-muted-foreground">
                       {stage.last_event ? <p>Last event: {humanizeStageEvent(stage.last_event) || stage.last_event}</p> : null}
                       {stage.focus ? <p>Focus: {stage.focus}</p> : null}
+                      {stage.activity ? <p>Activity: {stage.activity.replace(/\n+/g, " · ")}</p> : null}
                     </div>
                   ) : null}
                 </div>

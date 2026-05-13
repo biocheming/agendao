@@ -557,6 +557,7 @@ impl SchedulerStageBlock {
             focus: self.focus.clone(),
             last_event: self.last_event.clone(),
             waiting_on: self.waiting_on.clone(),
+            activity: self.activity.clone(),
             estimated_context_tokens: self.estimated_context_tokens,
             skill_tree_budget: self.skill_tree_budget,
             skill_tree_truncation_strategy: self.skill_tree_truncation_strategy.clone(),

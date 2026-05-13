@@ -1479,6 +1479,7 @@ mod tests {
                 focus: Some("inspect scheduler".to_string()),
                 last_event: Some("scheduler.stage.waiting".to_string()),
                 waiting_on: Some("tool".to_string()),
+                activity: Some("Reading scheduler telemetry".to_string()),
                 estimated_context_tokens: Some(99),
                 skill_tree_budget: Some(512),
                 skill_tree_truncation_strategy: Some("head".to_string()),
