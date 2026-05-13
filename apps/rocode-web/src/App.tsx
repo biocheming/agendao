@@ -5,6 +5,7 @@ import {
   type FormEvent,
   Suspense,
   lazy,
+  startTransition,
   useCallback,
   useEffect,
   useMemo,
@@ -1259,6 +1260,11 @@ export default function App() {
   const autoPreviewSignatureRef = useRef<string>("");
   const liveBlocksRef = useRef<SessionLiveBlockCache>({});
   const optimisticMessagesRef = useRef<SessionOptimisticFeedCache>({});
+  const pendingOutputBlocksRef = useRef<Record<string, OutputBlock[]>>({});
+  const outputFlushFrameRef = useRef<number | null>(null);
+  const pendingSessionRefreshTimerRef = useRef<number | null>(null);
+  const pendingHistoryReloadTimerRef = useRef<number | null>(null);
+  const showThinkingRef = useRef(showThinking);
   const connectResolveRequestRef = useRef(0);
   const recentModelScopeRef = useRef<string | null>(null);
   const recentModelAutoSuppressedRef = useRef(false);
@@ -1556,10 +1562,10 @@ export default function App() {
       body: JSON.stringify(payload),
     });
 
-  const fetchSessions = async (): Promise<SessionRecord[]> => {
+  const fetchSessions = useCallback(async (): Promise<SessionRecord[]> => {
     const sessionData = await apiJson<SessionListResponseRecord>("/session?limit=500");
     return normalizeSessionRecords(sessionData?.items ?? []);
-  };
+  }, [apiJson]);
 
   const provisionExternalAdapterSession = useCallback(
     async (
@@ -1700,6 +1706,77 @@ export default function App() {
   useEffect(() => {
     selectedSessionRef.current = selectedSessionId;
   }, [selectedSessionId]);
+
+  useEffect(() => {
+    showThinkingRef.current = showThinking;
+  }, [showThinking]);
+
+  const clearPendingOutputBlockFlush = useCallback(() => {
+    if (outputFlushFrameRef.current !== null) {
+      window.cancelAnimationFrame(outputFlushFrameRef.current);
+      outputFlushFrameRef.current = null;
+    }
+  }, []);
+
+  const flushPendingOutputBlocks = useCallback(() => {
+    clearPendingOutputBlockFlush();
+
+    const queuedBySession = pendingOutputBlocksRef.current;
+    const sessionIds = Object.keys(queuedBySession);
+    if (sessionIds.length === 0) {
+      return;
+    }
+    pendingOutputBlocksRef.current = {};
+
+    const nextLiveBlocks = { ...liveBlocksRef.current };
+    for (const sessionId of sessionIds) {
+      const queued = queuedBySession[sessionId];
+      if (!queued?.length) continue;
+      nextLiveBlocks[sessionId] = queued.reduce(
+        (current, block) => appendLiveBlock(current, block),
+        nextLiveBlocks[sessionId] ?? [],
+      );
+    }
+    liveBlocksRef.current = nextLiveBlocks;
+
+    const selectedSessionId = selectedSessionRef.current;
+    const visibleQueue = selectedSessionId ? queuedBySession[selectedSessionId] ?? [] : [];
+    if (visibleQueue.length === 0) {
+      return;
+    }
+
+    startTransition(() => {
+      setMessages((current) =>
+        visibleQueue.reduce(
+          (messages, block) => applyOutputBlock(messages, block, showThinkingRef.current),
+          current,
+        ),
+      );
+    });
+  }, [clearPendingOutputBlockFlush]);
+
+  const schedulePendingOutputBlockFlush = useCallback(() => {
+    if (outputFlushFrameRef.current !== null) {
+      return;
+    }
+    outputFlushFrameRef.current = window.requestAnimationFrame(() => {
+      flushPendingOutputBlocks();
+    });
+  }, [flushPendingOutputBlocks]);
+
+  const clearPendingSessionRefresh = useCallback(() => {
+    if (pendingSessionRefreshTimerRef.current !== null) {
+      window.clearTimeout(pendingSessionRefreshTimerRef.current);
+      pendingSessionRefreshTimerRef.current = null;
+    }
+  }, []);
+
+  const clearPendingHistoryReload = useCallback(() => {
+    if (pendingHistoryReloadTimerRef.current !== null) {
+      window.clearTimeout(pendingHistoryReloadTimerRef.current);
+      pendingHistoryReloadTimerRef.current = null;
+    }
+  }, []);
 
   const selectSession = useCallback((sessionId: string | null) => {
     routeSyncSourceRef.current = "app";
@@ -1997,6 +2074,46 @@ export default function App() {
     };
   }, [messageReloadToken, selectedSessionId, showThinking]);
 
+  const refreshSessionsFromServer = useCallback(async () => {
+    try {
+      const sessionData = await fetchSessions();
+      setSessions(sessionData);
+      setSelectedSessionId((current) => {
+        if (current && sessionData.some((session) => session.id === current)) {
+          return current;
+        }
+        return sessionData[0]?.id ?? null;
+      });
+    } catch (error) {
+      setBanner(`Failed to refresh sessions: ${formatError(error)}`);
+    }
+  }, [fetchSessions]);
+
+  const scheduleSessionRefresh = useCallback(() => {
+    if (pendingSessionRefreshTimerRef.current !== null) {
+      return;
+    }
+    pendingSessionRefreshTimerRef.current = window.setTimeout(() => {
+      pendingSessionRefreshTimerRef.current = null;
+      void refreshSessionsFromServer();
+    }, 120);
+  }, [refreshSessionsFromServer]);
+
+  const scheduleSelectedHistoryReload = useCallback((sessionId: string) => {
+    if (pendingHistoryReloadTimerRef.current !== null) {
+      return;
+    }
+    pendingHistoryReloadTimerRef.current = window.setTimeout(() => {
+      pendingHistoryReloadTimerRef.current = null;
+      if (selectedSessionRef.current !== sessionId) {
+        return;
+      }
+      startTransition(() => {
+        setMessageReloadToken((current) => current + 1);
+      });
+    }, 120);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -2086,24 +2203,6 @@ export default function App() {
     let active = true;
     let controller: AbortController | null = null;
 
-    const refreshSessions = async () => {
-      try {
-        const sessionData = await fetchSessions();
-        if (!active) return;
-        setSessions(sessionData);
-        setSelectedSessionId((current) => {
-          if (current && sessionData.some((session) => session.id === current)) {
-            return current;
-          }
-          return sessionData[0]?.id ?? null;
-        });
-      } catch (error) {
-        if (active) {
-          setBanner(`Failed to refresh sessions: ${formatError(error)}`);
-        }
-      }
-    };
-
     const reloadProvidersAndModes = async () => {
       try {
         const [providersData, modeData, connectSchema] = await Promise.all([
@@ -2153,15 +2252,15 @@ export default function App() {
             }
           : undefined;
         if (!block) return;
-        liveBlocksRef.current = {
-          ...liveBlocksRef.current,
-          [eventSessionId]: appendLiveBlock(liveBlocksRef.current[eventSessionId] ?? [], block),
-        };
-        setMessages((current) => applyOutputBlock(current, block, showThinking));
+        const queue = pendingOutputBlocksRef.current[eventSessionId] ?? [];
+        queue.push(block);
+        pendingOutputBlocksRef.current[eventSessionId] = queue;
+        schedulePendingOutputBlockFlush();
         return;
       }
 
       if (type === "error" && eventSessionId === selectedSessionRef.current) {
+        flushPendingOutputBlocks();
         setMessages((current) =>
           applyOutputBlock(
             current,
@@ -2179,9 +2278,9 @@ export default function App() {
       }
 
       if (type === "session.updated") {
-        void refreshSessions();
+        scheduleSessionRefresh();
         if (eventSessionId === selectedSessionRef.current) {
-          setMessageReloadToken((current) => current + 1);
+          scheduleSelectedHistoryReload(eventSessionId);
         }
         return;
       }
@@ -2192,6 +2291,7 @@ export default function App() {
       }
 
       if (type === "session.status" && eventSessionId === selectedSessionRef.current) {
+        flushPendingOutputBlocks();
         const rawStatus = event.status;
         const status =
           typeof rawStatus === "string"
@@ -2207,6 +2307,7 @@ export default function App() {
       }
 
       if (type === "question.created" && eventSessionId === selectedSessionRef.current) {
+        flushPendingOutputBlocks();
         setQuestion(questionInteractionFromEvent(event, eventSessionId));
         setQuestionAnswers({});
         setStreaming(false);
@@ -2268,8 +2369,20 @@ export default function App() {
     return () => {
       active = false;
       controller?.abort();
+      clearPendingOutputBlockFlush();
+      clearPendingSessionRefresh();
+      clearPendingHistoryReload();
     };
-  }, [refreshExecutionActivity, showThinking]);
+  }, [
+    clearPendingHistoryReload,
+    clearPendingOutputBlockFlush,
+    clearPendingSessionRefresh,
+    flushPendingOutputBlocks,
+    refreshExecutionActivity,
+    schedulePendingOutputBlockFlush,
+    scheduleSelectedHistoryReload,
+    scheduleSessionRefresh,
+  ]);
 
   const createSession = async (options?: {
     directory?: string;
