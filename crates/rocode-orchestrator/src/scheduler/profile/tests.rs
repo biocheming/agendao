@@ -498,6 +498,72 @@ fn gate_terminal_output_preserves_structured_execution_for_atlas_generic_gate_re
 }
 
 #[test]
+fn gate_terminal_output_preserves_richer_structured_execution_for_atlas_summary_shell() {
+    let plan = runtime_execution_plan("atlas");
+    let execution = OrchestratorOutput {
+        content: "## Delivery Summary\nResearch complete.\n\n**Task Status**\n- Compared 13 products across gameplay, speech stack, and learning loop.\n- Identified 4 differentiators and 3 product gaps.\n- Traced each claim back to code inspection and market evidence.\n\n**Verification**\n- Read the full local project.\n- Cross-checked three competitor research tracks.\n\n**Gate Decision**\n- Ship the comparative analysis.\n\n**Blockers or Risks**\n- None for the scoped comparison.\n\n**Next Actions**\n- Expand any competitor thread on demand.".to_string(),
+        steps: 1,
+        tool_calls_count: 2,
+        metadata: HashMap::new(),
+        finish_reason: FinishReason::EndTurn,
+    };
+    let decision = SchedulerExecutionGateDecision {
+        status: SchedulerExecutionGateStatus::Done,
+        summary: "verified".to_string(),
+        next_input: None,
+        final_response: Some(
+            "## Delivery Summary\nResearch complete.\n\n**Task Status**\n- Comparative analysis completed.\n\n**Verification**\n- Evidence checked.\n\n**Gate Decision**\n- Ship.".to_string(),
+        ),
+    };
+
+    let output = SchedulerProfileOrchestrator::gate_terminal_output(
+        &plan,
+        SchedulerExecutionGateStatus::Done,
+        &decision,
+        &execution,
+        None,
+    )
+    .expect("done gate should produce terminal output");
+
+    assert!(output.content.contains("Compared 13 products across gameplay"));
+    assert!(output.content.contains("Identified 4 differentiators and 3 product gaps"));
+    assert!(!output.content.contains("Comparative analysis completed.\n\n**Verification**\n- Evidence checked."));
+}
+
+#[test]
+fn gate_terminal_output_preserves_richer_structured_execution_for_hephaestus_summary_shell() {
+    let plan = runtime_execution_plan("hephaestus");
+    let execution = OrchestratorOutput {
+        content: "## Delivery Summary\nImplementation complete.\n\n**Completion Status**\n- Fixed the scheduler projection regression.\n\n**What Changed**\n- Restored full worker result projection into the parent session.\n- Added regression coverage for summary-shell overwrite cases.\n- Verified no loss of structured assistant output.\n\n**Verification**\n- Ran targeted scheduler orchestrator tests.\n\n**Risks or Follow-ups**\n- Broader end-to-end replay is still useful.".to_string(),
+        steps: 1,
+        tool_calls_count: 2,
+        metadata: HashMap::new(),
+        finish_reason: FinishReason::EndTurn,
+    };
+    let decision = SchedulerExecutionGateDecision {
+        status: SchedulerExecutionGateStatus::Done,
+        summary: "verified".to_string(),
+        next_input: None,
+        final_response: Some(
+            "## Delivery Summary\nImplementation complete.\n\n**Completion Status**\n- Fix verified.\n\n**What Changed**\n- Scheduler output updated.\n\n**Verification**\n- Checked.\n\n**Risks or Follow-ups**\n- None.".to_string(),
+        ),
+    };
+
+    let output = SchedulerProfileOrchestrator::gate_terminal_output(
+        &plan,
+        SchedulerExecutionGateStatus::Done,
+        &decision,
+        &execution,
+        None,
+    )
+    .expect("done gate should produce terminal output");
+
+    assert!(output.content.contains("Restored full worker result projection"));
+    assert!(output.content.contains("Added regression coverage for summary-shell overwrite cases"));
+    assert!(!output.content.contains("**What Changed**\n- Scheduler output updated."));
+}
+
+#[test]
 fn gate_terminal_output_uses_default_preservation_for_custom_scheduler() {
     let plan = runtime_execution_plan("custom-research-scheduler");
     let execution = OrchestratorOutput {
