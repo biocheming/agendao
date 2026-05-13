@@ -1605,17 +1605,22 @@ async fn lifecycle_hook_emits_scheduler_stage_and_reasoning_blocks_for_non_attac
             "scheduler_stage",
             "reasoning:start",
             "reasoning:delta",
-            "scheduler_stage",
-            "scheduler_stage",
+            "message:delta",
             "scheduler_stage",
             "reasoning:end",
         ]
     );
-    assert!(
-        !session_blocks
-            .iter()
-            .any(|block| matches!(block, OutputBlock::Message(_)))
-    );
+    assert!(session_blocks
+        .iter()
+        .any(|block| matches!(
+            block,
+            OutputBlock::Message(message)
+                if *message
+                    == MessageBlock::delta(
+                        OutputMessageRole::Assistant,
+                        "main session streamed content",
+                    )
+        )));
 }
 
 #[tokio::test]
