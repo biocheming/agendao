@@ -62,7 +62,11 @@ execution-orchestration"
     // the same large capability catalog is not sent twice.
     sections.push(
         "## Delivery Contract
-Return a concrete execution delivery, not a plan. Keep the top-level result anchored in `## Delivery Summary`, `**Delegation Path**`, `**Execution Outcome**`, `**Verification**`, `**Open Risks or Follow-ups**`."
+Return a concrete execution delivery, not a plan. Keep the top-level result anchored in `## Delivery Summary`, `**Delegation Path**`, `**Execution Outcome**`, `**Verification**`, `**Open Risks or Follow-ups**`.
+- Start the final visible answer directly at `## Delivery Summary`.
+- Do not preface the final answer with intent narration, progress narration, transition filler, or meta commentary.
+- Never include lines such as `I detect...`, `My approach:`, `Let me...`, `Now I...`, `现在我有了全面的信息...`, or any equivalent process narration before the delivery heading.
+- If you explored or reasoned internally, reflect only the final conclusions inside the required sections."
             .to_string(),
     );
     sections.push(SHARED_EXECUTION_EVIDENCE_CONTRACT.to_string());

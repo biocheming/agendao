@@ -243,6 +243,14 @@ fn prometheus_final_output_preserves_structured_handoff_delivery() {
 }
 
 #[test]
+fn prometheus_final_output_strips_preface_before_embedded_delivery() {
+    let prefaced = "Review complete.\n\n## `## Plan Summary`\n- Reviewed planning handoff prepared for Prometheus.\n\n**Recommended Next Step**\n- Run `/start-work scheduler` to hand the reviewed plan to Atlas.\n\n**Remaining Decisions or Risks**\n- None.\n\n**Execution Status**\n- Code execution has not been performed in this workflow.";
+    let normalized = normalize_prometheus_final_output(prefaced);
+    assert!(normalized.starts_with("## Plan Summary"));
+    assert!(!normalized.contains("Review complete."));
+}
+
+#[test]
 fn prometheus_interview_input_mentions_draft_memory_and_clearance() {
     let input = compose_prometheus_interview_input(SchedulerInterviewStageInput {
         original_request: "Help me plan a refactor.",

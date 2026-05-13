@@ -1,3 +1,5 @@
+use super::super::normalize_embedded_delivery_summary;
+
 fn structured_section(title: &str, body: &str) -> String {
     format!("**{title}**\n{}", body.trim())
 }
@@ -36,7 +38,8 @@ fn strip_delivery_summary_heading(content: &str) -> &str {
 }
 
 pub fn normalize_atlas_final_output(output: &str) -> String {
-    let trimmed = output.trim();
+    let normalized_input = normalize_embedded_delivery_summary(output);
+    let trimmed = normalized_input.trim();
     if trimmed.is_empty() {
         return trimmed.to_string();
     }
@@ -110,5 +113,14 @@ mod tests {
         assert!(normalized.contains("**Task Status**"));
         assert!(normalized.contains("**Verification**"));
         assert_eq!(normalized.matches("## Delivery Summary").count(), 1);
+    }
+
+    #[test]
+    fn atlas_final_output_normalization_strips_preface_before_embedded_delivery() {
+        let prefaced = "Working through the verified result now.\n\n## `## Delivery Summary`\n\nReady.\n\n**Task Status**\n- A\n\n**Verification**\n- B\n\n**Gate Decision**\n- Ship.";
+        let normalized = normalize_atlas_final_output(prefaced);
+        assert!(normalized.starts_with("## Delivery Summary"));
+        assert_eq!(normalized.matches("## Delivery Summary").count(), 1);
+        assert!(!normalized.contains("Working through the verified result now."));
     }
 }
