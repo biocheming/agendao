@@ -1,3 +1,5 @@
+use super::super::normalize_embedded_delivery_summary;
+
 fn structured_section(title: &str, body: &str) -> String {
     format!(
         "**{title}**
@@ -40,7 +42,8 @@ fn strip_delivery_summary_heading(content: &str) -> &str {
 }
 
 pub fn normalize_sisyphus_final_output(output: &str) -> String {
-    let trimmed = output.trim();
+    let normalized_input = normalize_embedded_delivery_summary(output);
+    let trimmed = normalized_input.trim();
     if trimmed.is_empty() {
         return trimmed.to_string();
     }
@@ -134,5 +137,15 @@ Done.
         assert!(normalized.contains("**Execution Outcome**"));
         assert!(normalized.contains("**Verification**"));
         assert_eq!(normalized.matches("## Delivery Summary").count(), 1);
+    }
+
+    #[test]
+    fn sisyphus_final_output_normalization_strips_preface_before_embedded_delivery() {
+        let prefaced = "现在我有了全面的信息。这是我系统比较的结果。\n\n---\n\n## `## Delivery Summary`\n\n**VoiceCraft（本项目）与同类游戏/应用的系统比较**\n\n**Delegation Path**\n- Delegated.\n\n**Execution Outcome**\n- Detailed findings.\n\n**Verification**\n- Checked.";
+        let normalized = normalize_sisyphus_final_output(prefaced);
+        assert!(normalized.starts_with("## Delivery Summary"));
+        assert!(!normalized.contains("**Execution Outcome**\n现在我有了全面的信息。这是我系统比较的结果。"));
+        assert_eq!(normalized.matches("## Delivery Summary").count(), 1);
+        assert!(normalized.contains("VoiceCraft（本项目）与同类游戏/应用的系统比较"));
     }
 }

@@ -36,6 +36,41 @@ use crate::OrchestratorContext;
 use serde_json::Value;
 use std::collections::HashMap;
 
+pub(super) fn normalize_embedded_delivery_summary(output: &str) -> String {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let lines: Vec<&str> = trimmed.lines().collect();
+    let Some((heading_index, canonical_heading)) = lines
+        .iter()
+        .enumerate()
+        .find_map(|(index, line)| embedded_structured_heading(line).map(|heading| (index, heading)))
+    else {
+        return trimmed.to_string();
+    };
+
+    let mut normalized = format!("## {canonical_heading}");
+    for line in lines.iter().skip(heading_index + 1) {
+        normalized.push('\n');
+        normalized.push_str(line);
+    }
+    normalized.trim().to_string()
+}
+
+fn embedded_structured_heading(line: &str) -> Option<&'static str> {
+    let cleaned = line.trim().replace('`', "");
+    let without_leading_hashes = cleaned.trim().trim_start_matches('#').trim();
+    let normalized = without_leading_hashes.trim_start_matches('#').trim();
+
+    match normalized {
+        "Delivery Summary" => Some("Delivery Summary"),
+        "Plan Summary" => Some("Plan Summary"),
+        _ => None,
+    }
+}
+
 type NormalizeReviewStageOutputFn = for<'a> fn(SchedulerPresetRuntimeFields<'a>, &str) -> String;
 type NormalizeFinalOutputFn = fn(&str) -> String;
 type RuntimeStringUpdateFn = fn(String) -> SchedulerPresetRuntimeUpdate;
@@ -1408,5 +1443,20 @@ mod tests {
             preview.contains("never write code yourself"),
             "Atlas boundary must prohibit direct code authoring"
         );
+    }
+
+    #[test]
+    fn normalize_embedded_delivery_summary_drops_preface_and_repairs_heading() {
+        let raw = "Preface line.\n\n---\n\n## `## Delivery Summary`\n\nActual body\n\n**Verification**\n- Checked.";
+        let normalized = normalize_embedded_delivery_summary(raw);
+        assert!(normalized.starts_with("## Delivery Summary"));
+        assert!(!normalized.contains("Preface line."));
+        assert_eq!(normalized.matches("## Delivery Summary").count(), 1);
+    }
+
+    #[test]
+    fn normalize_embedded_delivery_summary_keeps_non_delivery_text() {
+        let raw = "Plain final answer without structured heading.";
+        assert_eq!(normalize_embedded_delivery_summary(raw), raw);
     }
 }

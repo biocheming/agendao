@@ -1,6 +1,7 @@
 use crate::scheduler::SchedulerAdvisoryReviewInput;
 use serde_json::{json, Value};
 
+use super::super::normalize_embedded_delivery_summary;
 use super::super::super::{
     SchedulerEffectContext, SchedulerEffectDispatch, SchedulerEffectKind, SchedulerEffectMoment,
     SchedulerEffectProtocol, SchedulerEffectSpec, SchedulerHandoffDecoration,
@@ -400,7 +401,8 @@ fn infer_prometheus_review_gate(content: &str) -> Option<bool> {
 }
 
 pub fn normalize_prometheus_final_output(output: &str) -> String {
-    let trimmed = output.trim();
+    let normalized_input = normalize_embedded_delivery_summary(output);
+    let trimmed = normalized_input.trim();
     if trimmed.is_empty() {
         return trimmed.to_string();
     }

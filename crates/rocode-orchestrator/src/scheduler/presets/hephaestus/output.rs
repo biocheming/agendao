@@ -1,3 +1,5 @@
+use super::super::normalize_embedded_delivery_summary;
+
 fn structured_section(title: &str, body: &str) -> String {
     format!("**{title}**\n{}", body.trim())
 }
@@ -36,7 +38,8 @@ fn strip_delivery_summary_heading(content: &str) -> &str {
 }
 
 pub fn normalize_hephaestus_final_output(output: &str) -> String {
-    let trimmed = output.trim();
+    let normalized_input = normalize_embedded_delivery_summary(output);
+    let trimmed = normalized_input.trim();
     if trimmed.is_empty() {
         return trimmed.to_string();
     }
@@ -111,5 +114,14 @@ mod tests {
         assert!(normalized.contains("**What Changed**"));
         assert!(normalized.contains("**Verification**"));
         assert_eq!(normalized.matches("## Delivery Summary").count(), 1);
+    }
+
+    #[test]
+    fn hephaestus_final_output_normalization_strips_preface_before_embedded_delivery() {
+        let prefaced = "I have the final verified state.\n\n## `## Delivery Summary`\n\nDone.\n\n**Completion Status**\n- Done.\n\n**What Changed**\n- A\n\n**Verification**\n- B";
+        let normalized = normalize_hephaestus_final_output(prefaced);
+        assert!(normalized.starts_with("## Delivery Summary"));
+        assert_eq!(normalized.matches("## Delivery Summary").count(), 1);
+        assert!(!normalized.contains("I have the final verified state."));
     }
 }
