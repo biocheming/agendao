@@ -90,8 +90,6 @@ use self::support::{
     resolve_recovery_action_selection, selected_execution_mode, status_line_from_block,
 };
 
-// TS parity: renderer targetFps is 60, ~16ms frame budget.
-const TICK_RATE_MS: u64 = 16;
 const SESSION_SYNC_DEBOUNCE_MS: u64 = 180;
 const SESSION_FULL_SYNC_INTERVAL_SECS: u64 = 10;
 const QUESTION_SYNC_FALLBACK_SECS: u64 = 5;
@@ -226,6 +224,7 @@ struct SyncLifecycleState {
     pending_initial_submit: bool,
     pending_session_sync: Option<String>,
     pending_session_sync_due_at: Option<Instant>,
+    last_tick_at: Instant,
     last_session_sync: Instant,
     last_full_session_sync: Instant,
     last_question_sync: Instant,
@@ -242,6 +241,7 @@ impl SyncLifecycleState {
             pending_initial_submit,
             pending_session_sync: None,
             pending_session_sync_due_at: None,
+            last_tick_at: now,
             last_session_sync: now,
             last_full_session_sync: now,
             last_question_sync: now,
@@ -1582,9 +1582,15 @@ impl App {
                 _ => {}
             },
             Event::Tick => {
+                let now = Instant::now();
+                let delta_ms = now
+                    .saturating_duration_since(self.sync_runtime.last_tick_at)
+                    .as_millis()
+                    .min(u128::from(u64::MAX)) as u64;
+                self.sync_runtime.last_tick_at = now;
                 let mut tick_changed = false;
-                tick_changed |= self.toast.tick(TICK_RATE_MS);
-                tick_changed |= self.prompt.tick_spinner(TICK_RATE_MS);
+                tick_changed |= self.toast.tick(delta_ms);
+                tick_changed |= self.prompt.tick_spinner(delta_ms);
                 tick_changed |= self.sync_prompt_spinner_state();
 
                 if self.sync_runtime.pending_initial_submit
@@ -1735,6 +1741,63 @@ impl App {
                 "tui perf snapshot"
             );
         }
+    }
+
+    pub(crate) fn next_tick_deadline(&self, now: Instant) -> Option<Instant> {
+        let mut deadline = None;
+
+        let mut schedule_at = |candidate: Instant| match deadline {
+            Some(current) if current <= candidate => {}
+            _ => deadline = Some(candidate),
+        };
+
+        let mut schedule_after_last_tick = |delta: Duration| {
+            schedule_at(self.sync_runtime.last_tick_at + delta);
+        };
+
+        if let Some(delta) = self.toast.next_tick_after() {
+            schedule_after_last_tick(delta);
+        }
+        if let Some(delta) = self
+            .prompt
+            .next_tick_after(now, self.sync_runtime.last_tick_at)
+        {
+            schedule_at(now + delta);
+        }
+
+        if self.sync_runtime.pending_initial_submit && !self.prompt.get_input().trim().is_empty() {
+            schedule_at(now);
+        }
+
+        let route = self.context.current_route();
+        if let Route::Session { session_id } = &route {
+            if self.sync_runtime.pending_session_sync.as_deref() == Some(session_id.as_str()) {
+                if let Some(due_at) = self.sync_runtime.pending_session_sync_due_at {
+                    schedule_at(due_at);
+                }
+            }
+
+            schedule_at(
+                self.sync_runtime.last_full_session_sync
+                    + Duration::from_secs(SESSION_FULL_SYNC_INTERVAL_SECS),
+            );
+
+            if self.session_sidebar_visible() {
+                schedule_at(self.sync_runtime.last_process_refresh + Duration::from_secs(2));
+            }
+        }
+
+        schedule_at(
+            self.sync_runtime.last_question_sync + Duration::from_secs(QUESTION_SYNC_FALLBACK_SECS),
+        );
+        schedule_at(
+            self.sync_runtime.last_permission_sync
+                + Duration::from_secs(PERMISSION_SYNC_FALLBACK_SECS),
+        );
+        schedule_at(self.sync_runtime.last_aux_sync + Duration::from_secs(5));
+        schedule_at(self.sync_runtime.last_perf_log + Duration::from_secs(PERF_LOG_INTERVAL_SECS));
+
+        deadline
     }
 
     fn sync_ui_bridge_health(&mut self) -> bool {

@@ -92,6 +92,19 @@ impl Toast {
         self.message.is_some()
     }
 
+    pub fn next_tick_after(&self) -> Option<std::time::Duration> {
+        let _ = self.message.as_ref()?;
+
+        match self.phase {
+            ToastPhase::Entering | ToastPhase::Exiting => {
+                Some(std::time::Duration::from_millis(16))
+            }
+            ToastPhase::Visible => Some(std::time::Duration::from_millis(
+                self.duration_ms.saturating_sub(self.phase_elapsed_ms),
+            )),
+        }
+    }
+
     pub fn slide_offset(&self) -> u16 {
         let progress = self.animation_progress();
         let hidden = (1.0 - progress) * SLIDE_OFFSET_COLS as f32;
@@ -236,5 +249,23 @@ mod tests {
         assert!(start > 0);
         toast.tick(TRANSITION_MS);
         assert_eq!(toast.slide_offset(), 0);
+    }
+
+    #[test]
+    fn toast_next_tick_after_tracks_phase_needs() {
+        let mut toast = Toast::new();
+        assert_eq!(toast.next_tick_after(), None);
+
+        toast.show(ToastVariant::Info, "hello", 3000);
+        assert_eq!(
+            toast.next_tick_after(),
+            Some(std::time::Duration::from_millis(16))
+        );
+
+        toast.tick(TRANSITION_MS);
+        assert_eq!(
+            toast.next_tick_after(),
+            Some(std::time::Duration::from_millis(3000))
+        );
     }
 }
