@@ -598,6 +598,23 @@ function orderedMessageParts(parts: MessagePartRecord[] = []): MessagePartRecord
     .map(({ part }) => part);
 }
 
+function shouldRenderHistoryPart(message: MessageRecord, part: MessagePartRecord): boolean {
+  if (part.ignored) {
+    return false;
+  }
+
+  if (part.type === "reasoning") {
+    return true;
+  }
+
+  const keepSyntheticText = message.mode === "compaction";
+  if (part.type === "text" && part.synthetic && !keepSyntheticText) {
+    return false;
+  }
+
+  return true;
+}
+
 function orderRelatedFeedMessages(messages: FeedMessage[]): FeedMessage[] {
   return messages
     .map((message, index) => ({ message, index }))
@@ -855,7 +872,7 @@ function buildFeedFromHistory(history: MessageRecord[], showThinking: boolean): 
     let startedText = false;
 
     for (const part of orderedMessageParts(message.parts)) {
-      if (part.ignored) {
+      if (!shouldRenderHistoryPart(message, part)) {
         continue;
       }
       if (part.output_block) {
@@ -1507,6 +1524,7 @@ export default function App() {
     return null;
   }, [executionActivity.telemetry?.provider_diagnostic_summary, messageHistory]);
   const refreshExecutionActivity = executionActivity.refreshExecutionActivity;
+  const applySchedulerStageOutputBlock = executionActivity.applySchedulerStageOutputBlock;
   const conversationJump = useConversationJump({
     messages,
     feedRef,
@@ -2252,6 +2270,9 @@ export default function App() {
             }
           : undefined;
         if (!block) return;
+        if (block.kind === "scheduler_stage") {
+          applySchedulerStageOutputBlock(block, eventSessionId);
+        }
         const queue = pendingOutputBlocksRef.current[eventSessionId] ?? [];
         queue.push(block);
         pendingOutputBlocksRef.current[eventSessionId] = queue;

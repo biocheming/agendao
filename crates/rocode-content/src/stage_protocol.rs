@@ -61,6 +61,8 @@ pub struct StageSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting_on: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_context_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_tree_budget: Option<u64>,

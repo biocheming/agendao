@@ -79,6 +79,7 @@ mod tests {
             focus: None,
             last_event: None,
             waiting_on: None,
+            activity: None,
             estimated_context_tokens: None,
             skill_tree_budget: None,
             skill_tree_truncation_strategy: None,

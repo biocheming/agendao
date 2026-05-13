@@ -515,6 +515,9 @@ fn cli_runtime_snapshot_lines(
         if let Some(last_event) = stage.last_event.as_deref() {
             lines.push(format!("Last event: {}", last_event));
         }
+        if let Some(activity) = stage.activity.as_deref().filter(|value| !value.is_empty()) {
+            lines.push(format!("Activity: {}", activity.replace('\n', " · ")));
+        }
         if let Some(focus) = stage.focus.as_deref() {
             lines.push(format!("Focus: {}", focus));
         }
@@ -541,6 +544,12 @@ fn cli_runtime_snapshot_lines(
             lines.push(format!("  {}", cli_stage_runtime_line(stage)));
             if let Some(last_event) = stage.last_event.as_deref() {
                 lines.push(format!("    last-event {}", last_event));
+            }
+            if let Some(activity) = stage.activity.as_deref().filter(|value| !value.is_empty()) {
+                lines.push(format!(
+                    "    activity {}",
+                    activity.replace('\n', " · ")
+                ));
             }
             if let Some(focus) = stage.focus.as_deref() {
                 lines.push(format!("    focus {}", focus));
@@ -1820,8 +1829,43 @@ fn cli_session_update_requires_refresh(source: Option<&str>) -> bool {
                 | "prompt.completed"
                 | "session.title.set"
                 | "prompt.done"
+                | "prompt.scheduler.stage.step"
+                | "prompt.scheduler.stage.usage"
+                | "prompt.scheduler.stage.tool.start"
+                | "prompt.scheduler.stage.tool.end"
+                | "prompt.scheduler.stage.step_checkpoint.compact"
+                | "prompt.scheduler.stage.step_checkpoint.compacted"
+                | "prompt.scheduler.stage.step_checkpoint.blocked"
+                | "prompt.scheduler.snapshot"
         )
     )
+}
+
+#[cfg(test)]
+mod session_update_refresh_tests {
+    use super::cli_session_update_requires_refresh;
+
+    #[test]
+    fn cli_refreshes_for_scheduler_stage_summary_sources() {
+        assert!(cli_session_update_requires_refresh(Some(
+            "prompt.scheduler.stage.step"
+        )));
+        assert!(cli_session_update_requires_refresh(Some(
+            "prompt.scheduler.stage.usage"
+        )));
+        assert!(cli_session_update_requires_refresh(Some(
+            "prompt.scheduler.stage.tool.start"
+        )));
+        assert!(cli_session_update_requires_refresh(Some(
+            "prompt.scheduler.stage.tool.end"
+        )));
+        assert!(!cli_session_update_requires_refresh(Some(
+            "prompt.scheduler.stage.reasoning"
+        )));
+        assert!(!cli_session_update_requires_refresh(Some(
+            "prompt.scheduler.stage.content"
+        )));
+    }
 }
 
 #[cfg(test)]

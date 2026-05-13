@@ -93,6 +93,7 @@ export interface MessagePartRecord {
 export interface MessageRecord {
   id: string;
   role: string;
+  mode?: string | null;
   tokens?: {
     input: number;
     context?: number;

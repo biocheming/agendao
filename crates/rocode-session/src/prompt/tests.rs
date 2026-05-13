@@ -588,6 +588,7 @@ struct MultiTurnScriptedProvider {
     model: ModelInfo,
     turns: Arc<StdMutex<std::collections::VecDeque<Vec<StreamEvent>>>>,
     request_count: Arc<StdMutex<usize>>,
+    requests: Arc<StdMutex<Vec<ChatRequest>>>,
 }
 
 impl MultiTurnScriptedProvider {
@@ -596,6 +597,7 @@ impl MultiTurnScriptedProvider {
             model,
             turns: Arc::new(StdMutex::new(turns.into())),
             request_count: Arc::new(StdMutex::new(0)),
+            requests: Arc::new(StdMutex::new(Vec::new())),
         }
     }
 }
@@ -628,7 +630,7 @@ impl Provider for MultiTurnScriptedProvider {
         ))
     }
 
-    async fn chat_stream(&self, _request: ChatRequest) -> Result<StreamResult, ProviderError> {
+    async fn chat_stream(&self, request: ChatRequest) -> Result<StreamResult, ProviderError> {
         {
             let mut count = self
                 .request_count
@@ -636,6 +638,10 @@ impl Provider for MultiTurnScriptedProvider {
                 .expect("request_count lock should not poison");
             *count += 1;
         }
+        self.requests
+            .lock()
+            .expect("requests lock should not poison")
+            .push(request);
 
         let events = self
             .turns
@@ -921,6 +927,141 @@ async fn prompt_with_update_hook_emits_incremental_snapshots() {
         .map(SessionMessage::get_text)
         .unwrap_or_default();
     assert_eq!(final_text, "Hello");
+}
+
+#[tokio::test]
+async fn prompt_length_finish_reason_appends_hidden_continuation_turn() {
+    let prompt = SessionPrompt::default();
+    let mut session = Session::new("proj", ".");
+    let scripted = MultiTurnScriptedProvider::new(
+        ModelInfo {
+            id: "test-model".to_string(),
+            name: "Test Model".to_string(),
+            provider: "mock".to_string(),
+            context_window: 8192,
+            max_input_tokens: None,
+            max_output_tokens: 1024,
+            supports_vision: false,
+            supports_tools: false,
+            cost_per_million_input: 0.0,
+            cost_per_million_output: 0.0,
+            cost_per_million_cache_read: None,
+            cost_per_million_cache_write: None,
+        },
+        vec![
+            vec![
+                StreamEvent::Start,
+                StreamEvent::TextDelta("Part 1 ".to_string()),
+                StreamEvent::FinishStep {
+                    finish_reason: Some("length".to_string()),
+                    usage: StreamUsage::default(),
+                    provider_metadata: None,
+                },
+                StreamEvent::Done,
+            ],
+            vec![
+                StreamEvent::Start,
+                StreamEvent::TextDelta("Part 2".to_string()),
+                StreamEvent::FinishStep {
+                    finish_reason: Some("stop".to_string()),
+                    usage: StreamUsage::default(),
+                    provider_metadata: None,
+                },
+                StreamEvent::Done,
+            ],
+        ],
+    );
+    let request_count = scripted.request_count.clone();
+    let requests = scripted.requests.clone();
+    let provider: Arc<dyn Provider> = Arc::new(scripted);
+
+    let input = PromptInput {
+        session_id: session.id.clone(),
+        message_id: None,
+        model: Some(ModelRef {
+            provider_id: "mock".to_string(),
+            model_id: "test-model".to_string(),
+        }),
+        agent: None,
+        no_reply: false,
+        system: None,
+        variant: None,
+        parts: vec![PartInput::Text {
+            text: "Tell me more".to_string(),
+        }],
+        tools: None,
+        ingress: None,
+    };
+
+    prompt
+        .prompt_with_update_hook(
+            input,
+            &mut session,
+            PromptRequestContext {
+                provider,
+                system_prompt: None,
+                memory_prefetch: None,
+                tools: Vec::new(),
+                tool_source_digests: Vec::new(),
+                compiled_request: CompiledExecutionRequest::default(),
+                hooks: PromptHooks::default(),
+            },
+        )
+        .await
+        .expect("prompt_with_update_hook should succeed");
+
+    let request_count = *request_count
+        .lock()
+        .expect("request_count lock should not poison");
+    assert_eq!(request_count, 2);
+
+    let requests = requests.lock().expect("requests lock should not poison");
+    let second_request = requests.get(1).expect("second request should exist");
+    let last_message = second_request
+        .messages
+        .last()
+        .expect("continuation request should contain the hidden prompt");
+    assert!(matches!(last_message.role, rocode_provider::Role::User));
+    let last_text = match &last_message.content {
+        rocode_provider::Content::Text(text) => text.clone(),
+        rocode_provider::Content::Parts(parts) => parts
+            .iter()
+            .filter_map(|part| part.text.as_deref())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    };
+    assert!(
+        last_text.contains("truncated by the output length limit"),
+        "{last_text}"
+    );
+
+    let synthetic_user = session
+        .messages
+        .iter()
+        .find(|message| {
+            matches!(message.role, MessageRole::User)
+                && message.parts.iter().any(|part| {
+                    matches!(
+                        &part.part_type,
+                        PartType::Text {
+                            text,
+                            synthetic: Some(true),
+                            ..
+                        } if text.contains("truncated by the output length limit")
+                    )
+                })
+        })
+        .expect("synthetic continuation user message should be stored in session");
+    assert!(matches!(synthetic_user.role, MessageRole::User));
+
+    let final_text = session
+        .messages
+        .iter()
+        .rev()
+        .find(|m| matches!(m.role, MessageRole::Assistant))
+        .map(SessionMessage::get_text)
+        .unwrap_or_default();
+    assert_eq!(final_text, "Part 2");
 }
 
 #[tokio::test]

@@ -43,6 +43,9 @@ use super::{
     PROMPT_SURFACE_STATE_SNAPSHOT_METADATA_KEY, STREAM_UPDATE_INTERVAL_MS,
 };
 
+const MAX_LENGTH_CONTINUATION_RETRIES: u8 = 2;
+const LENGTH_CONTINUATION_PROMPT: &str = "[System: Your previous response was truncated by the output length limit. Continue exactly where you left off. Do not restart or repeat prior text. Finish the answer directly.]";
+
 #[derive(Clone)]
 struct SessionStepCancelToken {
     user_cancel: CancellationToken,
@@ -882,6 +885,10 @@ struct PreparedChatMessages {
 }
 
 impl SessionPrompt {
+    fn append_length_continuation_prompt(session: &mut Session) {
+        session.add_synthetic_user_message(LENGTH_CONTINUATION_PROMPT, &[]);
+    }
+
     async fn emit_context_compaction_status(
         output_block_hook: Option<&super::OutputBlockHook>,
         session_id: &str,
@@ -2338,6 +2345,7 @@ impl SessionPrompt {
         let mut step = 0u32;
         let provider_type = ProviderType::from_provider_id(&prompt_ctx.provider_id);
         let mut overflow_recovery_attempts = 0_u8;
+        let mut length_continuation_retries = 0_u8;
         let mut post_first_step_ran = false;
         let turn_start_index = session.messages.len().saturating_sub(1);
 
@@ -2630,6 +2638,29 @@ impl SessionPrompt {
                 has_tool_calls,
             )
             .await;
+
+            if finish_reason.as_deref() == Some("length") && !has_tool_calls {
+                if length_continuation_retries < MAX_LENGTH_CONTINUATION_RETRIES {
+                    length_continuation_retries += 1;
+                    tracing::info!(
+                        session_id = %session_id,
+                        retry = length_continuation_retries,
+                        max_retries = MAX_LENGTH_CONTINUATION_RETRIES,
+                        "assistant output hit max tokens; scheduling synthetic continuation turn"
+                    );
+                    Self::append_length_continuation_prompt(session);
+                    session.touch();
+                    Self::emit_session_update(prompt_ctx.hooks.update_hook.as_ref(), session);
+                    continue;
+                }
+                tracing::warn!(
+                    session_id = %session_id,
+                    max_retries = MAX_LENGTH_CONTINUATION_RETRIES,
+                    "assistant output remained truncated after continuation retries"
+                );
+            } else {
+                length_continuation_retries = 0;
+            }
 
             if executed_local_tools_this_step {
                 continue;

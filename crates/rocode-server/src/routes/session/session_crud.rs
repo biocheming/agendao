@@ -1000,6 +1000,7 @@ mod tests {
                 focus: Some("inspect".to_string()),
                 last_event: Some("scheduler.stage.started".to_string()),
                 waiting_on: None,
+                activity: Some("Inspecting scheduler state".to_string()),
                 estimated_context_tokens: Some(99),
                 skill_tree_budget: Some(512),
                 skill_tree_truncation_strategy: Some("head".to_string()),

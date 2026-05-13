@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { OutputBlock } from "../lib/history";
 import type {
   ActivityEventRecord,
   ExecutionNodeRecord,
   SessionInsightsRecord,
   SessionTelemetrySnapshotRecord,
+  StageSummaryRecord,
 } from "../lib/sessionActivity";
 import { isLiveStageStatus } from "../lib/contextPressure";
 
@@ -72,6 +74,43 @@ function sameActivityFilters(left: ActivityFilters, right: ActivityFilters) {
     left.executionId === right.executionId &&
     left.eventType === right.eventType
   );
+}
+
+function stageSummaryFromOutputBlock(block: OutputBlock): StageSummaryRecord | null {
+  if (block.kind !== "scheduler_stage" || !block.stage_id || !block.stage) {
+    return null;
+  }
+
+  return {
+    stage_id: block.stage_id,
+    stage_name: block.stage,
+    index: block.stage_index ?? null,
+    total: block.stage_total ?? null,
+    step: block.step ?? null,
+    step_total: null,
+    status: block.status ?? "running",
+    prompt_tokens: block.prompt_tokens ?? null,
+    context_tokens: block.prompt_tokens ?? null,
+    completion_tokens: block.completion_tokens ?? null,
+    reasoning_tokens: block.reasoning_tokens ?? null,
+    cache_read_tokens: block.cache_read_tokens ?? null,
+    cache_miss_tokens: block.cache_miss_tokens ?? null,
+    cache_write_tokens: block.cache_write_tokens ?? null,
+    focus: block.focus ?? null,
+    last_event: block.last_event ?? null,
+    waiting_on: block.waiting_on ?? null,
+    activity: block.activity ?? null,
+    estimated_context_tokens:
+      typeof block.prompt_tokens === "number" ? block.prompt_tokens : null,
+    skill_tree_budget: null,
+    skill_tree_truncation_strategy: null,
+    skill_tree_truncated: null,
+    retry_attempt: null,
+    active_agent_count: Array.isArray(block.active_agents) ? block.active_agents.length : 0,
+    active_tool_count: 0,
+    attached_session_count: block.attached_session_id ? 1 : 0,
+    primary_attached_session_id: block.attached_session_id ?? null,
+  };
 }
 
 export function useExecutionActivity({
@@ -168,6 +207,36 @@ export function useExecutionActivity({
     },
     [apiJson, onError, resetExecutionActivity],
   );
+
+  const applySchedulerStageOutputBlock = useCallback((block: OutputBlock, sessionId = sessionRef.current) => {
+    if (!sessionId) return;
+    const summary = stageSummaryFromOutputBlock(block);
+    if (!summary) return;
+
+    setTelemetry((current) => {
+      if (!current) return current;
+      if (current.runtime?.session_id !== sessionId) return current;
+
+      const nextStages = [...(Array.isArray(current.stages) ? current.stages : [])];
+      const existingIndex = nextStages.findIndex((stage) => stage.stage_id === summary.stage_id);
+      if (existingIndex >= 0) {
+        nextStages[existingIndex] = summary;
+      } else {
+        nextStages.push(summary);
+        nextStages.sort((left, right) => {
+          const leftIndex = left.index ?? Number.MAX_SAFE_INTEGER;
+          const rightIndex = right.index ?? Number.MAX_SAFE_INTEGER;
+          if (leftIndex !== rightIndex) return leftIndex - rightIndex;
+          return left.stage_id.localeCompare(right.stage_id);
+        });
+      }
+
+      return {
+        ...current,
+        stages: nextStages,
+      };
+    });
+  }, []);
 
   useEffect(() => {
     if (!selectedSessionId) {
@@ -330,5 +399,6 @@ export function useExecutionActivity({
     firstActivityPage,
     cancelExecution,
     refreshExecutionActivity,
+    applySchedulerStageOutputBlock,
   };
 }

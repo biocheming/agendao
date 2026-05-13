@@ -105,11 +105,8 @@ fn session_update_requires_sync(source: Option<&str>) -> bool {
         Some(
             "prompt.stream"
                 | "stream.prompt"
-                | "prompt.scheduler.stage.start"
                 | "prompt.scheduler.stage.content"
                 | "prompt.scheduler.stage.reasoning"
-                | "prompt.scheduler.stage.usage"
-                | "prompt.scheduler.stage"
                 | "prompt.scheduler.stage.child.final"
         )
     )
@@ -1558,6 +1555,16 @@ impl App {
                             payload,
                         );
                     }
+                    if payload.get("kind").and_then(|value| value.as_str())
+                        == Some("scheduler_stage")
+                    {
+                        if let Ok(block) = serde_json::from_value::<
+                            rocode_command::output_blocks::SchedulerStageBlock,
+                        >(payload.clone())
+                        {
+                            self.context.apply_scheduler_stage_summary(session_id, &block);
+                        }
+                    }
 
                     if let Route::Session { session_id: active } = self.context.current_route() {
                         if active == *session_id {
@@ -1834,6 +1841,8 @@ mod tests {
         assert!(session_update_requires_sync(Some("prompt.completed")));
         assert!(session_update_requires_sync(Some("prompt.scheduler.completed")));
         assert!(!session_update_requires_sync(Some("prompt.stream")));
+        assert!(session_update_requires_sync(Some("prompt.scheduler.stage.step")));
+        assert!(session_update_requires_sync(Some("prompt.scheduler.stage.usage")));
         assert!(!session_update_requires_sync(Some(
             "prompt.scheduler.stage.reasoning"
         )));

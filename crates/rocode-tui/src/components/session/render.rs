@@ -920,7 +920,8 @@ fn render_assistant_thinking_output(
     expanded_reasoning: &HashSet<String>,
 ) -> AssistantSegmentRenderOutput {
     let reasoning_id = format!("{}:{}", msg.id, item.part_index);
-    let collapsed = !expanded_reasoning.contains(&reasoning_id);
+    let is_live_reasoning = msg.completed_at.is_none();
+    let collapsed = !is_live_reasoning && !expanded_reasoning.contains(&reasoning_id);
     let rendered = super::session_text::render_reasoning_part(
         &item.text,
         &context.theme,

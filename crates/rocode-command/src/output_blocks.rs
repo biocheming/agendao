@@ -1912,6 +1912,7 @@ mod tests {
         assert_eq!(summary.reasoning_tokens, Some(25));
         assert_eq!(summary.focus, Some("code analysis".to_string()));
         assert_eq!(summary.last_event, Some("tool_call".to_string()));
+        assert_eq!(summary.activity, Some("reading files".to_string()));
         assert_eq!(summary.active_agent_count, 2); // two active agents
         assert_eq!(summary.active_tool_count, 0); // always 0 from presentation layer
         assert_eq!(summary.attached_session_count, 1);

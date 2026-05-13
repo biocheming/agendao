@@ -226,6 +226,14 @@ impl SessionSchedulerLifecycleHook {
             self.emit_stage_block(message).await;
         }
 
+        if message_snapshot.is_some() {
+            broadcast_session_updated(
+                self.state.as_ref(),
+                self.session_id.clone(),
+                _source.to_string(),
+            );
+        }
+
         if let (Some(execution_id), Some(patch)) = (execution_id, runtime_patch) {
             self.state
                 .runtime_control

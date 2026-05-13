@@ -61,6 +61,7 @@ export interface StageSummaryRecord {
   focus?: string | null;
   last_event?: string | null;
   waiting_on?: string | null;
+  activity?: string | null;
   estimated_context_tokens?: number | null;
   skill_tree_budget?: number | null;
   skill_tree_truncation_strategy?: string | null;
