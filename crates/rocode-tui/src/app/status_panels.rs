@@ -835,6 +835,7 @@ impl App {
         let runtime = self.context.session_runtime();
         let usage = self.context.session_usage();
         let stages = self.context.stage_summaries();
+        let ui_bridge = self.context.ui_bridge_snapshot();
         let Some(runtime) = runtime else {
             return vec![
                 StatusBlock::title("Session Telemetry"),
@@ -913,6 +914,8 @@ impl App {
             }
         }
 
+        blocks.extend(ui_bridge_status_blocks(&ui_bridge));
+
         blocks
     }
 
@@ -936,7 +939,11 @@ impl App {
             Ok(telemetry) => {
                 self.context
                     .apply_session_telemetry_snapshot(telemetry.clone());
-                let lines = tui_runtime_status_lines(&session_id, &telemetry);
+                let lines = tui_runtime_status_lines(
+                    &session_id,
+                    &telemetry,
+                    &self.context.ui_bridge_snapshot(),
+                );
                 self.status_dialog.set_title("Runtime");
                 self.status_dialog.set_footer_hint(Some(
                     "Esc close · /events [stage=<id>] for raw event log".to_string(),
@@ -1732,6 +1739,7 @@ fn tui_yes_no(value: bool) -> &'static str {
 fn tui_runtime_status_lines(
     session_id: &str,
     telemetry: &crate::api::SessionTelemetrySnapshot,
+    ui_bridge: &crate::bridge::UiBridgeSnapshot,
 ) -> Vec<StatusLine> {
     let runtime = &telemetry.runtime;
     let topology = &telemetry.topology;
@@ -1820,6 +1828,24 @@ fn tui_runtime_status_lines(
                 tool.tool_name, tool.tool_call_id
             )));
         }
+    }
+
+    lines.push(StatusLine::muted(String::new()));
+    lines.push(StatusLine::title("Local UI Event Queue"));
+    lines.push(StatusLine::normal(format!(
+        "Pending: {} / {} · high-water {}",
+        ui_bridge.pending_events, ui_bridge.capacity, ui_bridge.high_water_mark
+    )));
+    lines.push(StatusLine::normal(format!(
+        "Coalesced: {} · dropped: {}",
+        ui_bridge.coalesced_events, ui_bridge.dropped_events
+    )));
+    if ui_bridge.dropped_events > 0 {
+        lines.push(StatusLine::warning(format!(
+            "Lagged: dropped {} queued update{} before render caught up",
+            ui_bridge.dropped_events,
+            if ui_bridge.dropped_events == 1 { "" } else { "s" }
+        )));
     }
 
     if let Some(question) = runtime.pending_question.as_ref() {
@@ -1922,6 +1948,28 @@ fn tui_runtime_status_lines(
     }
 
     lines
+}
+
+fn ui_bridge_status_blocks(ui_bridge: &crate::bridge::UiBridgeSnapshot) -> Vec<StatusBlock> {
+    let mut blocks = vec![
+        StatusBlock::title("Local UI Event Queue"),
+        StatusBlock::normal(format!(
+            "Pending {} / {} · high-water {}",
+            ui_bridge.pending_events, ui_bridge.capacity, ui_bridge.high_water_mark
+        )),
+    ];
+    if ui_bridge.dropped_events > 0 {
+        blocks.push(StatusBlock::warning(format!(
+            "Lagged · coalesced {} · dropped {}",
+            ui_bridge.coalesced_events, ui_bridge.dropped_events
+        )));
+    } else {
+        blocks.push(StatusBlock::normal(format!(
+            "Coalesced {} · dropped {}",
+            ui_bridge.coalesced_events, ui_bridge.dropped_events
+        )));
+    }
+    blocks
 }
 
 fn tui_usage_status_lines(
@@ -3484,6 +3532,74 @@ mod tests {
         assert!(texts.iter().any(|line| line == "Live Context"));
         assert!(texts.iter().any(|line| line == "Last Request"));
         assert!(texts.iter().any(|line| line == "Workflow Cumulative"));
+    }
+
+    #[test]
+    fn runtime_status_surfaces_local_ui_queue_metrics() {
+        let telemetry = crate::api::SessionTelemetrySnapshot {
+            runtime: crate::api::SessionRuntimeState {
+                session_id: "sess_123".to_string(),
+                run_status: crate::api::SessionRunStatusKind::Running,
+                current_message_id: None,
+                usage: None,
+                active_stage_id: None,
+                active_stage_count: 0,
+                active_tools: Vec::new(),
+                pending_question: None,
+                pending_permission: None,
+                attached_sessions: Vec::new(),
+            },
+            stages: Vec::new(),
+            topology: crate::api::SessionExecutionTopology {
+                session_id: "sess_123".to_string(),
+                active_count: 1,
+                done_count: 0,
+                running_count: 1,
+                waiting_count: 0,
+                cancelling_count: 0,
+                retry_count: 0,
+                updated_at: None,
+                roots: Vec::new(),
+            },
+            usage: rocode_session::SessionUsage::default(),
+            usage_books: SessionUsageBooks::default(),
+            memory: None,
+            cache_evidence: None,
+            context_explain: None,
+            ownership: None,
+            context_compaction_summary: None,
+            compaction_continuity: None,
+            context_compaction_lifecycle_summary: None,
+            context_pressure_governance_summary: None,
+            cache_semantics: None,
+            context_closure_contract: None,
+            prompt_surface_evidence: None,
+            ingress_stabilization: None,
+            execution_preflight_summary: None,
+            provider_diagnostic_summary: None,
+        };
+        let ui_bridge = crate::bridge::UiBridgeSnapshot {
+            revision: 7,
+            last_event: None,
+            pending_events: 12,
+            high_water_mark: 48,
+            coalesced_events: 30,
+            dropped_events: 4,
+            capacity: 4096,
+        };
+
+        let texts = tui_runtime_status_lines("sess_123", &telemetry, &ui_bridge)
+            .into_iter()
+            .map(|line| line.text)
+            .collect::<Vec<_>>();
+
+        assert!(texts.iter().any(|line| line == "Local UI Event Queue"));
+        assert!(texts
+            .iter()
+            .any(|line| line == "Pending: 12 / 4096 · high-water 48"));
+        assert!(texts
+            .iter()
+            .any(|line| line == "Coalesced: 30 · dropped: 4"));
     }
 }
 

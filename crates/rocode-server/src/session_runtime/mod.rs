@@ -1423,7 +1423,18 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
         drop(sessions);
 
         if let Some(message) = message_snapshot.as_ref() {
-            self.emit_stage_block(message).await;
+            // The stage message already carries scheduler metadata locally.
+            // Stream only the text delta here so we do not re-broadcast the
+            // entire accumulated stage card on every content token.
+            self.emit_output_block(
+                self.session_id.clone(),
+                OutputBlock::Message(MessageBlock::delta(
+                    OutputMessageRole::Assistant,
+                    content_delta.to_string(),
+                )),
+                Some(message.id.clone()),
+            )
+            .await;
         }
     }
 
@@ -1546,19 +1557,13 @@ impl LifecycleHook for SessionSchedulerLifecycleHook {
             return;
         };
 
-        let mut message_snapshot = None;
         if let Some(message) = session.get_message_mut(&message_id) {
             message.add_reasoning(reasoning_delta);
             apply_scheduler_decision_metadata(stage_name, message);
-            message_snapshot = Some(message.clone());
         }
         session.touch();
         sessions.update(session);
         drop(sessions);
-
-        if let Some(message) = message_snapshot.as_ref() {
-            self.emit_stage_block(message).await;
-        }
     }
 
     async fn on_scheduler_stage_usage(

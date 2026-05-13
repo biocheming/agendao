@@ -233,6 +233,7 @@ struct SyncLifecycleState {
     last_aux_sync: Instant,
     last_process_refresh: Instant,
     last_perf_log: Instant,
+    last_ui_bridge_dropped_events: u64,
 }
 
 impl SyncLifecycleState {
@@ -248,6 +249,7 @@ impl SyncLifecycleState {
             last_aux_sync: now,
             last_process_refresh: now,
             last_perf_log: now,
+            last_ui_bridge_dropped_events: 0,
         }
     }
 }
@@ -1669,6 +1671,7 @@ impl App {
                     }
                     self.sync_runtime.last_process_refresh = Instant::now();
                 }
+                tick_changed |= self.sync_ui_bridge_health();
                 self.maybe_log_perf_snapshot();
                 self.event_caused_change = tick_changed;
             }
@@ -1700,6 +1703,7 @@ impl App {
             return;
         }
         self.sync_runtime.last_perf_log = Instant::now();
+        let ui_bridge = self.context.ui_bridge_snapshot();
         if self.diagnostics.perf_log_info {
             tracing::info!(
                 draws = self.diagnostics.perf.draws,
@@ -1708,6 +1712,11 @@ impl App {
                 session_sync_incremental = self.diagnostics.perf.session_sync_incremental,
                 question_sync = self.diagnostics.perf.question_sync,
                 session_updated_events = self.diagnostics.perf.session_updated_events,
+                ui_bridge_pending = ui_bridge.pending_events,
+                ui_bridge_high_water = ui_bridge.high_water_mark,
+                ui_bridge_coalesced = ui_bridge.coalesced_events,
+                ui_bridge_dropped = ui_bridge.dropped_events,
+                ui_bridge_capacity = ui_bridge.capacity,
                 "tui perf snapshot"
             );
         } else {
@@ -1718,9 +1727,35 @@ impl App {
                 session_sync_incremental = self.diagnostics.perf.session_sync_incremental,
                 question_sync = self.diagnostics.perf.question_sync,
                 session_updated_events = self.diagnostics.perf.session_updated_events,
+                ui_bridge_pending = ui_bridge.pending_events,
+                ui_bridge_high_water = ui_bridge.high_water_mark,
+                ui_bridge_coalesced = ui_bridge.coalesced_events,
+                ui_bridge_dropped = ui_bridge.dropped_events,
+                ui_bridge_capacity = ui_bridge.capacity,
                 "tui perf snapshot"
             );
         }
+    }
+
+    fn sync_ui_bridge_health(&mut self) -> bool {
+        let ui_bridge = self.context.ui_bridge_snapshot();
+        let previous_dropped = self.sync_runtime.last_ui_bridge_dropped_events;
+        self.sync_runtime.last_ui_bridge_dropped_events = ui_bridge.dropped_events;
+        if ui_bridge.dropped_events <= previous_dropped {
+            return false;
+        }
+
+        let dropped_delta = ui_bridge.dropped_events.saturating_sub(previous_dropped);
+        self.toast.show(
+            ToastVariant::Warning,
+            &format!(
+                "TUI event stream lagged; dropped {} queued update{}. Open /runtime for queue stats.",
+                dropped_delta,
+                if dropped_delta == 1 { "" } else { "s" }
+            ),
+            4200,
+        );
+        true
     }
 }
 
@@ -2092,5 +2127,36 @@ mod tests {
         let children = app.context.attached_sessions();
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].session_id, attached_id);
+    }
+
+    #[test]
+    fn ui_bridge_drop_growth_surfaces_warning_toast() {
+        let mut app = App::new().expect("app should initialize");
+        app.toast = Toast::new();
+        assert!(!app.toast.is_visible());
+
+        app.sync_runtime.last_ui_bridge_dropped_events = 2;
+        app.context.ui_bridge.emit(Event::Custom(Box::new(
+            crate::event::CustomEvent::Message("message-1".to_string()),
+        )));
+        app.context.ui_bridge.emit(Event::Custom(Box::new(
+            crate::event::CustomEvent::Message("message-2".to_string()),
+        )));
+
+        app.context.ui_bridge.drain(1);
+        let queue_capacity = app.context.ui_bridge_snapshot().capacity;
+        for index in 0..(queue_capacity + 2) {
+            app.context.ui_bridge.emit(Event::Custom(Box::new(
+                crate::event::CustomEvent::Message(format!("overflow-{index}")),
+            )));
+        }
+
+        assert!(app.sync_ui_bridge_health());
+        assert!(app.toast.is_visible());
+        assert_eq!(
+            app.sync_runtime.last_ui_bridge_dropped_events,
+            app.context.ui_bridge_snapshot().dropped_events
+        );
+        assert!(!app.sync_ui_bridge_health());
     }
 }

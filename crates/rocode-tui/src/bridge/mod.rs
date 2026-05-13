@@ -1,6 +1,6 @@
 use std::any::Any;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -21,7 +21,7 @@ use tokio_stream::StreamExt;
 use crate::app::{App, RunOutcome};
 use crate::context::keybind::is_primary_key_event;
 use crate::context::AppContext;
-use crate::event::Event;
+use crate::event::{CustomEvent, Event, StateChange};
 use crate::router::Route;
 use crate::ui::BufferSurface;
 
@@ -29,6 +29,11 @@ use crate::ui::BufferSurface;
 pub struct UiBridgeSnapshot {
     pub revision: u64,
     pub last_event: Option<Event>,
+    pub pending_events: usize,
+    pub high_water_mark: usize,
+    pub coalesced_events: u64,
+    pub dropped_events: u64,
+    pub capacity: usize,
 }
 
 #[derive(Clone, Default)]
@@ -36,7 +41,15 @@ pub struct UiBridge {
     queue: Arc<Mutex<VecDeque<Event>>>,
     last_event: Arc<RwLock<Option<Event>>>,
     revision: Arc<AtomicU64>,
+    high_water_mark: Arc<AtomicUsize>,
+    coalesced_events: Arc<AtomicU64>,
+    dropped_events: Arc<AtomicU64>,
 }
+
+#[cfg(test)]
+const MAX_UI_BRIDGE_QUEUE: usize = 64;
+#[cfg(not(test))]
+const MAX_UI_BRIDGE_QUEUE: usize = 4_096;
 
 impl UiBridge {
     pub fn new() -> Self {
@@ -45,7 +58,22 @@ impl UiBridge {
 
     pub fn emit(&self, event: Event) -> bool {
         self.record(&event);
-        self.queue.lock().push_back(event);
+        let mut queue = self.queue.lock();
+        if let Some(index) = queue
+            .iter()
+            .rposition(|queued| queued_event_is_superseded_by(queued, &event))
+        {
+            queue[index] = event;
+            self.coalesced_events.fetch_add(1, Ordering::SeqCst);
+        } else {
+            if queue.len() >= MAX_UI_BRIDGE_QUEUE {
+                queue.pop_front();
+                self.dropped_events.fetch_add(1, Ordering::SeqCst);
+            }
+            queue.push_back(event);
+            self.high_water_mark
+                .fetch_max(queue.len(), Ordering::SeqCst);
+        }
         true
     }
 
@@ -59,9 +87,15 @@ impl UiBridge {
     }
 
     pub fn snapshot(&self) -> UiBridgeSnapshot {
+        let pending_events = self.queue.lock().len();
         UiBridgeSnapshot {
             revision: self.revision.load(Ordering::SeqCst),
             last_event: self.last_event.read().clone(),
+            pending_events,
+            high_water_mark: self.high_water_mark.load(Ordering::SeqCst),
+            coalesced_events: self.coalesced_events.load(Ordering::SeqCst),
+            dropped_events: self.dropped_events.load(Ordering::SeqCst),
+            capacity: MAX_UI_BRIDGE_QUEUE,
         }
     }
 
@@ -76,6 +110,44 @@ impl UiBridge {
         }
         drained
     }
+}
+
+fn queued_event_is_superseded_by(queued: &Event, incoming: &Event) -> bool {
+    let (
+        Some((queued_session_id, queued_id, queued_kind)),
+        Some((incoming_session_id, incoming_id, incoming_kind)),
+    ) = (
+        scheduler_stage_output_block_identity(queued),
+        scheduler_stage_output_block_identity(incoming),
+    )
+    else {
+        return false;
+    };
+
+    queued_session_id == incoming_session_id
+        && queued_id == incoming_id
+        && queued_kind == incoming_kind
+}
+
+fn scheduler_stage_output_block_identity(
+    event: &Event,
+) -> Option<(&str, Option<&str>, &str)> {
+    let Event::Custom(custom) = event else {
+        return None;
+    };
+    let CustomEvent::StateChanged(StateChange::OutputBlock {
+        session_id,
+        id,
+        payload,
+    }) = custom.as_ref()
+    else {
+        return None;
+    };
+    let kind = payload.get("kind").and_then(|value| value.as_str())?;
+    if kind != "scheduler_stage" {
+        return None;
+    }
+    Some((session_id.as_str(), id.as_deref(), kind))
 }
 
 const FRAME_INTERVAL_MS: u64 = 16;
@@ -485,5 +557,90 @@ fn map_crossterm_event(event: CrosstermEvent) -> Option<Event> {
         CrosstermEvent::FocusGained => Some(Event::FocusGained),
         CrosstermEvent::FocusLost => Some(Event::FocusLost),
         CrosstermEvent::Paste(text) => Some(Event::Paste(text)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::{CustomEvent, StateChange};
+
+    fn scheduler_stage_event(session_id: &str, id: &str, text: &str) -> Event {
+        Event::Custom(Box::new(CustomEvent::StateChanged(
+            StateChange::OutputBlock {
+                session_id: session_id.to_string(),
+                id: Some(id.to_string()),
+                payload: serde_json::json!({
+                    "kind": "scheduler_stage",
+                    "text": text,
+                }),
+            },
+        )))
+    }
+
+    fn message_delta_event(session_id: &str, id: &str, text: &str) -> Event {
+        Event::Custom(Box::new(CustomEvent::StateChanged(
+            StateChange::OutputBlock {
+                session_id: session_id.to_string(),
+                id: Some(id.to_string()),
+                payload: serde_json::json!({
+                    "kind": "message",
+                    "phase": "delta",
+                    "text": text,
+                }),
+            },
+        )))
+    }
+
+    #[test]
+    fn ui_bridge_coalesces_pending_scheduler_stage_snapshots() {
+        let bridge = UiBridge::new();
+
+        bridge.emit(scheduler_stage_event("session-1", "msg-1", "old"));
+        bridge.emit(scheduler_stage_event("session-1", "msg-1", "new"));
+
+        let snapshot = bridge.snapshot();
+        assert_eq!(snapshot.coalesced_events, 1);
+        assert_eq!(snapshot.pending_events, 1);
+
+        let drained = bridge.drain(10);
+        assert_eq!(drained.len(), 1);
+        let Event::Custom(custom) = &drained[0] else {
+            panic!("expected custom event");
+        };
+        let CustomEvent::StateChanged(StateChange::OutputBlock { payload, .. }) = custom.as_ref()
+        else {
+            panic!("expected output block");
+        };
+        assert_eq!(payload["text"], "new");
+    }
+
+    #[test]
+    fn ui_bridge_keeps_message_deltas_distinct() {
+        let bridge = UiBridge::new();
+
+        bridge.emit(message_delta_event("session-1", "msg-1", "a"));
+        bridge.emit(message_delta_event("session-1", "msg-1", "b"));
+
+        let drained = bridge.drain(10);
+        assert_eq!(drained.len(), 2);
+    }
+
+    #[test]
+    fn ui_bridge_caps_pending_queue_length() {
+        let bridge = UiBridge::new();
+
+        for index in 0..(MAX_UI_BRIDGE_QUEUE + 5) {
+            bridge.emit(message_delta_event(
+                "session-1",
+                &format!("msg-{index}"),
+                "payload",
+            ));
+        }
+
+        let snapshot = bridge.snapshot();
+        assert_eq!(snapshot.pending_events, MAX_UI_BRIDGE_QUEUE);
+        assert_eq!(snapshot.dropped_events, 5);
+        assert_eq!(snapshot.high_water_mark, MAX_UI_BRIDGE_QUEUE);
     }
 }
