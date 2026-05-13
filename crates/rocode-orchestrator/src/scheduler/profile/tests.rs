@@ -564,6 +564,58 @@ fn gate_terminal_output_preserves_richer_structured_execution_for_hephaestus_sum
 }
 
 #[test]
+fn gate_terminal_output_preserves_rich_delivery_report_over_short_gate_summary() {
+    let orchestrator = SchedulerProfileOrchestrator::new(
+        SchedulerProfilePlan::new(vec![SchedulerStageKind::ExecutionOrchestration])
+            .with_orchestrator("sisyphus"),
+        ToolRunner::new(Arc::new(NoopToolExecutor)),
+    );
+    let execution = OrchestratorOutput {
+        content: "## Delivery Summary\n\n**Comparative Analysis: VoiceCraft vs. Competing English Learning / Voice-Controlled Games**\n\n---\n\n### Project Definition\n\nThis VoiceCraft is a browser-based, voice-controlled Minecraft-style English learning game.\n\n### Competitive Landscape\n\n| Tier | Competitor | Category |\n|------|-----------|----------|\n| 1 | Aleph Kids | Minecraft-embedded AI tutor |\n| 1 | Cambridge Adventures | Official Minecraft language DLC |\n\n### Systematic Comparison Matrix\n\n| Dimension | VoiceCraft | Aleph Kids |\n|-----------|------------|------------|\n| Platform | Browser | Minecraft |\n| Cost | Free | $50/mo |\n\n### Strategic Positioning\n\nVoiceCraft's strongest differentiator is its offline bilingual ASR plus game-native learning loop.\n\n**Open Risks or Follow-ups**\n- Pricing and features may shift across competitors.".to_string(),
+        steps: 1,
+        tool_calls_count: 2,
+        metadata: HashMap::new(),
+        finish_reason: FinishReason::EndTurn,
+    };
+    let decision = SchedulerExecutionGateDecision {
+        status: SchedulerExecutionGateStatus::Done,
+        summary: "verified".to_string(),
+        next_input: None,
+        final_response: Some(
+            "**Verification**: All 5 research tasks completed.\n\n**Open Risks or Follow-ups**:\n- Competitor pricing may shift.".to_string(),
+        ),
+    };
+
+    let terminal_output = SchedulerProfileOrchestrator::gate_terminal_output(
+        &orchestrator.plan,
+        SchedulerExecutionGateStatus::Done,
+        &decision,
+        &execution,
+        None,
+    )
+    .expect("done gate should produce terminal output");
+
+    let state = SchedulerProfileState {
+        execution: SchedulerExecutionState {
+            delegated: Some(terminal_output),
+            ..Default::default()
+        },
+        metrics: SchedulerMetricsState {
+            total_steps: 1,
+            total_tool_calls: 2,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let output = orchestrator.finalize_output(state);
+    assert!(output.content.contains("Comparative Analysis: VoiceCraft vs. Competing English Learning"));
+    assert!(output.content.contains("Systematic Comparison Matrix"));
+    assert!(output.content.contains("VoiceCraft's strongest differentiator"));
+    assert!(!output.content.starts_with("## Delivery Summary\n**Verification**: All 5 research tasks completed."));
+}
+
+#[test]
 fn gate_terminal_output_uses_default_preservation_for_custom_scheduler() {
     let plan = runtime_execution_plan("custom-research-scheduler");
     let execution = OrchestratorOutput {

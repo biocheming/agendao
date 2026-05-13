@@ -2205,7 +2205,7 @@ fn preserve_structured_execution_output(
 
     let fallback = fallback_content.trim();
     let gate = gate_content.trim();
-    if is_structured_delivery(fallback) && !is_structured_delivery(gate) {
+    if is_rich_final_delivery(fallback) && !is_rich_final_delivery(gate) {
         return fallback.to_string();
     }
     if should_preserve_richer_fallback_delivery(gate, fallback) {
@@ -2216,7 +2216,7 @@ fn preserve_structured_execution_output(
 }
 
 fn should_preserve_richer_fallback_delivery(gate_content: &str, fallback_content: &str) -> bool {
-    if !is_structured_delivery(gate_content) || !is_structured_delivery(fallback_content) {
+    if !is_rich_final_delivery(gate_content) || !is_rich_final_delivery(fallback_content) {
         return false;
     }
 
@@ -2229,6 +2229,10 @@ fn should_preserve_richer_fallback_delivery(gate_content: &str, fallback_content
         && (fallback.body_lines >= gate.body_lines + 3
             || fallback.bullet_lines >= gate.bullet_lines + 2
             || fallback.section_count > gate.section_count)
+}
+
+fn is_rich_final_delivery(content: &str) -> bool {
+    is_structured_delivery(content) || is_delivery_report(content)
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -2285,6 +2289,22 @@ fn is_structured_delivery(content: &str) -> bool {
         || trimmed.contains("**Remaining Risks");
 
     has_delivery_summary && has_execution_shape && has_evidence_shape
+}
+
+fn is_delivery_report(content: &str) -> bool {
+    let trimmed = content.trim();
+    if !trimmed.contains("## Delivery Summary") {
+        return false;
+    }
+
+    let metrics = structured_delivery_metrics(trimmed);
+    let has_report_heading =
+        trimmed.contains("\n# ") || trimmed.contains("\n## ") || trimmed.contains("\n### ");
+    let has_table = trimmed.contains('|');
+
+    metrics.substantive_chars >= 600
+        && metrics.body_lines >= 12
+        && (has_report_heading || has_table)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
