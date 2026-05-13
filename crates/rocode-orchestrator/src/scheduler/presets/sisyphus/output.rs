@@ -148,4 +148,14 @@ Done.
         assert_eq!(normalized.matches("## Delivery Summary").count(), 1);
         assert!(normalized.contains("VoiceCraft（本项目）与同类游戏/应用的系统比较"));
     }
+
+    #[test]
+    fn sisyphus_final_output_normalization_strips_preface_before_chinese_delivery_heading() {
+        let prefaced = "现在我对 VoiceCraft 和所有主要竞品有了全面的了解。让我将分析进行组织整理。\n\n## 交付摘要\n\n以下是对 VoiceCraft 与主要竞品的系统性对比。\n\n**Verification**\n- Checked.";
+        let normalized = normalize_sisyphus_final_output(prefaced);
+        assert!(normalized.starts_with("## Delivery Summary"));
+        assert!(!normalized.contains("**Execution Outcome**\n现在我对 VoiceCraft 和所有主要竞品有了全面的了解。让我将分析进行组织整理。"));
+        assert!(!normalized.contains("现在我对 VoiceCraft 和所有主要竞品有了全面的了解。让我将分析进行组织整理。"));
+        assert!(normalized.contains("以下是对 VoiceCraft 与主要竞品的系统性对比。"));
+    }
 }

@@ -66,6 +66,7 @@ fn embedded_structured_heading(line: &str) -> Option<&'static str> {
 
     match normalized {
         "Delivery Summary" => Some("Delivery Summary"),
+        "交付摘要" => Some("Delivery Summary"),
         "Plan Summary" => Some("Plan Summary"),
         _ => None,
     }
@@ -1452,6 +1453,15 @@ mod tests {
         assert!(normalized.starts_with("## Delivery Summary"));
         assert!(!normalized.contains("Preface line."));
         assert_eq!(normalized.matches("## Delivery Summary").count(), 1);
+    }
+
+    #[test]
+    fn normalize_embedded_delivery_summary_recognizes_chinese_delivery_heading() {
+        let raw = "现在我对结果有了全面了解。\n\n## 交付摘要\n\n以下是整理后的最终答案。";
+        let normalized = normalize_embedded_delivery_summary(raw);
+        assert!(normalized.starts_with("## Delivery Summary"));
+        assert!(!normalized.contains("现在我对结果有了全面了解。"));
+        assert!(normalized.contains("以下是整理后的最终答案。"));
     }
 
     #[test]
