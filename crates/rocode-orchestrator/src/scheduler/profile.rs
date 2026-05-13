@@ -2208,8 +2208,61 @@ fn preserve_structured_execution_output(
     if is_structured_delivery(fallback) && !is_structured_delivery(gate) {
         return fallback.to_string();
     }
+    if should_preserve_richer_fallback_delivery(gate, fallback) {
+        return fallback.to_string();
+    }
 
     gate.to_string()
+}
+
+fn should_preserve_richer_fallback_delivery(gate_content: &str, fallback_content: &str) -> bool {
+    if !is_structured_delivery(gate_content) || !is_structured_delivery(fallback_content) {
+        return false;
+    }
+
+    let gate = structured_delivery_metrics(gate_content);
+    let fallback = structured_delivery_metrics(fallback_content);
+
+    fallback.substantive_chars >= gate.substantive_chars + 200
+        && fallback.substantive_chars.saturating_mul(10)
+            >= gate.substantive_chars.saturating_mul(16)
+        && (fallback.body_lines >= gate.body_lines + 3
+            || fallback.bullet_lines >= gate.bullet_lines + 2
+            || fallback.section_count > gate.section_count)
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct StructuredDeliveryMetrics {
+    substantive_chars: usize,
+    section_count: usize,
+    bullet_lines: usize,
+    body_lines: usize,
+}
+
+fn structured_delivery_metrics(content: &str) -> StructuredDeliveryMetrics {
+    let mut metrics = StructuredDeliveryMetrics::default();
+
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line == "## Delivery Summary" {
+            continue;
+        }
+        if line.starts_with("**") && line.ends_with("**") {
+            metrics.section_count += 1;
+            continue;
+        }
+
+        metrics.body_lines += 1;
+        if line.starts_with("- ") || line.starts_with("* ") {
+            metrics.bullet_lines += 1;
+        }
+        metrics.substantive_chars += line.chars().count();
+    }
+
+    metrics
 }
 
 fn is_structured_delivery(content: &str) -> bool {
