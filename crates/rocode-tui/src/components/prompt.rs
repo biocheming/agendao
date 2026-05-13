@@ -439,6 +439,32 @@ impl Prompt {
         spinner_changed || interrupt_changed
     }
 
+    pub fn next_tick_after(&self, now: Instant, last_tick_at: Instant) -> Option<Duration> {
+        let animations_enabled = *self.context.animations_enabled.read();
+        let spinner_deadline = if animations_enabled {
+            self.spinner
+                .next_tick_after()
+                .map(|delta| (last_tick_at + delta).saturating_duration_since(now))
+        } else {
+            None
+        };
+        let interrupt_deadline = if self.interrupt_press_count == 0 {
+            None
+        } else {
+            self.last_interrupt_time.map(|started_at| {
+                let expiry = started_at + Duration::from_secs(INTERRUPT_CONFIRM_WINDOW_SECS);
+                expiry.saturating_duration_since(now)
+            })
+        };
+
+        match (spinner_deadline, interrupt_deadline) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (Some(left), None) => Some(left),
+            (None, Some(right)) => Some(right),
+            (None, None) => None,
+        }
+    }
+
     pub fn set_spinner_active(&mut self, active: bool) {
         self.spinner.set_active(active);
         if !active {

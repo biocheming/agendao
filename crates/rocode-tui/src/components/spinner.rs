@@ -190,6 +190,18 @@ impl KnightRiderSpinner {
         changed
     }
 
+    pub fn next_tick_after(&self) -> Option<std::time::Duration> {
+        if !self.active {
+            return None;
+        }
+
+        Some(std::time::Duration::from_millis(
+            self.frame_interval_ms
+                .saturating_sub(self.tick_accumulator_ms)
+                .max(1),
+        ))
+    }
+
     pub fn render<S: RenderSurface>(
         &self,
         surface: &mut S,
@@ -420,5 +432,30 @@ fn color_to_rgb(color: Color) -> (u8, u8, u8) {
         Color::White => (255, 255, 255),
         Color::Indexed(index) => (index, index, index),
         Color::Reset => (140, 140, 140),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spinner_next_tick_after_respects_remaining_frame_budget() {
+        let mut spinner = KnightRiderSpinner::new();
+        spinner.set_active(true);
+        spinner.set_mode(SpinnerMode::Braille);
+
+        assert_eq!(
+            spinner.next_tick_after(),
+            Some(std::time::Duration::from_millis(BRAILLE_FRAME_INTERVAL_MS))
+        );
+
+        assert!(!spinner.advance(30));
+        assert_eq!(
+            spinner.next_tick_after(),
+            Some(std::time::Duration::from_millis(
+                BRAILLE_FRAME_INTERVAL_MS - 30
+            ))
+        );
     }
 }

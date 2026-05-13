@@ -2,7 +2,7 @@ use std::any::Any;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::Context;
 use crossterm::event::{Event as CrosstermEvent, EventStream, MouseEventKind};
@@ -17,6 +17,7 @@ use reratui::{
     reset_component_position_counter, set_current_event, Buffer, Component, FiberTree, Rect,
 };
 use tokio_stream::StreamExt;
+use tokio::sync::Notify;
 
 use crate::app::{App, RunOutcome};
 use crate::context::keybind::is_primary_key_event;
@@ -44,6 +45,7 @@ pub struct UiBridge {
     high_water_mark: Arc<AtomicUsize>,
     coalesced_events: Arc<AtomicU64>,
     dropped_events: Arc<AtomicU64>,
+    notify: Arc<Notify>,
 }
 
 #[cfg(test)]
@@ -74,6 +76,7 @@ impl UiBridge {
             self.high_water_mark
                 .fetch_max(queue.len(), Ordering::SeqCst);
         }
+        self.notify.notify_one();
         true
     }
 
@@ -109,6 +112,10 @@ impl UiBridge {
             drained.push(event);
         }
         drained
+    }
+
+    pub fn notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.notify.notified()
     }
 }
 
@@ -150,7 +157,6 @@ fn scheduler_stage_output_block_identity(
     Some((session_id.as_str(), id.as_deref(), kind))
 }
 
-const FRAME_INTERVAL_MS: u64 = 16;
 const MAX_EVENTS_PER_FRAME: usize = 256;
 
 #[derive(Default)]
@@ -421,12 +427,11 @@ pub fn run_app(app: App) -> anyhow::Result<RunOutcome> {
 
 async fn run_app_async(app: Arc<Mutex<App>>) -> anyhow::Result<()> {
     let errors = Arc::new(RuntimeErrorSink::default());
-    let frame_interval = Duration::from_millis(FRAME_INTERVAL_MS);
     let mut events = EventStream::new();
     let mut first_frame = true;
-    let mut last_tick = Instant::now();
     let mut terminal = crate::app::terminal::init()
         .context("failed to initialize ratatui terminal for reratui bridge")?;
+    let ui_bridge = app.lock().context_handle().ui_bridge.clone();
 
     set_fiber_tree(FiberTree::new());
     init_render_context();
@@ -443,12 +448,31 @@ async fn run_app_async(app: Arc<Mutex<App>>) -> anyhow::Result<()> {
                 break;
             }
 
-            let timeout = tokio::time::sleep(frame_interval);
-            tokio::pin!(timeout);
+            let now = Instant::now();
+            let tick_deadline = app.lock().next_tick_deadline(now);
+            let tick_due = tick_deadline.is_some_and(|deadline| deadline <= now);
+            let bridge_pending = ui_bridge.snapshot().pending_events > 0;
+            let should_wait = !first_frame && !tick_due && !bridge_pending;
 
-            let polled_event = tokio::select! {
-                Some(Ok(event)) = events.next() => Some(event),
-                _ = &mut timeout => None,
+            let polled_event = if should_wait {
+                let bridge_notified = ui_bridge.notified();
+                tokio::pin!(bridge_notified);
+                if let Some(deadline) = tick_deadline {
+                    let timeout = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline));
+                    tokio::pin!(timeout);
+                    tokio::select! {
+                        Some(Ok(event)) = events.next() => Some(event),
+                        _ = &mut bridge_notified => None,
+                        _ = &mut timeout => None,
+                    }
+                } else {
+                    tokio::select! {
+                        Some(Ok(event)) = events.next() => Some(event),
+                        _ = &mut bridge_notified => None,
+                    }
+                }
+            } else {
+                None
             };
 
             if matches!(polled_event, Some(CrosstermEvent::Resize(_, _))) {
@@ -460,9 +484,12 @@ async fn run_app_async(app: Arc<Mutex<App>>) -> anyhow::Result<()> {
 
             let mut should_draw = first_frame;
 
-            if last_tick.elapsed() >= frame_interval {
+            let tick_due_now = app
+                .lock()
+                .next_tick_deadline(Instant::now())
+                .is_some_and(|deadline| deadline <= Instant::now());
+            if tick_due_now {
                 should_draw |= process_app_event_blocking(&app, &Event::Tick)?;
-                last_tick = Instant::now();
             }
 
             should_draw |= drain_app_pending_events_blocking(&app, MAX_EVENTS_PER_FRAME)?;
