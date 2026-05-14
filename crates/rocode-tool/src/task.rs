@@ -127,7 +127,7 @@ impl TaskInput {
             .map(str::trim)
             .filter(|v| !v.is_empty())
             .map(ToString::to_string)
-            .ok_or_else(|| ToolError::InvalidArguments("missing field `prompt`".to_string()))?;
+            .ok_or_else(|| ToolError::InvalidArguments("prompt is required. Use `description` only as a short label; put the real delegated instruction in `prompt`. Canonical shape: {\"subagent_type\":\"build\",\"prompt\":\"...\"}".to_string()))?;
 
         let description = self
             .description
@@ -168,7 +168,7 @@ impl TaskInput {
             (None, Some(category)) => TaskDispatchKind::Category(category),
             (None, None) => {
                 return Err(ToolError::InvalidArguments(
-                    "missing field `subagent_type` (or alias `subagentType` / `category`)"
+                    "subagent_type is required. Canonical shape: {\"subagent_type\":\"build\",\"prompt\":\"...\"}"
                         .to_string(),
                 ));
             }
@@ -257,7 +257,15 @@ impl Tool for TaskTool {
     }
 
     fn description(&self) -> &str {
-        "Low-level delegated subagent execution entry. Prefer task_flow for ordinary request-level delegation and lifecycle semantics such as create, resume, get, list, or cancel. Use task only when you explicitly need direct subagent dispatch. Minimal low-level shape: {\"subagent_type\":\"build\",\"prompt\":\"...\"}. Common aliases are normalized automatically: `agent` -> `subagent_type`, `request` / `instructions` / `goal` / `message` -> `prompt`, `title` / `summary` / `task` -> `description`, `session_id` -> `task_id`, `system_prompt` -> `agent_prompt`, and `allowed_tools` -> `agent_tools`."
+        "Direct subagent dispatch. Prefer task_flow for lifecycle operations (create/resume/get/list/cancel). Use task only when you need raw subagent dispatch without lifecycle semantics.
+
+Canonical shape:
+{\"subagent_type\":\"build\",\"prompt\":\"...\"}
+
+Legacy aliases accepted for recovery only (prefer the canonical names above):
+`agent`→subagent_type, `request`/`instructions`/`goal`/`message`→prompt,
+`title`/`summary`/`task`→description, `session_id`→task_id, `system_prompt`→agent_prompt,
+`allowed_tools`→agent_tools."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -266,7 +274,7 @@ impl Tool for TaskTool {
             "properties": {
                 "subagent_type": {
                     "type": "string",
-                    "description": "The type of specialized agent to use for this task (e.g., 'explore', 'librarian', 'oracle'). Use any name for a runtime-constructed agent when paired with agent_prompt. `agent` is accepted as an alias."
+                    "description": "The type of specialized agent to use for this task (e.g., 'explore', 'librarian', 'oracle'). Use any name for a runtime-constructed agent when paired with agent_prompt."
                 },
                 "description": {
                     "type": "string",
@@ -274,11 +282,11 @@ impl Tool for TaskTool {
                 },
                 "prompt": {
                     "type": "string",
-                    "description": "The task for the agent to perform. Common aliases such as `request`, `instructions`, `goal`, or `message` are accepted."
+                    "description": "The task for the agent to perform."
                 },
                 "task_id": {
                     "type": "string",
-                    "description": "Resume a previous task by passing its task_id. `session_id` is accepted as an alias."
+                    "description": "Resume a previous task by passing its task_id."
                 },
                 "command": {
                     "type": "string",
@@ -295,12 +303,12 @@ impl Tool for TaskTool {
                 },
                 "agent_prompt": {
                     "type": "string",
-                    "description": "Inline system prompt for a dynamically constructed agent. When subagent_type is not a known agent, this prompt defines the agent's role and behavior at runtime. `system_prompt` is accepted as an alias."
+                    "description": "Inline system prompt for a dynamically constructed agent. When subagent_type is not a known agent, this prompt defines the agent's role and behavior at runtime."
                 },
                 "agent_tools": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Allowed tools for a dynamically constructed agent. Only tools available to the parent agent can be granted. `allowed_tools` is accepted as an alias."
+                    "description": "Allowed tools for a dynamically constructed agent. Only tools available to the parent agent can be granted."
                 }
             },
             "required": ["subagent_type", "prompt"],
@@ -696,9 +704,9 @@ mod tests {
     fn task_description_directs_lifecycle_semantics_to_task_flow() {
         let description = TaskTool::new().description().to_string();
         assert!(description.contains("Prefer task_flow"));
-        assert!(description.contains("create, resume, get, list, or cancel"));
-        assert!(description.contains("Minimal low-level shape"));
-        assert!(description.contains("`agent` -> `subagent_type`"));
+        assert!(description.contains("create/resume/get/list/cancel"));
+        assert!(description.contains("Canonical shape"));
+        assert!(description.contains("agent`→subagent_type"));
     }
 
     #[test]
