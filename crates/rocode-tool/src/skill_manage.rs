@@ -102,7 +102,24 @@ impl Tool for SkillManageTool {
     }
 
     fn description(&self) -> &str {
-        "Create, patch, edit, delete, or manage supporting files for workspace-local skills under .rocode/skills. Create when a complex task succeeded (5+ tool calls), you overcame errors, a user-corrected approach worked, you discovered a non-trivial workflow, or the user asks you to remember a procedure. For create, the most reliable minimal shape is {\"action\":\"create\",\"name\":\"skill-name\",\"description\":\"what it does\",\"methodology\":{...}} or {\"action\":\"create\",\"name\":\"skill-name\",\"description\":\"what it does\",\"body\":\"# Skill...\"}. Prefer the structured `methodology` shape when creating or patching a skill so the result includes trigger conditions, core steps, success criteria, validation, and boundaries. `methodology` and `frontmatter` may be provided either as nested objects or as JSON strings containing objects. Common methodology aliases are normalized automatically: `trigger_conditions` -> `when_to_use`, `boundaries` -> `pitfalls`, `steps` -> `core_steps`, and per-step `name`/`description` -> `title`/`action`. For `frontmatter`, keep human-readable prerequisites in `methodology.prerequisites`; use structured metadata such as `required_commands` or `prerequisites: { env_vars, commands }` only when you specifically need setup metadata. When creating or patching a methodology skill with core steps, review the current session's tool call history and fill each step's optional `experienced_tools` field with the tool names actually used in that step. For commands invoked through bash, use the command name you actually ran, such as `docker` or `cargo`, instead of `bash`; leave `experienced_tools` empty if you are unsure. Patch when instructions are stale or wrong, a skill fails on a specific OS or environment, steps or pitfalls are missing, or you used a skill and found gaps not covered by it. After difficult or iterative tasks, offer to save the approach as a skill. Skip simple one-offs. Confirm with the user before creating or deleting skills."
+        "Manage workspace-local skills under .rocode/skills. Create when a complex task succeeded (5+ tool calls), you overcame errors, a corrected approach worked, or the user asks you to remember a procedure. Confirm with the user before creating or deleting.
+
+Minimal create shape (methodology variant, preferred):
+{\"action\":\"create\",\"name\":\"skill-name\",\"description\":\"what it does\",\"methodology\":{\"when_to_use\":\"...\",\"core_steps\":[{\"title\":\"...\",\"action\":\"...\"}]}}
+
+Minimal create shape (body variant, for simple free-form skills):
+{\"action\":\"create\",\"name\":\"skill-name\",\"description\":\"what it does\",\"body\":\"# Skill...\"}
+
+Other actions: patch, edit, delete. Patch when instructions are stale, steps are missing, or a skill failed in a specific environment. Skip simple one-offs.
+
+Canonical content fields (use these directly on create/patch):
+- `body` for free-form markdown skills; `methodology` for structured skills
+
+Compatibility wrappers accepted for recovery only (prefer the canonical fields above):
+- `input` / `payload` / `arguments` — root-level wrappers that get normalized automatically
+- `trigger_conditions` / `when_to_use`  ·  `boundaries` / `pitfalls`
+- `steps` / `core_steps`  ·  per-step `name` / `description` -> `title` / `action`
+- `methodology` and `frontmatter` accept either nested objects or JSON strings"
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -1325,17 +1342,13 @@ mod tests {
     fn description_includes_self_improvement_guidance() {
         let description = SkillManageTool.description();
         assert!(description.contains("complex task succeeded (5+ tool calls)"));
-        assert!(description.contains("most reliable minimal shape"));
-        assert!(description.contains("structured `methodology` shape"));
-        assert!(description.contains("may be provided either as nested objects or as JSON strings"));
-        assert!(description.contains("Common methodology aliases are normalized automatically"));
-        assert!(description
-            .contains("keep human-readable prerequisites in `methodology.prerequisites`"));
-        assert!(description.contains("current session's tool call history"));
-        assert!(description.contains("optional `experienced_tools` field"));
-        assert!(description.contains("After difficult or iterative tasks"));
-        assert!(description.contains("Patch when instructions are stale or wrong"));
+        assert!(description.contains("methodology"));
+        assert!(description.contains("create"));
+        assert!(description.contains("nested objects or JSON strings"));
+        assert!(description.contains("Compatibility wrappers"));
+        assert!(description.contains("Patch when instructions are stale"));
         assert!(description.contains("Confirm with the user before creating or deleting"));
+        assert!(description.contains("Skip simple one-offs"));
     }
 
     #[test]
