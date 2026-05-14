@@ -8,6 +8,7 @@ rocode-content = { path = "../rocode-content" }
 rocode-agent = { path = "../rocode-agent" }
 rocode-plugin = { path = "../rocode-plugin" }
 rocode-tool = { path = "../rocode-tool" }
+rocode-types = { path = "../rocode-types" }
 rocode-permission = { path = "../rocode-permission" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

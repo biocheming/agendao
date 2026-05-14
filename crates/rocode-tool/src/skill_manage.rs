@@ -608,12 +608,11 @@ fn take_nested_root_object(
             event.insert("field".to_string(), serde_json::json!(field));
             // P1.1: raw_shape is the JSON string, normalized_shape is the parsed object.
             event.insert("raw_shape".to_string(), Value::String(raw.clone()));
-            let parsed =
-                rocode_util::json::try_parse_json_object_robust(trimmed).ok_or_else(|| {
-                    ToolError::InvalidArguments(format!(
-                        "{field} must be a JSON object or object string"
-                    ))
-                })?;
+            let parsed = rocode_util::json::try_parse_json_object_robust(trimmed).ok_or_else(|| {
+                ToolError::InvalidArguments(format!(
+                    "{field} must be a JSON object or object string"
+                ))
+            })?;
             event.insert("normalized_shape".to_string(), parsed.clone());
             append_tool_repair_event_map(repair_metadata, event);
             match parsed {
@@ -648,11 +647,12 @@ fn take_object_like(
             let mut event = tool_repair_event("json_string_object_parse", "tool", "skill_manage");
             event.insert("field".to_string(), serde_json::json!(field));
             event.insert("raw_shape".to_string(), Value::String(raw.clone()));
-            let parsed = rocode_util::json::try_parse_json_object_robust(trimmed).ok_or_else(|| {
-                ToolError::InvalidArguments(format!(
-                    "{field} must be a JSON object or object string"
-                ))
-            })?;
+            let parsed =
+                rocode_util::json::try_parse_json_object_robust(trimmed).ok_or_else(|| {
+                    ToolError::InvalidArguments(format!(
+                        "{field} must be a JSON object or object string"
+                    ))
+                })?;
             event.insert("normalized_shape".to_string(), parsed.clone());
             append_tool_repair_event_map(repair_metadata, event);
             parsed

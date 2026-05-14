@@ -2,6 +2,7 @@ use super::*;
 use rocode_command::terminal_tool_block_display::{
     build_file_items, build_image_items, summarize_block_items_inline,
 };
+use rocode_types::tool_call_observable_arguments;
 
 const LEGACY_SYSTEM_REMINDER_PREFIX: &str = "System Reminder Sent:";
 const LOADED_INSTRUCTION_FILES_PREFIX: &str = "Loaded instruction files:";
@@ -178,15 +179,10 @@ fn map_api_message_part(
     }
 
     if let Some(tool_call) = &part.tool_call {
-        let arguments = if let Some(value) = tool_call.input.as_str() {
-            value.to_string()
-        } else {
-            tool_call.input.to_string()
-        };
         return Some(ContextMessagePart::ToolCall {
             id: tool_call.id.clone(),
             name: tool_call.name.clone(),
-            arguments,
+            arguments: tool_call_observable_arguments(&tool_call.input).unwrap_or_default(),
         });
     }
 
@@ -335,6 +331,34 @@ mod tests {
             &merged[0],
             ContextMessagePart::Text { text }
                 if text == "User-facing summary.\n\nLoaded instruction files: /tmp/project/AGENTS.md"
+        ));
+    }
+
+    #[test]
+    fn map_api_message_part_uses_observable_arguments_not_raw_shape() {
+        let part = crate::api::MessagePart {
+            id: "prt_tool".to_string(),
+            part_type: "tool_call".to_string(),
+            text: None,
+            file: None,
+            tool_call: Some(crate::api::ToolCall {
+                id: "call_1".to_string(),
+                name: "read".to_string(),
+                input: serde_json::json!({"file_path":"/tmp/normalized.txt"}),
+                status: Some("running".to_string()),
+                raw: Some("{\"file_path\":\"/tmp/raw.txt\"}".to_string()),
+                state: None,
+            }),
+            tool_result: None,
+            synthetic: None,
+            ignored: None,
+        };
+
+        let mapped = map_api_message_part(&part, false).expect("tool call should map");
+        assert!(matches!(
+            mapped,
+            ContextMessagePart::ToolCall { arguments, .. }
+                if arguments == "{\"file_path\":\"/tmp/normalized.txt\"}"
         ));
     }
 }

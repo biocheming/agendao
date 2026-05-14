@@ -6,6 +6,7 @@ use crate::output_blocks::{
     SessionEventField, StatusBlock, ToolBlock, ToolPhase, ToolStructuredDetail,
 };
 use rocode_agent::{AgentRenderEvent, AgentRenderOutcome, AgentToolOutput};
+use rocode_types::tool_call_observable_arguments;
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -129,10 +130,10 @@ pub fn history_tool_call_to_web(
     tool_name: &str,
     input: &serde_json::Value,
     status: Option<&str>,
-    raw: Option<&str>,
+    _raw: Option<&str>,
 ) -> serde_json::Value {
     let normalized_status = status.unwrap_or("pending");
-    let detail = history_tool_call_detail(input, raw, normalized_status);
+    let detail = history_tool_call_detail(input, normalized_status);
     let structured = extract_tool_input_structured(tool_name, input);
     let phase = match normalized_status {
         "running" => ToolPhase::Running,
@@ -215,40 +216,10 @@ pub fn history_session_event_to_web(
     }))
 }
 
-fn history_tool_call_detail(
-    input: &serde_json::Value,
-    raw: Option<&str>,
-    status: &str,
-) -> Option<String> {
-    if let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) {
-        return Some(raw.to_string());
-    }
-
+fn history_tool_call_detail(input: &serde_json::Value, status: &str) -> Option<String> {
     match status {
         "completed" | "error" => None,
-        _ => {
-            if input.is_null() {
-                return None;
-            }
-            if let Some(obj) = input.as_object() {
-                if obj.is_empty() {
-                    return None;
-                }
-            }
-            if let Some(arr) = input.as_array() {
-                if arr.is_empty() {
-                    return None;
-                }
-            }
-            if let Some(text) = input.as_str() {
-                let trimmed = text.trim();
-                if trimmed.is_empty() {
-                    return None;
-                }
-                return Some(trimmed.to_string());
-            }
-            Some(input.to_string())
-        }
+        _ => tool_call_observable_arguments(input),
     }
 }
 
@@ -1220,6 +1191,22 @@ mod tests {
         );
         assert_eq!(web.get("kind").and_then(|v| v.as_str()), Some("tool"));
         assert_eq!(web.get("id").and_then(|v| v.as_str()), Some("call_123"));
+    }
+
+    #[test]
+    fn history_tool_call_to_web_uses_observable_input_not_raw_shape() {
+        let web = history_tool_call_to_web(
+            "call_123",
+            "read",
+            &json!({"file_path":"/tmp/normalized.txt"}),
+            Some("running"),
+            Some("{\"file_path\":\"/tmp/raw.txt\"}"),
+        );
+
+        assert_eq!(
+            web.get("detail").and_then(|value| value.as_str()),
+            Some("{\"file_path\":\"/tmp/normalized.txt\"}")
+        );
     }
 
     #[test]
