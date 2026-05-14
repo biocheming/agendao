@@ -209,10 +209,41 @@ impl SessionPrompt {
                 tool_ctx.call_id = Some(call_id.clone());
                 let repaired_tool_name =
                     Self::repair_tool_call_name(&tool_name, &available_tool_ids);
+                let mut repair_metadata = rocode_tool::Metadata::new();
+                if repaired_tool_name != tool_name {
+                    let mut event = rocode_tool::tool_repair_event(
+                        "tool_name_repair",
+                        "session_prompt",
+                        &repaired_tool_name,
+                    );
+                    event.insert("from".to_string(), serde_json::json!(tool_name));
+                    event.insert("to".to_string(), serde_json::json!(repaired_tool_name));
+                    event.insert(
+                        "reason".to_string(),
+                        serde_json::json!("case_insensitive_exact_match"),
+                    );
+                    rocode_tool::append_tool_repair_event_map(&mut repair_metadata, event);
+                }
                 let effective_tool_name = repaired_tool_name.clone();
                 let mut effective_input = input;
-                effective_input =
-                    rocode_tool::normalize_tool_arguments(&effective_tool_name, effective_input);
+                let (normalized_input, normalization_telemetry) =
+                    rocode_tool::normalize_tool_arguments_with_telemetry(
+                        &effective_tool_name,
+                        effective_input,
+                    );
+                effective_input = normalized_input;
+                if !normalization_telemetry.is_empty() {
+                    let mut event = rocode_tool::tool_repair_event(
+                        "argument_normalization",
+                        "session_prompt",
+                        &effective_tool_name,
+                    );
+                    event.insert(
+                        "modes".to_string(),
+                        serde_json::json!(normalization_telemetry.modes),
+                    );
+                    rocode_tool::append_tool_repair_event_map(&mut repair_metadata, event);
+                }
                 if let Some(payload) =
                     Self::prevalidate_tool_arguments(&effective_tool_name, &effective_input)
                 {
@@ -221,6 +252,18 @@ impl SessionPrompt {
                         normalized_tool = %effective_tool_name,
                         "tool arguments failed prevalidation; preserving original tool name"
                     );
+                    let mut event = rocode_tool::tool_repair_event(
+                        "argument_prevalidation_fallback",
+                        "session_prompt",
+                        &effective_tool_name,
+                    );
+                    if let Some(reason) = payload.get("error").and_then(|value| value.as_str()) {
+                        event.insert("reason".to_string(), serde_json::json!(reason));
+                    }
+                    if let Some(received_args) = payload.get("receivedArgs") {
+                        event.insert("receivedArgs".to_string(), received_args.clone());
+                    }
+                    rocode_tool::append_tool_repair_event_map(&mut repair_metadata, event);
                     effective_input = payload;
                 }
 
@@ -236,6 +279,10 @@ impl SessionPrompt {
                     match execution {
                         Ok(result) => {
                             let mut metadata = result.metadata;
+                            rocode_tool::merge_tool_repair_telemetry(
+                                &mut metadata,
+                                &repair_metadata,
+                            );
                             let (attachments, state_attachments) =
                                 Self::extract_tool_attachments_from_metadata(
                                     &mut metadata,
@@ -255,7 +302,8 @@ impl SessionPrompt {
                             format!("Error: {}", e),
                             true,
                             Some("Tool Error".to_string()),
-                            None,
+                            (!rocode_tool::tool_repair_events(&repair_metadata).is_empty())
+                                .then_some(repair_metadata.clone()),
                             None,
                             None,
                         ),
@@ -287,7 +335,7 @@ impl SessionPrompt {
                         crate::ToolState::Error {
                             input: history_input.clone(),
                             error: content.clone(),
-                            metadata: None,
+                            metadata: metadata.clone(),
                             time: crate::ErrorTime {
                                 start: now,
                                 end: now,
@@ -948,6 +996,8 @@ mod tests {
     }
 
     struct SyntheticAttachmentTool;
+    struct EchoTool;
+    struct AlwaysFailTool;
 
     #[async_trait]
     impl Tool for SyntheticAttachmentTool {
@@ -984,6 +1034,85 @@ mod tests {
 
             Ok(ToolResult::simple("Synthetic Attachment", "queued"))
         }
+    }
+
+    #[async_trait]
+    impl Tool for EchoTool {
+        fn id(&self) -> &str {
+            "echo_tool"
+        }
+
+        fn description(&self) -> &str {
+            "Echo tool for telemetry tests"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "value": { "type": "string" }
+                }
+            })
+        }
+
+        async fn execute(
+            &self,
+            args: serde_json::Value,
+            _ctx: ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::simple("Echo", args.to_string()))
+        }
+    }
+
+    #[async_trait]
+    impl Tool for AlwaysFailTool {
+        fn id(&self) -> &str {
+            "fail_tool"
+        }
+
+        fn description(&self) -> &str {
+            "Always fails for telemetry tests"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {}
+            })
+        }
+
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            Err(ToolError::ExecutionError("boom".to_string()))
+        }
+    }
+
+    fn tool_state_repair_events(
+        session: &Session,
+        assistant_index: usize,
+    ) -> Vec<serde_json::Value> {
+        session.messages[assistant_index]
+            .parts
+            .iter()
+            .find_map(|part| match &part.part_type {
+                PartType::ToolCall {
+                    state: Some(crate::ToolState::Completed { metadata, .. }),
+                    ..
+                } => Some(rocode_tool::tool_repair_events(metadata)),
+                PartType::ToolCall {
+                    state:
+                        Some(crate::ToolState::Error {
+                            metadata: Some(metadata),
+                            ..
+                        }),
+                    ..
+                } => Some(rocode_tool::tool_repair_events(metadata)),
+                _ => None,
+            })
+            .unwrap_or_default()
     }
 
     #[test]
@@ -1161,6 +1290,94 @@ mod tests {
         assert_eq!(file_part.0, "file:///tmp/artifact.png");
         assert_eq!(file_part.1, "artifact.png");
         assert_eq!(file_part.2, "image/png");
+    }
+
+    #[tokio::test]
+    async fn execute_tool_calls_persists_prompt_layer_repair_telemetry_on_success() {
+        let tool_registry = Arc::new(rocode_tool::ToolRegistry::new());
+        tool_registry.register(EchoTool).await;
+
+        let mut session = Session::new("proj", ".");
+        let sid = session.id.clone();
+        session
+            .messages_mut()
+            .push(SessionMessage::user(sid.clone(), "run echo"));
+        let mut assistant = SessionMessage::assistant(sid);
+        assistant.add_tool_call(
+            "call_echo",
+            "ECHO_TOOL",
+            serde_json::json!("{\"value\":\"hello\"}"),
+        );
+        session.messages_mut().push(assistant);
+
+        let provider: Arc<dyn Provider> =
+            Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
+        let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string());
+
+        SessionPrompt::execute_tool_calls(
+            &mut session,
+            tool_registry,
+            ctx,
+            provider,
+            "mock",
+            "test-model",
+        )
+        .await
+        .expect("execute_tool_calls should succeed");
+
+        let repair_events = tool_state_repair_events(&session, 1);
+        assert!(repair_events.iter().any(|event| {
+            event.get("kind").and_then(|value| value.as_str()) == Some("tool_name_repair")
+                && event.get("from").and_then(|value| value.as_str()) == Some("ECHO_TOOL")
+                && event.get("to").and_then(|value| value.as_str()) == Some("echo_tool")
+        }));
+        assert!(repair_events.iter().any(|event| {
+            event.get("kind").and_then(|value| value.as_str()) == Some("argument_normalization")
+                && event
+                    .get("modes")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|modes| {
+                        modes
+                            .iter()
+                            .any(|value| value.as_str() == Some("robust_json_object_parse"))
+                    })
+        }));
+    }
+
+    #[tokio::test]
+    async fn execute_tool_calls_persists_prompt_layer_repair_telemetry_on_error() {
+        let tool_registry = Arc::new(rocode_tool::ToolRegistry::new());
+        tool_registry.register(AlwaysFailTool).await;
+
+        let mut session = Session::new("proj", ".");
+        let sid = session.id.clone();
+        session
+            .messages_mut()
+            .push(SessionMessage::user(sid.clone(), "run failing tool"));
+        let mut assistant = SessionMessage::assistant(sid);
+        assistant.add_tool_call("call_fail", "FAIL_TOOL", serde_json::json!({}));
+        session.messages_mut().push(assistant);
+
+        let provider: Arc<dyn Provider> =
+            Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
+        let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string());
+
+        SessionPrompt::execute_tool_calls(
+            &mut session,
+            tool_registry,
+            ctx,
+            provider,
+            "mock",
+            "test-model",
+        )
+        .await
+        .expect("execute_tool_calls should complete despite tool failure");
+
+        let repair_events = tool_state_repair_events(&session, 1);
+        assert!(repair_events.iter().any(|event| {
+            event.get("kind").and_then(|value| value.as_str()) == Some("tool_name_repair")
+                && event.get("to").and_then(|value| value.as_str()) == Some("fail_tool")
+        }));
     }
 
     #[test]

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::repair_telemetry::ToolArgumentNormalizationTelemetry;
 use crate::tool_access;
 use crate::{Tool, ToolContext, ToolError, ToolResult};
 use rocode_plugin::{HookContext, HookEvent};
@@ -197,7 +198,16 @@ fn recover_bash_args_from_jsonish(input: &str) -> Option<serde_json::Value> {
     None
 }
 
-pub fn normalize_tool_arguments(tool_id: &str, mut args: serde_json::Value) -> serde_json::Value {
+pub fn normalize_tool_arguments(tool_id: &str, args: serde_json::Value) -> serde_json::Value {
+    normalize_tool_arguments_with_telemetry(tool_id, args).0
+}
+
+pub fn normalize_tool_arguments_with_telemetry(
+    tool_id: &str,
+    mut args: serde_json::Value,
+) -> (serde_json::Value, ToolArgumentNormalizationTelemetry) {
+    let mut telemetry = ToolArgumentNormalizationTelemetry::default();
+
     // Normalize: if args is a JSON array of objects, merge them into a single
     // object. Some models produce `[{"file_path":"x"},{"content":"y"}]` instead
     // of `{"file_path":"x","content":"y"}`.
@@ -217,6 +227,7 @@ pub fn normalize_tool_arguments(tool_id: &str, mut args: serde_json::Value) -> s
                 merged_keys = %merged.keys().cloned().collect::<Vec<_>>().join(","),
                 "merged array tool arguments into single object"
             );
+            telemetry.record("array_object_merge");
             args = serde_json::Value::Object(merged);
         }
     }
@@ -233,6 +244,7 @@ pub fn normalize_tool_arguments(tool_id: &str, mut args: serde_json::Value) -> s
                 tool = %tool_id,
                 "recovered tool arguments via robust JSON parser"
             );
+            telemetry.record("robust_json_object_parse");
             args = parsed;
         } else {
             if let Some(parsed) =
@@ -242,6 +254,7 @@ pub fn normalize_tool_arguments(tool_id: &str, mut args: serde_json::Value) -> s
                     tool = %tool_id,
                     "recovered tool arguments from JSON-ish payload"
                 );
+                telemetry.record("jsonish_recovery");
                 args = parsed;
             } else if tool_id == "write" {
                 if let Some(parsed) = recover_write_args_from_jsonish(&s) {
@@ -249,6 +262,7 @@ pub fn normalize_tool_arguments(tool_id: &str, mut args: serde_json::Value) -> s
                         tool = %tool_id,
                         "recovered write arguments from JSON-ish payload"
                     );
+                    telemetry.record("write_jsonish_recovery");
                     args = parsed;
                 }
             } else if tool_id == "bash" {
@@ -257,6 +271,7 @@ pub fn normalize_tool_arguments(tool_id: &str, mut args: serde_json::Value) -> s
                         tool = %tool_id,
                         "recovered bash arguments from JSON-ish payload"
                     );
+                    telemetry.record("bash_jsonish_recovery");
                     args = parsed;
                 }
             }
@@ -268,6 +283,7 @@ pub fn normalize_tool_arguments(tool_id: &str, mut args: serde_json::Value) -> s
                         tool = %tool_id,
                         "recovered tool arguments via ultra structural recovery"
                     );
+                    telemetry.record("ultra_structural_recovery");
                     args = parsed;
                 }
             }
@@ -296,6 +312,7 @@ pub fn normalize_tool_arguments(tool_id: &str, mut args: serde_json::Value) -> s
                         tool = %tool_id,
                         "normalized non-JSON tool arguments from key=value format"
                     );
+                    telemetry.record("key_value_recovery");
                     args = serde_json::Value::Object(obj);
                 }
             }
@@ -315,10 +332,11 @@ pub fn normalize_tool_arguments(tool_id: &str, mut args: serde_json::Value) -> s
                     "description".to_string(),
                     serde_json::Value::String("Execute shell command".to_string()),
                 );
+                telemetry.record("bash_default_description");
             }
         }
     }
-    args
+    (args, telemetry)
 }
 
 pub struct ToolRegistry {

@@ -27,6 +27,7 @@ pub mod plugin_tool;
 pub mod question;
 pub mod read;
 pub mod registry;
+pub mod repair_telemetry;
 pub mod repo_history;
 pub mod rust_search;
 pub mod shell_session;
@@ -57,4 +58,5 @@ pub use external_directory::{
     assert_external_directory, ExternalDirectoryKind, ExternalDirectoryOptions,
 };
 pub use registry::*;
+pub use repair_telemetry::*;
 pub use tool::*;
