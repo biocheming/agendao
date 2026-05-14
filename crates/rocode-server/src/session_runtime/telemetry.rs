@@ -706,6 +706,7 @@ impl RuntimeTelemetryAuthority {
             tool_repair_summary,
             memory,
             compaction_continuity: None,
+            repair_query_snapshot: None,
             last_run_status: last_run_status.into(),
             updated_at: chrono::Utc::now().timestamp_millis(),
         })

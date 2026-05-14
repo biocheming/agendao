@@ -164,7 +164,11 @@ impl Tool for ReadTool {
         let path_str = path.to_string_lossy().to_string();
         let mut repair_metadata = Metadata::new();
         if repaired_from.is_some() {
-            let mut event = tool_repair_event("basename_auto_repair", "tool", "read");
+            let mut event = tool_repair_event(
+                rocode_types::RepairKind::BasenameAutoRepair.as_str(),
+                "tool",
+                "read",
+            );
             event.insert("from".to_string(), serde_json::json!(file_path));
             event.insert("to".to_string(), serde_json::json!(path_str.clone()));
             event.insert(
@@ -173,7 +177,10 @@ impl Tool for ReadTool {
             );
             // P1.1: raw_shape is the model's basename input, normalized_shape is the resolved path.
             event.insert("raw_shape".to_string(), serde_json::json!(file_path));
-            event.insert("normalized_shape".to_string(), serde_json::json!(path_str.clone()));
+            event.insert(
+                "normalized_shape".to_string(),
+                serde_json::json!(path_str.clone()),
+            );
             append_tool_repair_event_map(&mut repair_metadata, event);
         }
 

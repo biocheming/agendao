@@ -104,8 +104,8 @@ impl SessionPrompt {
             })
             .collect();
 
-        let tool_calls: Vec<(String, String, serde_json::Value, serde_json::Value)> = session.messages
-            [last_assistant_index]
+        let tool_calls: Vec<(String, String, serde_json::Value, serde_json::Value)> = session
+            .messages[last_assistant_index]
             .parts
             .iter()
             .filter_map(|p| match &p.part_type {
@@ -226,7 +226,7 @@ impl SessionPrompt {
                 let mut repair_metadata = rocode_tool::Metadata::new();
                 if repaired_tool_name != tool_name {
                     let mut event = rocode_tool::tool_repair_event(
-                        "tool_name_repair",
+                        rocode_types::RepairKind::ToolNameRepair.as_str(),
                         "session_prompt",
                         &repaired_tool_name,
                     );
@@ -248,7 +248,7 @@ impl SessionPrompt {
                 effective_input = normalized_input;
                 if !normalization_telemetry.is_empty() {
                     let mut event = rocode_tool::tool_repair_event(
-                        "argument_normalization",
+                        rocode_types::RepairKind::ArgumentNormalization.as_str(),
                         "session_prompt",
                         &effective_tool_name,
                     );
@@ -258,10 +258,7 @@ impl SessionPrompt {
                     );
                     // P1.1: Record the raw model output and the normalized execution args.
                     event.insert("raw_shape".to_string(), raw_shape.clone());
-                    event.insert(
-                        "normalized_shape".to_string(),
-                        effective_input.clone(),
-                    );
+                    event.insert("normalized_shape".to_string(), effective_input.clone());
                     rocode_tool::append_tool_repair_event_map(&mut repair_metadata, event);
                 }
                 let mut strict_prevalidation_error: Option<String> = None;
@@ -277,7 +274,7 @@ impl SessionPrompt {
                         "tool arguments failed prevalidation"
                     );
                     let mut event = rocode_tool::tool_repair_event(
-                        "argument_prevalidation_fallback",
+                        rocode_types::RepairKind::ArgumentPrevalidationFallback.as_str(),
                         "session_prompt",
                         &effective_tool_name,
                     );
@@ -417,7 +414,8 @@ impl SessionPrompt {
                                         // Strict mode (or no invalid tool): return the raw error.
                                         if is_strict {
                                             let mut event = rocode_tool::tool_repair_event(
-                                                "execution_error_no_reroute",
+                                                rocode_types::RepairKind::ExecutionErrorNoReroute
+                                                    .as_str(),
                                                 "session_prompt",
                                                 &effective_tool_name,
                                             );
@@ -426,10 +424,8 @@ impl SessionPrompt {
                                                 serde_json::json!(format!("Error: {}", e)),
                                             );
                                             // P1.1: record the failing input shape.
-                                            event.insert(
-                                                "raw_shape".to_string(),
-                                                raw_shape.clone(),
-                                            );
+                                            event
+                                                .insert("raw_shape".to_string(), raw_shape.clone());
                                             event.insert(
                                                 "normalized_shape".to_string(),
                                                 effective_input.clone(),

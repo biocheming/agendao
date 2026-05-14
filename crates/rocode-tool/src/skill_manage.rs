@@ -487,8 +487,11 @@ fn normalize_skill_manage_args(args: Value) -> Result<NormalizedSkillManageArgs,
             if trimmed.is_empty() {
                 Value::String(raw)
             } else if let Some(parsed) = rocode_util::json::try_parse_json_object_robust(trimmed) {
-                let mut event =
-                    tool_repair_event("json_string_object_parse", "tool", "skill_manage");
+                let mut event = tool_repair_event(
+                    rocode_types::RepairKind::JsonStringObjectParse.as_str(),
+                    "tool",
+                    "skill_manage",
+                );
                 event.insert("field".to_string(), serde_json::json!("$root"));
                 // P1.1: capture the raw string and the parsed object.
                 event.insert("raw_shape".to_string(), Value::String(raw.clone()));
@@ -604,15 +607,20 @@ fn take_nested_root_object(
             if trimmed.is_empty() {
                 return Ok(None);
             }
-            let mut event = tool_repair_event("json_string_object_parse", "tool", "skill_manage");
+            let mut event = tool_repair_event(
+                rocode_types::RepairKind::JsonStringObjectParse.as_str(),
+                "tool",
+                "skill_manage",
+            );
             event.insert("field".to_string(), serde_json::json!(field));
             // P1.1: raw_shape is the JSON string, normalized_shape is the parsed object.
             event.insert("raw_shape".to_string(), Value::String(raw.clone()));
-            let parsed = rocode_util::json::try_parse_json_object_robust(trimmed).ok_or_else(|| {
-                ToolError::InvalidArguments(format!(
-                    "{field} must be a JSON object or object string"
-                ))
-            })?;
+            let parsed =
+                rocode_util::json::try_parse_json_object_robust(trimmed).ok_or_else(|| {
+                    ToolError::InvalidArguments(format!(
+                        "{field} must be a JSON object or object string"
+                    ))
+                })?;
             event.insert("normalized_shape".to_string(), parsed.clone());
             append_tool_repair_event_map(repair_metadata, event);
             match parsed {
@@ -644,7 +652,11 @@ fn take_object_like(
             if trimmed.is_empty() {
                 return Ok(None);
             }
-            let mut event = tool_repair_event("json_string_object_parse", "tool", "skill_manage");
+            let mut event = tool_repair_event(
+                rocode_types::RepairKind::JsonStringObjectParse.as_str(),
+                "tool",
+                "skill_manage",
+            );
             event.insert("field".to_string(), serde_json::json!(field));
             event.insert("raw_shape".to_string(), Value::String(raw.clone()));
             let parsed =

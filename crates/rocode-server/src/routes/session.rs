@@ -6,6 +6,7 @@ mod executions;
 mod messages;
 pub(crate) mod prompt;
 mod recovery;
+mod repair;
 mod scheduler;
 mod session_crud;
 mod stages;
@@ -42,6 +43,7 @@ use self::executions::{cancel_session_execution, get_session_executions, list_al
 use self::messages::{add_message_part, delete_message, delete_part, list_messages, send_message};
 use self::prompt::session_prompt;
 use self::recovery::{execute_session_recovery, get_session_recovery};
+use self::repair::{get_session_repair_summary, query_session_repair};
 use self::session_crud::{
     archive_session, cancel_tool_call, clear_session_revert, create_session, delete_session,
     execute_command, execute_shell, fork_session, get_message, get_session,
@@ -71,6 +73,8 @@ pub(crate) fn session_routes() -> Router<Arc<ServerState>> {
         .route("/{id}/runtime", get(get_session_runtime))
         .route("/{id}/telemetry", get(get_session_telemetry))
         .route("/{id}/insights", get(get_session_insights))
+        .route("/{id}/repair/summary", get(get_session_repair_summary))
+        .route("/{id}/repair/query", get(query_session_repair))
         .route("/{id}/stages", get(get_session_stages))
         .route("/{id}/executions", get(get_session_executions))
         .route(

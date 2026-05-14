@@ -41,14 +41,15 @@ impl SanitizerTelemetry {
 
     /// Record an action and emit a structured repair event into the given metadata.
     pub fn record(&mut self, action: SanitizerAction, repair_metadata: &mut Metadata) {
+        let stable_kind = action.repair_kind();
         tracing::debug!(
             stage = %self.stage.map(|s| s.label()).unwrap_or("unknown"),
-            action = %action.kind(),
+            action = %stable_kind.as_str(),
             detail = %action.description(),
             "sanitizer action"
         );
 
-        let event = repair_event_builder(action.kind(), "sanitizer", "")
+        let event = repair_event_builder(stable_kind.as_str(), "sanitizer", "")
             .reason(action.description())
             .build();
 
@@ -61,7 +62,7 @@ impl SanitizerTelemetry {
         self.actions
             .iter()
             .map(|action| {
-                repair_event_builder(action.kind(), "sanitizer", "")
+                repair_event_builder(action.repair_kind().as_str(), "sanitizer", "")
                     .reason(action.description())
                     .build()
             })
@@ -108,7 +109,7 @@ pub fn sanitize_with_contract(
     // Convert every sanitizer action into a repair event.
     // In permissive mode, mark strict_mode_would_fail for synthetic actions.
     for action in &actions {
-        let mut event = repair_event_builder(action.kind(), "sanitizer", "")
+        let mut event = repair_event_builder(action.repair_kind().as_str(), "sanitizer", "")
             .reason(action.description())
             .build();
         if matches!(policy, RepairPolicy::Permissive) {
