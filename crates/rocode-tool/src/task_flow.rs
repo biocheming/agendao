@@ -13,38 +13,23 @@ use crate::{
 
 const DEFAULT_LIMIT: usize = 20;
 const MAX_LIMIT: usize = 100;
-const DESCRIPTION: &str = r#"Task lifecycle orchestration facade.
+const DESCRIPTION: &str = r#"Task lifecycle orchestration — use this for all delegation and lifecycle operations.
+The `task` tool still exists for direct subagent dispatch, but prefer task_flow.
 
-This tool is the ROCode semantic entry point for task lifecycle operations.
-It does not replace the `task` tool's delegated execution path. Instead, it
-provides a stable request-level interface for task create/resume/get/list/cancel
-operations that will be backed by existing authorities.
-
-For ordinary delegation, prefer the minimal create shape:
+Canonical create shape:
 {"operation":"create","agent":"build","prompt":"..."}
 
-For ordinary continuation, prefer the minimal resume shape:
+Canonical resume shape:
 {"operation":"resume","task_id":"...","agent":"build","prompt":"..."}
 
-ROCode will normalize common aliases automatically:
-- `action` -> `operation`
-- `request` / `instructions` / `goal` / `message` -> `prompt`
-- `title` / `summary` / `task` -> `description`
-- `subagent_type` -> `agent`
-- `session_id` -> `task_id`
-- `system_prompt` -> `agent_prompt`
-- `allowed_tools` -> `agent_tools`
+Other operations: get, list, cancel.
 
-Phase 1 status:
-- get/list are implemented as read-only registry-backed operations
-- cancel is implemented via orchestration lifecycle mediation
-- create/resume are implemented as thin adapters over the existing `task` tool
+Required fields: `create` needs `agent` + `prompt`; `resume` needs `task_id` + `agent` + `prompt`.
 
-Important call-shape rules:
-- `create` requires both `agent` and `prompt`
-- `resume` requires `task_id`, `agent`, and `prompt`
-- `todo_item` / `todo_items` / `todos` only describe todo projection data; they do not replace delegated execution inputs
-- use `description` only as a short label; the real delegated instruction belongs in `prompt`
+Legacy aliases accepted for recovery only (prefer the canonical names above):
+`action`→operation, `subagent_type`→agent, `request`/`instructions`/`goal`/`message`→prompt,
+`title`/`summary`/`task`→description, `session_id`→task_id, `system_prompt`→agent_prompt,
+`allowed_tools`→agent_tools.
 "#;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
