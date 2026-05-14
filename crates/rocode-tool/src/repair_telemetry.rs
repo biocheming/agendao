@@ -160,3 +160,22 @@ pub fn record_repair_event(
     extra(&mut builder);
     append_structured_repair_event(metadata, &builder.build());
 }
+
+// ── Stable RepairKind helpers (P1.3) ─────────────────────────────────────
+
+/// Record a repair event using the canonical `RepairKind` enum instead of a
+/// raw string literal. This is the preferred API for all new code.
+pub fn record_repair_kind(
+    metadata: &mut Metadata,
+    kind: rocode_types::RepairKind,
+    layer: impl Into<String>,
+    tool: impl Into<String>,
+    extra: impl FnOnce(&mut RepairEventBuilder) -> &mut RepairEventBuilder,
+) {
+    record_repair_event(metadata, kind.as_str(), layer, tool, extra)
+}
+
+/// Return the canonical string for a `RepairKind`.
+pub fn canonical_repair_kind_str(kind: rocode_types::RepairKind) -> &'static str {
+    kind.as_str()
+}

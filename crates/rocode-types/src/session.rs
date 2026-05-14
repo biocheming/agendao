@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use crate::{
     MemoryScope, ProviderConnectionDescriptorCandidate, ProviderProfileDescriptorView,
-    SessionMemoryTelemetrySummary,
+    SessionMemoryTelemetrySummary, SessionRepairQuerySnapshot,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1990,6 +1990,8 @@ pub struct SessionTelemetrySnapshot {
     pub memory: Option<SessionMemoryTelemetrySummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction_continuity: Option<SessionCompactionContinuityInspection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_query_snapshot: Option<SessionRepairQuerySnapshot>,
     pub last_run_status: String,
     pub updated_at: i64,
 }

@@ -6,6 +6,7 @@
 //! - Adapters reference the schema; they never replicate it.
 //! - The session telemetry accumulator reads structured fields, not loose keys.
 
+use crate::ToolRepairCount;
 use serde::{Deserialize, Serialize};
 
 /// A single repair event recorded during tool-call processing.
@@ -367,6 +368,341 @@ pub enum SanitizerAction {
 
     /// An orphaned continuation signature was detected and auto-healed.
     OrphanedContinuationAutoHeal,
+}
+
+// ── Canonical RepairKind (P1.3) ─────────────────────────────────────────
+
+/// Stable, queryable classification of every repair event.
+///
+/// This replaces ad-hoc string literals like `"tool_name_repair"` across the
+/// codebase. Every repair site MUST use one of these variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum RepairKind {
+    ToolNameRepair,
+    ArgumentNormalization,
+    ArgumentPrevalidationFallback,
+    InvalidToolReroute,
+    ExecutionErrorNoReroute,
+    BasenameAutoRepair,
+    JsonStringObjectParse,
+    SanitizerOrphanedToolResult,
+    SanitizerDuplicateToolId,
+    SanitizerThinkingOnlyAssistant,
+    SanitizerTrailingInvalidThinkingBlock,
+    SanitizerFallbackContinuationStrip,
+    SanitizerCompactionResidue,
+    SanitizerAssistantMalformedPlaceholder,
+    SanitizerOrphanedContinuationAutoHeal,
+    ProviderFallbackRetry,
+    ProviderRequestRejected,
+    ThinkingReplayBoundaryReset,
+}
+
+impl RepairKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ToolNameRepair => "tool_name_repair",
+            Self::ArgumentNormalization => "argument_normalization",
+            Self::ArgumentPrevalidationFallback => "argument_prevalidation_fallback",
+            Self::InvalidToolReroute => "invalid_tool_reroute",
+            Self::ExecutionErrorNoReroute => "execution_error_no_reroute",
+            Self::BasenameAutoRepair => "basename_auto_repair",
+            Self::JsonStringObjectParse => "json_string_object_parse",
+            Self::SanitizerOrphanedToolResult => "orphaned_tool_result",
+            Self::SanitizerDuplicateToolId => "duplicate_tool_id",
+            Self::SanitizerThinkingOnlyAssistant => "thinking_only_assistant",
+            Self::SanitizerTrailingInvalidThinkingBlock => "trailing_invalid_thinking_block",
+            Self::SanitizerFallbackContinuationStrip => "fallback_continuation_strip",
+            Self::SanitizerCompactionResidue => "compaction_residue",
+            Self::SanitizerAssistantMalformedPlaceholder => "assistant_malformed_placeholder",
+            Self::SanitizerOrphanedContinuationAutoHeal => "orphaned_continuation_auto_heal",
+            Self::ProviderFallbackRetry => "provider_fallback_retry",
+            Self::ProviderRequestRejected => "provider_request_rejected",
+            Self::ThinkingReplayBoundaryReset => "thinking_replay_boundary_reset",
+        }
+    }
+
+    /// Parse a legacy string literal back into a stable `RepairKind`.
+    /// Accepts both the canonical snake_case and legacy forms.
+    pub fn from_legacy_str(value: &str) -> Option<Self> {
+        match value {
+            "tool_name_repair" => Some(Self::ToolNameRepair),
+            "argument_normalization" => Some(Self::ArgumentNormalization),
+            "argument_prevalidation_fallback" => Some(Self::ArgumentPrevalidationFallback),
+            "invalid_tool_reroute" => Some(Self::InvalidToolReroute),
+            "execution_error_no_reroute" => Some(Self::ExecutionErrorNoReroute),
+            "basename_auto_repair" => Some(Self::BasenameAutoRepair),
+            "json_string_object_parse" => Some(Self::JsonStringObjectParse),
+            "orphaned_tool_result" => Some(Self::SanitizerOrphanedToolResult),
+            "duplicate_tool_id" => Some(Self::SanitizerDuplicateToolId),
+            "thinking_only_assistant" => Some(Self::SanitizerThinkingOnlyAssistant),
+            "trailing_invalid_thinking_block" => Some(Self::SanitizerTrailingInvalidThinkingBlock),
+            "fallback_continuation_strip" => Some(Self::SanitizerFallbackContinuationStrip),
+            "compaction_residue" => Some(Self::SanitizerCompactionResidue),
+            "assistant_malformed_placeholder" => Some(Self::SanitizerAssistantMalformedPlaceholder),
+            "orphaned_continuation_auto_heal" => Some(Self::SanitizerOrphanedContinuationAutoHeal),
+            "provider_fallback_retry" => Some(Self::ProviderFallbackRetry),
+            "provider_request_rejected" => Some(Self::ProviderRequestRejected),
+            "thinking_replay_boundary_reset" => Some(Self::ThinkingReplayBoundaryReset),
+            // Legacy aliases
+            "alias_normalization" | "field_alias_normalization" => {
+                Some(Self::ArgumentNormalization)
+            }
+            "fallback_normalization" => Some(Self::ArgumentPrevalidationFallback),
+            _ => None,
+        }
+    }
+}
+
+/// Outcome classification for a tool call that had repairs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepairOutcomeKind {
+    Success,
+    ExecutionError,
+    InvalidArguments,
+    PermissionDenied,
+    ProviderRejected,
+    Canceled,
+    Unknown,
+}
+
+// ── Query / Aggregate Types (P1.3) ──────────────────────────────────────
+
+/// Filter parameters for repair queries.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RepairQuery {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_kind: Option<RepairKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict_only: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_samples: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+/// Aggregated row in a repair query result.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RepairAggregateRow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    pub tool_name: String,
+    pub repair_kind: RepairKind,
+    pub layer: String,
+    pub count: u64,
+    #[serde(default)]
+    pub strict_would_fail_count: u64,
+    #[serde(default)]
+    pub injected_count: u64,
+    #[serde(default)]
+    pub success_count: u64,
+    #[serde(default)]
+    pub error_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_at: Option<i64>,
+}
+
+/// A single repair event sampled for detailed inspection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RepairSample {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    pub tool_name: String,
+    pub repair_kind: RepairKind,
+    pub layer: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_shape: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub normalized_shape: Option<serde_json::Value>,
+    #[serde(default)]
+    pub strict_mode_would_fail: bool,
+    #[serde(default)]
+    pub injected_into_model_context: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<RepairOutcomeKind>,
+    pub created_at: i64,
+}
+
+/// Per-session repair summary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionRepairQuerySummary {
+    pub total_events: u64,
+    pub distinct_tools: u64,
+    pub distinct_repair_kinds: u64,
+    #[serde(default)]
+    pub strict_would_fail_count: u64,
+    #[serde(default)]
+    pub injected_count: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub top_repairs: Vec<ToolRepairCount>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub top_tools: Vec<ToolRepairCount>,
+}
+
+/// Per-model repair summary across sessions.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelRepairQuerySummary {
+    pub provider_id: String,
+    pub model_id: String,
+    #[serde(default)]
+    pub session_count: u64,
+    #[serde(default)]
+    pub total_events: u64,
+    #[serde(default)]
+    pub strict_would_fail_count: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub top_repairs: Vec<ToolRepairCount>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub top_tools: Vec<ToolRepairCount>,
+}
+
+/// Full session-scoped repair snapshot (persisted to metadata).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionRepairQuerySnapshot {
+    pub summary: SessionRepairQuerySummary,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rows: Vec<RepairAggregateRow>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub samples: Vec<RepairSample>,
+    pub updated_at: i64,
+}
+
+/// Unified response for any repair query endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RepairQueryResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<SessionRepairQuerySummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_summary: Option<ModelRepairQuerySummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rows: Vec<RepairAggregateRow>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub samples: Vec<RepairSample>,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+// ── Cross-type mapping helpers (P1.3) ───────────────────────────────────
+
+impl SanitizerAction {
+    /// Map this sanitizer action to its stable `RepairKind`.
+    pub fn repair_kind(&self) -> RepairKind {
+        match self {
+            Self::OrphanedToolResult { .. } => RepairKind::SanitizerOrphanedToolResult,
+            Self::DuplicateToolId { .. } => RepairKind::SanitizerDuplicateToolId,
+            Self::ThinkingOnlyAssistant => RepairKind::SanitizerThinkingOnlyAssistant,
+            Self::TrailingInvalidThinkingBlock => RepairKind::SanitizerTrailingInvalidThinkingBlock,
+            Self::FallbackContinuationStrip { .. } => {
+                RepairKind::SanitizerFallbackContinuationStrip
+            }
+            Self::CompactionResidue { .. } => RepairKind::SanitizerCompactionResidue,
+            Self::AssistantMalformedPlaceholder => {
+                RepairKind::SanitizerAssistantMalformedPlaceholder
+            }
+            Self::OrphanedContinuationAutoHeal => RepairKind::SanitizerOrphanedContinuationAutoHeal,
+        }
+    }
+}
+
+impl RepairEvent {
+    /// Attempt to normalize this event's `repair_kind` string into a stable
+    /// `RepairKind` enum value.
+    pub fn normalized_kind(&self) -> Option<RepairKind> {
+        RepairKind::from_legacy_str(&self.repair_kind)
+    }
+}
+
+#[cfg(test)]
+mod repair_kind_tests {
+    use super::*;
+
+    #[test]
+    fn repair_kind_round_trips_stably() {
+        for kind in &[
+            RepairKind::ToolNameRepair,
+            RepairKind::ArgumentNormalization,
+            RepairKind::BasenameAutoRepair,
+            RepairKind::InvalidToolReroute,
+            RepairKind::SanitizerOrphanedToolResult,
+            RepairKind::ProviderFallbackRetry,
+        ] {
+            let s = kind.as_str();
+            let parsed = RepairKind::from_legacy_str(s);
+            assert_eq!(parsed, Some(*kind), "round-trip failed for {s}");
+        }
+    }
+
+    #[test]
+    fn sanitizer_action_maps_to_repair_kind() {
+        assert_eq!(
+            SanitizerAction::OrphanedToolResult {
+                tool_call_id: "x".into()
+            }
+            .repair_kind(),
+            RepairKind::SanitizerOrphanedToolResult
+        );
+        assert_eq!(
+            SanitizerAction::ThinkingOnlyAssistant.repair_kind(),
+            RepairKind::SanitizerThinkingOnlyAssistant
+        );
+        assert_eq!(
+            SanitizerAction::FallbackContinuationStrip {
+                removed_keys: vec!["x".into()]
+            }
+            .repair_kind(),
+            RepairKind::SanitizerFallbackContinuationStrip
+        );
+    }
+
+    #[test]
+    fn legacy_repair_kind_strings_parse_to_enum() {
+        assert_eq!(
+            RepairKind::from_legacy_str("tool_name_repair"),
+            Some(RepairKind::ToolNameRepair)
+        );
+        assert_eq!(
+            RepairKind::from_legacy_str("orphaned_tool_result"),
+            Some(RepairKind::SanitizerOrphanedToolResult)
+        );
+        // Legacy alias
+        assert_eq!(
+            RepairKind::from_legacy_str("alias_normalization"),
+            Some(RepairKind::ArgumentNormalization)
+        );
+        // Unknown
+        assert_eq!(RepairKind::from_legacy_str("nonexistent_kind"), None);
+    }
+
+    #[test]
+    fn repair_event_normalized_kind_resolves_legacy_strings() {
+        let event = RepairEvent::new("alias_normalization", "tool", "skill_manage");
+        assert_eq!(
+            event.normalized_kind(),
+            Some(RepairKind::ArgumentNormalization)
+        );
+    }
 }
 
 impl SanitizerAction {

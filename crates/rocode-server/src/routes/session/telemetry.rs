@@ -6,9 +6,10 @@ use rocode_command::stage_protocol::StageSummary;
 use rocode_multimodal::PersistedMultimodalExplain;
 use rocode_session::prompt::{explain_session_cache_semantics, explain_session_context};
 use rocode_session::{
-    aggregate_model_tool_repair_telemetry, build_session_tool_repair_telemetry,
-    load_session_telemetry_snapshot, persist_session_telemetry_snapshot,
-    session_last_run_status_label, session_telemetry_model_ref, Session, SessionUsage,
+    aggregate_model_tool_repair_telemetry, build_session_repair_query_snapshot,
+    build_session_tool_repair_telemetry, load_session_telemetry_snapshot,
+    persist_session_telemetry_snapshot, session_last_run_status_label, session_telemetry_model_ref,
+    Session, SessionUsage,
 };
 use rocode_types::message_continuity_packet;
 #[cfg(test)]
@@ -44,6 +45,8 @@ pub struct SessionTelemetrySnapshot {
     pub tool_repair_summary: Option<SessionToolRepairTelemetrySummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_tool_repair_summary: Option<ModelToolRepairTelemetrySummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_query_snapshot: Option<rocode_types::SessionRepairQuerySnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<SessionMemoryTelemetrySummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -191,6 +194,7 @@ pub(super) async fn build_session_telemetry_snapshot(
     } else {
         None
     };
+    let repair_query_snapshot = build_session_repair_query_snapshot(session);
     let memory = build_session_memory_telemetry(state, session).await;
     let diagnostics = SessionDiagnosticsSidecar::derive_from_session(session);
     let cache_evidence = diagnostics
@@ -275,6 +279,7 @@ pub(super) async fn build_session_telemetry_snapshot(
         usage_books,
         tool_repair_summary,
         model_tool_repair_summary,
+        repair_query_snapshot,
         memory,
         cache_evidence,
         context_explain,
@@ -697,6 +702,7 @@ pub(super) async fn persist_session_telemetry_metadata(
         .and_then(|value| serde_json::from_value::<ContextCompactionSummary>(value).ok());
     snapshot.compaction_continuity =
         latest_compaction_continuity_inspection(session, raw_summary.as_ref());
+    snapshot.repair_query_snapshot = build_session_repair_query_snapshot(session);
 
     if let Err(error) = persist_session_telemetry_snapshot(session, &snapshot) {
         tracing::warn!(
@@ -1544,6 +1550,7 @@ mod tests {
             },
             tool_repair_summary: None,
             model_tool_repair_summary: None,
+            repair_query_snapshot: None,
             memory: None,
             cache_evidence: None,
             context_explain: Some(SessionContextExplain {
@@ -1961,6 +1968,7 @@ mod tests {
                         total_cost: 0.25,
                     },
                     stage_summaries: vec![],
+                    repair_query_snapshot: None,
                     last_run_status: "completed".to_string(),
                     updated_at: 123,
                 },
