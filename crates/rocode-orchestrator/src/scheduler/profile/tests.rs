@@ -525,9 +525,15 @@ fn gate_terminal_output_preserves_richer_structured_execution_for_atlas_summary_
     )
     .expect("done gate should produce terminal output");
 
-    assert!(output.content.contains("Compared 13 products across gameplay"));
-    assert!(output.content.contains("Identified 4 differentiators and 3 product gaps"));
-    assert!(!output.content.contains("Comparative analysis completed.\n\n**Verification**\n- Evidence checked."));
+    assert!(output
+        .content
+        .contains("Compared 13 products across gameplay"));
+    assert!(output
+        .content
+        .contains("Identified 4 differentiators and 3 product gaps"));
+    assert!(!output
+        .content
+        .contains("Comparative analysis completed.\n\n**Verification**\n- Evidence checked."));
 }
 
 #[test]
@@ -558,9 +564,15 @@ fn gate_terminal_output_preserves_richer_structured_execution_for_hephaestus_sum
     )
     .expect("done gate should produce terminal output");
 
-    assert!(output.content.contains("Restored full worker result projection"));
-    assert!(output.content.contains("Added regression coverage for summary-shell overwrite cases"));
-    assert!(!output.content.contains("**What Changed**\n- Scheduler output updated."));
+    assert!(output
+        .content
+        .contains("Restored full worker result projection"));
+    assert!(output
+        .content
+        .contains("Added regression coverage for summary-shell overwrite cases"));
+    assert!(!output
+        .content
+        .contains("**What Changed**\n- Scheduler output updated."));
 }
 
 #[test]
@@ -609,10 +621,16 @@ fn gate_terminal_output_preserves_rich_delivery_report_over_short_gate_summary()
     };
 
     let output = orchestrator.finalize_output(state);
-    assert!(output.content.contains("Comparative Analysis: VoiceCraft vs. Competing English Learning"));
+    assert!(output
+        .content
+        .contains("Comparative Analysis: VoiceCraft vs. Competing English Learning"));
     assert!(output.content.contains("Systematic Comparison Matrix"));
-    assert!(output.content.contains("VoiceCraft's strongest differentiator"));
-    assert!(!output.content.starts_with("## Delivery Summary\n**Verification**: All 5 research tasks completed."));
+    assert!(output
+        .content
+        .contains("VoiceCraft's strongest differentiator"));
+    assert!(!output
+        .content
+        .starts_with("## Delivery Summary\n**Verification**: All 5 research tasks completed."));
 }
 
 #[test]

@@ -144,7 +144,8 @@ Done.
         let prefaced = "现在我有了全面的信息。这是我系统比较的结果。\n\n---\n\n## `## Delivery Summary`\n\n**VoiceCraft（本项目）与同类游戏/应用的系统比较**\n\n**Delegation Path**\n- Delegated.\n\n**Execution Outcome**\n- Detailed findings.\n\n**Verification**\n- Checked.";
         let normalized = normalize_sisyphus_final_output(prefaced);
         assert!(normalized.starts_with("## Delivery Summary"));
-        assert!(!normalized.contains("**Execution Outcome**\n现在我有了全面的信息。这是我系统比较的结果。"));
+        assert!(!normalized
+            .contains("**Execution Outcome**\n现在我有了全面的信息。这是我系统比较的结果。"));
         assert_eq!(normalized.matches("## Delivery Summary").count(), 1);
         assert!(normalized.contains("VoiceCraft（本项目）与同类游戏/应用的系统比较"));
     }
@@ -155,7 +156,9 @@ Done.
         let normalized = normalize_sisyphus_final_output(prefaced);
         assert!(normalized.starts_with("## Delivery Summary"));
         assert!(!normalized.contains("**Execution Outcome**\n现在我对 VoiceCraft 和所有主要竞品有了全面的了解。让我将分析进行组织整理。"));
-        assert!(!normalized.contains("现在我对 VoiceCraft 和所有主要竞品有了全面的了解。让我将分析进行组织整理。"));
+        assert!(!normalized.contains(
+            "现在我对 VoiceCraft 和所有主要竞品有了全面的了解。让我将分析进行组织整理。"
+        ));
         assert!(normalized.contains("以下是对 VoiceCraft 与主要竞品的系统性对比。"));
     }
 }

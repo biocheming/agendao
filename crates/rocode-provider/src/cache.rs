@@ -1121,6 +1121,8 @@ fn cache_tool_order_rank(name: &str) -> u8 {
         "skill_view" => 4,
         "skill" => 5,
         "skill_manage" => 6,
+        "bash" => 250,
+        "shell_session" => 251,
         _ => 7,
     }
 }

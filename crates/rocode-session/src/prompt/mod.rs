@@ -2576,7 +2576,7 @@ impl SessionPrompt {
                     msg.add_agent(name.clone());
                     // Add synthetic text instructing the LLM to invoke the agent
                     msg.add_text(format!(
-                        "Use the above message and context to generate a prompt and prefer calling task_flow with operation=create and agent=\"{}\". Only fall back to the task tool if task_flow is unavailable in this session.",
+                        "Use the above message and context to generate a delegated prompt and prefer the minimal task_flow create shape {{\"operation\":\"create\",\"agent\":\"{}\",\"prompt\":\"...\"}}. Use `description` only as a short label. Only fall back to the task tool if task_flow is unavailable in this session.",
                         name
                     ));
                 }

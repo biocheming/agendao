@@ -420,6 +420,31 @@ mod title_tests {
     }
 
     #[test]
+    fn prioritize_tool_definitions_pushes_bash_after_structured_tools() {
+        let mut tools = vec![
+            ToolDefinition {
+                name: "bash".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: "read".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            ToolDefinition {
+                name: "skill_manage".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+        ];
+
+        prioritize_tool_definitions(&mut tools);
+        let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_str()).collect();
+        assert_eq!(names, vec!["skill_manage", "read", "bash"]);
+    }
+
+    #[test]
     fn merge_tool_definitions_keeps_base_tool_on_name_conflict() {
         let base = vec![ToolDefinition {
             name: "read".to_string(),

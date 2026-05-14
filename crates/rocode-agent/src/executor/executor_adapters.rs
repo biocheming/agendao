@@ -19,6 +19,7 @@ fn preferred_tool_order_key(name: &str) -> (u8, &str) {
     match name {
         "task_flow" => (0, name),
         "task" => (1, name),
+        "bash" => (3, name),
         _ => (2, name),
     }
 }
@@ -313,5 +314,30 @@ mod tests {
         prioritize_tool_definitions(&mut tools);
         let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_str()).collect();
         assert_eq!(names, vec!["task_flow", "task", "websearch"]);
+    }
+
+    #[test]
+    fn prioritize_tool_definitions_pushes_bash_after_other_tools() {
+        let mut tools = vec![
+            rocode_provider::ToolDefinition {
+                name: "bash".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            rocode_provider::ToolDefinition {
+                name: "read".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+            rocode_provider::ToolDefinition {
+                name: "task".to_string(),
+                description: None,
+                parameters: serde_json::json!({}),
+            },
+        ];
+
+        prioritize_tool_definitions(&mut tools);
+        let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_str()).collect();
+        assert_eq!(names, vec!["task", "read", "bash"]);
     }
 }

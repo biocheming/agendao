@@ -1399,7 +1399,10 @@ mod tests {
         let summaries = context.stage_summaries();
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].stage_id, "stage-1");
-        assert_eq!(summaries[0].activity.as_deref(), Some("Inspecting repository"));
+        assert_eq!(
+            summaries[0].activity.as_deref(),
+            Some("Inspecting repository")
+        );
 
         context.apply_scheduler_stage_summary(
             "session-1",

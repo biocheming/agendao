@@ -1,7 +1,350 @@
-use crate::{MessageRole, Session};
-use rocode_types::SessionTelemetrySnapshot;
+use std::collections::BTreeMap;
+
+use crate::{MessageRole, PartType, Session, ToolState};
+use rocode_provider::provider_diagnostic_from_metadata;
+use rocode_types::{
+    ModelToolRepairTelemetrySummary, SessionTelemetrySnapshot, SessionToolRepairTelemetrySummary,
+    ToolRepairCount, ToolRepairToolSummary,
+};
 
 pub const SESSION_TELEMETRY_METADATA_KEY: &str = "telemetry";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionTelemetryModelRef {
+    pub provider_id: String,
+    pub model_id: String,
+}
+
+#[derive(Default)]
+struct ToolRepairToolAccumulator {
+    call_count: u64,
+    repaired_call_count: u64,
+    error_call_count: u64,
+    repair_event_count: u64,
+    event_kinds: BTreeMap<String, u64>,
+    failure_kinds: BTreeMap<String, u64>,
+}
+
+#[derive(Default)]
+struct ToolRepairAccumulator {
+    total_tool_calls: u64,
+    repaired_tool_call_count: u64,
+    error_tool_call_count: u64,
+    repair_event_count: u64,
+    failure_kinds: BTreeMap<String, u64>,
+    provider_diagnostic_count: u64,
+    provider_diagnostic_kinds: BTreeMap<String, u64>,
+    event_kinds: BTreeMap<String, u64>,
+    event_layers: BTreeMap<String, u64>,
+    tools: BTreeMap<String, ToolRepairToolAccumulator>,
+}
+
+impl ToolRepairAccumulator {
+    fn record_tool_call(
+        &mut self,
+        tool_name: &str,
+        is_error: bool,
+        error_text: Option<&str>,
+        metadata: Option<&std::collections::HashMap<String, serde_json::Value>>,
+    ) {
+        self.total_tool_calls += 1;
+        if is_error {
+            self.error_tool_call_count += 1;
+        }
+
+        let tool_entry = self.tools.entry(tool_name.to_string()).or_default();
+        tool_entry.call_count += 1;
+        if is_error {
+            tool_entry.error_call_count += 1;
+            let kind = classify_tool_failure_kind(error_text);
+            *self.failure_kinds.entry(kind.to_string()).or_default() += 1;
+            *tool_entry
+                .failure_kinds
+                .entry(kind.to_string())
+                .or_default() += 1;
+        }
+
+        let Some(metadata) = metadata else {
+            return;
+        };
+        let events = rocode_tool::tool_repair_events(metadata);
+        if events.is_empty() {
+            return;
+        }
+
+        self.repaired_tool_call_count += 1;
+        tool_entry.repaired_call_count += 1;
+
+        for event in events {
+            self.repair_event_count += 1;
+            tool_entry.repair_event_count += 1;
+
+            if let Some(kind) = event.get("kind").and_then(|value| value.as_str()) {
+                *self.event_kinds.entry(kind.to_string()).or_default() += 1;
+                *tool_entry.event_kinds.entry(kind.to_string()).or_default() += 1;
+            }
+            if let Some(layer) = event.get("layer").and_then(|value| value.as_str()) {
+                *self.event_layers.entry(layer.to_string()).or_default() += 1;
+            }
+        }
+    }
+
+    fn record_provider_diagnostic(&mut self, code: &str) {
+        self.provider_diagnostic_count += 1;
+        *self
+            .provider_diagnostic_kinds
+            .entry(code.to_string())
+            .or_default() += 1;
+    }
+
+    fn build_session_summary(self) -> Option<SessionToolRepairTelemetrySummary> {
+        if self.total_tool_calls == 0 && self.provider_diagnostic_count == 0 {
+            return None;
+        }
+
+        Some(SessionToolRepairTelemetrySummary {
+            total_tool_calls: self.total_tool_calls,
+            repaired_tool_call_count: self.repaired_tool_call_count,
+            error_tool_call_count: self.error_tool_call_count,
+            repair_event_count: self.repair_event_count,
+            failure_kinds: counts_to_vec(self.failure_kinds),
+            provider_diagnostic_count: self.provider_diagnostic_count,
+            provider_diagnostic_kinds: counts_to_vec(self.provider_diagnostic_kinds),
+            event_kinds: counts_to_vec(self.event_kinds),
+            event_layers: counts_to_vec(self.event_layers),
+            tools: self
+                .tools
+                .into_iter()
+                .map(|(tool_name, tool)| ToolRepairToolSummary {
+                    tool_name,
+                    call_count: tool.call_count,
+                    repaired_call_count: tool.repaired_call_count,
+                    error_call_count: tool.error_call_count,
+                    repair_event_count: tool.repair_event_count,
+                    event_kinds: counts_to_vec(tool.event_kinds),
+                    failure_kinds: counts_to_vec(tool.failure_kinds),
+                })
+                .collect(),
+        })
+    }
+}
+
+pub fn session_telemetry_model_ref(session: &Session) -> Option<SessionTelemetryModelRef> {
+    let provider_id = session
+        .metadata
+        .get("model_provider")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?
+        .to_string();
+    let model_id = session
+        .metadata
+        .get("model_id")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?
+        .to_string();
+    Some(SessionTelemetryModelRef {
+        provider_id,
+        model_id,
+    })
+}
+
+pub fn build_session_tool_repair_telemetry(
+    session: &Session,
+) -> Option<SessionToolRepairTelemetrySummary> {
+    let mut accumulator = ToolRepairAccumulator::default();
+
+    for message in &session.messages {
+        if !matches!(message.role, MessageRole::Assistant) {
+            continue;
+        }
+
+        if let Some(summary) = provider_diagnostic_from_metadata(&message.metadata) {
+            accumulator.record_provider_diagnostic(&summary.code);
+        }
+
+        for part in &message.parts {
+            let PartType::ToolCall {
+                name,
+                status,
+                state,
+                ..
+            } = &part.part_type
+            else {
+                continue;
+            };
+
+            let Some((is_error, error_text, metadata)) =
+                finalized_tool_call_metadata(status, state.as_ref())
+            else {
+                continue;
+            };
+            accumulator.record_tool_call(name, is_error, error_text, metadata);
+        }
+    }
+
+    accumulator.build_session_summary()
+}
+
+pub fn aggregate_model_tool_repair_telemetry<'a>(
+    sessions: impl IntoIterator<Item = &'a Session>,
+    provider_id: &str,
+    model_id: &str,
+) -> Option<ModelToolRepairTelemetrySummary> {
+    let mut session_count = 0u64;
+    let mut repaired_session_count = 0u64;
+    let mut error_session_count = 0u64;
+    let mut provider_diagnostic_session_count = 0u64;
+    let mut aggregate = ToolRepairAccumulator::default();
+
+    for session in sessions {
+        let Some(model_ref) = session_telemetry_model_ref(session) else {
+            continue;
+        };
+        if model_ref.provider_id != provider_id || model_ref.model_id != model_id {
+            continue;
+        }
+
+        let Some(summary) = build_session_tool_repair_telemetry(session) else {
+            continue;
+        };
+
+        session_count += 1;
+        if summary.repaired_tool_call_count > 0 {
+            repaired_session_count += 1;
+        }
+        if summary.error_tool_call_count > 0 {
+            error_session_count += 1;
+        }
+        if summary.provider_diagnostic_count > 0 {
+            provider_diagnostic_session_count += 1;
+        }
+
+        aggregate.total_tool_calls += summary.total_tool_calls;
+        aggregate.repaired_tool_call_count += summary.repaired_tool_call_count;
+        aggregate.error_tool_call_count += summary.error_tool_call_count;
+        aggregate.repair_event_count += summary.repair_event_count;
+        aggregate.provider_diagnostic_count += summary.provider_diagnostic_count;
+
+        for count in summary.failure_kinds {
+            *aggregate.failure_kinds.entry(count.key).or_default() += count.count;
+        }
+        for count in summary.provider_diagnostic_kinds {
+            *aggregate
+                .provider_diagnostic_kinds
+                .entry(count.key)
+                .or_default() += count.count;
+        }
+        for count in summary.event_kinds {
+            *aggregate.event_kinds.entry(count.key).or_default() += count.count;
+        }
+        for count in summary.event_layers {
+            *aggregate.event_layers.entry(count.key).or_default() += count.count;
+        }
+        for tool in summary.tools {
+            let entry = aggregate.tools.entry(tool.tool_name).or_default();
+            entry.call_count += tool.call_count;
+            entry.repaired_call_count += tool.repaired_call_count;
+            entry.error_call_count += tool.error_call_count;
+            entry.repair_event_count += tool.repair_event_count;
+            for count in tool.event_kinds {
+                *entry.event_kinds.entry(count.key).or_default() += count.count;
+            }
+            for count in tool.failure_kinds {
+                *entry.failure_kinds.entry(count.key).or_default() += count.count;
+            }
+        }
+    }
+
+    if session_count == 0 {
+        return None;
+    }
+
+    Some(ModelToolRepairTelemetrySummary {
+        provider_id: provider_id.to_string(),
+        model_id: model_id.to_string(),
+        session_count,
+        repaired_session_count,
+        error_session_count,
+        provider_diagnostic_session_count,
+        total_tool_calls: aggregate.total_tool_calls,
+        repaired_tool_call_count: aggregate.repaired_tool_call_count,
+        error_tool_call_count: aggregate.error_tool_call_count,
+        repair_event_count: aggregate.repair_event_count,
+        failure_kinds: counts_to_vec(aggregate.failure_kinds),
+        provider_diagnostic_count: aggregate.provider_diagnostic_count,
+        provider_diagnostic_kinds: counts_to_vec(aggregate.provider_diagnostic_kinds),
+        event_kinds: counts_to_vec(aggregate.event_kinds),
+        event_layers: counts_to_vec(aggregate.event_layers),
+        tools: aggregate
+            .tools
+            .into_iter()
+            .map(|(tool_name, tool)| ToolRepairToolSummary {
+                tool_name,
+                call_count: tool.call_count,
+                repaired_call_count: tool.repaired_call_count,
+                error_call_count: tool.error_call_count,
+                repair_event_count: tool.repair_event_count,
+                event_kinds: counts_to_vec(tool.event_kinds),
+                failure_kinds: counts_to_vec(tool.failure_kinds),
+            })
+            .collect(),
+    })
+}
+
+fn finalized_tool_call_metadata<'a>(
+    status: &crate::ToolCallStatus,
+    state: Option<&'a ToolState>,
+) -> Option<(
+    bool,
+    Option<&'a str>,
+    Option<&'a std::collections::HashMap<String, serde_json::Value>>,
+)> {
+    match state {
+        Some(ToolState::Completed { metadata, .. }) => Some((false, None, Some(metadata))),
+        Some(ToolState::Error {
+            error, metadata, ..
+        }) => Some((true, Some(error.as_str()), metadata.as_ref())),
+        _ if matches!(status, crate::ToolCallStatus::Completed) => Some((false, None, None)),
+        _ if matches!(status, crate::ToolCallStatus::Error) => Some((true, None, None)),
+        _ => None,
+    }
+}
+
+fn classify_tool_failure_kind(error_text: Option<&str>) -> &'static str {
+    let Some(error_text) = error_text else {
+        return "error";
+    };
+    let lower = error_text.trim().to_ascii_lowercase();
+    if lower.starts_with("permission denied:") || lower.contains("permission denied") {
+        "permission_denied"
+    } else if lower.starts_with("file not found:") || lower.contains("file not found") {
+        "file_not_found"
+    } else if lower.starts_with("timeout:")
+        || lower.contains("timeout:")
+        || lower.contains("timed out")
+    {
+        "timeout"
+    } else if lower.starts_with("invalid arguments:")
+        || lower.contains("invalid arguments:")
+        || lower.starts_with("validation error:")
+        || lower.contains("validation error:")
+    {
+        "invalid_arguments"
+    } else if lower == "cancelled" || lower.contains("cancelled") || lower.contains("canceled") {
+        "cancelled"
+    } else {
+        "execution_error"
+    }
+}
+
+fn counts_to_vec(counts: BTreeMap<String, u64>) -> Vec<ToolRepairCount> {
+    counts
+        .into_iter()
+        .map(|(key, count)| ToolRepairCount { key, count })
+        .collect()
+}
 
 pub fn persist_session_telemetry_snapshot(
     session: &mut Session,
@@ -73,7 +416,7 @@ mod tests {
 
     fn sample_snapshot() -> SessionTelemetrySnapshot {
         SessionTelemetrySnapshot {
-            version: SessionTelemetrySnapshotVersion::V2,
+            version: SessionTelemetrySnapshotVersion::V4,
             usage: SessionUsage {
                 input_tokens: 10,
                 output_tokens: 20,
@@ -111,6 +454,44 @@ mod tests {
                 attached_session_count: 0,
                 primary_attached_session_id: None,
             }],
+            tool_repair_summary: Some(SessionToolRepairTelemetrySummary {
+                total_tool_calls: 3,
+                repaired_tool_call_count: 2,
+                error_tool_call_count: 1,
+                repair_event_count: 4,
+                failure_kinds: vec![ToolRepairCount {
+                    key: "invalid_arguments".to_string(),
+                    count: 1,
+                }],
+                provider_diagnostic_count: 1,
+                provider_diagnostic_kinds: vec![ToolRepairCount {
+                    key: "thinking_replay_rejected".to_string(),
+                    count: 1,
+                }],
+                event_kinds: vec![ToolRepairCount {
+                    key: "alias_normalization".to_string(),
+                    count: 2,
+                }],
+                event_layers: vec![ToolRepairCount {
+                    key: "tool".to_string(),
+                    count: 4,
+                }],
+                tools: vec![ToolRepairToolSummary {
+                    tool_name: "task_flow".to_string(),
+                    call_count: 2,
+                    repaired_call_count: 2,
+                    error_call_count: 1,
+                    repair_event_count: 4,
+                    event_kinds: vec![ToolRepairCount {
+                        key: "alias_normalization".to_string(),
+                        count: 2,
+                    }],
+                    failure_kinds: vec![ToolRepairCount {
+                        key: "invalid_arguments".to_string(),
+                        count: 1,
+                    }],
+                }],
+            }),
             memory: None,
             compaction_continuity: None,
             last_run_status: "completed".to_string(),
@@ -157,5 +538,288 @@ mod tests {
         session.messages_mut().push(assistant);
 
         assert_eq!(session_last_run_status_label(&session), "completed");
+    }
+
+    #[test]
+    fn build_session_tool_repair_telemetry_aggregates_tool_states() {
+        let mut session = Session::new("proj", ".");
+
+        let mut assistant = SessionMessage::assistant(session.id.clone());
+        assistant.add_tool_call("call-1", "task_flow", serde_json::json!({}));
+        if let Some(crate::MessagePart {
+            part_type: PartType::ToolCall { status, state, .. },
+            ..
+        }) = assistant.parts.last_mut()
+        {
+            *status = crate::ToolCallStatus::Completed;
+            let mut metadata = rocode_tool::Metadata::new();
+            rocode_tool::append_tool_repair_event_map(&mut metadata, {
+                let mut event =
+                    rocode_tool::tool_repair_event("alias_normalization", "tool", "task_flow");
+                event.insert(
+                    "aliases".to_string(),
+                    serde_json::json!(["action->operation"]),
+                );
+                event
+            });
+            *state = Some(ToolState::Completed {
+                input: serde_json::json!({}),
+                output: "ok".to_string(),
+                title: "Task".to_string(),
+                metadata,
+                time: crate::CompletedTime {
+                    start: 1,
+                    end: 2,
+                    compacted: None,
+                },
+                attachments: None,
+            });
+        }
+
+        assistant.add_tool_call("call-2", "read", serde_json::json!({}));
+        if let Some(crate::MessagePart {
+            part_type: PartType::ToolCall { status, state, .. },
+            ..
+        }) = assistant.parts.last_mut()
+        {
+            *status = crate::ToolCallStatus::Error;
+            let mut metadata = rocode_tool::Metadata::new();
+            rocode_tool::append_tool_repair_event_map(&mut metadata, {
+                let mut event =
+                    rocode_tool::tool_repair_event("basename_auto_repair", "tool", "read");
+                event.insert("from".to_string(), serde_json::json!("Game.ts"));
+                event.insert(
+                    "to".to_string(),
+                    serde_json::json!("/tmp/project/src/Game.ts"),
+                );
+                event
+            });
+            *state = Some(ToolState::Error {
+                input: serde_json::json!({}),
+                error: "boom".to_string(),
+                metadata: Some(metadata),
+                time: crate::ErrorTime { start: 3, end: 4 },
+            });
+        }
+        session.push_message(assistant);
+
+        let diag_message = session.add_assistant_message();
+        rocode_provider::ProviderDiagnosticSummary {
+            severity: rocode_provider::ProviderDiagnosticSeverity::HardFail,
+            source: rocode_provider::ProviderDiagnosticSource::ApiErrorRewrite,
+            code: "thinking_replay_rejected".to_string(),
+            provider_id: "deepseek".to_string(),
+            model_id: Some("v4-flash".to_string()),
+            message: "thinking replay rejected".to_string(),
+        }
+        .attach_to_metadata(&mut diag_message.metadata);
+
+        let summary = build_session_tool_repair_telemetry(&session).expect("summary");
+        assert_eq!(summary.total_tool_calls, 2);
+        assert_eq!(summary.repaired_tool_call_count, 2);
+        assert_eq!(summary.error_tool_call_count, 1);
+        assert_eq!(summary.repair_event_count, 2);
+        assert_eq!(summary.provider_diagnostic_count, 1);
+        assert!(summary
+            .failure_kinds
+            .iter()
+            .any(|count| count.key == "execution_error" && count.count == 1));
+        assert!(summary
+            .provider_diagnostic_kinds
+            .iter()
+            .any(|count| count.key == "thinking_replay_rejected" && count.count == 1));
+        assert!(summary
+            .event_kinds
+            .iter()
+            .any(|count| count.key == "alias_normalization" && count.count == 1));
+        assert!(summary
+            .event_kinds
+            .iter()
+            .any(|count| count.key == "basename_auto_repair" && count.count == 1));
+        assert!(summary.tools.iter().any(|tool| {
+            tool.tool_name == "read"
+                && tool.error_call_count == 1
+                && tool.repaired_call_count == 1
+                && tool
+                    .failure_kinds
+                    .iter()
+                    .any(|count| count.key == "execution_error" && count.count == 1)
+        }));
+    }
+
+    #[test]
+    fn aggregate_model_tool_repair_telemetry_groups_matching_sessions() {
+        let mut first = Session::new("proj", ".");
+        first.insert_metadata("model_provider".to_string(), serde_json::json!("deepseek"));
+        first.insert_metadata("model_id".to_string(), serde_json::json!("v4-flash"));
+        let mut assistant = SessionMessage::assistant(first.id.clone());
+        assistant.add_tool_call("call-1", "task_flow", serde_json::json!({}));
+        if let Some(crate::MessagePart {
+            part_type: PartType::ToolCall { status, state, .. },
+            ..
+        }) = assistant.parts.last_mut()
+        {
+            *status = crate::ToolCallStatus::Completed;
+            let mut metadata = rocode_tool::Metadata::new();
+            rocode_tool::append_tool_repair_event_map(
+                &mut metadata,
+                rocode_tool::tool_repair_event("alias_normalization", "tool", "task_flow"),
+            );
+            *state = Some(ToolState::Completed {
+                input: serde_json::json!({}),
+                output: "ok".to_string(),
+                title: "Task".to_string(),
+                metadata,
+                time: crate::CompletedTime {
+                    start: 1,
+                    end: 2,
+                    compacted: None,
+                },
+                attachments: None,
+            });
+        }
+        first.push_message(assistant);
+
+        let mut second = Session::new("proj", ".");
+        second.insert_metadata("model_provider".to_string(), serde_json::json!("deepseek"));
+        second.insert_metadata("model_id".to_string(), serde_json::json!("v4-flash"));
+        let mut second_assistant = SessionMessage::assistant(second.id.clone());
+        second_assistant.add_tool_call("call-2", "read", serde_json::json!({}));
+        if let Some(crate::MessagePart {
+            part_type: PartType::ToolCall { status, state, .. },
+            ..
+        }) = second_assistant.parts.last_mut()
+        {
+            *status = crate::ToolCallStatus::Completed;
+            *state = Some(ToolState::Completed {
+                input: serde_json::json!({}),
+                output: "ok".to_string(),
+                title: "Read".to_string(),
+                metadata: rocode_tool::Metadata::new(),
+                time: crate::CompletedTime {
+                    start: 1,
+                    end: 2,
+                    compacted: None,
+                },
+                attachments: None,
+            });
+        }
+        second.push_message(second_assistant);
+        let diag = second.add_assistant_message();
+        rocode_provider::ProviderDiagnosticSummary {
+            severity: rocode_provider::ProviderDiagnosticSeverity::HardFail,
+            source: rocode_provider::ProviderDiagnosticSource::ApiErrorRewrite,
+            code: "thinking_replay_rejected".to_string(),
+            provider_id: "deepseek".to_string(),
+            model_id: Some("v4-flash".to_string()),
+            message: "thinking replay rejected".to_string(),
+        }
+        .attach_to_metadata(&mut diag.metadata);
+
+        let mut third = Session::new("proj", ".");
+        third.insert_metadata("model_provider".to_string(), serde_json::json!("openai"));
+        third.insert_metadata("model_id".to_string(), serde_json::json!("gpt-4.1"));
+
+        let summary = aggregate_model_tool_repair_telemetry(
+            [&first, &second, &third],
+            "deepseek",
+            "v4-flash",
+        )
+        .expect("summary");
+
+        assert_eq!(summary.session_count, 2);
+        assert_eq!(summary.repaired_session_count, 1);
+        assert_eq!(summary.error_session_count, 0);
+        assert_eq!(summary.provider_diagnostic_session_count, 1);
+        assert_eq!(summary.total_tool_calls, 2);
+        assert_eq!(summary.repaired_tool_call_count, 1);
+        assert_eq!(summary.repair_event_count, 1);
+        assert_eq!(summary.provider_diagnostic_count, 1);
+        assert!(summary
+            .provider_diagnostic_kinds
+            .iter()
+            .any(|count| count.key == "thinking_replay_rejected" && count.count == 1));
+        assert!(summary
+            .tools
+            .iter()
+            .any(|tool| tool.tool_name == "task_flow" && tool.repaired_call_count == 1));
+    }
+
+    #[test]
+    fn build_session_tool_repair_telemetry_classifies_common_failure_kinds() {
+        let mut session = Session::new("proj", ".");
+        let mut assistant = SessionMessage::assistant(session.id.clone());
+
+        for (idx, tool_name, error) in [
+            ("1", "bash", "Permission denied: bash requires approval"),
+            ("2", "read", "File not found: missing.txt"),
+            ("3", "websearch", "Timeout: search request timed out"),
+            (
+                "4",
+                "skill_manage",
+                "Invalid arguments: create requires either `body` or `methodology`",
+            ),
+            ("5", "task_flow", "Cancelled"),
+        ] {
+            assistant.add_tool_call(format!("call-{idx}"), tool_name, serde_json::json!({}));
+            if let Some(crate::MessagePart {
+                part_type: PartType::ToolCall { status, state, .. },
+                ..
+            }) = assistant.parts.last_mut()
+            {
+                *status = crate::ToolCallStatus::Error;
+                *state = Some(ToolState::Error {
+                    input: serde_json::json!({}),
+                    error: error.to_string(),
+                    metadata: None,
+                    time: crate::ErrorTime { start: 1, end: 2 },
+                });
+            }
+        }
+        session.push_message(assistant);
+
+        let summary = build_session_tool_repair_telemetry(&session).expect("summary");
+        assert_eq!(summary.error_tool_call_count, 5);
+        for kind in [
+            "permission_denied",
+            "file_not_found",
+            "timeout",
+            "invalid_arguments",
+            "cancelled",
+        ] {
+            assert!(summary
+                .failure_kinds
+                .iter()
+                .any(|count| count.key == kind && count.count == 1));
+        }
+    }
+
+    #[test]
+    fn aggregate_model_tool_repair_telemetry_keeps_provider_only_sessions() {
+        let mut session = Session::new("proj", ".");
+        session.insert_metadata("model_provider".to_string(), serde_json::json!("deepseek"));
+        session.insert_metadata("model_id".to_string(), serde_json::json!("v4-flash"));
+        let assistant = session.add_assistant_message();
+        rocode_provider::ProviderDiagnosticSummary {
+            severity: rocode_provider::ProviderDiagnosticSeverity::HardFail,
+            source: rocode_provider::ProviderDiagnosticSource::RequestValidation,
+            code: "thinking_replay_missing".to_string(),
+            provider_id: "deepseek".to_string(),
+            model_id: Some("v4-flash".to_string()),
+            message: "thinking replay missing".to_string(),
+        }
+        .attach_to_metadata(&mut assistant.metadata);
+
+        let summary = aggregate_model_tool_repair_telemetry([&session], "deepseek", "v4-flash")
+            .expect("provider-only session should still aggregate");
+
+        assert_eq!(summary.session_count, 1);
+        assert_eq!(summary.total_tool_calls, 0);
+        assert_eq!(summary.provider_diagnostic_session_count, 1);
+        assert_eq!(summary.provider_diagnostic_count, 1);
+        assert!(summary
+            .provider_diagnostic_kinds
+            .iter()
+            .any(|count| count.key == "thinking_replay_missing" && count.count == 1));
     }
 }

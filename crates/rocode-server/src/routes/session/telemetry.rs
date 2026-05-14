@@ -6,19 +6,21 @@ use rocode_command::stage_protocol::StageSummary;
 use rocode_multimodal::PersistedMultimodalExplain;
 use rocode_session::prompt::{explain_session_cache_semantics, explain_session_context};
 use rocode_session::{
+    aggregate_model_tool_repair_telemetry, build_session_tool_repair_telemetry,
     load_session_telemetry_snapshot, persist_session_telemetry_snapshot,
-    session_last_run_status_label, Session, SessionUsage,
+    session_last_run_status_label, session_telemetry_model_ref, Session, SessionUsage,
 };
 use rocode_types::message_continuity_packet;
 #[cfg(test)]
 use rocode_types::message_latest_compaction_summary;
 use rocode_types::{
     ContextCompactionDecisionTrace, ContextCompactionLifecycleSummary, ContextCompactionSummary,
-    ContextPressureGovernanceSummary, PromptSurfaceEvidenceSummary, SessionCacheSemanticsSummary,
+    ContextPressureGovernanceSummary, ModelToolRepairTelemetrySummary,
+    PromptSurfaceEvidenceSummary, SessionCacheSemanticsSummary,
     SessionCompactionContinuityInspection, SessionContextClosureContract, SessionContextExplain,
     SessionDiagnosticsSidecar, SessionInsightsResponse, SessionMemoryTelemetrySummary,
     SessionMultimodalAttachmentInfo, SessionMultimodalInsight, SessionOwnershipSummary,
-    SessionUsageBooks, WorkflowUsageSummary,
+    SessionToolRepairTelemetrySummary, SessionUsageBooks, WorkflowUsageSummary,
 };
 use serde::Serialize;
 
@@ -38,6 +40,10 @@ pub struct SessionTelemetrySnapshot {
     pub topology: SessionExecutionTopology,
     pub usage: SessionUsage,
     pub usage_books: SessionUsageBooks,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_repair_summary: Option<SessionToolRepairTelemetrySummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_tool_repair_summary: Option<ModelToolRepairTelemetrySummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<SessionMemoryTelemetrySummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -174,6 +180,17 @@ pub(super) async fn build_session_telemetry_snapshot(
         .list_stage_summaries(session_id)
         .await;
     let topology = build_session_execution_topology_snapshot(state, session_id, session).await;
+    let tool_repair_summary = build_session_tool_repair_telemetry(session);
+    let model_tool_repair_summary = if let Some(model_ref) = session_telemetry_model_ref(session) {
+        let sessions = state.sessions.lock().await;
+        aggregate_model_tool_repair_telemetry(
+            sessions.list(),
+            &model_ref.provider_id,
+            &model_ref.model_id,
+        )
+    } else {
+        None
+    };
     let memory = build_session_memory_telemetry(state, session).await;
     let diagnostics = SessionDiagnosticsSidecar::derive_from_session(session);
     let cache_evidence = diagnostics
@@ -256,6 +273,8 @@ pub(super) async fn build_session_telemetry_snapshot(
         topology,
         usage,
         usage_books,
+        tool_repair_summary,
+        model_tool_repair_summary,
         memory,
         cache_evidence,
         context_explain,
@@ -657,9 +676,16 @@ pub(super) async fn persist_session_telemetry_metadata(
     let last_run_status = session_last_run_status_label(session);
     let session_id = session.record().id.clone();
     let memory = build_session_memory_telemetry(state, session).await;
+    let tool_repair_summary = build_session_tool_repair_telemetry(session);
     let Some(mut snapshot) = state
         .runtime_telemetry
-        .build_persisted_snapshot(&session_id, usage, last_run_status, memory)
+        .build_persisted_snapshot(
+            &session_id,
+            usage,
+            last_run_status,
+            memory,
+            tool_repair_summary,
+        )
         .await
     else {
         return;
@@ -1516,6 +1542,8 @@ mod tests {
                 live_context_tokens: None,
                 workflow_cumulative: runtime_usage.workflow_usage_summary(),
             },
+            tool_repair_summary: None,
+            model_tool_repair_summary: None,
             memory: None,
             cache_evidence: None,
             context_explain: Some(SessionContextExplain {
@@ -1907,6 +1935,7 @@ mod tests {
                 &mut session,
                 &rocode_session::SessionTelemetrySnapshot {
                     version: SessionTelemetrySnapshotVersion::V1,
+                    tool_repair_summary: None,
                     memory: None,
                     compaction_continuity: Some(
                         rocode_types::SessionCompactionContinuityInspection {
@@ -2340,5 +2369,141 @@ mod tests {
                 .child_history_in_live_prefix_detected
         );
         assert!(!contract.prefix_stability.prefix_change_detected);
+    }
+
+    #[tokio::test]
+    async fn telemetry_snapshot_includes_session_and_model_tool_repair_summaries() {
+        let state = Arc::new(ServerState::new());
+
+        let (root_id, root_session) = {
+            let mut sessions = state.sessions.lock().await;
+
+            let mut root = sessions.create("project", "/tmp/project");
+            root.insert_metadata("model_provider".to_string(), serde_json::json!("deepseek"));
+            root.insert_metadata("model_id".to_string(), serde_json::json!("v4-flash"));
+            let assistant = root.add_assistant_message();
+            assistant.add_tool_call("call-1", "task_flow", serde_json::json!({}));
+            if let Some(rocode_session::MessagePart {
+                part_type: rocode_session::PartType::ToolCall { status, state, .. },
+                ..
+            }) = assistant.parts.last_mut()
+            {
+                *status = rocode_session::ToolCallStatus::Completed;
+                let mut metadata = rocode_tool::Metadata::new();
+                rocode_tool::append_tool_repair_event_map(
+                    &mut metadata,
+                    rocode_tool::tool_repair_event("alias_normalization", "tool", "task_flow"),
+                );
+                *state = Some(rocode_session::ToolState::Completed {
+                    input: serde_json::json!({}),
+                    output: "ok".to_string(),
+                    title: "Task".to_string(),
+                    metadata,
+                    time: rocode_session::CompletedTime {
+                        start: 1,
+                        end: 2,
+                        compacted: None,
+                    },
+                    attachments: None,
+                });
+            }
+            sessions.update(root.clone());
+
+            let mut sibling = sessions.create("project", "/tmp/project");
+            sibling.insert_metadata("model_provider".to_string(), serde_json::json!("deepseek"));
+            sibling.insert_metadata("model_id".to_string(), serde_json::json!("v4-flash"));
+            let sibling_assistant = sibling.add_assistant_message();
+            sibling_assistant.add_tool_call("call-2", "read", serde_json::json!({}));
+            if let Some(rocode_session::MessagePart {
+                part_type: rocode_session::PartType::ToolCall { status, state, .. },
+                ..
+            }) = sibling_assistant.parts.last_mut()
+            {
+                *status = rocode_session::ToolCallStatus::Completed;
+                *state = Some(rocode_session::ToolState::Completed {
+                    input: serde_json::json!({}),
+                    output: "ok".to_string(),
+                    title: "Read".to_string(),
+                    metadata: rocode_tool::Metadata::new(),
+                    time: rocode_session::CompletedTime {
+                        start: 3,
+                        end: 4,
+                        compacted: None,
+                    },
+                    attachments: None,
+                });
+            }
+            sessions.update(sibling);
+
+            let mut other_model = sessions.create("project", "/tmp/project");
+            other_model.insert_metadata("model_provider".to_string(), serde_json::json!("openai"));
+            other_model.insert_metadata("model_id".to_string(), serde_json::json!("gpt-4.1"));
+            let other_assistant = other_model.add_assistant_message();
+            other_assistant.add_tool_call("call-3", "task_flow", serde_json::json!({}));
+            if let Some(rocode_session::MessagePart {
+                part_type: rocode_session::PartType::ToolCall { status, state, .. },
+                ..
+            }) = other_assistant.parts.last_mut()
+            {
+                *status = rocode_session::ToolCallStatus::Completed;
+                let mut metadata = rocode_tool::Metadata::new();
+                rocode_tool::append_tool_repair_event_map(
+                    &mut metadata,
+                    rocode_tool::tool_repair_event("fallback", "tool", "task_flow"),
+                );
+                *state = Some(rocode_session::ToolState::Completed {
+                    input: serde_json::json!({}),
+                    output: "ok".to_string(),
+                    title: "Task".to_string(),
+                    metadata,
+                    time: rocode_session::CompletedTime {
+                        start: 5,
+                        end: 6,
+                        compacted: None,
+                    },
+                    attachments: None,
+                });
+            }
+            sessions.update(other_model);
+
+            (root.id.clone(), root)
+        };
+
+        let snapshot = build_session_telemetry_snapshot(&state, &root_id, &root_session)
+            .await
+            .expect("snapshot should build");
+
+        let session_summary = snapshot
+            .tool_repair_summary
+            .as_ref()
+            .expect("session summary should be present");
+        assert_eq!(session_summary.total_tool_calls, 1);
+        assert_eq!(session_summary.repaired_tool_call_count, 1);
+        assert_eq!(session_summary.error_tool_call_count, 0);
+        assert_eq!(session_summary.repair_event_count, 1);
+        assert!(session_summary
+            .tools
+            .iter()
+            .any(|tool| tool.tool_name == "task_flow" && tool.repaired_call_count == 1));
+
+        let model_summary = snapshot
+            .model_tool_repair_summary
+            .as_ref()
+            .expect("model summary should be present");
+        assert_eq!(model_summary.provider_id, "deepseek");
+        assert_eq!(model_summary.model_id, "v4-flash");
+        assert_eq!(model_summary.session_count, 2);
+        assert_eq!(model_summary.repaired_session_count, 1);
+        assert_eq!(model_summary.total_tool_calls, 2);
+        assert_eq!(model_summary.repaired_tool_call_count, 1);
+        assert_eq!(model_summary.repair_event_count, 1);
+        assert!(model_summary
+            .tools
+            .iter()
+            .any(|tool| tool.tool_name == "task_flow" && tool.repaired_call_count == 1));
+        assert!(model_summary
+            .tools
+            .iter()
+            .any(|tool| tool.tool_name == "read" && tool.call_count == 1));
     }
 }

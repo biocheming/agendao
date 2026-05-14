@@ -8,9 +8,9 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use self::events::{DiffEntry, broadcast_session_updated, emit_output_block_via_hook};
-use crate::ServerState;
+use self::events::{broadcast_session_updated, emit_output_block_via_hook, DiffEntry};
 use crate::runtime_control::{ExecutionPatch, ExecutionStatus, FieldUpdate, SessionRunStatus};
+use crate::ServerState;
 use rocode_command::output_blocks::{
     MessageBlock, MessageRole as OutputMessageRole, OutputBlock, ReasoningBlock,
     SchedulerDecisionBlock, SchedulerDecisionField, SchedulerDecisionRenderSpec,
@@ -18,10 +18,10 @@ use rocode_command::output_blocks::{
 };
 use rocode_orchestrator::runtime::StepCheckpointDirective;
 use rocode_orchestrator::{
+    parse_execution_gate_decision, parse_route_decision, scheduler_stage_observability,
     ExecutionContext as OrchestratorExecutionContext, LifecycleHook, RouteDecision,
     SchedulerExecutionGateDecision, SchedulerStageCapabilities,
-    ToolOutput as OrchestratorToolOutput, parse_execution_gate_decision, parse_route_decision,
-    scheduler_stage_observability,
+    ToolOutput as OrchestratorToolOutput,
 };
 use rocode_provider::Provider;
 use rocode_session::prompt::{OutputBlockEvent, OutputBlockHook};
@@ -2755,7 +2755,11 @@ fn extract_todo_items_from_args(
             })
         })
         .collect::<Vec<_>>();
-    if items.is_empty() { None } else { Some(items) }
+    if items.is_empty() {
+        None
+    } else {
+        Some(items)
+    }
 }
 
 fn apply_scheduler_decision_metadata(stage_name: &str, message: &mut SessionMessage) {

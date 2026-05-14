@@ -656,6 +656,8 @@ mod tests {
                     total_cost: 1.60,
                 },
             },
+            tool_repair_summary: None,
+            model_tool_repair_summary: None,
             memory: None,
             cache_evidence: None,
             context_explain: Some(SessionContextExplain {

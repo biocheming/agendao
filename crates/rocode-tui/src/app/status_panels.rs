@@ -1736,6 +1736,46 @@ fn tui_yes_no(value: bool) -> &'static str {
     }
 }
 
+fn tui_tool_repair_kind_summary(counts: &[rocode_types::ToolRepairCount]) -> Option<String> {
+    if counts.is_empty() {
+        return None;
+    }
+    Some(
+        counts
+            .iter()
+            .take(3)
+            .map(|count| format!("{} {}", count.key, count.count))
+            .collect::<Vec<_>>()
+            .join(" · "),
+    )
+}
+
+fn tui_tool_repair_tool_summary(tools: &[rocode_types::ToolRepairToolSummary]) -> Option<String> {
+    if tools.is_empty() {
+        return None;
+    }
+    Some(
+        tools
+            .iter()
+            .take(3)
+            .map(|tool| {
+                let mut parts = vec![format!(
+                    "{} {}/{}",
+                    tool.tool_name, tool.repaired_call_count, tool.call_count
+                )];
+                if tool.error_call_count > 0 {
+                    parts.push(format!("err {}", tool.error_call_count));
+                }
+                if tool.repair_event_count > 0 {
+                    parts.push(format!("events {}", tool.repair_event_count));
+                }
+                parts.join(" · ")
+            })
+            .collect::<Vec<_>>()
+            .join(" | "),
+    )
+}
+
 fn tui_runtime_status_lines(
     session_id: &str,
     telemetry: &crate::api::SessionTelemetrySnapshot,
@@ -1844,7 +1884,11 @@ fn tui_runtime_status_lines(
         lines.push(StatusLine::warning(format!(
             "Lagged: dropped {} queued update{} before render caught up",
             ui_bridge.dropped_events,
-            if ui_bridge.dropped_events == 1 { "" } else { "s" }
+            if ui_bridge.dropped_events == 1 {
+                ""
+            } else {
+                "s"
+            }
         )));
     }
 
@@ -2061,6 +2105,45 @@ fn tui_usage_status_lines(
         )));
         lines.push(StatusLine::muted("Provider/model: request shape only"));
         lines.push(StatusLine::muted("Workflow cumulative: observation only"));
+    }
+
+    if telemetry.tool_repair_summary.is_some() || telemetry.model_tool_repair_summary.is_some() {
+        lines.push(StatusLine::muted(String::new()));
+        lines.push(StatusLine::title("Tool Repair"));
+        if let Some(summary) = telemetry.tool_repair_summary.as_ref() {
+            lines.push(StatusLine::normal(format!(
+                "Session: repaired {}/{} calls · errors {} · events {}",
+                summary.repaired_tool_call_count,
+                summary.total_tool_calls,
+                summary.error_tool_call_count,
+                summary.repair_event_count
+            )));
+            if let Some(kinds) = tui_tool_repair_kind_summary(&summary.event_kinds) {
+                lines.push(StatusLine::muted(format!("Session kinds: {}", kinds)));
+            }
+            if let Some(tools) = tui_tool_repair_tool_summary(&summary.tools) {
+                lines.push(StatusLine::muted(format!("Session tools: {}", tools)));
+            }
+        }
+        if let Some(summary) = telemetry.model_tool_repair_summary.as_ref() {
+            lines.push(StatusLine::normal(format!(
+                "Model: {}/{} · sessions {} · repaired sessions {}",
+                summary.provider_id,
+                summary.model_id,
+                summary.session_count,
+                summary.repaired_session_count
+            )));
+            lines.push(StatusLine::muted(format!(
+                "Model calls: repaired {}/{} · errors {} · events {}",
+                summary.repaired_tool_call_count,
+                summary.total_tool_calls,
+                summary.error_tool_call_count,
+                summary.repair_event_count
+            )));
+            if let Some(kinds) = tui_tool_repair_kind_summary(&summary.event_kinds) {
+                lines.push(StatusLine::muted(format!("Model kinds: {}", kinds)));
+            }
+        }
     }
 
     if telemetry.context_closure_contract.is_none() {
@@ -2422,6 +2505,15 @@ fn tui_session_insights_lines(
             tui_format_token_count(telemetry.usage.output_tokens),
             tui_format_token_count(telemetry.usage.reasoning_tokens)
         )));
+        if let Some(summary) = telemetry.tool_repair_summary.as_ref() {
+            lines.push(StatusLine::muted(format!(
+                "Tool repair: repaired {}/{} calls · errors {} · events {}",
+                summary.repaired_tool_call_count,
+                summary.total_tool_calls,
+                summary.error_tool_call_count,
+                summary.repair_event_count
+            )));
+        }
         lines.push(StatusLine::muted(format!(
             "Cache read {} · Cache miss {} · Cache write {} · Cost ${:.4}",
             tui_format_token_count(telemetry.usage.cache_read_tokens),
@@ -3280,6 +3372,88 @@ mod tests {
                     total_cost: 1.60,
                 },
             },
+            tool_repair_summary: Some(rocode_types::SessionToolRepairTelemetrySummary {
+                total_tool_calls: 3,
+                repaired_tool_call_count: 2,
+                error_tool_call_count: 1,
+                repair_event_count: 4,
+                failure_kinds: vec![rocode_types::ToolRepairCount {
+                    key: "invalid_arguments".to_string(),
+                    count: 1,
+                }],
+                provider_diagnostic_count: 1,
+                provider_diagnostic_kinds: vec![rocode_types::ToolRepairCount {
+                    key: "thinking_replay_rejected".to_string(),
+                    count: 1,
+                }],
+                event_kinds: vec![rocode_types::ToolRepairCount {
+                    key: "alias_normalization".to_string(),
+                    count: 2,
+                }],
+                event_layers: vec![rocode_types::ToolRepairCount {
+                    key: "tool".to_string(),
+                    count: 4,
+                }],
+                tools: vec![rocode_types::ToolRepairToolSummary {
+                    tool_name: "task_flow".to_string(),
+                    call_count: 2,
+                    repaired_call_count: 2,
+                    error_call_count: 1,
+                    repair_event_count: 4,
+                    event_kinds: vec![rocode_types::ToolRepairCount {
+                        key: "alias_normalization".to_string(),
+                        count: 2,
+                    }],
+                    failure_kinds: vec![rocode_types::ToolRepairCount {
+                        key: "invalid_arguments".to_string(),
+                        count: 1,
+                    }],
+                }],
+            }),
+            model_tool_repair_summary: Some(rocode_types::ModelToolRepairTelemetrySummary {
+                provider_id: "deepseek".to_string(),
+                model_id: "v4-flash".to_string(),
+                session_count: 2,
+                repaired_session_count: 1,
+                error_session_count: 1,
+                provider_diagnostic_session_count: 1,
+                total_tool_calls: 5,
+                repaired_tool_call_count: 3,
+                error_tool_call_count: 1,
+                repair_event_count: 5,
+                failure_kinds: vec![rocode_types::ToolRepairCount {
+                    key: "invalid_arguments".to_string(),
+                    count: 1,
+                }],
+                provider_diagnostic_count: 1,
+                provider_diagnostic_kinds: vec![rocode_types::ToolRepairCount {
+                    key: "thinking_replay_rejected".to_string(),
+                    count: 1,
+                }],
+                event_kinds: vec![rocode_types::ToolRepairCount {
+                    key: "alias_normalization".to_string(),
+                    count: 3,
+                }],
+                event_layers: vec![rocode_types::ToolRepairCount {
+                    key: "tool".to_string(),
+                    count: 5,
+                }],
+                tools: vec![rocode_types::ToolRepairToolSummary {
+                    tool_name: "task_flow".to_string(),
+                    call_count: 3,
+                    repaired_call_count: 3,
+                    error_call_count: 1,
+                    repair_event_count: 5,
+                    event_kinds: vec![rocode_types::ToolRepairCount {
+                        key: "alias_normalization".to_string(),
+                        count: 3,
+                    }],
+                    failure_kinds: vec![rocode_types::ToolRepairCount {
+                        key: "invalid_arguments".to_string(),
+                        count: 1,
+                    }],
+                }],
+            }),
             memory: None,
             cache_evidence: None,
             context_explain: Some(SessionContextExplain {
@@ -3489,6 +3663,16 @@ mod tests {
         assert!(texts
             .iter()
             .any(|line| line == "Compact owner: this session"));
+        assert!(texts.iter().any(|line| line == "Tool Repair"));
+        assert!(texts
+            .iter()
+            .any(|line| { line == "Session: repaired 2/3 calls · errors 1 · events 4" }));
+        assert!(texts
+            .iter()
+            .any(|line| { line == "Session kinds: alias_normalization 2" }));
+        assert!(texts.iter().any(|line| {
+            line == "Model: deepseek/v4-flash · sessions 2 · repaired sessions 1"
+        }));
         assert!(!texts.iter().any(|line| line == "Cache semantics"));
         assert!(texts.iter().any(|line| {
             line == "Boundary: 7 earlier model-visible messages trimmed before the next request"
@@ -3563,6 +3747,8 @@ mod tests {
             },
             usage: rocode_session::SessionUsage::default(),
             usage_books: SessionUsageBooks::default(),
+            tool_repair_summary: None,
+            model_tool_repair_summary: None,
             memory: None,
             cache_evidence: None,
             context_explain: None,
@@ -3931,7 +4117,11 @@ fn active_stage_status_blocks(
     if let Some(waiting_on) = stage.waiting_on.as_deref() {
         blocks.push(StatusBlock::warning(format!("Waiting on: {}", waiting_on)));
     }
-    if let Some(focus) = stage.focus.as_deref().filter(|value| !value.trim().is_empty()) {
+    if let Some(focus) = stage
+        .focus
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
         blocks.push(StatusBlock::normal(format!("Focus: {}", focus)));
     }
     if let Some(last_event) = stage.last_event.as_deref() {

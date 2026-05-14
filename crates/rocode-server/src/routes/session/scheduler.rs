@@ -10,59 +10,59 @@ use rocode_config::{Config as AppConfig, SkillTreeNodeConfig};
 use rocode_execution_types::{CompiledExecutionRequest, ExecutionRequestContext};
 use rocode_orchestrator::output_metadata::output_usage;
 use rocode_orchestrator::{
-    AUTO_SCHEDULER_PROFILE_NAME, AgentResolver, AvailableAgentMeta, AvailableCategoryMeta,
-    ExecutionContext as OrchestratorExecutionContext, ModelRef as OrchestratorModelRef,
-    ModelResolver, Orchestrator, OrchestratorContext, OrchestratorError, SchedulerConfig,
-    SchedulerPresetKind, SchedulerProfileConfig, SchedulerRequestDefaults, SkillTreeNode,
-    SkillTreeRequestPlan, SkillTreeTruncationStrategy, ToolExecError as OrchestratorToolExecError,
-    ToolExecutor as OrchestratorToolExecutor, ToolOutput as OrchestratorToolOutput, ToolRunner,
     resolve_skill_markdown_repo, runtime::policy::ModelContextLimits,
     scheduler_auto_profile_config, scheduler_orchestrator_from_plan, scheduler_plan_from_profile,
     scheduler_request_defaults_from_file, scheduler_request_defaults_from_plan,
-    stage_policy_available_tools, stage_policy_from_label,
+    stage_policy_available_tools, stage_policy_from_label, AgentResolver, AvailableAgentMeta,
+    AvailableCategoryMeta, ExecutionContext as OrchestratorExecutionContext,
+    ModelRef as OrchestratorModelRef, ModelResolver, Orchestrator, OrchestratorContext,
+    OrchestratorError, SchedulerConfig, SchedulerPresetKind, SchedulerProfileConfig,
+    SchedulerRequestDefaults, SkillTreeNode, SkillTreeRequestPlan, SkillTreeTruncationStrategy,
+    ToolExecError as OrchestratorToolExecError, ToolExecutor as OrchestratorToolExecutor,
+    ToolOutput as OrchestratorToolOutput, ToolRunner, AUTO_SCHEDULER_PROFILE_NAME,
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::request_options::{ExecutionResolutionContext, resolve_compiled_execution_request};
+use crate::request_options::{resolve_compiled_execution_request, ExecutionResolutionContext};
 use crate::routes::skill_catalog::enrich_scheduler_plan_skills;
 use crate::runtime_control::SessionRunStatus;
 use crate::session_runtime::events::{
     broadcast_session_updated, emit_output_block_via_hook, server_output_block_hook,
 };
 use crate::session_runtime::{
-    ModelPricing, SCHEDULER_STAGE_PENDING_COMPACTION_PHASE_KEY,
-    SCHEDULER_STAGE_PENDING_LAST_EVENT_KEY, SessionSchedulerLifecycleHook, assistant_visible_text,
-    ensure_default_session_title, finalize_active_scheduler_stage_cancelled,
-    first_user_message_text, visible_assistant_text_from_orchestrator_output,
+    assistant_visible_text, ensure_default_session_title,
+    finalize_active_scheduler_stage_cancelled, first_user_message_text,
+    visible_assistant_text_from_orchestrator_output, ModelPricing, SessionSchedulerLifecycleHook,
+    SCHEDULER_STAGE_PENDING_COMPACTION_PHASE_KEY, SCHEDULER_STAGE_PENDING_LAST_EVENT_KEY,
 };
 use crate::{ApiError, Result, ServerState};
-use rocode_provider::transform::{ProviderType, apply_caching};
+use rocode_provider::transform::{apply_caching, ProviderType};
 use rocode_session::prompt::{
-    ContextPressureGovernanceOutcome, OutputBlockEvent, OutputBlockHook,
     auto_compact_session_with_focus_if_needed, govern_pre_dispatch_session_context,
+    ContextPressureGovernanceOutcome, OutputBlockEvent, OutputBlockHook,
 };
 use rocode_session::{MessageRole, PartType as SessionPartType, SessionMessage};
 use rocode_types::{
-    ConfigPolicyValidationEffect, ConfigPolicyValidationItem, ConfigPolicyValidationOwner,
-    ConfigPolicyValidationScope, ConfigPolicyValidationScopeKind, ConfigPolicyValidationSeverity,
-    ContextPressureGovernanceSummary, MemoryDetailView, MemoryEvidenceRef, MemoryRecordId,
-    SessionContinuityPacket, SessionEffectiveSchedulerTraceStep,
-    SessionEffectiveSchedulerTraceStepKind, message_latest_compaction_summary,
+    message_latest_compaction_summary, ConfigPolicyValidationEffect, ConfigPolicyValidationItem,
+    ConfigPolicyValidationOwner, ConfigPolicyValidationScope, ConfigPolicyValidationScopeKind,
+    ConfigPolicyValidationSeverity, ContextPressureGovernanceSummary, MemoryDetailView,
+    MemoryEvidenceRef, MemoryRecordId, SessionContinuityPacket, SessionEffectiveSchedulerTraceStep,
+    SessionEffectiveSchedulerTraceStepKind,
 };
 
 use super::super::permission::request_permission;
 use super::super::tui::request_question_answers;
 use super::autoresearch_target::{
-    AUTORESEARCH_PROFILE_NAME, AUTORESEARCH_PROFILE_OVERRIDE_METADATA_KEY,
-    AutoresearchProfileOverrideRecord,
+    AutoresearchProfileOverrideRecord, AUTORESEARCH_PROFILE_NAME,
+    AUTORESEARCH_PROFILE_OVERRIDE_METADATA_KEY,
 };
 use super::cancel::is_scheduler_cancellation_error;
 use super::messages::resolve_provider_and_model;
 use super::prompt::{
-    SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY, SchedulerUserMessageContext,
     build_scheduler_session_context_packet, create_scheduler_user_message,
     merge_scheduler_prompt_with_memory, move_scheduler_final_answer_after_stage_messages,
     propagate_output_projection_metadata, resolve_prompt_memory_context,
+    SchedulerUserMessageContext, SCHEDULER_SESSION_CONTEXT_PACKET_METADATA_KEY,
 };
 use super::session_crud::{
     compaction_lifecycle_status_hook, resolved_session_directory, set_session_run_status,
@@ -3039,12 +3039,10 @@ mod tests {
         .expect("valid message ids should parse");
 
         assert_eq!(ids, vec!["msg_1".to_string(), "msg_2".to_string()]);
-        assert!(
-            scheduler_context_hydrate_message_ids(&serde_json::json!({
-                "message_ids": []
-            }))
-            .is_err()
-        );
+        assert!(scheduler_context_hydrate_message_ids(&serde_json::json!({
+            "message_ids": []
+        }))
+        .is_err());
         assert_eq!(
             scheduler_context_hydrate_message_limit(&serde_json::json!({
                 "max_chars_per_message": 99_999
@@ -3158,12 +3156,10 @@ mod tests {
         .expect("valid record ids should parse");
 
         assert_eq!(ids, vec!["mem_1".to_string(), "mem_2".to_string()]);
-        assert!(
-            scheduler_memory_hydrate_record_ids(&serde_json::json!({
-                "record_ids": []
-            }))
-            .is_err()
-        );
+        assert!(scheduler_memory_hydrate_record_ids(&serde_json::json!({
+            "record_ids": []
+        }))
+        .is_err());
         assert_eq!(
             scheduler_memory_hydrate_record_limit(&serde_json::json!({
                 "max_chars_per_record": 99_999

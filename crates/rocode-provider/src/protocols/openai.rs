@@ -105,7 +105,8 @@ fn maybe_start_new_continuation_boundary(config: &ProviderConfig, request: &mut 
     if !provider_defaults_thinking_enabled(config) {
         return;
     }
-    if request_explicitly_enables_thinking(request) || request_explicitly_disables_thinking(request) {
+    if request_explicitly_enables_thinking(request) || request_explicitly_disables_thinking(request)
+    {
         return;
     }
     if !request_has_tool_call_continuation_missing_reasoning_replay(&request.messages) {

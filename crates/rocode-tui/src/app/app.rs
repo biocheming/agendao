@@ -1562,7 +1562,8 @@ impl App {
                             rocode_command::output_blocks::SchedulerStageBlock,
                         >(payload.clone())
                         {
-                            self.context.apply_scheduler_stage_summary(session_id, &block);
+                            self.context
+                                .apply_scheduler_stage_summary(session_id, &block);
                         }
                     }
 
@@ -1839,10 +1840,16 @@ mod tests {
     fn session_update_requires_sync_for_prompt_final_sources() {
         assert!(session_update_requires_sync(Some("prompt.final")));
         assert!(session_update_requires_sync(Some("prompt.completed")));
-        assert!(session_update_requires_sync(Some("prompt.scheduler.completed")));
+        assert!(session_update_requires_sync(Some(
+            "prompt.scheduler.completed"
+        )));
         assert!(!session_update_requires_sync(Some("prompt.stream")));
-        assert!(session_update_requires_sync(Some("prompt.scheduler.stage.step")));
-        assert!(session_update_requires_sync(Some("prompt.scheduler.stage.usage")));
+        assert!(session_update_requires_sync(Some(
+            "prompt.scheduler.stage.step"
+        )));
+        assert!(session_update_requires_sync(Some(
+            "prompt.scheduler.stage.usage"
+        )));
         assert!(!session_update_requires_sync(Some(
             "prompt.scheduler.stage.reasoning"
         )));
@@ -2208,12 +2215,16 @@ mod tests {
         assert!(!app.toast.is_visible());
 
         app.sync_runtime.last_ui_bridge_dropped_events = 2;
-        app.context.ui_bridge.emit(Event::Custom(Box::new(
-            crate::event::CustomEvent::Message("message-1".to_string()),
-        )));
-        app.context.ui_bridge.emit(Event::Custom(Box::new(
-            crate::event::CustomEvent::Message("message-2".to_string()),
-        )));
+        app.context
+            .ui_bridge
+            .emit(Event::Custom(Box::new(crate::event::CustomEvent::Message(
+                "message-1".to_string(),
+            ))));
+        app.context
+            .ui_bridge
+            .emit(Event::Custom(Box::new(crate::event::CustomEvent::Message(
+                "message-2".to_string(),
+            ))));
 
         app.context.ui_bridge.drain(1);
         let queue_capacity = app.context.ui_bridge_snapshot().capacity;
