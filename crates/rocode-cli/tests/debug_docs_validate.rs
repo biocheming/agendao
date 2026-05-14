@@ -1,34 +1,31 @@
+use std::sync::{Mutex, OnceLock};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-fn rocode_bin() -> PathBuf {
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_rocode") {
-        return PathBuf::from(path);
-    }
-
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let binary_name = if cfg!(windows) {
-        "rocode.exe"
-    } else {
-        "rocode"
-    };
-    manifest_dir
-        .join("../..")
-        .join("target")
-        .join("debug")
-        .join(binary_name)
-}
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 fn run_rocode_json(current_dir: &Path, args: &[&str]) -> serde_json::Value {
-    let output = Command::new(rocode_bin())
-        .current_dir(current_dir)
+    static CARGO_RUN_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let _guard = CARGO_RUN_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("cargo run lock should not be poisoned");
+
+    let manifest_path = repo_root().join("crates/rocode/Cargo.toml");
+    let output = Command::new("cargo")
+        .arg("run")
+        .arg("-q")
+        .arg("--manifest-path")
+        .arg(&manifest_path)
+        .arg("-p")
+        .arg("rocode")
+        .arg("--")
         .args(args)
+        .current_dir(current_dir)
         .output()
         .expect("rocode should execute");
 
