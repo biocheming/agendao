@@ -128,6 +128,57 @@ fn take_pending_sanitizer_stage(session: &mut Session) -> rocode_types::Sanitize
 }
 
 #[cfg(test)]
+mod sanitizer_stage_tests {
+    use super::*;
+
+    #[test]
+    fn resume_path_uses_shared_sanitizer_contract() {
+        let mut session = Session::new("proj", ".");
+        session.insert_metadata(
+            PENDING_SANITIZER_STAGE_METADATA_KEY.to_string(),
+            serde_json::json!(rocode_types::SanitizerStage::SessionResume.label()),
+        );
+
+        let stage = take_pending_sanitizer_stage(&mut session);
+        assert_eq!(stage, rocode_types::SanitizerStage::SessionResume);
+        // Stage is consumed on read; second call defaults to PreRequest.
+        let stage2 = take_pending_sanitizer_stage(&mut session);
+        assert_eq!(stage2, rocode_types::SanitizerStage::PreRequest);
+    }
+
+    #[test]
+    fn post_compaction_continue_uses_shared_sanitizer_contract() {
+        let mut session = Session::new("proj", ".");
+        session.insert_metadata(
+            PENDING_SANITIZER_STAGE_METADATA_KEY.to_string(),
+            serde_json::json!(rocode_types::SanitizerStage::PostCompaction.label()),
+        );
+
+        let stage = take_pending_sanitizer_stage(&mut session);
+        assert_eq!(stage, rocode_types::SanitizerStage::PostCompaction);
+    }
+
+    #[test]
+    fn fallback_retry_uses_shared_sanitizer_contract() {
+        let mut session = Session::new("proj", ".");
+        session.insert_metadata(
+            PENDING_SANITIZER_STAGE_METADATA_KEY.to_string(),
+            serde_json::json!(rocode_types::SanitizerStage::FallbackRetry.label()),
+        );
+
+        let stage = take_pending_sanitizer_stage(&mut session);
+        assert_eq!(stage, rocode_types::SanitizerStage::FallbackRetry);
+    }
+
+    #[test]
+    fn default_sanitizer_stage_is_pre_request() {
+        let mut session = Session::new("proj", ".");
+        let stage = take_pending_sanitizer_stage(&mut session);
+        assert_eq!(stage, rocode_types::SanitizerStage::PreRequest);
+    }
+}
+
+#[cfg(test)]
 mod cache_fingerprint_tests {
     use super::*;
     use rocode_provider::Message;

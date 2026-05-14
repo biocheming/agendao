@@ -688,7 +688,7 @@ mod tests {
         assert!(matches!(
             &converted.messages[2].content[0],
             MessagesContent::ToolUse { id, name, .. }
-            if id == "tool-call-0" && name == "skills_list"
+            if id == "tool-call-0--dedup-1" && name == "skills_list"
         ));
 
         assert_eq!(converted.messages[3].role, "user");
@@ -698,7 +698,7 @@ mod tests {
                 tool_use_id,
                 content,
                 is_error: None
-            } if tool_use_id == "tool-call-0" && content == "{\"skills\":[]}"
+            } if tool_use_id == "tool-call-0--dedup-1" && content == "{\"skills\":[]}"
         ));
     }
 
