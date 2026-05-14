@@ -5,6 +5,7 @@ pub mod ingress;
 mod loop_lifecycle;
 mod message_building;
 mod runtime_step;
+pub mod sanitizer_contract;
 pub mod shell;
 mod skill_reflection;
 pub mod subtask;
@@ -26,6 +27,7 @@ pub const CONTEXT_COMPACTION_LIFECYCLE_SUMMARY_METADATA_KEY: &str =
 pub const CONTEXT_PRESSURE_GOVERNANCE_SUMMARY_METADATA_KEY: &str =
     "context_pressure_governance_summary";
 pub const CONTEXT_LIGHTWEIGHT_TRIM_SUMMARY_METADATA_KEY: &str = "context_lightweight_trim_summary";
+pub const PENDING_SANITIZER_STAGE_METADATA_KEY: &str = "pending_sanitizer_stage";
 
 pub fn sanctioned_model_context_summary(message: &SessionMessage) -> Option<&str> {
     surface_contract::sanctioned_model_context_projection_for_message(message)

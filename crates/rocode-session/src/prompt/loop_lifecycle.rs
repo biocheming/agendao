@@ -39,8 +39,9 @@ use super::{
         PromptSurfaceProviderOptionGroup,
     },
     tools_and_output, PromptHooks, PromptInput, PromptRequestContext, SessionPrompt,
-    SessionStepShared, MAX_STEPS, PROMPT_SURFACE_EVIDENCE_METADATA_KEY,
-    PROMPT_SURFACE_STATE_SNAPSHOT_METADATA_KEY, STREAM_UPDATE_INTERVAL_MS,
+    SessionStepShared, MAX_STEPS, PENDING_SANITIZER_STAGE_METADATA_KEY,
+    PROMPT_SURFACE_EVIDENCE_METADATA_KEY, PROMPT_SURFACE_STATE_SNAPSHOT_METADATA_KEY,
+    STREAM_UPDATE_INTERVAL_MS,
 };
 
 const MAX_LENGTH_CONTINUATION_RETRIES: u8 = 2;
@@ -111,6 +112,19 @@ impl RuntimeCancelToken for SessionStepCancelToken {
     fn is_cancelled(&self) -> bool {
         self.user_cancel.is_cancelled() || self.step_complete.load(Ordering::Relaxed)
     }
+}
+
+fn take_pending_sanitizer_stage(session: &mut Session) -> rocode_types::SanitizerStage {
+    let Some(value) = session.remove_metadata(PENDING_SANITIZER_STAGE_METADATA_KEY) else {
+        return rocode_types::SanitizerStage::PreRequest;
+    };
+
+    value
+        .as_str()
+        .and_then(|raw| {
+            serde_json::from_str::<rocode_types::SanitizerStage>(&format!("\"{raw}\"")).ok()
+        })
+        .unwrap_or(rocode_types::SanitizerStage::PreRequest)
 }
 
 #[cfg(test)]
@@ -1200,6 +1214,11 @@ impl SessionPrompt {
             session_state.set_busy(&session_id);
         }
 
+        session.insert_metadata(
+            PENDING_SANITIZER_STAGE_METADATA_KEY,
+            serde_json::json!(rocode_types::SanitizerStage::SessionResume.label()),
+        );
+
         let result = self
             .loop_inner(
                 session_id.clone(),
@@ -1381,6 +1400,10 @@ impl SessionPrompt {
             force,
         ) {
             tracing::info!(session_id = %session_id, summary, "context compacted");
+            session.insert_metadata(
+                PENDING_SANITIZER_STAGE_METADATA_KEY,
+                serde_json::json!(rocode_types::SanitizerStage::PostCompaction.label()),
+            );
             let mut lifecycle = lifecycle.clone();
             lifecycle.status = rocode_types::ContextCompactionLifecycleStatus::Installed;
             super::install_compaction_lifecycle_summary(session, &mut lifecycle);
@@ -2404,7 +2427,7 @@ impl SessionPrompt {
 
             let PreparedChatMessages {
                 prompt_messages,
-                chat_messages,
+                mut chat_messages,
             } = Self::prepare_chat_messages(
                 &session_id,
                 prompt_ctx.agent_name.as_deref(),
@@ -2413,6 +2436,24 @@ impl SessionPrompt {
                 provider_type,
             )
             .await?;
+
+            let sanitizer_stage = take_pending_sanitizer_stage(session);
+
+            // P0.2: Run the shared sanitizer contract on every pre-request path.
+            // Records repair telemetry for orphaned tool results, thinking-only
+            // assistants, and other common message-level issues.
+            let (sanitized, _telemetry) = super::sanitizer_contract::sanitize_with_contract(
+                &chat_messages,
+                sanitizer_stage,
+                rocode_provider::protocols::request_sanitizer::SanitizerOptions::default(),
+                &mut session.record_mut().metadata,
+            );
+            chat_messages = sanitized;
+
+            // P0.4: Inject the latest tool batch summary into the model context
+            // so the model can consume structured results from the previous turn.
+            Self::inject_latest_tool_batch_summary(session, &mut chat_messages);
+
             let (request_context_tokens, request_body_chars) =
                 Self::estimate_request_context_tokens_from_provider_messages(&chat_messages);
             let filtered_messages = Self::filter_compacted_messages(&session.messages);
@@ -2589,6 +2630,10 @@ impl SessionPrompt {
                         )
                         .await
                     {
+                        session.insert_metadata(
+                            PENDING_SANITIZER_STAGE_METADATA_KEY,
+                            serde_json::json!(rocode_types::SanitizerStage::FallbackRetry.label()),
+                        );
                         overflow_recovery_attempts = 1;
                         continue;
                     }

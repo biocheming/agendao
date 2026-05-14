@@ -1,28 +1,48 @@
+use rocode_types::SanitizerAction;
+
 use crate::{Content, ContentPart, Message, Role};
 
 const INTERRUPTED_TOOL_RESULT_TEXT: &str = "[Tool execution was interrupted]";
 
 #[derive(Debug, Clone, Copy, Default)]
-pub(super) struct SanitizerOptions {
+pub struct SanitizerOptions {
     pub drop_thinking_only_assistant: bool,
 }
 
-pub(super) fn sanitize_messages_for_protocol(
+/// Sanitize messages for protocol transport (backward-compatible signature).
+pub fn sanitize_messages_for_protocol(
     messages: &[Message],
     options: SanitizerOptions,
+) -> Vec<Message> {
+    sanitize_messages_for_protocol_with_actions(messages, options, None)
+}
+
+/// Sanitize messages and record every cleanup action into the supplied vector.
+pub fn sanitize_messages_for_protocol_with_actions(
+    messages: &[Message],
+    options: SanitizerOptions,
+    mut actions_out: Option<&mut Vec<SanitizerAction>>,
 ) -> Vec<Message> {
     let mut sanitized = Vec::new();
     let mut pending_tool_use_ids = Vec::new();
 
+    // Helper to record an action without consuming the outer Option.
+    let mut record = |action: SanitizerAction| {
+        if let Some(ref mut actions) = actions_out {
+            actions.push(action);
+        }
+    };
+
     for message in messages {
         match message.role {
             Role::System | Role::User => {
-                flush_pending_tool_results(&mut sanitized, &mut pending_tool_use_ids);
+                flush_pending(&mut sanitized, &mut pending_tool_use_ids, &mut record);
                 sanitized.push(message.clone());
             }
             Role::Assistant => {
-                flush_pending_tool_results(&mut sanitized, &mut pending_tool_use_ids);
+                flush_pending(&mut sanitized, &mut pending_tool_use_ids, &mut record);
                 if options.drop_thinking_only_assistant && is_thinking_only_assistant(message) {
+                    record(SanitizerAction::ThinkingOnlyAssistant);
                     continue;
                 }
                 pending_tool_use_ids = assistant_tool_use_ids(message);
@@ -31,11 +51,27 @@ pub(super) fn sanitize_messages_for_protocol(
             Role::Tool => {
                 let (tool_result_parts, text_parts) =
                     sanitize_tool_message_content(&message.content, &mut pending_tool_use_ids);
+                // Detect orphaned tool results.
+                let matched_ids: std::collections::HashSet<&str> = tool_result_parts
+                    .iter()
+                    .filter_map(|p| p.tool_result.as_ref().map(|tr| tr.tool_use_id.as_str()))
+                    .collect();
+                if let Content::Parts(parts) = &message.content {
+                    for part in parts {
+                        if let Some(tool_result) = &part.tool_result {
+                            if !matched_ids.contains(tool_result.tool_use_id.as_str()) {
+                                record(SanitizerAction::OrphanedToolResult {
+                                    tool_call_id: tool_result.tool_use_id.clone(),
+                                });
+                            }
+                        }
+                    }
+                }
                 if !tool_result_parts.is_empty() {
                     sanitized.push(Message::tool_parts(tool_result_parts));
                 }
                 if !text_parts.is_empty() {
-                    flush_pending_tool_results(&mut sanitized, &mut pending_tool_use_ids);
+                    flush_pending(&mut sanitized, &mut pending_tool_use_ids, &mut record);
                     sanitized.push(Message {
                         role: Role::User,
                         content: Content::Parts(text_parts),
@@ -47,15 +83,15 @@ pub(super) fn sanitize_messages_for_protocol(
         }
     }
 
-    flush_pending_tool_results(&mut sanitized, &mut pending_tool_use_ids);
+    flush_pending(&mut sanitized, &mut pending_tool_use_ids, &mut record);
     sanitized
 }
 
-pub(super) fn interrupted_tool_result_text() -> &'static str {
+pub fn interrupted_tool_result_text() -> &'static str {
     INTERRUPTED_TOOL_RESULT_TEXT
 }
 
-pub(super) fn sanitize_messages_for_text_protocol(messages: &[Message]) -> Vec<Message> {
+pub fn sanitize_messages_for_text_protocol(messages: &[Message]) -> Vec<Message> {
     let sanitized = sanitize_messages_for_protocol(
         messages,
         SanitizerOptions {
@@ -76,7 +112,7 @@ pub(super) fn sanitize_messages_for_text_protocol(messages: &[Message]) -> Vec<M
     projected
 }
 
-pub(super) fn content_visible_text_lossy(content: &Content) -> String {
+pub fn content_visible_text_lossy(content: &Content) -> String {
     match content {
         Content::Text(text) => text.clone(),
         Content::Parts(parts) => parts
@@ -89,6 +125,8 @@ pub(super) fn content_visible_text_lossy(content: &Content) -> String {
             .join("\n\n"),
     }
 }
+
+// ── Internal helpers ────────────────────────────────────────────────────
 
 fn assistant_tool_use_ids(message: &Message) -> Vec<String> {
     match &message.content {
@@ -104,14 +142,24 @@ fn interrupted_tool_result_part(tool_use_id: String) -> ContentPart {
     ContentPart::tool_result(tool_use_id, INTERRUPTED_TOOL_RESULT_TEXT, Some(true))
 }
 
-fn flush_pending_tool_results(messages: &mut Vec<Message>, pending_tool_use_ids: &mut Vec<String>) {
+fn flush_pending(
+    messages: &mut Vec<Message>,
+    pending_tool_use_ids: &mut Vec<String>,
+    record: &mut dyn FnMut(SanitizerAction),
+) {
     if pending_tool_use_ids.is_empty() {
         return;
     }
 
-    let tool_result_parts = pending_tool_use_ids
-        .drain(..)
-        .map(interrupted_tool_result_part)
+    let ids: Vec<String> = pending_tool_use_ids.drain(..).collect();
+    let tool_result_parts = ids
+        .into_iter()
+        .map(|id| {
+            record(SanitizerAction::OrphanedToolResult {
+                tool_call_id: id.clone(),
+            });
+            interrupted_tool_result_part(id)
+        })
         .collect();
     messages.push(Message::tool_parts(tool_result_parts));
 }
@@ -144,7 +192,7 @@ fn sanitize_tool_message_content(
                     } else {
                         tracing::warn!(
                             tool_call_id = %tool_result.tool_use_id,
-                            "dropping orphan or out-of-order historical tool message without pending assistant tool_call"
+                            "dropping orphan tool_result without pending assistant tool_call"
                         );
                     }
                     continue;
@@ -286,6 +334,47 @@ mod tests {
                             && tool_result.content == INTERRUPTED_TOOL_RESULT_TEXT
                 )
         ));
+    }
+
+    #[test]
+    fn records_actions_when_collector_provided() {
+        let messages = vec![
+            Message::user("first"),
+            Message::assistant_parts(vec![ContentPart::reasoning("hidden")]),
+            Message::user("second"),
+        ];
+
+        let mut actions = Vec::new();
+        let _sanitized = sanitize_messages_for_protocol_with_actions(
+            &messages,
+            SanitizerOptions {
+                drop_thinking_only_assistant: true,
+            },
+            Some(&mut actions),
+        );
+
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(actions[0], SanitizerAction::ThinkingOnlyAssistant));
+    }
+
+    #[test]
+    fn records_interrupted_tool_calls() {
+        let messages = vec![
+            Message::assistant_parts(vec![ContentPart::tool_use("call-1", "ls", json!({}))]),
+            // New assistant without tool_result for call-1 → interrupted
+            Message::assistant_parts(vec![ContentPart::tool_use("call-2", "read", json!({}))]),
+        ];
+
+        let mut actions = Vec::new();
+        let _sanitized = sanitize_messages_for_protocol_with_actions(
+            &messages,
+            SanitizerOptions::default(),
+            Some(&mut actions),
+        );
+
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, SanitizerAction::OrphanedToolResult { tool_call_id } if tool_call_id == "call-1")));
     }
 
     #[test]
