@@ -91,6 +91,20 @@ pub fn resolved_compaction_config(
     config
 }
 
+/// Resolve the effective repair policy from config.
+/// Defaults to `Permissive` when unset.
+pub fn effective_repair_policy(
+    config_store: Option<&rocode_config::ConfigStore>,
+) -> rocode_types::RepairPolicy {
+    let Some(store) = config_store else {
+        return rocode_types::RepairPolicy::Permissive;
+    };
+    store
+        .config()
+        .repair_policy
+        .unwrap_or(rocode_types::RepairPolicy::Permissive)
+}
+
 /// Input for the compaction process.
 #[derive(Clone)]
 pub struct CompactionInput {
@@ -1830,5 +1844,21 @@ mod tests {
                 .join("\n"),
         };
         assert_eq!(first_text, "from parts");
+    }
+
+    #[test]
+    fn strict_policy_defaults_to_permissive_when_unset() {
+        // No config store → permissive.
+        assert_eq!(
+            effective_repair_policy(None),
+            rocode_types::RepairPolicy::Permissive
+        );
+
+        // Config store without explicit repair_policy → permissive.
+        let store = rocode_config::ConfigStore::new(rocode_config::Config::default());
+        assert_eq!(
+            effective_repair_policy(Some(&store)),
+            rocode_types::RepairPolicy::Permissive
+        );
     }
 }

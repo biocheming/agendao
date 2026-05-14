@@ -177,6 +177,7 @@ impl GitHubCopilotCloseAiAdapter {
             &request.messages,
             SanitizerOptions {
                 drop_thinking_only_assistant: false,
+                ..Default::default()
             },
         );
         if let Some(system) = &request.system {

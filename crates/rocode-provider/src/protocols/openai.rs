@@ -298,6 +298,7 @@ fn responses_generate_options(_config: &ProviderConfig, request: &ChatRequest) -
         &request.messages,
         SanitizerOptions {
             drop_thinking_only_assistant: false,
+            ..Default::default()
         },
     );
     if let Some(system) = &request.system {

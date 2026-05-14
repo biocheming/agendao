@@ -52,6 +52,7 @@ impl EthnopicAdapter {
             &request.messages,
             SanitizerOptions {
                 drop_thinking_only_assistant: true,
+                ..Default::default()
             },
         );
 

@@ -33,6 +33,7 @@ struct ToolExecutionOptions {
     provider_id: String,
     model_id: String,
     hooks: PromptHooks,
+    repair_policy: rocode_types::RepairPolicy,
 }
 
 const MAX_PERSISTED_SUBSESSION_HISTORY_TURNS: usize = 8;
@@ -60,6 +61,7 @@ impl SessionPrompt {
         provider_id: &str,
         model_id: &str,
     ) -> anyhow::Result<()> {
+        let repair_policy = crate::compaction::effective_repair_policy(ctx.config_store.as_deref());
         Self::execute_tool_calls_with_hook(
             session,
             tool_registry,
@@ -69,6 +71,7 @@ impl SessionPrompt {
                 provider_id: provider_id.to_string(),
                 model_id: model_id.to_string(),
                 hooks: PromptHooks::default(),
+                repair_policy,
             },
         )
         .await?;
@@ -244,13 +247,17 @@ impl SessionPrompt {
                     );
                     rocode_tool::append_tool_repair_event_map(&mut repair_metadata, event);
                 }
+                let mut strict_prevalidation_error: Option<String> = None;
                 if let Some(payload) =
                     Self::prevalidate_tool_arguments(&effective_tool_name, &effective_input)
                 {
+                    let is_strict =
+                        matches!(options.repair_policy, rocode_types::RepairPolicy::Strict);
                     tracing::warn!(
                         tool_name = %tool_name,
                         normalized_tool = %effective_tool_name,
-                        "tool arguments failed prevalidation; routing to invalid tool"
+                        policy = %options.repair_policy.label(),
+                        "tool arguments failed prevalidation"
                     );
                     let mut event = rocode_tool::tool_repair_event(
                         "argument_prevalidation_fallback",
@@ -263,102 +270,162 @@ impl SessionPrompt {
                     if let Some(received_args) = payload.get("receivedArgs") {
                         event.insert("receivedArgs".to_string(), received_args.clone());
                     }
+                    if is_strict {
+                        event.insert(
+                            "strict_mode_would_fail".to_string(),
+                            serde_json::json!(true),
+                        );
+                    }
                     rocode_tool::append_tool_repair_event_map(&mut repair_metadata, event);
-                    effective_tool_name = "invalid".to_string();
-                    effective_input = payload;
+                    if is_strict {
+                        // Strict: do not rewrite the execution input or reroute
+                        // through the invalid tool. Record the failure and stop
+                        // before executing the tool.
+                        strict_prevalidation_error = payload
+                            .get("error")
+                            .and_then(|value| value.as_str())
+                            .map(ToOwned::to_owned)
+                            .or_else(|| Some("Tool arguments failed prevalidation".to_string()));
+                    } else {
+                        // Permissive: reroute to invalid tool for a helpful error message.
+                        effective_tool_name = "invalid".to_string();
+                        effective_input = payload;
+                    }
                 }
 
-                let execution = tool_registry
-                    .execute(
-                        &effective_tool_name,
-                        effective_input.clone(),
-                        tool_ctx.clone(),
-                    )
-                    .await;
-
                 let (content, is_error, title, metadata, attachments, state_attachments) =
-                    match execution {
-                        Ok(result) => {
-                            let mut metadata = result.metadata;
-                            rocode_tool::merge_tool_repair_telemetry(
-                                &mut metadata,
-                                &repair_metadata,
-                            );
-                            let (attachments, state_attachments) =
-                                Self::extract_tool_attachments_from_metadata(
-                                    &mut metadata,
-                                    &ctx.session_id,
-                                    &ctx.message_id,
-                                );
-                            (
-                                result.output,
-                                false,
-                                Some(result.title),
-                                Some(metadata),
-                                attachments,
-                                state_attachments,
-                            )
-                        }
-                        Err(e) => {
-                            // Route argument/validation failures to the "invalid"
-                            // tool so the model sees a consistent, machine-readable
-                            // error with repair hints.
-                            if available_tool_ids.contains("invalid") {
-                                let invalid_input = Self::invalid_tool_payload(
-                                    &tool_name,
-                                    &format!("Error: {}", e),
-                                );
-                                let fallback_execution = tool_registry
-                                    .execute("invalid", invalid_input.clone(), tool_ctx.clone())
-                                    .await;
-                                match fallback_execution {
-                                    Ok(result) => {
-                                        effective_tool_name = "invalid".to_string();
-                                        effective_input = invalid_input;
-                                        let mut metadata = result.metadata;
-                                        rocode_tool::merge_tool_repair_telemetry(
+                    match strict_prevalidation_error {
+                        Some(error) => (
+                            format!("Invalid arguments: {}", error),
+                            true,
+                            Some("Tool Error".to_string()),
+                            (!rocode_tool::tool_repair_events(&repair_metadata).is_empty())
+                                .then_some(repair_metadata.clone()),
+                            None,
+                            None,
+                        ),
+                        None => {
+                            let execution = tool_registry
+                                .execute(
+                                    &effective_tool_name,
+                                    effective_input.clone(),
+                                    tool_ctx.clone(),
+                                )
+                                .await;
+                            match execution {
+                                Ok(result) => {
+                                    let mut metadata = result.metadata;
+                                    rocode_tool::merge_tool_repair_telemetry(
+                                        &mut metadata,
+                                        &repair_metadata,
+                                    );
+                                    let (attachments, state_attachments) =
+                                        Self::extract_tool_attachments_from_metadata(
                                             &mut metadata,
-                                            &repair_metadata,
+                                            &ctx.session_id,
+                                            &ctx.message_id,
                                         );
-                                        let (attachments, state_attachments) =
-                                            Self::extract_tool_attachments_from_metadata(
-                                                &mut metadata,
-                                                &ctx.session_id,
-                                                &ctx.message_id,
-                                            );
-                                        (
-                                            result.output,
-                                            false,
-                                            Some(result.title),
-                                            Some(metadata),
-                                            attachments,
-                                            state_attachments,
-                                        )
-                                    }
-                                    Err(fallback_err) => (
-                                        format!(
+                                    (
+                                        result.output,
+                                        false,
+                                        Some(result.title),
+                                        Some(metadata),
+                                        attachments,
+                                        state_attachments,
+                                    )
+                                }
+                                Err(e) => {
+                                    let is_strict = matches!(
+                                        options.repair_policy,
+                                        rocode_types::RepairPolicy::Strict
+                                    );
+                                    // Permissive: reroute to invalid for machine-readable errors.
+                                    // Strict: return the raw error, don't silently rewrite.
+                                    if !is_strict && available_tool_ids.contains("invalid") {
+                                        let invalid_input = Self::invalid_tool_payload(
+                                            &tool_name,
+                                            &format!("Error: {}", e),
+                                        );
+                                        let fallback_execution = tool_registry
+                                            .execute(
+                                                "invalid",
+                                                invalid_input.clone(),
+                                                tool_ctx.clone(),
+                                            )
+                                            .await;
+                                        match fallback_execution {
+                                            Ok(result) => {
+                                                effective_tool_name = "invalid".to_string();
+                                                effective_input = invalid_input;
+                                                let mut metadata = result.metadata;
+                                                rocode_tool::merge_tool_repair_telemetry(
+                                                    &mut metadata,
+                                                    &repair_metadata,
+                                                );
+                                                let (attachments, state_attachments) =
+                                                    Self::extract_tool_attachments_from_metadata(
+                                                        &mut metadata,
+                                                        &ctx.session_id,
+                                                        &ctx.message_id,
+                                                    );
+                                                (
+                                                    result.output,
+                                                    false,
+                                                    Some(result.title),
+                                                    Some(metadata),
+                                                    attachments,
+                                                    state_attachments,
+                                                )
+                                            }
+                                            Err(fallback_err) => (
+                                                format!(
                                             "Tool {} failed: {}. Invalid fallback also failed: {}",
                                             tool_name, e, fallback_err
                                         ),
-                                        true,
-                                        Some("Tool Error".to_string()),
-                                        (!rocode_tool::tool_repair_events(&repair_metadata)
-                                            .is_empty())
-                                        .then_some(repair_metadata.clone()),
-                                        None,
-                                        None,
-                                    ),
+                                                true,
+                                                Some("Tool Error".to_string()),
+                                                (!rocode_tool::tool_repair_events(
+                                                    &repair_metadata,
+                                                )
+                                                .is_empty())
+                                                .then_some(repair_metadata.clone()),
+                                                None,
+                                                None,
+                                            ),
+                                        }
+                                    } else {
+                                        // Strict mode (or no invalid tool): return the raw error.
+                                        if is_strict {
+                                            let mut event = rocode_tool::tool_repair_event(
+                                                "execution_error_no_reroute",
+                                                "session_prompt",
+                                                &effective_tool_name,
+                                            );
+                                            event.insert(
+                                                "reason".to_string(),
+                                                serde_json::json!(format!("Error: {}", e)),
+                                            );
+                                            event.insert(
+                                                "strict_mode_would_fail".to_string(),
+                                                serde_json::json!(true),
+                                            );
+                                            rocode_tool::append_tool_repair_event_map(
+                                                &mut repair_metadata,
+                                                event,
+                                            );
+                                        }
+                                        (
+                                            format!("Error: {}", e),
+                                            true,
+                                            Some("Tool Error".to_string()),
+                                            (!rocode_tool::tool_repair_events(&repair_metadata)
+                                                .is_empty())
+                                            .then_some(repair_metadata.clone()),
+                                            None,
+                                            None,
+                                        )
+                                    }
                                 }
-                            } else {
-                                (
-                                    format!("Error: {}", e),
-                                    true,
-                                    Some("Tool Error".to_string()),
-                                    (!rocode_tool::tool_repair_events(&repair_metadata).is_empty())
-                                        .then_some(repair_metadata.clone()),
-                                    None,
-                                    None,
-                                )
                             }
                         }
                     };
@@ -1679,5 +1746,252 @@ mod tests {
         let tools = SessionPrompt::mcp_tools_from_session(&session);
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "repo_search");
+    }
+
+    #[tokio::test]
+    async fn strict_tool_execution_does_not_reroute_invalid_args_to_invalid_tool() {
+        let tool_registry = Arc::new(rocode_tool::ToolRegistry::new());
+        tool_registry.register(AlwaysFailTool).await;
+        tool_registry
+            .register(rocode_tool::invalid::InvalidTool)
+            .await;
+
+        let mut session = Session::new("proj", ".");
+        let sid = session.id.clone();
+        session
+            .messages_mut()
+            .push(SessionMessage::user(sid.clone(), "run failing tool"));
+        let mut assistant = SessionMessage::assistant(sid);
+        assistant.add_tool_call("call_fail", "fail_tool", serde_json::json!({}));
+        session.messages_mut().push(assistant);
+
+        let provider: Arc<dyn Provider> =
+            Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
+
+        // Strict policy via config store.
+        let mut config = rocode_config::Config::default();
+        config.repair_policy = Some(rocode_types::RepairPolicy::Strict);
+        let config_store = Arc::new(rocode_config::ConfigStore::new(config));
+        let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string())
+            .with_config_store(config_store);
+
+        SessionPrompt::execute_tool_calls(
+            &mut session,
+            tool_registry,
+            ctx,
+            provider,
+            "mock",
+            "test-model",
+        )
+        .await
+        .expect("execute_tool_calls should complete");
+
+        // In strict mode, the tool call name should NOT be changed to "invalid".
+        let assistant_msg = session
+            .messages
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, MessageRole::Assistant))
+            .expect("assistant message should exist");
+        let tool_name = assistant_msg
+            .parts
+            .iter()
+            .find_map(|part| match &part.part_type {
+                PartType::ToolCall { id, name, .. } if id == "call_fail" => Some(name.clone()),
+                _ => None,
+            })
+            .expect("tool call should exist");
+        assert_eq!(
+            tool_name, "fail_tool",
+            "strict mode should preserve original tool name, not reroute to invalid"
+        );
+    }
+
+    #[tokio::test]
+    async fn strict_prevalidation_preserves_original_write_input_and_avoids_invalid_payload() {
+        let tool_registry = Arc::new(rocode_tool::ToolRegistry::new());
+        tool_registry
+            .register(rocode_tool::write::WriteTool::new())
+            .await;
+        tool_registry
+            .register(rocode_tool::invalid::InvalidTool)
+            .await;
+
+        let mut session = Session::new("proj", ".");
+        let sid = session.id.clone();
+        session
+            .messages_mut()
+            .push(SessionMessage::user(sid.clone(), "write file"));
+        let mut assistant = SessionMessage::assistant(sid);
+        assistant.add_tool_call(
+            "call_write",
+            "write",
+            serde_json::json!({
+                "file_path": "demo.txt"
+            }),
+        );
+        session.messages_mut().push(assistant);
+
+        let provider: Arc<dyn Provider> =
+            Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
+
+        let mut config = rocode_config::Config::default();
+        config.repair_policy = Some(rocode_types::RepairPolicy::Strict);
+        let config_store = Arc::new(rocode_config::ConfigStore::new(config));
+        let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string())
+            .with_config_store(config_store);
+
+        SessionPrompt::execute_tool_calls(
+            &mut session,
+            tool_registry,
+            ctx,
+            provider,
+            "mock",
+            "test-model",
+        )
+        .await
+        .expect("execute_tool_calls should complete");
+
+        let assistant_msg = session
+            .messages
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, MessageRole::Assistant))
+            .expect("assistant message should exist");
+        let (tool_name, tool_input) = assistant_msg
+            .parts
+            .iter()
+            .find_map(|part| match &part.part_type {
+                PartType::ToolCall {
+                    id, name, input, ..
+                } if id == "call_write" => Some((name.clone(), input.clone())),
+                _ => None,
+            })
+            .expect("tool call should exist");
+
+        assert_eq!(tool_name, "write");
+        assert_eq!(tool_input, serde_json::json!({ "file_path": "demo.txt" }));
+
+        let tool_result = session
+            .messages
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, MessageRole::Tool))
+            .and_then(|message| {
+                message.parts.iter().find_map(|part| match &part.part_type {
+                    PartType::ToolResult {
+                        tool_call_id,
+                        content,
+                        ..
+                    } if tool_call_id == "call_write" => Some(content.clone()),
+                    _ => None,
+                })
+            })
+            .expect("tool result should exist");
+        assert!(
+            tool_result.contains("Invalid arguments:"),
+            "strict prevalidation should stop with an argument error"
+        );
+    }
+
+    #[tokio::test]
+    async fn permissive_repair_preserves_invalid_reroute_strict_does_not() {
+        let tool_registry = Arc::new(rocode_tool::ToolRegistry::new());
+        tool_registry.register(AlwaysFailTool).await;
+        tool_registry
+            .register(rocode_tool::invalid::InvalidTool)
+            .await;
+
+        let provider: Arc<dyn Provider> =
+            Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
+
+        // ── Permissive ────────────────────────────────────────────
+        let mut session = Session::new("proj", ".");
+        let sid = session.id.clone();
+        session
+            .messages_mut()
+            .push(SessionMessage::user(sid.clone(), "run failing tool"));
+        let mut assistant = SessionMessage::assistant(sid);
+        assistant.add_tool_call("call_fail_p", "fail_tool", serde_json::json!({}));
+        session.messages_mut().push(assistant);
+
+        let mut config = rocode_config::Config::default();
+        config.repair_policy = Some(rocode_types::RepairPolicy::Permissive);
+        let config_store = Arc::new(rocode_config::ConfigStore::new(config));
+        let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string())
+            .with_config_store(config_store);
+
+        SessionPrompt::execute_tool_calls(
+            &mut session,
+            tool_registry.clone(),
+            ctx,
+            provider.clone(),
+            "mock",
+            "test-model",
+        )
+        .await
+        .expect("permissive should succeed");
+
+        let p_name = session
+            .messages
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, MessageRole::Assistant))
+            .and_then(|m| {
+                m.parts.iter().find_map(|part| match &part.part_type {
+                    PartType::ToolCall { id, name, .. } if id == "call_fail_p" => {
+                        Some(name.clone())
+                    }
+                    _ => None,
+                })
+            })
+            .unwrap_or_default();
+        assert_eq!(p_name, "invalid", "permissive should reroute to invalid");
+
+        // ── Strict ────────────────────────────────────────────────
+        let mut session2 = Session::new("proj2", ".");
+        let sid2 = session2.id.clone();
+        session2
+            .messages_mut()
+            .push(SessionMessage::user(sid2.clone(), "run failing tool"));
+        let mut assistant2 = SessionMessage::assistant(sid2);
+        assistant2.add_tool_call("call_fail_s", "fail_tool", serde_json::json!({}));
+        session2.messages_mut().push(assistant2);
+
+        let mut config2 = rocode_config::Config::default();
+        config2.repair_policy = Some(rocode_types::RepairPolicy::Strict);
+        let config_store2 = Arc::new(rocode_config::ConfigStore::new(config2));
+        let ctx2 = ToolContext::new(session2.id.clone(), "msg_test".to_string(), ".".to_string())
+            .with_config_store(config_store2);
+
+        SessionPrompt::execute_tool_calls(
+            &mut session2,
+            tool_registry,
+            ctx2,
+            provider,
+            "mock",
+            "test-model",
+        )
+        .await
+        .expect("strict should complete");
+
+        let s_name = session2
+            .messages
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, MessageRole::Assistant))
+            .and_then(|m| {
+                m.parts.iter().find_map(|part| match &part.part_type {
+                    PartType::ToolCall { id, name, .. } if id == "call_fail_s" => {
+                        Some(name.clone())
+                    }
+                    _ => None,
+                })
+            })
+            .unwrap_or_default();
+        assert_eq!(
+            s_name, "fail_tool",
+            "strict should preserve original tool name"
+        );
     }
 }
