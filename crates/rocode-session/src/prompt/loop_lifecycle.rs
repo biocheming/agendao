@@ -2440,12 +2440,13 @@ impl SessionPrompt {
             let sanitizer_stage = take_pending_sanitizer_stage(session);
 
             // P0.2: Run the shared sanitizer contract on every pre-request path.
-            // Records repair telemetry for orphaned tool results, thinking-only
-            // assistants, and other common message-level issues.
+            // P1.2: Policy gates whether synthetic repairs are injected.
+            let repair_policy =
+                crate::compaction::effective_repair_policy(prompt_ctx.config_store.as_deref());
             let (sanitized, _telemetry) = super::sanitizer_contract::sanitize_with_contract(
                 &chat_messages,
                 sanitizer_stage,
-                rocode_provider::protocols::request_sanitizer::SanitizerOptions::default(),
+                repair_policy,
                 &mut session.record_mut().metadata,
             );
             chat_messages = sanitized;

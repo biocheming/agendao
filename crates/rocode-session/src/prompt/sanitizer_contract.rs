@@ -15,7 +15,7 @@ use rocode_provider::protocols::request_sanitizer::{
 };
 use rocode_provider::Message as ProviderMessage;
 use rocode_tool::{append_structured_repair_event, repair_event_builder, Metadata};
-use rocode_types::{RepairEvent, SanitizerAction, SanitizerStage};
+use rocode_types::{RepairEvent, RepairPolicy, SanitizerAction, SanitizerStage};
 
 // ── Contract ────────────────────────────────────────────────────────────
 
@@ -80,17 +80,24 @@ impl SanitizerTelemetry {
 /// This is the single entry point that all four lifecycle paths should use
 /// instead of calling `sanitize_messages_for_protocol` directly.
 ///
-/// Actions are recorded **explicitly** by the sanitizer itself (not inferred
-/// post-hoc from pointer comparisons), so the telemetry is reliable.
+/// In `Permissive` mode, synthetic repairs (interrupted tool placeholders) are
+/// injected to keep the conversation flowing. In `Strict` mode, those synthetic
+/// repairs are skipped but the corresponding repair events are still recorded
+/// with `strict_mode_would_fail = true`.
 pub fn sanitize_with_contract(
     messages: &[ProviderMessage],
     stage: SanitizerStage,
-    options: SanitizerOptions,
+    policy: RepairPolicy,
     repair_metadata: &mut Metadata,
 ) -> (Vec<ProviderMessage>, SanitizerTelemetry) {
     let count_before = messages.len();
     let mut telemetry = SanitizerTelemetry::new(stage);
     telemetry.message_count_before = count_before;
+
+    let options = SanitizerOptions {
+        drop_thinking_only_assistant: true,
+        skip_synthetic_repair: matches!(policy, RepairPolicy::Strict),
+    };
 
     let mut actions = Vec::new();
     let sanitized =
@@ -98,39 +105,50 @@ pub fn sanitize_with_contract(
 
     telemetry.message_count_after = sanitized.len();
 
-    // Convert every sanitizer action into a repair event with stage context.
+    // Convert every sanitizer action into a repair event.
+    // In permissive mode, mark strict_mode_would_fail for synthetic actions.
     for action in &actions {
-        telemetry.record(action.clone(), repair_metadata);
+        let mut event = repair_event_builder(action.kind(), "sanitizer", "")
+            .reason(action.description())
+            .build();
+        if matches!(policy, RepairPolicy::Permissive) {
+            event.strict_mode_would_fail = is_synthetic_repair_action(action);
+        }
+        append_structured_repair_event(repair_metadata, &event);
+        telemetry.actions.push(action.clone());
     }
 
     (sanitized, telemetry)
+}
+
+/// Synthetic repairs are those that inject placeholder content rather than
+/// fixing actual protocol violations.
+fn is_synthetic_repair_action(action: &SanitizerAction) -> bool {
+    matches!(action, SanitizerAction::OrphanedToolResult { .. })
 }
 
 /// Run the shared sanitizer for text-protocol (non-tool) projections.
 pub fn sanitize_text_with_contract(
     messages: &[ProviderMessage],
     stage: SanitizerStage,
+    policy: RepairPolicy,
     repair_metadata: &mut Metadata,
 ) -> (Vec<ProviderMessage>, SanitizerTelemetry) {
-    sanitize_with_contract(
-        messages,
-        stage,
-        SanitizerOptions {
-            drop_thinking_only_assistant: true,
-        },
-        repair_metadata,
-    )
+    sanitize_with_contract(messages, stage, policy, repair_metadata)
 }
 
 /// Convenience: run the sanitizer contract and return only the cleaned messages,
-/// discarding telemetry. Use this when telemetry is not needed (e.g. text protocol
-/// adapters that can't store metadata).
+/// discarding telemetry.
 pub fn sanitize_with_contract_quiet(
     messages: &[ProviderMessage],
     stage: SanitizerStage,
-    options: SanitizerOptions,
+    policy: RepairPolicy,
 ) -> Vec<ProviderMessage> {
     let count_before = messages.len();
+    let options = SanitizerOptions {
+        drop_thinking_only_assistant: true,
+        skip_synthetic_repair: matches!(policy, RepairPolicy::Strict),
+    };
     let mut actions = Vec::new();
     let sanitized =
         sanitize_messages_for_protocol_with_actions(messages, options, Some(&mut actions));

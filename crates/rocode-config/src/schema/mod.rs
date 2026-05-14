@@ -1,3 +1,4 @@
+use rocode_types::RepairPolicy;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 
@@ -167,6 +168,13 @@ pub struct Config {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compaction: Option<CompactionConfig>,
+
+    #[serde(
+        rename = "repairPolicy",
+        alias = "repair_policy",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub repair_policy: Option<RepairPolicy>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub experimental: Option<ExperimentalConfig>,

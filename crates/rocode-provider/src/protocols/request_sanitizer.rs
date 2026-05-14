@@ -7,6 +7,9 @@ const INTERRUPTED_TOOL_RESULT_TEXT: &str = "[Tool execution was interrupted]";
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SanitizerOptions {
     pub drop_thinking_only_assistant: bool,
+    /// When true, synthetic repairs (interrupted tool placeholders) are
+    /// skipped but their corresponding actions are still recorded.
+    pub skip_synthetic_repair: bool,
 }
 
 /// Sanitize messages for protocol transport (backward-compatible signature).
@@ -26,6 +29,8 @@ pub fn sanitize_messages_for_protocol_with_actions(
     let mut sanitized = Vec::new();
     let mut pending_tool_use_ids = Vec::new();
 
+    let skip_synthetic = options.skip_synthetic_repair;
+
     // Helper to record an action without consuming the outer Option.
     let mut record = |action: SanitizerAction| {
         if let Some(ref mut actions) = actions_out {
@@ -36,11 +41,21 @@ pub fn sanitize_messages_for_protocol_with_actions(
     for message in messages {
         match message.role {
             Role::System | Role::User => {
-                flush_pending(&mut sanitized, &mut pending_tool_use_ids, &mut record);
+                flush_pending(
+                    &mut sanitized,
+                    &mut pending_tool_use_ids,
+                    &mut record,
+                    skip_synthetic,
+                );
                 sanitized.push(message.clone());
             }
             Role::Assistant => {
-                flush_pending(&mut sanitized, &mut pending_tool_use_ids, &mut record);
+                flush_pending(
+                    &mut sanitized,
+                    &mut pending_tool_use_ids,
+                    &mut record,
+                    skip_synthetic,
+                );
                 if options.drop_thinking_only_assistant && is_thinking_only_assistant(message) {
                     record(SanitizerAction::ThinkingOnlyAssistant);
                     continue;
@@ -71,7 +86,12 @@ pub fn sanitize_messages_for_protocol_with_actions(
                     sanitized.push(Message::tool_parts(tool_result_parts));
                 }
                 if !text_parts.is_empty() {
-                    flush_pending(&mut sanitized, &mut pending_tool_use_ids, &mut record);
+                    flush_pending(
+                        &mut sanitized,
+                        &mut pending_tool_use_ids,
+                        &mut record,
+                        skip_synthetic,
+                    );
                     sanitized.push(Message {
                         role: Role::User,
                         content: Content::Parts(text_parts),
@@ -83,7 +103,12 @@ pub fn sanitize_messages_for_protocol_with_actions(
         }
     }
 
-    flush_pending(&mut sanitized, &mut pending_tool_use_ids, &mut record);
+    flush_pending(
+        &mut sanitized,
+        &mut pending_tool_use_ids,
+        &mut record,
+        skip_synthetic,
+    );
     sanitized
 }
 
@@ -96,6 +121,7 @@ pub fn sanitize_messages_for_text_protocol(messages: &[Message]) -> Vec<Message>
         messages,
         SanitizerOptions {
             drop_thinking_only_assistant: true,
+            ..Default::default()
         },
     );
     let mut projected = Vec::new();
@@ -146,22 +172,23 @@ fn flush_pending(
     messages: &mut Vec<Message>,
     pending_tool_use_ids: &mut Vec<String>,
     record: &mut dyn FnMut(SanitizerAction),
+    skip_synthetic: bool,
 ) {
     if pending_tool_use_ids.is_empty() {
         return;
     }
 
     let ids: Vec<String> = pending_tool_use_ids.drain(..).collect();
-    let tool_result_parts = ids
-        .into_iter()
-        .map(|id| {
-            record(SanitizerAction::OrphanedToolResult {
-                tool_call_id: id.clone(),
-            });
-            interrupted_tool_result_part(id)
-        })
-        .collect();
-    messages.push(Message::tool_parts(tool_result_parts));
+    for id in &ids {
+        record(SanitizerAction::OrphanedToolResult {
+            tool_call_id: id.clone(),
+        });
+    }
+    // Strict mode: record the action but don't inject synthetic placeholder.
+    if !skip_synthetic {
+        let tool_result_parts = ids.into_iter().map(interrupted_tool_result_part).collect();
+        messages.push(Message::tool_parts(tool_result_parts));
+    }
 }
 
 fn sanitize_tool_message_content(
@@ -349,6 +376,7 @@ mod tests {
             &messages,
             SanitizerOptions {
                 drop_thinking_only_assistant: true,
+                ..Default::default()
             },
             Some(&mut actions),
         );
@@ -389,6 +417,7 @@ mod tests {
             &messages,
             SanitizerOptions {
                 drop_thinking_only_assistant: true,
+                ..Default::default()
             },
         );
         assert_eq!(sanitized.len(), 2);
@@ -457,5 +486,42 @@ mod tests {
             &sanitized[0].content,
             Content::Text(text) if text == "visible"
         ));
+    }
+
+    #[test]
+    fn strict_sanitizer_does_not_inject_interrupted_tool_placeholder() {
+        // Two consecutive assistant messages with tool_use but no tool_result:
+        // the first assistant's tool calls should be synthetic-interrupted.
+        // In strict mode (skip_synthetic_repair=true), those placeholders
+        // are NOT injected — the messages are just dropped.
+        let messages = vec![
+            Message::assistant_parts(vec![ContentPart::tool_use("call-1", "ls", json!({}))]),
+            Message::assistant_parts(vec![ContentPart::tool_use("call-2", "read", json!({}))]),
+        ];
+
+        let mut actions = Vec::new();
+        let sanitized = sanitize_messages_for_protocol_with_actions(
+            &messages,
+            SanitizerOptions {
+                drop_thinking_only_assistant: false,
+                skip_synthetic_repair: true,
+            },
+            Some(&mut actions),
+        );
+
+        // Actions are still recorded.
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, SanitizerAction::OrphanedToolResult { tool_call_id } if tool_call_id == "call-1")));
+
+        // But no synthetic tool messages are injected — only the valid assistant messages remain.
+        let tool_msg_count = sanitized
+            .iter()
+            .filter(|m| matches!(m.role, Role::Tool))
+            .count();
+        assert_eq!(
+            tool_msg_count, 0,
+            "strict mode should not inject synthetic tool placeholders"
+        );
     }
 }

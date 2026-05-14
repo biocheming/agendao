@@ -1093,6 +1093,7 @@ impl Config {
         default_agent: Option<String>,
         username: Option<String>,
         layout: Option<LayoutMode>,
+        repair_policy: Option<RepairPolicy>,
     ) {
         merge_option_replace(&mut self.schema, schema);
         merge_option_replace(&mut self.theme, theme);
@@ -1108,6 +1109,7 @@ impl Config {
         merge_option_replace(&mut self.default_agent, default_agent);
         merge_option_replace(&mut self.username, username);
         merge_option_replace(&mut self.layout, layout);
+        merge_option_replace(&mut self.repair_policy, repair_policy);
     }
 
     // Nested config authorities recurse through their own merge contracts.
@@ -1235,6 +1237,7 @@ impl Config {
             voice,
             enterprise,
             compaction,
+            repair_policy,
             experimental,
             env,
         } = other;
@@ -1254,6 +1257,7 @@ impl Config {
             default_agent,
             username,
             layout,
+            repair_policy,
         );
         self.merge_nested_fields(
             keybinds,
