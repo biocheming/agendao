@@ -11,6 +11,7 @@ pub mod session;
 pub mod session_artifact;
 pub mod skill;
 pub mod todo;
+pub mod tool_call_layers;
 pub mod workspace_skill_artifact;
 
 pub use config_policy::*;
@@ -26,4 +27,5 @@ pub use session::*;
 pub use session_artifact::*;
 pub use skill::*;
 pub use todo::*;
+pub use tool_call_layers::*;
 pub use workspace_skill_artifact::*;

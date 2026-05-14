@@ -74,15 +74,15 @@ use rocode_provider::{cache::CacheEvidenceSummary, Provider, ToolDefinition};
 use rocode_skill::{infer_runtime_skill_names, RuntimeInstructionSource, SkillGovernanceAuthority};
 use rocode_types::SkillRuntimeCompositionHintKind;
 use rocode_types::{
-    context_usage_percent, message_latest_compaction_summary, ContextCompactionAssessmentSummary,
-    ContextCompactionBackoffSummary, ContextCompactionDecisionTrace,
-    ContextCompactionInstalledDiagnostics, ContextCompactionLifecycleStatus,
-    ContextCompactionLifecycleSummary, ContextCompactionSummary, ContextPressureGovernanceStatus,
-    ContextPressureGovernanceSummary, LightweightTrimSummary, MemoryRetrievalPacket,
-    PromptSurfaceEvidenceSummary, SessionCacheBoundaryKind, SessionCacheBoundarySummary,
-    SessionCacheEvidenceExplain, SessionCacheSemanticsBasis, SessionCacheSemanticsSummary,
-    SessionCacheSeverity, SessionContextExplain, SessionContextKind, SubsessionHandoffPacket,
-    SubsessionResultEnvelope,
+    context_usage_percent, message_latest_compaction_summary, tool_call_replay_text,
+    ContextCompactionAssessmentSummary, ContextCompactionBackoffSummary,
+    ContextCompactionDecisionTrace, ContextCompactionInstalledDiagnostics,
+    ContextCompactionLifecycleStatus, ContextCompactionLifecycleSummary, ContextCompactionSummary,
+    ContextPressureGovernanceStatus, ContextPressureGovernanceSummary, LightweightTrimSummary,
+    MemoryRetrievalPacket, PromptSurfaceEvidenceSummary, SessionCacheBoundaryKind,
+    SessionCacheBoundarySummary, SessionCacheEvidenceExplain, SessionCacheSemanticsBasis,
+    SessionCacheSemanticsSummary, SessionCacheSeverity, SessionContextExplain, SessionContextKind,
+    SubsessionHandoffPacket, SubsessionResultEnvelope,
 };
 
 use crate::instruction::{InstructionLoader, InstructionSource};
@@ -1689,8 +1689,7 @@ fn estimate_tail_content_tokens(messages: &[SessionMessage]) -> Option<u64> {
                 content.len() + title.as_ref().map_or(0, |title| title.len())
             }
             PartType::ToolCall { input, raw, .. } => {
-                serde_json::to_string(input).map_or(0, |value| value.len())
-                    + raw.as_ref().map_or(0, |value| value.len())
+                tool_call_replay_text(input, raw.as_deref()).map_or(0, |value| value.len())
             }
             PartType::Reasoning { text } => text.len(),
             PartType::File {

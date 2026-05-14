@@ -27,10 +27,10 @@ use super::{
     CONTEXT_COMPACTION_RECORD_METADATA_KEY,
 };
 use rocode_types::{
-    ContextCompactionBackoffSummary, LightweightTrimSummary, SessionContinuityCompactionSummary,
-    SessionContinuityDependency, SessionContinuityDependencyKind, SessionContinuityLedgerEntry,
-    SessionContinuityLedgerKind, SessionContinuityLimits, SessionContinuityPacket,
-    SessionContinuityTurn,
+    tool_call_replay_input, tool_call_replay_text, ContextCompactionBackoffSummary,
+    LightweightTrimSummary, SessionContinuityCompactionSummary, SessionContinuityDependency,
+    SessionContinuityDependencyKind, SessionContinuityLedgerEntry, SessionContinuityLedgerKind,
+    SessionContinuityLimits, SessionContinuityPacket, SessionContinuityTurn,
 };
 
 type LegacyToolResult = (
@@ -243,8 +243,7 @@ impl SessionPrompt {
                     content.len() + title.as_ref().map_or(0, |t| t.len())
                 }
                 PartType::ToolCall { input, raw, .. } => {
-                    let input_len = serde_json::to_string(input).map_or(0, |s| s.len());
-                    input_len + raw.as_ref().map_or(0, |r| r.len())
+                    tool_call_replay_text(input, raw.as_deref()).map_or(0, |value| value.len())
                 }
                 PartType::Reasoning { text } => text.len(),
                 _ => 0,
@@ -292,11 +291,15 @@ impl SessionPrompt {
                 PartType::Text { text, .. } => Some(ContentPart::text(text.clone())),
                 PartType::Reasoning { text } => Some(ContentPart::reasoning(text.clone())),
                 PartType::ToolCall {
-                    id, name, input, ..
+                    id,
+                    name,
+                    input,
+                    raw,
+                    ..
                 } => Some(ContentPart::tool_use(
                     id.clone(),
                     name.clone(),
-                    input.clone(),
+                    tool_call_replay_input(input, raw.as_deref()),
                 )),
                 PartType::ToolResult {
                     tool_call_id,
@@ -2166,6 +2169,57 @@ mod tests {
                     && part.image_url.as_ref().map(|value| value.url.as_str())
                         == Some("data:audio/wav;base64,UklGRg==")
         ));
+    }
+
+    #[test]
+    fn parts_to_content_replays_tool_call_from_raw_shape() {
+        let content = SessionPrompt::parts_to_content(&[crate::MessagePart {
+            id: "prt_tool".to_string(),
+            part_type: PartType::ToolCall {
+                id: "call_1".to_string(),
+                name: "read".to_string(),
+                input: serde_json::json!({"file_path":"/tmp/normalized.txt"}),
+                status: crate::ToolCallStatus::Running,
+                raw: Some("{\"file_path\":\"/tmp/raw.txt\"}".to_string()),
+                state: None,
+            },
+            created_at: chrono::Utc::now(),
+            message_id: None,
+        }]);
+
+        let Content::Parts(parts) = content else {
+            panic!("expected structured content");
+        };
+        assert_eq!(
+            parts
+                .first()
+                .and_then(|part| part.tool_use.as_ref())
+                .map(|tool| &tool.input),
+            Some(&serde_json::json!({"file_path":"/tmp/raw.txt"}))
+        );
+    }
+
+    #[test]
+    fn model_context_char_len_counts_replay_shape_once() {
+        let mut assistant = SessionMessage::assistant("ses_replay_len".to_string());
+        assistant.parts.push(crate::MessagePart {
+            id: "prt_tool".to_string(),
+            part_type: PartType::ToolCall {
+                id: "call_1".to_string(),
+                name: "read".to_string(),
+                input: serde_json::json!({"file_path":"/tmp/normalized.txt"}),
+                status: crate::ToolCallStatus::Running,
+                raw: Some("{\"file_path\":\"/tmp/raw.txt\"}".to_string()),
+                state: None,
+            },
+            created_at: chrono::Utc::now(),
+            message_id: None,
+        });
+
+        assert_eq!(
+            SessionPrompt::model_context_char_len(&assistant),
+            "{\"file_path\":\"/tmp/raw.txt\"}".len()
+        );
     }
 
     #[test]
