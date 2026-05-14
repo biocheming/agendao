@@ -564,8 +564,10 @@ pub struct SessionRepairQuerySummary {
 /// Per-model repair summary across sessions.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelRepairQuerySummary {
-    pub provider_id: String,
-    pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
     #[serde(default)]
     pub session_count: u64,
     #[serde(default)]

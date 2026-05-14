@@ -320,7 +320,7 @@ pub fn query_model_repair_summary<'a>(
     let mut kind_map: BTreeMap<RepairKind, u64> = BTreeMap::new();
     let mut tool_map: BTreeMap<String, u64> = BTreeMap::new();
     let mut rows: BTreeMap<(String, RepairKind, String), RepairAggregateRow> = BTreeMap::new();
-    let mut last_model_ref: Option<SessionTelemetryModelRef> = None;
+    let mut matched_model_refs: Vec<SessionTelemetryModelRef> = Vec::new();
 
     for session in &sessions {
         let Some(model_ref) = session_repair_query_model_ref(session) else {
@@ -344,7 +344,7 @@ pub fn query_model_repair_summary<'a>(
         session_count += 1;
         total_events += snapshot.summary.total_events;
         strict_would_fail_count += snapshot.summary.strict_would_fail_count;
-        last_model_ref = Some(model_ref);
+        matched_model_refs.push(model_ref);
 
         for row in snapshot.rows {
             if !filter_row(&row, query) {
@@ -397,21 +397,38 @@ pub fn query_model_repair_summary<'a>(
         result_rows.truncate(limit);
     }
 
-    let model_ref = last_model_ref;
+    let provider_id = if let Some(provider_id) = &query.provider_id {
+        Some(provider_id.clone())
+    } else {
+        let first = matched_model_refs.first().map(|model| model.provider_id.clone());
+        if matched_model_refs
+            .iter()
+            .all(|model| Some(model.provider_id.clone()) == first)
+        {
+            first
+        } else {
+            None
+        }
+    };
+    let model_id = if let Some(model_id) = &query.model_id {
+        Some(model_id.clone())
+    } else {
+        let first = matched_model_refs.first().map(|model| model.model_id.clone());
+        if matched_model_refs
+            .iter()
+            .all(|model| Some(model.model_id.clone()) == first)
+        {
+            first
+        } else {
+            None
+        }
+    };
 
     RepairQueryResponse {
         summary: None,
         model_summary: Some(ModelRepairQuerySummary {
-            provider_id: query
-                .provider_id
-                .clone()
-                .or_else(|| model_ref.as_ref().map(|m| m.provider_id.clone()))
-                .unwrap_or_default(),
-            model_id: query
-                .model_id
-                .clone()
-                .or_else(|| model_ref.as_ref().map(|m| m.model_id.clone()))
-                .unwrap_or_default(),
+            provider_id,
+            model_id,
             session_count,
             total_events,
             strict_would_fail_count,
@@ -739,7 +756,64 @@ mod tests {
             },
         );
         let ms = response.model_summary.expect("should have model summary");
+        assert_eq!(ms.provider_id.as_deref(), Some("mock"));
+        assert_eq!(ms.model_id.as_deref(), Some("mock-model"));
         assert_eq!(ms.session_count, 2);
         assert_eq!(ms.total_events, 2);
+    }
+
+    #[test]
+    fn model_repair_query_does_not_mislabel_cross_model_aggregate() {
+        let mut s1 = Session::new("proj", ".");
+        s1.insert_metadata("model_provider".to_string(), serde_json::json!("mock"));
+        s1.insert_metadata("model_id".to_string(), serde_json::json!("model-a"));
+        let mut a1 = SessionMessage::assistant(s1.id.clone());
+        a1.parts.push(build_tool_call_part(
+            "c1",
+            "echo",
+            ToolCallStatus::Completed,
+            ToolState::Completed {
+                input: serde_json::json!({}),
+                output: "ok".to_string(),
+                title: "Echo".to_string(),
+                metadata: repair_metadata_with_kind("tool_name_repair"),
+                time: crate::CompletedTime {
+                    start: 1,
+                    end: 2,
+                    compacted: None,
+                },
+                attachments: None,
+            },
+        ));
+        s1.push_message(a1);
+
+        let mut s2 = Session::new("proj2", ".");
+        s2.insert_metadata("model_provider".to_string(), serde_json::json!("mock"));
+        s2.insert_metadata("model_id".to_string(), serde_json::json!("model-b"));
+        let mut a2 = SessionMessage::assistant(s2.id.clone());
+        a2.parts.push(build_tool_call_part(
+            "c2",
+            "echo",
+            ToolCallStatus::Completed,
+            ToolState::Completed {
+                input: serde_json::json!({}),
+                output: "ok".to_string(),
+                title: "Echo".to_string(),
+                metadata: repair_metadata_with_kind("tool_name_repair"),
+                time: crate::CompletedTime {
+                    start: 3,
+                    end: 4,
+                    compacted: None,
+                },
+                attachments: None,
+            },
+        ));
+        s2.push_message(a2);
+
+        let response = query_model_repair_summary([&s1, &s2], &RepairQuery::default());
+        let summary = response.model_summary.expect("should have model summary");
+        assert_eq!(summary.provider_id.as_deref(), Some("mock"));
+        assert_eq!(summary.model_id, None);
+        assert_eq!(summary.session_count, 2);
     }
 }

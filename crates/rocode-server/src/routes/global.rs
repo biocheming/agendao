@@ -14,6 +14,8 @@ use std::sync::Arc;
 use crate::worktree::{self, WorktreeInfo as WorktreeInfoStruct};
 use crate::{ApiError, Result, ServerState};
 use rocode_config::Config as AppConfig;
+use rocode_session::query_model_repair_summary;
+use rocode_types::{RepairKind, RepairQuery, RepairQueryResponse};
 
 pub(crate) fn global_routes() -> Router<Arc<ServerState>> {
     Router::new()
@@ -22,6 +24,7 @@ pub(crate) fn global_routes() -> Router<Arc<ServerState>> {
         .route("/diagnostics", get(global_diagnostics))
         .route("/perf", get(global_perf))
         .route("/config", get(get_global_config))
+        .route("/repair/query", get(query_global_repair))
 }
 
 pub(crate) fn experimental_routes() -> Router<Arc<ServerState>> {
@@ -97,6 +100,48 @@ async fn global_perf(State(state): State<Arc<ServerState>>) -> Json<GlobalPerfRe
             .list_messages_full_calls
             .load(Ordering::Relaxed),
     })
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GlobalRepairQueryParams {
+    pub provider_id: Option<String>,
+    pub model_id: Option<String>,
+    pub tool_name: Option<String>,
+    pub repair_kind: Option<String>,
+    pub layer: Option<String>,
+    #[serde(default)]
+    pub strict_only: bool,
+    #[serde(default)]
+    pub include_samples: bool,
+    pub limit: Option<usize>,
+}
+
+impl GlobalRepairQueryParams {
+    fn to_query(&self) -> RepairQuery {
+        RepairQuery {
+            provider_id: self.provider_id.clone(),
+            model_id: self.model_id.clone(),
+            tool_name: self.tool_name.clone(),
+            repair_kind: self
+                .repair_kind
+                .as_deref()
+                .and_then(RepairKind::from_legacy_str),
+            layer: self.layer.clone(),
+            strict_only: Some(self.strict_only),
+            include_samples: Some(self.include_samples),
+            limit: self.limit,
+            ..Default::default()
+        }
+    }
+}
+
+async fn query_global_repair(
+    State(state): State<Arc<ServerState>>,
+    Query(params): Query<GlobalRepairQueryParams>,
+) -> Result<Json<RepairQueryResponse>> {
+    let query = params.to_query();
+    let sessions = state.sessions.lock().await;
+    Ok(Json(query_model_repair_summary(sessions.list(), &query)))
 }
 
 #[derive(Debug, Serialize)]

@@ -2,6 +2,7 @@
 
 use axum::extract::{Path, Query, State};
 use axum::Json;
+use rocode_api::SessionRepairSummaryResponse;
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -9,7 +10,7 @@ use rocode_session::repair_query::{
     build_session_repair_query_snapshot, load_session_repair_query_snapshot,
     query_session_repair_snapshot,
 };
-use rocode_types::{RepairKind, RepairQuery, SessionRepairQuerySnapshot};
+use rocode_types::{RepairKind, RepairQuery};
 
 use crate::{ApiError, Result, ServerState};
 
@@ -40,12 +41,6 @@ impl RepairQueryParams {
             ..Default::default()
         }
     }
-}
-
-#[derive(Debug, serde::Serialize)]
-pub struct SessionRepairSummaryResponse {
-    pub session_id: String,
-    pub snapshot: Option<SessionRepairQuerySnapshot>,
 }
 
 /// GET /session/{id}/repair/summary

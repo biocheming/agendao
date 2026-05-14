@@ -626,6 +626,11 @@ pub(crate) enum DebugCommands {
         #[command(subcommand)]
         action: DebugDocsCommands,
     },
+    #[command(about = "Tool repair telemetry debugging utilities")]
+    Repair {
+        #[command(subcommand)]
+        action: DebugRepairCommands,
+    },
     #[command(about = "Show agent configuration details")]
     Agent {
         #[arg(value_name = "NAME")]
@@ -929,6 +934,36 @@ pub(crate) enum DebugDocsCommands {
         registry: Option<PathBuf>,
         #[arg(long, value_name = "PATH", conflicts_with = "registry")]
         index: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum DebugRepairCommands {
+    #[command(about = "Show cached repair summary for one session")]
+    Summary {
+        #[arg(value_name = "SESSION_ID")]
+        session_id: String,
+    },
+    #[command(about = "Query repair events for one session or across all sessions")]
+    Query {
+        #[arg(long)]
+        session_id: Option<String>,
+        #[arg(long)]
+        provider_id: Option<String>,
+        #[arg(long)]
+        model_id: Option<String>,
+        #[arg(long)]
+        tool_name: Option<String>,
+        #[arg(long)]
+        repair_kind: Option<String>,
+        #[arg(long)]
+        layer: Option<String>,
+        #[arg(long, default_value_t = false)]
+        strict_only: bool,
+        #[arg(long, default_value_t = false)]
+        include_samples: bool,
+        #[arg(long)]
+        limit: Option<usize>,
     },
 }
 
