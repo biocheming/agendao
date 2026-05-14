@@ -2244,6 +2244,15 @@ fn runtime_skill_save_suggestion_triggers_for_methodology_shaped_turns() {
                     && text.contains("Use `skill_manage` when you are ready to save it.")
         )
     }));
+    assert!(note.parts.iter().all(|part| {
+        !matches!(
+            &part.part_type,
+            PartType::Text { text, .. }
+                if text.contains("invalid tool")
+                    || text.contains("Do not call the invalid")
+                    || text.contains("`invalid`")
+        )
+    }));
 }
 
 #[test]

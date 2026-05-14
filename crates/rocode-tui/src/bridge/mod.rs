@@ -16,8 +16,8 @@ use reratui::{
     clear_current_event, clear_global_handlers, clear_render_context, init_render_context,
     reset_component_position_counter, set_current_event, Buffer, Component, FiberTree, Rect,
 };
-use tokio_stream::StreamExt;
 use tokio::sync::Notify;
+use tokio_stream::StreamExt;
 
 use crate::app::{App, RunOutcome};
 use crate::context::keybind::is_primary_key_event;
@@ -136,9 +136,7 @@ fn queued_event_is_superseded_by(queued: &Event, incoming: &Event) -> bool {
         && queued_kind == incoming_kind
 }
 
-fn scheduler_stage_output_block_identity(
-    event: &Event,
-) -> Option<(&str, Option<&str>, &str)> {
+fn scheduler_stage_output_block_identity(event: &Event) -> Option<(&str, Option<&str>, &str)> {
     let Event::Custom(custom) = event else {
         return None;
     };
@@ -458,7 +456,8 @@ async fn run_app_async(app: Arc<Mutex<App>>) -> anyhow::Result<()> {
                 let bridge_notified = ui_bridge.notified();
                 tokio::pin!(bridge_notified);
                 if let Some(deadline) = tick_deadline {
-                    let timeout = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline));
+                    let timeout =
+                        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline));
                     tokio::pin!(timeout);
                     tokio::select! {
                         Some(Ok(event)) = events.next() => Some(event),

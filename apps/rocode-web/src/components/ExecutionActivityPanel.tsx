@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 import type { ConversationJumpTarget } from "../hooks/useConversationJump";
 import type { useExecutionActivity } from "../hooks/useExecutionActivity";
+import type {
+  ModelToolRepairTelemetrySummaryRecord,
+  SessionToolRepairTelemetrySummaryRecord,
+} from "../lib/sessionActivity";
 import {
   currentContextTokensFromSources,
   isLiveStageStatus,
@@ -71,6 +75,35 @@ function currentContextEstimate(activity: ExecutionActivityState) {
     ? activeStage.context_tokens ?? activeStage.estimated_context_tokens
     : null;
   return currentContextTokensFromSources(activity.sessionUsage?.context_tokens, activeStageContext);
+}
+
+function formatRepairKindSummary(
+  counts: SessionToolRepairTelemetrySummaryRecord["event_kinds"] | undefined,
+) {
+  if (!counts?.length) return "No repair kinds recorded yet.";
+  return counts
+    .slice(0, 3)
+    .map((count) => `${count.key} ${count.count}`)
+    .join(" · ");
+}
+
+function formatRepairToolSummary(
+  tools: SessionToolRepairTelemetrySummaryRecord["tools"] | undefined,
+) {
+  if (!tools?.length) return "No repaired tools recorded yet.";
+  return tools
+    .slice(0, 3)
+    .map((tool) => {
+      const parts = [`${tool.tool_name} ${tool.repaired_call_count}/${tool.call_count}`];
+      if (tool.error_call_count > 0) {
+        parts.push(`err ${tool.error_call_count}`);
+      }
+      if (tool.repair_event_count > 0) {
+        parts.push(`events ${tool.repair_event_count}`);
+      }
+      return parts.join(" · ");
+    })
+    .join(" | ");
 }
 
 function eventWindowLabel(page: number, count: number, pageSize: number) {
@@ -295,6 +328,9 @@ export function ExecutionActivityPanel({
   const contextClosure = contextClosureContractFromTelemetry(activity.telemetry);
   const compactionContinuity = compactionContinuityFromTelemetry(activity.telemetry);
   const promptSurfaceEvidence = promptSurfaceEvidenceFromTelemetry(activity.telemetry);
+  const sessionToolRepairSummary = activity.telemetry?.tool_repair_summary ?? null;
+  const modelToolRepairSummary: ModelToolRepairTelemetrySummaryRecord | null =
+    activity.telemetry?.model_tool_repair_summary ?? null;
 
   return (
     <div className="roc-panel roc-rail-panel p-5">
@@ -402,6 +438,64 @@ export function ExecutionActivityPanel({
                   <p className="text-sm text-muted-foreground leading-relaxed">No active stage summary in telemetry.</p>
                 )}
               </div>
+            </div>
+          ) : null}
+          {sessionToolRepairSummary || modelToolRepairSummary ? (
+            <div className="grid gap-3 md:grid-cols-2">
+              {sessionToolRepairSummary ? (
+                <div className={sideSectionClass}>
+                  <p className="roc-section-label">Tool Repair</p>
+                  <div className="roc-rail-meta-list">
+                    <span className="roc-badge px-3 py-1.5 text-xs">
+                      repaired {sessionToolRepairSummary.repaired_tool_call_count}/
+                      {sessionToolRepairSummary.total_tool_calls}
+                    </span>
+                    <span className="roc-badge px-3 py-1.5 text-xs">
+                      errors {sessionToolRepairSummary.error_tool_call_count}
+                    </span>
+                    <span className="roc-badge px-3 py-1.5 text-xs">
+                      events {sessionToolRepairSummary.repair_event_count}
+                    </span>
+                  </div>
+                  <p className="text-sm text-muted-foreground leading-relaxed">
+                    Session-local repair activity for finalized tool calls.
+                  </p>
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    Kinds {formatRepairKindSummary(sessionToolRepairSummary.event_kinds)}
+                  </p>
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    Tools {formatRepairToolSummary(sessionToolRepairSummary.tools)}
+                  </p>
+                </div>
+              ) : null}
+              {modelToolRepairSummary ? (
+                <div className={sideSectionClass}>
+                  <p className="roc-section-label">Model Repair Baseline</p>
+                  <div className="roc-rail-meta-list">
+                    <span className="roc-badge px-3 py-1.5 text-xs">
+                      {modelToolRepairSummary.provider_id}/{modelToolRepairSummary.model_id}
+                    </span>
+                    <span className="roc-badge px-3 py-1.5 text-xs">
+                      sessions {modelToolRepairSummary.session_count}
+                    </span>
+                    <span className="roc-badge px-3 py-1.5 text-xs">
+                      repaired sessions {modelToolRepairSummary.repaired_session_count}
+                    </span>
+                  </div>
+                  <p className="text-sm text-muted-foreground leading-relaxed">
+                    Cross-session baseline for the same provider/model pair.
+                  </p>
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    Calls {modelToolRepairSummary.repaired_tool_call_count}/
+                    {modelToolRepairSummary.total_tool_calls} repaired · errors{" "}
+                    {modelToolRepairSummary.error_tool_call_count} · events{" "}
+                    {modelToolRepairSummary.repair_event_count}
+                  </p>
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    Kinds {formatRepairKindSummary(modelToolRepairSummary.event_kinds)}
+                  </p>
+                </div>
+              ) : null}
             </div>
           ) : null}
           {contextClosure ? (

@@ -1513,6 +1513,79 @@ pub enum SessionTelemetrySnapshotVersion {
     #[default]
     V1,
     V2,
+    V3,
+    V4,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolRepairCount {
+    pub key: String,
+    pub count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolRepairToolSummary {
+    pub tool_name: String,
+    pub call_count: u64,
+    pub repaired_call_count: u64,
+    pub error_call_count: u64,
+    pub repair_event_count: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_kinds: Vec<ToolRepairCount>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failure_kinds: Vec<ToolRepairCount>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionToolRepairTelemetrySummary {
+    pub total_tool_calls: u64,
+    pub repaired_tool_call_count: u64,
+    pub error_tool_call_count: u64,
+    pub repair_event_count: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failure_kinds: Vec<ToolRepairCount>,
+    #[serde(default, skip_serializing_if = "u64_is_zero")]
+    pub provider_diagnostic_count: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_diagnostic_kinds: Vec<ToolRepairCount>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_kinds: Vec<ToolRepairCount>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_layers: Vec<ToolRepairCount>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolRepairToolSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelToolRepairTelemetrySummary {
+    pub provider_id: String,
+    pub model_id: String,
+    pub session_count: u64,
+    pub repaired_session_count: u64,
+    #[serde(default, skip_serializing_if = "u64_is_zero")]
+    pub error_session_count: u64,
+    #[serde(default, skip_serializing_if = "u64_is_zero")]
+    pub provider_diagnostic_session_count: u64,
+    pub total_tool_calls: u64,
+    pub repaired_tool_call_count: u64,
+    pub error_tool_call_count: u64,
+    pub repair_event_count: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failure_kinds: Vec<ToolRepairCount>,
+    #[serde(default, skip_serializing_if = "u64_is_zero")]
+    pub provider_diagnostic_count: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_diagnostic_kinds: Vec<ToolRepairCount>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_kinds: Vec<ToolRepairCount>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_layers: Vec<ToolRepairCount>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolRepairToolSummary>,
+}
+
+fn u64_is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1911,6 +1984,8 @@ pub struct SessionTelemetrySnapshot {
     pub usage: SessionUsage,
     #[serde(default)]
     pub stage_summaries: Vec<PersistedStageTelemetrySummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_repair_summary: Option<SessionToolRepairTelemetrySummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<SessionMemoryTelemetrySummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

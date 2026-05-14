@@ -316,6 +316,7 @@ mod tests {
                     attached_session_count: 0,
                     primary_attached_session_id: None,
                 }],
+                tool_repair_summary: None,
                 memory: None,
                 compaction_continuity: None,
                 last_run_status: "completed".to_string(),

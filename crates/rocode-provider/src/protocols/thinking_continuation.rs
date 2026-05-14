@@ -170,9 +170,7 @@ pub fn message_has_tool_calls(message: &Message) -> bool {
     }
 }
 
-pub fn request_has_tool_call_continuation_missing_reasoning_replay(
-    messages: &[Message],
-) -> bool {
+pub fn request_has_tool_call_continuation_missing_reasoning_replay(messages: &[Message]) -> bool {
     messages.iter().enumerate().any(|(index, message)| {
         matches!(message.role, Role::Assistant)
             && index + 1 < messages.len()

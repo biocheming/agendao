@@ -92,7 +92,10 @@ impl SkillGovernanceAuthority {
             sync_planner: Arc::new(SkillSyncPlanner::new()),
             guard_engine: Arc::new(SkillGuardEngine::new()),
             distribution_resolver: Arc::new(SkillDistributionResolver::new()),
-            artifact_store: Arc::new(SkillArtifactStore::new(base_dir.clone(), config_store.clone())),
+            artifact_store: Arc::new(SkillArtifactStore::new(
+                base_dir.clone(),
+                config_store.clone(),
+            )),
             lifecycle: Arc::new(SkillLifecycleCoordinator::new()),
             config_store,
         }
@@ -1007,7 +1010,14 @@ impl SkillGovernanceAuthority {
         self.config_store
             .as_deref()
             .map(|store| store.config())
-            .and_then(|config| config.skills.as_ref()?.hub.as_ref()?.index_freshness_max_age_seconds)
+            .and_then(|config| {
+                config
+                    .skills
+                    .as_ref()?
+                    .hub
+                    .as_ref()?
+                    .index_freshness_max_age_seconds
+            })
             .unwrap_or(DEFAULT_INDEX_FRESHNESS_MAX_AGE_SECONDS)
     }
 
@@ -1051,8 +1061,9 @@ impl SkillGovernanceAuthority {
         // or resolved from a git/archive locator).
         match source.source_kind {
             rocode_types::SkillSourceKind::Bundled => rocode_types::SkillTrustLevel::Official,
-            rocode_types::SkillSourceKind::Registry
-            | rocode_types::SkillSourceKind::Git => rocode_types::SkillTrustLevel::Community,
+            rocode_types::SkillSourceKind::Registry | rocode_types::SkillSourceKind::Git => {
+                rocode_types::SkillTrustLevel::Community
+            }
             _ => rocode_types::SkillTrustLevel::Unknown,
         }
     }
@@ -1119,8 +1130,7 @@ impl SkillGovernanceAuthority {
                 let managed_for_source = managed_record
                     .and_then(|record| record.source.as_ref())
                     .is_some_and(|source| source == &snapshot.source);
-                let maintenance_status =
-                    Self::maintenance_status_label(stale, snapshot.updated_at);
+                let maintenance_status = Self::maintenance_status_label(stale, snapshot.updated_at);
                 matches.push(SkillHubSearchMatch {
                     source: snapshot.source.clone(),
                     entry,
@@ -1156,20 +1166,21 @@ impl SkillGovernanceAuthority {
         });
         matches.truncate(limit);
 
-        let suggested_refresh_sources: Vec<SkillSourceRef> = if matches.is_empty() || !has_indexed_sources {
-            self.default_registry_sources()
-                .into_iter()
-                .filter(|source| {
-                    search_source_matches_filters(
-                        source,
-                        normalized_source_id.as_deref(),
-                        source_kind.clone(),
-                    )
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let suggested_refresh_sources: Vec<SkillSourceRef> =
+            if matches.is_empty() || !has_indexed_sources {
+                self.default_registry_sources()
+                    .into_iter()
+                    .filter(|source| {
+                        search_source_matches_filters(
+                            source,
+                            normalized_source_id.as_deref(),
+                            source_kind.clone(),
+                        )
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
         let web_fallback_query =
             if matches.is_empty() && !has_indexed_sources && normalized_query.is_some() {

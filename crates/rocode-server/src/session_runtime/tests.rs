@@ -364,12 +364,10 @@ async fn emit_scheduler_stage_message_consumes_pending_compaction_notice() {
             .and_then(|value| value.as_str()),
         Some("scheduler.pre_run")
     );
-    assert!(
-        !session
-            .record()
-            .metadata
-            .contains_key(SCHEDULER_STAGE_PENDING_LAST_EVENT_KEY)
-    );
+    assert!(!session
+        .record()
+        .metadata
+        .contains_key(SCHEDULER_STAGE_PENDING_LAST_EVENT_KEY));
 }
 
 #[test]
@@ -1259,11 +1257,9 @@ async fn lifecycle_hook_step_checkpoint_prefers_observed_usage_over_low_estimate
         summary.status,
         rocode_types::ContextPressureGovernanceStatus::Deferred
     );
-    assert!(
-        summary
-            .request_pressure_percent
-            .is_some_and(|percent| percent >= 100)
-    );
+    assert!(summary
+        .request_pressure_percent
+        .is_some_and(|percent| percent >= 100));
 }
 
 #[tokio::test]
@@ -1610,17 +1606,15 @@ async fn lifecycle_hook_emits_scheduler_stage_and_reasoning_blocks_for_non_attac
             "reasoning:end",
         ]
     );
-    assert!(session_blocks
-        .iter()
-        .any(|block| matches!(
-            block,
-            OutputBlock::Message(message)
-                if *message
-                    == MessageBlock::delta(
-                        OutputMessageRole::Assistant,
-                        "main session streamed content",
-                    )
-        )));
+    assert!(session_blocks.iter().any(|block| matches!(
+        block,
+        OutputBlock::Message(message)
+            if *message
+                == MessageBlock::delta(
+                    OutputMessageRole::Assistant,
+                    "main session streamed content",
+                )
+    )));
 }
 
 #[tokio::test]

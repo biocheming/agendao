@@ -284,7 +284,8 @@ async fn sisyphus_runs_single_execution_orchestration_without_review_or_synthesi
     assert!(inputs[0].contains("## Delivery Contract"));
     assert!(inputs[0].contains("Start the final visible answer directly at `## Delivery Summary`."));
     assert!(inputs[0].contains("Do not preface the final answer with intent narration"));
-    assert!(inputs[0].contains("Never include lines such as `I detect...`, `My approach:`, `Let me...`"));
+    assert!(inputs[0]
+        .contains("Never include lines such as `I detect...`, `My approach:`, `Let me...`"));
     assert!(!inputs[0].contains("## Stage\nroute"));
     assert!(!inputs[0].contains("Phase 0 - Intent Gate"));
     assert!(!inputs[0].contains("Phase 3 - Completion"));

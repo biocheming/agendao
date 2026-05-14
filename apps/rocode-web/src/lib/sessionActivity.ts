@@ -43,6 +43,38 @@ export interface SessionUsageRecord {
   total_cost: number;
 }
 
+export interface ToolRepairCountRecord {
+  key: string;
+  count: number;
+}
+
+export interface ToolRepairToolSummaryRecord {
+  tool_name: string;
+  call_count: number;
+  repaired_call_count: number;
+  error_call_count: number;
+  repair_event_count: number;
+  event_kinds: ToolRepairCountRecord[];
+}
+
+export interface SessionToolRepairTelemetrySummaryRecord {
+  total_tool_calls: number;
+  repaired_tool_call_count: number;
+  error_tool_call_count: number;
+  repair_event_count: number;
+  event_kinds: ToolRepairCountRecord[];
+  event_layers: ToolRepairCountRecord[];
+  tools: ToolRepairToolSummaryRecord[];
+}
+
+export interface ModelToolRepairTelemetrySummaryRecord
+  extends SessionToolRepairTelemetrySummaryRecord {
+  provider_id: string;
+  model_id: string;
+  session_count: number;
+  repaired_session_count: number;
+}
+
 export interface StageSummaryRecord {
   stage_id: string;
   stage_name: string;
@@ -190,6 +222,8 @@ export interface SessionTelemetrySnapshotRecord {
   stages: StageSummaryRecord[];
   topology: SessionExecutionTopologyRecord;
   usage: SessionUsageRecord;
+  tool_repair_summary?: SessionToolRepairTelemetrySummaryRecord | null;
+  model_tool_repair_summary?: ModelToolRepairTelemetrySummaryRecord | null;
   memory?: SessionMemoryTelemetryRecord | null;
   cache_evidence?: Record<string, unknown> | null;
   cache_semantics?: Record<string, unknown> | null;

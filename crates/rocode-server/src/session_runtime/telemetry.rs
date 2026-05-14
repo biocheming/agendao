@@ -4,20 +4,19 @@ use tokio::sync::{broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::runtime_control::{
-    ExecutionKind, ExecutionRecord, QuestionInfo, QuestionReply, RuntimeControlRegistry,
-    SessionExecutionTopology, SessionRunStatus, TopologyChangeContext,
-    build_session_execution_topology,
+    build_session_execution_topology, ExecutionKind, ExecutionRecord, QuestionInfo, QuestionReply,
+    RuntimeControlRegistry, SessionExecutionTopology, SessionRunStatus, TopologyChangeContext,
 };
 use crate::session_runtime::events::{DiffEntry, QuestionResolutionKind, ServerEvent};
 use crate::session_runtime::stage_summary::StageSummaryStore;
 use crate::session_runtime::state::{RuntimeStateStore, SessionRuntimeState};
 use crate::stage_event_log::{EventFilter, StageEventLog};
-use rocode_command::stage_protocol::{EventScope, StageEvent, StageSummary, telemetry_event_names};
+use rocode_command::stage_protocol::{telemetry_event_names, EventScope, StageEvent, StageSummary};
 use rocode_plugin::{HookContext, HookEvent};
 use rocode_session::{
     SessionMessage, SessionTelemetrySnapshot, SessionTelemetrySnapshotVersion, SessionUsage,
 };
-use rocode_types::SessionMemoryTelemetrySummary;
+use rocode_types::{SessionMemoryTelemetrySummary, SessionToolRepairTelemetrySummary};
 
 pub(crate) struct RuntimeTelemetryAuthority {
     event_bus: broadcast::Sender<String>,
@@ -685,6 +684,7 @@ impl RuntimeTelemetryAuthority {
         usage: SessionUsage,
         last_run_status: impl Into<String>,
         memory: Option<SessionMemoryTelemetrySummary>,
+        tool_repair_summary: Option<SessionToolRepairTelemetrySummary>,
     ) -> Option<SessionTelemetrySnapshot> {
         let has_runtime = self.runtime_state.get(session_id).await.is_some();
         let stage_summaries = self.stage_summaries.list_for_session(session_id).await;
@@ -700,9 +700,10 @@ impl RuntimeTelemetryAuthority {
         }
 
         Some(SessionTelemetrySnapshot {
-            version: SessionTelemetrySnapshotVersion::V2,
+            version: SessionTelemetrySnapshotVersion::V4,
             usage,
             stage_summaries: stage_summaries.into_iter().map(Into::into).collect(),
+            tool_repair_summary,
             memory,
             compaction_continuity: None,
             last_run_status: last_run_status.into(),
@@ -800,14 +801,14 @@ impl RuntimeTelemetryAuthority {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session_runtime::{emit_scheduler_stage_message, SchedulerStageMessageInput};
     use crate::ServerState;
-    use crate::session_runtime::{SchedulerStageMessageInput, emit_scheduler_stage_message};
     use rocode_orchestrator::ExecutionContext;
-    use rocode_plugin::{Hook, HookContext, global};
+    use rocode_plugin::{global, Hook, HookContext};
     use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::sync::mpsc;
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{timeout, Duration};
 
     async fn recv_stage_summary_hook_for_session(
         rx: &mut mpsc::UnboundedReceiver<HookContext>,
@@ -887,13 +888,11 @@ mod tests {
             hook_ctx.get("summary").and_then(|v| v.get("stage_name")),
             Some(&serde_json::json!("plan"))
         );
-        assert!(
-            hook_ctx
-                .get("summary")
-                .and_then(|value| value.get("stage_id"))
-                .and_then(|value| value.as_str())
-                .is_some()
-        );
+        assert!(hook_ctx
+            .get("summary")
+            .and_then(|value| value.get("stage_id"))
+            .and_then(|value| value.as_str())
+            .is_some());
 
         let message_snapshot = {
             let sessions = state.sessions.lock().await;
@@ -909,11 +908,13 @@ mod tests {
             .runtime_telemetry
             .refresh_stage_summary_from_message(&session_id, &message_snapshot)
             .await;
-        assert!(
-            recv_stage_summary_hook_for_session(&mut rx, &session_id, Duration::from_millis(200))
-                .await
-                .is_none()
-        );
+        assert!(recv_stage_summary_hook_for_session(
+            &mut rx,
+            &session_id,
+            Duration::from_millis(200)
+        )
+        .await
+        .is_none());
 
         let _ = global()
             .remove(&HookEvent::StageSummaryUpdated, &hook_name)

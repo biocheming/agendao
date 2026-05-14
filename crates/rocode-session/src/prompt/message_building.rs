@@ -138,10 +138,10 @@ impl SessionPrompt {
 
             // Skip messages with no parts — empty Tool/Assistant messages
             // confuse providers, especially the Ethnopic-compatible family
-                // which rejects empty content.
-                if msg.parts.is_empty() {
-                    continue;
-                }
+            // which rejects empty content.
+            if msg.parts.is_empty() {
+                continue;
+            }
 
             if let Some(summary) = Self::projected_model_context_summary(msg) {
                 messages.push(Message::assistant(summary));

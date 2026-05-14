@@ -7,9 +7,8 @@ use rocode_execution_types::{
     ExecutionRequestContext,
 };
 use rocode_provider::{
-    Content, ContentPart, Message, Provider, ProviderProfileResolver, ProviderQuirk, Role,
-    ToolDefinition, ToolResult as ProviderToolResult,
-    strip_reasoning_provider_options_for_new_continuation,
+    strip_reasoning_provider_options_for_new_continuation, Content, ContentPart, Message, Provider,
+    ProviderProfileResolver, ProviderQuirk, Role, ToolDefinition, ToolResult as ProviderToolResult,
 };
 use rocode_tool::{ToolContext, ToolError};
 use rocode_types::SubsessionHandoffPacket;

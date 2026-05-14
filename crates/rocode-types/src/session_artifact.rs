@@ -887,6 +887,7 @@ mod tests {
             version: SessionTelemetrySnapshotVersion::V1,
             usage: SessionUsage::default(),
             stage_summaries: Vec::new(),
+            tool_repair_summary: None,
             memory: None,
             compaction_continuity: None,
             last_run_status: "completed".to_string(),

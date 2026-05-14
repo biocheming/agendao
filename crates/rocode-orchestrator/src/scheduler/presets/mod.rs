@@ -43,10 +43,10 @@ pub(super) fn normalize_embedded_delivery_summary(output: &str) -> String {
     }
 
     let lines: Vec<&str> = trimmed.lines().collect();
-    let Some((heading_index, canonical_heading)) = lines
-        .iter()
-        .enumerate()
-        .find_map(|(index, line)| embedded_structured_heading(line).map(|heading| (index, heading)))
+    let Some((heading_index, canonical_heading)) =
+        lines.iter().enumerate().find_map(|(index, line)| {
+            embedded_structured_heading(line).map(|heading| (index, heading))
+        })
     else {
         return trimmed.to_string();
     };
