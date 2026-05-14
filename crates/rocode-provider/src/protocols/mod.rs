@@ -8,7 +8,7 @@ mod openai_request_body;
 mod openai_response;
 mod openai_tool_recovery;
 mod openai_usage;
-mod request_sanitizer;
+pub mod request_sanitizer;
 mod thinking_continuation;
 mod vertex;
 

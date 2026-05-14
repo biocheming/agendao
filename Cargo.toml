@@ -45,7 +45,7 @@ license = "MIT"
 [profile.release]
 strip = "debuginfo"
 lto = "thin"
-codegen-units = 1
+#codegen-units = 1
 debug = 0
 
 [workspace.dependencies]

@@ -9,8 +9,8 @@ use tokio_util::sync::CancellationToken;
 use rocode_orchestrator::inline_subtask_request_defaults;
 use rocode_provider::{Provider, ToolDefinition};
 use rocode_types::{
-    SubsessionHandoffFieldKind, SubsessionHandoffPacket, SubsessionHandoffRichness,
-    SubsessionResultEnvelope,
+    RepairEvent, SubsessionHandoffFieldKind, SubsessionHandoffPacket, SubsessionHandoffRichness,
+    SubsessionResultEnvelope, ToolBatchSummary,
 };
 
 use crate::{FilePart, MessageRole, PartType, Session, SessionMessage};
@@ -224,7 +224,7 @@ impl SessionPrompt {
                     );
                     rocode_tool::append_tool_repair_event_map(&mut repair_metadata, event);
                 }
-                let effective_tool_name = repaired_tool_name.clone();
+                let mut effective_tool_name = repaired_tool_name.clone();
                 let mut effective_input = input;
                 let (normalized_input, normalization_telemetry) =
                     rocode_tool::normalize_tool_arguments_with_telemetry(
@@ -250,7 +250,7 @@ impl SessionPrompt {
                     tracing::warn!(
                         tool_name = %tool_name,
                         normalized_tool = %effective_tool_name,
-                        "tool arguments failed prevalidation; preserving original tool name"
+                        "tool arguments failed prevalidation; routing to invalid tool"
                     );
                     let mut event = rocode_tool::tool_repair_event(
                         "argument_prevalidation_fallback",
@@ -264,6 +264,7 @@ impl SessionPrompt {
                         event.insert("receivedArgs".to_string(), received_args.clone());
                     }
                     rocode_tool::append_tool_repair_event_map(&mut repair_metadata, event);
+                    effective_tool_name = "invalid".to_string();
                     effective_input = payload;
                 }
 
@@ -298,15 +299,68 @@ impl SessionPrompt {
                                 state_attachments,
                             )
                         }
-                        Err(e) => (
-                            format!("Error: {}", e),
-                            true,
-                            Some("Tool Error".to_string()),
-                            (!rocode_tool::tool_repair_events(&repair_metadata).is_empty())
-                                .then_some(repair_metadata.clone()),
-                            None,
-                            None,
-                        ),
+                        Err(e) => {
+                            // Route argument/validation failures to the "invalid"
+                            // tool so the model sees a consistent, machine-readable
+                            // error with repair hints.
+                            if available_tool_ids.contains("invalid") {
+                                let invalid_input = Self::invalid_tool_payload(
+                                    &tool_name,
+                                    &format!("Error: {}", e),
+                                );
+                                let fallback_execution = tool_registry
+                                    .execute("invalid", invalid_input.clone(), tool_ctx.clone())
+                                    .await;
+                                match fallback_execution {
+                                    Ok(result) => {
+                                        effective_tool_name = "invalid".to_string();
+                                        effective_input = invalid_input;
+                                        let mut metadata = result.metadata;
+                                        rocode_tool::merge_tool_repair_telemetry(
+                                            &mut metadata,
+                                            &repair_metadata,
+                                        );
+                                        let (attachments, state_attachments) =
+                                            Self::extract_tool_attachments_from_metadata(
+                                                &mut metadata,
+                                                &ctx.session_id,
+                                                &ctx.message_id,
+                                            );
+                                        (
+                                            result.output,
+                                            false,
+                                            Some(result.title),
+                                            Some(metadata),
+                                            attachments,
+                                            state_attachments,
+                                        )
+                                    }
+                                    Err(fallback_err) => (
+                                        format!(
+                                            "Tool {} failed: {}. Invalid fallback also failed: {}",
+                                            tool_name, e, fallback_err
+                                        ),
+                                        true,
+                                        Some("Tool Error".to_string()),
+                                        (!rocode_tool::tool_repair_events(&repair_metadata)
+                                            .is_empty())
+                                        .then_some(repair_metadata.clone()),
+                                        None,
+                                        None,
+                                    ),
+                                }
+                            } else {
+                                (
+                                    format!("Error: {}", e),
+                                    true,
+                                    Some("Tool Error".to_string()),
+                                    (!rocode_tool::tool_repair_events(&repair_metadata).is_empty())
+                                        .then_some(repair_metadata.clone()),
+                                    None,
+                                    None,
+                                )
+                            }
+                        }
                     };
                 let history_input = Self::sanitize_tool_call_input_for_history(
                     &effective_tool_name,
@@ -393,7 +447,129 @@ impl SessionPrompt {
 
         let persisted = subsessions.lock().await.clone();
         Self::save_persisted_subsessions(session, &persisted);
+
+        // Build and persist a tool batch summary for telemetry / compaction.
+        if executed_calls > 0 {
+            let summary = session
+                .messages
+                .get(last_assistant_index)
+                .and_then(|msg| Self::build_tool_batch_summary(msg));
+            if let Some(summary) = summary {
+                session.insert_metadata(
+                    "latest_tool_batch_summary".to_string(),
+                    serde_json::to_value(&summary).unwrap_or_default(),
+                );
+            }
+        }
+
         Ok(executed_calls)
+    }
+
+    /// Build a structured `ToolBatchSummary` from the completed tool calls in
+    /// an assistant message.
+    pub(super) fn build_tool_batch_summary(
+        assistant_msg: &SessionMessage,
+    ) -> Option<ToolBatchSummary> {
+        let tool_calls: Vec<_> = assistant_msg
+            .parts
+            .iter()
+            .filter_map(|part| match &part.part_type {
+                PartType::ToolCall {
+                    name,
+                    status,
+                    state,
+                    ..
+                } => {
+                    let is_error = matches!(status, crate::ToolCallStatus::Error);
+                    let error_kind = if is_error {
+                        state.as_ref().and_then(|s| match s {
+                            crate::ToolState::Error { error, .. } => {
+                                Some(classify_error_kind(error))
+                            }
+                            _ => None,
+                        })
+                    } else {
+                        None
+                    };
+                    let repair_events = state
+                        .as_ref()
+                        .and_then(|s| match s {
+                            crate::ToolState::Completed { metadata, .. }
+                            | crate::ToolState::Error {
+                                metadata: Some(metadata),
+                                ..
+                            } => Some(rocode_tool::structured_repair_events(metadata)),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    Some((name.clone(), is_error, error_kind, repair_events))
+                }
+                _ => None,
+            })
+            .collect();
+
+        if tool_calls.is_empty() {
+            return None;
+        }
+
+        let success_count = tool_calls.iter().filter(|(_, err, ..)| !err).count() as u32;
+        let error_count = tool_calls.iter().filter(|(_, err, ..)| *err).count() as u32;
+        let tools_used: Vec<String> = {
+            let mut names: Vec<String> = tool_calls.iter().map(|(n, ..)| n.clone()).collect();
+            names.sort();
+            names.dedup();
+            names
+        };
+        let error_kinds: Vec<String> = {
+            let mut kinds: Vec<String> = tool_calls
+                .iter()
+                .filter_map(|(_, _, kind, _)| kind.clone())
+                .collect();
+            kinds.sort();
+            kinds.dedup();
+            kinds
+        };
+        let repair_events: Vec<RepairEvent> = tool_calls
+            .into_iter()
+            .flat_map(|(_, _, _, events)| events)
+            .collect();
+
+        Some(ToolBatchSummary {
+            tools_used,
+            success_count,
+            error_count,
+            error_kinds,
+            artifacts_created: Vec::new(),
+            pending_follow_up: Vec::new(),
+            recommended_next_step: None,
+            repair_events,
+        })
+    }
+
+    /// Read the latest tool batch summary from session metadata and inject it
+    /// into the chat messages as a compact model-visible context block (P0.4).
+    pub(super) fn inject_latest_tool_batch_summary(
+        session: &mut Session,
+        chat_messages: &mut Vec<rocode_provider::Message>,
+    ) {
+        let Some(summary_value) = session.remove_metadata("latest_tool_batch_summary") else {
+            return;
+        };
+        let Ok(summary) = serde_json::from_value::<ToolBatchSummary>(summary_value) else {
+            return;
+        };
+        if summary.tools_used.is_empty() {
+            return;
+        }
+
+        let context_block = summary.format_for_context();
+        // Append as a user message so the model sees it as task context.
+        chat_messages.push(rocode_provider::Message {
+            role: rocode_provider::Role::User,
+            content: rocode_provider::Content::Text(context_block),
+            cache_control: None,
+            provider_options: None,
+        });
     }
 
     fn append_synthetic_user_message(session: &mut Session, message: PendingSyntheticMessage) {
@@ -905,6 +1081,26 @@ impl SessionPrompt {
     }
 }
 
+fn classify_error_kind(error: &str) -> String {
+    let lower = error.trim().to_ascii_lowercase();
+    if lower.starts_with("permission denied:") || lower.contains("permission denied") {
+        "permission_denied".to_string()
+    } else if lower.starts_with("file not found:") || lower.contains("file not found") {
+        "file_not_found".to_string()
+    } else if lower.starts_with("timeout:")
+        || lower.contains("timeout:")
+        || lower.contains("timed out")
+    {
+        "timeout".to_string()
+    } else if lower.starts_with("invalid arguments:") || lower.starts_with("validation error:") {
+        "invalid_arguments".to_string()
+    } else if lower == "cancelled" || lower.contains("cancelled") || lower.contains("canceled") {
+        "cancelled".to_string()
+    } else {
+        "execution_error".to_string()
+    }
+}
+
 fn synthetic_attachment_filename(
     attachment: &rocode_tool::SyntheticAttachment,
     index: usize,
@@ -1378,6 +1574,61 @@ mod tests {
             event.get("kind").and_then(|value| value.as_str()) == Some("tool_name_repair")
                 && event.get("to").and_then(|value| value.as_str()) == Some("fail_tool")
         }));
+    }
+
+    #[test]
+    fn inject_latest_tool_batch_summary_consumes_metadata_once() {
+        let mut session = Session::new("proj", ".");
+        let summary = ToolBatchSummary {
+            tools_used: vec!["read".to_string(), "edit".to_string()],
+            success_count: 2,
+            error_count: 0,
+            error_kinds: Vec::new(),
+            artifacts_created: Vec::new(),
+            pending_follow_up: Vec::new(),
+            recommended_next_step: Some("continue with implementation".to_string()),
+            repair_events: Vec::new(),
+        };
+        session.insert_metadata(
+            "latest_tool_batch_summary".to_string(),
+            serde_json::to_value(&summary).expect("summary should serialize"),
+        );
+
+        let mut chat_messages = vec![rocode_provider::Message {
+            role: rocode_provider::Role::User,
+            content: rocode_provider::Content::Text("original user request".to_string()),
+            cache_control: None,
+            provider_options: None,
+        }];
+
+        SessionPrompt::inject_latest_tool_batch_summary(&mut session, &mut chat_messages);
+
+        assert_eq!(chat_messages.len(), 2);
+        let injected = match &chat_messages[1].content {
+            rocode_provider::Content::Text(text) => text.clone(),
+            other => panic!("expected text summary, got {other:?}"),
+        };
+        assert!(injected.contains("<tool-batch-summary>"));
+        assert!(injected.contains("tools: edit, read") || injected.contains("tools: read, edit"));
+        assert_eq!(session.metadata.get("latest_tool_batch_summary"), None);
+
+        SessionPrompt::inject_latest_tool_batch_summary(&mut session, &mut chat_messages);
+        assert_eq!(chat_messages.len(), 2);
+    }
+
+    #[test]
+    fn inject_latest_tool_batch_summary_skips_invalid_payload_and_clears_it() {
+        let mut session = Session::new("proj", ".");
+        session.insert_metadata(
+            "latest_tool_batch_summary".to_string(),
+            serde_json::json!({"bad": "shape"}),
+        );
+
+        let mut chat_messages = Vec::new();
+        SessionPrompt::inject_latest_tool_batch_summary(&mut session, &mut chat_messages);
+
+        assert!(chat_messages.is_empty());
+        assert_eq!(session.metadata.get("latest_tool_batch_summary"), None);
     }
 
     #[test]

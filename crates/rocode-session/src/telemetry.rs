@@ -40,6 +40,27 @@ struct ToolRepairAccumulator {
 }
 
 impl ToolRepairAccumulator {
+    fn record_repair_events(
+        &mut self,
+        metadata: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> bool {
+        let events = rocode_tool::structured_repair_events(metadata);
+        if events.is_empty() {
+            return false;
+        }
+
+        for event in &events {
+            self.repair_event_count += 1;
+            *self
+                .event_kinds
+                .entry(event.repair_kind.clone())
+                .or_default() += 1;
+            *self.event_layers.entry(event.layer.clone()).or_default() += 1;
+        }
+
+        true
+    }
+
     fn record_tool_call(
         &mut self,
         tool_name: &str,
@@ -52,39 +73,40 @@ impl ToolRepairAccumulator {
             self.error_tool_call_count += 1;
         }
 
-        let tool_entry = self.tools.entry(tool_name.to_string()).or_default();
-        tool_entry.call_count += 1;
-        if is_error {
-            tool_entry.error_call_count += 1;
-            let kind = classify_tool_failure_kind(error_text);
-            *self.failure_kinds.entry(kind.to_string()).or_default() += 1;
-            *tool_entry
-                .failure_kinds
-                .entry(kind.to_string())
-                .or_default() += 1;
+        let mut per_tool_failure_kind: Option<String> = None;
+        {
+            let tool_entry = self.tools.entry(tool_name.to_string()).or_default();
+            tool_entry.call_count += 1;
+            if is_error {
+                tool_entry.error_call_count += 1;
+                let kind = classify_tool_failure_kind(error_text).to_string();
+                per_tool_failure_kind = Some(kind.clone());
+                *tool_entry.failure_kinds.entry(kind).or_default() += 1;
+            }
+        }
+
+        if let Some(kind) = per_tool_failure_kind {
+            *self.failure_kinds.entry(kind).or_default() += 1;
         }
 
         let Some(metadata) = metadata else {
             return;
         };
-        let events = rocode_tool::tool_repair_events(metadata);
-        if events.is_empty() {
+        if !self.record_repair_events(metadata) {
             return;
         }
 
         self.repaired_tool_call_count += 1;
-        tool_entry.repaired_call_count += 1;
-
-        for event in events {
-            self.repair_event_count += 1;
-            tool_entry.repair_event_count += 1;
-
-            if let Some(kind) = event.get("kind").and_then(|value| value.as_str()) {
-                *self.event_kinds.entry(kind.to_string()).or_default() += 1;
-                *tool_entry.event_kinds.entry(kind.to_string()).or_default() += 1;
-            }
-            if let Some(layer) = event.get("layer").and_then(|value| value.as_str()) {
-                *self.event_layers.entry(layer.to_string()).or_default() += 1;
+        let events = rocode_tool::structured_repair_events(metadata);
+        {
+            let tool_entry = self.tools.entry(tool_name.to_string()).or_default();
+            tool_entry.repaired_call_count += 1;
+            tool_entry.repair_event_count += events.len() as u64;
+            for event in &events {
+                *tool_entry
+                    .event_kinds
+                    .entry(event.repair_kind.clone())
+                    .or_default() += 1;
             }
         }
     }
@@ -98,7 +120,10 @@ impl ToolRepairAccumulator {
     }
 
     fn build_session_summary(self) -> Option<SessionToolRepairTelemetrySummary> {
-        if self.total_tool_calls == 0 && self.provider_diagnostic_count == 0 {
+        if self.total_tool_calls == 0
+            && self.provider_diagnostic_count == 0
+            && self.repair_event_count == 0
+        {
             return None;
         }
 
@@ -154,6 +179,8 @@ pub fn build_session_tool_repair_telemetry(
     session: &Session,
 ) -> Option<SessionToolRepairTelemetrySummary> {
     let mut accumulator = ToolRepairAccumulator::default();
+
+    let _ = accumulator.record_repair_events(&session.metadata);
 
     for message in &session.messages {
         if !matches!(message.role, MessageRole::Assistant) {
@@ -211,7 +238,7 @@ pub fn aggregate_model_tool_repair_telemetry<'a>(
         };
 
         session_count += 1;
-        if summary.repaired_tool_call_count > 0 {
+        if summary.repaired_tool_call_count > 0 || summary.repair_event_count > 0 {
             repaired_session_count += 1;
         }
         if summary.error_tool_call_count > 0 {
@@ -648,6 +675,29 @@ mod tests {
     }
 
     #[test]
+    fn build_session_tool_repair_telemetry_includes_session_level_sanitizer_repairs() {
+        let mut session = Session::new("proj", ".");
+        let mut metadata = rocode_tool::Metadata::new();
+        let event = rocode_tool::repair_event_builder("thinking_only_assistant", "sanitizer", "")
+            .reason("dropped assistant message with only thinking blocks")
+            .build();
+        rocode_tool::append_structured_repair_event(&mut metadata, &event);
+        session.record_mut().metadata.extend(metadata);
+
+        let summary = build_session_tool_repair_telemetry(&session).expect("summary");
+        assert_eq!(summary.total_tool_calls, 0);
+        assert_eq!(summary.repair_event_count, 1);
+        assert!(summary
+            .event_kinds
+            .iter()
+            .any(|count| count.key == "thinking_only_assistant" && count.count == 1));
+        assert!(summary
+            .event_layers
+            .iter()
+            .any(|count| count.key == "sanitizer" && count.count == 1));
+    }
+
+    #[test]
     fn aggregate_model_tool_repair_telemetry_groups_matching_sessions() {
         let mut first = Session::new("proj", ".");
         first.insert_metadata("model_provider".to_string(), serde_json::json!("deepseek"));
@@ -743,6 +793,28 @@ mod tests {
             .tools
             .iter()
             .any(|tool| tool.tool_name == "task_flow" && tool.repaired_call_count == 1));
+    }
+
+    #[test]
+    fn aggregate_model_tool_repair_telemetry_counts_session_level_repairs_as_repaired_sessions() {
+        let mut session = Session::new("proj", ".");
+        session.insert_metadata("model_provider".to_string(), serde_json::json!("deepseek"));
+        session.insert_metadata("model_id".to_string(), serde_json::json!("v4-flash"));
+        let mut metadata = rocode_tool::Metadata::new();
+        rocode_tool::append_structured_repair_event(
+            &mut metadata,
+            &rocode_tool::repair_event_builder("orphaned_tool_result", "sanitizer", "")
+                .reason("orphaned tool_result without pending tool_use")
+                .build(),
+        );
+        session.record_mut().metadata.extend(metadata);
+
+        let summary = aggregate_model_tool_repair_telemetry([&session], "deepseek", "v4-flash")
+            .expect("summary");
+        assert_eq!(summary.session_count, 1);
+        assert_eq!(summary.repaired_session_count, 1);
+        assert_eq!(summary.total_tool_calls, 0);
+        assert_eq!(summary.repair_event_count, 1);
     }
 
     #[test]
