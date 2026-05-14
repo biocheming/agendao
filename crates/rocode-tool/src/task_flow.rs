@@ -1,11 +1,15 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::{Map, Value};
 
 use rocode_core::agent_task_registry::{global_task_registry, AgentTask, AgentTaskStatus};
 
 use crate::task::TaskTool;
 use crate::todo::TodoWriteTool;
-use crate::{Metadata, PermissionRequest, TodoItemData, Tool, ToolContext, ToolError, ToolResult};
+use crate::{
+    append_tool_repair_event_map, merge_tool_repair_telemetry, tool_repair_event, Metadata,
+    PermissionRequest, TodoItemData, Tool, ToolContext, ToolError, ToolResult,
+};
 
 const DEFAULT_LIMIT: usize = 20;
 const MAX_LIMIT: usize = 100;
@@ -16,6 +20,21 @@ It does not replace the `task` tool's delegated execution path. Instead, it
 provides a stable request-level interface for task create/resume/get/list/cancel
 operations that will be backed by existing authorities.
 
+For ordinary delegation, prefer the minimal create shape:
+{"operation":"create","agent":"build","prompt":"..."}
+
+For ordinary continuation, prefer the minimal resume shape:
+{"operation":"resume","task_id":"...","agent":"build","prompt":"..."}
+
+ROCode will normalize common aliases automatically:
+- `action` -> `operation`
+- `request` / `instructions` / `goal` / `message` -> `prompt`
+- `title` / `summary` / `task` -> `description`
+- `subagent_type` -> `agent`
+- `session_id` -> `task_id`
+- `system_prompt` -> `agent_prompt`
+- `allowed_tools` -> `agent_tools`
+
 Phase 1 status:
 - get/list are implemented as read-only registry-backed operations
 - cancel is implemented via orchestration lifecycle mediation
@@ -25,6 +44,7 @@ Important call-shape rules:
 - `create` requires both `agent` and `prompt`
 - `resume` requires `task_id`, `agent`, and `prompt`
 - `todo_item` / `todo_items` / `todos` only describe todo projection data; they do not replace delegated execution inputs
+- use `description` only as a short label; the real delegated instruction belongs in `prompt`
 "#;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -76,7 +96,13 @@ struct TaskFlowInput {
     agent: Option<String>,
     #[serde(default)]
     description: Option<String>,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "request",
+        alias = "instructions",
+        alias = "goal",
+        alias = "message"
+    )]
     prompt: Option<String>,
     #[serde(default)]
     command: Option<String>,
@@ -98,10 +124,10 @@ struct TaskFlowInput {
     #[serde(default = "default_limit")]
     limit: usize,
     /// Inline agent system prompt for runtime agent construction.
-    #[serde(default, alias = "agentPrompt")]
+    #[serde(default, alias = "agentPrompt", alias = "agent_prompt")]
     agent_prompt: Option<String>,
     /// Inline agent allowed tools for runtime agent construction.
-    #[serde(default, alias = "agentTools")]
+    #[serde(default, alias = "agentTools", alias = "agent_tools")]
     agent_tools: Option<Vec<String>>,
 }
 
@@ -156,6 +182,11 @@ fn default_limit() -> usize {
 
 pub struct TaskFlowTool;
 
+struct NormalizedTaskFlowArgs {
+    args: Value,
+    repair_metadata: Metadata,
+}
+
 impl TaskFlowTool {
     pub fn new() -> Self {
         Self
@@ -197,23 +228,23 @@ impl Tool for TaskFlowTool {
                 "operation": {
                     "type": "string",
                     "enum": ["create", "resume", "get", "list", "cancel"],
-                    "description": "Task lifecycle operation"
+                    "description": "Task lifecycle operation. For most delegation calls, use `create`."
                 },
                 "task_id": {
                     "type": "string",
-                    "description": "Registry task id or delegated session id depending on operation"
+                    "description": "Registry task id or delegated session id depending on operation. `session_id` is accepted as an alias."
                 },
                 "agent": {
                     "type": "string",
-                    "description": "Agent name to delegate to for create or resume"
+                    "description": "Agent name to delegate to for create or resume. `subagent_type` is accepted as an alias."
                 },
                 "description": {
                     "type": "string",
-                    "description": "Short task label for UI and summaries"
+                    "description": "Short task label for UI and summaries. Use this as a concise label, not as the main delegated instruction."
                 },
                 "prompt": {
                     "type": "string",
-                    "description": "Delegated prompt body for create or resume"
+                    "description": "Delegated prompt body for create or resume. Common aliases such as `request`, `instructions`, `goal`, or `message` are accepted."
                 },
                 "command": {
                     "type": "string",
@@ -274,12 +305,12 @@ impl Tool for TaskFlowTool {
                 },
                 "agent_prompt": {
                     "type": "string",
-                    "description": "Inline system prompt for a dynamically constructed agent (create only). When the agent name is not known, this defines its role at runtime."
+                    "description": "Inline system prompt for a dynamically constructed agent (create only). When the agent name is not known, this defines its role at runtime. `system_prompt` is accepted as an alias."
                 },
                 "agent_tools": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Allowed tools for a dynamically constructed agent (create only). Only tools available to the parent can be granted."
+                    "description": "Allowed tools for a dynamically constructed agent (create only). Only tools available to the parent can be granted. `allowed_tools` is accepted as an alias."
                 }
             },
             "required": ["operation"],
@@ -324,6 +355,26 @@ impl Tool for TaskFlowTool {
                         "required": ["operation", "task_id"]
                     }
                 }
+            ],
+            "examples": [
+                {
+                    "operation": "create",
+                    "agent": "build",
+                    "prompt": "Investigate the failing integration test and return a concrete fix."
+                },
+                {
+                    "operation": "create",
+                    "agent": "security-auditor",
+                    "description": "Audit auth middleware",
+                    "prompt": "Audit the authentication middleware for bypasses, missing checks, and trust-boundary mistakes.",
+                    "run_in_background": true
+                },
+                {
+                    "operation": "resume",
+                    "task_id": "task_build_42",
+                    "agent": "build",
+                    "prompt": "Continue from the last completed step and finish the remaining work."
+                }
             ]
         })
     }
@@ -333,8 +384,9 @@ impl Tool for TaskFlowTool {
         args: serde_json::Value,
         ctx: ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        let input: TaskFlowInput =
-            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let normalized = normalize_task_flow_args(args);
+        let input: TaskFlowInput = serde_json::from_value(normalized.args)
+            .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
         validate_input(&input)?;
 
         let mut permission = PermissionRequest::new("task_flow")
@@ -356,7 +408,7 @@ impl Tool for TaskFlowTool {
             .with_metadata("sync_todo", serde_json::json!(input.sync_todo));
         ctx.ask_permission(permission).await?;
 
-        match input.operation {
+        let mut result = match input.operation {
             TaskFlowOperation::Get => execute_get(&input),
             TaskFlowOperation::List => execute_list(&input),
             TaskFlowOperation::Cancel => execute_cancel(&input),
@@ -366,7 +418,9 @@ impl Tool for TaskFlowTool {
             TaskFlowOperation::Resume => {
                 execute_delegate(&input, ctx, TaskFlowOperation::Resume).await
             }
-        }
+        }?;
+        merge_tool_repair_telemetry(&mut result.metadata, &normalized.repair_metadata);
+        Ok(result)
     }
 }
 
@@ -486,6 +540,7 @@ async fn execute_delegate(
     if let Some(loaded_skill_count) = delegated.metadata.get("loadedSkillCount") {
         metadata.insert("loadedSkillCount".to_string(), loaded_skill_count.clone());
     }
+    merge_tool_repair_telemetry(&mut metadata, &delegated.metadata);
     metadata.insert(
         "display.summary".to_string(),
         serde_json::json!(format!(
@@ -926,13 +981,25 @@ fn validate_input(input: &TaskFlowInput) -> Result<(), ToolError> {
 
     match input.operation {
         TaskFlowOperation::Create => {
-            require_non_empty(input.agent.as_deref(), "agent is required for create")?;
-            require_non_empty(input.prompt.as_deref(), "prompt is required for create")?;
+            require_non_empty(
+                input.agent.as_deref(),
+                "agent is required for create. Minimal shape: {\"operation\":\"create\",\"agent\":\"build\",\"prompt\":\"...\"}",
+            )?;
+            require_non_empty(
+                input.prompt.as_deref(),
+                "prompt is required for create. Use `description` only as a short label; put the real delegated instruction in `prompt`.",
+            )?;
         }
         TaskFlowOperation::Resume => {
-            require_non_empty(input.task_id.as_deref(), "task_id is required for resume")?;
+            require_non_empty(
+                input.task_id.as_deref(),
+                "task_id is required for resume. Minimal shape: {\"operation\":\"resume\",\"task_id\":\"...\",\"agent\":\"build\",\"prompt\":\"...\"}",
+            )?;
             require_non_empty(input.agent.as_deref(), "agent is required for resume")?;
-            require_non_empty(input.prompt.as_deref(), "prompt is required for resume")?;
+            require_non_empty(
+                input.prompt.as_deref(),
+                "prompt is required for resume. Use `description` only as a short label; put the real continuation instruction in `prompt`.",
+            )?;
         }
         TaskFlowOperation::Get => {
             require_non_empty(input.task_id.as_deref(), "task_id is required for get")?;
@@ -944,6 +1011,79 @@ fn validate_input(input: &TaskFlowInput) -> Result<(), ToolError> {
     }
 
     Ok(())
+}
+
+fn normalize_task_flow_args(args: Value) -> NormalizedTaskFlowArgs {
+    let Value::Object(mut root) = args else {
+        return NormalizedTaskFlowArgs {
+            args,
+            repair_metadata: Metadata::new(),
+        };
+    };
+    let mut repair_metadata = Metadata::new();
+    let mut aliases = Vec::new();
+
+    move_alias(&mut root, "action", "operation", &mut aliases);
+    move_alias(&mut root, "subagent_type", "agent", &mut aliases);
+    move_alias(&mut root, "session_id", "task_id", &mut aliases);
+    move_alias(&mut root, "sessionId", "task_id", &mut aliases);
+    move_alias(&mut root, "system_prompt", "agent_prompt", &mut aliases);
+    move_alias(&mut root, "allowed_tools", "agent_tools", &mut aliases);
+    move_alias(&mut root, "skills", "load_skills", &mut aliases);
+    move_alias(&mut root, "background", "run_in_background", &mut aliases);
+    move_alias(&mut root, "todo", "todo_item", &mut aliases);
+
+    if root.get("description").is_none() {
+        move_alias(&mut root, "title", "description", &mut aliases);
+        move_alias(&mut root, "summary", "description", &mut aliases);
+        move_alias(&mut root, "task", "description", &mut aliases);
+        move_alias(&mut root, "label", "description", &mut aliases);
+    }
+
+    if root.get("prompt").is_none() {
+        move_alias(&mut root, "request", "prompt", &mut aliases);
+        move_alias(&mut root, "instructions", "prompt", &mut aliases);
+        move_alias(&mut root, "goal", "prompt", &mut aliases);
+        move_alias(&mut root, "message", "prompt", &mut aliases);
+        move_alias(&mut root, "input", "prompt", &mut aliases);
+    }
+
+    let operation = root
+        .get("operation")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+
+    if matches!(operation, "create" | "resume") && root.get("prompt").is_none() {
+        if let Some(description) = root.get("description").cloned() {
+            root.insert("prompt".to_string(), description);
+            let mut event = tool_repair_event("fallback_normalization", "tool", "task_flow");
+            event.insert("source".to_string(), serde_json::json!("description"));
+            event.insert("target".to_string(), serde_json::json!("prompt"));
+            append_tool_repair_event_map(&mut repair_metadata, event);
+        }
+    }
+
+    if !aliases.is_empty() {
+        let mut event = tool_repair_event("alias_normalization", "tool", "task_flow");
+        event.insert("aliases".to_string(), serde_json::json!(aliases));
+        append_tool_repair_event_map(&mut repair_metadata, event);
+    }
+
+    NormalizedTaskFlowArgs {
+        args: Value::Object(root),
+        repair_metadata,
+    }
+}
+
+fn move_alias(root: &mut Map<String, Value>, from: &str, to: &str, aliases: &mut Vec<String>) {
+    if root.get(to).is_some() {
+        return;
+    }
+    if let Some(value) = root.remove(from) {
+        root.insert(to.to_string(), value);
+        aliases.push(format!("{from}->{to}"));
+    }
 }
 
 fn require_non_empty(value: Option<&str>, message: &str) -> Result<(), ToolError> {
@@ -1026,6 +1166,78 @@ mod tests {
     }
 
     #[test]
+    fn create_prompt_can_be_normalized_from_description_only() {
+        let normalized = normalize_task_flow_args(serde_json::json!({
+            "operation": "create",
+            "agent": "build",
+            "description": "Investigate the failing integration test and return a fix."
+        }));
+        let input: TaskFlowInput =
+            serde_json::from_value(normalized.args).expect("normalized input should deserialize");
+
+        assert_eq!(
+            input.prompt.as_deref(),
+            Some("Investigate the failing integration test and return a fix.")
+        );
+        validate_input(&input).expect("description-only create should normalize into prompt");
+        let repair_events = crate::tool_repair_events(&normalized.repair_metadata);
+        assert!(repair_events.iter().any(|event| {
+            event.get("kind").and_then(|value| value.as_str()) == Some("fallback_normalization")
+        }));
+    }
+
+    #[test]
+    fn aliases_normalize_into_minimal_create_shape() {
+        let normalized = normalize_task_flow_args(serde_json::json!({
+            "action": "create",
+            "subagent_type": "security-auditor",
+            "request": "Audit the auth middleware for bypasses.",
+            "title": "Auth audit",
+            "background": true,
+            "allowed_tools": ["read", "grep"],
+            "system_prompt": "You are a security-focused auditor."
+        }));
+        let input: TaskFlowInput = serde_json::from_value(normalized.args)
+            .expect("normalized aliased input should deserialize");
+
+        assert_eq!(input.operation, TaskFlowOperation::Create);
+        assert_eq!(input.agent.as_deref(), Some("security-auditor"));
+        assert_eq!(
+            input.prompt.as_deref(),
+            Some("Audit the auth middleware for bypasses.")
+        );
+        assert_eq!(input.description.as_deref(), Some("Auth audit"));
+        assert!(input.run_in_background);
+        assert_eq!(
+            input.agent_prompt.as_deref(),
+            Some("You are a security-focused auditor.")
+        );
+        assert_eq!(
+            input.agent_tools.as_deref(),
+            Some(&["read".to_string(), "grep".to_string()][..])
+        );
+        let repair_events = crate::tool_repair_events(&normalized.repair_metadata);
+        assert!(repair_events.iter().any(|event| {
+            event.get("kind").and_then(|value| value.as_str()) == Some("alias_normalization")
+        }));
+    }
+
+    #[test]
+    fn resume_accepts_session_id_alias_for_task_id() {
+        let normalized = normalize_task_flow_args(serde_json::json!({
+            "operation": "resume",
+            "session_id": "task_build_42",
+            "agent": "build",
+            "prompt": "Continue and finish the remaining work."
+        }));
+        let input: TaskFlowInput =
+            serde_json::from_value(normalized.args).expect("normalized resume should deserialize");
+
+        assert_eq!(input.task_id.as_deref(), Some("task_build_42"));
+        validate_input(&input).expect("session_id alias should satisfy resume task_id");
+    }
+
+    #[test]
     fn create_requires_agent_and_prompt() {
         let input = TaskFlowInput {
             operation: TaskFlowOperation::Create,
@@ -1044,7 +1256,10 @@ mod tests {
             agent_tools: None,
         };
         match validate_input(&input) {
-            Err(ToolError::InvalidArguments(msg)) => assert!(msg.contains("agent is required")),
+            Err(ToolError::InvalidArguments(msg)) => {
+                assert!(msg.contains("agent is required"));
+                assert!(msg.contains("\"operation\":\"create\""));
+            }
             other => panic!("unexpected result: {:?}", other),
         }
 
@@ -1053,7 +1268,10 @@ mod tests {
             ..input
         };
         match validate_input(&input) {
-            Err(ToolError::InvalidArguments(msg)) => assert!(msg.contains("prompt is required")),
+            Err(ToolError::InvalidArguments(msg)) => {
+                assert!(msg.contains("prompt is required"));
+                assert!(msg.contains("description"));
+            }
             other => panic!("unexpected result: {:?}", other),
         }
     }
@@ -1572,6 +1790,67 @@ mod tests {
         let prompt_calls = prompt_calls.lock().await.clone();
         assert_eq!(prompt_calls.len(), 1);
         assert_eq!(prompt_calls[0].0, "task_build_123");
+    }
+
+    #[tokio::test]
+    async fn execute_create_persists_alias_normalization_telemetry_in_result_metadata() {
+        let ctx = ToolContext::new("session-1".into(), "message-1".into(), ".".into())
+            .with_get_agent_info(|name| async move {
+                if name == "build" {
+                    Ok(Some(crate::TaskAgentInfo {
+                        name: "build".to_string(),
+                        model: None,
+                        can_use_task: true,
+                        steps: Some(4),
+                        execution: None,
+                        max_tokens: None,
+                        temperature: None,
+                        top_p: None,
+                        variant: None,
+                    }))
+                } else {
+                    Ok(None)
+                }
+            })
+            .with_get_last_model(|_session_id| async move { Ok(Some("provider-x:model-y".into())) })
+            .with_create_subsession(|_agent, _title, _model, _disabled_tools| async move {
+                Ok("task_build_telemetry".to_string())
+            })
+            .with_prompt_subsession(|_session_id, _prompt| async move {
+                Ok(summary("subagent output"))
+            });
+
+        let result = TaskFlowTool::new()
+            .execute(
+                serde_json::json!({
+                    "action": "create",
+                    "subagent_type": "build",
+                    "title": "Investigate issue",
+                    "request": "Please inspect runtime behavior"
+                }),
+                ctx,
+            )
+            .await
+            .expect("aliased create should succeed");
+
+        let repair_events = crate::tool_repair_events(&result.metadata);
+        assert!(repair_events.iter().any(|event| {
+            event.get("kind").and_then(|value| value.as_str()) == Some("alias_normalization")
+                && event
+                    .get("aliases")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|aliases| {
+                        aliases
+                            .iter()
+                            .any(|value| value.as_str() == Some("action->operation"))
+                            && aliases
+                                .iter()
+                                .any(|value| value.as_str() == Some("subagent_type->agent"))
+                            && aliases
+                                .iter()
+                                .any(|value| value.as_str() == Some("request->prompt"))
+                    })
+        }));
     }
 
     #[tokio::test]

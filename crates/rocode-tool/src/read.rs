@@ -7,7 +7,10 @@ use crate::path_guard::{resolve_user_path, RootPathFallbackPolicy};
 use crate::tool_access::{
     self, read_block_message, read_warning_message, ToolAccessKey, ToolAccessOutcome,
 };
-use crate::{Metadata, Tool, ToolContext, ToolError, ToolResult};
+use crate::{
+    append_tool_repair_event_map, merge_tool_repair_telemetry, tool_repair_event, Metadata, Tool,
+    ToolContext, ToolError, ToolResult,
+};
 
 const DEFAULT_READ_LIMIT: usize = 2000;
 const MAX_LINE_LENGTH: usize = 2000;
@@ -21,6 +24,19 @@ const INSTRUCTION_FILES: &[&str] = &[
     ".context",
     ".cursorrules",
     ".opencoderules",
+];
+
+const BASENAME_REPAIR_MAX_MATCHES: usize = 8;
+const BASENAME_REPAIR_SKIP_DIRS: &[&str] = &[
+    ".git",
+    ".hg",
+    ".svn",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    ".next",
+    ".cache",
 ];
 
 pub struct ReadTool {
@@ -134,7 +150,29 @@ impl Tool for ReadTool {
             );
         }
 
+        let (path, repaired_from, basename_suggestions) =
+            repair_missing_read_path(&file_path, path, base_dir, Path::new(&ctx.project_root));
+        if let Some(ref original) = repaired_from {
+            tracing::warn!(
+                from = %original.display(),
+                to = %path.display(),
+                session_dir = %base_dir.display(),
+                "auto-repaired basename-only read path into unique workspace match"
+            );
+        }
+
         let path_str = path.to_string_lossy().to_string();
+        let mut repair_metadata = Metadata::new();
+        if repaired_from.is_some() {
+            let mut event = tool_repair_event("basename_auto_repair", "tool", "read");
+            event.insert("from".to_string(), serde_json::json!(file_path));
+            event.insert("to".to_string(), serde_json::json!(path_str.clone()));
+            event.insert(
+                "strategy".to_string(),
+                serde_json::json!("unique_workspace_basename_match"),
+            );
+            append_tool_repair_event_map(&mut repair_metadata, event);
+        }
 
         if ctx.is_external_path(&path_str) {
             let parent = path
@@ -173,8 +211,8 @@ impl Tool for ReadTool {
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
 
-            if let Ok(entries) = std::fs::read_dir(dir) {
-                let suggestions: Vec<String> = entries
+            let sibling_suggestions = if let Ok(entries) = std::fs::read_dir(dir) {
+                entries
                     .filter_map(|e| e.ok())
                     .filter(|e| {
                         let name = e.file_name().to_string_lossy().to_lowercase();
@@ -183,7 +221,12 @@ impl Tool for ReadTool {
                     })
                     .take(3)
                     .map(|e| e.path().to_string_lossy().to_string())
-                    .collect();
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            let suggestions = merge_suggestions(&basename_suggestions, &sibling_suggestions, 6);
+            if !suggestions.is_empty() {
                 ToolError::with_suggestions(
                     format!("File not found: {}", path.display()),
                     &suggestions,
@@ -207,7 +250,8 @@ impl Tool for ReadTool {
             }
             ctx.do_file_time_read(path_str.clone()).await?;
             ctx.do_lsp_touch_file(path_str.clone(), false).await?;
-            let result = read_directory(&path, offset, limit, title)?;
+            let mut result = read_directory(&path, offset, limit, title)?;
+            merge_tool_repair_telemetry(&mut result.metadata, &repair_metadata);
             return Ok(apply_repeated_access_feedback(result, outcome));
         }
 
@@ -231,7 +275,8 @@ impl Tool for ReadTool {
             }
             ctx.do_file_time_read(path_str.clone()).await?;
             ctx.do_lsp_touch_file(path_str.clone(), false).await?;
-            let result = handle_binary_file(&path, &content, &mime, title)?;
+            let mut result = handle_binary_file(&path, &content, &mime, title)?;
+            merge_tool_repair_telemetry(&mut result.metadata, &repair_metadata);
             return Ok(apply_repeated_access_feedback(result, outcome));
         }
 
@@ -252,7 +297,7 @@ impl Tool for ReadTool {
         if let ToolAccessOutcome::Block { consecutive } = outcome {
             return Err(ToolError::ExecutionError(read_block_message(consecutive)));
         }
-        let result = read_file_content(
+        let mut result = read_file_content(
             &path,
             &path_str,
             &content,
@@ -262,6 +307,7 @@ impl Tool for ReadTool {
             &ctx.project_root,
         )
         .await?;
+        merge_tool_repair_telemetry(&mut result.metadata, &repair_metadata);
         Ok(apply_repeated_access_feedback(result, outcome))
     }
 }
@@ -284,6 +330,99 @@ fn apply_repeated_access_feedback(
         );
     }
     result
+}
+
+fn repair_missing_read_path(
+    raw_path: &str,
+    path: PathBuf,
+    base_dir: &Path,
+    project_root: &Path,
+) -> (PathBuf, Option<PathBuf>, Vec<String>) {
+    if path.exists() || !is_basename_only_path(raw_path) {
+        return (path, None, Vec::new());
+    }
+
+    let matches = find_workspace_basename_matches(raw_path, base_dir, project_root);
+    if matches.len() == 1 {
+        return (matches[0].clone(), Some(path), Vec::new());
+    }
+
+    let suggestions = matches
+        .into_iter()
+        .map(|candidate| candidate.to_string_lossy().to_string())
+        .collect();
+    (path, None, suggestions)
+}
+
+fn is_basename_only_path(raw_path: &str) -> bool {
+    let path = Path::new(raw_path.trim());
+    !path.is_absolute()
+        && matches!(
+            (path.components().next(), path.components().nth(1)),
+            (Some(std::path::Component::Normal(_)), None)
+        )
+}
+
+fn find_workspace_basename_matches(
+    raw_path: &str,
+    base_dir: &Path,
+    project_root: &Path,
+) -> Vec<PathBuf> {
+    let basename = raw_path.trim();
+    if basename.is_empty() {
+        return Vec::new();
+    }
+
+    let mut roots = Vec::new();
+    if base_dir.exists() {
+        roots.push(base_dir.to_path_buf());
+    }
+    if project_root.exists() && !roots.iter().any(|root| root == project_root) {
+        roots.push(project_root.to_path_buf());
+    }
+
+    let mut matches = Vec::new();
+    for root in roots {
+        for entry in WalkDir::new(&root)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| should_visit_basename_repair(entry.path()))
+            .filter_map(Result::ok)
+        {
+            if entry.file_name().to_string_lossy() != basename {
+                continue;
+            }
+            let candidate = entry.path().to_path_buf();
+            if !matches.iter().any(|existing| existing == &candidate) {
+                matches.push(candidate);
+            }
+            if matches.len() >= BASENAME_REPAIR_MAX_MATCHES {
+                return matches;
+            }
+        }
+    }
+    matches
+}
+
+fn should_visit_basename_repair(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| !BASENAME_REPAIR_SKIP_DIRS.contains(&name))
+        .unwrap_or(true)
+}
+
+fn merge_suggestions(primary: &[String], secondary: &[String], limit: usize) -> Vec<String> {
+    let mut merged = Vec::new();
+    for candidate in primary.iter().chain(secondary.iter()) {
+        if merged.iter().any(|existing| existing == candidate) {
+            continue;
+        }
+        merged.push(candidate.clone());
+        if merged.len() >= limit {
+            break;
+        }
+    }
+    merged
 }
 
 fn detect_mime(path: &Path) -> String {
@@ -811,5 +950,78 @@ mod tests {
             other => panic!("unexpected error: {other}"),
         }
         clear_tool_access_tracker(session_id);
+    }
+
+    #[tokio::test]
+    async fn read_auto_repairs_unique_basename_match_from_workspace_root() {
+        let dir = tempdir().expect("tempdir");
+        let nested = dir.path().join("voicecraft/src/Game.ts");
+        fs::create_dir_all(nested.parent().expect("nested parent"))
+            .await
+            .expect("create nested dir");
+        fs::write(&nested, "export const GAME = true;\n")
+            .await
+            .expect("write nested file");
+
+        let tool = ReadTool::with_directory(dir.path());
+        let result = tool
+            .execute(
+                serde_json::json!({ "file_path": "Game.ts" }),
+                ToolContext::new(
+                    "session".to_string(),
+                    "message".to_string(),
+                    dir.path().display().to_string(),
+                ),
+            )
+            .await
+            .expect("unique basename should auto-repair");
+
+        assert!(result.output.contains("voicecraft/src/Game.ts"));
+        assert!(result.output.contains("export const GAME = true;"));
+        let repair_events = crate::tool_repair_events(&result.metadata);
+        assert!(repair_events.iter().any(|event| {
+            event.get("kind").and_then(|value| value.as_str()) == Some("basename_auto_repair")
+                && event
+                    .get("to")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|path| path.ends_with("voicecraft/src/Game.ts"))
+        }));
+    }
+
+    #[tokio::test]
+    async fn read_ambiguous_basename_returns_candidate_suggestions() {
+        let dir = tempdir().expect("tempdir");
+        let first = dir.path().join("voicecraft/src/Game.ts");
+        let second = dir.path().join("demo/src/Game.ts");
+        fs::create_dir_all(first.parent().expect("first parent"))
+            .await
+            .expect("create first dir");
+        fs::create_dir_all(second.parent().expect("second parent"))
+            .await
+            .expect("create second dir");
+        fs::write(&first, "export const GAME = 1;\n")
+            .await
+            .expect("write first file");
+        fs::write(&second, "export const GAME = 2;\n")
+            .await
+            .expect("write second file");
+
+        let tool = ReadTool::with_directory(dir.path());
+        let err = tool
+            .execute(
+                serde_json::json!({ "file_path": "Game.ts" }),
+                ToolContext::new(
+                    "session".to_string(),
+                    "message".to_string(),
+                    dir.path().display().to_string(),
+                ),
+            )
+            .await
+            .expect_err("ambiguous basename should return suggestions");
+
+        let message = err.to_string();
+        assert!(message.contains("Did you mean one of these?"));
+        assert!(message.contains("voicecraft/src/Game.ts"));
+        assert!(message.contains("demo/src/Game.ts"));
     }
 }
