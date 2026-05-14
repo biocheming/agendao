@@ -1274,7 +1274,7 @@ mod tests {
         assert_eq!(converted[2]["role"], "user");
         assert_eq!(converted[3]["role"], "assistant");
         assert_eq!(converted[4]["role"], "tool");
-        assert_eq!(converted[4]["tool_call_id"], "tool-call-0");
+        assert_eq!(converted[4]["tool_call_id"], "tool-call-0--dedup-1");
         assert_eq!(converted[4]["content"], "<available_skills />");
     }
 
