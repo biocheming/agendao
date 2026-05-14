@@ -1,3 +1,22 @@
+//! Repair telemetry — the single authority for recording tool-call repairs.
+//!
+//! ## Three-Layer Argument Contract (P1.1)
+//!
+//! Every tool-call repair event distinguishes three layers of arguments:
+//!
+//! | Layer | Name | Source | Stored In | Used For |
+//! |-------|------|--------|-----------|----------|
+//! | 1 | **Raw** | Model output (unmodified) | `PartType::ToolCall.raw`, `RepairEvent.raw_shape` | API replay, cache stability, model evaluation |
+//! | 2 | **Normalized** | After system repair/correction | `RepairEvent.normalized_shape`, execution `effective_input` | Tool execution, history replay |
+//! | 3 | **Observable** | Derived from normalized + repair events | UI/transcript/debug views | Human readability, debugging |
+//!
+//! Rules:
+//! - Raw args MUST be preserved byte-for-byte for replay fidelity.
+//! - Normalized args are what the tool actually executes with.
+//! - Observable args are for display only; they MUST NOT be used for replay.
+//! - `RepairEvent.raw_shape` records layer 1, `normalized_shape` records layer 2.
+//! - When a repair does not change the shape, both fields may be absent.
+
 use crate::Metadata;
 use rocode_types::{RepairEvent, RepairEventBuilder};
 use serde_json::{Map, Value};

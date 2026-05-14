@@ -171,6 +171,9 @@ impl Tool for ReadTool {
                 "strategy".to_string(),
                 serde_json::json!("unique_workspace_basename_match"),
             );
+            // P1.1: raw_shape is the model's basename input, normalized_shape is the resolved path.
+            event.insert("raw_shape".to_string(), serde_json::json!(file_path));
+            event.insert("normalized_shape".to_string(), serde_json::json!(path_str.clone()));
             append_tool_repair_event_map(&mut repair_metadata, event);
         }
 

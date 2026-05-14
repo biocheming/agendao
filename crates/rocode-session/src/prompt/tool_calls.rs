@@ -498,6 +498,25 @@ impl SessionPrompt {
         }
     }
 
+    pub(super) fn tool_call_raw_shape_for_execution(
+        input: &serde_json::Value,
+        raw: Option<&str>,
+        state: Option<&crate::ToolState>,
+    ) -> serde_json::Value {
+        match state {
+            Some(crate::ToolState::Pending { raw, .. }) if !raw.trim().is_empty() => {
+                serde_json::Value::String(raw.clone())
+            }
+            _ => {
+                if let Some(raw) = raw.filter(|value| !value.trim().is_empty()) {
+                    serde_json::Value::String(raw.to_string())
+                } else {
+                    input.clone()
+                }
+            }
+        }
+    }
+
     pub(super) fn append_delta_part(message: &mut SessionMessage, reasoning: bool, delta: &str) {
         if delta.is_empty() {
             return;
@@ -766,6 +785,16 @@ mod tests {
             None,
         );
         assert_eq!(resolved, Some(serde_json::json!({})));
+    }
+
+    #[test]
+    fn tool_call_raw_shape_for_execution_prefers_raw_string() {
+        let raw = SessionPrompt::tool_call_raw_shape_for_execution(
+            &serde_json::json!({"parsed": true}),
+            Some("{\"raw\":true}"),
+            None,
+        );
+        assert_eq!(raw, serde_json::Value::String("{\"raw\":true}".to_string()));
     }
 
     #[test]

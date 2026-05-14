@@ -104,7 +104,7 @@ impl SessionPrompt {
             })
             .collect();
 
-        let tool_calls: Vec<(String, String, serde_json::Value)> = session.messages
+        let tool_calls: Vec<(String, String, serde_json::Value, serde_json::Value)> = session.messages
             [last_assistant_index]
             .parts
             .iter()
@@ -124,7 +124,18 @@ impl SessionPrompt {
                         raw.as_deref(),
                         state.as_ref(),
                     )
-                    .map(|args| (id.clone(), name.clone(), args))
+                    .map(|args| {
+                        (
+                            id.clone(),
+                            name.clone(),
+                            args,
+                            Self::tool_call_raw_shape_for_execution(
+                                input,
+                                raw.as_deref(),
+                                state.as_ref(),
+                            ),
+                        )
+                    })
                 }
                 _ => None,
             })
@@ -135,7 +146,7 @@ impl SessionPrompt {
         }
 
         if let Some(assistant_msg) = session.messages_mut().get_mut(last_assistant_index) {
-            for (call_id, tool_name, input) in &tool_calls {
+            for (call_id, tool_name, input, _) in &tool_calls {
                 Self::upsert_tool_call_part(
                     assistant_msg,
                     call_id,
@@ -196,7 +207,7 @@ impl SessionPrompt {
         let mut executed_calls = 0usize;
         let tool_results_msg = {
             let mut msg = SessionMessage::tool(ctx.session_id.clone());
-            for (call_id, tool_name, input) in tool_calls {
+            for (call_id, tool_name, input, raw_shape) in tool_calls {
                 tracing::info!(
                     tool_call_id = %call_id,
                     tool_name = %tool_name,
@@ -228,7 +239,7 @@ impl SessionPrompt {
                     rocode_tool::append_tool_repair_event_map(&mut repair_metadata, event);
                 }
                 let mut effective_tool_name = repaired_tool_name.clone();
-                let mut effective_input = input;
+                let mut effective_input = input.clone();
                 let (normalized_input, normalization_telemetry) =
                     rocode_tool::normalize_tool_arguments_with_telemetry(
                         &effective_tool_name,
@@ -244,6 +255,12 @@ impl SessionPrompt {
                     event.insert(
                         "modes".to_string(),
                         serde_json::json!(normalization_telemetry.modes),
+                    );
+                    // P1.1: Record the raw model output and the normalized execution args.
+                    event.insert("raw_shape".to_string(), raw_shape.clone());
+                    event.insert(
+                        "normalized_shape".to_string(),
+                        effective_input.clone(),
                     );
                     rocode_tool::append_tool_repair_event_map(&mut repair_metadata, event);
                 }
@@ -270,6 +287,9 @@ impl SessionPrompt {
                     if let Some(received_args) = payload.get("receivedArgs") {
                         event.insert("receivedArgs".to_string(), received_args.clone());
                     }
+                    // P1.1: record the raw model output and the replacement payload.
+                    event.insert("raw_shape".to_string(), raw_shape.clone());
+                    event.insert("normalized_shape".to_string(), payload.clone());
                     if is_strict {
                         event.insert(
                             "strict_mode_would_fail".to_string(),
@@ -404,6 +424,15 @@ impl SessionPrompt {
                                             event.insert(
                                                 "reason".to_string(),
                                                 serde_json::json!(format!("Error: {}", e)),
+                                            );
+                                            // P1.1: record the failing input shape.
+                                            event.insert(
+                                                "raw_shape".to_string(),
+                                                raw_shape.clone(),
+                                            );
+                                            event.insert(
+                                                "normalized_shape".to_string(),
+                                                effective_input.clone(),
                                             );
                                             event.insert(
                                                 "strict_mode_would_fail".to_string(),
@@ -1604,6 +1633,13 @@ mod tests {
                             .iter()
                             .any(|value| value.as_str() == Some("robust_json_object_parse"))
                     })
+        }));
+        // P1.1: verify the three-layer arg contract — raw_shape and normalized_shape
+        // are populated on the argument_normalization repair event.
+        assert!(repair_events.iter().any(|event| {
+            event.get("kind").and_then(|value| value.as_str()) == Some("argument_normalization")
+                && event.get("raw_shape").is_some()
+                && event.get("normalized_shape").is_some()
         }));
     }
 
