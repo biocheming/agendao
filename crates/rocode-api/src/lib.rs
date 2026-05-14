@@ -23,7 +23,9 @@ pub use rocode_types::{
     MemoryDetailView, MemoryListQuery, MemoryListResponse, MemoryRetrievalPreviewResponse,
     MemoryRetrievalQuery, MemoryRuleHitListResponse, MemoryRuleHitQuery,
     MemoryRulePackListResponse, MemoryScope, MemoryValidationReportResponse,
-    ModelToolRepairTelemetrySummary, PromptSurfaceEvidenceSummary, ProposalStatus,
+    ModelRepairQuerySummary, ModelToolRepairTelemetrySummary, PromptSurfaceEvidenceSummary,
+    ProposalStatus, RepairAggregateRow, RepairKind, RepairOutcomeKind, RepairQuery,
+    RepairQueryResponse, RepairSample,
     ProviderConnectionDescriptorCandidate, ProviderProfileDescriptorView,
     SessionCacheSemanticsSummary, SessionCompactionContinuityInspection,
     SessionContextClosureContract, SessionContextExplain, SessionContextKind,
@@ -33,7 +35,8 @@ pub use rocode_types::{
     SessionEffectiveSchedulerTraceStep, SessionEffectiveSchedulerTraceStepKind,
     SessionEffectiveSkillTreePolicy, SessionForkExplain, SessionForkHistoryMode,
     SessionInsightsResponse, SessionMemoryTelemetrySummary, SessionOwnershipSummary,
-    SessionStatusInfo, SessionToolRepairTelemetrySummary, SessionUsageBooks,
+    SessionRepairQuerySnapshot, SessionRepairQuerySummary, SessionStatusInfo,
+    SessionToolRepairTelemetrySummary, SessionUsageBooks,
     SkillArtifactCacheEntry, SkillAuditEvent, SkillDistributionRecord, SkillEvolutionProposal,
     SkillEvolutionProposalKind, SkillGovernanceDiagnosticSeverity, SkillGovernanceTimelineEntry,
     SkillGovernanceTimelineStatus, SkillGovernanceWriteResult, SkillGuardReport, SkillGuardStatus,
@@ -428,6 +431,8 @@ pub struct SessionTelemetrySnapshot {
     #[serde(default)]
     pub model_tool_repair_summary: Option<ModelToolRepairTelemetrySummary>,
     #[serde(default)]
+    pub repair_query_snapshot: Option<SessionRepairQuerySnapshot>,
+    #[serde(default)]
     pub memory: Option<SessionMemoryTelemetrySummary>,
     #[serde(default)]
     pub cache_evidence: Option<serde_json::Value>,
@@ -455,6 +460,13 @@ pub struct SessionTelemetrySnapshot {
     pub execution_preflight_summary: Option<SessionExecutionPreflightSummary>,
     #[serde(default)]
     pub provider_diagnostic_summary: Option<ProviderDiagnosticSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionRepairSummaryResponse {
+    pub session_id: String,
+    #[serde(default)]
+    pub snapshot: Option<SessionRepairQuerySnapshot>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

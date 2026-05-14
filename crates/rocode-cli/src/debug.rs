@@ -6,8 +6,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::api_client::{
-    CliApiClient, SkillCatalogQuery, SkillDetailQuery, SkillHubGuardRunRequest,
-    SkillHubIndexRefreshRequest, SkillHubManagedDetachRequest, SkillHubManagedRemoveRequest,
+    CliApiClient, RepairQuery, RepairQueryResponse, SessionRepairSummaryResponse,
+    SkillCatalogQuery, SkillDetailQuery, SkillHubGuardRunRequest, SkillHubIndexRefreshRequest,
+    SkillHubManagedDetachRequest, SkillHubManagedRemoveRequest,
     SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
     SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest, SkillHubSyncApplyRequest,
     SkillHubSyncPlanRequest, SkillHubTimelineQuery, SkillSourceKind, SkillSourceRef,
@@ -554,6 +555,146 @@ async fn resolve_server_skill_hub_remove(
     Ok(serde_json::json!(response))
 }
 
+async fn resolve_server_session_repair_summary(
+    session_id: &str,
+    runtime_context: &FrontendRuntimeContext,
+) -> anyhow::Result<SessionRepairSummaryResponse> {
+    let base_url = runtime_context.discover_or_start_server(None).await?;
+    let client = CliApiClient::new(base_url);
+    client.get_session_repair_summary(session_id).await
+}
+
+async fn resolve_server_repair_query(
+    query: &RepairQuery,
+    runtime_context: &FrontendRuntimeContext,
+) -> anyhow::Result<RepairQueryResponse> {
+    let base_url = runtime_context.discover_or_start_server(None).await?;
+    let client = CliApiClient::new(base_url);
+    if let Some(session_id) = query.session_id.as_deref() {
+        client.query_session_repair(session_id, query).await
+    } else {
+        client.query_global_repair(query).await
+    }
+}
+
+fn print_repair_summary(summary: &SessionRepairSummaryResponse) {
+    println!("session_id: {}", summary.session_id);
+    let Some(snapshot) = &summary.snapshot else {
+        println!("snapshot: <none>");
+        return;
+    };
+
+    println!("updated_at: {}", snapshot.updated_at);
+    println!("total_events: {}", snapshot.summary.total_events);
+    println!("distinct_tools: {}", snapshot.summary.distinct_tools);
+    println!(
+        "distinct_repair_kinds: {}",
+        snapshot.summary.distinct_repair_kinds
+    );
+    println!(
+        "strict_would_fail_count: {}",
+        snapshot.summary.strict_would_fail_count
+    );
+    println!("injected_count: {}", snapshot.summary.injected_count);
+
+    if !snapshot.summary.top_repairs.is_empty() {
+        println!("top_repairs:");
+        for entry in &snapshot.summary.top_repairs {
+            println!("  - {}: {}", entry.key, entry.count);
+        }
+    }
+    if !snapshot.summary.top_tools.is_empty() {
+        println!("top_tools:");
+        for entry in &snapshot.summary.top_tools {
+            println!("  - {}: {}", entry.key, entry.count);
+        }
+    }
+    println!("rows: {}", snapshot.rows.len());
+    println!("samples: {}", snapshot.samples.len());
+}
+
+fn print_repair_query_response(response: &RepairQueryResponse) {
+    if let Some(summary) = &response.summary {
+        println!("scope: session");
+        println!("total_events: {}", summary.total_events);
+        println!("distinct_tools: {}", summary.distinct_tools);
+        println!(
+            "distinct_repair_kinds: {}",
+            summary.distinct_repair_kinds
+        );
+        println!(
+            "strict_would_fail_count: {}",
+            summary.strict_would_fail_count
+        );
+        println!("injected_count: {}", summary.injected_count);
+    }
+
+    if let Some(summary) = &response.model_summary {
+        println!("scope: global");
+        println!(
+            "provider_id: {}",
+            summary.provider_id.as_deref().unwrap_or("<multiple>")
+        );
+        println!(
+            "model_id: {}",
+            summary.model_id.as_deref().unwrap_or("<multiple>")
+        );
+        println!("session_count: {}", summary.session_count);
+        println!("total_events: {}", summary.total_events);
+        println!(
+            "strict_would_fail_count: {}",
+            summary.strict_would_fail_count
+        );
+        if !summary.top_repairs.is_empty() {
+            println!("top_repairs:");
+            for entry in &summary.top_repairs {
+                println!("  - {}: {}", entry.key, entry.count);
+            }
+        }
+        if !summary.top_tools.is_empty() {
+            println!("top_tools:");
+            for entry in &summary.top_tools {
+                println!("  - {}: {}", entry.key, entry.count);
+            }
+        }
+    }
+
+    println!("rows: {}", response.rows.len());
+    for row in &response.rows {
+        println!(
+            "  - tool={} repair={} layer={} count={} strict={} injected={} success={} error={}",
+            row.tool_name,
+            row.repair_kind.as_str(),
+            row.layer,
+            row.count,
+            row.strict_would_fail_count,
+            row.injected_count,
+            row.success_count,
+            row.error_count
+        );
+    }
+
+    if !response.samples.is_empty() {
+        println!("samples: {}", response.samples.len());
+        for sample in &response.samples {
+            println!(
+                "  - tool={} repair={} layer={} strict={} injected={} outcome={}",
+                sample.tool_name,
+                sample.repair_kind.as_str(),
+                sample.layer,
+                sample.strict_mode_would_fail,
+                sample.injected_into_model_context,
+                sample
+                    .outcome
+                    .map(|value| format!("{:?}", value).to_ascii_lowercase())
+                    .unwrap_or_else(|| "unknown".to_string())
+            );
+        }
+    }
+
+    println!("truncated: {}", response.truncated);
+}
+
 pub(crate) async fn handle_debug_command(
     action: DebugCommands,
     runtime_context: &FrontendRuntimeContext,
@@ -1031,6 +1172,43 @@ pub(crate) async fn handle_debug_command(
                     )?)?
                 };
                 println!("{}", serde_json::to_string_pretty(&output)?);
+            }
+        },
+        DebugCommands::Repair { action } => match action {
+            DebugRepairCommands::Summary { session_id } => {
+                let response =
+                    resolve_server_session_repair_summary(&session_id, runtime_context).await?;
+                print_repair_summary(&response);
+            }
+            DebugRepairCommands::Query {
+                session_id,
+                provider_id,
+                model_id,
+                tool_name,
+                repair_kind,
+                layer,
+                strict_only,
+                include_samples,
+                limit,
+            } => {
+                let response = resolve_server_repair_query(
+                    &RepairQuery {
+                        session_id,
+                        provider_id,
+                        model_id,
+                        tool_name,
+                        repair_kind: repair_kind
+                            .as_deref()
+                            .and_then(crate::api_client::RepairKind::from_legacy_str),
+                        layer,
+                        strict_only: Some(strict_only),
+                        include_samples: Some(include_samples),
+                        limit,
+                    },
+                    runtime_context,
+                )
+                .await?;
+                print_repair_query_response(&response);
             }
         },
 

@@ -658,6 +658,7 @@ mod tests {
             },
             tool_repair_summary: None,
             model_tool_repair_summary: None,
+            repair_query_snapshot: None,
             memory: None,
             cache_evidence: None,
             context_explain: Some(SessionContextExplain {

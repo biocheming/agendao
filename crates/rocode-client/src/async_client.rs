@@ -23,25 +23,26 @@ use crate::{
     MultimodalPreflightResponse, PermissionRequestInfo, PromptPart, PromptRequest, PromptResponse,
     ProviderConnectSchemaResponse, ProviderDescriptorResponse, ProviderListResponse,
     ProvisionExternalAdapterSessionRequest, ProvisionExternalAdapterSessionResponse, QuestionInfo,
-    RecoveryActionKind, RefreshProviderCatalogResponse, ResolveProviderConnectRequest,
-    ResolveProviderConnectResponse, RevertRequest, RevertResponse, SessionEventsQuery,
+    RecoveryActionKind, RefreshProviderCatalogResponse, RepairQuery, RepairQueryResponse,
+    ResolveProviderConnectRequest, ResolveProviderConnectResponse, RevertRequest,
+    RevertResponse, SessionEventsQuery,
     SessionExecutionTopology, SessionInfo, SessionInsightsResponse, SessionListItem,
-    SessionListResponse, SessionRecoveryProtocol, SessionRuntimeState, SessionStatusInfo,
-    SessionTelemetrySnapshot, ShareResponse, SkillCatalogEntry, SkillCatalogQuery,
-    SkillDetailQuery, SkillDetailResponse, SkillEvolutionProposal, SkillHubArtifactCacheResponse,
-    SkillHubAuditResponse, SkillHubDistributionResponse, SkillHubGuardRunRequest,
-    SkillHubGuardRunResponse, SkillHubIndexRefreshRequest, SkillHubIndexRefreshResponse,
-    SkillHubIndexResponse, SkillHubLifecycleResponse, SkillHubManagedDetachRequest,
-    SkillHubManagedDetachResponse, SkillHubManagedRemoveRequest, SkillHubManagedRemoveResponse,
-    SkillHubManagedResponse, SkillHubNegativeEntropyResponse, SkillHubPolicyResponse,
-    SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
-    SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest,
-    SkillHubReviewCandidatesSyncRequest, SkillHubReviewCandidatesSyncResponse,
-    SkillHubSemanticConflictResponse, SkillHubSyncApplyRequest, SkillHubSyncPlanRequest,
-    SkillHubSyncPlanResponse, SkillHubTimelineQuery, SkillHubTimelineResponse,
-    SkillHubUsageLedgerResponse, SkillHubVitalityUpdateRequest, SkillHubVitalityUpdateResponse,
-    SkillManageRequest, SkillManageResponse, SkillRemoteInstallPlan, SkillRemoteInstallResponse,
-    UpdateSessionRequest,
+    SessionListResponse, SessionRecoveryProtocol, SessionRepairSummaryResponse,
+    SessionRuntimeState, SessionStatusInfo, SessionTelemetrySnapshot, ShareResponse,
+    SkillCatalogEntry, SkillCatalogQuery, SkillDetailQuery, SkillDetailResponse,
+    SkillEvolutionProposal, SkillHubArtifactCacheResponse, SkillHubAuditResponse,
+    SkillHubDistributionResponse, SkillHubGuardRunRequest, SkillHubGuardRunResponse,
+    SkillHubIndexRefreshRequest, SkillHubIndexRefreshResponse, SkillHubIndexResponse,
+    SkillHubLifecycleResponse, SkillHubManagedDetachRequest, SkillHubManagedDetachResponse,
+    SkillHubManagedRemoveRequest, SkillHubManagedRemoveResponse, SkillHubManagedResponse,
+    SkillHubNegativeEntropyResponse, SkillHubPolicyResponse, SkillHubRemoteInstallApplyRequest,
+    SkillHubRemoteInstallPlanRequest, SkillHubRemoteUpdateApplyRequest,
+    SkillHubRemoteUpdatePlanRequest, SkillHubReviewCandidatesSyncRequest,
+    SkillHubReviewCandidatesSyncResponse, SkillHubSemanticConflictResponse,
+    SkillHubSyncApplyRequest, SkillHubSyncPlanRequest, SkillHubSyncPlanResponse,
+    SkillHubTimelineQuery, SkillHubTimelineResponse, SkillHubUsageLedgerResponse,
+    SkillHubVitalityUpdateRequest, SkillHubVitalityUpdateResponse, SkillManageRequest,
+    SkillManageResponse, SkillRemoteInstallPlan, SkillRemoteInstallResponse, UpdateSessionRequest,
 };
 
 #[derive(Clone)]
@@ -387,6 +388,38 @@ impl AsyncApiClient {
             &format!("get session recovery `{}`", session_id),
         )
         .await
+    }
+
+    pub async fn get_session_repair_summary(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<SessionRepairSummaryResponse> {
+        self.get_json(
+            &format!("/session/{}/repair/summary", session_id),
+            &format!("get session repair summary `{}`", session_id),
+        )
+        .await
+    }
+
+    pub async fn query_session_repair(
+        &self,
+        session_id: &str,
+        query: &RepairQuery,
+    ) -> anyhow::Result<RepairQueryResponse> {
+        self.get_json_query(
+            &format!("/session/{}/repair/query", session_id),
+            query,
+            &format!("query session repair `{}`", session_id),
+        )
+        .await
+    }
+
+    pub async fn query_global_repair(
+        &self,
+        query: &RepairQuery,
+    ) -> anyhow::Result<RepairQueryResponse> {
+        self.get_json_query("/global/repair/query", query, "query global repair")
+            .await
     }
 
     pub async fn execute_session_recovery(
@@ -1121,6 +1154,17 @@ impl AsyncApiClient {
     ) -> anyhow::Result<T> {
         let url = server_url(&self.base_url, path);
         let resp = self.client.get(&url).send().await?;
+        Self::json_ok(resp, action).await
+    }
+
+    async fn get_json_query<T: serde::de::DeserializeOwned, Q: Serialize + ?Sized>(
+        &self,
+        path: &str,
+        query: &Q,
+        action: &str,
+    ) -> anyhow::Result<T> {
+        let url = server_url(&self.base_url, path);
+        let resp = self.client.get(&url).query(query).send().await?;
         Self::json_ok(resp, action).await
     }
 
