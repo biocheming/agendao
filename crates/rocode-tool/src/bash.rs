@@ -182,6 +182,39 @@ pub(crate) async fn authorize_bash_command(
     Ok(())
 }
 
+fn structured_tool_timeout_hint(command: &str) -> Option<&'static str> {
+    let first = command
+        .split_whitespace()
+        .next()
+        .map(|value| value.trim_matches(|c| c == '"' || c == '\''))
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match first.as_str() {
+        "cat" | "head" | "tail" | "sed" | "awk" | "less" | "more" => {
+            Some("If you were only inspecting a file, prefer `read` instead of `bash`.")
+        }
+        "grep" | "rg" | "ag" => {
+            Some("If you were only searching text, prefer `grep` instead of `bash`.")
+        }
+        "find" | "fd" | "tree" | "ls" => {
+            Some("If you were only discovering files, prefer `glob` or `ls` instead of `bash`.")
+        }
+        "python" | "python3" | "node" | "npm" | "pnpm" | "yarn" | "cargo" | "make" => Some(
+            "If this work is long-running or multi-step, prefer delegating it with `task_flow` instead of holding the main turn in `bash`.",
+        ),
+        _ => None,
+    }
+}
+
+fn bash_timeout_error(command: &str, timeout_ms: u64) -> ToolError {
+    let mut message = format!("Command timed out after {}ms", timeout_ms);
+    if let Some(hint) = structured_tool_timeout_hint(command) {
+        message.push_str(". ");
+        message.push_str(hint);
+    }
+    ToolError::Timeout(message)
+}
+
 #[async_trait]
 impl Tool for BashTool {
     fn id(&self) -> &str {
@@ -189,7 +222,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Executes a bash command in the specified working directory."
+        "Execute a shell command in the specified working directory. Prefer structured tools such as read, glob, grep, edit, write, or task_flow when they can complete the job more directly. Use bash as a last resort for commands that genuinely require the shell, build tools, package managers, or external CLIs."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -404,10 +437,7 @@ impl Tool for BashTool {
                         "Failed to kill bash child process after timeout"
                     );
                 }
-                return Err(ToolError::Timeout(format!(
-                    "Command timed out after {}ms",
-                    timeout_ms
-                )));
+                return Err(bash_timeout_error(&command, timeout_ms));
             }
         }
 
@@ -617,5 +647,20 @@ mod tests {
             parsed.command_family_scope_key().as_deref(),
             Some("cmd:cargo+git")
         );
+    }
+
+    #[test]
+    fn structured_tool_timeout_hint_prefers_read_for_file_inspection() {
+        let err = bash_timeout_error("cat src/lib.rs", 5000);
+        let message = err.to_string();
+        assert!(message.contains("Command timed out after 5000ms"));
+        assert!(message.contains("prefer `read`"));
+    }
+
+    #[test]
+    fn structured_tool_timeout_hint_prefers_task_flow_for_long_running_builds() {
+        let err = bash_timeout_error("cargo test", 5000);
+        let message = err.to_string();
+        assert!(message.contains("prefer delegating it with `task_flow`"));
     }
 }

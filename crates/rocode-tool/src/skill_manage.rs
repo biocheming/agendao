@@ -480,16 +480,59 @@ fn optional_trimmed_multiline(value: Option<String>) -> Option<String> {
 }
 
 fn normalize_skill_manage_args(args: Value) -> Result<NormalizedSkillManageArgs, ToolError> {
+    let mut repair_metadata = Metadata::new();
+    let args = match args {
+        Value::String(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                Value::String(raw)
+            } else if let Some(parsed) = rocode_util::json::try_parse_json_object_robust(trimmed) {
+                let mut event =
+                    tool_repair_event("json_string_object_parse", "tool", "skill_manage");
+                event.insert("field".to_string(), serde_json::json!("$root"));
+                append_tool_repair_event_map(&mut repair_metadata, event);
+                parsed
+            } else {
+                Value::String(raw)
+            }
+        }
+        other => other,
+    };
     let mut root = match args {
         Value::Object(map) => map,
         other => {
             return Ok(NormalizedSkillManageArgs {
                 args: other,
-                repair_metadata: Metadata::new(),
+                repair_metadata,
             });
         }
     };
-    let mut repair_metadata = Metadata::new();
+
+    for wrapper_key in ["input", "payload", "arguments"] {
+        if root.get("action").is_some() {
+            break;
+        }
+        let Some(wrapper_value) = root.remove(wrapper_key) else {
+            continue;
+        };
+        let Some(wrapper_map) =
+            take_nested_root_object(wrapper_key, wrapper_value, &mut repair_metadata)?
+        else {
+            continue;
+        };
+        if wrapper_map.get("action").is_none() {
+            root.insert(wrapper_key.to_string(), Value::Object(wrapper_map));
+            continue;
+        }
+        for (key, value) in wrapper_map {
+            root.entry(key).or_insert(value);
+        }
+        let mut event = tool_repair_event("fallback_normalization", "tool", "skill_manage");
+        event.insert("source".to_string(), serde_json::json!(wrapper_key));
+        event.insert("target".to_string(), serde_json::json!("$root"));
+        append_tool_repair_event_map(&mut repair_metadata, event);
+        break;
+    }
 
     if matches!(root.get("action").and_then(Value::as_str), Some("create"))
         && root.get("body").is_none()
@@ -543,6 +586,41 @@ fn normalize_skill_manage_args(args: Value) -> Result<NormalizedSkillManageArgs,
         args: Value::Object(root),
         repair_metadata,
     })
+}
+
+fn take_nested_root_object(
+    field: &str,
+    value: Value,
+    repair_metadata: &mut Metadata,
+) -> Result<Option<Map<String, Value>>, ToolError> {
+    match value {
+        Value::Null => Ok(None),
+        Value::Object(map) => Ok(Some(map)),
+        Value::String(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            let mut event = tool_repair_event("json_string_object_parse", "tool", "skill_manage");
+            event.insert("field".to_string(), serde_json::json!(field));
+            append_tool_repair_event_map(repair_metadata, event);
+            let parsed =
+                rocode_util::json::try_parse_json_object_robust(trimmed).ok_or_else(|| {
+                    ToolError::InvalidArguments(format!(
+                        "{field} must be a JSON object or object string"
+                    ))
+                })?;
+            match parsed {
+                Value::Object(map) => Ok(Some(map)),
+                _ => Err(ToolError::InvalidArguments(format!(
+                    "{field} must be a JSON object or object string"
+                ))),
+            }
+        }
+        _ => Err(ToolError::InvalidArguments(format!(
+            "{field} must be a JSON object or object string"
+        ))),
+    }
 }
 
 fn take_object_like(
@@ -989,6 +1067,44 @@ mod tests {
         assert!(source.contains("license: MIT"));
         assert!(source.contains("tags:"));
         assert!(source.contains("- skills"));
+        let repair_events = crate::tool_repair_events(&result.metadata);
+        assert!(repair_events.iter().any(|event| {
+            event.get("kind").and_then(|value| value.as_str()) == Some("json_string_object_parse")
+                && event.get("field").and_then(|value| value.as_str()) == Some("methodology")
+        }));
+        assert!(repair_events.iter().any(|event| {
+            event.get("kind").and_then(|value| value.as_str()) == Some("json_string_object_parse")
+                && event.get("field").and_then(|value| value.as_str()) == Some("frontmatter")
+        }));
+    }
+
+    #[tokio::test]
+    async fn create_without_body_or_methodology_returns_helpful_shape() {
+        let dir = tempdir().unwrap();
+        let tool = SkillManageTool;
+        let ctx = ToolContext::new(
+            "session".to_string(),
+            "message".to_string(),
+            dir.path().to_string_lossy().to_string(),
+        )
+        .with_ask(|_| async { Ok(()) });
+
+        let err = tool
+            .execute(
+                serde_json::json!({
+                    "action": "create",
+                    "name": "missing-shape-skill",
+                    "description": "missing methodology"
+                }),
+                ctx,
+            )
+            .await
+            .expect_err("create without body or methodology should fail");
+
+        let message = err.to_string();
+        assert!(message.contains("requires either `body` or `methodology`"));
+        assert!(message.contains("\"action\":\"create\""));
+        assert!(message.contains("\"methodology\""));
     }
 
     #[tokio::test]
@@ -1099,6 +1215,82 @@ mod tests {
             event.get("kind").and_then(|value| value.as_str()) == Some("field_alias_normalization")
                 && event.get("from").and_then(|value| value.as_str()) == Some("content")
                 && event.get("to").and_then(|value| value.as_str()) == Some("body")
+        }));
+    }
+
+    #[tokio::test]
+    async fn create_accepts_root_json_string_payload() {
+        let dir = tempdir().unwrap();
+        let tool = SkillManageTool;
+        let ctx = ToolContext::new(
+            "session".to_string(),
+            "message".to_string(),
+            dir.path().to_string_lossy().to_string(),
+        )
+        .with_ask(|_| async { Ok(()) });
+
+        let result = tool
+            .execute(
+                serde_json::json!(
+                    "{\"action\":\"create\",\"name\":\"root-json-skill\",\"description\":\"root string\",\"methodology\":{\"when_to_use\":[\"Use when the model stringifies the whole tool payload.\"],\"core_steps\":[{\"title\":\"Parse\",\"action\":\"Accept the root JSON string.\",\"outcome\":\"Create succeeds.\"}],\"success_criteria\":[\"The skill is created.\"],\"validation\":[\"Load the created skill.\"],\"pitfalls\":[\"Do not reject a valid object string at the root.\"]}}"
+                ),
+                ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.output.contains("root-json-skill"));
+        let repair_events = crate::tool_repair_events(&result.metadata);
+        assert!(repair_events.iter().any(|event| {
+            event.get("kind").and_then(|value| value.as_str()) == Some("json_string_object_parse")
+                && event.get("field").and_then(|value| value.as_str()) == Some("$root")
+        }));
+    }
+
+    #[tokio::test]
+    async fn create_unwraps_nested_payload_object() {
+        let dir = tempdir().unwrap();
+        let tool = SkillManageTool;
+        let ctx = ToolContext::new(
+            "session".to_string(),
+            "message".to_string(),
+            dir.path().to_string_lossy().to_string(),
+        )
+        .with_ask(|_| async { Ok(()) });
+
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "payload": {
+                        "action": "create",
+                        "name": "payload-skill",
+                        "description": "payload wrapper",
+                        "methodology": {
+                            "when_to_use": ["Use when arguments are wrapped under payload."],
+                            "core_steps": [
+                                {
+                                    "title": "Unwrap",
+                                    "action": "Promote payload fields to the root.",
+                                    "outcome": "The request uses the normal create shape."
+                                }
+                            ],
+                            "success_criteria": ["The skill is created."],
+                            "validation": ["Load the generated skill."],
+                            "pitfalls": ["Do not duplicate fields when root fields already exist."]
+                        }
+                    }
+                }),
+                ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.output.contains("payload-skill"));
+        let repair_events = crate::tool_repair_events(&result.metadata);
+        assert!(repair_events.iter().any(|event| {
+            event.get("kind").and_then(|value| value.as_str()) == Some("fallback_normalization")
+                && event.get("source").and_then(|value| value.as_str()) == Some("payload")
+                && event.get("target").and_then(|value| value.as_str()) == Some("$root")
         }));
     }
 
