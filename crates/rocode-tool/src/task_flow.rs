@@ -217,11 +217,11 @@ impl Tool for TaskFlowTool {
                 },
                 "task_id": {
                     "type": "string",
-                    "description": "Registry task id or delegated session id depending on operation. `session_id` is accepted as an alias."
+                    "description": "Registry task id or delegated session id depending on operation."
                 },
                 "agent": {
                     "type": "string",
-                    "description": "Agent name to delegate to for create or resume. `subagent_type` is accepted as an alias."
+                    "description": "Agent name to delegate to for create or resume."
                 },
                 "description": {
                     "type": "string",
@@ -229,7 +229,7 @@ impl Tool for TaskFlowTool {
                 },
                 "prompt": {
                     "type": "string",
-                    "description": "Delegated prompt body for create or resume. Common aliases such as `request`, `instructions`, `goal`, or `message` are accepted."
+                    "description": "Delegated prompt body for create or resume."
                 },
                 "command": {
                     "type": "string",
@@ -290,12 +290,12 @@ impl Tool for TaskFlowTool {
                 },
                 "agent_prompt": {
                     "type": "string",
-                    "description": "Inline system prompt for a dynamically constructed agent (create only). When the agent name is not known, this defines its role at runtime. `system_prompt` is accepted as an alias."
+                    "description": "Inline system prompt for a dynamically constructed agent (create only). When the agent name is not known, this defines its role at runtime."
                 },
                 "agent_tools": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Allowed tools for a dynamically constructed agent (create only). Only tools available to the parent can be granted. `allowed_tools` is accepted as an alias."
+                    "description": "Allowed tools for a dynamically constructed agent (create only). Only tools available to the parent can be granted."
                 }
             },
             "required": ["operation"],
@@ -968,22 +968,25 @@ fn validate_input(input: &TaskFlowInput) -> Result<(), ToolError> {
         TaskFlowOperation::Create => {
             require_non_empty(
                 input.agent.as_deref(),
-                "agent is required for create. Minimal shape: {\"operation\":\"create\",\"agent\":\"build\",\"prompt\":\"...\"}",
+                "agent is required for create. Canonical shape: {\"operation\":\"create\",\"agent\":\"build\",\"prompt\":\"...\"}",
             )?;
             require_non_empty(
                 input.prompt.as_deref(),
-                "prompt is required for create. Use `description` only as a short label; put the real delegated instruction in `prompt`.",
+                "prompt is required for create. Use `description` only as a short label, not the main instruction. Canonical shape: {\"operation\":\"create\",\"agent\":\"build\",\"prompt\":\"...\"}",
             )?;
         }
         TaskFlowOperation::Resume => {
             require_non_empty(
                 input.task_id.as_deref(),
-                "task_id is required for resume. Minimal shape: {\"operation\":\"resume\",\"task_id\":\"...\",\"agent\":\"build\",\"prompt\":\"...\"}",
+                "task_id is required for resume. Canonical shape: {\"operation\":\"resume\",\"task_id\":\"...\",\"agent\":\"build\",\"prompt\":\"...\"}",
             )?;
-            require_non_empty(input.agent.as_deref(), "agent is required for resume")?;
+            require_non_empty(
+                input.agent.as_deref(),
+                "agent is required for resume. Canonical shape: {\"operation\":\"resume\",\"task_id\":\"...\",\"agent\":\"build\",\"prompt\":\"...\"}",
+            )?;
             require_non_empty(
                 input.prompt.as_deref(),
-                "prompt is required for resume. Use `description` only as a short label; put the real continuation instruction in `prompt`.",
+                "prompt is required for resume. Use `description` only as a short label, not the main instruction. Canonical shape: {\"operation\":\"resume\",\"task_id\":\"...\",\"agent\":\"build\",\"prompt\":\"...\"}",
             )?;
         }
         TaskFlowOperation::Get => {
