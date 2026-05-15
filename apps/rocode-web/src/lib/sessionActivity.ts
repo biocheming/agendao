@@ -4,7 +4,10 @@ import type {
   SessionMemoryTelemetryRecord,
 } from "./memory";
 import type { SessionMultimodalInsight } from "./multimodal";
-import type { PersistedSessionTelemetrySnapshot } from "./session";
+import type {
+  PersistedSessionTelemetrySnapshot,
+  ToolTrajectoryQualityRecord,
+} from "./session";
 
 export interface ExecutionNodeRecord {
   id: string;
@@ -224,6 +227,7 @@ export interface SessionTelemetrySnapshotRecord {
   usage: SessionUsageRecord;
   tool_repair_summary?: SessionToolRepairTelemetrySummaryRecord | null;
   model_tool_repair_summary?: ModelToolRepairTelemetrySummaryRecord | null;
+  tool_trajectory_quality?: ToolTrajectoryQualityRecord | null;
   memory?: SessionMemoryTelemetryRecord | null;
   cache_evidence?: Record<string, unknown> | null;
   cache_semantics?: Record<string, unknown> | null;

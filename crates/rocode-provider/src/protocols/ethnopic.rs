@@ -775,4 +775,69 @@ mod tests {
             } if tool_use_id == "call-1" && content == "[Tool execution was interrupted]"
         ));
     }
+
+    // P2: downgraded tool-summary injected as user must stay user on wire.
+    #[test]
+    fn p2_downgraded_tool_summary_stays_role_user_on_ethnopic_wire() {
+        let request = ChatRequest {
+            model: "claude-test".to_string(),
+            messages: vec![Message {
+                role: Role::User,
+                content: Content::Text("<tool-batch-summary>\n  tools: read\n  goal_status: mixed\n</tool-batch-summary>".to_string()),
+                cache_control: None,
+                provider_options: None,
+            }],
+            max_tokens: Some(1024),
+            temperature: None,
+            top_p: None,
+            system: None,
+            tools: None,
+            stream: None,
+            provider_options: None,
+            variant: None,
+        };
+
+        let converted = EthnopicAdapter::convert_request(request);
+        assert_eq!(converted.messages.len(), 1);
+        assert_eq!(converted.messages[0].role, "user");
+    }
+
+    // P2 canonical ordering: the Ethnopic adapter preserves input order and
+    // expects canonical ordering (reasoning before text) from the upstream
+    // replay authority. This regression pins the contract: if input is in
+    // canonical order, output is in canonical order.
+    #[test]
+    fn p2_canonical_input_order_preserved_on_ethnopic_wire() {
+        let request = ChatRequest {
+            model: "claude-test".to_string(),
+            messages: vec![Message {
+                role: Role::Assistant,
+                content: Content::Parts(vec![
+                    ContentPart::reasoning("plan"),
+                    ContentPart::text("visible"),
+                    ContentPart::tool_use("call-1", "ls", json!({ "path": "." })),
+                ]),
+                cache_control: None,
+                provider_options: None,
+            }],
+            max_tokens: Some(1024),
+            temperature: None,
+            top_p: None,
+            system: None,
+            tools: None,
+            stream: None,
+            provider_options: None,
+            variant: None,
+        };
+
+        let converted = EthnopicAdapter::convert_request(request);
+        assert_eq!(converted.messages[0].content.len(), 3);
+        // Canonical: thinking → text → tool_use.
+        assert!(matches!(&converted.messages[0].content[0],
+            MessagesContent::Thinking { thinking } if thinking == "plan"));
+        assert!(matches!(&converted.messages[0].content[1],
+            MessagesContent::Text { text } if text == "visible"));
+        assert!(matches!(&converted.messages[0].content[2],
+            MessagesContent::ToolUse { id, name, .. } if id == "call-1" && name == "ls"));
+    }
 }

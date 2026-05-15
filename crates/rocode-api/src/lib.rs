@@ -36,7 +36,7 @@ pub use rocode_types::{
     SessionEffectiveSkillTreePolicy, SessionForkExplain, SessionForkHistoryMode,
     SessionInsightsResponse, SessionMemoryTelemetrySummary, SessionOwnershipSummary,
     SessionRepairQuerySnapshot, SessionRepairQuerySummary, SessionStatusInfo,
-    SessionToolRepairTelemetrySummary, SessionUsageBooks,
+    SessionToolRepairTelemetrySummary, SessionUsageBooks, ToolTrajectoryQualitySummary,
     SkillArtifactCacheEntry, SkillAuditEvent, SkillDistributionRecord, SkillEvolutionProposal,
     SkillEvolutionProposalKind, SkillGovernanceDiagnosticSeverity, SkillGovernanceTimelineEntry,
     SkillGovernanceTimelineStatus, SkillGovernanceWriteResult, SkillGuardReport, SkillGuardStatus,
@@ -432,6 +432,8 @@ pub struct SessionTelemetrySnapshot {
     pub model_tool_repair_summary: Option<ModelToolRepairTelemetrySummary>,
     #[serde(default)]
     pub repair_query_snapshot: Option<SessionRepairQuerySnapshot>,
+    #[serde(default)]
+    pub tool_trajectory_quality: Option<ToolTrajectoryQualitySummary>,
     #[serde(default)]
     pub memory: Option<SessionMemoryTelemetrySummary>,
     #[serde(default)]

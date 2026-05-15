@@ -106,6 +106,11 @@ function formatRepairToolSummary(
     .join(" | ");
 }
 
+function formatTrajectoryBand(band?: string | null) {
+  if (!band) return "--";
+  return band.replaceAll("_", " ");
+}
+
 function eventWindowLabel(page: number, count: number, pageSize: number) {
   if (count === 0) return `page ${page} · items 0`;
   const start = (page - 1) * pageSize + 1;
@@ -331,6 +336,7 @@ export function ExecutionActivityPanel({
   const sessionToolRepairSummary = activity.telemetry?.tool_repair_summary ?? null;
   const modelToolRepairSummary: ModelToolRepairTelemetrySummaryRecord | null =
     activity.telemetry?.model_tool_repair_summary ?? null;
+  const trajectoryQuality = activity.telemetry?.tool_trajectory_quality ?? null;
 
   return (
     <div className="roc-panel roc-rail-panel p-5">
@@ -496,6 +502,24 @@ export function ExecutionActivityPanel({
                   </p>
                 </div>
               ) : null}
+            </div>
+          ) : null}
+          {trajectoryQuality ? (
+            <div className={sideSectionClass}>
+              <p className="roc-section-label">Trajectory Quality</p>
+              <div className="roc-rail-meta-list">
+                <span className="roc-badge px-3 py-1.5 text-xs">score {trajectoryQuality.score}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">{formatTrajectoryBand(trajectoryQuality.band)}</span>
+                <span className="roc-badge px-3 py-1.5 text-xs">
+                  repaired {trajectoryQuality.repaired_tool_call_count}/{trajectoryQuality.total_tool_calls}
+                </span>
+                <span className="roc-badge px-3 py-1.5 text-xs">
+                  errors {trajectoryQuality.error_tool_call_count}
+                </span>
+              </div>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                Sanitizer {trajectoryQuality.sanitizer_event_count} · strict-fail {trajectoryQuality.strict_would_fail_count} · provider {trajectoryQuality.provider_diagnostic_count}
+              </p>
             </div>
           ) : null}
           {contextClosure ? (

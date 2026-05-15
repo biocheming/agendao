@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use crate::{
     MemoryScope, ProviderConnectionDescriptorCandidate, ProviderProfileDescriptorView,
-    SessionMemoryTelemetrySummary, SessionRepairQuerySnapshot,
+    SessionMemoryTelemetrySummary, SessionRepairQuerySnapshot, ToolTrajectoryQualitySummary,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1515,6 +1515,7 @@ pub enum SessionTelemetrySnapshotVersion {
     V2,
     V3,
     V4,
+    V5,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1992,6 +1993,8 @@ pub struct SessionTelemetrySnapshot {
     pub compaction_continuity: Option<SessionCompactionContinuityInspection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repair_query_snapshot: Option<SessionRepairQuerySnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_trajectory_quality: Option<ToolTrajectoryQualitySummary>,
     pub last_run_status: String,
     pub updated_at: i64,
 }

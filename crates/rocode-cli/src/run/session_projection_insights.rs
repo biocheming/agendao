@@ -2,6 +2,17 @@ use super::{cli_optional_generated_at, cli_yes_no};
 use crate::run::session_projection_usage::format_token_count;
 use crate::util::truncate_text;
 
+fn cli_tool_trajectory_band_label(
+    band: rocode_types::ToolTrajectoryQualityBand,
+) -> &'static str {
+    match band {
+        rocode_types::ToolTrajectoryQualityBand::Clean => "clean",
+        rocode_types::ToolTrajectoryQualityBand::Recoverable => "recoverable",
+        rocode_types::ToolTrajectoryQualityBand::Degraded => "degraded",
+        rocode_types::ToolTrajectoryQualityBand::Risky => "risky",
+    }
+}
+
 pub(super) fn cli_session_insights_lines(
     session_id: &str,
     insights: &crate::api_client::SessionInsightsResponse,
@@ -47,6 +58,16 @@ pub(super) fn cli_session_insights_lines(
             "  Persisted stages: {}",
             telemetry.stage_summaries.len()
         ));
+        if let Some(quality) = telemetry.tool_trajectory_quality.as_ref() {
+            lines.push(format!(
+                "  Trajectory quality: {} · {} · repaired {}/{} · errors {}",
+                quality.score,
+                cli_tool_trajectory_band_label(quality.band),
+                quality.repaired_tool_call_count,
+                quality.total_tool_calls,
+                quality.error_tool_call_count
+            ));
+        }
     }
 
     if let Some(memory) = insights.memory.as_ref() {

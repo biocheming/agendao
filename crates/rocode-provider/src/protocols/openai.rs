@@ -1554,6 +1554,53 @@ mod tests {
         assert_eq!(converted[1]["content"], "[Tool execution was interrupted]");
     }
 
+    // P2 canonical ordering: when the upstream replay authority provides
+    // parts in canonical order, the OpenAI wire preserves reasoning and
+    // content in the correct positions.
+    #[test]
+    fn p2_canonical_ordering_preserved_on_openai_wire() {
+        // Canonical order: reasoning before text.
+        let assistant = Message {
+            role: Role::Assistant,
+            content: crate::Content::Parts(vec![
+                crate::ContentPart {
+                    content_type: "reasoning".to_string(),
+                    text: Some("hidden thought".to_string()),
+                    ..Default::default()
+                },
+                crate::ContentPart {
+                    content_type: "text".to_string(),
+                    text: Some("final answer".to_string()),
+                    ..Default::default()
+                },
+            ]),
+            cache_control: None,
+            provider_options: None,
+        };
+
+        let converted = to_openai_compatible_chat_messages(&[assistant]);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0]["reasoning_content"], "hidden thought");
+        assert_eq!(converted[0]["content"], "final answer");
+    }
+
+    // P2: downgraded tool-summary injected as a user message must stay
+    // Role::User on the wire — it must not be re-emitted as Role::Tool.
+    #[test]
+    fn p2_downgraded_tool_summary_stays_role_user_on_wire() {
+        let messages = vec![Message {
+            role: Role::User,
+            content: crate::Content::Text("<tool-batch-summary>\n  tools: read\n  goal_status: mixed\n</tool-batch-summary>".to_string()),
+            cache_control: None,
+            provider_options: None,
+        }];
+
+        let converted = to_openai_compatible_chat_messages(&messages);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0]["role"], "user");
+        assert!(converted[0]["content"].as_str().unwrap().contains("tool-batch-summary"));
+    }
+
     #[test]
     fn responses_generate_options_defaults_reasoning_summary_to_auto() {
         let request = ChatRequest {
