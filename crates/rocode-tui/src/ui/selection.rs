@@ -1,3 +1,4 @@
+use ratatui::layout::Rect;
 use unicode_width::UnicodeWidthChar;
 
 /// Terminal text selection — tracks a rectangular region in screen coordinates
@@ -13,6 +14,8 @@ pub struct Selection {
     anchor: Option<(u16, u16)>,
     /// Current drag endpoint.
     cursor: Option<(u16, u16)>,
+    /// Optional clipping region for highlight and copy.
+    scope: Option<Rect>,
     /// True while the mouse button is held down.
     dragging: bool,
 }
@@ -22,20 +25,29 @@ impl Selection {
         Self {
             anchor: None,
             cursor: None,
+            scope: None,
             dragging: false,
         }
     }
 
     /// Begin a new selection at (row, col).
     pub fn start(&mut self, row: u16, col: u16) {
+        self.start_scoped(row, col, None);
+    }
+
+    /// Begin a new selection constrained to a given rectangle.
+    pub fn start_scoped(&mut self, row: u16, col: u16, scope: Option<Rect>) {
+        let (row, col) = clamp_point_to_scope(scope, row, col);
         self.anchor = Some((row, col));
         self.cursor = Some((row, col));
+        self.scope = scope;
         self.dragging = true;
     }
 
     /// Update the drag endpoint.
     pub fn update(&mut self, row: u16, col: u16) {
         if self.dragging {
+            let (row, col) = clamp_point_to_scope(self.scope, row, col);
             self.cursor = Some((row, col));
         }
     }
@@ -49,6 +61,7 @@ impl Selection {
     pub fn clear(&mut self) {
         self.anchor = None;
         self.cursor = None;
+        self.scope = None;
         self.dragging = false;
     }
 
@@ -78,6 +91,9 @@ impl Selection {
 
     /// Test whether a specific cell is inside the selection.
     pub fn is_selected(&self, row: u16, col: u16) -> bool {
+        if !point_in_scope(self.scope, row, col) {
+            return false;
+        }
         let ((r0, c0), (r1, c1)) = match self.range() {
             Some(r) => r,
             None => return false,
@@ -116,28 +132,26 @@ impl Selection {
             Some(r) => r,
             None => return String::new(),
         };
+        let (row_start, row_end) = match intersect_row_range(self.scope, r0, r1) {
+            Some(range) => range,
+            None => return String::new(),
+        };
 
         let mut result = String::new();
 
-        for row in r0..=r1 {
+        for row in row_start..=row_end {
             let line = match get_line(row) {
                 Some(l) => l,
                 None => continue,
             };
 
-            let selected = if r0 == r1 {
-                // Single line: clip both ends
-                slice_by_columns(&line, c0 as usize, c1.saturating_add(1) as usize)
-            } else if row == r0 {
-                // First row: from col to end
-                slice_from_column(&line, c0 as usize)
-            } else if row == r1 {
-                // Last row: from start to col
-                slice_to_column(&line, c1.saturating_add(1) as usize)
-            } else {
-                // Middle row: full line
-                line
+            let Some((start_col, end_col_exclusive)) =
+                selected_columns_for_row(self.scope, r0, c0, r1, c1, row)
+            else {
+                continue;
             };
+            let selected =
+                slice_by_columns(&line, start_col as usize, end_col_exclusive as usize);
 
             if !result.is_empty() {
                 result.push('\n');
@@ -147,6 +161,74 @@ impl Selection {
 
         result
     }
+}
+
+fn clamp_point_to_scope(scope: Option<Rect>, row: u16, col: u16) -> (u16, u16) {
+    let Some(scope) = scope else {
+        return (row, col);
+    };
+    if scope.width == 0 || scope.height == 0 {
+        return (row, col);
+    }
+    let max_row = scope.y.saturating_add(scope.height.saturating_sub(1));
+    let max_col = scope.x.saturating_add(scope.width.saturating_sub(1));
+    (row.clamp(scope.y, max_row), col.clamp(scope.x, max_col))
+}
+
+fn point_in_scope(scope: Option<Rect>, row: u16, col: u16) -> bool {
+    let Some(scope) = scope else {
+        return true;
+    };
+    if scope.width == 0 || scope.height == 0 {
+        return false;
+    }
+    let max_row = scope.y.saturating_add(scope.height);
+    let max_col = scope.x.saturating_add(scope.width);
+    row >= scope.y && row < max_row && col >= scope.x && col < max_col
+}
+
+fn intersect_row_range(scope: Option<Rect>, r0: u16, r1: u16) -> Option<(u16, u16)> {
+    let Some(scope) = scope else {
+        return Some((r0, r1));
+    };
+    if scope.height == 0 {
+        return None;
+    }
+    let scope_end = scope.y.saturating_add(scope.height.saturating_sub(1));
+    let start = r0.max(scope.y);
+    let end = r1.min(scope_end);
+    (start <= end).then_some((start, end))
+}
+
+fn selected_columns_for_row(
+    scope: Option<Rect>,
+    r0: u16,
+    c0: u16,
+    r1: u16,
+    c1: u16,
+    row: u16,
+) -> Option<(u16, u16)> {
+    let (mut start, mut end_exclusive) = if r0 == r1 {
+        (c0, c1.saturating_add(1))
+    } else if row == r0 {
+        (c0, u16::MAX)
+    } else if row == r1 {
+        (0, c1.saturating_add(1))
+    } else {
+        (0, u16::MAX)
+    };
+
+    if let Some(scope) = scope {
+        if scope.width == 0 {
+            return None;
+        }
+        let scope_start = scope.x;
+        let scope_end = scope.x.saturating_add(scope.width);
+        start = start.max(scope_start);
+        end_exclusive = end_exclusive.min(scope_end);
+    }
+
+    (start < end_exclusive).then_some((start, end_exclusive))
 }
 
 fn slice_by_columns(line: &str, start_col: usize, end_col_exclusive: usize) -> String {
@@ -159,22 +241,6 @@ fn slice_by_columns(line: &str, start_col: usize, end_col_exclusive: usize) -> S
         return String::new();
     }
     line[start..end].to_string()
-}
-
-fn slice_from_column(line: &str, start_col: usize) -> String {
-    let start = byte_index_for_column_start(line, start_col);
-    if start >= line.len() {
-        return String::new();
-    }
-    line[start..].to_string()
-}
-
-fn slice_to_column(line: &str, end_col_exclusive: usize) -> String {
-    let end = byte_index_for_column_end(line, end_col_exclusive);
-    if end == 0 {
-        return String::new();
-    }
-    line[..end].to_string()
 }
 
 fn byte_index_for_column_start(line: &str, target_col: usize) -> usize {
@@ -230,6 +296,7 @@ impl Default for Selection {
 #[cfg(test)]
 mod tests {
     use super::Selection;
+    use ratatui::layout::Rect;
 
     #[test]
     fn utf8_glyph_boundary_selection_is_safe() {
@@ -268,5 +335,22 @@ mod tests {
         });
 
         assert_eq!(selected, "你");
+    }
+
+    #[test]
+    fn scoped_selection_does_not_copy_outside_rect() {
+        let mut selection = Selection::new();
+        selection.start_scoped(5, 10, Some(Rect::new(10, 5, 8, 3)));
+        selection.update(8, 40);
+        selection.finalize();
+
+        let selected = selection.get_selected_text(|row| match row {
+            5 => Some("0123456789abcdefghij".to_string()),
+            6 => Some("0123456789klmnopqrst".to_string()),
+            7 => Some("0123456789uvwxyzABCD".to_string()),
+            _ => None,
+        });
+
+        assert_eq!(selected, "abcdefgh\nklmnopqr\nuvwxyzAB");
     }
 }

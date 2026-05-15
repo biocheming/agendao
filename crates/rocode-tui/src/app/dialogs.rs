@@ -453,6 +453,13 @@ impl App {
                     self.provider_dialog.move_down();
                 }
             }
+            Some(DialogSlot::Status) => {
+                if up {
+                    self.status_dialog.scroll_up();
+                } else {
+                    self.status_dialog.scroll_down();
+                }
+            }
             Some(DialogSlot::Subagent) => {
                 if up {
                     self.subagent_dialog.scroll_up();
