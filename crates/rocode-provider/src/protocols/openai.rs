@@ -1211,6 +1211,8 @@ mod tests {
     }
 
     #[test]
+    // P2.3: reused call_id history must be sanitized before OpenAI transport —
+    // duplicate IDs are rewritten and tool_result pairing stays consistent.
     fn injects_interrupted_tool_result_per_assistant_segment_even_with_reused_call_id() {
         let first_assistant = Message {
             role: Role::Assistant,

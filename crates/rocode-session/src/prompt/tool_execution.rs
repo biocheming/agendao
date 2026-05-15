@@ -165,9 +165,9 @@ fn extract_tool_fact_extras(
 
 fn classify_block_reason(
     error_kind: Option<&str>,
-    _repair_events: &[RepairEvent],
+    repair_events: &[RepairEvent],
 ) -> Option<rocode_types::ToolBatchBlockReason> {
-    match error_kind {
+    let from_error = match error_kind {
         Some("invalid_arguments") => Some(rocode_types::ToolBatchBlockReason::InvalidArguments),
         Some("permission_denied") => Some(rocode_types::ToolBatchBlockReason::PermissionDenied),
         Some("timeout") => Some(rocode_types::ToolBatchBlockReason::Timeout),
@@ -178,26 +178,68 @@ fn classify_block_reason(
         Some("execution_error") => Some(rocode_types::ToolBatchBlockReason::ToolExecutionError),
         Some(_) => Some(rocode_types::ToolBatchBlockReason::Unknown),
         None => None,
+    };
+    if from_error.is_some() {
+        return from_error;
     }
+    // When a tool call was permissively rerouted, infer the block reason
+    // from repair events that carry the original error classification.
+    for e in repair_events {
+        let Some(kind) = rocode_types::RepairKind::from_legacy_str(&e.repair_kind) else {
+            continue;
+        };
+        match kind {
+            rocode_types::RepairKind::ArgumentPrevalidationFallback => {
+                return Some(rocode_types::ToolBatchBlockReason::InvalidArguments);
+            }
+            rocode_types::RepairKind::InvalidToolReroute => {
+                // Check the event's stored reason for the original error kind.
+                let reason = e.reason.as_deref().unwrap_or_default();
+                let lower = reason.to_ascii_lowercase();
+                if lower.contains("invalid arguments") || lower.contains("invalid_arguments") {
+                    return Some(rocode_types::ToolBatchBlockReason::InvalidArguments);
+                }
+                if lower.contains("permission denied") {
+                    return Some(rocode_types::ToolBatchBlockReason::PermissionDenied);
+                }
+                // Generic execution error reroute.
+                return Some(rocode_types::ToolBatchBlockReason::ToolExecutionError);
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn derive_goal_status(facts: &[ToolCallBatchFact]) -> rocode_types::ToolBatchGoalStatus {
-    let has_success = facts.iter().any(|f| !f.is_error);
     let has_error = facts.iter().any(|f| f.is_error);
     let has_blocker = facts.iter().any(|f| f.block_reason.is_some());
+    // Count calls that actually succeeded (no error AND no blocker).
+    let real_success_count = facts.iter().filter(|f| !f.is_error && f.block_reason.is_none()).count();
+    let total = facts.len();
 
-    match (has_success, has_error, has_blocker) {
-        (true, false, _) => rocode_types::ToolBatchGoalStatus::Advanced,
-        (true, true, _) => rocode_types::ToolBatchGoalStatus::Mixed,
-        (false, true, true) => rocode_types::ToolBatchGoalStatus::Blocked,
-        (false, true, false) => rocode_types::ToolBatchGoalStatus::NoProgress,
-        _ => rocode_types::ToolBatchGoalStatus::NoProgress,
+    if real_success_count == total {
+        return rocode_types::ToolBatchGoalStatus::Advanced;
     }
+    if real_success_count > 0 && has_error {
+        return rocode_types::ToolBatchGoalStatus::Mixed;
+    }
+    if real_success_count > 0 && has_blocker {
+        return rocode_types::ToolBatchGoalStatus::Mixed;
+    }
+    if has_blocker {
+        return rocode_types::ToolBatchGoalStatus::Blocked;
+    }
+    if has_error {
+        return rocode_types::ToolBatchGoalStatus::NoProgress;
+    }
+    rocode_types::ToolBatchGoalStatus::NoProgress
 }
 
 fn derive_recommended_next_step(facts: &[ToolCallBatchFact]) -> Option<String> {
     let has_success = facts.iter().any(|f| !f.is_error);
     let has_artifact = facts.iter().any(|f| !f.artifacts_created.is_empty());
+    let all_have_blockers = facts.iter().all(|f| f.block_reason.is_some());
     let has_invalid_args = facts
         .iter()
         .any(|f| f.block_reason == Some(rocode_types::ToolBatchBlockReason::InvalidArguments));
@@ -208,7 +250,8 @@ fn derive_recommended_next_step(facts: &[ToolCallBatchFact]) -> Option<String> {
         .iter()
         .any(|f| f.block_reason == Some(rocode_types::ToolBatchBlockReason::Timeout));
 
-    if !has_success {
+    // All calls are blocked (even if permissively rerouted): give blocker-specific advice.
+    if all_have_blockers {
         if has_invalid_args {
             return Some("fix tool arguments before retrying".into());
         }
@@ -546,6 +589,20 @@ impl SessionPrompt {
                                     // Permissive: reroute to invalid for machine-readable errors.
                                     // Strict: return the raw error, don't silently rewrite.
                                     if !is_strict && available_tool_ids.contains("invalid") {
+                                        // Record the reroute as a repair event for telemetry.
+                                        let mut reroute_event = rocode_tool::tool_repair_event(
+                                            rocode_types::RepairKind::InvalidToolReroute.as_str(),
+                                            "session_prompt",
+                                            &effective_tool_name,
+                                        );
+                                        reroute_event.insert(
+                                            "reason".to_string(),
+                                            serde_json::json!(format!("Error: {}", e)),
+                                        );
+                                        rocode_tool::append_tool_repair_event_map(
+                                            &mut repair_metadata,
+                                            reroute_event,
+                                        );
                                         let invalid_input = Self::invalid_tool_payload(
                                             &tool_name,
                                             &format!("Error: {}", e),
@@ -1494,6 +1551,7 @@ mod tests {
     struct SyntheticAttachmentTool;
     struct EchoTool;
     struct AlwaysFailTool;
+    struct ExecutionErrorTool;
 
     #[async_trait]
     impl Tool for SyntheticAttachmentTool {
@@ -1568,6 +1626,41 @@ mod tests {
 
         fn description(&self) -> &str {
             "Always fails for telemetry tests"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "required_arg": { "type": "string" }
+                },
+                "required": ["required_arg"]
+            })
+        }
+
+        fn validate(&self, _args: &serde_json::Value) -> Result<(), ToolError> {
+            Err(ToolError::InvalidArguments(
+                "Invalid arguments: required_arg is required".to_string(),
+            ))
+        }
+
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            Err(ToolError::ExecutionError("boom".to_string()))
+        }
+    }
+
+    #[async_trait]
+    impl Tool for ExecutionErrorTool {
+        fn id(&self) -> &str {
+            "exec_err_tool"
+        }
+
+        fn description(&self) -> &str {
+            "Always fails with ExecutionError for testing"
         }
 
         fn parameters(&self) -> serde_json::Value {
@@ -2056,6 +2149,7 @@ mod tests {
     }
 
     #[tokio::test]
+    // P2.3: strict/permissive split must not drift — strict preserves raw errors.
     async fn strict_tool_execution_does_not_reroute_invalid_args_to_invalid_tool() {
         let tool_registry = Arc::new(rocode_tool::ToolRegistry::new());
         tool_registry.register(AlwaysFailTool).await;
@@ -2301,4 +2395,191 @@ mod tests {
             "strict should preserve original tool name"
         );
     }
+
+    // P2.3: invalid args from real execution must end up as blocked_by in the
+    // persisted batch summary, with machine-readable next_step.
+    #[tokio::test]
+    async fn p23_tool_batch_summary_marks_invalid_arguments_as_blocked_with_fix_args_next_step() {
+        let tool_registry = Arc::new(rocode_tool::ToolRegistry::new());
+        tool_registry.register(AlwaysFailTool).await;
+        // Register the invalid tool so permissive reroute can happen.
+        tool_registry
+            .register(rocode_tool::invalid::InvalidTool)
+            .await;
+
+        let mut session = Session::new("proj", ".");
+        let sid = session.id.clone();
+        session
+            .messages_mut()
+            .push(SessionMessage::user(sid.clone(), "run failing tool"));
+        let mut assistant = SessionMessage::assistant(sid);
+        // AlwaysFailTool's validate() returns Err, which triggers permissive
+        // reroute to invalid. The batch summary must reflect the block reason.
+        assistant.add_tool_call("call_fail", "fail_tool", serde_json::json!({}));
+        session.messages_mut().push(assistant);
+
+        let provider: Arc<dyn Provider> =
+            Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
+        // Permissive policy so the reroute happens.
+        let mut config = rocode_config::Config::default();
+        config.repair_policy = Some(rocode_types::RepairPolicy::Permissive);
+        let config_store = Arc::new(rocode_config::ConfigStore::new(config));
+        let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string())
+            .with_config_store(config_store);
+
+        SessionPrompt::execute_tool_calls(
+            &mut session,
+            tool_registry,
+            ctx,
+            provider,
+            "mock",
+            "test-model",
+        )
+        .await
+        .expect("execute_tool_calls should succeed");
+
+        // Read the persisted summary from session metadata.
+        let summary_value = session
+            .record()
+            .metadata
+            .get("latest_tool_batch_summary")
+            .expect("batch summary should be persisted");
+        let summary: ToolBatchSummary =
+            serde_json::from_value(summary_value.clone()).expect("should deserialize");
+
+        assert!(
+            summary
+                .blocked_by
+                .contains(&rocode_types::ToolBatchBlockReason::InvalidArguments),
+            "blocked_by should contain InvalidArguments, got {:?}",
+            summary.blocked_by
+        );
+        assert_eq!(
+            summary.recommended_next_step,
+            Some("fix tool arguments before retrying".to_string())
+        );
+    }
+
+    // P2.3: synthetic attachment names captured from the real
+    // execute_tool_calls → pending_synthetic_messages pipeline must survive
+    // into the persisted batch summary.
+    #[tokio::test]
+    async fn p23_tool_batch_summary_preserves_synthetic_artifact_names() {
+        let tool_registry = Arc::new(rocode_tool::ToolRegistry::new());
+        tool_registry.register(SyntheticAttachmentTool).await;
+
+        let mut session = Session::new("proj", ".");
+        let sid = session.id.clone();
+        session.messages_mut().push(SessionMessage::user(
+            sid.clone(),
+            "run synthetic attachment",
+        ));
+        let mut assistant = SessionMessage::assistant(sid);
+        assistant.add_tool_call(
+            "call_synthetic",
+            "synthetic_attachment",
+            serde_json::json!({}),
+        );
+        session.messages_mut().push(assistant);
+
+        let provider: Arc<dyn Provider> =
+            Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
+        let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string());
+
+        SessionPrompt::execute_tool_calls(
+            &mut session,
+            tool_registry,
+            ctx,
+            provider,
+            "mock",
+            "test-model",
+        )
+        .await
+        .expect("execute_tool_calls should succeed");
+
+        // Read from session metadata — the path that execute_tool_calls writes.
+        let summary_value = session
+            .record()
+            .metadata
+            .get("latest_tool_batch_summary")
+            .expect("batch summary should be persisted");
+        let summary: ToolBatchSummary =
+            serde_json::from_value(summary_value.clone()).expect("should deserialize");
+
+        // SyntheticAttachmentTool emits "artifact.png" as an attachment filename.
+        assert!(
+            summary
+                .artifacts_created
+                .iter()
+                .any(|a| a == "artifact.png"),
+            "synthetic artifact name should survive into persisted summary"
+        );
+        let formatted = summary.format_for_context();
+        assert!(formatted.contains("artifacts: artifact.png"));
+    }
+
+    // P2.3: an ordinary execution error permissive reroute must NOT be
+    // misclassified as invalid_arguments in the batch summary.
+    #[tokio::test]
+    async fn p23_execution_error_reroute_is_not_classified_as_invalid_arguments() {
+        let tool_registry = Arc::new(rocode_tool::ToolRegistry::new());
+        // AlwaysFailTool.execute() returns ExecutionError("boom"), which has
+        // no validate() — this is a genuine execution error, not bad args.
+        tool_registry.register(ExecutionErrorTool).await;
+        tool_registry
+            .register(rocode_tool::invalid::InvalidTool)
+            .await;
+
+        let mut session = Session::new("proj", ".");
+        let sid = session.id.clone();
+        session
+            .messages_mut()
+            .push(SessionMessage::user(sid.clone(), "run failing tool"));
+        let mut assistant = SessionMessage::assistant(sid);
+        assistant.add_tool_call("call_exec_err", "exec_err_tool", serde_json::json!({}));
+        session.messages_mut().push(assistant);
+
+        let provider: Arc<dyn Provider> =
+            Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
+        let mut config = rocode_config::Config::default();
+        config.repair_policy = Some(rocode_types::RepairPolicy::Permissive);
+        let config_store = Arc::new(rocode_config::ConfigStore::new(config));
+        let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string())
+            .with_config_store(config_store);
+
+        SessionPrompt::execute_tool_calls(
+            &mut session,
+            tool_registry,
+            ctx,
+            provider,
+            "mock",
+            "test-model",
+        )
+        .await
+        .expect("execute_tool_calls should succeed");
+
+        let summary_value = session
+            .record()
+            .metadata
+            .get("latest_tool_batch_summary")
+            .expect("batch summary should be persisted");
+        let summary: ToolBatchSummary =
+            serde_json::from_value(summary_value.clone()).expect("should deserialize");
+
+        // Must NOT be classified as invalid_arguments.
+        assert!(
+            !summary
+                .blocked_by
+                .contains(&rocode_types::ToolBatchBlockReason::InvalidArguments),
+            "execution error reroute must not be misclassified as invalid_arguments"
+        );
+        // Must be classified as a tool execution error.
+        assert!(
+            summary
+                .blocked_by
+                .contains(&rocode_types::ToolBatchBlockReason::ToolExecutionError),
+            "execution error reroute should be classified as tool_execution_error"
+        );
+    }
+
 }
