@@ -15,22 +15,24 @@
 7. [rocode acp -- ACP 服务器](#rocode-acp----acp-服务器)
 8. [rocode models -- 模型列表](#rocode-models----模型列表)
 9. [rocode session -- 会话管理](#rocode-session----会话管理)
-10. [rocode skill -- 技能目录管理](#rocode-skill----技能目录管理)
-11. [rocode stats -- 用量统计](#rocode-stats----用量统计)
-12. [rocode db -- 数据库工具](#rocode-db----数据库工具)
-13. [rocode config -- 配置显示](#rocode-config----配置显示)
-14. [rocode auth -- 凭证管理](#rocode-auth----凭证管理)
-15. [rocode agent -- 智能体管理](#rocode-agent----智能体管理)
-16. [rocode debug -- 调试工具](#rocode-debug----调试工具)
-17. [rocode mcp -- MCP 服务器管理](#rocode-mcp----mcp-服务器管理)
-18. [rocode export / import -- 会话导入导出](#rocode-export--import----会话导入导出)
-19. [rocode github -- GitHub 智能体](#rocode-github----github-智能体)
-20. [rocode pr -- PR 检出](#rocode-pr----pr-检出)
-21. [rocode upgrade -- 升级](#rocode-upgrade----升级)
-22. [rocode uninstall -- 卸载](#rocode-uninstall----卸载)
-23. [rocode generate -- OpenAPI 生成](#rocode-generate----openapi-生成)
-24. [rocode version / info -- 版本信息](#rocode-version--info----版本信息)
-25. [交互式斜杠命令](#交互式斜杠命令)
+10. [rocode memory -- Memory 权威工件](#rocode-memory----memory-权威工件)
+11. [rocode provider -- Provider 权威工件](#rocode-provider----provider-权威工件)
+12. [rocode skill -- 技能目录管理](#rocode-skill----技能目录管理)
+13. [rocode stats -- 用量统计](#rocode-stats----用量统计)
+14. [rocode db -- 数据库工具](#rocode-db----数据库工具)
+15. [rocode config -- 配置与 validation](#rocode-config----配置与-validation)
+16. [rocode auth -- 凭证管理](#rocode-auth----凭证管理)
+17. [rocode agent -- 智能体管理](#rocode-agent----智能体管理)
+18. [rocode debug -- 调试工具](#rocode-debug----调试工具)
+19. [rocode mcp -- MCP 服务器管理](#rocode-mcp----mcp-服务器管理)
+20. [rocode export / import -- 会话导入导出](#rocode-export--import----会话导入导出)
+21. [rocode github -- GitHub 智能体](#rocode-github----github-智能体)
+22. [rocode pr -- PR 检出](#rocode-pr----pr-检出)
+23. [rocode upgrade -- 升级](#rocode-upgrade----升级)
+24. [rocode uninstall -- 卸载](#rocode-uninstall----卸载)
+25. [rocode generate -- OpenAPI 生成](#rocode-generate----openapi-生成)
+26. [rocode version / info -- 版本信息](#rocode-version--info----版本信息)
+27. [交互式斜杠命令](#交互式斜杠命令)
 
 ---
 
@@ -306,10 +308,78 @@ rocode session list [选项]
 rocode session show <SESSION_ID>
 ```
 
+说明：
+
+- 输出的是 authority-backed session info。
+- 如果该会话已有 persisted telemetry，返回中会包含 usage、stage summaries、repair summary、repair query snapshot、tool trajectory quality 等结构化读面。
+
 #### session delete
 
 ```
 rocode session delete <SESSION_ID>
+```
+
+#### session provision-external-adapter
+
+```
+rocode session provision-external-adapter --adapter-id <ID> --actor-id <ID> [选项]
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `--adapter-id` | string | 外部 adapter 标识 |
+| `--actor-id` | string | 外部调用方标识 |
+| `--workspace-id` | string | 外部工作区标识 |
+| `--route-policy-id` | string | 路由策略标识 |
+| `--scheduler-profile` | string | 调度器 profile |
+| `--directory` | path | 工作目录 |
+| `--project-id` | string | 项目标识 |
+| `--title` | string | 会话标题 |
+| `--format` | enum | 输出格式: `text` 或 `json` |
+
+说明：
+
+- 这是 external adapter 的正式 owner-local session provision 入口。
+- 集成方不应该自己猜测 session id，而应先通过这个命令或对应 HTTP 路由申请会话。
+
+---
+
+## rocode memory -- Memory 权威工件
+
+导出或导入 memory authority 持久化工件。
+
+### 子命令
+
+| 子命令 | 说明 |
+|--------|------|
+| `export` | 导出 memory authority 记录为 JSON |
+| `import` | 从 JSON 导入 memory authority 记录 |
+
+### 用法
+
+```bash
+rocode memory export --output memory.json
+rocode memory import ./memory.json
+```
+
+---
+
+## rocode provider -- Provider 权威工件
+
+导出或导入 provider authority 持久化工件。
+
+### 子命令
+
+| 子命令 | 说明 |
+|--------|------|
+| `export` | 导出 provider authority 工件为 JSON |
+| `import` | 从 JSON 导入 provider authority 工件 |
+
+### 用法
+
+```bash
+rocode provider export --output provider.json
+rocode provider import ./provider.json
 ```
 
 ---
@@ -344,6 +414,15 @@ rocode skill hub <action> [选项]
 | `update-apply` | 应用一个托管技能更新 |
 | `detach` | 从来源分离托管技能（保留工作区文件） |
 | `remove` | 移除托管技能（仅在干净状态时删除工作区副本） |
+
+#### Proposal 子命令
+
+| 子命令 | 说明 |
+|--------|------|
+| `list` | 列出 skill evolution proposals |
+| `show` | 查看 proposal 详情 |
+| `approve` | 批准 proposal（不直接改写 SKILL.md） |
+| `reject` | 拒绝 proposal |
 
 #### 公共参数
 
@@ -396,13 +475,28 @@ rocode db path
 
 ---
 
-## rocode config -- 配置显示
+## rocode config -- 配置与 validation
 
-显示当前已解析的配置。用于确认配置加载是否正确。
+显示当前已解析配置，或读取 authority-backed validation snapshot。
 
-```
+### 用法
+
+```bash
 rocode config
+rocode config validation
+rocode config validation --format json
 ```
+
+### 子命令
+
+| 子命令 | 说明 |
+|--------|------|
+| `validation` | 显示配置 validation 快照 |
+
+说明：
+
+- `rocode config` 侧重“当前解析结果”。
+- `rocode config validation` 侧重 provider / external adapter / scheduler skill tree 等 owner-local validation 结果。
 
 ---
 
@@ -478,6 +572,7 @@ rocode auth logout zhipuai
 | `rg` | Ripgrep 调试工具 |
 | `lsp` | LSP 调试工具 |
 | `docs` | 上下文文档调试工具 |
+| `repair` | tool repair / sanitizer / repair query 调试工具 |
 | `agent` | 显示智能体配置详情 |
 
 #### debug agent
@@ -511,6 +606,27 @@ rocode debug agent <NAME> [--tool <tool>] [--params <params>]
 | `diagnostics <FILE>` | 获取文件诊断 |
 | `symbols <QUERY>` | 搜索工作区符号 |
 | `document-symbols <URI>` | 获取文档符号 |
+
+#### debug repair 子命令
+
+| 子命令 | 说明 |
+|--------|------|
+| `summary <SESSION_ID>` | 显示一个会话的 repair summary |
+| `query` | 查询单会话或全局 repair events |
+
+`query` 支持的主要过滤参数：
+
+| 参数 | 说明 |
+|------|------|
+| `--session-id` | 限定一个会话 |
+| `--provider-id` | 按 provider 过滤 |
+| `--model-id` | 按 model 过滤 |
+| `--tool-name` | 按工具过滤 |
+| `--repair-kind` | 按 repair kind 过滤 |
+| `--layer` | 按层过滤（如 sanitizer / execution） |
+| `--strict-only` | 仅看 strict would fail 相关项 |
+| `--include-samples` | 返回样本 |
+| `--limit` | 限制结果数 |
 
 #### debug snapshot 子命令
 
