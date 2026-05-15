@@ -1,48 +1,54 @@
 # ROCode Docs
 
-文档基线：`v2026.5.12`（更新日期：`2026-05-12`）
+文档基线：`v2026.5.15`（更新日期：`2026-05-15`）
 
-This directory contains product-facing examples and design references for ROCode features.
+这里不是“今天改了什么”的补丁板，而是 ROCode 文档系统的正式入口。后续读 `rocode/docs` 时，先用这份文档判断每类文档的用途，再进入具体主题。
 
-## 这轮计划收口后，ROCode 现在正式提供什么
+## 先看阅读规则
 
-- **Provider authority 收口**
-  - typed `ProviderProfile` 统一持有 protocol family / shape / transport / usage / cache 语义
-  - `/provider/{id}/descriptor` 提供窄只读 provider descriptor；Web/TUI/CLI 不再从 `/managed` 大响应里侧取
-  - `/config/validation` 会把 provider / external adapter / scheduler skill tree 的 owner-local 校验结果聚合成一份 snapshot
-- **上下文治理收口**
-  - session telemetry 现在区分 `request_context_tokens`、`live_context_tokens`、`workflow_cumulative_tokens`
-  - `context_closure_contract` 统一解释 prefix stability、compaction boundary、cache explainability、child history isolation
-  - `prompt_surface_state_snapshot` 作为 diagnostics sidecar 进入 artifact/export 读面，用来解释 cache bust 与 prefix 失稳
-- **artifact / adapter owner 收口**
-  - session bundle 与 memory artifact 都有 shared schema 和 owner-local legacy adapter 边界
-  - external adapter 必须先走 `/external-adapter/session/provision` 创建 owner-local session，不能让集成方自行猜测 session id
-  - 显式 full-history fork 已有冻结策略、只读 imported history 和 lifecycle explain
-- **Skill 治理收口**
-  - `skill hub` 不只看 managed/distribution，还新增 usage ledger、negative entropy、semantic conflict、composition relationship 和 runtime resolution
-  - draft proposal、review candidate、retired 状态、runtime gate 都进入统一 inspection / runtime 分层
-- **前端同步收口**
-  - Web 会把 persisted history 与 live streaming block 统一投影到同一组 message / reasoning block id，避免 stale live snapshot 覆盖最终消息
-  - TUI 依赖 authoritative `session.updated` 触发最终 session sync，`prompt.final` / `prompt.completed` / `prompt.scheduler.completed` 都已进入正式同步路径
-- **在线 Skill 发现进入正式读面**
-  - `skill hub search` 已支持多 source 聚合搜索、stale index 提示、默认 registry 建议、trust / maintenance metadata
-  - 搜索结果直接返回安装所需的 source / entry 结构，而不是只给人类看的文本列表
+`rocode/docs` 里的内容分三类：
 
-如果你想顺着这些治理线读代码和界面，优先看下面四份文档：
+1. 稳定产品文档
+   - 解释当前已经对用户、集成方、前端或 CLI/TUI 开放的能力。
+2. 设计/实施参考
+   - 解释为什么这样设计、哪些边界不能退化、哪些局部计划仍在进行中。
+3. 示例与 schema
+   - 提供合法样例、模板和教程，不直接代表主线完成度。
 
+如果你只想知道“现在什么是真的”，先读：
+
+- `documentation-status.md`
+- `index.md`
+- `commands.md`
+- `tools.md`
 - `context-caching.md`
-  - 稳定提示面、cache 语义、context closure、运行中 checkpoint
-- `skills.md`
-  - usage ledger、negative entropy、semantic conflict、composition relationship、runtime gate
-- `configuration.md`
-  - workspace authority、effective policy、validation
-- `../README.md`
-  - 产品层总览，说明这些能力为什么要同时存在
+
+## 当前工程快照
+
+截至 `2026-05-15`，当前最值得明确的几条状态是：
+
+- **工具调用准确率 / replay authority**
+  - 当前主收口已完成。
+  - assistant 历史 replay 现在有共享 authority，canonical ordering 已钉死，session/provider/orchestrator 都有守护。
+- **repair / telemetry / trajectory quality**
+  - 已经进入正式读面。
+  - repair summary、repair query snapshot、tool trajectory quality 已由 server 提供，并在 CLI/TUI/Web 展示。
+- **prompt surface / context closure / cache diagnostics**
+  - 核心能力已落地。
+  - 相关计划文档仍有价值，但应视为局部技术参考，而不是自动外推下一阶段的依据。
+- **frontend/backend decoupling**
+  - 主体已完成，当前更偏向边界守护和产品 polish。
+- **verifier mode**
+  - 主算法与主产品面已实现，剩余主要是 retry counters / frontend copy / polish。
+
+更细的判断见 `documentation-status.md`。
 
 ## 当前文档入口
 
 - `README.md`
-  - 项目总览、启动方式、当前公开能力范围
+  - docs 门户、阅读顺序、当前文档分类
+- `documentation-status.md`
+  - 每份核心文档与计划文档的当前定位、状态和使用边界
 - `installation.md`
   - 单一 `rocode` 分发入口的安装、升级、卸载，以及默认内嵌 Web 资源与可选外部覆盖说明
 - `../CHANGELOG.md`
@@ -52,11 +58,11 @@ This directory contains product-facing examples and design references for ROCode
 - `skills.md`
   - Skill lifecycle、skill reflection、`skill_manage` 写入与 memory linkage，以及 skill hub search / trust / stale index 发现链路
 - `tools.md`
-  - 工具层参考，包括 `skill_manage` 与 memory 可观测面入口
+  - 工具层参考，包括 `skill_manage`、`task` / `task_flow` 的 canonical-first 约束，以及 memory 可观测面入口
 - `configuration.md`
   - 配置分层、workspace 边界，以及 memory 受 workspace mode 约束的作用域说明
 - `context-caching.md`
-  - closeai-compatible / ethnopic-compatible 两类协议族下的上下文缓存策略、稳定提示面、输出投影与 cache diagnostic
+  - closeai-compatible / ethnopic-compatible 两类协议族下的上下文缓存策略、稳定提示面、replay continuity、输出投影与 cache diagnostic
 - `examples/scheduler/README.md`
   - public scheduler presets、stage 默认值、当前行为说明
 - `examples/scheduler/SCHEDULER_GUIDE.md`
@@ -82,16 +88,19 @@ This directory contains product-facing examples and design references for ROCode
 ## Plans
 
 - `plans/`
-  - Design notes and architecture plans
-  - Use these as implementation references, not as runtime config files
+  - 设计笔记与架构计划。默认只作为实施参考，不自动构成主线。
+- `plans/message-replay-authority-refactor.md`
+  - replay authority 收口复盘；当前状态为已完成的局部技术线
 - `docs/plans/frontend-backend-decoupling-blueprint.md`
-  - 前端/后端解耦执行蓝图，定义 `rocode` 产品壳、`rocode-cli`/`rocode-tui`/`rocode-web` 前端层与 `rocode-server` 后端层的边界和迁移状态
+  - 前端/后端解耦蓝图；当前主要作为边界守护参考
 - `docs/plans/tui-session-graph-sidebar.md`
-  - TUI session graph sidebar 的分轮目标与风险
+  - TUI session graph sidebar 的设计 backlog
 - `docs/plans/verifier-mode-preset-design.md`
-  - Verifier preset 的算法与架构设计，记录 canonical score-job 公式、trajectory evidence、observability 与 ROCode 宪法边界
+  - Verifier preset 的算法与架构设计；主体已落地，文档现在偏复盘与边界说明
 - `docs/plans/verifier-mode-implementation-checklist.md`
-  - Verifier mode 已完成项、剩余产品 polish，以及 score-job、cache、observability、trajectory evidence 的实现状态
+  - Verifier mode 已完成项与剩余 polish
+
+更完整的计划状态，统一看 `documentation-status.md`。
 
 ## Context Docs Entry
 

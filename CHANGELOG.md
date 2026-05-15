@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026.5.15
+
+- 同步工作区版本到 `v2026.5.15`，更新工作区版本、Web 根包版本与相关 lock 文件中的 ROCode 自身条目。
+- replay authority 主线完成当前收口：assistant 历史 replay 进入共享 authority，canonical ordering 与 raw replay shape 优先级被明确写死，session/provider/orchestrator 三条路径都有回归守护。
+- tool repair / trajectory quality 进入正式可见读面：persisted telemetry 现在稳定携带 repair summary、repair query snapshot 与 tool trajectory quality，CLI/TUI/Web 都能显示。
+- 文档系统完成一次通盘整理：`rocode/docs` 新增统一状态总表，README/命令参考/工具参考/上下文缓存文档按“当前真相、局部技术计划、示例文档”重新分层，不再依赖口头复盘判断哪些文档 still authoritative。
+
 ## 2026.5.12
 
 - 同步工作区版本到 `v2026.5.12`，更新 ROCode 自有包元数据、Web 根包版本与相关 lock 文件中的 ROCode 自身条目。

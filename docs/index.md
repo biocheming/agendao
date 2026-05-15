@@ -2,7 +2,26 @@
 
 ROCode（RockyCode）是一个用 Rust 编写的高性能 AI 编码编排器。它将终端原生交互、多 Agent 协调、可扩展技能系统和多模型 Provider 整合为一个统一的开发工作流引擎。
 
-> **版本:** 2026.5.12 · **许可证:** MIT · **作者:** Biocheming
+> **版本:** 2026.5.15 · **许可证:** MIT · **作者:** Biocheming
+
+---
+
+## 当前工程快照
+
+如果你不是来看历史，而是想知道“现在这套系统已经收口到了哪一步”，先抓四条：
+
+- **工具调用与 replay authority**
+  - assistant 历史 replay 已统一到共享 authority。
+  - canonical ordering、tool-result role discipline、raw replay shape 优先级都已进入正式实现与回归测试。
+- **tool repair / trajectory quality**
+  - repair telemetry 不再只是内部日志。
+  - persisted telemetry 已携带 repair summary、repair query snapshot 和 tool trajectory quality，CLI/TUI/Web 都能显示。
+- **prompt surface / context closure / cache diagnostics**
+  - ROCode 现在能解释 prefix stability、compaction boundary、cache explainability 和 child history isolation。
+- **前后端 / authority 边界**
+  - `rocode` 是产品壳，`rocode-cli` / `rocode-tui` / `rocode-web` 是前端层，`rocode-server` 是后端 authority；前端不再各自猜后端内部语义。
+
+更细的文档状态判断，见 [documentation-status.md](documentation-status.md)。
 
 ---
 

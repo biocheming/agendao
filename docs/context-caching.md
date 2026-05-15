@@ -93,6 +93,52 @@ ROCode 会尽量把请求组织成三段：
 - artifact / output projection 可以压缩可见报告和长 tool output，但不得压缩或丢弃协议必需的 reasoning continuation。
 - 如果跨 provider、跨协议族或切换 thinking 字段导致 continuation 不可兼容，应形成新的 continuation boundary，并记录 cache / prompt-surface 诊断，而不是伪装成同一条 hidden reasoning 链。
 
+## Message Replay Authority
+
+上下文缓存和 replay authority 现在需要一起理解，而不是分开理解。
+
+当前 replay authority 的关键约束是：
+
+- assistant 历史 replay 走共享 authority，而不是 session / provider / orchestrator 各自拼装。
+- canonical replay ordering 固定为：
+  - `reasoning -> text -> tool_use -> tool_result -> file`
+- text-only assistant turn 允许保持 `Content::Text`。
+- raw tool-call replay shape 优先于 normalized shape。
+- downgraded tool-summary 必须留在普通上下文，不得重新回到 `Role::Tool`。
+
+这和缓存直接相关，因为：
+
+- reasoning continuation 丢失会破坏同一 continuation boundary。
+- tool-result role 漂移会让下一轮 request shape 不再稳定。
+- projection 如果把 reasoning/tool-use assistant turn 误投影成纯 summary，也会导致 prefix 与 replay 语义同时退化。
+
+因此，今天讨论 cache hit / miss，不能只看 `cache_control` 或 `prompt_cache_key`；还必须看 replay authority 是否保持了协议连续性。
+
+## Tool Trajectory Quality
+
+ROCode 现在不只记录 cache 和 usage，也会记录工具轨迹质量。
+
+`tool_trajectory_quality` 的作用不是替代执行结果，而是解释：
+
+- 这次工具轨迹到底有多干净
+- 有没有大量 repair / sanitizer / provider diagnostics
+- 当前成功是“干净成功”还是“修出来的成功”
+
+CLI、TUI、Web 都会读这个 summary。典型信号包括：
+
+- `score`
+- `band`
+- `repaired_tool_call_count / total_tool_calls`
+- `error_tool_call_count`
+- `sanitizer_event_count`
+- `strict_would_fail_count`
+
+它和 cache / context closure 的关系是：
+
+- 工具轨迹越脏，下一轮 prompt surface 越容易失稳。
+- 轨迹质量越差，缓存命中率和工具连续性解释就越不能只看单轮 usage。
+- repair telemetry 与 trajectory quality 提供的是“这次为什么还能跑下去”的解释层。
+
 ## 可观测性
 
 CLI、TUI 和 Web 都会显示缓存相关 usage：
