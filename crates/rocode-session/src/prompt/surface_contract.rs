@@ -138,7 +138,9 @@ pub(super) fn sanctioned_model_context_projection_for_message(
     if message.parts.iter().any(|part| {
         matches!(
             part.part_type,
-            PartType::ToolCall { .. } | PartType::ToolResult { .. }
+            PartType::ToolCall { .. }
+                | PartType::ToolResult { .. }
+                | PartType::Reasoning { .. }
         )
     }) {
         return None;
@@ -297,5 +299,18 @@ mod tests {
         assert!(reasoning.contains_key("thinking"));
         assert_eq!(tool_policy.len(), 1);
         assert!(tool_policy.contains_key("tool_choice"));
+    }
+
+    // P2: reasoning-only assistant must not be projected as a text summary.
+    #[test]
+    fn reasoning_only_assistant_is_not_projected_as_summary() {
+        let mut msg = SessionMessage::assistant("s");
+        msg.add_reasoning("hidden chain of thought");
+
+        let projection = sanctioned_model_context_projection_for_message(&msg);
+        assert!(
+            projection.is_none(),
+            "reasoning-only assistant must not be projected as summary"
+        );
     }
 }

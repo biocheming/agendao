@@ -3,8 +3,9 @@ use std::collections::BTreeMap;
 use crate::{MessageRole, PartType, Session, ToolState};
 use rocode_provider::provider_diagnostic_from_metadata;
 use rocode_types::{
-    ModelToolRepairTelemetrySummary, SessionTelemetrySnapshot, SessionToolRepairTelemetrySummary,
-    ToolRepairCount, ToolRepairToolSummary,
+    ModelToolRepairTelemetrySummary, RepairKind, SessionTelemetrySnapshot,
+    SessionToolRepairTelemetrySummary, ToolRepairCount, ToolRepairToolSummary,
+    ToolTrajectoryQualityBand, ToolTrajectoryQualityPenalty, ToolTrajectoryQualitySummary,
 };
 
 pub const SESSION_TELEMETRY_METADATA_KEY: &str = "telemetry";
@@ -433,6 +434,169 @@ fn normalize_finish_reason(reason: &str) -> String {
     }
 }
 
+// ── P2.1: Tool trajectory quality scoring ───────────────────────────────
+
+/// Build a deterministic session-level quality score from existing telemetry
+/// signals. This is a pure read-only function — it does not modify metadata.
+pub fn build_session_tool_trajectory_quality(
+    session: &Session,
+) -> Option<ToolTrajectoryQualitySummary> {
+    let repair_summary = build_session_tool_repair_telemetry(session)?;
+    let query_snapshot = crate::repair_query::build_session_repair_query_snapshot(session);
+
+    let total_tool_calls = repair_summary.total_tool_calls;
+    let error_tool_call_count = repair_summary.error_tool_call_count;
+    let repaired_tool_call_count = repair_summary.repaired_tool_call_count;
+    let repair_event_count = repair_summary.repair_event_count;
+    let provider_diagnostic_count = repair_summary.provider_diagnostic_count;
+
+    let strict_would_fail_count = query_snapshot
+        .as_ref()
+        .map_or(0, |s| s.summary.strict_would_fail_count);
+    let invalid_reroute_count = query_snapshot
+        .as_ref()
+        .map_or(0, |s| count_kind(&s.rows, RepairKind::InvalidToolReroute));
+    let sanitizer_event_count = query_snapshot
+        .as_ref()
+        .map_or(0, |s| s.summary.total_events.saturating_sub(
+            s.rows.iter().filter(|r| r.layer != "sanitizer").map(|r| r.count).sum(),
+        ));
+
+    let orphan_tool_result_count = query_snapshot
+        .as_ref()
+        .map_or(0, |s| count_kind(&s.rows, RepairKind::SanitizerOrphanedToolResult));
+    let duplicate_tool_id_count = query_snapshot
+        .as_ref()
+        .map_or(0, |s| count_kind(&s.rows, RepairKind::SanitizerDuplicateToolId));
+    let malformed_placeholder_count = query_snapshot
+        .as_ref()
+        .map_or(0, |s| count_kind(&s.rows, RepairKind::SanitizerAssistantMalformedPlaceholder));
+    let trailing_invalid_thinking_count = query_snapshot
+        .as_ref()
+        .map_or(0, |s| {
+            count_kind(&s.rows, RepairKind::SanitizerTrailingInvalidThinkingBlock)
+        });
+
+    // Also count session-level sanitizer repair events recorded via
+    // sanitize_with_contract into session.metadata (not tool-call metadata).
+    let session_level_events =
+        rocode_tool::structured_repair_events(&session.record().metadata);
+    let session_sanitizer_count = session_level_events
+        .iter()
+        .filter(|e| e.layer == "sanitizer")
+        .count() as u64;
+    let session_orphan_count = session_level_events
+        .iter()
+        .filter(|e| e.normalized_kind() == Some(RepairKind::SanitizerOrphanedToolResult))
+        .count() as u64;
+    let session_duplicate_count = session_level_events
+        .iter()
+        .filter(|e| e.normalized_kind() == Some(RepairKind::SanitizerDuplicateToolId))
+        .count() as u64;
+    let session_malformed_count = session_level_events
+        .iter()
+        .filter(|e| {
+            e.normalized_kind() == Some(RepairKind::SanitizerAssistantMalformedPlaceholder)
+        })
+        .count() as u64;
+    let session_trailing_thinking_count = session_level_events
+        .iter()
+        .filter(|e| {
+            e.normalized_kind()
+                == Some(RepairKind::SanitizerTrailingInvalidThinkingBlock)
+        })
+        .count() as u64;
+
+    let orphan_tool_result_count = orphan_tool_result_count + session_orphan_count;
+    let duplicate_tool_id_count = duplicate_tool_id_count + session_duplicate_count;
+    let malformed_placeholder_count = malformed_placeholder_count + session_malformed_count;
+    let trailing_invalid_thinking_count =
+        trailing_invalid_thinking_count + session_trailing_thinking_count;
+    let sanitizer_event_count = sanitizer_event_count + session_sanitizer_count;
+
+    let mut score: i32 = 100;
+    let mut penalties: Vec<ToolTrajectoryQualityPenalty> = Vec::new();
+
+    let mut penalize = |key: &str, count: u64, unit: i32| {
+        if count > 0 {
+            let points = (count as i32 * unit).min(score);
+            score -= points;
+            penalties.push(ToolTrajectoryQualityPenalty {
+                key: key.to_string(),
+                count,
+                points: -points,
+            });
+        }
+    };
+
+    penalize("error_tool_calls", error_tool_call_count, 12);
+    penalize("provider_diagnostics", provider_diagnostic_count, 10);
+    penalize("orphan_tool_results", orphan_tool_result_count, 10);
+    penalize("duplicate_tool_ids", duplicate_tool_id_count, 8);
+    penalize("strict_would_fail", strict_would_fail_count, 8);
+    penalize("malformed_placeholders", malformed_placeholder_count, 8);
+    penalize("invalid_reroute", invalid_reroute_count, 6);
+    penalize("trailing_invalid_thinking", trailing_invalid_thinking_count, 5);
+    penalize("other_sanitizer_events", sanitizer_event_count.saturating_sub(
+        orphan_tool_result_count
+            + duplicate_tool_id_count
+            + malformed_placeholder_count
+            + trailing_invalid_thinking_count,
+    ), 2);
+
+    score = score.clamp(0, 100);
+
+    let band = match score {
+        90..=100 => ToolTrajectoryQualityBand::Clean,
+        70..=89 => ToolTrajectoryQualityBand::Recoverable,
+        45..=69 => ToolTrajectoryQualityBand::Degraded,
+        _ => ToolTrajectoryQualityBand::Risky,
+    };
+
+    let mut notes: Vec<String> = Vec::new();
+    if score >= 90 && error_tool_call_count == 0 && repair_event_count == 0 {
+        notes.push("clean_success_path".to_string());
+    }
+    if error_tool_call_count == 0 && repair_event_count > 0 {
+        notes.push("success_with_repairs".to_string());
+    }
+    if error_tool_call_count > 0 && (repair_event_count > 0 || provider_diagnostic_count > 0) {
+        notes.push("blocked_and_noisy".to_string());
+    }
+    if sanitizer_event_count >= 3 {
+        notes.push("sanitizer_heavy".to_string());
+    }
+    if provider_diagnostic_count > 0 {
+        notes.push("provider_rejection_present".to_string());
+    }
+
+    Some(ToolTrajectoryQualitySummary {
+        score: score as u8,
+        band,
+        total_tool_calls,
+        repaired_tool_call_count,
+        error_tool_call_count,
+        repair_event_count,
+        provider_diagnostic_count,
+        strict_would_fail_count,
+        invalid_reroute_count,
+        sanitizer_event_count,
+        orphan_tool_result_count,
+        duplicate_tool_id_count,
+        malformed_placeholder_count,
+        trailing_invalid_thinking_count,
+        penalties,
+        notes,
+    })
+}
+
+fn count_kind(rows: &[rocode_types::RepairAggregateRow], kind: RepairKind) -> u64 {
+    rows.iter()
+        .filter(|r| r.repair_kind == kind)
+        .map(|r| r.count)
+        .sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -522,6 +686,7 @@ mod tests {
             memory: None,
             compaction_continuity: None,
             repair_query_snapshot: None,
+            tool_trajectory_quality: None,
             last_run_status: "completed".to_string(),
             updated_at: 123,
         }
@@ -894,5 +1059,263 @@ mod tests {
             .provider_diagnostic_kinds
             .iter()
             .any(|count| count.key == "thinking_replay_missing" && count.count == 1));
+    }
+
+    // ── P2.1 quality scoring tests ────────────────────────────────────
+
+    #[test]
+    fn build_session_tool_trajectory_quality_scores_clean_success_high() {
+        let mut session = Session::new("proj", ".");
+        let mut assistant = SessionMessage::assistant(session.id.clone());
+        assistant.add_tool_call("call-1", "read", serde_json::json!({"file_path":"a.txt"}));
+        if let Some(crate::MessagePart {
+            part_type:
+                PartType::ToolCall {
+                    status, state, ..
+                },
+            ..
+        }) = assistant.parts.last_mut()
+        {
+            *status = crate::ToolCallStatus::Completed;
+            *state = Some(ToolState::Completed {
+                input: serde_json::json!({"file_path": "a.txt"}),
+                output: "ok".to_string(),
+                title: "Read".to_string(),
+                metadata: rocode_tool::Metadata::new(),
+                time: crate::CompletedTime {
+                    start: 1,
+                    end: 2,
+                    compacted: None,
+                },
+                attachments: None,
+            });
+        }
+        assistant.add_tool_call("call-2", "echo", serde_json::json!({"value":"hi"}));
+        if let Some(crate::MessagePart {
+            part_type:
+                PartType::ToolCall {
+                    status, state, ..
+                },
+            ..
+        }) = assistant.parts.last_mut()
+        {
+            *status = crate::ToolCallStatus::Completed;
+            *state = Some(ToolState::Completed {
+                input: serde_json::json!({"value": "hi"}),
+                output: "hi".to_string(),
+                title: "Echo".to_string(),
+                metadata: rocode_tool::Metadata::new(),
+                time: crate::CompletedTime {
+                    start: 3,
+                    end: 4,
+                    compacted: None,
+                },
+                attachments: None,
+            });
+        }
+        session.push_message(assistant);
+
+        let quality =
+            build_session_tool_trajectory_quality(&session).expect("should build");
+        assert!(quality.score >= 90);
+        assert_eq!(quality.band, ToolTrajectoryQualityBand::Clean);
+        assert!(quality.notes.contains(&"clean_success_path".to_string()));
+    }
+
+    #[test]
+    fn build_session_tool_trajectory_quality_penalizes_success_with_repairs() {
+        let mut session = Session::new("proj", ".");
+        let mut assistant = SessionMessage::assistant(session.id.clone());
+        assistant.add_tool_call("call-1", "read", serde_json::json!({"file_path":"a.txt"}));
+        let mut metadata = rocode_tool::Metadata::new();
+        rocode_tool::append_tool_repair_event_map(
+            &mut metadata,
+            rocode_tool::tool_repair_event("alias_normalization", "tool", "read"),
+        );
+        if let Some(crate::MessagePart {
+            part_type:
+                PartType::ToolCall {
+                    status, state, ..
+                },
+            ..
+        }) = assistant.parts.last_mut()
+        {
+            *status = crate::ToolCallStatus::Completed;
+            *state = Some(ToolState::Completed {
+                input: serde_json::json!({"file_path": "a.txt"}),
+                output: "ok".to_string(),
+                title: "Read".to_string(),
+                metadata,
+                time: crate::CompletedTime {
+                    start: 1,
+                    end: 2,
+                    compacted: None,
+                },
+                attachments: None,
+            });
+        }
+        session.push_message(assistant);
+
+        let quality =
+            build_session_tool_trajectory_quality(&session).expect("should build");
+        // Repaired but no error: score should still be high but notes reflect repairs.
+        assert!(quality.repaired_tool_call_count > 0);
+        assert_eq!(quality.error_tool_call_count, 0);
+        assert!(quality.notes.contains(&"success_with_repairs".to_string()));
+    }
+
+    #[test]
+    fn build_session_tool_trajectory_quality_marks_blocked_noisy_session_low() {
+        let mut session = Session::new("proj", ".");
+        session.insert_metadata(
+            "model_provider".to_string(),
+            serde_json::json!("test"),
+        );
+        session.insert_metadata("model_id".to_string(), serde_json::json!("test"));
+
+        let mut assistant = SessionMessage::assistant(session.id.clone());
+        // 4 errors to push score low enough for Degraded band.
+        for i in 0..4 {
+            let call_id = format!("call-{}", i);
+            assistant.add_tool_call(&call_id, "fail_tool", serde_json::json!({}));
+            let mut metadata = rocode_tool::Metadata::new();
+            rocode_tool::append_tool_repair_event_map(
+                &mut metadata,
+                rocode_tool::tool_repair_event("fallback", "tool", "fail_tool"),
+            );
+            if let Some(crate::MessagePart {
+                part_type: PartType::ToolCall { status, state, .. }, ..
+            }) = assistant.parts.last_mut()
+            {
+                *status = crate::ToolCallStatus::Error;
+                *state = Some(ToolState::Error {
+                    input: serde_json::json!({}),
+                    error: "boom".to_string(),
+                    metadata: Some(metadata),
+                    time: crate::ErrorTime { start: 1, end: 2 },
+                });
+            }
+        }
+        session.push_message(assistant);
+
+        let diag = session.add_assistant_message();
+        rocode_provider::ProviderDiagnosticSummary {
+            severity: rocode_provider::ProviderDiagnosticSeverity::HardFail,
+            source: rocode_provider::ProviderDiagnosticSource::ApiErrorRewrite,
+            code: "thinking_replay_rejected".to_string(),
+            provider_id: "test".to_string(),
+            model_id: Some("test".to_string()),
+            message: "rejected".to_string(),
+        }
+        .attach_to_metadata(&mut diag.metadata);
+
+        let quality =
+            build_session_tool_trajectory_quality(&session).expect("should build");
+        assert!(quality.score <= 60, "score={}", quality.score);
+        assert!(matches!(
+            quality.band,
+            ToolTrajectoryQualityBand::Degraded | ToolTrajectoryQualityBand::Risky
+        ));
+        assert!(quality.notes.contains(&"blocked_and_noisy".to_string()));
+        assert!(quality.notes.contains(&"provider_rejection_present".to_string()));
+    }
+
+    #[test]
+    fn build_session_tool_trajectory_quality_penalizes_sanitizer_heavy_session() {
+        let mut session = Session::new("proj", ".");
+        session.insert_metadata(
+            "model_provider".to_string(),
+            serde_json::json!("test"),
+        );
+        session.insert_metadata("model_id".to_string(), serde_json::json!("test"));
+
+        let mut assistant = SessionMessage::assistant(session.id.clone());
+        // Add 3 tool calls, each with a sanitizer-type repair event.
+        for i in 0..3 {
+            let call_id = format!("call-{}", i);
+            assistant.add_tool_call(&call_id, "read", serde_json::json!({}));
+            let mut metadata = rocode_tool::Metadata::new();
+            rocode_tool::append_tool_repair_event_map(
+                &mut metadata,
+                rocode_tool::tool_repair_event(
+                    RepairKind::SanitizerAssistantMalformedPlaceholder.as_str(),
+                    "sanitizer",
+                    "read",
+                ),
+            );
+            if let Some(crate::MessagePart {
+                part_type: PartType::ToolCall { status, state, .. }, ..
+            }) = assistant.parts.last_mut()
+            {
+                *status = crate::ToolCallStatus::Completed;
+                *state = Some(ToolState::Completed {
+                    input: serde_json::json!({}),
+                    output: "ok".to_string(),
+                    title: "Read".to_string(),
+                    metadata,
+                    time: crate::CompletedTime { start: 1, end: 2, compacted: None },
+                    attachments: None,
+                });
+            }
+        }
+        session.push_message(assistant);
+
+        let quality =
+            build_session_tool_trajectory_quality(&session).expect("should build");
+        assert!(quality.sanitizer_event_count >= 3);
+        assert!(quality.notes.contains(&"sanitizer_heavy".to_string()));
+        assert!(quality.malformed_placeholder_count >= 3);
+    }
+
+    #[test]
+    fn telemetry_snapshot_roundtrips_tool_trajectory_quality() {
+        let mut session = Session::new("proj", ".");
+        let mut assistant = SessionMessage::assistant(session.id.clone());
+        assistant.add_tool_call("call-1", "read", serde_json::json!({"file_path":"a.txt"}));
+        if let Some(crate::MessagePart {
+            part_type: PartType::ToolCall { status, state, .. }, ..
+        }) = assistant.parts.last_mut()
+        {
+            *status = crate::ToolCallStatus::Completed;
+            *state = Some(ToolState::Completed {
+                input: serde_json::json!({"file_path": "a.txt"}),
+                output: "ok".to_string(),
+                title: "Read".to_string(),
+                metadata: rocode_tool::Metadata::new(),
+                time: crate::CompletedTime { start: 1, end: 2, compacted: None },
+                attachments: None,
+            });
+        }
+        session.push_message(assistant);
+
+        let quality = build_session_tool_trajectory_quality(&session).expect("should build");
+        let snapshot = SessionTelemetrySnapshot {
+            version: rocode_types::SessionTelemetrySnapshotVersion::V5,
+            usage: rocode_types::SessionUsage {
+                input_tokens: 10,
+                output_tokens: 20,
+                reasoning_tokens: 0,
+                cache_write_tokens: 0,
+                cache_read_tokens: 0,
+                cache_miss_tokens: 0,
+                context_tokens: 0,
+                total_cost: 0.0,
+            },
+            stage_summaries: vec![],
+            tool_repair_summary: Some(build_session_tool_repair_telemetry(&session).unwrap()),
+            memory: None,
+            compaction_continuity: None,
+            repair_query_snapshot: None,
+            tool_trajectory_quality: Some(quality),
+            last_run_status: "completed".to_string(),
+            updated_at: 123,
+        };
+
+        persist_session_telemetry_snapshot(&mut session, &snapshot).expect("persist");
+        let loaded = load_session_telemetry_snapshot(&session).expect("load");
+        assert_eq!(loaded.version, rocode_types::SessionTelemetrySnapshotVersion::V5);
+        let q = loaded.tool_trajectory_quality.expect("quality should survive");
+        assert!(q.score >= 90);
+        assert_eq!(q.band, ToolTrajectoryQualityBand::Clean);
     }
 }

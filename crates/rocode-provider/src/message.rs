@@ -347,6 +347,24 @@ impl Message {
         }
     }
 
+    /// Build a tool-role message from tool_result parts only.
+    /// Returns `None` when `parts` is empty.
+    pub fn tool_results(parts: Vec<ContentPart>) -> Option<Self> {
+        if parts.is_empty() {
+            return None;
+        }
+        Some(Self::tool_parts(parts))
+    }
+
+    /// Build an assistant message from generic parts.
+    /// Returns `None` when `parts` is empty.
+    pub fn assistant_from_parts(parts: Vec<ContentPart>) -> Option<Self> {
+        if parts.is_empty() {
+            return None;
+        }
+        Some(Self::assistant_parts(parts))
+    }
+
     pub fn system(content: impl Into<String>) -> Self {
         Self {
             role: Role::System,

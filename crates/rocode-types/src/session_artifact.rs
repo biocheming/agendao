@@ -891,6 +891,7 @@ mod tests {
             memory: None,
             compaction_continuity: None,
             repair_query_snapshot: None,
+            tool_trajectory_quality: None,
             last_run_status: "completed".to_string(),
             updated_at: 123,
         }

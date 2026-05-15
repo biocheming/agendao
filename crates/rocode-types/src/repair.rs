@@ -403,6 +403,89 @@ impl RepairPolicy {
     }
 }
 
+// ── Tool Trajectory Quality (P2.1) ──────────────────────────────────────
+
+/// Session-level quality band for tool-call trajectories.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolTrajectoryQualityBand {
+    /// Almost no repairs, no trajectory damage.
+    Clean,
+    /// Repairs present, but overall still healthy.
+    Recoverable,
+    /// Runs, but trajectory is dirty — likely to degrade further.
+    Degraded,
+    /// Protocol/trajectory anomalies present; continued use risks model pollution.
+    Risky,
+}
+
+/// A single penalty contributing to the quality score.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolTrajectoryQualityPenalty {
+    pub key: String,
+    pub count: u64,
+    pub points: i32,
+}
+
+/// Derived session-level quality summary for tool-call trajectories.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolTrajectoryQualitySummary {
+    pub score: u8,
+    pub band: ToolTrajectoryQualityBand,
+
+    pub total_tool_calls: u64,
+    pub repaired_tool_call_count: u64,
+    pub error_tool_call_count: u64,
+    pub repair_event_count: u64,
+    pub provider_diagnostic_count: u64,
+
+    pub strict_would_fail_count: u64,
+    pub invalid_reroute_count: u64,
+    pub sanitizer_event_count: u64,
+
+    pub orphan_tool_result_count: u64,
+    pub duplicate_tool_id_count: u64,
+    pub malformed_placeholder_count: u64,
+    pub trailing_invalid_thinking_count: u64,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub penalties: Vec<ToolTrajectoryQualityPenalty>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+impl ToolTrajectoryQualitySummary {
+    pub fn empty() -> Self {
+        Self {
+            score: 100,
+            band: ToolTrajectoryQualityBand::Clean,
+            total_tool_calls: 0,
+            repaired_tool_call_count: 0,
+            error_tool_call_count: 0,
+            repair_event_count: 0,
+            provider_diagnostic_count: 0,
+            strict_would_fail_count: 0,
+            invalid_reroute_count: 0,
+            sanitizer_event_count: 0,
+            orphan_tool_result_count: 0,
+            duplicate_tool_id_count: 0,
+            malformed_placeholder_count: 0,
+            trailing_invalid_thinking_count: 0,
+            penalties: Vec::new(),
+            notes: Vec::new(),
+        }
+    }
+
+    pub fn is_clean(&self) -> bool {
+        self.band == ToolTrajectoryQualityBand::Clean
+    }
+
+    pub fn is_risky(&self) -> bool {
+        self.band == ToolTrajectoryQualityBand::Risky
+    }
+}
+
 // ── Shared Sanitizer Types ──────────────────────────────────────────────
 
 /// The lifecycle phase during which sanitization runs.
@@ -906,6 +989,18 @@ mod repair_kind_tests {
         };
         assert!(!mixed.has_meaningful_progress());
         assert!(!mixed.is_blocked());
+    }
+
+    #[test]
+    fn tool_trajectory_quality_summary_clean_and_risky_helpers_match_band() {
+        let mut summary = ToolTrajectoryQualitySummary::empty();
+        summary.band = ToolTrajectoryQualityBand::Clean;
+        assert!(summary.is_clean());
+        assert!(!summary.is_risky());
+
+        summary.band = ToolTrajectoryQualityBand::Risky;
+        assert!(!summary.is_clean());
+        assert!(summary.is_risky());
     }
 }
 

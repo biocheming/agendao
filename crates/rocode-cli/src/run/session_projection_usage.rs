@@ -95,6 +95,33 @@ pub(super) fn cli_usage_snapshot_lines(
         lines.push("  Workflow cumulative: observation only".to_string());
     }
 
+    if let Some(quality) = telemetry.tool_trajectory_quality.as_ref() {
+        lines.push(String::new());
+        lines.push("Trajectory quality".to_string());
+        lines.push(format!(
+            "  Score: {} · {}",
+            quality.score,
+            cli_tool_trajectory_band_label(quality.band)
+        ));
+        let mut signals = vec![format!(
+            "repaired {}/{}",
+            quality.repaired_tool_call_count, quality.total_tool_calls
+        )];
+        if quality.error_tool_call_count > 0 {
+            signals.push(format!("errors {}", quality.error_tool_call_count));
+        }
+        if quality.sanitizer_event_count > 0 {
+            signals.push(format!("sanitizer {}", quality.sanitizer_event_count));
+        }
+        if quality.strict_would_fail_count > 0 {
+            signals.push(format!("strict-fail {}", quality.strict_would_fail_count));
+        }
+        if quality.provider_diagnostic_count > 0 {
+            signals.push(format!("provider {}", quality.provider_diagnostic_count));
+        }
+        lines.push(format!("  Signals: {}", signals.join(" · ")));
+    }
+
     if telemetry.context_closure_contract.is_none() {
         if let Some(cache_semantics) = telemetry.cache_semantics.as_ref() {
             lines.push(String::new());
@@ -453,6 +480,17 @@ pub(super) fn format_token_count(n: u64) -> String {
     }
 }
 
+pub(super) fn cli_tool_trajectory_band_label(
+    band: rocode_types::ToolTrajectoryQualityBand,
+) -> &'static str {
+    match band {
+        rocode_types::ToolTrajectoryQualityBand::Clean => "clean",
+        rocode_types::ToolTrajectoryQualityBand::Recoverable => "recoverable",
+        rocode_types::ToolTrajectoryQualityBand::Degraded => "degraded",
+        rocode_types::ToolTrajectoryQualityBand::Risky => "risky",
+    }
+}
+
 pub(super) fn cli_context_usage_percent(used: u64, limit: u64) -> Option<u64> {
     rocode_types::context_usage_percent(used, limit)
 }
@@ -659,6 +697,24 @@ mod tests {
             tool_repair_summary: None,
             model_tool_repair_summary: None,
             repair_query_snapshot: None,
+            tool_trajectory_quality: Some(rocode_types::ToolTrajectoryQualitySummary {
+                score: 78,
+                band: rocode_types::ToolTrajectoryQualityBand::Recoverable,
+                total_tool_calls: 3,
+                repaired_tool_call_count: 2,
+                error_tool_call_count: 1,
+                repair_event_count: 4,
+                provider_diagnostic_count: 0,
+                strict_would_fail_count: 1,
+                invalid_reroute_count: 1,
+                sanitizer_event_count: 2,
+                orphan_tool_result_count: 0,
+                duplicate_tool_id_count: 0,
+                malformed_placeholder_count: 0,
+                trailing_invalid_thinking_count: 0,
+                penalties: Vec::new(),
+                notes: Vec::new(),
+            }),
             memory: None,
             cache_evidence: None,
             context_explain: Some(SessionContextExplain {
@@ -853,6 +909,13 @@ mod tests {
         assert!(lines
             .iter()
             .any(|line| line == "  Compact owner: this session"));
+        assert!(lines.iter().any(|line| line == "Trajectory quality"));
+        assert!(lines
+            .iter()
+            .any(|line| line == "  Score: 78 · recoverable"));
+        assert!(lines.iter().any(|line| {
+            line == "  Signals: repaired 2/3 · errors 1 · sanitizer 2 · strict-fail 1"
+        }));
         assert!(!lines.iter().any(|line| line == "Cache semantics"));
         assert!(lines.iter().any(|line| line == "Context Closure"));
         assert!(lines

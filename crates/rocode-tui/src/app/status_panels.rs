@@ -1776,6 +1776,17 @@ fn tui_tool_repair_tool_summary(tools: &[rocode_types::ToolRepairToolSummary]) -
     )
 }
 
+fn tui_tool_trajectory_band_label(
+    band: rocode_types::ToolTrajectoryQualityBand,
+) -> &'static str {
+    match band {
+        rocode_types::ToolTrajectoryQualityBand::Clean => "clean",
+        rocode_types::ToolTrajectoryQualityBand::Recoverable => "recoverable",
+        rocode_types::ToolTrajectoryQualityBand::Degraded => "degraded",
+        rocode_types::ToolTrajectoryQualityBand::Risky => "risky",
+    }
+}
+
 fn tui_runtime_status_lines(
     session_id: &str,
     telemetry: &crate::api::SessionTelemetrySnapshot,
@@ -2144,6 +2155,33 @@ fn tui_usage_status_lines(
                 lines.push(StatusLine::muted(format!("Model kinds: {}", kinds)));
             }
         }
+    }
+
+    if let Some(quality) = telemetry.tool_trajectory_quality.as_ref() {
+        lines.push(StatusLine::muted(String::new()));
+        lines.push(StatusLine::title("Trajectory Quality"));
+        lines.push(StatusLine::normal(format!(
+            "Score: {} · {}",
+            quality.score,
+            tui_tool_trajectory_band_label(quality.band)
+        )));
+        let mut signals = vec![format!(
+            "repaired {}/{}",
+            quality.repaired_tool_call_count, quality.total_tool_calls
+        )];
+        if quality.error_tool_call_count > 0 {
+            signals.push(format!("errors {}", quality.error_tool_call_count));
+        }
+        if quality.sanitizer_event_count > 0 {
+            signals.push(format!("sanitizer {}", quality.sanitizer_event_count));
+        }
+        if quality.strict_would_fail_count > 0 {
+            signals.push(format!("strict-fail {}", quality.strict_would_fail_count));
+        }
+        if quality.provider_diagnostic_count > 0 {
+            signals.push(format!("provider {}", quality.provider_diagnostic_count));
+        }
+        lines.push(StatusLine::muted(format!("Signals: {}", signals.join(" · "))));
     }
 
     if telemetry.context_closure_contract.is_none() {
@@ -3455,6 +3493,24 @@ mod tests {
                 }],
             }),
             repair_query_snapshot: None,
+            tool_trajectory_quality: Some(rocode_types::ToolTrajectoryQualitySummary {
+                score: 78,
+                band: rocode_types::ToolTrajectoryQualityBand::Recoverable,
+                total_tool_calls: 3,
+                repaired_tool_call_count: 2,
+                error_tool_call_count: 1,
+                repair_event_count: 4,
+                provider_diagnostic_count: 0,
+                strict_would_fail_count: 1,
+                invalid_reroute_count: 1,
+                sanitizer_event_count: 2,
+                orphan_tool_result_count: 0,
+                duplicate_tool_id_count: 0,
+                malformed_placeholder_count: 0,
+                trailing_invalid_thinking_count: 0,
+                penalties: Vec::new(),
+                notes: Vec::new(),
+            }),
             memory: None,
             cache_evidence: None,
             context_explain: Some(SessionContextExplain {
@@ -3674,6 +3730,13 @@ mod tests {
         assert!(texts.iter().any(|line| {
             line == "Model: deepseek/v4-flash · sessions 2 · repaired sessions 1"
         }));
+        assert!(texts.iter().any(|line| line == "Trajectory Quality"));
+        assert!(texts
+            .iter()
+            .any(|line| { line == "Score: 78 · recoverable" }));
+        assert!(texts.iter().any(|line| {
+            line == "Signals: repaired 2/3 · errors 1 · sanitizer 2 · strict-fail 1"
+        }));
         assert!(!texts.iter().any(|line| line == "Cache semantics"));
         assert!(texts.iter().any(|line| {
             line == "Boundary: 7 earlier model-visible messages trimmed before the next request"
@@ -3751,6 +3814,7 @@ mod tests {
             tool_repair_summary: None,
             model_tool_repair_summary: None,
             repair_query_snapshot: None,
+            tool_trajectory_quality: None,
             memory: None,
             cache_evidence: None,
             context_explain: None,

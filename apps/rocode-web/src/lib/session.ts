@@ -39,6 +39,25 @@ export interface PersistedCompactionContinuityInspectionRecord {
   recall_policy?: string | null;
 }
 
+export interface ToolTrajectoryQualityRecord {
+  score: number;
+  band: string;
+  total_tool_calls: number;
+  repaired_tool_call_count: number;
+  error_tool_call_count: number;
+  repair_event_count: number;
+  provider_diagnostic_count: number;
+  strict_would_fail_count: number;
+  invalid_reroute_count: number;
+  sanitizer_event_count: number;
+  orphan_tool_result_count: number;
+  duplicate_tool_id_count: number;
+  malformed_placeholder_count: number;
+  trailing_invalid_thinking_count: number;
+  penalties?: Array<{ key: string; count: number; points: number }>;
+  notes?: string[];
+}
+
 export interface PersistedSessionTelemetrySnapshot {
   version: string;
   usage: {
@@ -53,6 +72,7 @@ export interface PersistedSessionTelemetrySnapshot {
   };
   stage_summaries: PersistedStageTelemetrySummary[];
   compaction_continuity?: PersistedCompactionContinuityInspectionRecord | null;
+  tool_trajectory_quality?: ToolTrajectoryQualityRecord | null;
   last_run_status: string;
   updated_at: number;
 }

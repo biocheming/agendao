@@ -67,6 +67,11 @@ function schedulerTraceLabel(kind?: string | null) {
   }
 }
 
+function formatTrajectoryBand(band?: string | null) {
+  if (!band) return "--";
+  return band.replaceAll("_", " ");
+}
+
 function totalUsageTokens(usage?: {
   input_tokens?: number;
   output_tokens?: number;
@@ -93,6 +98,7 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
   const schedulerPolicy = effectivePolicy?.scheduler ?? null;
   const telemetryUsage = telemetry?.usage ?? null;
   const telemetryStages = telemetry?.stage_summaries ?? [];
+  const trajectoryQuality = telemetry?.tool_trajectory_quality ?? null;
   const memory = insights?.memory ?? null;
   const memorySummary = memory?.summary ?? null;
   const memoryAllowedScopes = memorySummary?.allowed_scopes ?? [];
@@ -220,6 +226,11 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
                 <span className="roc-badge px-3 py-1.5 text-xs">version {telemetry.version}</span>
                 <span className="roc-badge px-3 py-1.5 text-xs">status {telemetry.last_run_status}</span>
                 <span className="roc-badge px-3 py-1.5 text-xs">stages {telemetryStages.length}</span>
+                {trajectoryQuality ? (
+                  <span className="roc-badge px-3 py-1.5 text-xs">
+                    trajectory {trajectoryQuality.score} {formatTrajectoryBand(trajectoryQuality.band)}
+                  </span>
+                ) : null}
               </div>
               {currentContextTokens ? (
                 <p className="text-sm text-muted-foreground leading-relaxed">
@@ -235,6 +246,11 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
               <p className="text-sm text-muted-foreground leading-relaxed">
                 Updated {formatDateTime(telemetry.updated_at)}
               </p>
+              {trajectoryQuality ? (
+                <p className="text-sm text-muted-foreground leading-relaxed">
+                  Trajectory quality {trajectoryQuality.score} · {formatTrajectoryBand(trajectoryQuality.band)} · repaired {trajectoryQuality.repaired_tool_call_count}/{trajectoryQuality.total_tool_calls} · errors {trajectoryQuality.error_tool_call_count}
+                </p>
+              ) : null}
               {telemetry.compaction_continuity ? (
                 <div className="grid gap-2 md:grid-cols-2">
                   <CompactionContinuityCard

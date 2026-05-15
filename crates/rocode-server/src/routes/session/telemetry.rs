@@ -21,7 +21,8 @@ use rocode_types::{
     SessionCompactionContinuityInspection, SessionContextClosureContract, SessionContextExplain,
     SessionDiagnosticsSidecar, SessionInsightsResponse, SessionMemoryTelemetrySummary,
     SessionMultimodalAttachmentInfo, SessionMultimodalInsight, SessionOwnershipSummary,
-    SessionToolRepairTelemetrySummary, SessionUsageBooks, WorkflowUsageSummary,
+    SessionToolRepairTelemetrySummary, SessionUsageBooks, ToolTrajectoryQualitySummary,
+    WorkflowUsageSummary,
 };
 use serde::Serialize;
 
@@ -47,6 +48,8 @@ pub struct SessionTelemetrySnapshot {
     pub model_tool_repair_summary: Option<ModelToolRepairTelemetrySummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repair_query_snapshot: Option<rocode_types::SessionRepairQuerySnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_trajectory_quality: Option<ToolTrajectoryQualitySummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<SessionMemoryTelemetrySummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -195,6 +198,7 @@ pub(super) async fn build_session_telemetry_snapshot(
         None
     };
     let repair_query_snapshot = build_session_repair_query_snapshot(session);
+    let tool_trajectory_quality = rocode_session::build_session_tool_trajectory_quality(session);
     let memory = build_session_memory_telemetry(state, session).await;
     let diagnostics = SessionDiagnosticsSidecar::derive_from_session(session);
     let cache_evidence = diagnostics
@@ -280,6 +284,7 @@ pub(super) async fn build_session_telemetry_snapshot(
         tool_repair_summary,
         model_tool_repair_summary,
         repair_query_snapshot,
+        tool_trajectory_quality,
         memory,
         cache_evidence,
         context_explain,
@@ -703,6 +708,8 @@ pub(super) async fn persist_session_telemetry_metadata(
     snapshot.compaction_continuity =
         latest_compaction_continuity_inspection(session, raw_summary.as_ref());
     snapshot.repair_query_snapshot = build_session_repair_query_snapshot(session);
+    snapshot.tool_trajectory_quality =
+        rocode_session::build_session_tool_trajectory_quality(session);
 
     if let Err(error) = persist_session_telemetry_snapshot(session, &snapshot) {
         tracing::warn!(
@@ -1551,6 +1558,7 @@ mod tests {
             tool_repair_summary: None,
             model_tool_repair_summary: None,
             repair_query_snapshot: None,
+            tool_trajectory_quality: None,
             memory: None,
             cache_evidence: None,
             context_explain: Some(SessionContextExplain {
@@ -1969,6 +1977,7 @@ mod tests {
                     },
                     stage_summaries: vec![],
                     repair_query_snapshot: None,
+                    tool_trajectory_quality: None,
                     last_run_status: "completed".to_string(),
                     updated_at: 123,
                 },

@@ -700,13 +700,14 @@ impl RuntimeTelemetryAuthority {
         }
 
         Some(SessionTelemetrySnapshot {
-            version: SessionTelemetrySnapshotVersion::V4,
+            version: SessionTelemetrySnapshotVersion::V5,
             usage,
             stage_summaries: stage_summaries.into_iter().map(Into::into).collect(),
             tool_repair_summary,
             memory,
             compaction_continuity: None,
             repair_query_snapshot: None,
+            tool_trajectory_quality: None,
             last_run_status: last_run_status.into(),
             updated_at: chrono::Utc::now().timestamp_millis(),
         })

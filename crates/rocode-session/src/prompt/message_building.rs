@@ -156,7 +156,7 @@ impl SessionPrompt {
             {
                 // Backward-compat: old sessions may carry tool_result parts on
                 // assistant messages. Split those into a synthetic tool-role
-                // message to preserve provider role expectations.
+                // message using shared constructors (P1 replay authority).
                 let mut assistant_parts = Vec::new();
                 let mut tool_parts = Vec::new();
                 for part in &msg.parts {
@@ -164,29 +164,17 @@ impl SessionPrompt {
                         if Self::is_model_visible_part(part) {
                             tool_parts.push(part.clone());
                         }
-                    } else {
-                        if Self::is_model_visible_part(part) {
-                            assistant_parts.push(part.clone());
-                        }
+                    } else if Self::is_model_visible_part(part) {
+                        assistant_parts.push(part.clone());
                     }
                 }
 
-                if !assistant_parts.is_empty() {
-                    messages.push(Message::assistant_parts(
-                        match Self::parts_to_content(&assistant_parts) {
-                            Content::Parts(parts) => parts,
-                            Content::Text(text) => vec![ContentPart::text(text)],
-                        },
-                    ));
+                if let Some(assistant_msg) =
+                    Self::build_assistant_replay_message(&assistant_parts)
+                {
+                    messages.push(assistant_msg);
                 }
-                if !tool_parts.is_empty() {
-                    messages.push(Message::tool_parts(
-                        match Self::parts_to_content(&tool_parts) {
-                            Content::Parts(parts) => parts,
-                            Content::Text(text) => vec![ContentPart::text(text)],
-                        },
-                    ));
-                }
+                messages.extend(Self::build_tool_replay_messages(&tool_parts));
                 continue;
             }
 
@@ -200,23 +188,174 @@ impl SessionPrompt {
                 continue;
             }
 
-            let content = Self::parts_to_content(&visible_parts);
-            let role = match msg.role {
-                MessageRole::User => Role::User,
-                MessageRole::Assistant => Role::Assistant,
-                MessageRole::System => Role::System,
-                MessageRole::Tool => Role::Tool,
-            };
-
-            messages.push(Message {
-                role,
-                content,
-                cache_control: None,
-                provider_options: None,
-            });
+            match msg.role {
+                MessageRole::Assistant => {
+                    if let Some(msg) = Self::build_assistant_replay_message(&visible_parts)
+                    {
+                        messages.push(msg);
+                    }
+                }
+                MessageRole::Tool => {
+                    messages.extend(Self::build_tool_replay_messages(&visible_parts));
+                }
+                _ => {
+                    let content = Self::parts_to_content(&visible_parts);
+                    let role = match msg.role {
+                        MessageRole::User => Role::User,
+                        MessageRole::System => Role::System,
+                        _ => unreachable!(),
+                    };
+                    messages.push(Message { role, content, cache_control: None, provider_options: None });
+                }
+            }
         }
 
         Ok(messages)
+    }
+
+    /// Convert session-level MessageParts to provider-facing ContentParts.
+    ///
+    /// Canonical replay ordering (P2) — enforced here, not reliant on upstream:
+    ///   reasoning → text → tool_use → tool_result → file
+    ///
+    /// Regardless of the order parts were added to `SessionMessage.parts`,
+    /// the replay authority always emits them in this canonical order.
+    /// The provider-side `Message::assistant_turn` enforces the same ordering
+    /// for orchestrator-pathed messages.
+    /// `Content::Text` is only emitted for text-only assistant turns; any turn
+    /// with tool calls, reasoning, or attachments uses `Content::Parts`.
+    fn visible_provider_parts(parts: &[crate::MessagePart]) -> Vec<ContentPart> {
+        let mut reasoning = Vec::new();
+        let mut text = Vec::new();
+        let mut tool_uses = Vec::new();
+        let mut tool_results = Vec::new();
+        let mut files = Vec::new();
+
+        for part in parts {
+            match &part.part_type {
+                PartType::Reasoning { text: r } => {
+                    reasoning.push(ContentPart::reasoning(r.clone()));
+                }
+                PartType::Text { text: t, .. } => {
+                    text.push(ContentPart::text(t.clone()));
+                }
+                PartType::ToolCall { id, name, input, raw, .. } => {
+                    tool_uses.push(ContentPart::tool_use(
+                        id.clone(),
+                        name.clone(),
+                        tool_call_replay_input(input, raw.as_deref()),
+                    ));
+                }
+                PartType::ToolResult { tool_call_id, content, is_error, .. } => {
+                    tool_results.push(ContentPart::tool_result(
+                        tool_call_id.clone(),
+                        content.clone(),
+                        Some(*is_error),
+                    ));
+                }
+                PartType::File { url, filename, mime } => {
+                    if mime.starts_with("image/") {
+                        files.push(ContentPart::image_url(
+                            url.clone(),
+                            Some(filename.clone()),
+                            Some(mime.clone()),
+                        ));
+                    } else if mime.starts_with("audio/") {
+                        files.push(ContentPart::file(
+                            url.clone(),
+                            Some(filename.clone()),
+                            Some(mime.clone()),
+                        ));
+                    } else {
+                        files.push(ContentPart {
+                            filename: Some(filename.clone()),
+                            media_type: Some(mime.clone()),
+                            ..ContentPart::text(format!("[File: {} ({})]", filename, mime))
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut result = Vec::new();
+        result.append(&mut reasoning);
+        result.append(&mut text);
+        result.append(&mut tool_uses);
+        result.append(&mut tool_results);
+        result.append(&mut files);
+        result
+    }
+
+    /// Build an assistant replay message using the shared provider constructor.
+    /// Preserves reasoning before text before tool_use ordering.
+    fn build_assistant_replay_message(
+        parts: &[crate::MessagePart],
+    ) -> Option<Message> {
+        let provider_parts = Self::visible_provider_parts(parts);
+        // If all parts are text-only, emit Content::Text for backward compat.
+        let has_non_text = parts.iter().any(|p| {
+            !matches!(p.part_type, PartType::Text { .. })
+        });
+        if !has_non_text {
+            let text: String = parts.iter().filter_map(|p| match &p.part_type {
+                PartType::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            }).collect::<Vec<_>>().join("\n");
+            if text.is_empty() {
+                return None;
+            }
+            return Some(Message::assistant(text));
+        }
+        Message::assistant_from_parts(provider_parts)
+    }
+
+    /// Build provider-facing replay messages for a tool-role session message.
+    ///
+    /// Structured tool results stay in `Role::Tool`. Any remaining synthetic
+    /// text/file context is downgraded to a normal user-context message so it
+    /// does not depend on protocol-specific `Role::Tool` fallback behavior.
+    fn build_tool_replay_messages(parts: &[crate::MessagePart]) -> Vec<Message> {
+        let mut tool_result_parts = Vec::new();
+        let mut context_parts = Vec::new();
+
+        for part in parts {
+            match part.part_type {
+                PartType::ToolResult { .. } => tool_result_parts.push(part.clone()),
+                _ => context_parts.push(part.clone()),
+            }
+        }
+
+        let mut messages = Vec::new();
+
+        if let Some(tool_message) =
+            Message::tool_results(Self::visible_provider_parts(&tool_result_parts))
+        {
+            messages.push(tool_message);
+        }
+
+        if !context_parts.is_empty() {
+            let content = Self::parts_to_content(&context_parts);
+            match content {
+                Content::Text(text) => {
+                    if !text.is_empty() {
+                        messages.push(Message::user(text));
+                    }
+                }
+                Content::Parts(parts) => {
+                    if !parts.is_empty() {
+                        messages.push(Message {
+                            role: Role::User,
+                            content: Content::Parts(parts),
+                            cache_control: None,
+                            provider_options: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        messages
     }
 
     fn projected_model_context_summary(msg: &SessionMessage) -> Option<String> {
@@ -3370,6 +3509,200 @@ mod tests {
         assert_eq!(usage.cache_read, 30);
         assert_eq!(usage.cache_write, 20);
         assert_eq!(usage.total, 350);
+    }
+
+    // P1 replay authority: legacy assistant tool_result split must emit
+    // tool results as Role::Tool.
+    #[test]
+    fn build_chat_messages_routes_tool_results_to_role_tool_even_after_legacy_split() {
+        let mut msg = SessionMessage::assistant("ses_test");
+        msg.add_tool_call("call-1", "read", serde_json::json!({"file_path":"a.txt"}));
+        msg.add_tool_result("call-1", "ok", false);
+        let messages = SessionPrompt::build_chat_messages(&[msg], None).expect("build");
+        assert_eq!(messages.len(), 2);
+        // Assistant with tool call.
+        assert!(matches!(messages[0].role, Role::Assistant));
+        // Tool result as Role::Tool.
+        assert!(matches!(messages[1].role, Role::Tool));
+    }
+
+    // P1 replay authority: raw tool call input must be preserved in replay.
+    #[test]
+    fn build_chat_messages_preserves_raw_tool_call_input_in_assistant_replay() {
+        let mut msg = SessionMessage::assistant("ses_test");
+        msg.add_tool_call("call-1", "read", serde_json::json!({"file_path":"a.txt"}));
+        // Store raw separately from normalized input.
+        if let Some(part) = msg.parts.last_mut() {
+            if let PartType::ToolCall { ref mut raw, .. } = part.part_type {
+                *raw = Some("{\"file_path\":\"raw.txt\"}".to_string());
+            }
+        }
+        let messages = SessionPrompt::build_chat_messages(&[msg], None).expect("build");
+        let assistant = &messages[0];
+        match &assistant.content {
+            Content::Parts(parts) => {
+                let tool_use = parts[0].tool_use.as_ref().expect("should have tool_use");
+                assert_eq!(tool_use.input["file_path"], "raw.txt",
+                    "raw replay shape must be preferred over normalized");
+            }
+            _ => panic!("expected parts"),
+        }
+    }
+
+    // P1 replay authority: image/audio/file parts on assistant messages must
+    // survive the replay path and not be silently dropped.
+    #[test]
+    fn build_chat_messages_preserves_file_parts_in_assistant_replay() {
+        let mut msg = SessionMessage::assistant("ses_test");
+        msg.add_text("here is an image");
+        // Simulate a file part attached to the assistant message.
+        msg.parts.push(crate::MessagePart {
+            id: "prt_file".to_string(),
+            part_type: PartType::File {
+                url: "file:///tmp/photo.png".to_string(),
+                filename: "photo.png".to_string(),
+                mime: "image/png".to_string(),
+            },
+            created_at: chrono::Utc::now(),
+            message_id: None,
+        });
+        msg.parts.push(crate::MessagePart {
+            id: "prt_audio".to_string(),
+            part_type: PartType::File {
+                url: "file:///tmp/note.wav".to_string(),
+                filename: "note.wav".to_string(),
+                mime: "audio/wav".to_string(),
+            },
+            created_at: chrono::Utc::now(),
+            message_id: None,
+        });
+
+        let messages = SessionPrompt::build_chat_messages(&[msg], None).expect("build");
+        let assistant = &messages[0];
+        match &assistant.content {
+            Content::Parts(parts) => {
+                // Text, image, and audio file parts must all be present.
+                assert!(parts.iter().any(|p| p.text.as_ref().is_some_and(|t| t == "here is an image")));
+                assert!(parts.iter().any(|p| p.image_url.is_some()));
+                assert!(parts.iter().any(|p| {
+                    p.media_type.as_deref() == Some("audio/wav")
+                }));
+            }
+            _ => panic!("expected parts with file attachments"),
+        }
+    }
+
+    // P1 replay authority hardening: Tool-role summaries without structured
+    // tool_result parts must not rely on provider-specific Role::Tool fallbacks.
+    #[test]
+    fn build_chat_messages_routes_text_only_tool_summary_to_user_context() {
+        let mut msg = SessionMessage::tool("ses_test");
+        msg.add_text("tool round summary: read ok");
+
+        let messages = SessionPrompt::build_chat_messages(&[msg], None).expect("build");
+        assert_eq!(messages.len(), 1);
+        assert!(matches!(messages[0].role, Role::User));
+        assert!(matches!(
+            &messages[0].content,
+            Content::Text(text) if text == "tool round summary: read ok"
+        ));
+    }
+
+    // P1 replay authority hardening: mixed tool-role messages must keep real
+    // tool_result replay in Role::Tool and move residual context to user.
+    #[test]
+    fn build_chat_messages_splits_mixed_tool_role_message_into_tool_and_user_context() {
+        let mut msg = SessionMessage::tool("ses_test");
+        msg.add_tool_result("call-1", "ok", false);
+        msg.add_text("synthetic follow-up summary");
+
+        let messages = SessionPrompt::build_chat_messages(&[msg], None).expect("build");
+        assert_eq!(messages.len(), 2);
+        assert!(matches!(messages[0].role, Role::Tool));
+        assert!(matches!(messages[1].role, Role::User));
+        assert!(matches!(
+            &messages[1].content,
+            Content::Text(text) if text == "synthetic follow-up summary"
+        ));
+    }
+
+    // P2 canonical ordering: replay authority must normalize order even when
+    // input parts were added in a non-canonical sequence.
+    #[test]
+    fn build_chat_messages_normalizes_reasoning_before_text_regardless_of_input_order() {
+        let mut msg = SessionMessage::assistant("ses_test");
+        // Add parts in deliberately wrong order: text before reasoning.
+        msg.add_text("visible response");
+        msg.add_reasoning("internal chain of thought");
+        msg.add_tool_call("call-1", "read", serde_json::json!({"file_path":"a.txt"}));
+
+        let messages = SessionPrompt::build_chat_messages(&[msg], None).expect("build");
+        let assistant = &messages[0];
+        match &assistant.content {
+            Content::Parts(parts) => {
+                let positions: Vec<&str> = parts.iter().map(|p| p.content_type.as_str()).collect();
+                let reasoning_idx = positions.iter().position(|t| *t == "reasoning");
+                let text_idx = positions.iter().position(|t| *t == "text");
+                let tool_idx = positions.iter().position(|t| *t == "tool_use");
+                assert!(reasoning_idx < text_idx,
+                    "reasoning must come before text even when input is reversed");
+                assert!(text_idx < tool_idx,
+                    "text must come before tool_use even when input is reversed");
+            }
+            Content::Text(_) => panic!("mixed-content turn must use Content::Parts"),
+        }
+    }
+
+    // P2 canonical ordering: reasoning must appear before text before tool_use.
+    #[test]
+    fn build_chat_messages_preserves_reasoning_before_text_before_tool_use() {
+        let mut msg = SessionMessage::assistant("ses_test");
+        msg.add_reasoning("internal chain of thought");
+        msg.add_text("visible response");
+        msg.add_tool_call("call-1", "read", serde_json::json!({"file_path":"a.txt"}));
+
+        let messages = SessionPrompt::build_chat_messages(&[msg], None).expect("build");
+        let assistant = &messages[0];
+        match &assistant.content {
+            Content::Parts(parts) => {
+                let positions: Vec<&str> = parts.iter().map(|p| p.content_type.as_str()).collect();
+                let reasoning_idx = positions.iter().position(|t| *t == "reasoning");
+                let text_idx = positions.iter().position(|t| *t == "text");
+                let tool_idx = positions.iter().position(|t| *t == "tool_use");
+                assert!(reasoning_idx < text_idx, "reasoning must come before text");
+                assert!(text_idx < tool_idx, "text must come before tool_use");
+            }
+            Content::Text(_) => panic!("mixed-content turn must use Content::Parts"),
+        }
+    }
+
+    // P2: downgraded tool-summary injected as user message must stay
+    // Role::User in the output — never leaked as Role::Tool.
+    #[test]
+    fn build_chat_messages_downgraded_tool_summary_stays_role_user() {
+        let user_msg = SessionMessage::user("s", "continue");
+        let summary_msg = SessionMessage::user("s", "<tool-batch-summary>\n  tools: read\n  goal_status: mixed\n</tool-batch-summary>");
+
+        let messages =
+            SessionPrompt::build_chat_messages(&[user_msg, summary_msg], None).expect("build");
+
+        // All messages must stay Role::User — tool summaries are never Role::Tool.
+        for msg in &messages {
+            assert!(matches!(msg.role, Role::User),
+                "tool batch summary must stay Role::User, got {:?}", msg.role);
+        }
+    }
+
+    // P2: text-only assistant must stay as Content::Text.
+    #[test]
+    fn build_chat_messages_keeps_text_only_assistant_as_plain_text() {
+        let mut msg = SessionMessage::assistant("ses_test");
+        msg.add_text("hello world");
+        let messages = SessionPrompt::build_chat_messages(&[msg], None).expect("build");
+        let assistant = &messages[0];
+        assert!(matches!(assistant.role, Role::Assistant));
+        assert!(matches!(assistant.content, Content::Text(_)),
+            "text-only assistant must stay as Content::Text");
     }
     // PLACEHOLDER_TESTS_CONTINUE_4
 
