@@ -736,6 +736,8 @@ mod tests {
         }));
     }
 
+    // P2.3: trailing invalid thinking blocks from fallback/retry must not
+    // carry over into the next provider request.
     #[test]
     fn fallback_retry_sanitizer_strips_invalid_continuation_residue() {
         // Simulate a message with valid tool_use followed by trailing thinking blocks
@@ -799,6 +801,7 @@ mod tests {
         assert_eq!(sanitized.len(), 1);
     }
 
+    // P2.3: compaction/trimmed placeholder text must not re-enter model context.
     #[test]
     fn sanitized_messages_do_not_reintroduce_compaction_placeholder_text() {
         // Simulate a post-compaction message: an assistant that is just "[compacted]".
@@ -839,6 +842,49 @@ mod tests {
         assert!(matches!(sanitized[1].role, Role::User));
     }
 
+    // P2.3: compaction-like trimmed markers must be dropped before model context.
+    #[test]
+    fn placeholder_only_assistant_is_dropped_after_compaction_like_trim() {
+        let messages = vec![
+            Message::user("continue"),
+            Message::assistant_parts(vec![ContentPart::text("[compacted]")]),
+            Message::assistant_parts(vec![ContentPart::text("[trimmed]")]),
+        ];
+
+        let mut actions = Vec::new();
+        let sanitized = sanitize_messages_for_protocol_with_actions(
+            &messages,
+            SanitizerOptions::default(),
+            Some(&mut actions),
+        );
+
+        // Both placeholder-only assistants must be dropped.
+        let assistant_texts: Vec<String> = sanitized
+            .iter()
+            .filter(|m| matches!(m.role, Role::Assistant))
+            .flat_map(|m| match &m.content {
+                Content::Parts(parts) => parts
+                    .iter()
+                    .filter_map(|p| p.text.clone())
+                    .collect(),
+                _ => Vec::new(),
+            })
+            .collect();
+        assert!(
+            !assistant_texts.iter().any(|t| t.contains("[compacted]")),
+            "no [compacted] text should reach the model"
+        );
+        assert!(
+            !assistant_texts.iter().any(|t| t.contains("[trimmed]")),
+            "no [trimmed] text should reach the model"
+        );
+
+        // Actions recorded.
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, SanitizerAction::AssistantMalformedPlaceholder)));
+    }
+
     #[test]
     fn detects_duplicate_tool_use_ids_in_same_batch() {
         let messages = vec![Message::assistant_parts(vec![
@@ -858,6 +904,7 @@ mod tests {
             .any(|a| matches!(a, SanitizerAction::DuplicateToolId { tool_call_id } if tool_call_id == "dup-id")));
     }
 
+    // P2.3: protects against duplicate tool_use_id in provider request payload.
     #[test]
     fn cross_message_duplicate_tool_use_ids_are_rewritten_with_unique_suffix() {
         // Two separate assistant messages reusing the same tool_use id:

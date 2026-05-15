@@ -132,6 +132,7 @@ mod sanitizer_stage_tests {
     use super::*;
 
     #[test]
+    // P2.3 route guard: all bad shapes on resume path must go through shared sanitizer.
     fn resume_path_uses_shared_sanitizer_contract() {
         let mut session = Session::new("proj", ".");
         session.insert_metadata(
@@ -147,6 +148,7 @@ mod sanitizer_stage_tests {
     }
 
     #[test]
+    // P2.3 route guard: post-compaction path uses the same shared sanitizer entry.
     fn post_compaction_continue_uses_shared_sanitizer_contract() {
         let mut session = Session::new("proj", ".");
         session.insert_metadata(

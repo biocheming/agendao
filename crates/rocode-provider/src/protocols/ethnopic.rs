@@ -628,6 +628,7 @@ mod tests {
     }
 
     #[test]
+    // P2.3: reused call_id history must be sanitized before Ethnopic (messages) transport.
     fn injects_interrupted_tool_result_per_assistant_segment_even_with_reused_call_id() {
         let request = ChatRequest {
             model: "claude-test".to_string(),

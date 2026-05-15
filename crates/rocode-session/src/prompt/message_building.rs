@@ -3239,6 +3239,7 @@ mod tests {
     }
 
     #[test]
+    // P2.3: compaction/trimmed placeholder text must never re-enter model context.
     fn lightweight_trim_placeholders_do_not_reenter_next_turn_model_context() {
         let mut session = Session::new("proj", ".");
         let session_id = session.id.clone();
