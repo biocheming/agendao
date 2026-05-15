@@ -202,83 +202,161 @@ impl RepairEventBuilder {
     }
 }
 
+// ── Tool Batch Summary types (P2.2) ────────────────────────────────────
+
+/// Whether this tool batch advanced the task goal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolBatchGoalStatus {
+    /// All calls succeeded with clear output.
+    Advanced,
+    /// All calls failed for a single identifiable reason.
+    Blocked,
+    /// Mix of successes and failures.
+    Mixed,
+    /// No progress made but no clear blocker identified.
+    NoProgress,
+}
+
+/// The category of reason blocking progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolBatchBlockReason {
+    InvalidArguments,
+    PermissionDenied,
+    Timeout,
+    ProviderRejected,
+    ToolExecutionError,
+    UserInputRequired,
+    Unknown,
+}
+
+impl ToolBatchBlockReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidArguments => "invalid_arguments",
+            Self::PermissionDenied => "permission_denied",
+            Self::Timeout => "timeout",
+            Self::ProviderRejected => "provider_rejected",
+            Self::ToolExecutionError => "tool_execution_error",
+            Self::UserInputRequired => "user_input_required",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// A lightweight follow-up item for the next turn.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolBatchFollowUpItem {
+    /// e.g. "retry", "inspect_artifact", "ask_user", "fix_args"
+    pub kind: String,
+    pub text: String,
+}
+
 /// Tool batch summary emitted after one round of tool execution.
 ///
-/// This replaces long raw tool_result text with a structured summary that the
-/// model can consume in the next turn without being polluted by verbose output.
+/// Provides the model with a structured read on what happened, whether the
+/// goal advanced, what blocked progress, and what to do next.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolBatchSummary {
-    /// Names of tools that were invoked in this batch.
     pub tools_used: Vec<String>,
-
-    /// How many tool calls succeeded.
     pub success_count: u32,
-
-    /// How many tool calls failed.
     pub error_count: u32,
-
-    /// Kinds of errors encountered (non-duplicated).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub error_kinds: Vec<String>,
 
-    /// File paths or artifact identifiers created by this batch.
+    pub goal_status: ToolBatchGoalStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_by: Vec<ToolBatchBlockReason>,
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts_created: Vec<String>,
-
-    /// Actions the tool results suggest should follow.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub pending_follow_up: Vec<String>,
-
-    /// Optional hint for what the model should do next.
+    pub pending_follow_up: Vec<ToolBatchFollowUpItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unresolved_items: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recommended_next_step: Option<String>,
 
-    /// Repair events recorded during this batch (for telemetry).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repair_events: Vec<RepairEvent>,
 }
 
 impl ToolBatchSummary {
-    /// Create an empty summary for a batch that had no tool calls.
     pub fn empty() -> Self {
         Self {
             tools_used: Vec::new(),
             success_count: 0,
             error_count: 0,
             error_kinds: Vec::new(),
+            goal_status: ToolBatchGoalStatus::NoProgress,
+            blocked_by: Vec::new(),
             artifacts_created: Vec::new(),
             pending_follow_up: Vec::new(),
+            unresolved_items: Vec::new(),
             recommended_next_step: None,
             repair_events: Vec::new(),
         }
     }
 
-    /// Format the summary as a compact model-visible block.
+    pub fn has_meaningful_progress(&self) -> bool {
+        self.success_count > 0 && self.error_count == 0
+    }
+
+    pub fn is_blocked(&self) -> bool {
+        !self.blocked_by.is_empty()
+    }
+
+    /// Format as a compact model-visible block. Empty fields are omitted.
+    /// Output order: tools → goal_status → success/error → blocked_by →
+    /// artifacts → next_step → unresolved.
     pub fn format_for_context(&self) -> String {
         let mut lines = vec!["<tool-batch-summary>".to_string()];
-        lines.push(format!("  tools: {}", self.tools_used.join(", ")));
-        lines.push(format!(
-            "  results: {} succeeded, {} failed",
-            self.success_count, self.error_count
-        ));
-        if !self.error_kinds.is_empty() {
-            lines.push(format!("  error_kinds: {}", self.error_kinds.join(", ")));
+
+        if !self.tools_used.is_empty() {
+            lines.push(format!("  tools: {}", self.tools_used.join(", ")));
         }
+
+        lines.push(format!(
+            "  goal_status: {}",
+            match self.goal_status {
+                ToolBatchGoalStatus::Advanced => "advanced",
+                ToolBatchGoalStatus::Blocked => "blocked",
+                ToolBatchGoalStatus::Mixed => "mixed",
+                ToolBatchGoalStatus::NoProgress => "no_progress",
+            }
+        ));
+
+        if self.success_count > 0 || self.error_count > 0 {
+            lines.push(format!(
+                "  success: {}  errors: {}",
+                self.success_count, self.error_count
+            ));
+        }
+
+        if !self.blocked_by.is_empty() {
+            let reasons: Vec<&str> = self.blocked_by.iter().map(|b| b.as_str()).collect();
+            lines.push(format!("  blocked_by: {}", reasons.join(", ")));
+        }
+
         if !self.artifacts_created.is_empty() {
             lines.push(format!(
                 "  artifacts: {}",
                 self.artifacts_created.join(", ")
             ));
         }
+
         if let Some(ref next) = self.recommended_next_step {
-            lines.push(format!("  recommended_next: {}", next));
+            lines.push(format!("  next_step: {}", next));
         }
-        if !self.pending_follow_up.is_empty() {
+
+        if !self.unresolved_items.is_empty() {
             lines.push(format!(
-                "  follow_up: {}",
-                self.pending_follow_up.join("; ")
+                "  unresolved: {}",
+                self.unresolved_items.join("; ")
             ));
         }
+
         lines.push("</tool-batch-summary>".to_string());
         lines.join("\n")
     }
@@ -704,6 +782,88 @@ mod repair_kind_tests {
             event.normalized_kind(),
             Some(RepairKind::ArgumentNormalization)
         );
+    }
+
+    #[test]
+    fn tool_batch_summary_format_includes_goal_status_and_blockers() {
+        let summary = ToolBatchSummary {
+            tools_used: vec!["read".into(), "edit".into()],
+            success_count: 1,
+            error_count: 1,
+            error_kinds: vec!["invalid_arguments".into()],
+            goal_status: ToolBatchGoalStatus::Mixed,
+            blocked_by: vec![ToolBatchBlockReason::InvalidArguments],
+            artifacts_created: vec!["src/foo.rs".into()],
+            pending_follow_up: vec![ToolBatchFollowUpItem {
+                kind: "fix_args".into(),
+                text: "edit call failed validation".into(),
+            }],
+            unresolved_items: vec!["edit call failed validation".into()],
+            recommended_next_step: Some("fix tool arguments before retrying".into()),
+            repair_events: vec![],
+        };
+
+        let formatted = summary.format_for_context();
+        assert!(formatted.contains("goal_status: mixed"));
+        assert!(formatted.contains("blocked_by: invalid_arguments"));
+        assert!(formatted.contains("artifacts: src/foo.rs"));
+        assert!(formatted.contains("next_step: fix tool arguments before retrying"));
+        assert!(formatted.contains("unresolved: edit call failed validation"));
+        // Repair events should NOT be expanded in the context.
+        assert!(!formatted.contains("repair_kind"));
+        assert!(!formatted.contains("\"kind\""));
+    }
+
+    #[test]
+    fn tool_batch_summary_omits_empty_sections() {
+        let summary = ToolBatchSummary {
+            tools_used: vec!["read".into()],
+            success_count: 1,
+            error_count: 0,
+            error_kinds: vec![],
+            goal_status: ToolBatchGoalStatus::Advanced,
+            blocked_by: vec![],
+            artifacts_created: vec![],
+            pending_follow_up: vec![],
+            unresolved_items: vec![],
+            recommended_next_step: None,
+            repair_events: vec![],
+        };
+
+        let formatted = summary.format_for_context();
+        // Empty sections should not appear.
+        assert!(!formatted.contains("blocked_by:"));
+        assert!(!formatted.contains("artifacts:"));
+        assert!(!formatted.contains("next_step:"));
+        assert!(!formatted.contains("unresolved:"));
+    }
+
+    #[test]
+    fn tool_batch_summary_progress_helpers_match_status() {
+        let advanced = ToolBatchSummary {
+            success_count: 3,
+            error_count: 0,
+            ..ToolBatchSummary::empty()
+        };
+        assert!(advanced.has_meaningful_progress());
+        assert!(!advanced.is_blocked());
+
+        let blocked = ToolBatchSummary {
+            success_count: 0,
+            error_count: 1,
+            blocked_by: vec![ToolBatchBlockReason::InvalidArguments],
+            ..ToolBatchSummary::empty()
+        };
+        assert!(!blocked.has_meaningful_progress());
+        assert!(blocked.is_blocked());
+
+        let mixed = ToolBatchSummary {
+            success_count: 2,
+            error_count: 1,
+            ..ToolBatchSummary::empty()
+        };
+        assert!(!mixed.has_meaningful_progress());
+        assert!(!mixed.is_blocked());
     }
 }
 
