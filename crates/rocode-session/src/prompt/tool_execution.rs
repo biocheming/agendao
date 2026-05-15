@@ -193,17 +193,12 @@ fn classify_block_reason(
                 return Some(rocode_types::ToolBatchBlockReason::InvalidArguments);
             }
             rocode_types::RepairKind::InvalidToolReroute => {
-                // Check the event's stored reason for the original error kind.
-                let reason = e.reason.as_deref().unwrap_or_default();
-                let lower = reason.to_ascii_lowercase();
-                if lower.contains("invalid arguments") || lower.contains("invalid_arguments") {
-                    return Some(rocode_types::ToolBatchBlockReason::InvalidArguments);
-                }
-                if lower.contains("permission denied") {
-                    return Some(rocode_types::ToolBatchBlockReason::PermissionDenied);
-                }
-                // Generic execution error reroute.
-                return Some(rocode_types::ToolBatchBlockReason::ToolExecutionError);
+                // Read the structured original_error_kind field directly.
+                let error_kind = e
+                    .original_error_kind
+                    .as_deref()
+                    .unwrap_or("execution_error");
+                return classify_block_reason(Some(error_kind), &[]);
             }
             _ => {}
         }
@@ -590,6 +585,8 @@ impl SessionPrompt {
                                     // Strict: return the raw error, don't silently rewrite.
                                     if !is_strict && available_tool_ids.contains("invalid") {
                                         // Record the reroute as a repair event for telemetry.
+                                        let error_text = format!("Error: {}", e);
+                                        let original_kind = classify_error_kind(&error_text);
                                         let mut reroute_event = rocode_tool::tool_repair_event(
                                             rocode_types::RepairKind::InvalidToolReroute.as_str(),
                                             "session_prompt",
@@ -597,7 +594,11 @@ impl SessionPrompt {
                                         );
                                         reroute_event.insert(
                                             "reason".to_string(),
-                                            serde_json::json!(format!("Error: {}", e)),
+                                            serde_json::json!(error_text),
+                                        );
+                                        reroute_event.insert(
+                                            "original_error_kind".to_string(),
+                                            serde_json::json!(original_kind),
                                         );
                                         rocode_tool::append_tool_repair_event_map(
                                             &mut repair_metadata,
@@ -1449,7 +1450,11 @@ fn classify_error_kind(error: &str) -> String {
         || lower.contains("timed out")
     {
         "timeout".to_string()
-    } else if lower.starts_with("invalid arguments:") || lower.starts_with("validation error:") {
+    } else if lower.starts_with("invalid arguments:")
+        || lower.contains("invalid arguments:")
+        || lower.starts_with("validation error:")
+        || lower.contains("validation error:")
+    {
         "invalid_arguments".to_string()
     } else if lower == "cancelled" || lower.contains("cancelled") || lower.contains("canceled") {
         "cancelled".to_string()
