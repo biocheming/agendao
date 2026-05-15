@@ -41,6 +41,193 @@ const MAX_SUBSESSION_HANDOFF_TAIL_FIELDS: usize = 3;
 const MAX_SUBSESSION_FIELD_CHARS: usize = 4_000;
 const MAX_SUBSESSION_TAIL_FIELD_CHARS: usize = 1_200;
 
+// ── P2.2: Tool batch fact extraction ────────────────────────────────────
+
+struct ToolCallBatchFact {
+    tool_name: String,
+    is_error: bool,
+    error_kind: Option<String>,
+    block_reason: Option<rocode_types::ToolBatchBlockReason>,
+    artifacts_created: Vec<String>,
+    repair_events: Vec<RepairEvent>,
+    suggested_follow_up: Vec<rocode_types::ToolBatchFollowUpItem>,
+    unresolved_items: Vec<String>,
+}
+
+fn collect_tool_batch_facts(assistant_msg: &SessionMessage) -> Vec<ToolCallBatchFact> {
+    assistant_msg
+        .parts
+        .iter()
+        .filter_map(|part| match &part.part_type {
+            PartType::ToolCall {
+                name, status, state, ..
+            } => {
+                let is_error = matches!(status, crate::ToolCallStatus::Error);
+                let error_kind = if is_error {
+                    state.as_ref().and_then(|s| match s {
+                        crate::ToolState::Error { error, .. } => {
+                            Some(classify_error_kind(error))
+                        }
+                        _ => None,
+                    })
+                } else {
+                    None
+                };
+                let repair_events = state
+                    .as_ref()
+                    .and_then(|s| match s {
+                        crate::ToolState::Completed { metadata, .. }
+                        | crate::ToolState::Error { metadata: Some(metadata), .. } => {
+                            Some(rocode_tool::structured_repair_events(metadata))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                let block_reason =
+                    classify_block_reason(error_kind.as_deref(), &repair_events);
+                let (artifacts_created, suggested_follow_up, unresolved_items) =
+                    extract_tool_fact_extras(name, is_error, error_kind.as_deref(), state.as_ref());
+                Some(ToolCallBatchFact {
+                    tool_name: name.clone(),
+                    is_error,
+                    error_kind,
+                    block_reason,
+                    artifacts_created,
+                    repair_events,
+                    suggested_follow_up,
+                    unresolved_items,
+                })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn extract_tool_fact_extras(
+    name: &str,
+    _is_error: bool,
+    error_kind: Option<&str>,
+    state: Option<&crate::ToolState>,
+) -> (Vec<String>, Vec<rocode_types::ToolBatchFollowUpItem>, Vec<String>) {
+    let mut artifacts = Vec::new();
+    let mut follow_up = Vec::new();
+    let mut unresolved = Vec::new();
+
+    if let Some(state) = state {
+        match state {
+            crate::ToolState::Completed {
+                output, attachments, ..
+            } => {
+                if let Some(attachments) = attachments {
+                    for a in attachments {
+                        if let Some(ref filename) = a.filename {
+                            artifacts.push(filename.clone());
+                        } else if !a.url.is_empty() {
+                            artifacts.push(a.url.clone());
+                        }
+                    }
+                }
+                let trimmed = output.trim();
+                if trimmed.starts_with('/') && !trimmed.contains('\n') && trimmed.len() < 256 {
+                    artifacts.push(trimmed.to_string());
+                }
+            }
+            crate::ToolState::Error { error, .. } => {
+                unresolved.push(format!("{name} call failed: {error}"));
+                match error_kind {
+                    Some("invalid_arguments") => {
+                        follow_up.push(rocode_types::ToolBatchFollowUpItem {
+                            kind: "fix_args".into(),
+                            text: format!("{name}: fix arguments and retry"),
+                        });
+                    }
+                    Some("permission_denied") => {
+                        follow_up.push(rocode_types::ToolBatchFollowUpItem {
+                            kind: "ask_permission".into(),
+                            text: format!("{name}: request permission or use alternative"),
+                        });
+                    }
+                    Some("timeout") => {
+                        follow_up.push(rocode_types::ToolBatchFollowUpItem {
+                            kind: "retry_narrower".into(),
+                            text: format!("{name}: retry with a narrower operation"),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (artifacts, follow_up, unresolved)
+}
+
+fn classify_block_reason(
+    error_kind: Option<&str>,
+    _repair_events: &[RepairEvent],
+) -> Option<rocode_types::ToolBatchBlockReason> {
+    match error_kind {
+        Some("invalid_arguments") => Some(rocode_types::ToolBatchBlockReason::InvalidArguments),
+        Some("permission_denied") => Some(rocode_types::ToolBatchBlockReason::PermissionDenied),
+        Some("timeout") => Some(rocode_types::ToolBatchBlockReason::Timeout),
+        Some("provider_rejected") => Some(rocode_types::ToolBatchBlockReason::ProviderRejected),
+        Some("user_input_required") => {
+            Some(rocode_types::ToolBatchBlockReason::UserInputRequired)
+        }
+        Some("execution_error") => Some(rocode_types::ToolBatchBlockReason::ToolExecutionError),
+        Some(_) => Some(rocode_types::ToolBatchBlockReason::Unknown),
+        None => None,
+    }
+}
+
+fn derive_goal_status(facts: &[ToolCallBatchFact]) -> rocode_types::ToolBatchGoalStatus {
+    let has_success = facts.iter().any(|f| !f.is_error);
+    let has_error = facts.iter().any(|f| f.is_error);
+    let has_blocker = facts.iter().any(|f| f.block_reason.is_some());
+
+    match (has_success, has_error, has_blocker) {
+        (true, false, _) => rocode_types::ToolBatchGoalStatus::Advanced,
+        (true, true, _) => rocode_types::ToolBatchGoalStatus::Mixed,
+        (false, true, true) => rocode_types::ToolBatchGoalStatus::Blocked,
+        (false, true, false) => rocode_types::ToolBatchGoalStatus::NoProgress,
+        _ => rocode_types::ToolBatchGoalStatus::NoProgress,
+    }
+}
+
+fn derive_recommended_next_step(facts: &[ToolCallBatchFact]) -> Option<String> {
+    let has_success = facts.iter().any(|f| !f.is_error);
+    let has_artifact = facts.iter().any(|f| !f.artifacts_created.is_empty());
+    let has_invalid_args = facts
+        .iter()
+        .any(|f| f.block_reason == Some(rocode_types::ToolBatchBlockReason::InvalidArguments));
+    let has_permission = facts
+        .iter()
+        .any(|f| f.block_reason == Some(rocode_types::ToolBatchBlockReason::PermissionDenied));
+    let has_timeout = facts
+        .iter()
+        .any(|f| f.block_reason == Some(rocode_types::ToolBatchBlockReason::Timeout));
+
+    if !has_success {
+        if has_invalid_args {
+            return Some("fix tool arguments before retrying".into());
+        }
+        if has_permission {
+            return Some("request permission or choose a non-privileged path".into());
+        }
+        if has_timeout {
+            return Some("retry with a narrower or cheaper operation".into());
+        }
+    }
+    if has_success && has_artifact && !has_invalid_args {
+        return Some("continue from successful outputs".into());
+    }
+    if has_success && has_invalid_args {
+        return Some("continue from successful outputs and fix the failed calls".into());
+    }
+    None
+}
+
 #[derive(Clone)]
 pub(super) struct PersistedSubsessionPromptOptions {
     pub(super) default_model: String,
@@ -526,6 +713,27 @@ impl SessionPrompt {
             session.push_message(tool_results_msg);
         }
 
+        // Capture synthetic attachment filenames before the messages are consumed.
+        let synthetic_artifacts: Vec<String> = {
+            let pending = pending_synthetic_messages.lock().await;
+            pending
+                .iter()
+                .flat_map(|m| {
+                    m.attachments.iter().filter_map(|a| {
+                        a.filename
+                            .clone()
+                            .or_else(|| {
+                                if a.url.is_empty() {
+                                    None
+                                } else {
+                                    Some(a.url.clone())
+                                }
+                            })
+                    })
+                })
+                .collect()
+        };
+
         let pending_synthetic_messages = {
             let mut pending = pending_synthetic_messages.lock().await;
             std::mem::take(&mut *pending)
@@ -545,7 +753,7 @@ impl SessionPrompt {
             let summary = session
                 .messages
                 .get(last_assistant_index)
-                .and_then(|msg| Self::build_tool_batch_summary(msg));
+                .and_then(|msg| Self::build_tool_batch_summary(msg, &synthetic_artifacts));
             if let Some(summary) = summary {
                 session.insert_metadata(
                     "latest_tool_batch_summary".to_string(),
@@ -558,72 +766,59 @@ impl SessionPrompt {
     }
 
     /// Build a structured `ToolBatchSummary` from the completed tool calls in
-    /// an assistant message.
+    /// an assistant message, enriched with pending synthetic attachment info.
     pub(super) fn build_tool_batch_summary(
         assistant_msg: &SessionMessage,
+        synthetic_artifacts: &[String],
     ) -> Option<ToolBatchSummary> {
-        let tool_calls: Vec<_> = assistant_msg
-            .parts
-            .iter()
-            .filter_map(|part| match &part.part_type {
-                PartType::ToolCall {
-                    name,
-                    status,
-                    state,
-                    ..
-                } => {
-                    let is_error = matches!(status, crate::ToolCallStatus::Error);
-                    let error_kind = if is_error {
-                        state.as_ref().and_then(|s| match s {
-                            crate::ToolState::Error { error, .. } => {
-                                Some(classify_error_kind(error))
-                            }
-                            _ => None,
-                        })
-                    } else {
-                        None
-                    };
-                    let repair_events = state
-                        .as_ref()
-                        .and_then(|s| match s {
-                            crate::ToolState::Completed { metadata, .. }
-                            | crate::ToolState::Error {
-                                metadata: Some(metadata),
-                                ..
-                            } => Some(rocode_tool::structured_repair_events(metadata)),
-                            _ => None,
-                        })
-                        .unwrap_or_default();
-                    Some((name.clone(), is_error, error_kind, repair_events))
-                }
-                _ => None,
-            })
-            .collect();
-
-        if tool_calls.is_empty() {
+        let facts = collect_tool_batch_facts(assistant_msg);
+        if facts.is_empty() {
             return None;
         }
 
-        let success_count = tool_calls.iter().filter(|(_, err, ..)| !err).count() as u32;
-        let error_count = tool_calls.iter().filter(|(_, err, ..)| *err).count() as u32;
-        let tools_used: Vec<String> = {
-            let mut names: Vec<String> = tool_calls.iter().map(|(n, ..)| n.clone()).collect();
+        let success_count = facts.iter().filter(|f| !f.is_error).count() as u32;
+        let error_count = facts.iter().filter(|f| f.is_error).count() as u32;
+        let tools_used = {
+            let mut names: Vec<String> = facts.iter().map(|f| f.tool_name.clone()).collect();
             names.sort();
             names.dedup();
             names
         };
-        let error_kinds: Vec<String> = {
-            let mut kinds: Vec<String> = tool_calls
-                .iter()
-                .filter_map(|(_, _, kind, _)| kind.clone())
-                .collect();
+        let error_kinds = {
+            let mut kinds: Vec<String> = facts.iter().filter_map(|f| f.error_kind.clone()).collect();
             kinds.sort();
             kinds.dedup();
             kinds
         };
-        let repair_events: Vec<RepairEvent> = tool_calls
-            .into_iter()
-            .flat_map(|(_, _, _, events)| events)
+        let blocked_by: Vec<rocode_types::ToolBatchBlockReason> = {
+            let mut reasons: Vec<rocode_types::ToolBatchBlockReason> = facts
+                .iter()
+                .filter_map(|f| f.block_reason)
+                .collect();
+            reasons.sort_by_key(|r| r.as_str());
+            reasons.dedup_by_key(|r| r.as_str());
+            reasons
+        };
+        let repair_events: Vec<RepairEvent> = facts.iter().flat_map(|f| f.repair_events.clone()).collect();
+        let goal_status = derive_goal_status(&facts);
+        let recommended_next_step = derive_recommended_next_step(&facts);
+
+        let mut artifacts_created: Vec<String> = facts
+            .iter()
+            .flat_map(|f| f.artifacts_created.clone())
+            .collect();
+        artifacts_created.extend(synthetic_artifacts.iter().cloned());
+        artifacts_created.sort();
+        artifacts_created.dedup();
+
+        let pending_follow_up: Vec<rocode_types::ToolBatchFollowUpItem> = facts
+            .iter()
+            .flat_map(|f| f.suggested_follow_up.clone())
+            .collect();
+
+        let unresolved_items: Vec<String> = facts
+            .iter()
+            .flat_map(|f| f.unresolved_items.clone())
             .collect();
 
         Some(ToolBatchSummary {
@@ -631,9 +826,12 @@ impl SessionPrompt {
             success_count,
             error_count,
             error_kinds,
-            artifacts_created: Vec::new(),
-            pending_follow_up: Vec::new(),
-            recommended_next_step: None,
+            goal_status,
+            blocked_by,
+            artifacts_created,
+            pending_follow_up,
+            unresolved_items,
+            recommended_next_step,
             repair_events,
         })
     }
@@ -1177,6 +1375,16 @@ fn classify_error_kind(error: &str) -> String {
     let lower = error.trim().to_ascii_lowercase();
     if lower.starts_with("permission denied:") || lower.contains("permission denied") {
         "permission_denied".to_string()
+    } else if lower.starts_with("provider error:")
+        || lower.starts_with("invalid request:")
+        || lower.contains("provider rejected")
+    {
+        "provider_rejected".to_string()
+    } else if lower.contains("user input required")
+        || lower.contains("question required")
+        || lower.contains("approval required")
+    {
+        "user_input_required".to_string()
     } else if lower.starts_with("file not found:") || lower.contains("file not found") {
         "file_not_found".to_string()
     } else if lower.starts_with("timeout:")
@@ -1683,8 +1891,11 @@ mod tests {
             success_count: 2,
             error_count: 0,
             error_kinds: Vec::new(),
+            goal_status: rocode_types::ToolBatchGoalStatus::Advanced,
+            blocked_by: Vec::new(),
             artifacts_created: Vec::new(),
             pending_follow_up: Vec::new(),
+            unresolved_items: Vec::new(),
             recommended_next_step: Some("continue with implementation".to_string()),
             repair_events: Vec::new(),
         };
@@ -1728,6 +1939,70 @@ mod tests {
 
         assert!(chat_messages.is_empty());
         assert_eq!(session.metadata.get("latest_tool_batch_summary"), None);
+    }
+
+    #[test]
+    fn build_tool_batch_summary_marks_provider_rejected_as_blocked() {
+        let mut assistant = SessionMessage::assistant("sess".to_string());
+        assistant.add_tool_call("call_provider", "websearch", serde_json::json!({}));
+        if let Some(part) = assistant.parts.get_mut(0) {
+            part.part_type = PartType::ToolCall {
+                id: "call_provider".to_string(),
+                name: "websearch".to_string(),
+                input: serde_json::json!({}),
+                status: crate::ToolCallStatus::Error,
+                raw: None,
+                state: Some(crate::ToolState::Error {
+                    input: serde_json::json!({}),
+                    error: "Provider error: Invalid request".to_string(),
+                    metadata: None,
+                    time: crate::ErrorTime { start: 0, end: 1 },
+                }),
+            };
+        }
+
+        let summary = SessionPrompt::build_tool_batch_summary(&assistant, &[])
+            .expect("summary should be built");
+        assert_eq!(
+            summary.goal_status,
+            rocode_types::ToolBatchGoalStatus::Blocked
+        );
+        assert_eq!(
+            summary.blocked_by,
+            vec![rocode_types::ToolBatchBlockReason::ProviderRejected]
+        );
+        assert_eq!(
+            summary.recommended_next_step,
+            None,
+            "provider-rejected path should not pretend normal execution can continue"
+        );
+    }
+
+    #[test]
+    fn build_tool_batch_summary_uses_no_progress_when_failure_has_no_blocker() {
+        let mut assistant = SessionMessage::assistant("sess".to_string());
+        assistant.add_tool_call("call_unknown", "read", serde_json::json!({}));
+        if let Some(part) = assistant.parts.get_mut(0) {
+            part.part_type = PartType::ToolCall {
+                id: "call_unknown".to_string(),
+                name: "read".to_string(),
+                input: serde_json::json!({}),
+                status: crate::ToolCallStatus::Error,
+                raw: None,
+                state: None,
+            };
+        }
+
+        let summary = SessionPrompt::build_tool_batch_summary(&assistant, &[])
+            .expect("summary should be built");
+        assert_eq!(
+            summary.goal_status,
+            rocode_types::ToolBatchGoalStatus::NoProgress
+        );
+        assert!(
+            summary.blocked_by.is_empty(),
+            "missing blocker classification should not be upgraded to blocked"
+        );
     }
 
     #[test]
