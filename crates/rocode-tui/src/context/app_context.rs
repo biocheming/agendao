@@ -309,7 +309,8 @@ const DIALOG_CLOSE_PRIORITY: [DialogSlot; 21] = [
     DialogSlot::Tag,
 ];
 
-const DIALOG_SCROLL_PRIORITY: [DialogSlot; 13] = [
+const DIALOG_SCROLL_PRIORITY: [DialogSlot; 14] = [
+    DialogSlot::Status,
     DialogSlot::PromptStash,
     DialogSlot::SkillList,
     DialogSlot::SlashPopup,

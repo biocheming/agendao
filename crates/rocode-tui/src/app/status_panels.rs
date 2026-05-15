@@ -1055,12 +1055,26 @@ impl App {
             return false;
         }
 
-        if !matches!(
-            self.context.status_dialog_view(),
-            StatusDialogView::Events(_)
-        ) {
-            if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
-                self.close_status_dialog_modal();
+        if !matches!(self.context.status_dialog_view(), StatusDialogView::Events(_)) {
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter => self.close_status_dialog_modal(),
+                KeyCode::Up | KeyCode::Char('k')
+                    if !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    self.status_dialog.scroll_up();
+                }
+                KeyCode::Down | KeyCode::Char('j')
+                    if !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    self.status_dialog.scroll_down();
+                }
+                KeyCode::PageUp => self.status_dialog.page_up(10),
+                KeyCode::PageDown => self.status_dialog.page_down(10),
+                KeyCode::Home => self.status_dialog.scroll_to_top(),
+                KeyCode::End => self.status_dialog.scroll_to_bottom(),
+                _ => {}
             }
             return true;
         }

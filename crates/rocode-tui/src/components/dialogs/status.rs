@@ -2,7 +2,9 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{
+        Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    },
 };
 use std::cell::Cell;
 
@@ -74,7 +76,9 @@ pub struct StatusDialog {
     open: bool,
     title: String,
     footer_hint: Option<String>,
+    scroll_offset: Cell<u16>,
     last_rendered_area: Cell<Option<Rect>>,
+    last_content_area: Cell<Option<Rect>>,
     close_button_area: Cell<Option<Rect>>,
 }
 
@@ -85,17 +89,21 @@ impl StatusDialog {
             open: false,
             title: "Status".to_string(),
             footer_hint: None,
+            scroll_offset: Cell::new(0),
             last_rendered_area: Cell::new(None),
+            last_content_area: Cell::new(None),
             close_button_area: Cell::new(None),
         }
     }
 
     pub fn set_lines(&mut self, lines: Vec<String>) {
         self.lines = lines.into_iter().map(StatusLine::normal).collect();
+        self.scroll_offset.set(0);
     }
 
     pub fn set_status_lines(&mut self, lines: Vec<StatusLine>) {
         self.lines = lines;
+        self.scroll_offset.set(0);
     }
 
     pub fn set_title(&mut self, title: impl Into<String>) {
@@ -113,11 +121,14 @@ impl StatusDialog {
 
     pub fn open(&mut self) {
         self.open = true;
+        self.scroll_offset.set(0);
     }
 
     pub fn close(&mut self) {
         self.open = false;
+        self.scroll_offset.set(0);
         self.last_rendered_area.set(None);
+        self.last_content_area.set(None);
         self.close_button_area.set(None);
     }
 
@@ -125,10 +136,45 @@ impl StatusDialog {
         self.open
     }
 
+    pub fn scroll_up(&self) {
+        self.scroll_offset
+            .set(self.scroll_offset.get().saturating_sub(1));
+    }
+
+    pub fn scroll_down(&self) {
+        self.scroll_offset
+            .set(self.scroll_offset.get().saturating_add(1));
+    }
+
+    pub fn page_up(&self, page_size: u16) {
+        self.scroll_offset
+            .set(self.scroll_offset.get().saturating_sub(page_size.max(1)));
+    }
+
+    pub fn page_down(&self, page_size: u16) {
+        self.scroll_offset.set(
+            self.scroll_offset
+                .get()
+                .saturating_add(page_size.max(1)),
+        );
+    }
+
+    pub fn scroll_to_top(&self) {
+        self.scroll_offset.set(0);
+    }
+
+    pub fn scroll_to_bottom(&self) {
+        self.scroll_offset.set(u16::MAX);
+    }
+
     pub fn contains_point(&self, col: u16, row: u16) -> bool {
         self.last_rendered_area
             .get()
             .is_some_and(|area| contains_point(area, col, row))
+    }
+
+    pub fn selection_area(&self) -> Option<Rect> {
+        self.last_content_area.get()
     }
 
     pub fn handle_click(&self, col: u16, row: u16) -> bool {
@@ -182,6 +228,7 @@ impl StatusDialog {
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(1)])
             .split(inner);
+        self.last_content_area.set(Some(layout[0]));
 
         let lines = if self.lines.is_empty() {
             vec![Line::from(Span::styled(
@@ -206,11 +253,48 @@ impl StatusDialog {
                 })
                 .collect()
         };
-        surface.render_widget(Paragraph::new(lines), layout[0]);
+        let viewport_height = layout[0].height as usize;
+        let max_scroll = lines.len().saturating_sub(viewport_height) as u16;
+        let scroll = self.scroll_offset.get().min(max_scroll);
+        self.scroll_offset.set(scroll);
+        surface.render_widget(Paragraph::new(lines).scroll((scroll, 0)), layout[0]);
+
+        if max_scroll > 0 && layout[0].width > 1 {
+            let scroll_area = Rect {
+                x: layout[0]
+                    .x
+                    .saturating_add(layout[0].width.saturating_sub(1)),
+                y: layout[0].y,
+                width: 1,
+                height: layout[0].height,
+            };
+            let mut scrollbar_state = ScrollbarState::new((max_scroll as usize).saturating_add(1))
+                .position(scroll as usize)
+                .viewport_content_length(viewport_height);
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .thumb_style(Style::default().fg(theme.primary))
+                .track_style(Style::default().fg(theme.border));
+            surface.render_stateful_widget(scrollbar, scroll_area, &mut scrollbar_state);
+        }
 
         let footer = self.footer_hint.as_ref().map_or_else(
-            || "Drag to select · Ctrl+Shift+C copy · Esc close".to_string(),
-            |hint| format!("{hint} · Drag to select · Ctrl+Shift+C copy · Esc close"),
+            || {
+                if max_scroll > 0 {
+                    "Up/Down/PgUp/PgDn scroll · Drag to select · Ctrl+Shift+C copy · Esc close"
+                        .to_string()
+                } else {
+                    "Drag to select · Ctrl+Shift+C copy · Esc close".to_string()
+                }
+            },
+            |hint| {
+                if max_scroll > 0 {
+                    format!(
+                        "{hint} · Up/Down/PgUp/PgDn scroll · Drag to select · Ctrl+Shift+C copy · Esc close"
+                    )
+                } else {
+                    format!("{hint} · Drag to select · Ctrl+Shift+C copy · Esc close")
+                }
+            },
         );
         surface.render_widget(
             Paragraph::new(Line::from(Span::styled(
@@ -283,5 +367,29 @@ mod tests {
         assert!(dialog.contains_point(15, 5));
         assert!(dialog.handle_click(102, 4));
         assert!(!dialog.handle_click(15, 5));
+    }
+
+    #[test]
+    fn status_dialog_scrolls_long_content() {
+        let mut dialog = StatusDialog::new();
+        dialog.set_status_lines(
+            (0..40)
+                .map(|i| StatusLine::normal(format!("line {i}")))
+                .collect(),
+        );
+        dialog.open();
+        dialog.page_down(10);
+
+        let area = Rect::new(0, 0, 80, 18);
+        let mut buffer = Buffer::empty(area);
+        let mut surface = BufferSurface::new(&mut buffer);
+        dialog.render(&mut surface, area, &Theme::dark());
+
+        let rendered = buffer
+            .content
+            .iter()
+            .filter(|cell| cell.symbol() == "1")
+            .count();
+        assert!(rendered > 0, "expected scrolled content to render later lines");
     }
 }

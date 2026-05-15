@@ -1212,7 +1212,17 @@ impl App {
                             }
                             if self.status_dialog.contains_point(col, row) {
                                 if button == MouseButton::Left {
-                                    self.selection.start(row, col);
+                                    if let Some(area) = self.status_dialog.selection_area() {
+                                        if col >= area.x
+                                            && col < area.x.saturating_add(area.width)
+                                            && row >= area.y
+                                            && row < area.y.saturating_add(area.height)
+                                        {
+                                            self.selection.start_scoped(row, col, Some(area));
+                                        } else {
+                                            self.selection.clear();
+                                        }
+                                    }
                                 }
                                 return Ok(());
                             }
@@ -1252,8 +1262,26 @@ impl App {
                                     }
                                 }
                             }
-                            // Clear previous selection and start a new one
-                            self.selection.start(row, col);
+                            if let Route::Session { .. } = self.context.current_route() {
+                                if let Some(sv) = self.context.session_view_handle() {
+                                    if let Some(area) = sv.selection_area() {
+                                        if col >= area.x
+                                            && col < area.x.saturating_add(area.width)
+                                            && row >= area.y
+                                            && row < area.y.saturating_add(area.height)
+                                        {
+                                            self.selection.start_scoped(row, col, Some(area));
+                                        } else {
+                                            self.selection.clear();
+                                        }
+                                    } else {
+                                        self.selection.clear();
+                                    }
+                                }
+                            } else {
+                                // Clear previous selection and start a new one
+                                self.selection.start(row, col);
+                            }
                         }
                     }
                     MouseEventKind::ScrollUp => {

@@ -1057,6 +1057,10 @@ impl SessionView {
             .contains_sidebar_point(col, row)
     }
 
+    pub fn selection_area(&self) -> Option<Rect> {
+        self.state.lock().viewport.last_messages_area
+    }
+
     pub fn scroll_sidebar_up_at(&self, col: u16, row: u16) -> bool {
         let mut state = self.state.lock();
         let mut next_sidebar = state.sidebar.clone();
