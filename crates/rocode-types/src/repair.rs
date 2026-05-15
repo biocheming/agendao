@@ -51,6 +51,14 @@ pub struct RepairEvent {
     /// the original model output instead of repairing it.
     #[serde(default)]
     pub strict_mode_would_fail: bool,
+
+    /// When a permissive reroute rewrites the execution path, this records
+    /// the original error kind that would have propagated in strict mode.
+    /// Uses the same stable strings as `classify_error_kind`:
+    /// `invalid_arguments`, `permission_denied`, `timeout`,
+    /// `provider_rejected`, `execution_error`, etc.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_error_kind: Option<String>,
 }
 
 impl RepairEvent {
@@ -70,6 +78,7 @@ impl RepairEvent {
             normalized_shape: None,
             injected_into_model_context: false,
             strict_mode_would_fail: false,
+            original_error_kind: None,
         }
     }
 
@@ -115,6 +124,12 @@ impl RepairEvent {
             "strict_mode_would_fail".to_string(),
             serde_json::Value::Bool(self.strict_mode_would_fail),
         );
+        if let Some(ref original_error_kind) = self.original_error_kind {
+            map.insert(
+                "original_error_kind".to_string(),
+                serde_json::Value::String(original_error_kind.clone()),
+            );
+        }
         map
     }
 
@@ -145,6 +160,10 @@ impl RepairEvent {
                 .get("strict_mode_would_fail")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
+            original_error_kind: map
+                .get("original_error_kind")
+                .and_then(|v| v.as_str())
+                .map(ToOwned::to_owned),
         })
     }
 }
@@ -732,6 +751,29 @@ mod repair_kind_tests {
             let parsed = RepairKind::from_legacy_str(s);
             assert_eq!(parsed, Some(*kind), "round-trip failed for {s}");
         }
+    }
+
+    #[test]
+    fn repair_event_original_error_kind_survives_loose_map_roundtrip() {
+        let mut event = RepairEvent::new("invalid_tool_reroute", "session_prompt", "test_tool");
+        event.original_error_kind = Some("invalid_arguments".to_string());
+        event.reason = Some("Error: Invalid arguments: missing field".to_string());
+
+        let map = event.to_loose_map();
+        let restored = RepairEvent::from_loose_map(&map).expect("should round-trip");
+
+        assert_eq!(restored.original_error_kind.as_deref(), Some("invalid_arguments"));
+        assert_eq!(restored.reason.as_deref(), Some("Error: Invalid arguments: missing field"));
+        assert_eq!(restored.repair_kind, "invalid_tool_reroute");
+    }
+
+    #[test]
+    fn repair_event_original_error_kind_is_none_when_not_set() {
+        let event = RepairEvent::new("tool_name_repair", "tool", "read");
+        let map = event.to_loose_map();
+        let restored = RepairEvent::from_loose_map(&map).expect("should round-trip");
+
+        assert_eq!(restored.original_error_kind, None);
     }
 
     #[test]
