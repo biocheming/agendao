@@ -5,6 +5,41 @@ use crate::{PartType, Session, SessionMessage};
 use super::SessionPrompt;
 
 impl SessionPrompt {
+    const MAX_TOOL_RESULT_TRANSCRIPT_CHARS: usize = 32_000;
+
+    fn truncate_tool_result_for_transcript(
+        content: String,
+    ) -> (String, Option<HashMap<String, serde_json::Value>>) {
+        if content.len() <= Self::MAX_TOOL_RESULT_TRANSCRIPT_CHARS {
+            return (content, None);
+        }
+
+        let original_chars = content.chars().count();
+        let truncated: String = content
+            .chars()
+            .take(Self::MAX_TOOL_RESULT_TRANSCRIPT_CHARS)
+            .collect();
+        let content = format!(
+            "{truncated}\n\n[tool result transcript fallback truncated: original_chars={original_chars}, kept_chars={}]",
+            Self::MAX_TOOL_RESULT_TRANSCRIPT_CHARS
+        );
+        let metadata = HashMap::from([
+            (
+                "tool_result_transcript_fallback_truncated".to_string(),
+                serde_json::json!(true),
+            ),
+            (
+                "tool_result_transcript_fallback_original_chars".to_string(),
+                serde_json::json!(original_chars),
+            ),
+            (
+                "tool_result_transcript_fallback_kept_chars".to_string(),
+                serde_json::json!(Self::MAX_TOOL_RESULT_TRANSCRIPT_CHARS),
+            ),
+        ]);
+        (content, Some(metadata))
+    }
+
     pub(super) fn upsert_tool_call_part(
         message: &mut SessionMessage,
         tool_call_id: &str,
@@ -114,6 +149,16 @@ impl SessionPrompt {
         metadata: Option<HashMap<String, serde_json::Value>>,
         attachments: Option<Vec<serde_json::Value>>,
     ) {
+        let (content, fallback_metadata) = Self::truncate_tool_result_for_transcript(content);
+        let metadata = match (metadata, fallback_metadata) {
+            (Some(mut existing), Some(fallback)) => {
+                existing.extend(fallback);
+                Some(existing)
+            }
+            (Some(existing), None) => Some(existing),
+            (None, Some(fallback)) => Some(fallback),
+            (None, None) => None,
+        };
         message.parts.push(crate::MessagePart {
             id: rocode_core::id::create(rocode_core::id::Prefix::Part, true, None),
             part_type: PartType::ToolResult {
@@ -935,5 +980,52 @@ mod tests {
         assert!(!metadata.contains_key("attachment"));
         assert_eq!(attachments.as_ref().map(|v| v.len()), Some(2));
         assert_eq!(file_parts.as_ref().map(|v| v.len()), Some(2));
+    }
+
+    #[test]
+    fn push_tool_result_part_truncates_large_transcript_payloads() {
+        let mut message = SessionMessage::tool("ses_test");
+        let oversized = "X".repeat(SessionPrompt::MAX_TOOL_RESULT_TRANSCRIPT_CHARS + 2048);
+
+        SessionPrompt::push_tool_result_part(
+            &mut message,
+            "call_1".to_string(),
+            oversized,
+            false,
+            None,
+            None,
+            None,
+        );
+
+        let content = message
+            .parts
+            .iter()
+            .find_map(|part| match &part.part_type {
+                PartType::ToolResult { content, .. } => Some(content.as_str()),
+                _ => None,
+            })
+            .expect("tool result should exist");
+
+        assert!(
+            content.contains("[tool result transcript fallback truncated:"),
+            "expected oversized tool result to be replaced with a truncation marker"
+        );
+        assert!(
+            content.len() < SessionPrompt::MAX_TOOL_RESULT_TRANSCRIPT_CHARS + 512,
+            "stored transcript payload should be substantially smaller than the original"
+        );
+
+        let metadata = message
+            .parts
+            .iter()
+            .find_map(|part| match &part.part_type {
+                PartType::ToolResult { metadata, .. } => metadata.as_ref(),
+                _ => None,
+            })
+            .expect("fallback metadata should exist");
+        assert_eq!(
+            metadata.get("tool_result_transcript_fallback_truncated"),
+            Some(&serde_json::json!(true))
+        );
     }
 }

@@ -8,10 +8,10 @@ use std::time::Duration;
 use crate::api_client::{
     CliApiClient, RepairQuery, RepairQueryResponse, SessionRepairSummaryResponse,
     SkillCatalogQuery, SkillDetailQuery, SkillHubGuardRunRequest, SkillHubIndexRefreshRequest,
-    SkillHubManagedDetachRequest, SkillHubManagedRemoveRequest,
-    SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
-    SkillHubRemoteUpdateApplyRequest, SkillHubRemoteUpdatePlanRequest, SkillHubSyncApplyRequest,
-    SkillHubSyncPlanRequest, SkillHubTimelineQuery, SkillSourceKind, SkillSourceRef,
+    SkillHubManagedDetachRequest, SkillHubManagedRemoveRequest, SkillHubRemoteInstallApplyRequest,
+    SkillHubRemoteInstallPlanRequest, SkillHubRemoteUpdateApplyRequest,
+    SkillHubRemoteUpdatePlanRequest, SkillHubSyncApplyRequest, SkillHubSyncPlanRequest,
+    SkillHubTimelineQuery, SkillSourceKind, SkillSourceRef,
 };
 use rocode_agent::AgentRegistry;
 use rocode_config::loader::load_config;
@@ -618,10 +618,7 @@ fn print_repair_query_response(response: &RepairQueryResponse) {
         println!("scope: session");
         println!("total_events: {}", summary.total_events);
         println!("distinct_tools: {}", summary.distinct_tools);
-        println!(
-            "distinct_repair_kinds: {}",
-            summary.distinct_repair_kinds
-        );
+        println!("distinct_repair_kinds: {}", summary.distinct_repair_kinds);
         println!(
             "strict_would_fail_count: {}",
             summary.strict_would_fail_count

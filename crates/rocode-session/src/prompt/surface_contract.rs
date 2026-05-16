@@ -138,9 +138,7 @@ pub(super) fn sanctioned_model_context_projection_for_message(
     if message.parts.iter().any(|part| {
         matches!(
             part.part_type,
-            PartType::ToolCall { .. }
-                | PartType::ToolResult { .. }
-                | PartType::Reasoning { .. }
+            PartType::ToolCall { .. } | PartType::ToolResult { .. } | PartType::Reasoning { .. }
         )
     }) {
         return None;

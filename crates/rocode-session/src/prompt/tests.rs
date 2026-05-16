@@ -5,6 +5,9 @@ use super::skill_reflection::{
 };
 use super::*;
 use crate::message::MessagePart;
+use crate::tool_result_governance::{
+    default_tool_result_artifacts_root, govern_tool_result_output, SINGLE_TOOL_RESULT_MAX_CHARS,
+};
 use crate::SessionMessage;
 use async_trait::async_trait;
 use futures::stream;
@@ -148,6 +151,174 @@ fn methodology_candidate_record(
         linked_skill_name: Some(linked_skill_name.to_string()),
         validation_status: MemoryValidationStatus::Passed,
     }
+}
+
+#[test]
+fn large_tool_result_is_governed_into_preview_and_artifact() {
+    let dir = tempdir().expect("tempdir");
+    let artifacts_root = default_tool_result_artifacts_root(dir.path().to_string_lossy().as_ref());
+    let mut metadata = std::collections::HashMap::new();
+    let large = "A".repeat(SINGLE_TOOL_RESULT_MAX_CHARS + 2048);
+
+    let governed =
+        govern_tool_result_output("session-1", "call-1", large, &mut metadata, &artifacts_root);
+
+    assert!(governed.degraded);
+    assert!(governed
+        .output
+        .contains("[tool result governed: output too large]"));
+    assert!(governed.output.contains("artifact: "));
+    let artifact_path = governed.artifact_path.expect("artifact path should exist");
+    assert!(std::path::Path::new(&artifact_path).exists());
+    assert_eq!(
+        metadata.get("tool_result_governed"),
+        Some(&serde_json::json!(true))
+    );
+    assert_eq!(
+        metadata.get("tool_result_preview_only"),
+        Some(&serde_json::json!(true))
+    );
+}
+
+#[test]
+fn small_tool_result_is_not_governed() {
+    let dir = tempdir().expect("tempdir");
+    let artifacts_root = default_tool_result_artifacts_root(dir.path().to_string_lossy().as_ref());
+    let mut metadata = std::collections::HashMap::new();
+
+    let governed = govern_tool_result_output(
+        "session-1",
+        "call-1",
+        "short tool output".to_string(),
+        &mut metadata,
+        &artifacts_root,
+    );
+
+    assert!(!governed.degraded);
+    assert_eq!(governed.output, "short tool output");
+    assert!(governed.artifact_path.is_none());
+    assert!(!metadata.contains_key("tool_result_governed"));
+}
+
+#[test]
+fn append_stream_tool_results_as_message_preserves_governed_preview() {
+    let dir = tempdir().expect("tempdir");
+    let mut session = Session::new("proj", dir.path().to_string_lossy().as_ref());
+    let session_id = session.id.clone();
+    let artifacts_root = default_tool_result_artifacts_root(dir.path().to_string_lossy().as_ref());
+    let mut metadata = std::collections::HashMap::new();
+    let governed = govern_tool_result_output(
+        &session_id,
+        "call-1",
+        "Z".repeat(SINGLE_TOOL_RESULT_MAX_CHARS + 4096),
+        &mut metadata,
+        &artifacts_root,
+    );
+    let stream_results = vec![(
+        "call-1".to_string(),
+        governed.output.clone(),
+        false,
+        Some("Tool Result".to_string()),
+        Some(metadata),
+        None,
+    )];
+
+    SessionPrompt::append_stream_tool_results_as_message(&mut session, &session_id, stream_results);
+
+    let tool_message = session
+        .record()
+        .messages
+        .last()
+        .expect("tool message should be appended");
+    let tool_result = tool_message
+        .parts
+        .iter()
+        .find_map(|part| match &part.part_type {
+            PartType::ToolResult {
+                content, metadata, ..
+            } => Some((content, metadata)),
+            _ => None,
+        })
+        .expect("tool result part should exist");
+
+    assert!(tool_result
+        .0
+        .contains("[tool result governed: output too large]"));
+    assert_eq!(
+        tool_result
+            .1
+            .as_ref()
+            .and_then(|m| m.get("tool_result_governed")),
+        Some(&serde_json::json!(true))
+    );
+}
+
+#[test]
+fn append_stream_tool_results_as_message_applies_batch_budget_without_reordering() {
+    let dir = tempdir().expect("tempdir");
+    let mut session = Session::new("proj", dir.path().to_string_lossy().as_ref());
+    let session_id = session.id.clone();
+    let stream_results = vec![
+        (
+            "call-1".to_string(),
+            "A".repeat(10_000),
+            false,
+            Some("one".to_string()),
+            None,
+            None,
+        ),
+        (
+            "call-2".to_string(),
+            "B".repeat(90_000),
+            false,
+            Some("two".to_string()),
+            None,
+            None,
+        ),
+        (
+            "call-3".to_string(),
+            "C".repeat(40_000),
+            false,
+            Some("three".to_string()),
+            None,
+            None,
+        ),
+    ];
+
+    SessionPrompt::append_stream_tool_results_as_message(&mut session, &session_id, stream_results);
+
+    let tool_message = session
+        .record()
+        .messages
+        .last()
+        .expect("tool message should be appended");
+    let results = tool_message
+        .parts
+        .iter()
+        .filter_map(|part| match &part.part_type {
+            PartType::ToolResult {
+                tool_call_id,
+                content,
+                metadata,
+                ..
+            } => Some((tool_call_id.as_str(), content.as_str(), metadata.as_ref())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[0].0, "call-1");
+    assert_eq!(results[1].0, "call-2");
+    assert_eq!(results[2].0, "call-3");
+    assert!(results[1]
+        .1
+        .contains("[tool result governed: output too large]"));
+    assert_eq!(
+        results[1]
+            .2
+            .and_then(|m| m.get("tool_result_batch_governed")),
+        Some(&serde_json::json!(true))
+    );
 }
 
 #[async_trait]

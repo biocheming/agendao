@@ -7,9 +7,9 @@ use rocode_multimodal::PersistedMultimodalExplain;
 use rocode_session::prompt::{explain_session_cache_semantics, explain_session_context};
 use rocode_session::{
     aggregate_model_tool_repair_telemetry, build_session_repair_query_snapshot,
-    build_session_tool_repair_telemetry, load_session_telemetry_snapshot,
-    persist_session_telemetry_snapshot, session_last_run_status_label, session_telemetry_model_ref,
-    Session, SessionUsage,
+    build_session_tool_repair_telemetry, build_session_tool_result_governance_summary,
+    load_session_telemetry_snapshot, persist_session_telemetry_snapshot,
+    session_last_run_status_label, session_telemetry_model_ref, Session, SessionUsage,
 };
 use rocode_types::message_continuity_packet;
 #[cfg(test)]
@@ -21,8 +21,8 @@ use rocode_types::{
     SessionCompactionContinuityInspection, SessionContextClosureContract, SessionContextExplain,
     SessionDiagnosticsSidecar, SessionInsightsResponse, SessionMemoryTelemetrySummary,
     SessionMultimodalAttachmentInfo, SessionMultimodalInsight, SessionOwnershipSummary,
-    SessionToolRepairTelemetrySummary, SessionUsageBooks, ToolTrajectoryQualitySummary,
-    WorkflowUsageSummary,
+    SessionToolRepairTelemetrySummary, SessionUsageBooks, ToolResultGovernanceSummary,
+    ToolTrajectoryQualitySummary, WorkflowUsageSummary,
 };
 use serde::Serialize;
 
@@ -50,6 +50,8 @@ pub struct SessionTelemetrySnapshot {
     pub repair_query_snapshot: Option<rocode_types::SessionRepairQuerySnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_trajectory_quality: Option<ToolTrajectoryQualitySummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_result_governance: Option<ToolResultGovernanceSummary>,
     #[serde(default)]
     pub pending_steering_count: u64,
     #[serde(default)]
@@ -207,6 +209,7 @@ pub(super) async fn build_session_telemetry_snapshot(
     };
     let repair_query_snapshot = build_session_repair_query_snapshot(session);
     let tool_trajectory_quality = rocode_session::build_session_tool_trajectory_quality(session);
+    let tool_result_governance = build_session_tool_result_governance_summary(session);
     // Steering telemetry: runtime view reads live session metadata, not persisted snapshot,
     // because steering can be consumed mid-turn before the next persist cycle.
     let record = session.record();
@@ -316,6 +319,7 @@ pub(super) async fn build_session_telemetry_snapshot(
         model_tool_repair_summary,
         repair_query_snapshot,
         tool_trajectory_quality,
+        tool_result_governance,
         pending_steering_count,
         consumed_steering_count,
         last_steering_injected_at,
@@ -780,6 +784,7 @@ pub(super) async fn persist_session_telemetry_metadata(
     snapshot.repair_query_snapshot = build_session_repair_query_snapshot(session);
     snapshot.tool_trajectory_quality =
         rocode_session::build_session_tool_trajectory_quality(session);
+    snapshot.tool_result_governance = build_session_tool_result_governance_summary(session);
     // Patch 4: steering telemetry — populate from session metadata and runtime state.
     populate_steering_telemetry(&mut snapshot, session, &state).await;
 
@@ -1631,6 +1636,7 @@ mod tests {
             model_tool_repair_summary: None,
             repair_query_snapshot: None,
             tool_trajectory_quality: None,
+            tool_result_governance: None,
             pending_steering_count: 0,
             consumed_steering_count: 0,
             last_steering_injected_at: None,
@@ -2054,6 +2060,7 @@ mod tests {
                     stage_summaries: vec![],
                     repair_query_snapshot: None,
                     tool_trajectory_quality: None,
+                    tool_result_governance: None,
                     pending_steering_count: 0,
                     consumed_steering_count: 0,
                     last_steering_injected_at: None,

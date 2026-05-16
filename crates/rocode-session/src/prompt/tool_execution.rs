@@ -60,14 +60,15 @@ fn collect_tool_batch_facts(assistant_msg: &SessionMessage) -> Vec<ToolCallBatch
         .iter()
         .filter_map(|part| match &part.part_type {
             PartType::ToolCall {
-                name, status, state, ..
+                name,
+                status,
+                state,
+                ..
             } => {
                 let is_error = matches!(status, crate::ToolCallStatus::Error);
                 let error_kind = if is_error {
                     state.as_ref().and_then(|s| match s {
-                        crate::ToolState::Error { error, .. } => {
-                            Some(classify_error_kind(error))
-                        }
+                        crate::ToolState::Error { error, .. } => Some(classify_error_kind(error)),
                         _ => None,
                     })
                 } else {
@@ -77,14 +78,14 @@ fn collect_tool_batch_facts(assistant_msg: &SessionMessage) -> Vec<ToolCallBatch
                     .as_ref()
                     .and_then(|s| match s {
                         crate::ToolState::Completed { metadata, .. }
-                        | crate::ToolState::Error { metadata: Some(metadata), .. } => {
-                            Some(rocode_tool::structured_repair_events(metadata))
-                        }
+                        | crate::ToolState::Error {
+                            metadata: Some(metadata),
+                            ..
+                        } => Some(rocode_tool::structured_repair_events(metadata)),
                         _ => None,
                     })
                     .unwrap_or_default();
-                let block_reason =
-                    classify_block_reason(error_kind.as_deref(), &repair_events);
+                let block_reason = classify_block_reason(error_kind.as_deref(), &repair_events);
                 let (artifacts_created, suggested_follow_up, unresolved_items) =
                     extract_tool_fact_extras(name, is_error, error_kind.as_deref(), state.as_ref());
                 Some(ToolCallBatchFact {
@@ -108,7 +109,11 @@ fn extract_tool_fact_extras(
     _is_error: bool,
     error_kind: Option<&str>,
     state: Option<&crate::ToolState>,
-) -> (Vec<String>, Vec<rocode_types::ToolBatchFollowUpItem>, Vec<String>) {
+) -> (
+    Vec<String>,
+    Vec<rocode_types::ToolBatchFollowUpItem>,
+    Vec<String>,
+) {
     let mut artifacts = Vec::new();
     let mut follow_up = Vec::new();
     let mut unresolved = Vec::new();
@@ -116,7 +121,9 @@ fn extract_tool_fact_extras(
     if let Some(state) = state {
         match state {
             crate::ToolState::Completed {
-                output, attachments, ..
+                output,
+                attachments,
+                ..
             } => {
                 if let Some(attachments) = attachments {
                     for a in attachments {
@@ -172,9 +179,7 @@ fn classify_block_reason(
         Some("permission_denied") => Some(rocode_types::ToolBatchBlockReason::PermissionDenied),
         Some("timeout") => Some(rocode_types::ToolBatchBlockReason::Timeout),
         Some("provider_rejected") => Some(rocode_types::ToolBatchBlockReason::ProviderRejected),
-        Some("user_input_required") => {
-            Some(rocode_types::ToolBatchBlockReason::UserInputRequired)
-        }
+        Some("user_input_required") => Some(rocode_types::ToolBatchBlockReason::UserInputRequired),
         Some("execution_error") => Some(rocode_types::ToolBatchBlockReason::ToolExecutionError),
         Some(_) => Some(rocode_types::ToolBatchBlockReason::Unknown),
         None => None,
@@ -210,7 +215,10 @@ fn derive_goal_status(facts: &[ToolCallBatchFact]) -> rocode_types::ToolBatchGoa
     let has_error = facts.iter().any(|f| f.is_error);
     let has_blocker = facts.iter().any(|f| f.block_reason.is_some());
     // Count calls that actually succeeded (no error AND no blocker).
-    let real_success_count = facts.iter().filter(|f| !f.is_error && f.block_reason.is_none()).count();
+    let real_success_count = facts
+        .iter()
+        .filter(|f| !f.is_error && f.block_reason.is_none())
+        .count();
     let total = facts.len();
 
     if real_success_count == total {
@@ -778,15 +786,13 @@ impl SessionPrompt {
                 .iter()
                 .flat_map(|m| {
                     m.attachments.iter().filter_map(|a| {
-                        a.filename
-                            .clone()
-                            .or_else(|| {
-                                if a.url.is_empty() {
-                                    None
-                                } else {
-                                    Some(a.url.clone())
-                                }
-                            })
+                        a.filename.clone().or_else(|| {
+                            if a.url.is_empty() {
+                                None
+                            } else {
+                                Some(a.url.clone())
+                            }
+                        })
                     })
                 })
                 .collect()
@@ -843,21 +849,21 @@ impl SessionPrompt {
             names
         };
         let error_kinds = {
-            let mut kinds: Vec<String> = facts.iter().filter_map(|f| f.error_kind.clone()).collect();
+            let mut kinds: Vec<String> =
+                facts.iter().filter_map(|f| f.error_kind.clone()).collect();
             kinds.sort();
             kinds.dedup();
             kinds
         };
         let blocked_by: Vec<rocode_types::ToolBatchBlockReason> = {
-            let mut reasons: Vec<rocode_types::ToolBatchBlockReason> = facts
-                .iter()
-                .filter_map(|f| f.block_reason)
-                .collect();
+            let mut reasons: Vec<rocode_types::ToolBatchBlockReason> =
+                facts.iter().filter_map(|f| f.block_reason).collect();
             reasons.sort_by_key(|r| r.as_str());
             reasons.dedup_by_key(|r| r.as_str());
             reasons
         };
-        let repair_events: Vec<RepairEvent> = facts.iter().flat_map(|f| f.repair_events.clone()).collect();
+        let repair_events: Vec<RepairEvent> =
+            facts.iter().flat_map(|f| f.repair_events.clone()).collect();
         let goal_status = derive_goal_status(&facts);
         let recommended_next_step = derive_recommended_next_step(&facts);
 
@@ -2070,8 +2076,7 @@ mod tests {
             vec![rocode_types::ToolBatchBlockReason::ProviderRejected]
         );
         assert_eq!(
-            summary.recommended_next_step,
-            None,
+            summary.recommended_next_step, None,
             "provider-rejected path should not pretend normal execution can continue"
         );
     }
@@ -2586,5 +2591,4 @@ mod tests {
             "execution error reroute should be classified as tool_execution_error"
         );
     }
-
 }

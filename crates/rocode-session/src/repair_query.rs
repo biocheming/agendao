@@ -400,7 +400,9 @@ pub fn query_model_repair_summary<'a>(
     let provider_id = if let Some(provider_id) = &query.provider_id {
         Some(provider_id.clone())
     } else {
-        let first = matched_model_refs.first().map(|model| model.provider_id.clone());
+        let first = matched_model_refs
+            .first()
+            .map(|model| model.provider_id.clone());
         if matched_model_refs
             .iter()
             .all(|model| Some(model.provider_id.clone()) == first)
@@ -413,7 +415,9 @@ pub fn query_model_repair_summary<'a>(
     let model_id = if let Some(model_id) = &query.model_id {
         Some(model_id.clone())
     } else {
-        let first = matched_model_refs.first().map(|model| model.model_id.clone());
+        let first = matched_model_refs
+            .first()
+            .map(|model| model.model_id.clone());
         if matched_model_refs
             .iter()
             .all(|model| Some(model.model_id.clone()) == first)

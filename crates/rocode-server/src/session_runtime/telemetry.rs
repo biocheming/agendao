@@ -723,6 +723,7 @@ impl RuntimeTelemetryAuthority {
             compaction_continuity: None,
             repair_query_snapshot: None,
             tool_trajectory_quality: None,
+            tool_result_governance: None,
             pending_steering_count: 0,
             consumed_steering_count: 0,
             last_steering_injected_at: None,

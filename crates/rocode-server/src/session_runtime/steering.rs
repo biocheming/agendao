@@ -56,14 +56,10 @@ impl SessionSteeringQueueStore {
     /// Drain all pending steering messages for an owner session.
     /// Returns them in FIFO order.
     pub fn drain(&mut self, owner_session_id: &str) -> Vec<PendingSteeringMessage> {
-        let mut queue = self
-            .queues
-            .remove(owner_session_id)
-            .unwrap_or_default();
+        let mut queue = self.queues.remove(owner_session_id).unwrap_or_default();
         let drained: Vec<_> = queue.drain(..).collect();
         if !queue.is_empty() {
-            self.queues
-                .insert(owner_session_id.to_string(), queue);
+            self.queues.insert(owner_session_id.to_string(), queue);
         }
         drained
     }

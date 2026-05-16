@@ -24,10 +24,9 @@ use crate::{
     ProviderConnectSchemaResponse, ProviderDescriptorResponse, ProviderListResponse,
     ProvisionExternalAdapterSessionRequest, ProvisionExternalAdapterSessionResponse, QuestionInfo,
     RecoveryActionKind, RefreshProviderCatalogResponse, RepairQuery, RepairQueryResponse,
-    ResolveProviderConnectRequest, ResolveProviderConnectResponse, RevertRequest,
-    RevertResponse, SessionEventsQuery,
-    SessionExecutionTopology, SessionInfo, SessionInsightsResponse, SessionListItem,
-    SessionListResponse, SessionRecoveryProtocol, SessionRepairSummaryResponse,
+    ResolveProviderConnectRequest, ResolveProviderConnectResponse, RevertRequest, RevertResponse,
+    SessionEventsQuery, SessionExecutionTopology, SessionInfo, SessionInsightsResponse,
+    SessionListItem, SessionListResponse, SessionRecoveryProtocol, SessionRepairSummaryResponse,
     SessionRuntimeState, SessionStatusInfo, SessionTelemetrySnapshot, ShareResponse,
     SkillCatalogEntry, SkillCatalogQuery, SkillDetailQuery, SkillDetailResponse,
     SkillEvolutionProposal, SkillHubArtifactCacheResponse, SkillHubAuditResponse,
@@ -1279,12 +1278,8 @@ impl AsyncApiClient {
         text: &str,
     ) -> anyhow::Result<serde_json::Value> {
         let url = format!("/session/{}/steer", session_id);
-        self.post_json(
-            &url,
-            "submit steering",
-            &serde_json::json!({"text": text}),
-        )
-        .await
+        self.post_json(&url, "submit steering", &serde_json::json!({"text": text}))
+            .await
     }
 
     async fn json_ok<T: serde::de::DeserializeOwned>(

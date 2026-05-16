@@ -1055,7 +1055,10 @@ impl App {
             return false;
         }
 
-        if !matches!(self.context.status_dialog_view(), StatusDialogView::Events(_)) {
+        if !matches!(
+            self.context.status_dialog_view(),
+            StatusDialogView::Events(_)
+        ) {
             match key.code {
                 KeyCode::Esc | KeyCode::Enter => self.close_status_dialog_modal(),
                 KeyCode::Up | KeyCode::Char('k')
@@ -1790,9 +1793,7 @@ fn tui_tool_repair_tool_summary(tools: &[rocode_types::ToolRepairToolSummary]) -
     )
 }
 
-fn tui_tool_trajectory_band_label(
-    band: rocode_types::ToolTrajectoryQualityBand,
-) -> &'static str {
+fn tui_tool_trajectory_band_label(band: rocode_types::ToolTrajectoryQualityBand) -> &'static str {
     match band {
         rocode_types::ToolTrajectoryQualityBand::Clean => "clean",
         rocode_types::ToolTrajectoryQualityBand::Recoverable => "recoverable",
@@ -2195,7 +2196,21 @@ fn tui_usage_status_lines(
         if quality.provider_diagnostic_count > 0 {
             signals.push(format!("provider {}", quality.provider_diagnostic_count));
         }
-        lines.push(StatusLine::muted(format!("Signals: {}", signals.join(" · "))));
+        lines.push(StatusLine::muted(format!(
+            "Signals: {}",
+            signals.join(" · ")
+        )));
+    }
+
+    if let Some(governance) = telemetry.tool_result_governance.as_ref() {
+        lines.push(StatusLine::muted(String::new()));
+        lines.push(StatusLine::title("Tool Result Governance"));
+        lines.push(StatusLine::normal(format!(
+            "Single-result governed: {} · Batch governed: {} · Transcript fallback: {}",
+            governance.single_result_governed_count,
+            governance.batch_governed_count,
+            governance.transcript_fallback_count
+        )));
     }
 
     if telemetry.context_closure_contract.is_none() {
@@ -3525,6 +3540,11 @@ mod tests {
                 penalties: Vec::new(),
                 notes: Vec::new(),
             }),
+            tool_result_governance: Some(rocode_types::ToolResultGovernanceSummary {
+                single_result_governed_count: 2,
+                batch_governed_count: 1,
+                transcript_fallback_count: 0,
+            }),
             memory: None,
             cache_evidence: None,
             context_explain: Some(SessionContextExplain {
@@ -3829,6 +3849,7 @@ mod tests {
             model_tool_repair_summary: None,
             repair_query_snapshot: None,
             tool_trajectory_quality: None,
+            tool_result_governance: None,
             memory: None,
             cache_evidence: None,
             context_explain: None,
