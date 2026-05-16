@@ -271,7 +271,27 @@ pub struct PromptHooks {
     pub ask_question_hook: Option<AskQuestionHook>,
     pub ask_permission_hook: Option<AskPermissionHook>,
     pub publish_bus_hook: Option<PublishBusHook>,
+    /// P0 steering: called after tool execution to drain pending steering messages.
+    /// Returns texts to inject as user messages before the next model request.
+    pub steering_boundary_hook: Option<SteeringBoundaryHook>,
 }
+
+/// A steering message drained from the server-owned queue, ready for injection.
+#[derive(Debug, Clone)]
+pub struct SteeringMessage {
+    pub text: String,
+    pub source_session_id: Option<String>,
+}
+
+/// Hook called at the tool boundary to drain pending steering messages.
+/// Constitution §9: session calls the hook; server owns the queue.
+pub type SteeringBoundaryHook = Arc<
+    dyn Fn(String)
+            -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Vec<SteeringMessage>> + Send>,
+            > + Send
+        + Sync,
+>;
 
 #[derive(Clone)]
 pub struct PromptRequestContext {

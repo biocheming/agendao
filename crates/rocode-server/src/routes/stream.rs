@@ -415,6 +415,7 @@ pub(crate) async fn stream_message(
                         ask_question_hook,
                         ask_permission_hook,
                         publish_bus_hook: None,
+                        steering_boundary_hook: None,
                     },
                 },
             )

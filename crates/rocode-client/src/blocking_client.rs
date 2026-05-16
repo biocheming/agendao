@@ -1074,6 +1074,20 @@ impl BlockingApiClient {
             .and_then(|current| current.clone())
     }
 
+    /// Submit a mid-run steering message to the owner session.
+    /// Constitution §9: client only submits; runtime consumes at tool boundary.
+    pub fn submit_steering(
+        &self,
+        session_id: &str,
+        text: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        self.post_json(
+            &format!("/session/{}/steer", session_id),
+            "submit steering",
+            &serde_json::json!({"text": text}),
+        )
+    }
+
     fn get_json<T: serde::de::DeserializeOwned>(
         &self,
         path: &str,

@@ -2,6 +2,7 @@ pub(crate) mod events;
 pub(crate) mod memory;
 pub(crate) mod stage_summary;
 pub(crate) mod state;
+pub(crate) mod steering;
 pub(crate) mod telemetry;
 
 use async_trait::async_trait;

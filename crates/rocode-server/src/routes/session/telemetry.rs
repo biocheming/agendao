@@ -50,6 +50,14 @@ pub struct SessionTelemetrySnapshot {
     pub repair_query_snapshot: Option<rocode_types::SessionRepairQuerySnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_trajectory_quality: Option<ToolTrajectoryQualitySummary>,
+    #[serde(default)]
+    pub pending_steering_count: u64,
+    #[serde(default)]
+    pub consumed_steering_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_steering_injected_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_steering_source_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<SessionMemoryTelemetrySummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -199,6 +207,29 @@ pub(super) async fn build_session_telemetry_snapshot(
     };
     let repair_query_snapshot = build_session_repair_query_snapshot(session);
     let tool_trajectory_quality = rocode_session::build_session_tool_trajectory_quality(session);
+    // Steering telemetry: runtime view reads live session metadata, not persisted snapshot,
+    // because steering can be consumed mid-turn before the next persist cycle.
+    let record = session.record();
+    let pending_steering_count = state
+        .runtime_telemetry
+        .runtime_state()
+        .get(&record.id)
+        .await
+        .map_or(0, |s| s.pending_steering.len() as u64);
+    let consumed_steering_count = record
+        .metadata
+        .get("consumed_steering_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let last_steering_injected_at = record
+        .metadata
+        .get("last_steering_injected_at")
+        .and_then(|v| v.as_i64());
+    let last_steering_source_session_id = record
+        .metadata
+        .get("last_steering_source_session_id")
+        .and_then(|v| v.as_str())
+        .map(ToOwned::to_owned);
     let memory = build_session_memory_telemetry(state, session).await;
     let diagnostics = SessionDiagnosticsSidecar::derive_from_session(session);
     let cache_evidence = diagnostics
@@ -285,6 +316,10 @@ pub(super) async fn build_session_telemetry_snapshot(
         model_tool_repair_summary,
         repair_query_snapshot,
         tool_trajectory_quality,
+        pending_steering_count,
+        consumed_steering_count,
+        last_steering_injected_at,
+        last_steering_source_session_id,
         memory,
         cache_evidence,
         context_explain,
@@ -301,6 +336,41 @@ pub(super) async fn build_session_telemetry_snapshot(
         execution_preflight_summary,
         provider_diagnostic_summary,
     })
+}
+
+/// Patch 4: populate steering telemetry fields from session metadata and runtime state.
+async fn populate_steering_telemetry(
+    snapshot: &mut rocode_types::SessionTelemetrySnapshot,
+    session: &Session,
+    state: &ServerState,
+) {
+    let record = session.record();
+
+    // Read from session metadata (written by loop_lifecycle.rs on injection).
+    snapshot.consumed_steering_count = record
+        .metadata
+        .get("consumed_steering_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    snapshot.last_steering_injected_at = record
+        .metadata
+        .get("last_steering_injected_at")
+        .and_then(|v| v.as_i64());
+    snapshot.last_steering_source_session_id = record
+        .metadata
+        .get("last_steering_source_session_id")
+        .and_then(|v| v.as_str())
+        .map(ToOwned::to_owned);
+
+    // Read pending count from runtime state.
+    if let Some(runtime) = state
+        .runtime_telemetry
+        .runtime_state()
+        .get(&record.id)
+        .await
+    {
+        snapshot.pending_steering_count = runtime.pending_steering.len() as u64;
+    }
 }
 
 fn latest_compaction_continuity_inspection(
@@ -710,6 +780,8 @@ pub(super) async fn persist_session_telemetry_metadata(
     snapshot.repair_query_snapshot = build_session_repair_query_snapshot(session);
     snapshot.tool_trajectory_quality =
         rocode_session::build_session_tool_trajectory_quality(session);
+    // Patch 4: steering telemetry — populate from session metadata and runtime state.
+    populate_steering_telemetry(&mut snapshot, session, &state).await;
 
     if let Err(error) = persist_session_telemetry_snapshot(session, &snapshot) {
         tracing::warn!(
@@ -1559,6 +1631,10 @@ mod tests {
             model_tool_repair_summary: None,
             repair_query_snapshot: None,
             tool_trajectory_quality: None,
+            pending_steering_count: 0,
+            consumed_steering_count: 0,
+            last_steering_injected_at: None,
+            last_steering_source_session_id: None,
             memory: None,
             cache_evidence: None,
             context_explain: Some(SessionContextExplain {
@@ -1978,6 +2054,10 @@ mod tests {
                     stage_summaries: vec![],
                     repair_query_snapshot: None,
                     tool_trajectory_quality: None,
+                    pending_steering_count: 0,
+                    consumed_steering_count: 0,
+                    last_steering_injected_at: None,
+                    last_steering_source_session_id: None,
                     last_run_status: "completed".to_string(),
                     updated_at: 123,
                 },

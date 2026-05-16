@@ -2710,6 +2710,26 @@ async fn session_prompt_inner(
                 ask_question_hook,
                 ask_permission_hook,
                 publish_bus_hook,
+                steering_boundary_hook: Some(Arc::new({
+                    let store = state.steering_store.clone();
+                    let runtime_state = state.runtime_telemetry.runtime_state();
+                    move |owner_id| {
+                        let store = store.clone();
+                        let runtime_state = runtime_state.clone();
+                        Box::pin(async move {
+                            let mut queue = store.lock().await;
+                            let drained = queue.drain(&owner_id);
+                            runtime_state.steering_cleared(&owner_id).await;
+                            drained
+                                .into_iter()
+                                .map(|m| rocode_session::prompt::SteeringMessage {
+                                    text: m.text,
+                                    source_session_id: m.source_session_id,
+                                })
+                                .collect()
+                        })
+                    }
+                })),
             },
         };
 
