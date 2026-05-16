@@ -29,9 +29,7 @@ fn validate_submit_steering_request(body: &SubmitSteeringRequest) -> Result<()> 
     }
 
     if body.text.trim().is_empty() {
-        return Err(ApiError::BadRequest(
-            "steering text cannot be empty".into(),
-        ));
+        return Err(ApiError::BadRequest("steering text cannot be empty".into()));
     }
 
     Ok(())
@@ -217,8 +215,10 @@ mod tests {
         let child_id = {
             let mut sessions = state.sessions.lock().await;
             let parent = sessions.create("project", "/tmp/project");
-            let child =
-                Session::attached_with_context_kind(&parent, SessionContextKind::DelegatedSubsession);
+            let child = Session::attached_with_context_kind(
+                &parent,
+                SessionContextKind::DelegatedSubsession,
+            );
             let child_id = child.id.clone();
             sessions.update(child);
             child_id

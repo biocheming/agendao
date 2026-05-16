@@ -1192,7 +1192,7 @@ impl SessionManager {
 
     /// Publish a session info event (Created/Updated/Deleted)
     fn publish_session_event(&self, def: &'static BusEventDef, session: &Session) {
-        if let Ok(json) = serde_json::to_value(session) {
+        if let Ok(json) = serde_json::to_value(session.to_row()) {
             self.publish_event(def, serde_json::json!({ "info": json }));
         }
     }
@@ -2524,9 +2524,41 @@ mod tests {
         assert_eq!(event.event_type, SESSION_UPDATED_EVENT.event_type);
         assert_eq!(event.properties["info"]["id"], session.id);
         assert_eq!(
-            event.properties["info"]["share"]["url"],
+            event.properties["info"]["share_url"],
             "https://share.opencode.ai/test"
         );
+        assert!(event.properties["info"].get("messages").is_none());
+        assert!(event.properties["info"].get("metadata").is_none());
+    }
+
+    #[tokio::test]
+    async fn session_updated_event_does_not_emit_large_tool_result_content() {
+        let bus = Arc::new(Bus::new());
+        let mut manager = SessionManager::with_bus(bus.clone());
+        let mut session = manager.create("project-1", "/path");
+        let large = "Y".repeat(50_000);
+        let mut tool_message = SessionMessage::tool(session.id.clone());
+        tool_message.add_tool_result("call-large", &large, false);
+        session.push_message(tool_message);
+        manager.update(session.clone());
+        let mut rx = bus.subscribe_channel();
+
+        let event = timeout(Duration::from_secs(1), async {
+            loop {
+                let event = rx.recv().await.expect("event channel closed");
+                if event.event_type == SESSION_UPDATED_EVENT.event_type {
+                    break event;
+                }
+            }
+        })
+        .await
+        .expect("event timeout");
+
+        assert_eq!(event.event_type, SESSION_UPDATED_EVENT.event_type);
+        assert!(event.properties["info"].get("messages").is_none());
+        assert!(event.properties["info"].get("metadata").is_none());
+        let serialized = event.properties.to_string();
+        assert!(!serialized.contains(&large));
     }
 
     #[tokio::test]

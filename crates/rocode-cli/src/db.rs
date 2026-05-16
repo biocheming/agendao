@@ -321,6 +321,11 @@ mod tests {
                 compaction_continuity: None,
                 repair_query_snapshot: None,
                 tool_trajectory_quality: None,
+                tool_result_governance: None,
+                pending_steering_count: 0,
+                consumed_steering_count: 0,
+                last_steering_injected_at: None,
+                last_steering_source_session_id: None,
                 last_run_status: "completed".to_string(),
                 updated_at: 123,
             })

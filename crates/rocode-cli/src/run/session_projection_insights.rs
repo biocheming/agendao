@@ -2,9 +2,7 @@ use super::{cli_optional_generated_at, cli_yes_no};
 use crate::run::session_projection_usage::format_token_count;
 use crate::util::truncate_text;
 
-fn cli_tool_trajectory_band_label(
-    band: rocode_types::ToolTrajectoryQualityBand,
-) -> &'static str {
+fn cli_tool_trajectory_band_label(band: rocode_types::ToolTrajectoryQualityBand) -> &'static str {
     match band {
         rocode_types::ToolTrajectoryQualityBand::Clean => "clean",
         rocode_types::ToolTrajectoryQualityBand::Recoverable => "recoverable",

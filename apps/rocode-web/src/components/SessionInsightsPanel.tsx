@@ -94,11 +94,15 @@ function totalUsageTokens(usage?: {
 export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanelProps) {
   const insights = activity.sessionInsights;
   const telemetry = insights?.telemetry ?? null;
+  const runtimeTelemetry = activity.telemetry ?? null;
   const effectivePolicy = insights?.effective_policy ?? null;
   const schedulerPolicy = effectivePolicy?.scheduler ?? null;
   const telemetryUsage = telemetry?.usage ?? null;
   const telemetryStages = telemetry?.stage_summaries ?? [];
-  const trajectoryQuality = telemetry?.tool_trajectory_quality ?? null;
+  const trajectoryQuality =
+    runtimeTelemetry?.tool_trajectory_quality ?? telemetry?.tool_trajectory_quality ?? null;
+  const toolResultGovernance =
+    runtimeTelemetry?.tool_result_governance ?? telemetry?.tool_result_governance ?? null;
   const memory = insights?.memory ?? null;
   const memorySummary = memory?.summary ?? null;
   const memoryAllowedScopes = memorySummary?.allowed_scopes ?? [];
@@ -250,6 +254,25 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
                 <p className="text-sm text-muted-foreground leading-relaxed">
                   Trajectory quality {trajectoryQuality.score} · {formatTrajectoryBand(trajectoryQuality.band)} · repaired {trajectoryQuality.repaired_tool_call_count}/{trajectoryQuality.total_tool_calls} · errors {trajectoryQuality.error_tool_call_count}
                 </p>
+              ) : null}
+              {runtimeTelemetry || telemetry ? (
+                <div className={detailTileClass}>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="roc-section-label">Tool Result Governance</p>
+                    <span className="roc-badge px-2.5 py-1 text-xs">
+                      single {toolResultGovernance?.single_result_governed_count ?? 0}
+                    </span>
+                    <span className="roc-badge px-2.5 py-1 text-xs">
+                      batch {toolResultGovernance?.batch_governed_count ?? 0}
+                    </span>
+                    <span className="roc-badge px-2.5 py-1 text-xs">
+                      transcript fallback {toolResultGovernance?.transcript_fallback_count ?? 0}
+                    </span>
+                  </div>
+                  <p className="text-sm text-muted-foreground leading-relaxed">
+                    Shows how many finalized tool results were governed into preview/artifact form before entering transcript and replay surfaces.
+                  </p>
+                </div>
               ) : null}
               {telemetry.compaction_continuity ? (
                 <div className="grid gap-2 md:grid-cols-2">

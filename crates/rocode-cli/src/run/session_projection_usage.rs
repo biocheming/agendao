@@ -122,6 +122,23 @@ pub(super) fn cli_usage_snapshot_lines(
         lines.push(format!("  Signals: {}", signals.join(" · ")));
     }
 
+    if let Some(governance) = telemetry.tool_result_governance.as_ref() {
+        lines.push(String::new());
+        lines.push("Tool result governance".to_string());
+        lines.push(format!(
+            "  Single-result governed: {}",
+            governance.single_result_governed_count
+        ));
+        lines.push(format!(
+            "  Batch governed: {}",
+            governance.batch_governed_count
+        ));
+        lines.push(format!(
+            "  Transcript fallback: {}",
+            governance.transcript_fallback_count
+        ));
+    }
+
     if telemetry.context_closure_contract.is_none() {
         if let Some(cache_semantics) = telemetry.cache_semantics.as_ref() {
             lines.push(String::new());
@@ -715,6 +732,11 @@ mod tests {
                 penalties: Vec::new(),
                 notes: Vec::new(),
             }),
+            tool_result_governance: Some(rocode_types::ToolResultGovernanceSummary {
+                single_result_governed_count: 2,
+                batch_governed_count: 1,
+                transcript_fallback_count: 0,
+            }),
             memory: None,
             cache_evidence: None,
             context_explain: Some(SessionContextExplain {
@@ -910,9 +932,7 @@ mod tests {
             .iter()
             .any(|line| line == "  Compact owner: this session"));
         assert!(lines.iter().any(|line| line == "Trajectory quality"));
-        assert!(lines
-            .iter()
-            .any(|line| line == "  Score: 78 · recoverable"));
+        assert!(lines.iter().any(|line| line == "  Score: 78 · recoverable"));
         assert!(lines.iter().any(|line| {
             line == "  Signals: repaired 2/3 · errors 1 · sanitizer 2 · strict-fail 1"
         }));

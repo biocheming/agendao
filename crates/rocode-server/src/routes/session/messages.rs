@@ -1027,10 +1027,15 @@ pub(super) async fn delete_part(
 
 #[cfg(test)]
 mod tests {
-    use super::{message_to_info, prompt_display_text};
+    use super::{list_messages, message_to_info, prompt_display_text, ListMessagesQuery};
     use std::collections::HashMap;
+    use std::sync::Arc;
 
-    use rocode_session::{MessagePart, PartType, SessionMessage};
+    use axum::extract::{Path, Query, State};
+    use axum::Json;
+
+    use crate::ServerState;
+    use rocode_session::{MessagePart, PartType, Session, SessionMessage};
 
     #[test]
     fn message_to_info_compacts_instruction_system_reminder_display() {
@@ -1178,5 +1183,57 @@ mod tests {
             vec!["voice.wav".to_string()]
         );
         assert_eq!(multimodal.warnings, vec!["audio not supported".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn list_messages_returns_governed_tool_result_preview() {
+        let state = Arc::new(ServerState::new());
+        let mut session = Session::new("proj", ".");
+        let session_id = session.id.clone();
+        let large = "X".repeat(40_000);
+        let governed_preview = format!(
+            "[tool result governed: output too large]\noriginal_chars: {}\npreview_chars: 8000\nartifact: /tmp/fake.txt\n\nPreview:\n{}",
+            large.chars().count(),
+            "X".repeat(128)
+        );
+        let mut tool_message = SessionMessage::tool(session_id.clone());
+        tool_message.parts.push(MessagePart {
+            id: "prt_tool_result".to_string(),
+            part_type: PartType::ToolResult {
+                tool_call_id: "call-1".to_string(),
+                content: governed_preview.clone(),
+                is_error: false,
+                title: Some("Tool Result".to_string()),
+                metadata: Some(HashMap::from([(
+                    "tool_result_governed".to_string(),
+                    serde_json::json!(true),
+                )])),
+                attachments: None,
+            },
+            created_at: chrono::Utc::now(),
+            message_id: Some(tool_message.id.clone()),
+        });
+        session.push_message(tool_message);
+        state.sessions.lock().await.update(session);
+
+        let Json(messages) = list_messages(
+            State(state),
+            Path(session_id),
+            Query(ListMessagesQuery {
+                after: None,
+                limit: None,
+            }),
+        )
+        .await
+        .expect("messages route should succeed");
+
+        let content = messages
+            .last()
+            .and_then(|message| message.parts.first())
+            .and_then(|part| part.tool_result.as_ref())
+            .map(|tool_result| tool_result.content.as_str())
+            .expect("tool result content");
+        assert!(content.contains("[tool result governed: output too large]"));
+        assert!(!content.contains(&large));
     }
 }

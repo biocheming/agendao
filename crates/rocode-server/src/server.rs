@@ -299,9 +299,7 @@ impl ServerState {
         let (tx, _) = broadcast::channel(1024);
         let runtime_telemetry = Arc::new(RuntimeTelemetryAuthority::new(tx.clone()));
         let runtime_control = runtime_telemetry.runtime_control();
-        let steering_store = Arc::new(tokio::sync::Mutex::new(
-            SessionSteeringQueueStore::new(),
-        ));
+        let steering_store = Arc::new(tokio::sync::Mutex::new(SessionSteeringQueueStore::new()));
         Self {
             workspace_root: normalize_workspace_root(workspace_root),
             sessions: Mutex::new(SessionManager::new()),

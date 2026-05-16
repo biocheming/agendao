@@ -286,10 +286,11 @@ pub struct SteeringMessage {
 /// Hook called at the tool boundary to drain pending steering messages.
 /// Constitution §9: session calls the hook; server owns the queue.
 pub type SteeringBoundaryHook = Arc<
-    dyn Fn(String)
-            -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Vec<SteeringMessage>> + Send>,
-            > + Send
+    dyn Fn(
+            String,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<SteeringMessage>> + Send>>
+        + Send
         + Sync,
 >;
 

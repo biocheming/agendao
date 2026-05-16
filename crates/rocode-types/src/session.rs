@@ -1538,6 +1538,13 @@ pub struct ToolRepairToolSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolResultGovernanceSummary {
+    pub single_result_governed_count: u64,
+    pub batch_governed_count: u64,
+    pub transcript_fallback_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionToolRepairTelemetrySummary {
     pub total_tool_calls: u64,
     pub repaired_tool_call_count: u64,
@@ -1995,6 +2002,8 @@ pub struct SessionTelemetrySnapshot {
     pub repair_query_snapshot: Option<SessionRepairQuerySnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_trajectory_quality: Option<ToolTrajectoryQualitySummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_result_governance: Option<ToolResultGovernanceSummary>,
     /// Steering telemetry (P4): counts and timestamps for mid-run steering.
     #[serde(default)]
     pub pending_steering_count: u64,

@@ -5,7 +5,8 @@ use rocode_provider::provider_diagnostic_from_metadata;
 use rocode_types::{
     ModelToolRepairTelemetrySummary, RepairKind, SessionTelemetrySnapshot,
     SessionToolRepairTelemetrySummary, ToolRepairCount, ToolRepairToolSummary,
-    ToolTrajectoryQualityBand, ToolTrajectoryQualityPenalty, ToolTrajectoryQualitySummary,
+    ToolResultGovernanceSummary, ToolTrajectoryQualityBand, ToolTrajectoryQualityPenalty,
+    ToolTrajectoryQualitySummary,
 };
 
 pub const SESSION_TELEMETRY_METADATA_KEY: &str = "telemetry";
@@ -213,6 +214,60 @@ pub fn build_session_tool_repair_telemetry(
     }
 
     accumulator.build_session_summary()
+}
+
+pub fn build_session_tool_result_governance_summary(
+    session: &Session,
+) -> Option<ToolResultGovernanceSummary> {
+    let mut single_result_governed_count = 0u64;
+    let mut batch_governed_count = 0u64;
+    let mut transcript_fallback_count = 0u64;
+
+    for message in &session.messages {
+        for part in &message.parts {
+            let PartType::ToolResult { metadata, .. } = &part.part_type else {
+                continue;
+            };
+            let Some(metadata) = metadata.as_ref() else {
+                continue;
+            };
+
+            if metadata
+                .get("tool_result_governed")
+                .and_then(|value| value.as_bool())
+                == Some(true)
+            {
+                single_result_governed_count += 1;
+            }
+            if metadata
+                .get("tool_result_batch_governed")
+                .and_then(|value| value.as_bool())
+                == Some(true)
+            {
+                batch_governed_count += 1;
+            }
+            if metadata
+                .get("tool_result_transcript_fallback_truncated")
+                .and_then(|value| value.as_bool())
+                == Some(true)
+            {
+                transcript_fallback_count += 1;
+            }
+        }
+    }
+
+    if single_result_governed_count == 0
+        && batch_governed_count == 0
+        && transcript_fallback_count == 0
+    {
+        return None;
+    }
+
+    Some(ToolResultGovernanceSummary {
+        single_result_governed_count,
+        batch_governed_count,
+        transcript_fallback_count,
+    })
 }
 
 pub fn aggregate_model_tool_repair_telemetry<'a>(
@@ -456,31 +511,32 @@ pub fn build_session_tool_trajectory_quality(
     let invalid_reroute_count = query_snapshot
         .as_ref()
         .map_or(0, |s| count_kind(&s.rows, RepairKind::InvalidToolReroute));
-    let sanitizer_event_count = query_snapshot
-        .as_ref()
-        .map_or(0, |s| s.summary.total_events.saturating_sub(
-            s.rows.iter().filter(|r| r.layer != "sanitizer").map(|r| r.count).sum(),
-        ));
+    let sanitizer_event_count = query_snapshot.as_ref().map_or(0, |s| {
+        s.summary.total_events.saturating_sub(
+            s.rows
+                .iter()
+                .filter(|r| r.layer != "sanitizer")
+                .map(|r| r.count)
+                .sum(),
+        )
+    });
 
-    let orphan_tool_result_count = query_snapshot
-        .as_ref()
-        .map_or(0, |s| count_kind(&s.rows, RepairKind::SanitizerOrphanedToolResult));
-    let duplicate_tool_id_count = query_snapshot
-        .as_ref()
-        .map_or(0, |s| count_kind(&s.rows, RepairKind::SanitizerDuplicateToolId));
-    let malformed_placeholder_count = query_snapshot
-        .as_ref()
-        .map_or(0, |s| count_kind(&s.rows, RepairKind::SanitizerAssistantMalformedPlaceholder));
-    let trailing_invalid_thinking_count = query_snapshot
-        .as_ref()
-        .map_or(0, |s| {
-            count_kind(&s.rows, RepairKind::SanitizerTrailingInvalidThinkingBlock)
-        });
+    let orphan_tool_result_count = query_snapshot.as_ref().map_or(0, |s| {
+        count_kind(&s.rows, RepairKind::SanitizerOrphanedToolResult)
+    });
+    let duplicate_tool_id_count = query_snapshot.as_ref().map_or(0, |s| {
+        count_kind(&s.rows, RepairKind::SanitizerDuplicateToolId)
+    });
+    let malformed_placeholder_count = query_snapshot.as_ref().map_or(0, |s| {
+        count_kind(&s.rows, RepairKind::SanitizerAssistantMalformedPlaceholder)
+    });
+    let trailing_invalid_thinking_count = query_snapshot.as_ref().map_or(0, |s| {
+        count_kind(&s.rows, RepairKind::SanitizerTrailingInvalidThinkingBlock)
+    });
 
     // Also count session-level sanitizer repair events recorded via
     // sanitize_with_contract into session.metadata (not tool-call metadata).
-    let session_level_events =
-        rocode_tool::structured_repair_events(&session.record().metadata);
+    let session_level_events = rocode_tool::structured_repair_events(&session.record().metadata);
     let session_sanitizer_count = session_level_events
         .iter()
         .filter(|e| e.layer == "sanitizer")
@@ -495,16 +551,11 @@ pub fn build_session_tool_trajectory_quality(
         .count() as u64;
     let session_malformed_count = session_level_events
         .iter()
-        .filter(|e| {
-            e.normalized_kind() == Some(RepairKind::SanitizerAssistantMalformedPlaceholder)
-        })
+        .filter(|e| e.normalized_kind() == Some(RepairKind::SanitizerAssistantMalformedPlaceholder))
         .count() as u64;
     let session_trailing_thinking_count = session_level_events
         .iter()
-        .filter(|e| {
-            e.normalized_kind()
-                == Some(RepairKind::SanitizerTrailingInvalidThinkingBlock)
-        })
+        .filter(|e| e.normalized_kind() == Some(RepairKind::SanitizerTrailingInvalidThinkingBlock))
         .count() as u64;
 
     let orphan_tool_result_count = orphan_tool_result_count + session_orphan_count;
@@ -536,13 +587,21 @@ pub fn build_session_tool_trajectory_quality(
     penalize("strict_would_fail", strict_would_fail_count, 8);
     penalize("malformed_placeholders", malformed_placeholder_count, 8);
     penalize("invalid_reroute", invalid_reroute_count, 6);
-    penalize("trailing_invalid_thinking", trailing_invalid_thinking_count, 5);
-    penalize("other_sanitizer_events", sanitizer_event_count.saturating_sub(
-        orphan_tool_result_count
-            + duplicate_tool_id_count
-            + malformed_placeholder_count
-            + trailing_invalid_thinking_count,
-    ), 2);
+    penalize(
+        "trailing_invalid_thinking",
+        trailing_invalid_thinking_count,
+        5,
+    );
+    penalize(
+        "other_sanitizer_events",
+        sanitizer_event_count.saturating_sub(
+            orphan_tool_result_count
+                + duplicate_tool_id_count
+                + malformed_placeholder_count
+                + trailing_invalid_thinking_count,
+        ),
+        2,
+    );
 
     score = score.clamp(0, 100);
 
@@ -687,6 +746,7 @@ mod tests {
             compaction_continuity: None,
             repair_query_snapshot: None,
             tool_trajectory_quality: None,
+            tool_result_governance: None,
             pending_steering_count: 0,
             consumed_steering_count: 0,
             last_steering_injected_at: None,
@@ -1073,10 +1133,7 @@ mod tests {
         let mut assistant = SessionMessage::assistant(session.id.clone());
         assistant.add_tool_call("call-1", "read", serde_json::json!({"file_path":"a.txt"}));
         if let Some(crate::MessagePart {
-            part_type:
-                PartType::ToolCall {
-                    status, state, ..
-                },
+            part_type: PartType::ToolCall { status, state, .. },
             ..
         }) = assistant.parts.last_mut()
         {
@@ -1096,10 +1153,7 @@ mod tests {
         }
         assistant.add_tool_call("call-2", "echo", serde_json::json!({"value":"hi"}));
         if let Some(crate::MessagePart {
-            part_type:
-                PartType::ToolCall {
-                    status, state, ..
-                },
+            part_type: PartType::ToolCall { status, state, .. },
             ..
         }) = assistant.parts.last_mut()
         {
@@ -1119,8 +1173,7 @@ mod tests {
         }
         session.push_message(assistant);
 
-        let quality =
-            build_session_tool_trajectory_quality(&session).expect("should build");
+        let quality = build_session_tool_trajectory_quality(&session).expect("should build");
         assert!(quality.score >= 90);
         assert_eq!(quality.band, ToolTrajectoryQualityBand::Clean);
         assert!(quality.notes.contains(&"clean_success_path".to_string()));
@@ -1137,10 +1190,7 @@ mod tests {
             rocode_tool::tool_repair_event("alias_normalization", "tool", "read"),
         );
         if let Some(crate::MessagePart {
-            part_type:
-                PartType::ToolCall {
-                    status, state, ..
-                },
+            part_type: PartType::ToolCall { status, state, .. },
             ..
         }) = assistant.parts.last_mut()
         {
@@ -1160,8 +1210,7 @@ mod tests {
         }
         session.push_message(assistant);
 
-        let quality =
-            build_session_tool_trajectory_quality(&session).expect("should build");
+        let quality = build_session_tool_trajectory_quality(&session).expect("should build");
         // Repaired but no error: score should still be high but notes reflect repairs.
         assert!(quality.repaired_tool_call_count > 0);
         assert_eq!(quality.error_tool_call_count, 0);
@@ -1171,10 +1220,7 @@ mod tests {
     #[test]
     fn build_session_tool_trajectory_quality_marks_blocked_noisy_session_low() {
         let mut session = Session::new("proj", ".");
-        session.insert_metadata(
-            "model_provider".to_string(),
-            serde_json::json!("test"),
-        );
+        session.insert_metadata("model_provider".to_string(), serde_json::json!("test"));
         session.insert_metadata("model_id".to_string(), serde_json::json!("test"));
 
         let mut assistant = SessionMessage::assistant(session.id.clone());
@@ -1188,7 +1234,8 @@ mod tests {
                 rocode_tool::tool_repair_event("fallback", "tool", "fail_tool"),
             );
             if let Some(crate::MessagePart {
-                part_type: PartType::ToolCall { status, state, .. }, ..
+                part_type: PartType::ToolCall { status, state, .. },
+                ..
             }) = assistant.parts.last_mut()
             {
                 *status = crate::ToolCallStatus::Error;
@@ -1213,24 +1260,22 @@ mod tests {
         }
         .attach_to_metadata(&mut diag.metadata);
 
-        let quality =
-            build_session_tool_trajectory_quality(&session).expect("should build");
+        let quality = build_session_tool_trajectory_quality(&session).expect("should build");
         assert!(quality.score <= 60, "score={}", quality.score);
         assert!(matches!(
             quality.band,
             ToolTrajectoryQualityBand::Degraded | ToolTrajectoryQualityBand::Risky
         ));
         assert!(quality.notes.contains(&"blocked_and_noisy".to_string()));
-        assert!(quality.notes.contains(&"provider_rejection_present".to_string()));
+        assert!(quality
+            .notes
+            .contains(&"provider_rejection_present".to_string()));
     }
 
     #[test]
     fn build_session_tool_trajectory_quality_penalizes_sanitizer_heavy_session() {
         let mut session = Session::new("proj", ".");
-        session.insert_metadata(
-            "model_provider".to_string(),
-            serde_json::json!("test"),
-        );
+        session.insert_metadata("model_provider".to_string(), serde_json::json!("test"));
         session.insert_metadata("model_id".to_string(), serde_json::json!("test"));
 
         let mut assistant = SessionMessage::assistant(session.id.clone());
@@ -1248,7 +1293,8 @@ mod tests {
                 ),
             );
             if let Some(crate::MessagePart {
-                part_type: PartType::ToolCall { status, state, .. }, ..
+                part_type: PartType::ToolCall { status, state, .. },
+                ..
             }) = assistant.parts.last_mut()
             {
                 *status = crate::ToolCallStatus::Completed;
@@ -1257,15 +1303,18 @@ mod tests {
                     output: "ok".to_string(),
                     title: "Read".to_string(),
                     metadata,
-                    time: crate::CompletedTime { start: 1, end: 2, compacted: None },
+                    time: crate::CompletedTime {
+                        start: 1,
+                        end: 2,
+                        compacted: None,
+                    },
                     attachments: None,
                 });
             }
         }
         session.push_message(assistant);
 
-        let quality =
-            build_session_tool_trajectory_quality(&session).expect("should build");
+        let quality = build_session_tool_trajectory_quality(&session).expect("should build");
         assert!(quality.sanitizer_event_count >= 3);
         assert!(quality.notes.contains(&"sanitizer_heavy".to_string()));
         assert!(quality.malformed_placeholder_count >= 3);
@@ -1277,7 +1326,8 @@ mod tests {
         let mut assistant = SessionMessage::assistant(session.id.clone());
         assistant.add_tool_call("call-1", "read", serde_json::json!({"file_path":"a.txt"}));
         if let Some(crate::MessagePart {
-            part_type: PartType::ToolCall { status, state, .. }, ..
+            part_type: PartType::ToolCall { status, state, .. },
+            ..
         }) = assistant.parts.last_mut()
         {
             *status = crate::ToolCallStatus::Completed;
@@ -1286,7 +1336,11 @@ mod tests {
                 output: "ok".to_string(),
                 title: "Read".to_string(),
                 metadata: rocode_tool::Metadata::new(),
-                time: crate::CompletedTime { start: 1, end: 2, compacted: None },
+                time: crate::CompletedTime {
+                    start: 1,
+                    end: 2,
+                    compacted: None,
+                },
                 attachments: None,
             });
         }
@@ -1311,6 +1365,7 @@ mod tests {
             compaction_continuity: None,
             repair_query_snapshot: None,
             tool_trajectory_quality: Some(quality),
+            tool_result_governance: None,
             pending_steering_count: 0,
             consumed_steering_count: 0,
             last_steering_injected_at: None,
@@ -1321,9 +1376,62 @@ mod tests {
 
         persist_session_telemetry_snapshot(&mut session, &snapshot).expect("persist");
         let loaded = load_session_telemetry_snapshot(&session).expect("load");
-        assert_eq!(loaded.version, rocode_types::SessionTelemetrySnapshotVersion::V5);
-        let q = loaded.tool_trajectory_quality.expect("quality should survive");
+        assert_eq!(
+            loaded.version,
+            rocode_types::SessionTelemetrySnapshotVersion::V5
+        );
+        let q = loaded
+            .tool_trajectory_quality
+            .expect("quality should survive");
         assert!(q.score >= 90);
         assert_eq!(q.band, ToolTrajectoryQualityBand::Clean);
+    }
+
+    #[test]
+    fn tool_result_governance_summary_counts_single_batch_and_fallback_markers() {
+        let mut session = Session::new("proj", ".");
+        let mut tool = SessionMessage::tool(session.id.clone());
+        tool.parts.push(crate::MessagePart {
+            id: "prt_1".to_string(),
+            part_type: PartType::ToolResult {
+                tool_call_id: "call-1".to_string(),
+                content: "preview".to_string(),
+                is_error: false,
+                title: None,
+                metadata: Some(std::collections::HashMap::from([
+                    ("tool_result_governed".to_string(), serde_json::json!(true)),
+                    (
+                        "tool_result_batch_governed".to_string(),
+                        serde_json::json!(true),
+                    ),
+                ])),
+                attachments: None,
+            },
+            created_at: chrono::Utc::now(),
+            message_id: Some(tool.id.clone()),
+        });
+        tool.parts.push(crate::MessagePart {
+            id: "prt_2".to_string(),
+            part_type: PartType::ToolResult {
+                tool_call_id: "call-2".to_string(),
+                content: "fallback".to_string(),
+                is_error: false,
+                title: None,
+                metadata: Some(std::collections::HashMap::from([(
+                    "tool_result_transcript_fallback_truncated".to_string(),
+                    serde_json::json!(true),
+                )])),
+                attachments: None,
+            },
+            created_at: chrono::Utc::now(),
+            message_id: Some(tool.id.clone()),
+        });
+        session.push_message(tool);
+
+        let summary =
+            build_session_tool_result_governance_summary(&session).expect("summary should exist");
+        assert_eq!(summary.single_result_governed_count, 1);
+        assert_eq!(summary.batch_governed_count, 1);
+        assert_eq!(summary.transcript_fallback_count, 1);
     }
 }

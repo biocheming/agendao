@@ -27,6 +27,7 @@ use rocode_provider::transform::{apply_caching, ProviderType};
 use rocode_provider::{Provider, ToolDefinition};
 use rocode_types::SessionContinuityPacket;
 
+use crate::tool_result_governance::{default_tool_result_artifacts_root, govern_tool_result_batch};
 use crate::{MessageRole, Session, SessionMessage};
 
 use super::runtime_step::{SessionStepRuntimeOutput, SessionStepSink, SessionStepToolDispatcher};
@@ -192,16 +193,14 @@ mod steering_transcript_tests {
     ) {
         let owner_id = session.id.clone();
         for (i, sm) in steering_msgs.into_iter().enumerate() {
-            let mut steering_msg =
-                crate::SessionMessage::user(session.id.clone(), sm.text.clone());
+            let mut steering_msg = crate::SessionMessage::user(session.id.clone(), sm.text.clone());
             steering_msg.metadata.insert(
                 "steering_mode".to_string(),
                 serde_json::json!("next_tool_boundary"),
             );
-            steering_msg.metadata.insert(
-                "steering_index".to_string(),
-                serde_json::json!(i),
-            );
+            steering_msg
+                .metadata
+                .insert("steering_index".to_string(), serde_json::json!(i));
             steering_msg.metadata.insert(
                 "steering_injected_at".to_string(),
                 serde_json::json!(injected_at_ms),
@@ -249,9 +248,7 @@ mod steering_transcript_tests {
         assert_eq!(chat_messages.len(), 2);
         let last = session.messages.last().expect("message should be appended");
         assert_eq!(
-            last.metadata
-                .get("steering_mode")
-                .and_then(|v| v.as_str()),
+            last.metadata.get("steering_mode").and_then(|v| v.as_str()),
             Some("next_tool_boundary")
         );
         assert_eq!(last.get_text(), "do not write code");
@@ -1033,6 +1030,34 @@ struct PreparedChatMessages {
 impl SessionPrompt {
     fn append_length_continuation_prompt(session: &mut Session) {
         session.add_synthetic_user_message(LENGTH_CONTINUATION_PROMPT, &[]);
+    }
+
+    pub(super) fn append_stream_tool_results_as_message(
+        session: &mut Session,
+        session_id: &str,
+        stream_tool_results: Vec<super::StreamToolResultEntry>,
+    ) {
+        if stream_tool_results.is_empty() {
+            return;
+        }
+
+        let artifacts_root = default_tool_result_artifacts_root(&session.record().directory);
+        let stream_tool_results =
+            govern_tool_result_batch(session_id, stream_tool_results, &artifacts_root);
+
+        let mut tool_msg = SessionMessage::tool(session_id.to_string());
+        for (tool_call_id, content, is_error, title, metadata, attachments) in stream_tool_results {
+            Self::push_tool_result_part(
+                &mut tool_msg,
+                tool_call_id,
+                content,
+                is_error,
+                title,
+                metadata,
+                attachments,
+            );
+        }
+        session.messages_mut().push(tool_msg);
     }
 
     async fn emit_context_compaction_status(
@@ -2607,14 +2632,12 @@ impl SessionPrompt {
                         "steering_mode".to_string(),
                         serde_json::json!("next_tool_boundary"),
                     );
-                    steering_msg.metadata.insert(
-                        "steering_index".to_string(),
-                        serde_json::json!(i),
-                    );
-                    steering_msg.metadata.insert(
-                        "steering_injected_at".to_string(),
-                        serde_json::json!(now),
-                    );
+                    steering_msg
+                        .metadata
+                        .insert("steering_index".to_string(), serde_json::json!(i));
+                    steering_msg
+                        .metadata
+                        .insert("steering_injected_at".to_string(), serde_json::json!(now));
                     steering_msg.metadata.insert(
                         "steering_owner_session_id".to_string(),
                         serde_json::json!(owner_id.clone()),
@@ -2850,23 +2873,11 @@ impl SessionPrompt {
 
             Self::finalize_assistant_message(session, assistant_index, &step_output);
 
-            if !step_output.stream_tool_results.is_empty() {
-                let mut tool_msg = SessionMessage::tool(session_id.clone());
-                for (tool_call_id, content, is_error, title, metadata, attachments) in
-                    step_output.stream_tool_results
-                {
-                    Self::push_tool_result_part(
-                        &mut tool_msg,
-                        tool_call_id,
-                        content,
-                        is_error,
-                        title,
-                        metadata,
-                        attachments,
-                    );
-                }
-                session.messages_mut().push(tool_msg);
-            }
+            Self::append_stream_tool_results_as_message(
+                session,
+                &session_id,
+                step_output.stream_tool_results,
+            );
 
             let has_tool_calls = session
                 .messages

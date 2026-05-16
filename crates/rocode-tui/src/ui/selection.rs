@@ -150,8 +150,7 @@ impl Selection {
             else {
                 continue;
             };
-            let selected =
-                slice_by_columns(&line, start_col as usize, end_col_exclusive as usize);
+            let selected = slice_by_columns(&line, start_col as usize, end_col_exclusive as usize);
 
             if !result.is_empty() {
                 result.push('\n');

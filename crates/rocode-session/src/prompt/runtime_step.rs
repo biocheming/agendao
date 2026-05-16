@@ -17,6 +17,9 @@ use rocode_orchestrator::runtime::events::{
 use rocode_orchestrator::runtime::traits::{LoopSink, ToolDispatcher};
 use rocode_provider::{Provider, ToolDefinition};
 
+use crate::tool_result_governance::{
+    default_tool_result_artifacts_root, govern_tool_result_output,
+};
 use crate::Session;
 
 use super::{
@@ -799,6 +802,14 @@ impl<'a> LoopSink for SessionStepSink<'a> {
             .and_then(|value| value.as_object().cloned())
             .map(|obj| obj.into_iter().collect::<HashMap<_, _>>())
             .unwrap_or_default();
+        let artifacts_root = default_tool_result_artifacts_root(&self.session.record().directory);
+        let governed = govern_tool_result_output(
+            &self.session.id,
+            &call.id,
+            result.output.clone(),
+            &mut metadata_map,
+            &artifacts_root,
+        );
         let (attachments, _) = SessionPrompt::extract_tool_attachments_from_metadata(
             &mut metadata_map,
             &self.session.id,
@@ -811,7 +822,7 @@ impl<'a> LoopSink for SessionStepSink<'a> {
         );
         self.stream_tool_results.push((
             call.id.clone(),
-            result.output.clone(),
+            governed.output.clone(),
             result.is_error,
             result.title.clone(),
             if metadata_map.is_empty() {
@@ -822,11 +833,11 @@ impl<'a> LoopSink for SessionStepSink<'a> {
             attachments,
         ));
 
-        let detail = tool_result_detail(result.title.as_deref(), &result.output);
+        let detail = tool_result_detail(result.title.as_deref(), &governed.output);
         let block = if result.is_error {
             OutputBlock::Tool(ToolBlock::error(
                 result.tool_name.clone(),
-                detail.unwrap_or_else(|| result.output.clone()),
+                detail.unwrap_or_else(|| governed.output.clone()),
             ))
         } else {
             OutputBlock::Tool(ToolBlock::done(result.tool_name.clone(), detail))

@@ -16,6 +16,7 @@ pub mod summary;
 pub mod system;
 pub mod telemetry;
 pub mod todo;
+pub mod tool_result_governance;
 
 pub use compaction::*;
 pub use instruction::*;
@@ -31,6 +32,7 @@ pub use summary::*;
 pub use system::*;
 pub use telemetry::*;
 pub use todo::*;
+pub use tool_result_governance::*;
 
 pub use rocode_types::SessionTime as SessionListTime;
 pub use rocode_types::{

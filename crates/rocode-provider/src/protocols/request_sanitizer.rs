@@ -29,7 +29,8 @@ pub fn sanitize_messages_for_protocol_with_actions(
     let mut sanitized = Vec::new();
     let mut pending_tool_use_ids = Vec::new();
     let mut seen_tool_use_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut dedup_rewrites: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut dedup_rewrites: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     let mut dedup_suffix: u64 = 0;
 
     let skip_synthetic = options.skip_synthetic_repair;
@@ -97,7 +98,11 @@ pub fn sanitize_messages_for_protocol_with_actions(
                 // Step 2: cross-message duplicates — rewrite the duplicate ID to a
                 // unique suffix so the provider never sees the same id twice.
                 deduped = rewrite_cross_message_duplicate_ids(
-                    &deduped, &mut seen_tool_use_ids, &mut dedup_rewrites, &mut dedup_suffix, &mut record,
+                    &deduped,
+                    &mut seen_tool_use_ids,
+                    &mut dedup_rewrites,
+                    &mut dedup_suffix,
+                    &mut record,
                 );
                 let deduped_ids = assistant_tool_use_ids(&deduped);
                 pending_tool_use_ids = deduped_ids;
@@ -724,10 +729,7 @@ mod tests {
             Message::assistant_parts(vec![ContentPart::text("next turn")]),
         ];
 
-        let sanitized = sanitize_messages_for_protocol(
-            &messages,
-            SanitizerOptions::default(),
-        );
+        let sanitized = sanitize_messages_for_protocol(&messages, SanitizerOptions::default());
 
         // An interrupted tool result placeholder is injected between the two assistants.
         assert!(sanitized.iter().any(|m| {
@@ -763,12 +765,14 @@ mod tests {
                 let has_trailing_thinking = parts
                     .iter()
                     .any(|p| matches!(p.content_type.as_str(), "reasoning" | "thinking"));
-                assert!(!has_trailing_thinking, "trailing thinking should be stripped");
+                assert!(
+                    !has_trailing_thinking,
+                    "trailing thinking should be stripped"
+                );
                 // But the tool_use and text should remain.
                 assert!(parts.iter().any(|p| p.tool_use.is_some()));
-                assert!(parts
-                    .iter()
-                    .any(|p| p.content_type == "text" && p.text.as_ref().is_some_and(|t| !t.trim().is_empty())));
+                assert!(parts.iter().any(|p| p.content_type == "text"
+                    && p.text.as_ref().is_some_and(|t| !t.trim().is_empty())));
             }
             _ => panic!("expected parts content"),
         }
@@ -810,17 +814,17 @@ mod tests {
             Message::assistant_parts(vec![ContentPart::text("[compacted]")]),
         ];
 
-        let sanitized = sanitize_messages_for_protocol(
-            &messages,
-            SanitizerOptions::default(),
-        );
+        let sanitized = sanitize_messages_for_protocol(&messages, SanitizerOptions::default());
 
         // The placeholder-only assistant should be stripped.
         let assistant_count = sanitized
             .iter()
             .filter(|m| matches!(m.role, Role::Assistant))
             .count();
-        assert_eq!(assistant_count, 0, "placeholder-only assistant should be dropped");
+        assert_eq!(
+            assistant_count, 0,
+            "placeholder-only assistant should be dropped"
+        );
     }
 
     #[test]
@@ -831,10 +835,7 @@ mod tests {
             Message::user("world"),
         ];
 
-        let sanitized = sanitize_messages_for_protocol(
-            &messages,
-            SanitizerOptions::default(),
-        );
+        let sanitized = sanitize_messages_for_protocol(&messages, SanitizerOptions::default());
 
         // Empty assistant should be dropped; only two user messages remain.
         assert_eq!(sanitized.len(), 2);
@@ -863,10 +864,7 @@ mod tests {
             .iter()
             .filter(|m| matches!(m.role, Role::Assistant))
             .flat_map(|m| match &m.content {
-                Content::Parts(parts) => parts
-                    .iter()
-                    .filter_map(|p| p.text.clone())
-                    .collect(),
+                Content::Parts(parts) => parts.iter().filter_map(|p| p.text.clone()).collect(),
                 _ => Vec::new(),
             })
             .collect();
@@ -916,10 +914,7 @@ mod tests {
             Message::tool_parts(vec![ContentPart::tool_result("dup-x", "done", None)]),
         ];
 
-        let sanitized = sanitize_messages_for_protocol(
-            &messages,
-            SanitizerOptions::default(),
-        );
+        let sanitized = sanitize_messages_for_protocol(&messages, SanitizerOptions::default());
 
         // The second assistant's tool_use should have a rewritten ID.
         let second_assistant_ids: Vec<&str> = sanitized
@@ -962,10 +957,7 @@ mod tests {
             Message::tool_parts(vec![ContentPart::tool_result("dup-x", "done", None)]),
         ];
 
-        let sanitized = sanitize_messages_for_protocol(
-            &messages,
-            SanitizerOptions::default(),
-        );
+        let sanitized = sanitize_messages_for_protocol(&messages, SanitizerOptions::default());
 
         let assistant_ids: Vec<&str> = sanitized
             .iter()
@@ -978,7 +970,10 @@ mod tests {
                 _ => Vec::new(),
             })
             .collect();
-        assert_eq!(assistant_ids, vec!["dup-x", "dup-x--dedup-1", "dup-x--dedup-2"]);
+        assert_eq!(
+            assistant_ids,
+            vec!["dup-x", "dup-x--dedup-1", "dup-x--dedup-2"]
+        );
 
         let tool_result_ids: Vec<&str> = sanitized
             .iter()

@@ -2,9 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{
-        Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
-    },
+    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 use std::cell::Cell;
 
@@ -152,11 +150,8 @@ impl StatusDialog {
     }
 
     pub fn page_down(&self, page_size: u16) {
-        self.scroll_offset.set(
-            self.scroll_offset
-                .get()
-                .saturating_add(page_size.max(1)),
-        );
+        self.scroll_offset
+            .set(self.scroll_offset.get().saturating_add(page_size.max(1)));
     }
 
     pub fn scroll_to_top(&self) {
@@ -390,6 +385,9 @@ mod tests {
             .iter()
             .filter(|cell| cell.symbol() == "1")
             .count();
-        assert!(rendered > 0, "expected scrolled content to render later lines");
+        assert!(
+            rendered > 0,
+            "expected scrolled content to render later lines"
+        );
     }
 }

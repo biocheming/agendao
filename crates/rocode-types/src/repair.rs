@@ -845,8 +845,14 @@ mod repair_kind_tests {
         let map = event.to_loose_map();
         let restored = RepairEvent::from_loose_map(&map).expect("should round-trip");
 
-        assert_eq!(restored.original_error_kind.as_deref(), Some("invalid_arguments"));
-        assert_eq!(restored.reason.as_deref(), Some("Error: Invalid arguments: missing field"));
+        assert_eq!(
+            restored.original_error_kind.as_deref(),
+            Some("invalid_arguments")
+        );
+        assert_eq!(
+            restored.reason.as_deref(),
+            Some("Error: Invalid arguments: missing field")
+        );
         assert_eq!(restored.repair_kind, "invalid_tool_reroute");
     }
 

@@ -169,8 +169,7 @@ impl SessionPrompt {
                     }
                 }
 
-                if let Some(assistant_msg) =
-                    Self::build_assistant_replay_message(&assistant_parts)
+                if let Some(assistant_msg) = Self::build_assistant_replay_message(&assistant_parts)
                 {
                     messages.push(assistant_msg);
                 }
@@ -190,8 +189,7 @@ impl SessionPrompt {
 
             match msg.role {
                 MessageRole::Assistant => {
-                    if let Some(msg) = Self::build_assistant_replay_message(&visible_parts)
-                    {
+                    if let Some(msg) = Self::build_assistant_replay_message(&visible_parts) {
                         messages.push(msg);
                     }
                 }
@@ -205,7 +203,12 @@ impl SessionPrompt {
                         MessageRole::System => Role::System,
                         _ => unreachable!(),
                     };
-                    messages.push(Message { role, content, cache_control: None, provider_options: None });
+                    messages.push(Message {
+                        role,
+                        content,
+                        cache_control: None,
+                        provider_options: None,
+                    });
                 }
             }
         }
@@ -239,21 +242,36 @@ impl SessionPrompt {
                 PartType::Text { text: t, .. } => {
                     text.push(ContentPart::text(t.clone()));
                 }
-                PartType::ToolCall { id, name, input, raw, .. } => {
+                PartType::ToolCall {
+                    id,
+                    name,
+                    input,
+                    raw,
+                    ..
+                } => {
                     tool_uses.push(ContentPart::tool_use(
                         id.clone(),
                         name.clone(),
                         tool_call_replay_input(input, raw.as_deref()),
                     ));
                 }
-                PartType::ToolResult { tool_call_id, content, is_error, .. } => {
+                PartType::ToolResult {
+                    tool_call_id,
+                    content,
+                    is_error,
+                    ..
+                } => {
                     tool_results.push(ContentPart::tool_result(
                         tool_call_id.clone(),
                         content.clone(),
                         Some(*is_error),
                     ));
                 }
-                PartType::File { url, filename, mime } => {
+                PartType::File {
+                    url,
+                    filename,
+                    mime,
+                } => {
                     if mime.starts_with("image/") {
                         files.push(ContentPart::image_url(
                             url.clone(),
@@ -289,19 +307,21 @@ impl SessionPrompt {
 
     /// Build an assistant replay message using the shared provider constructor.
     /// Preserves reasoning before text before tool_use ordering.
-    fn build_assistant_replay_message(
-        parts: &[crate::MessagePart],
-    ) -> Option<Message> {
+    fn build_assistant_replay_message(parts: &[crate::MessagePart]) -> Option<Message> {
         let provider_parts = Self::visible_provider_parts(parts);
         // If all parts are text-only, emit Content::Text for backward compat.
-        let has_non_text = parts.iter().any(|p| {
-            !matches!(p.part_type, PartType::Text { .. })
-        });
+        let has_non_text = parts
+            .iter()
+            .any(|p| !matches!(p.part_type, PartType::Text { .. }));
         if !has_non_text {
-            let text: String = parts.iter().filter_map(|p| match &p.part_type {
-                PartType::Text { text, .. } => Some(text.as_str()),
-                _ => None,
-            }).collect::<Vec<_>>().join("\n");
+            let text: String = parts
+                .iter()
+                .filter_map(|p| match &p.part_type {
+                    PartType::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
             if text.is_empty() {
                 return None;
             }
@@ -3542,8 +3562,10 @@ mod tests {
         match &assistant.content {
             Content::Parts(parts) => {
                 let tool_use = parts[0].tool_use.as_ref().expect("should have tool_use");
-                assert_eq!(tool_use.input["file_path"], "raw.txt",
-                    "raw replay shape must be preferred over normalized");
+                assert_eq!(
+                    tool_use.input["file_path"], "raw.txt",
+                    "raw replay shape must be preferred over normalized"
+                );
             }
             _ => panic!("expected parts"),
         }
@@ -3582,11 +3604,13 @@ mod tests {
         match &assistant.content {
             Content::Parts(parts) => {
                 // Text, image, and audio file parts must all be present.
-                assert!(parts.iter().any(|p| p.text.as_ref().is_some_and(|t| t == "here is an image")));
+                assert!(parts
+                    .iter()
+                    .any(|p| p.text.as_ref().is_some_and(|t| t == "here is an image")));
                 assert!(parts.iter().any(|p| p.image_url.is_some()));
-                assert!(parts.iter().any(|p| {
-                    p.media_type.as_deref() == Some("audio/wav")
-                }));
+                assert!(parts
+                    .iter()
+                    .any(|p| { p.media_type.as_deref() == Some("audio/wav") }));
             }
             _ => panic!("expected parts with file attachments"),
         }
@@ -3644,10 +3668,14 @@ mod tests {
                 let reasoning_idx = positions.iter().position(|t| *t == "reasoning");
                 let text_idx = positions.iter().position(|t| *t == "text");
                 let tool_idx = positions.iter().position(|t| *t == "tool_use");
-                assert!(reasoning_idx < text_idx,
-                    "reasoning must come before text even when input is reversed");
-                assert!(text_idx < tool_idx,
-                    "text must come before tool_use even when input is reversed");
+                assert!(
+                    reasoning_idx < text_idx,
+                    "reasoning must come before text even when input is reversed"
+                );
+                assert!(
+                    text_idx < tool_idx,
+                    "text must come before tool_use even when input is reversed"
+                );
             }
             Content::Text(_) => panic!("mixed-content turn must use Content::Parts"),
         }
@@ -3681,15 +3709,21 @@ mod tests {
     #[test]
     fn build_chat_messages_downgraded_tool_summary_stays_role_user() {
         let user_msg = SessionMessage::user("s", "continue");
-        let summary_msg = SessionMessage::user("s", "<tool-batch-summary>\n  tools: read\n  goal_status: mixed\n</tool-batch-summary>");
+        let summary_msg = SessionMessage::user(
+            "s",
+            "<tool-batch-summary>\n  tools: read\n  goal_status: mixed\n</tool-batch-summary>",
+        );
 
         let messages =
             SessionPrompt::build_chat_messages(&[user_msg, summary_msg], None).expect("build");
 
         // All messages must stay Role::User — tool summaries are never Role::Tool.
         for msg in &messages {
-            assert!(matches!(msg.role, Role::User),
-                "tool batch summary must stay Role::User, got {:?}", msg.role);
+            assert!(
+                matches!(msg.role, Role::User),
+                "tool batch summary must stay Role::User, got {:?}",
+                msg.role
+            );
         }
     }
 
@@ -3701,8 +3735,10 @@ mod tests {
         let messages = SessionPrompt::build_chat_messages(&[msg], None).expect("build");
         let assistant = &messages[0];
         assert!(matches!(assistant.role, Role::Assistant));
-        assert!(matches!(assistant.content, Content::Text(_)),
-            "text-only assistant must stay as Content::Text");
+        assert!(
+            matches!(assistant.content, Content::Text(_)),
+            "text-only assistant must stay as Content::Text"
+        );
     }
     // PLACEHOLDER_TESTS_CONTINUE_4
 

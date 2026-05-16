@@ -1590,7 +1590,10 @@ mod tests {
     fn p2_downgraded_tool_summary_stays_role_user_on_wire() {
         let messages = vec![Message {
             role: Role::User,
-            content: crate::Content::Text("<tool-batch-summary>\n  tools: read\n  goal_status: mixed\n</tool-batch-summary>".to_string()),
+            content: crate::Content::Text(
+                "<tool-batch-summary>\n  tools: read\n  goal_status: mixed\n</tool-batch-summary>"
+                    .to_string(),
+            ),
             cache_control: None,
             provider_options: None,
         }];
@@ -1598,7 +1601,10 @@ mod tests {
         let converted = to_openai_compatible_chat_messages(&messages);
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0]["role"], "user");
-        assert!(converted[0]["content"].as_str().unwrap().contains("tool-batch-summary"));
+        assert!(converted[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("tool-batch-summary"));
     }
 
     #[test]

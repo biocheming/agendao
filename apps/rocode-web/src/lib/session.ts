@@ -58,6 +58,12 @@ export interface ToolTrajectoryQualityRecord {
   notes?: string[];
 }
 
+export interface ToolResultGovernanceRecord {
+  single_result_governed_count: number;
+  batch_governed_count: number;
+  transcript_fallback_count: number;
+}
+
 export interface PersistedSessionTelemetrySnapshot {
   version: string;
   usage: {
@@ -73,6 +79,7 @@ export interface PersistedSessionTelemetrySnapshot {
   stage_summaries: PersistedStageTelemetrySummary[];
   compaction_continuity?: PersistedCompactionContinuityInspectionRecord | null;
   tool_trajectory_quality?: ToolTrajectoryQualityRecord | null;
+  tool_result_governance?: ToolResultGovernanceRecord | null;
   last_run_status: string;
   updated_at: number;
 }

@@ -6,6 +6,7 @@ import type {
 import type { SessionMultimodalInsight } from "./multimodal";
 import type {
   PersistedSessionTelemetrySnapshot,
+  ToolResultGovernanceRecord,
   ToolTrajectoryQualityRecord,
 } from "./session";
 
@@ -228,6 +229,7 @@ export interface SessionTelemetrySnapshotRecord {
   tool_repair_summary?: SessionToolRepairTelemetrySummaryRecord | null;
   model_tool_repair_summary?: ModelToolRepairTelemetrySummaryRecord | null;
   tool_trajectory_quality?: ToolTrajectoryQualityRecord | null;
+  tool_result_governance?: ToolResultGovernanceRecord | null;
   memory?: SessionMemoryTelemetryRecord | null;
   cache_evidence?: Record<string, unknown> | null;
   cache_semantics?: Record<string, unknown> | null;

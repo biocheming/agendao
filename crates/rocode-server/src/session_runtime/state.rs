@@ -602,13 +602,11 @@ mod tests {
 
         store.steering_cleared("ses_1").await;
 
-        assert!(
-            store
-                .get("ses_1")
-                .await
-                .expect("runtime state should still exist")
-                .pending_steering
-                .is_empty()
-        );
+        assert!(store
+            .get("ses_1")
+            .await
+            .expect("runtime state should still exist")
+            .pending_steering
+            .is_empty());
     }
 }
