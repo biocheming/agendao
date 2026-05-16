@@ -1611,6 +1611,11 @@ impl SessionManager {
         self.sessions.len()
     }
 
+    /// Number of pending events in the event queue (diagnostic for memory pressure).
+    pub fn events_count(&self) -> usize {
+        self.events.len()
+    }
+
     // ========================================================================
     // Message/Part Operations with Bus Publishing
     // ========================================================================
