@@ -59,6 +59,10 @@ impl RuntimeTelemetryAuthority {
         self.runtime_control.clone()
     }
 
+    pub(crate) fn runtime_state(&self) -> Arc<RuntimeStateStore> {
+        self.runtime_state.clone()
+    }
+
     pub(crate) async fn set_session_run_status(&self, session_id: &str, status: SessionRunStatus) {
         self.runtime_control
             .set_session_run_status(session_id, status.clone())
@@ -518,6 +522,17 @@ impl RuntimeTelemetryAuthority {
         .await;
     }
 
+    /// Update runtime state when a steering message is enqueued (Constitution §8).
+    pub(crate) async fn steering_enqueued(
+        &self,
+        owner_session_id: &str,
+        summary: crate::session_runtime::state::PendingSteeringMessageSummary,
+    ) {
+        self.runtime_state
+            .steering_enqueued(owner_session_id, summary)
+            .await;
+    }
+
     pub(crate) async fn record_session_usage(
         &self,
         session_id: &str,
@@ -708,6 +723,10 @@ impl RuntimeTelemetryAuthority {
             compaction_continuity: None,
             repair_query_snapshot: None,
             tool_trajectory_quality: None,
+            pending_steering_count: 0,
+            consumed_steering_count: 0,
+            last_steering_injected_at: None,
+            last_steering_source_session_id: None,
             last_run_status: last_run_status.into(),
             updated_at: chrono::Utc::now().timestamp_millis(),
         })

@@ -181,6 +181,85 @@ mod sanitizer_stage_tests {
 }
 
 #[cfg(test)]
+mod steering_transcript_tests {
+    use super::*;
+
+    fn append_steering_messages_to_transcript_and_request(
+        session: &mut Session,
+        chat_messages: &mut Vec<rocode_provider::Message>,
+        steering_msgs: Vec<crate::prompt::SteeringMessage>,
+        injected_at_ms: i64,
+    ) {
+        let owner_id = session.id.clone();
+        for (i, sm) in steering_msgs.into_iter().enumerate() {
+            let mut steering_msg =
+                crate::SessionMessage::user(session.id.clone(), sm.text.clone());
+            steering_msg.metadata.insert(
+                "steering_mode".to_string(),
+                serde_json::json!("next_tool_boundary"),
+            );
+            steering_msg.metadata.insert(
+                "steering_index".to_string(),
+                serde_json::json!(i),
+            );
+            steering_msg.metadata.insert(
+                "steering_injected_at".to_string(),
+                serde_json::json!(injected_at_ms),
+            );
+            steering_msg.metadata.insert(
+                "steering_owner_session_id".to_string(),
+                serde_json::json!(owner_id),
+            );
+            steering_msg.metadata.insert(
+                "steering_injected_during_active_run".to_string(),
+                serde_json::json!(true),
+            );
+            if let Some(ref source) = sm.source_session_id {
+                steering_msg.metadata.insert(
+                    "steering_source_session_id".to_string(),
+                    serde_json::json!(source),
+                );
+            }
+            session.push_message(steering_msg);
+            chat_messages.push(rocode_provider::Message::user(sm.text));
+        }
+    }
+
+    #[test]
+    fn steering_injection_writes_same_messages_to_transcript_and_request() {
+        let mut session = Session::new("proj", ".");
+        let mut chat_messages = Vec::new();
+
+        append_steering_messages_to_transcript_and_request(
+            &mut session,
+            &mut chat_messages,
+            vec![
+                crate::prompt::SteeringMessage {
+                    text: "stop and explain".to_string(),
+                    source_session_id: None,
+                },
+                crate::prompt::SteeringMessage {
+                    text: "do not write code".to_string(),
+                    source_session_id: Some("attached_ses".to_string()),
+                },
+            ],
+            1,
+        );
+
+        assert_eq!(chat_messages.len(), 2);
+        let last = session.messages.last().expect("message should be appended");
+        assert_eq!(
+            last.metadata
+                .get("steering_mode")
+                .and_then(|v| v.as_str()),
+            Some("next_tool_boundary")
+        );
+        assert_eq!(last.get_text(), "do not write code");
+        assert_eq!(session.messages.len(), 2);
+    }
+}
+
+#[cfg(test)]
 mod cache_fingerprint_tests {
     use super::*;
     use rocode_provider::Message;
@@ -2507,6 +2586,77 @@ impl SessionPrompt {
             // P0.4: Inject the latest tool batch summary into the model context
             // so the model can consume structured results from the previous turn.
             Self::inject_latest_tool_batch_summary(session, &mut chat_messages);
+
+            // Tool-boundary steering (Constitution §5, §9): drain pending steering
+            // and inject into BOTH the session transcript and the next request.
+            if let Some(ref hook) = prompt_ctx.hooks.steering_boundary_hook {
+                let owner_id = session.record().id.clone();
+                let steering_msgs = hook(owner_id.clone()).await;
+                let consumed = steering_msgs.len();
+                let last_source = steering_msgs
+                    .iter()
+                    .rev()
+                    .find_map(|sm| sm.source_session_id.clone());
+                let now = chrono::Utc::now().timestamp_millis();
+                for (i, sm) in steering_msgs.into_iter().enumerate() {
+                    // Append to session transcript so steering survives compact/
+                    // resume/recovery and is visible in replay (§5 owner session).
+                    let mut steering_msg =
+                        crate::SessionMessage::user(session.id.clone(), sm.text.clone());
+                    steering_msg.metadata.insert(
+                        "steering_mode".to_string(),
+                        serde_json::json!("next_tool_boundary"),
+                    );
+                    steering_msg.metadata.insert(
+                        "steering_index".to_string(),
+                        serde_json::json!(i),
+                    );
+                    steering_msg.metadata.insert(
+                        "steering_injected_at".to_string(),
+                        serde_json::json!(now),
+                    );
+                    steering_msg.metadata.insert(
+                        "steering_owner_session_id".to_string(),
+                        serde_json::json!(owner_id.clone()),
+                    );
+                    steering_msg.metadata.insert(
+                        "steering_injected_during_active_run".to_string(),
+                        serde_json::json!(true),
+                    );
+                    if let Some(ref source) = sm.source_session_id {
+                        steering_msg.metadata.insert(
+                            "steering_source_session_id".to_string(),
+                            serde_json::json!(source),
+                        );
+                    }
+                    session.push_message(steering_msg);
+
+                    // Inject into the current request's chat messages.
+                    chat_messages.push(rocode_provider::Message::user(sm.text));
+                }
+
+                // Write session-level steering telemetry (Patch 4).
+                let consumed = consumed as u64;
+                let previous: u64 = session
+                    .record()
+                    .metadata
+                    .get("consumed_steering_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                session.insert_metadata(
+                    "consumed_steering_count".to_string(),
+                    serde_json::json!(previous + consumed),
+                );
+                session.insert_metadata(
+                    "last_steering_injected_at".to_string(),
+                    serde_json::json!(now),
+                );
+                // Always write to clear stale values from previous batches.
+                session.insert_metadata(
+                    "last_steering_source_session_id".to_string(),
+                    serde_json::json!(last_source),
+                );
+            }
 
             let (request_context_tokens, request_body_chars) =
                 Self::estimate_request_context_tokens_from_provider_messages(&chat_messages);

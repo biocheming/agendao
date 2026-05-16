@@ -10,6 +10,7 @@ mod repair;
 mod scheduler;
 mod session_crud;
 mod stages;
+mod steering;
 mod telemetry;
 
 use std::sync::Arc;
@@ -54,6 +55,7 @@ use self::session_crud::{
 };
 pub(crate) use self::session_crud::{create_session_from_spec, session_to_info, CreateSessionSpec};
 use self::stages::get_session_stages;
+use self::steering::submit_session_steering;
 use self::telemetry::{get_session_insights, get_session_telemetry};
 
 use super::stream::stream_message;
@@ -75,6 +77,7 @@ pub(crate) fn session_routes() -> Router<Arc<ServerState>> {
         .route("/{id}/insights", get(get_session_insights))
         .route("/{id}/repair/summary", get(get_session_repair_summary))
         .route("/{id}/repair/query", get(query_session_repair))
+        .route("/{id}/steer", post(submit_session_steering))
         .route("/{id}/stages", get(get_session_stages))
         .route("/{id}/executions", get(get_session_executions))
         .route(

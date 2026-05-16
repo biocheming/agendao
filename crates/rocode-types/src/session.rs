@@ -1995,6 +1995,15 @@ pub struct SessionTelemetrySnapshot {
     pub repair_query_snapshot: Option<SessionRepairQuerySnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_trajectory_quality: Option<ToolTrajectoryQualitySummary>,
+    /// Steering telemetry (P4): counts and timestamps for mid-run steering.
+    #[serde(default)]
+    pub pending_steering_count: u64,
+    #[serde(default)]
+    pub consumed_steering_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_steering_injected_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_steering_source_session_id: Option<String>,
     pub last_run_status: String,
     pub updated_at: i64,
 }

@@ -39,6 +39,7 @@ use rocode_storage::{Database, MemoryRepository, MessageRepository, SessionRepos
 use crate::routes;
 use crate::runtime_control::RuntimeControlRegistry;
 use crate::session_runtime::memory::RuntimeMemoryAuthority;
+use crate::session_runtime::steering::SessionSteeringQueueStore;
 use crate::session_runtime::telemetry::RuntimeTelemetryAuthority;
 
 const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:3000";
@@ -236,6 +237,7 @@ pub struct ServerState {
     pub(crate) prompt_runner: Arc<SessionPrompt>,
     pub(crate) runtime_memory: Arc<RuntimeMemoryAuthority>,
     pub(crate) runtime_telemetry: Arc<RuntimeTelemetryAuthority>,
+    pub(crate) steering_store: Arc<tokio::sync::Mutex<SessionSteeringQueueStore>>,
     // Shared runtime registries still used by server routes and session runtime.
     pub(crate) runtime_control: Arc<RuntimeControlRegistry>,
     pub(crate) auth_manager: Arc<AuthManager>,
@@ -297,6 +299,9 @@ impl ServerState {
         let (tx, _) = broadcast::channel(1024);
         let runtime_telemetry = Arc::new(RuntimeTelemetryAuthority::new(tx.clone()));
         let runtime_control = runtime_telemetry.runtime_control();
+        let steering_store = Arc::new(tokio::sync::Mutex::new(
+            SessionSteeringQueueStore::new(),
+        ));
         Self {
             workspace_root: normalize_workspace_root(workspace_root),
             sessions: Mutex::new(SessionManager::new()),
@@ -315,6 +320,7 @@ impl ServerState {
             ),
             runtime_memory,
             runtime_telemetry,
+            steering_store,
             runtime_control,
             auth_manager: Arc::new(AuthManager::new()),
             event_bus: tx,

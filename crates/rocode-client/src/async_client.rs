@@ -1271,6 +1271,22 @@ impl AsyncApiClient {
         .await
     }
 
+    /// Submit a mid-run steering message to the owner session.
+    /// Constitution §9: client only submits; runtime consumes at tool boundary.
+    pub async fn submit_steering(
+        &self,
+        session_id: &str,
+        text: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        let url = format!("/session/{}/steer", session_id);
+        self.post_json(
+            &url,
+            "submit steering",
+            &serde_json::json!({"text": text}),
+        )
+        .await
+    }
+
     async fn json_ok<T: serde::de::DeserializeOwned>(
         resp: reqwest::Response,
         action: &str,

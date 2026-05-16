@@ -42,6 +42,9 @@ pub struct SessionRuntimeState {
     pub pending_question: Option<PendingQuestionSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending_permission: Option<PendingPermissionSummary>,
+    /// Constitution §8: pending steering messages must be observable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_steering: Vec<PendingSteeringMessageSummary>,
     pub attached_sessions: Vec<AttachedSessionSummary>,
 }
 
@@ -57,6 +60,7 @@ impl SessionRuntimeState {
             active_tools: Vec::new(),
             pending_question: None,
             pending_permission: None,
+            pending_steering: Vec::new(),
             attached_sessions: Vec::new(),
         }
     }
@@ -103,6 +107,20 @@ pub struct PendingQuestionSummary {
 pub struct PendingPermissionSummary {
     pub permission_id: String,
     pub info: serde_json::Value,
+}
+
+/// Summary of a pending steering message waiting for the next tool boundary.
+/// Constitution §8: pending steering must be observable in runtime state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingSteeringMessageSummary {
+    pub id: String,
+    pub owner_session_id: String,
+    pub text: String,
+    pub created_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_session_id: Option<String>,
+    /// Always "next_tool_boundary" in P0.
+    pub deliver_at: String,
 }
 
 /// Summary of an attached session.
@@ -259,6 +277,26 @@ impl RuntimeStateStore {
     pub async fn set_usage(&self, session_id: &str, usage: SessionUsage) {
         self.update(session_id, |s| {
             s.usage = Some(usage);
+        })
+        .await;
+    }
+
+    /// Append a steering message summary to the session's runtime state (Constitution §8).
+    pub async fn steering_enqueued(
+        &self,
+        session_id: &str,
+        summary: PendingSteeringMessageSummary,
+    ) {
+        self.update(session_id, |s| {
+            s.pending_steering.push(summary);
+        })
+        .await;
+    }
+
+    /// Clear all pending steering messages for a session.
+    pub async fn steering_cleared(&self, session_id: &str) {
+        self.update(session_id, |s| {
+            s.pending_steering.clear();
         })
         .await;
     }
@@ -520,5 +558,57 @@ mod tests {
         store.permission_resolved("ses_1").await;
         let state = store.get("ses_1").await.unwrap();
         assert_eq!(state.run_status, RunStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn steering_clear_removes_runtime_observable_pending_messages() {
+        let store = RuntimeStateStore::new();
+        store
+            .steering_enqueued(
+                "ses_1",
+                PendingSteeringMessageSummary {
+                    id: "steer_1".to_string(),
+                    owner_session_id: "ses_1".to_string(),
+                    text: "pause".to_string(),
+                    created_at: 1,
+                    source_session_id: Some("child_1".to_string()),
+                    deliver_at: "next_tool_boundary".to_string(),
+                },
+            )
+            .await;
+        store
+            .steering_enqueued(
+                "ses_1",
+                PendingSteeringMessageSummary {
+                    id: "steer_2".to_string(),
+                    owner_session_id: "ses_1".to_string(),
+                    text: "explain".to_string(),
+                    created_at: 2,
+                    source_session_id: None,
+                    deliver_at: "next_tool_boundary".to_string(),
+                },
+            )
+            .await;
+
+        assert_eq!(
+            store
+                .get("ses_1")
+                .await
+                .expect("runtime state should exist")
+                .pending_steering
+                .len(),
+            2
+        );
+
+        store.steering_cleared("ses_1").await;
+
+        assert!(
+            store
+                .get("ses_1")
+                .await
+                .expect("runtime state should still exist")
+                .pending_steering
+                .is_empty()
+        );
     }
 }
