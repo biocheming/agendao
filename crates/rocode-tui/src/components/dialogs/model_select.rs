@@ -6,6 +6,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::theme::Theme;
 use crate::ui::RenderSurface;
@@ -35,7 +36,7 @@ pub struct Model {
 #[derive(Clone)]
 enum Row {
     Header(String),
-    Model { index: usize },
+    Model { index: usize, is_recent: bool },
 }
 
 pub struct ModelSelectDialog {
@@ -143,7 +144,7 @@ impl ModelSelectDialog {
         self.selectable
             .get(self.cursor)
             .and_then(|&row_idx| match &self.rows[row_idx] {
-                Row::Model { index } => self.models.get(*index),
+                Row::Model { index, .. } => self.models.get(*index),
                 _ => None,
             })
     }
@@ -182,7 +183,10 @@ impl ModelSelectDialog {
         if !recent_indices.is_empty() {
             rows.push(Row::Header("Recent".into()));
             for &idx in &recent_indices {
-                rows.push(Row::Model { index: idx });
+                rows.push(Row::Model {
+                    index: idx,
+                    is_recent: true,
+                });
                 used[idx] = true;
             }
         }
@@ -220,7 +224,10 @@ impl ModelSelectDialog {
             });
             rows.push(Row::Header(provider.to_string()));
             for idx in indices {
-                rows.push(Row::Model { index: idx });
+                rows.push(Row::Model {
+                    index: idx,
+                    is_recent: false,
+                });
             }
         }
 
@@ -242,7 +249,7 @@ impl ModelSelectDialog {
             return;
         }
 
-        let dialog_width = 54u16;
+        let dialog_width = 72u16;
         let dialog_height = (self.rows.len() + 4).clamp(6, 20) as u16;
         let dialog_area = centered_rect(dialog_width, dialog_height, area);
 
@@ -333,7 +340,7 @@ impl ModelSelectDialog {
                     ));
                     surface.render_widget(Paragraph::new(line), row_area);
                 }
-                Row::Model { index } => {
+                Row::Model { index, is_recent } => {
                     let m = &self.models[*index];
                     let is_selected = selected_row == Some(abs_idx);
                     let model_key = format!("{}/{}", m.provider, m.id);
@@ -348,16 +355,23 @@ impl ModelSelectDialog {
 
                     let check = if is_current { "✓ " } else { "  " };
                     let ctx_str = format_context_window(m.context_window);
+                    let label = if *is_recent {
+                        format!("{}/{}", m.provider, m.id)
+                    } else {
+                        m.name.clone()
+                    };
+                    let reserved_width = check.len() + ctx_str.len() + 1;
+                    let max_label_width = content_width.saturating_sub(reserved_width);
+                    let visible_label = truncate_text_to_width(&label, max_label_width);
 
-                    // Build: "  ✓ ModelName          128K"
-                    let name_width = m.name.len() + check.len();
-                    let ctx_width = ctx_str.len();
+                    let name_width = UnicodeWidthStr::width(visible_label.as_str()) + check.len();
+                    let ctx_width = UnicodeWidthStr::width(ctx_str.as_str());
                     let padding = content_width.saturating_sub(name_width + ctx_width + 1);
 
                     let line = Line::from(vec![
                         Span::styled(check, base.fg(theme.success)),
                         Span::styled(
-                            &m.name,
+                            visible_label,
                             base.fg(if is_current {
                                 theme.primary
                             } else {
@@ -417,6 +431,31 @@ fn format_context_window(ctx: u64) -> String {
     }
 }
 
+fn truncate_text_to_width(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    if UnicodeWidthStr::width(text) <= max_width {
+        return text.to_string();
+    }
+    if max_width == 1 {
+        return "…".to_string();
+    }
+
+    let mut out = String::new();
+    let mut width = 0usize;
+    for ch in text.chars() {
+        let ch_width = UnicodeWidthStr::width(ch.encode_utf8(&mut [0; 4]));
+        if width.saturating_add(ch_width).saturating_add(1) > max_width {
+            break;
+        }
+        out.push(ch);
+        width += ch_width;
+    }
+    out.push('…');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -456,5 +495,42 @@ mod tests {
             .filter(|cell| !cell.symbol().trim().is_empty())
             .count();
         assert!(rendered > 0);
+    }
+
+    #[test]
+    fn recent_rows_render_provider_and_model_id() {
+        let mut dialog = ModelSelectDialog::new();
+        dialog.set_models(vec![
+            Model {
+                id: "gpt-4.1".to_string(),
+                name: "GPT-4.1".to_string(),
+                provider: "openai".to_string(),
+                context_window: 128_000,
+            },
+            Model {
+                id: "deepseek-v4-flash".to_string(),
+                name: "DeepSeek V4 Flash".to_string(),
+                provider: "deepseek".to_string(),
+                context_window: 64_000,
+            },
+        ]);
+        dialog.set_recent(vec![("openai".to_string(), "gpt-4.1".to_string())]);
+        dialog.open();
+
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buffer = Buffer::empty(area);
+        let mut surface = BufferSurface::new(&mut buffer);
+
+        dialog.render(&mut surface, area, &Theme::dark());
+
+        let rendered = buffer
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<Vec<_>>()
+            .join("");
+
+        assert!(rendered.contains("Recent"));
+        assert!(rendered.contains("openai/gpt-4.1"));
     }
 }
