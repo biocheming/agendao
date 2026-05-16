@@ -534,7 +534,7 @@ impl ServerState {
             stored.messages = stored_messages;
             let session: rocode_session::Session =
                 serde_json::from_value(serde_json::to_value(stored)?)?;
-            manager.update(session);
+            manager.restore(session);
         }
 
         Ok(())
@@ -1328,6 +1328,47 @@ mod tests {
         assert_eq!(session.messages[1].created_at, assistant_created_at);
         assert_eq!(session.messages[0].get_text(), "hello");
         assert_eq!(session.messages[1].get_text(), "world");
+    }
+
+    #[tokio::test]
+    async fn load_sessions_from_storage_does_not_enqueue_manager_events() {
+        let db = Database::in_memory()
+            .await
+            .expect("in-memory db should initialize");
+        let pool = db.pool().clone();
+
+        let state = state_with_repos(
+            SessionRepository::new(pool.clone()),
+            MessageRepository::new(pool.clone()),
+        );
+        {
+            let mut manager = state.sessions.lock().await;
+            let mut session = manager.create("default", ".");
+            session.add_user_message(&"x".repeat(16 * 1024));
+            manager.update(session);
+            let _ = manager.drain_events();
+        }
+
+        state
+            .sync_sessions_to_storage()
+            .await
+            .expect("session snapshot should sync to storage");
+
+        let reloaded = state_with_repos(
+            SessionRepository::new(pool.clone()),
+            MessageRepository::new(pool),
+        );
+        reloaded
+            .load_sessions_from_storage()
+            .await
+            .expect("sessions should reload from storage");
+
+        let mut manager = reloaded.sessions.lock().await;
+        assert!(manager.get("missing").is_none());
+        assert!(
+            manager.drain_events().is_empty(),
+            "cold-start restoration should not enqueue lifecycle events"
+        );
     }
 
     #[tokio::test]

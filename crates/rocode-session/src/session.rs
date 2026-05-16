@@ -187,13 +187,13 @@ pub fn sanitize_display_text(text: &str) -> String {
 #[serde(tag = "type")]
 pub enum SessionEvent {
     Created {
-        info: Session,
+        info: SessionRow,
     },
     Updated {
-        info: Session,
+        info: SessionRow,
     },
     Deleted {
-        info: Session,
+        info: SessionRow,
     },
     Diff {
         session_id: String,
@@ -1157,6 +1157,10 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
+    fn summarize_session(session: &Session) -> SessionRow {
+        session.to_row()
+    }
+
     pub fn new() -> Self {
         Self {
             sessions: HashMap::new(),
@@ -1238,7 +1242,7 @@ impl SessionManager {
         self.sessions
             .insert(session.record().id.clone(), session.clone());
         self.events.push(SessionEvent::Created {
-            info: session.clone(),
+            info: Self::summarize_session(&session),
         });
 
         // Publish to Bus
@@ -1368,7 +1372,7 @@ impl SessionManager {
 
         self.sessions.insert(forked_id, forked.clone());
         self.events.push(SessionEvent::Created {
-            info: forked.clone(),
+            info: Self::summarize_session(&forked),
         });
         self.publish_session_event(&SESSION_CREATED_EVENT, &forked);
         Ok(forked)
@@ -1382,7 +1386,7 @@ impl SessionManager {
             session.clone()
         };
         self.events.push(SessionEvent::Updated {
-            info: updated.clone(),
+            info: Self::summarize_session(&updated),
         });
         self.publish_session_event(&SESSION_UPDATED_EVENT, &updated);
         Some(updated)
@@ -1396,7 +1400,7 @@ impl SessionManager {
             session.clone()
         };
         self.events.push(SessionEvent::Updated {
-            info: updated.clone(),
+            info: Self::summarize_session(&updated),
         });
         self.publish_session_event(&SESSION_UPDATED_EVENT, &updated);
         Some(updated)
@@ -1410,7 +1414,7 @@ impl SessionManager {
             session.clone()
         };
         self.events.push(SessionEvent::Updated {
-            info: updated.clone(),
+            info: Self::summarize_session(&updated),
         });
         self.publish_session_event(&SESSION_UPDATED_EVENT, &updated);
         Some(updated)
@@ -1428,7 +1432,7 @@ impl SessionManager {
             session.clone()
         };
         self.events.push(SessionEvent::Updated {
-            info: updated.clone(),
+            info: Self::summarize_session(&updated),
         });
         self.publish_session_event(&SESSION_UPDATED_EVENT, &updated);
         Some(updated)
@@ -1442,7 +1446,7 @@ impl SessionManager {
             session.clone()
         };
         self.events.push(SessionEvent::Updated {
-            info: updated.clone(),
+            info: Self::summarize_session(&updated),
         });
         self.publish_session_event(&SESSION_UPDATED_EVENT, &updated);
         Some(updated)
@@ -1456,7 +1460,7 @@ impl SessionManager {
             session.clone()
         };
         self.events.push(SessionEvent::Updated {
-            info: updated.clone(),
+            info: Self::summarize_session(&updated),
         });
         self.publish_session_event(&SESSION_UPDATED_EVENT, &updated);
         Some(updated)
@@ -1470,7 +1474,7 @@ impl SessionManager {
             session.clone()
         };
         self.events.push(SessionEvent::Updated {
-            info: updated.clone(),
+            info: Self::summarize_session(&updated),
         });
         self.publish_session_event(&SESSION_UPDATED_EVENT, &updated);
         Some(updated)
@@ -1559,7 +1563,7 @@ impl SessionManager {
 
         let session = self.sessions.remove(id)?;
         self.events.push(SessionEvent::Deleted {
-            info: session.clone(),
+            info: Self::summarize_session(&session),
         });
 
         // Publish to Bus
@@ -1584,9 +1588,17 @@ impl SessionManager {
         let id = session.record().id.clone();
         self.sessions.insert(id, session.clone());
         self.events.push(SessionEvent::Updated {
-            info: session.clone(),
+            info: Self::summarize_session(&session),
         });
         self.publish_session_event(&SESSION_UPDATED_EVENT, &session);
+    }
+
+    /// Restore a session into the in-memory manager without emitting manager events.
+    /// Cold-start storage hydration should rebuild the authority state, not enqueue
+    /// replayable lifecycle events for every restored session.
+    pub fn restore(&mut self, session: Session) {
+        let id = session.record().id.clone();
+        self.sessions.insert(id, session);
     }
 
     /// Get events (and clear them)
@@ -2297,6 +2309,31 @@ mod tests {
             ..Default::default()
         });
         assert!(by_telemetry.is_empty());
+    }
+
+    #[test]
+    fn session_manager_events_store_rows_not_full_messages() {
+        let mut manager = SessionManager::new();
+        let mut session = manager.create("project-1", "/path/to/project");
+        session.add_user_message(&"x".repeat(32 * 1024));
+        let session_id = session.id.clone();
+        manager.update(session);
+
+        let events = manager.drain_events();
+        let updated = events
+            .into_iter()
+            .rev()
+            .find_map(|event| match event {
+                SessionEvent::Updated { info } => Some(info),
+                _ => None,
+            })
+            .expect("updated event should exist");
+
+        assert_eq!(updated.id, session_id);
+        assert_eq!(updated.directory, "/path/to/project");
+        let serialized = serde_json::to_value(&updated).expect("row should serialize");
+        assert!(serialized.get("messages").is_none());
+        assert!(serialized.get("metadata").is_none());
     }
 
     #[test]
