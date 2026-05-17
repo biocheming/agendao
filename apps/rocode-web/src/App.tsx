@@ -1243,6 +1243,9 @@ export default function App() {
   const [questionAnswers, setQuestionAnswers] = useState<Record<number, QuestionAnswerValue>>({});
   const [questionSubmitting, setQuestionSubmitting] = useState(false);
   const [permissionSubmitting, setPermissionSubmitting] = useState(false);
+  const [permissionSubmitError, setPermissionSubmitError] = useState<string | null>(null);
+  const [permissionSubmitStartedAt, setPermissionSubmitStartedAt] = useState<string | null>(null);
+  const [permissionSubmitCompletedAt, setPermissionSubmitCompletedAt] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [composerDragActive, setComposerDragActive] = useState(false);
   const [selectedAttachmentIndex, setSelectedAttachmentIndex] = useState<number | null>(null);
@@ -2350,19 +2353,29 @@ export default function App() {
 
       if (type === "permission.requested" && eventSessionId === selectedSessionRef.current) {
         setPermission(permissionInteractionFromEvent(event, eventSessionId));
+        setPermissionSubmitting(false);
+        setPermissionSubmitError(null);
+        setPermissionSubmitStartedAt(null);
+        setPermissionSubmitCompletedAt(null);
         return;
       }
 
       if (type === "permission.resolved") {
         const resolvedPermissionId = String(event.permissionID ?? "");
+        let resolvedCurrentPermission = false;
         setPermission((current) => {
           if (!current) return null;
           if (resolvedPermissionId && current.permission_id !== resolvedPermissionId) {
             return current;
           }
+          resolvedCurrentPermission = true;
           return null;
         });
-        setPermissionSubmitting(false);
+        if (resolvedCurrentPermission || !resolvedPermissionId) {
+          setPermissionSubmitting(false);
+          setPermissionSubmitError(null);
+          setPermissionSubmitCompletedAt(new Date().toISOString());
+        }
       }
     };
 
@@ -2758,20 +2771,37 @@ export default function App() {
     const currentPermission = permission;
     if (!currentPermission || permissionSubmitting) return;
     setPermissionSubmitting(true);
+    setPermissionSubmitError(null);
+    setPermissionSubmitStartedAt(new Date().toISOString());
     try {
       await api(`/permission/${currentPermission.permission_id}/reply`, {
         method: "POST",
         body: JSON.stringify({ reply }),
       });
+      setPermissionSubmitCompletedAt(new Date().toISOString());
     } catch (error) {
-      setBanner(`Permission reply failed: ${formatError(error)}`);
-    } finally {
-      setPermission((current) =>
-        current?.permission_id === currentPermission.permission_id ? null : current,
-      );
+      const message = formatError(error);
+      setBanner(`Permission reply failed: ${message}`);
+      setPermissionSubmitError(message);
       setPermissionSubmitting(false);
+      setPermissionSubmitCompletedAt(new Date().toISOString());
     }
   };
+
+  const permissionStatusLabel = permissionSubmitError
+    ? `Permission reply failed · ${permissionSubmitError}`
+    : permissionSubmitting
+      ? "Submitting permission reply…"
+      : permission
+        ? "Pending permission request"
+        : permissionSubmitCompletedAt
+          ? `Permission reply sent · ${permissionSubmitCompletedAt}`
+          : null;
+  const permissionStatusTone: "muted" | "warning" | "destructive" = permissionSubmitError
+    ? "destructive"
+    : permissionSubmitting || permission
+      ? "warning"
+      : "muted";
 
   const connectProvider = async () => {
     const providerId = connectProviderId.trim();
@@ -3299,6 +3329,8 @@ export default function App() {
               outputPricePerMillion={activeProviderModel?.cost_per_million_output ?? null}
               activeStageId={schedulerNavigation.activeStageId}
               provenance={schedulerNavigation.currentBreadcrumbProvenance}
+              permissionStatusLabel={permissionStatusLabel}
+              permissionStatusTone={permissionStatusTone}
               onPreviewStage={schedulerNavigation.previewStage}
               onSubmit={submitPrompt}
               onRemoveReference={(reference) => setComposer((current) => removePromptReference(current, reference))}
@@ -3463,6 +3495,9 @@ export default function App() {
         questionAnswers={questionAnswers}
         questionSubmitting={questionSubmitting}
         permissionSubmitting={permissionSubmitting}
+        permissionSubmitError={permissionSubmitError}
+        permissionSubmitStartedAt={permissionSubmitStartedAt}
+        permissionSubmitCompletedAt={permissionSubmitCompletedAt}
         onQuestionAnswerChange={(index, value) =>
           setQuestionAnswers((current) => ({ ...current, [index]: value }))
         }

@@ -196,6 +196,7 @@ impl RuntimeApiClient {
 pub struct ApiClient {
     base_url: String,
     jobs: mpsc::Sender<ApiJob>,
+    priority_client: BlockingApiClient,
     current_session: RwLock<Option<SessionInfo>>,
 }
 
@@ -220,6 +221,10 @@ impl ApiClient {
             .expect("failed to start TUI API gateway thread");
 
         Self {
+            priority_client: BlockingApiClient::new_with_password(
+                base_url.clone(),
+                server_password,
+            ),
             base_url,
             jobs,
             current_session: RwLock::new(None),
@@ -402,6 +407,18 @@ impl ApiClient {
         self.call("reply permission", move |client| {
             client.reply_permission(&permission_id, &reply, message)
         })
+    }
+
+    /// Submit permission replies outside the shared gateway queue so interactive
+    /// confirmations are not head-of-line blocked by telemetry or sync reads.
+    pub fn reply_permission_priority(
+        &self,
+        permission_id: &str,
+        reply: &str,
+        message: Option<String>,
+    ) -> anyhow::Result<()> {
+        self.priority_client
+            .reply_permission(permission_id, reply, message)
     }
 
     pub fn update_session_title(

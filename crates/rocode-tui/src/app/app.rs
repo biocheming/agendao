@@ -94,6 +94,9 @@ const SESSION_SYNC_DEBOUNCE_MS: u64 = 180;
 const SESSION_FULL_SYNC_INTERVAL_SECS: u64 = 10;
 const QUESTION_SYNC_FALLBACK_SECS: u64 = 5;
 const PERMISSION_SYNC_FALLBACK_SECS: u64 = 5;
+const PERMISSION_SYNC_BACKOFF_SECS: u64 = 15;
+const AUX_SYNC_INTERVAL_SECS: u64 = 5;
+const AUX_SYNC_BACKOFF_SECS: u64 = 15;
 const PERF_LOG_INTERVAL_SECS: u64 = 10;
 const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_DIM: &str = "\x1b[90m";
@@ -199,6 +202,9 @@ struct PromptRuntimeState {
 struct PermissionRuntimeState {
     pending_ids: HashSet<String>,
     pending_requests: HashMap<String, PermissionRequestInfo>,
+    last_submit_error: Option<String>,
+    last_submit_started_at: Option<String>,
+    last_submit_completed_at: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -638,6 +644,9 @@ impl App {
 
                 // Handle inline permission prompt before dialogs
                 if self.permission_prompt.is_open {
+                    if self.permission_prompt.is_current_request_submitting() {
+                        return Ok(());
+                    }
                     match key.code {
                         KeyCode::Char('y') | KeyCode::Enter => {
                             if let Some(request) = self.permission_prompt.approve_once() {
@@ -1439,6 +1448,34 @@ impl App {
                     }
                     self.event_caused_change = true;
                 }
+                CustomEvent::PermissionReplyFinished {
+                    permission_id,
+                    outcome,
+                } => {
+                    self.permission_runtime.last_submit_completed_at =
+                        Some(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+                    match outcome {
+                        crate::event::PermissionReplyOutcome::Succeeded => {
+                            self.permission_runtime.last_submit_error = None;
+                            self.toast.show(
+                                crate::components::ToastVariant::Success,
+                                "Permission reply sent",
+                                2000,
+                            );
+                        }
+                        crate::event::PermissionReplyOutcome::Failed { message } => {
+                            self.permission_runtime.last_submit_error = Some(message.clone());
+                            self.permission_prompt
+                                .mark_submit_failed(permission_id, message.clone());
+                            self.alert_dialog.set_message(&format!(
+                                "Failed to submit permission response:\n{}",
+                                message
+                            ));
+                            self.open_alert_dialog();
+                        }
+                    }
+                    self.event_caused_change = true;
+                }
                 CustomEvent::StateChanged(StateChange::SessionUpdated { session_id, source }) => {
                     self.diagnostics.perf.session_updated_events = self
                         .diagnostics
@@ -1534,6 +1571,7 @@ impl App {
                     };
                     if should_surface {
                         self.clear_permission_request(permission_id);
+                        self.permission_runtime.last_submit_error = None;
                         self.sync_runtime.last_permission_sync = Instant::now();
                         self.event_caused_change = true;
                     }
@@ -1689,14 +1727,18 @@ impl App {
                     self.sync_runtime.last_question_sync = Instant::now();
                 }
                 if self.sync_runtime.last_permission_sync.elapsed()
-                    >= Duration::from_secs(PERMISSION_SYNC_FALLBACK_SECS)
+                    >= self.permission_sync_interval()
                 {
                     tick_changed |= self.sync_permission_requests();
                     self.sync_runtime.last_permission_sync = Instant::now();
                 }
-                if self.sync_runtime.last_aux_sync.elapsed() >= Duration::from_secs(5) {
-                    self.refresh_session_list_dialog();
-                    let _ = self.refresh_skill_list_dialog();
+                if self.sync_runtime.last_aux_sync.elapsed() >= self.aux_sync_interval() {
+                    if self.session_list_dialog.is_open() {
+                        self.refresh_session_list_dialog();
+                    }
+                    if self.skill_list_dialog.is_open() {
+                        let _ = self.refresh_skill_list_dialog();
+                    }
                     let _ = self.refresh_lsp_status();
                     let _ = self.refresh_mcp_dialog();
                     self.sync_runtime.last_aux_sync = Instant::now();
@@ -1725,6 +1767,26 @@ impl App {
 
     fn terminal_width(&self) -> u16 {
         self.viewport_area.width
+    }
+
+    fn permission_interaction_active(&self) -> bool {
+        !self.permission_runtime.pending_ids.is_empty() || self.permission_prompt.is_open
+    }
+
+    fn permission_sync_interval(&self) -> Duration {
+        if self.permission_interaction_active() {
+            Duration::from_secs(PERMISSION_SYNC_BACKOFF_SECS)
+        } else {
+            Duration::from_secs(PERMISSION_SYNC_FALLBACK_SECS)
+        }
+    }
+
+    fn aux_sync_interval(&self) -> Duration {
+        if self.permission_interaction_active() {
+            Duration::from_secs(AUX_SYNC_BACKOFF_SECS)
+        } else {
+            Duration::from_secs(AUX_SYNC_INTERVAL_SECS)
+        }
     }
 
     fn session_sidebar_visible(&self) -> bool {
@@ -1826,11 +1888,8 @@ impl App {
         schedule_at(
             self.sync_runtime.last_question_sync + Duration::from_secs(QUESTION_SYNC_FALLBACK_SECS),
         );
-        schedule_at(
-            self.sync_runtime.last_permission_sync
-                + Duration::from_secs(PERMISSION_SYNC_FALLBACK_SECS),
-        );
-        schedule_at(self.sync_runtime.last_aux_sync + Duration::from_secs(5));
+        schedule_at(self.sync_runtime.last_permission_sync + self.permission_sync_interval());
+        schedule_at(self.sync_runtime.last_aux_sync + self.aux_sync_interval());
         schedule_at(self.sync_runtime.last_perf_log + Duration::from_secs(PERF_LOG_INTERVAL_SECS));
 
         deadline

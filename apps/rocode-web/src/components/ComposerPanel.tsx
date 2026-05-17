@@ -200,6 +200,8 @@ interface ComposerPanelProps {
   outputPricePerMillion?: number | null;
   activeStageId: string | null;
   provenance: BreadcrumbProvenance | null;
+  permissionStatusLabel?: string | null;
+  permissionStatusTone?: "muted" | "warning" | "destructive";
   onPreviewStage?: (stageId: string | null) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onRemoveReference: (reference: string) => void;
@@ -254,6 +256,8 @@ export function ComposerPanel({
   outputPricePerMillion = null,
   activeStageId,
   provenance,
+  permissionStatusLabel,
+  permissionStatusTone = "muted",
   onPreviewStage,
   onSubmit,
   onRemoveReference,
@@ -440,9 +444,7 @@ export function ComposerPanel({
       : null;
   const cacheUsageLabel =
     ((cacheReadTokens ?? 0) > 0 || (cacheMissTokens ?? 0) > 0 || (cacheWriteTokens ?? 0) > 0)
-      ? (cacheMissTokens ?? 0) > 0
-        ? `Cache H/M ${formatCompactTokenCount(cacheReadTokens)} / ${formatCompactTokenCount(cacheMissTokens)}`
-        : `Cache R/W ${formatCompactTokenCount(cacheReadTokens)} / ${formatCompactTokenCount(cacheWriteTokens)}`
+      ? `Cache H/M/W ${formatCompactTokenCount(cacheReadTokens)} / ${formatCompactTokenCount(cacheMissTokens)} / ${formatCompactTokenCount(cacheWriteTokens)}`
       : null;
   const contextBadgeLabel =
     contextCount > 0 ? `${references.length} refs · ${attachments.length} files` : null;
@@ -923,6 +925,20 @@ export function ComposerPanel({
                       {activityHint ? (
                         <span className={cn("font-medium", voiceError ? "text-destructive" : "text-muted-foreground")}>
                           {activityHint}
+                        </span>
+                      ) : null}
+                      {permissionStatusLabel ? (
+                        <span
+                          className={cn(
+                            "font-medium",
+                            permissionStatusTone === "destructive"
+                              ? "text-destructive"
+                              : permissionStatusTone === "warning"
+                                ? "text-amber-700 dark:text-amber-300"
+                                : "text-muted-foreground",
+                          )}
+                        >
+                          {permissionStatusLabel}
                         </span>
                       ) : null}
                     </div>

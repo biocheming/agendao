@@ -574,6 +574,31 @@ fn cli_runtime_snapshot_lines(
     if let Some(permission) = runtime.pending_permission.as_ref() {
         lines.push(format!("Pending permission: {}", permission.permission_id));
     }
+    if telemetry.granted_by_turn_count + telemetry.granted_by_session_count > 0
+        || telemetry.last_permission_miss_count > 0
+        || !telemetry.granted_by_matcher_kind.is_empty()
+    {
+        lines.push(String::new());
+        lines.push("Permission Authority:".to_string());
+        lines.push(format!(
+            "  Turn grants: {} · Session grants: {} · Pending: {} · Misses: {}",
+            telemetry.granted_by_turn_count,
+            telemetry.granted_by_session_count,
+            telemetry.pending_permission_count,
+            telemetry.last_permission_miss_count,
+        ));
+        if let Some(ref kind) = telemetry.last_permission_matcher_kind {
+            lines.push(format!("  Last grant: {kind}"));
+        }
+        if !telemetry.granted_by_matcher_kind.is_empty() {
+            let matchers: Vec<String> = telemetry
+                .granted_by_matcher_kind
+                .iter()
+                .map(|(k, v)| format!("{k}: {v}"))
+                .collect();
+            lines.push(format!("  Matchers: {}", matchers.join(", ")));
+        }
+    }
 
     if runtime.attached_sessions.is_empty() {
         lines.push(String::new());
@@ -2242,6 +2267,7 @@ fn cli_should_emit_scheduler_stage_block(
 mod session_projection_tests {
     use super::{
         cli_cache_evidence_status_label, cli_context_closure_cache_diagnostic_label,
+        cli_runtime_snapshot_lines,
     };
 
     #[test]
@@ -2307,6 +2333,69 @@ mod session_projection_tests {
             cli_cache_evidence_status_label(&summary).as_deref(),
             Some("cache explained")
         );
+    }
+
+    #[test]
+    fn runtime_snapshot_shows_permission_authority_for_miss_only() {
+        let telemetry = crate::api_client::SessionTelemetrySnapshot {
+            runtime: crate::api_client::SessionRuntimeState {
+                session_id: "sess_123".to_string(),
+                run_status: crate::api_client::SessionRunStatusKind::Idle,
+                current_message_id: None,
+                usage: None,
+                active_stage_id: None,
+                active_stage_count: 0,
+                active_tools: Vec::new(),
+                pending_question: None,
+                pending_permission: None,
+                attached_sessions: Vec::new(),
+            },
+            stages: Vec::new(),
+            topology: crate::api_client::SessionExecutionTopology {
+                session_id: "sess_123".to_string(),
+                active_count: 0,
+                done_count: 0,
+                running_count: 0,
+                waiting_count: 0,
+                cancelling_count: 0,
+                retry_count: 0,
+                updated_at: None,
+                roots: Vec::new(),
+            },
+            usage: rocode_session::SessionUsage::default(),
+            usage_books: rocode_types::SessionUsageBooks::default(),
+            tool_repair_summary: None,
+            model_tool_repair_summary: None,
+            repair_query_snapshot: None,
+            tool_trajectory_quality: None,
+            tool_result_governance: None,
+            pending_permission_count: 0,
+            granted_by_turn_count: 0,
+            granted_by_session_count: 0,
+            granted_by_matcher_kind: Default::default(),
+            last_permission_matcher_kind: None,
+            last_permission_grant_target: None,
+            last_permission_miss_count: 2,
+            memory: None,
+            cache_evidence: None,
+            context_explain: None,
+            ownership: None,
+            context_compaction_summary: None,
+            compaction_continuity: None,
+            context_compaction_lifecycle_summary: None,
+            context_pressure_governance_summary: None,
+            cache_semantics: None,
+            context_closure_contract: None,
+            prompt_surface_evidence: None,
+            ingress_stabilization: None,
+            execution_preflight_summary: None,
+            provider_diagnostic_summary: None,
+        };
+
+        let lines = cli_runtime_snapshot_lines("sess_123", &telemetry);
+        let rendered = lines.join("\n");
+        assert!(rendered.contains("Permission Authority:"));
+        assert!(rendered.contains("Misses: 2"));
     }
 
 }
