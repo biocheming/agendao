@@ -8,7 +8,8 @@ use crate::task::TaskTool;
 use crate::todo::TodoWriteTool;
 use crate::{
     append_tool_repair_event_map, merge_tool_repair_telemetry, tool_repair_event, Metadata,
-    PermissionRequest, TodoItemData, Tool, ToolContext, ToolError, ToolResult,
+    structured_dangerous_exec_lifetimes, PermissionRequest, TodoItemData, Tool, ToolContext,
+    ToolError, ToolResult,
 };
 
 const DEFAULT_LIMIT: usize = 20;
@@ -376,6 +377,8 @@ impl Tool for TaskFlowTool {
 
         let mut permission = PermissionRequest::new("task_flow")
             .with_scope_key(format!("task_flow:{}", input.operation.as_str()))
+            .with_supported_lifetimes(structured_dangerous_exec_lifetimes())
+            .with_risk_tag("dangerous_exec")
             .with_metadata("operation", serde_json::json!(input.operation.as_str()))
             .always_allow();
         if let Some(task_id) = input.task_id.as_ref() {
@@ -1674,6 +1677,22 @@ mod tests {
             task_flow_request.scope_key.as_deref(),
             Some("task_flow:create")
         );
+        assert_eq!(
+            task_flow_request.matcher_kind,
+            Some(rocode_permission::PermissionMatcherKind::ScopeOnly)
+        );
+        assert_eq!(
+            task_flow_request.matcher_key.as_deref(),
+            Some("task_flow:create")
+        );
+        assert_eq!(
+            task_flow_request.supported_lifetimes,
+            structured_dangerous_exec_lifetimes()
+        );
+        assert!(task_flow_request
+            .risk_tags
+            .iter()
+            .any(|tag| tag == "dangerous_exec"));
     }
 
     #[tokio::test]

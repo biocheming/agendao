@@ -53,6 +53,15 @@ impl CliFrontendProjection {
         if self.queue_len > 0 {
             parts.push(format!("queue {}", self.queue_len));
         }
+        if self.pending_permission_count > 0 || self.submitting_permission_count > 0 {
+            parts.push(format!(
+                "perm p/s {}/{}",
+                self.pending_permission_count, self.submitting_permission_count
+            ));
+        }
+        if let Some(error) = self.last_permission_submit_error.as_deref() {
+            parts.push(format!("perm-error {}", error));
+        }
         if let Some(current_tokens) = self.current_context_tokens() {
             let context_window = self
                 .current_model_label
@@ -88,18 +97,10 @@ impl CliFrontendProjection {
             || self.token_stats.cache_write_tokens > 0
         {
             parts.push(format!(
-                "{} {}/{}",
-                if self.token_stats.cache_miss_tokens > 0 {
-                    "cache H/M"
-                } else {
-                    "cache R/W"
-                },
+                "cache H/M/W {}/{}/{}",
                 format_token_count(self.token_stats.cache_read_tokens),
-                format_token_count(if self.token_stats.cache_miss_tokens > 0 {
-                    self.token_stats.cache_miss_tokens
-                } else {
-                    self.token_stats.cache_write_tokens
-                })
+                format_token_count(self.token_stats.cache_miss_tokens),
+                format_token_count(self.token_stats.cache_write_tokens)
             ));
         }
         if let Some(cache_diagnostic) = self.cache_diagnostic.as_deref() {
@@ -126,5 +127,22 @@ impl CliFrontendProjection {
         }
         parts.push("Ctrl+D exit".to_string());
         format!(" {} ", parts.join("  •  "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn footer_text_surfaces_permission_interaction_state() {
+        let mut projection = CliFrontendProjection::default();
+        projection.pending_permission_count = 1;
+        projection.submitting_permission_count = 1;
+        projection.last_permission_submit_error = Some("network down".to_string());
+
+        let footer = projection.footer_text();
+        assert!(footer.contains("perm p/s 1/1"));
+        assert!(footer.contains("perm-error network down"));
     }
 }

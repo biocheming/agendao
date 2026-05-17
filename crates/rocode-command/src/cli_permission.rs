@@ -134,9 +134,12 @@ fn format_permission_summary(
     permission_class: Option<&str>,
     scope_key: Option<&str>,
     scope_label: Option<&str>,
+    matcher_label: Option<&str>,
+    grant_target_summary: Option<&str>,
     patterns: &[String],
     metadata: &std::collections::HashMap<String, serde_json::Value>,
     lifetimes: &[PermissionLifetime],
+    risk_tags: &[String],
     style: &CliStyle,
 ) -> String {
     let mut lines = Vec::new();
@@ -174,8 +177,22 @@ fn format_permission_summary(
     if let Some(scope) = display_scope(scope_key, scope_label) {
         lines.push(format!("    {} {}", style.dim("scope:"), scope));
     }
-    if let Some(hint) = lifetime_hint(display_scope(scope_key, scope_label), lifetimes) {
+    if let Some(target) = grant_target_summary {
+        lines.push(format!("    {} {}", style.dim("target:"), target));
+    }
+    if let Some(matcher) = matcher_label {
+        lines.push(format!("    {} {}", style.dim("match:"), matcher));
+    }
+    let hint_scope = grant_target_summary.or_else(|| display_scope(scope_key, scope_label));
+    if let Some(hint) = lifetime_hint(hint_scope, lifetimes) {
         lines.push(format!("    {} {}", style.dim("grant:"), hint));
+    }
+    if !risk_tags.is_empty() {
+        lines.push(format!(
+            "    {} {}",
+            style.dim("risk:"),
+            risk_tags.join(", ")
+        ));
     }
 
     // Show patterns (file paths, commands, etc.)
@@ -241,9 +258,12 @@ pub fn prompt_permission(
     permission_class: Option<&str>,
     scope_key: Option<&str>,
     scope_label: Option<&str>,
+    matcher_label: Option<&str>,
+    grant_target_summary: Option<&str>,
     patterns: &[String],
     metadata: &std::collections::HashMap<String, serde_json::Value>,
     lifetimes: &[PermissionLifetime],
+    risk_tags: &[String],
     style: &CliStyle,
 ) -> io::Result<PermissionDecision> {
     let summary = format_permission_summary(
@@ -251,9 +271,12 @@ pub fn prompt_permission(
         permission_class,
         scope_key,
         scope_label,
+        matcher_label,
+        grant_target_summary,
         patterns,
         metadata,
         lifetimes,
+        risk_tags,
         style,
     );
 
@@ -359,9 +382,12 @@ pub fn build_cli_permission_callback(
                     permission_class,
                     request.scope_key.as_deref(),
                     None,
+                    None,
+                    None,
                     &patterns,
                     &metadata,
                     &lifetimes,
+                    &request.risk_tags,
                     &style,
                 )
             })
@@ -453,9 +479,12 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
             &["cargo test --all".to_string()],
             &metadata,
             &[PermissionLifetime::Once],
+            &[],
             &style,
         );
 
@@ -478,9 +507,12 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
             &["src/main.rs".to_string()],
             &metadata,
             &[PermissionLifetime::Once, PermissionLifetime::Session],
+            &[],
             &style,
         );
 

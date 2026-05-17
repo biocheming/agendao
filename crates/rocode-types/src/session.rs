@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use rocode_content::stage_protocol::StageStatus;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::{
     MemoryScope, ProviderConnectionDescriptorCandidate, ProviderProfileDescriptorView,
@@ -1516,6 +1516,7 @@ pub enum SessionTelemetrySnapshotVersion {
     V3,
     V4,
     V5,
+    V6,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2004,6 +2005,21 @@ pub struct SessionTelemetrySnapshot {
     pub tool_trajectory_quality: Option<ToolTrajectoryQualitySummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_result_governance: Option<ToolResultGovernanceSummary>,
+    #[serde(default)]
+    pub pending_permission_count: u64,
+    #[serde(default)]
+    pub granted_by_turn_count: u64,
+    #[serde(default)]
+    pub granted_by_session_count: u64,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub granted_by_matcher_kind: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_permission_matcher_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_permission_grant_target: Option<String>,
+    /// Cumulative count of permission requests that were rejected (miss).
+    #[serde(default)]
+    pub last_permission_miss_count: u64,
     /// Steering telemetry (P4): counts and timestamps for mid-run steering.
     #[serde(default)]
     pub pending_steering_count: u64,

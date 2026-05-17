@@ -39,7 +39,7 @@ use mcp_cmd::handle_mcp_command;
 use provider_cmd::handle_provider_command;
 use run::{run_non_interactive, RunNonInteractiveOptions};
 pub use server_lifecycle::{FrontendRuntimeContext, ServerDiscoveryRequest};
-use session_cmd::handle_session_command;
+use session_cmd::{handle_session_command, handle_steer_command};
 use skill_cmd::handle_skill_command;
 
 pub async fn run_frontend() -> anyhow::Result<()> {
@@ -167,6 +167,9 @@ where
         }
         Commands::Pr { number } => {
             handle_pr_command(number).await?;
+        }
+        Commands::Steer { session, message } => {
+            handle_steer_command(session, message, &runtime_context).await?;
         }
     }
 

@@ -5,7 +5,8 @@ use axum::{
 };
 use once_cell::sync::Lazy;
 use rocode_permission::{
-    AskOutcome, Pattern, PermissionEngine, PermissionInfo, PermissionLifetime, Response, TimeInfo,
+    AskOutcome, Pattern, PermissionEngine, PermissionInfo, PermissionLifetime,
+    PermissionMatcherKind, Response, TimeInfo,
 };
 use rocode_tool::default_supported_lifetimes_for_class;
 use serde::{Deserialize, Serialize};
@@ -36,6 +37,16 @@ pub struct PermissionRequestInfo {
     pub origin_tool: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub supported_lifetimes: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matcher_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matcher_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matcher_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grant_target_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub risk_tags: Vec<String>,
     pub input: serde_json::Value,
     pub message: String,
 }
@@ -44,6 +55,14 @@ pub(crate) static PERMISSION_ENGINE: Lazy<Mutex<PermissionEngine>> =
     Lazy::new(|| Mutex::new(PermissionEngine::new()));
 static PERMISSION_WAITERS: Lazy<Mutex<HashMap<String, oneshot::Sender<PermissionReply>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+
+const PERMISSION_GRANTED_BY_TURN_COUNT_METADATA_KEY: &str = "permission_granted_by_turn_count";
+const PERMISSION_GRANTED_BY_SESSION_COUNT_METADATA_KEY: &str =
+    "permission_granted_by_session_count";
+const PERMISSION_GRANTED_BY_MATCHER_KIND_METADATA_KEY: &str =
+    "permission_granted_by_matcher_kind";
+const LAST_PERMISSION_MATCHER_KIND_METADATA_KEY: &str = "last_permission_matcher_kind";
+const LAST_PERMISSION_GRANT_TARGET_METADATA_KEY: &str = "last_permission_grant_target";
 
 #[derive(Debug)]
 struct PermissionReply {
@@ -152,6 +171,116 @@ fn permission_scope_label(scope_key: Option<&str>) -> Option<String> {
     Some(scope_key.to_string())
 }
 
+fn permission_matcher_label(
+    matcher_kind: Option<PermissionMatcherKind>,
+    matcher_key: Option<&str>,
+) -> Option<String> {
+    let matcher_key = matcher_key?.trim();
+    if matcher_key.is_empty() {
+        return None;
+    }
+
+    match matcher_kind {
+        Some(PermissionMatcherKind::ScopeOnly) => None,
+        Some(PermissionMatcherKind::ExactInput) => Some(format!("Exact input: {matcher_key}")),
+        Some(PermissionMatcherKind::StructuredFamily) => {
+            let label = matcher_key
+                .strip_prefix("cmd:")
+                .unwrap_or(matcher_key)
+                .replace('+', ", ");
+            Some(format!("Command family: {label}"))
+        }
+        Some(PermissionMatcherKind::SemanticPattern) => {
+            Some(format!("Semantic pattern: {matcher_key}"))
+        }
+        None => None,
+    }
+}
+
+fn permission_grant_target_summary(info: &PermissionInfo) -> Option<String> {
+    permission_scope_label(info.scope_key.as_deref())
+        .or_else(|| permission_matcher_label(info.matcher_kind, info.matcher_key.as_deref()))
+}
+
+fn permission_matcher_kind_key(info: &PermissionInfo) -> String {
+    info.matcher_kind
+        .map(|kind| kind.as_str().to_string())
+        .unwrap_or_else(|| "legacy".to_string())
+}
+
+fn increment_session_metadata_counter(
+    session: &mut rocode_session::Session,
+    key: &str,
+) {
+    let next = session
+        .record()
+        .metadata
+        .get(key)
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0)
+        .saturating_add(1);
+    session.insert_metadata(key.to_string(), serde_json::json!(next));
+}
+
+fn increment_session_metadata_map_counter(
+    session: &mut rocode_session::Session,
+    key: &str,
+    entry_key: &str,
+) {
+    let mut object = session
+        .record()
+        .metadata
+        .get(key)
+        .and_then(|value| value.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let next = object
+        .get(entry_key)
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0)
+        .saturating_add(1);
+    object.insert(entry_key.to_string(), serde_json::json!(next));
+    session.insert_metadata(key.to_string(), serde_json::Value::Object(object));
+}
+
+fn record_permission_grant_telemetry(
+    session: &mut rocode_session::Session,
+    permission: &PermissionInfo,
+    response: Response,
+) {
+    let matcher_kind_key = permission_matcher_kind_key(permission);
+    increment_session_metadata_map_counter(
+        session,
+        PERMISSION_GRANTED_BY_MATCHER_KIND_METADATA_KEY,
+        &matcher_kind_key,
+    );
+    session.insert_metadata(
+        LAST_PERMISSION_MATCHER_KIND_METADATA_KEY.to_string(),
+        serde_json::json!(matcher_kind_key),
+    );
+    if let Some(target) = permission_grant_target_summary(permission) {
+        session.insert_metadata(
+            LAST_PERMISSION_GRANT_TARGET_METADATA_KEY.to_string(),
+            serde_json::json!(target),
+        );
+    } else {
+        session.insert_metadata(
+            LAST_PERMISSION_GRANT_TARGET_METADATA_KEY.to_string(),
+            serde_json::Value::Null,
+        );
+    }
+    match response {
+        Response::Turn => {
+            increment_session_metadata_counter(session, PERMISSION_GRANTED_BY_TURN_COUNT_METADATA_KEY)
+        }
+        Response::Always => increment_session_metadata_counter(
+            session,
+            PERMISSION_GRANTED_BY_SESSION_COUNT_METADATA_KEY,
+        ),
+        Response::Once | Response::Reject => {}
+    }
+}
+
 fn permission_request_info(info: &PermissionInfo) -> PermissionRequestInfo {
     PermissionRequestInfo {
         id: info.id.clone(),
@@ -168,12 +297,20 @@ fn permission_request_info(info: &PermissionInfo) -> PermissionRequestInfo {
             .iter()
             .map(|lifetime| lifetime.as_str().to_string())
             .collect(),
+        matcher_kind: info.matcher_kind.map(|kind| kind.as_str().to_string()),
+        matcher_key: info.matcher_key.clone(),
+        matcher_label: permission_matcher_label(info.matcher_kind, info.matcher_key.as_deref()),
+        grant_target_summary: permission_grant_target_summary(info),
+        risk_tags: info.risk_tags.clone(),
         input: serde_json::json!({
             "permission": info.permission_type,
             "permission_class": info.permission_class.map(|class| class.as_str()),
             "scope_key": info.scope_key,
             "origin_tool": info.origin_tool,
             "supported_lifetimes": info.supported_lifetimes.iter().map(|lifetime| lifetime.as_str()).collect::<Vec<_>>(),
+            "matcher_kind": info.matcher_kind.map(|kind| kind.as_str()),
+            "matcher_key": info.matcher_key,
+            "risk_tags": info.risk_tags,
             "patterns": match &info.pattern {
                 Some(Pattern::Single(pattern)) => serde_json::json!([pattern]),
                 Some(Pattern::Multiple(patterns)) => serde_json::json!(patterns),
@@ -205,7 +342,10 @@ pub(crate) async fn request_permission(
         pattern: request_pattern(&request),
         permission_class: request.permission_class,
         scope_key: request.scope_key.clone(),
+        matcher_kind: request.matcher_kind,
+        matcher_key: request.matcher_key.clone(),
         origin_tool: request.origin_tool.clone(),
+        risk_tags: request.risk_tags.clone(),
         supported_lifetimes: if request.supported_lifetimes.is_empty() {
             request
                 .permission_class
@@ -228,7 +368,23 @@ pub(crate) async fn request_permission(
         let mut engine = PERMISSION_ENGINE.lock().await;
         match engine.ask(info.clone()).await {
             Ok(AskOutcome::Granted) => return Ok(()),
-            Ok(AskOutcome::Pending) => {}
+            Ok(AskOutcome::Pending) => {
+                // Matcher miss: no existing grant covered this request, so it entered pending.
+                // Increment miss_count for the telemetry read model to explain WHY.
+                let mut sessions = state.sessions.lock().await;
+                if let Some(session) = sessions.get_mut(&session_id) {
+                    let current = session
+                        .record()
+                        .metadata
+                        .get("last_permission_miss_count")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    session.insert_metadata(
+                        "last_permission_miss_count".to_string(),
+                        serde_json::json!(current + 1),
+                    );
+                }
+            }
             Err(_) => {
                 return Err(rocode_tool::ToolError::PermissionDenied(format!(
                     "Permission rejected for {}",
@@ -256,6 +412,13 @@ pub(crate) async fn request_permission(
         )
         .await;
 
+    // Push session.updated so frontend refresh path triggers for pending state.
+    crate::session_runtime::events::broadcast_session_updated(
+        &state,
+        &session_id,
+        "permission.pending",
+    );
+
     let wait_result = tokio::time::timeout(std::time::Duration::from_secs(300), rx).await;
     PERMISSION_WAITERS.lock().await.remove(&permission_id);
 
@@ -282,6 +445,12 @@ pub(crate) async fn request_permission(
                 .lock()
                 .await
                 .remove_pending(&permission_id);
+            // Pending cleared — broadcast so frontend doesn't see stale pending.
+            crate::session_runtime::events::broadcast_session_updated(
+                &state,
+                &session_id,
+                "permission.resolved",
+            );
             Err(rocode_tool::ToolError::ExecutionError(
                 "Permission response channel closed".to_string(),
             ))
@@ -291,6 +460,12 @@ pub(crate) async fn request_permission(
                 .lock()
                 .await
                 .remove_pending(&permission_id);
+            // Pending cleared — broadcast so frontend doesn't see stale pending.
+            crate::session_runtime::events::broadcast_session_updated(
+                &state,
+                &session_id,
+                "permission.resolved",
+            );
             Err(rocode_tool::ToolError::PermissionDenied(
                 "Permission request timed out".to_string(),
             ))
@@ -338,6 +513,25 @@ pub(crate) async fn reply_permission(
         .respond_by_id(&id, response)
         .map_err(|_| ApiError::NotFound(format!("Permission request not found: {}", id)))?;
 
+    let session_id = permission.session_id.clone();
+    let was_grant = response != Response::Reject;
+
+    if was_grant {
+        let mut sessions = state.sessions.lock().await;
+        if let Some(session) = sessions.get_mut(&session_id) {
+            let matcher_kind = permission_matcher_kind_key(&permission);
+            record_permission_grant_telemetry(session, &permission, response);
+            // Store structured hit reason for telemetry read model (plan §8 path C).
+            session.insert_metadata(
+                "last_permission_hit_matcher_kind".to_string(),
+                serde_json::json!(matcher_kind),
+            );
+        }
+    }
+    // Note: miss_count is incremented in request_permission() when AskOutcome::Pending —
+    // that is the true "matcher miss" (no grant covered this request). Reject is a user
+    // decision, not a matcher miss, so we do NOT increment miss_count here.
+
     if let Some(waiter) = PERMISSION_WAITERS.lock().await.remove(&id) {
         let _ = waiter.send(PermissionReply {
             reply: req.reply.clone(),
@@ -347,8 +541,15 @@ pub(crate) async fn reply_permission(
 
     state
         .runtime_telemetry
-        .permission_resolved(&permission.session_id, &id, &req.reply, req.message.clone())
+        .permission_resolved(&session_id, &id, &req.reply, req.message.clone())
         .await;
+
+    // Push session.updated so frontend refresh path triggers (plan §8 path D).
+    crate::session_runtime::events::broadcast_session_updated(
+        &state,
+        &session_id,
+        "permission.resolved",
+    );
     Ok(Json(true))
 }
 
@@ -397,6 +598,12 @@ mod tests {
         assert_eq!(requested_json["permissionID"], permission_id);
         assert_eq!(requested_json["sessionID"], "session-1");
 
+        // Drain the session.updated event emitted by permission.pending broadcast.
+        let session_updated = rx.recv().await.expect("session.updated event");
+        let updated_json: serde_json::Value =
+            serde_json::from_str(&session_updated).expect("session.updated json");
+        assert_eq!(updated_json["type"], "session.updated");
+
         let reply = ReplyPermissionRequest {
             reply: "once".to_string(),
             message: Some("approved".to_string()),
@@ -409,6 +616,8 @@ mod tests {
         .await
         .expect("reply should succeed");
 
+        // Drain the session.updated event emitted by permission.resolved broadcast.
+        let _resolved_updated = rx.recv().await.expect("session.updated after resolved");
         let resolved = rx.recv().await.expect("resolved event");
         let resolved_json: serde_json::Value =
             serde_json::from_str(&resolved).expect("resolved json");
@@ -437,6 +646,9 @@ mod tests {
                 SESSION_ID.to_string(),
                 rocode_tool::PermissionRequest::new("bash")
                     .with_pattern("cargo test")
+                    .with_scope_key("cmd:cargo *")
+                    .with_matcher(PermissionMatcherKind::StructuredFamily, "cmd:cargo *")
+                    .with_risk_tag("dangerous_exec")
                     .with_metadata("command", serde_json::json!("cargo test"))
                     .with_supported_lifetimes(vec![
                         PermissionLifetime::Once,
@@ -473,11 +685,14 @@ mod tests {
             .expect("permission allowed");
 
         request_permission(
-            state,
+            state.clone(),
             SESSION_ID.to_string(),
             rocode_tool::PermissionRequest::new("bash")
-                .with_pattern("cargo test")
-                .with_metadata("command", serde_json::json!("cargo test"))
+                .with_pattern("cargo check")
+                .with_scope_key("cmd:cargo *")
+                .with_matcher(PermissionMatcherKind::StructuredFamily, "cmd:cargo *")
+                .with_risk_tag("dangerous_exec")
+                .with_metadata("command", serde_json::json!("cargo check"))
                 .with_supported_lifetimes(vec![
                     PermissionLifetime::Once,
                     PermissionLifetime::Turn,
@@ -488,13 +703,57 @@ mod tests {
         .expect("repeat request should be auto-approved");
 
         assert!(PERMISSION_ENGINE.lock().await.list().is_empty());
+
+        let state_for_request = state.clone();
+        let different_family_task = tokio::spawn(async move {
+            request_permission(
+                state_for_request,
+                SESSION_ID.to_string(),
+                rocode_tool::PermissionRequest::new("bash")
+                    .with_pattern("git status")
+                    .with_scope_key("cmd:git *")
+                    .with_matcher(PermissionMatcherKind::StructuredFamily, "cmd:git *")
+                    .with_risk_tag("dangerous_exec")
+                    .with_metadata("command", serde_json::json!("git status"))
+                    .with_supported_lifetimes(vec![
+                        PermissionLifetime::Once,
+                        PermissionLifetime::Turn,
+                        PermissionLifetime::Session,
+                    ]),
+            )
+            .await
+        });
+
+        let pending = loop {
+            let engine = PERMISSION_ENGINE.lock().await;
+            if let Some(info) = engine.list().first().cloned().cloned() {
+                break info;
+            }
+            drop(engine);
+            tokio::task::yield_now().await;
+        };
+        assert_eq!(pending.matcher_key.as_deref(), Some("cmd:git *"));
+
+        let _ = reply_permission(
+            State(state),
+            Path(pending.id.clone()),
+            Json(ReplyPermissionRequest {
+                reply: "once".to_string(),
+                message: None,
+            }),
+        )
+        .await
+        .expect("reply should succeed");
+
+        let result = different_family_task.await.expect("join different family");
+        result.expect("different family should still resolve after explicit approval");
         PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
     }
 
     #[tokio::test]
-    async fn request_permission_always_hint_does_not_auto_approve() {
+    async fn request_permission_exposes_structured_authority_fields() {
         let _guard = TEST_PERMISSION_LOCK.lock().await;
-        const SESSION_ID: &str = "session-always-hint";
+        const SESSION_ID: &str = "session-structured-fields";
         PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
 
         let state = Arc::new(ServerState::new());
@@ -503,6 +762,282 @@ mod tests {
             request_permission(
                 state_for_request,
                 SESSION_ID.to_string(),
+                rocode_tool::PermissionRequest::new("bash")
+                    .with_pattern("cargo test")
+                    .with_scope_key("cmd:cargo *")
+                    .with_matcher(PermissionMatcherKind::StructuredFamily, "cmd:cargo *")
+                    .with_risk_tag("dangerous_exec")
+                    .with_metadata("command", serde_json::json!("cargo test"))
+                    .with_supported_lifetimes(vec![
+                        PermissionLifetime::Once,
+                        PermissionLifetime::Turn,
+                        PermissionLifetime::Session,
+                    ]),
+            )
+            .await
+        });
+
+        let permission = loop {
+            let engine = PERMISSION_ENGINE.lock().await;
+            if let Some(info) = engine.list().first().cloned().cloned() {
+                break info;
+            }
+            drop(engine);
+            tokio::task::yield_now().await;
+        };
+
+        let rendered = permission_request_info(&permission);
+        assert_eq!(rendered.matcher_kind.as_deref(), Some("structured_family"));
+        assert_eq!(rendered.matcher_key.as_deref(), Some("cmd:cargo *"));
+        assert_eq!(
+            rendered.matcher_label.as_deref(),
+            Some("Command family: cargo *")
+        );
+        assert_eq!(
+            rendered.grant_target_summary.as_deref(),
+            Some("Shell commands: cargo *")
+        );
+        assert_eq!(rendered.risk_tags, vec!["dangerous_exec".to_string()]);
+
+        let _ = reply_permission(
+            State(state),
+            Path(permission.id.clone()),
+            Json(ReplyPermissionRequest {
+                reply: "once".to_string(),
+                message: None,
+            }),
+        )
+        .await
+        .expect("reply should succeed");
+
+        request_task
+            .await
+            .expect("request task join")
+            .expect("permission allowed");
+        PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
+    }
+
+    #[tokio::test]
+    async fn request_permission_exposes_scope_only_authority_fields() {
+        let _guard = TEST_PERMISSION_LOCK.lock().await;
+        const SESSION_ID: &str = "session-scope-only-fields";
+        PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
+
+        let state = Arc::new(ServerState::new());
+        let state_for_request = state.clone();
+        let request_task = tokio::spawn(async move {
+            request_permission(
+                state_for_request,
+                SESSION_ID.to_string(),
+                rocode_tool::PermissionRequest::new("task_flow")
+                    .with_scope_key("task_flow:create")
+                    .with_supported_lifetimes(
+                        rocode_tool::structured_dangerous_exec_lifetimes(),
+                    )
+                    .with_risk_tag("dangerous_exec")
+                    .with_metadata("operation", serde_json::json!("create")),
+            )
+            .await
+        });
+
+        let permission = loop {
+            let engine = PERMISSION_ENGINE.lock().await;
+            if let Some(info) = engine.list().first().cloned().cloned() {
+                break info;
+            }
+            drop(engine);
+            tokio::task::yield_now().await;
+        };
+
+        let rendered = permission_request_info(&permission);
+        assert_eq!(rendered.matcher_kind.as_deref(), Some("scope_only"));
+        assert_eq!(rendered.matcher_key.as_deref(), Some("task_flow:create"));
+        assert_eq!(rendered.matcher_label, None);
+        assert_eq!(
+            rendered.grant_target_summary.as_deref(),
+            Some("Task flow: create task")
+        );
+        assert_eq!(rendered.risk_tags, vec!["dangerous_exec".to_string()]);
+
+        let _ = reply_permission(
+            State(state),
+            Path(permission.id.clone()),
+            Json(ReplyPermissionRequest {
+                reply: "once".to_string(),
+                message: None,
+            }),
+        )
+        .await
+        .expect("reply should succeed");
+
+        request_task
+            .await
+            .expect("request task join")
+            .expect("permission allowed");
+        PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
+    }
+
+    #[tokio::test]
+    async fn reply_permission_records_permission_grant_telemetry_on_owner_session() {
+        let _guard = TEST_PERMISSION_LOCK.lock().await;
+        let state = Arc::new(ServerState::new());
+        let session_id = {
+            let mut sessions = state.sessions.lock().await;
+            sessions.create("project", "/tmp/project").id.clone()
+        };
+        PERMISSION_ENGINE.lock().await.clear_session(&session_id);
+
+        let state_for_scope_only = state.clone();
+        let session_id_for_scope_only = session_id.clone();
+        let scope_only_task = tokio::spawn(async move {
+            request_permission(
+                state_for_scope_only,
+                session_id_for_scope_only,
+                rocode_tool::PermissionRequest::new("task_flow")
+                    .with_scope_key("task_flow:create")
+                    .with_supported_lifetimes(
+                        rocode_tool::structured_dangerous_exec_lifetimes(),
+                    )
+                    .with_risk_tag("dangerous_exec")
+                    .with_metadata("operation", serde_json::json!("create")),
+            )
+            .await
+        });
+
+        let scope_only_permission = loop {
+            let engine = PERMISSION_ENGINE.lock().await;
+            if let Some(info) = engine.list().first().cloned().cloned() {
+                break info;
+            }
+            drop(engine);
+            tokio::task::yield_now().await;
+        };
+
+        let _ = reply_permission(
+            State(state.clone()),
+            Path(scope_only_permission.id.clone()),
+            Json(ReplyPermissionRequest {
+                reply: "turn".to_string(),
+                message: None,
+            }),
+        )
+        .await
+        .expect("turn reply should succeed");
+
+        scope_only_task
+            .await
+            .expect("scope-only request task join")
+            .expect("scope-only permission allowed");
+
+        let state_for_structured = state.clone();
+        let session_id_for_structured = session_id.clone();
+        let structured_task = tokio::spawn(async move {
+            request_permission(
+                state_for_structured,
+                session_id_for_structured,
+                rocode_tool::PermissionRequest::new("bash")
+                    .with_pattern("cargo test")
+                    .with_scope_key("cmd:cargo *")
+                    .with_matcher(PermissionMatcherKind::StructuredFamily, "cmd:cargo *")
+                    .with_risk_tag("dangerous_exec")
+                    .with_metadata("command", serde_json::json!("cargo test"))
+                    .with_supported_lifetimes(vec![
+                        PermissionLifetime::Once,
+                        PermissionLifetime::Turn,
+                        PermissionLifetime::Session,
+                    ]),
+            )
+            .await
+        });
+
+        let structured_permission = loop {
+            let engine = PERMISSION_ENGINE.lock().await;
+            if let Some(info) = engine.list().first().cloned().cloned() {
+                break info;
+            }
+            drop(engine);
+            tokio::task::yield_now().await;
+        };
+
+        let _ = reply_permission(
+            State(state.clone()),
+            Path(structured_permission.id.clone()),
+            Json(ReplyPermissionRequest {
+                reply: "session".to_string(),
+                message: None,
+            }),
+        )
+        .await
+        .expect("session reply should succeed");
+
+        structured_task
+            .await
+            .expect("structured request task join")
+            .expect("structured permission allowed");
+
+        let session = {
+            let sessions = state.sessions.lock().await;
+            sessions
+                .get(&session_id)
+                .cloned()
+                .expect("session should still exist")
+        };
+
+        assert_eq!(
+            session.record().metadata.get(PERMISSION_GRANTED_BY_TURN_COUNT_METADATA_KEY),
+            Some(&serde_json::json!(1))
+        );
+        assert_eq!(
+            session
+                .record()
+                .metadata
+                .get(PERMISSION_GRANTED_BY_SESSION_COUNT_METADATA_KEY),
+            Some(&serde_json::json!(1))
+        );
+        assert_eq!(
+            session
+                .record()
+                .metadata
+                .get(PERMISSION_GRANTED_BY_MATCHER_KIND_METADATA_KEY),
+            Some(&serde_json::json!({
+                "scope_only": 1,
+                "structured_family": 1
+            }))
+        );
+        assert_eq!(
+            session
+                .record()
+                .metadata
+                .get(LAST_PERMISSION_MATCHER_KIND_METADATA_KEY),
+            Some(&serde_json::json!("structured_family"))
+        );
+        assert_eq!(
+            session
+                .record()
+                .metadata
+                .get(LAST_PERMISSION_GRANT_TARGET_METADATA_KEY),
+            Some(&serde_json::json!("Shell commands: cargo *"))
+        );
+
+        PERMISSION_ENGINE.lock().await.clear_session(&session_id);
+    }
+
+    #[tokio::test]
+    async fn request_permission_always_hint_does_not_auto_approve() {
+        let _guard = TEST_PERMISSION_LOCK.lock().await;
+        let state = Arc::new(ServerState::new());
+        let session_id = {
+            let mut sessions = state.sessions.lock().await;
+            sessions.create("project", "/tmp/project").id.clone()
+        };
+        PERMISSION_ENGINE.lock().await.clear_session(&session_id);
+
+        let state_for_request = state.clone();
+        let sid = session_id.clone();
+        let request_task = tokio::spawn(async move {
+            request_permission(
+                state_for_request,
+                sid,
                 rocode_tool::PermissionRequest::new("bash")
                     .with_pattern("cargo test")
                     .with_always("cargo *"),
@@ -539,7 +1074,19 @@ mod tests {
             .await
             .expect("request task join")
             .expect("permission allowed");
-        PERMISSION_ENGINE.lock().await.clear_session(SESSION_ID);
+
+        // Verify matcher miss was recorded: entering pending = no grant matched.
+        let sessions = state.sessions.lock().await;
+        let session = sessions.get(&session_id).expect("session should exist");
+        let miss_count = session
+            .record()
+            .metadata
+            .get("last_permission_miss_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        assert_eq!(miss_count, 1, "miss_count should increment on AskOutcome::Pending");
+
+        PERMISSION_ENGINE.lock().await.clear_session(&session_id);
     }
 
     #[tokio::test]

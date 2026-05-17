@@ -747,6 +747,13 @@ mod tests {
             repair_query_snapshot: None,
             tool_trajectory_quality: None,
             tool_result_governance: None,
+            pending_permission_count: 0,
+            granted_by_turn_count: 0,
+            granted_by_session_count: 0,
+            granted_by_matcher_kind: std::collections::BTreeMap::new(),
+            last_permission_matcher_kind: None,
+            last_permission_grant_target: None,
+            last_permission_miss_count: 0,
             pending_steering_count: 0,
             consumed_steering_count: 0,
             last_steering_injected_at: None,
@@ -1348,7 +1355,7 @@ mod tests {
 
         let quality = build_session_tool_trajectory_quality(&session).expect("should build");
         let snapshot = SessionTelemetrySnapshot {
-            version: rocode_types::SessionTelemetrySnapshotVersion::V5,
+            version: rocode_types::SessionTelemetrySnapshotVersion::V6,
             usage: rocode_types::SessionUsage {
                 input_tokens: 10,
                 output_tokens: 20,
@@ -1366,6 +1373,16 @@ mod tests {
             repair_query_snapshot: None,
             tool_trajectory_quality: Some(quality),
             tool_result_governance: None,
+            pending_permission_count: 1,
+            granted_by_turn_count: 2,
+            granted_by_session_count: 3,
+            granted_by_matcher_kind: std::collections::BTreeMap::from([
+                ("scope_only".to_string(), 4),
+                ("structured_family".to_string(), 1),
+            ]),
+            last_permission_matcher_kind: Some("scope_only".to_string()),
+            last_permission_grant_target: Some("Task flow: create task".to_string()),
+            last_permission_miss_count: 5,
             pending_steering_count: 0,
             consumed_steering_count: 0,
             last_steering_injected_at: None,
@@ -1378,7 +1395,22 @@ mod tests {
         let loaded = load_session_telemetry_snapshot(&session).expect("load");
         assert_eq!(
             loaded.version,
-            rocode_types::SessionTelemetrySnapshotVersion::V5
+            rocode_types::SessionTelemetrySnapshotVersion::V6
+        );
+        assert_eq!(loaded.pending_permission_count, 1);
+        assert_eq!(loaded.granted_by_turn_count, 2);
+        assert_eq!(loaded.granted_by_session_count, 3);
+        assert_eq!(
+            loaded.granted_by_matcher_kind.get("scope_only"),
+            Some(&4)
+        );
+        assert_eq!(
+            loaded.last_permission_matcher_kind.as_deref(),
+            Some("scope_only")
+        );
+        assert_eq!(
+            loaded.last_permission_grant_target.as_deref(),
+            Some("Task flow: create task")
         );
         let q = loaded
             .tool_trajectory_quality

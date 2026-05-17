@@ -1,6 +1,7 @@
 use rocode_command::stage_protocol::StageSummary;
 use rocode_session::SessionUsage;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 
 pub use rocode_multimodal::{
@@ -436,6 +437,20 @@ pub struct SessionTelemetrySnapshot {
     #[serde(default)]
     pub tool_result_governance: Option<ToolResultGovernanceSummary>,
     #[serde(default)]
+    pub pending_permission_count: u64,
+    #[serde(default)]
+    pub granted_by_turn_count: u64,
+    #[serde(default)]
+    pub granted_by_session_count: u64,
+    #[serde(default)]
+    pub granted_by_matcher_kind: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub last_permission_matcher_kind: Option<String>,
+    #[serde(default)]
+    pub last_permission_grant_target: Option<String>,
+    #[serde(default)]
+    pub last_permission_miss_count: u64,
+    #[serde(default)]
     pub memory: Option<SessionMemoryTelemetrySummary>,
     #[serde(default)]
     pub cache_evidence: Option<serde_json::Value>,
@@ -608,6 +623,16 @@ pub struct PermissionRequestInfo {
     pub origin_tool: Option<String>,
     #[serde(default)]
     pub supported_lifetimes: Vec<String>,
+    #[serde(default)]
+    pub matcher_kind: Option<String>,
+    #[serde(default)]
+    pub matcher_key: Option<String>,
+    #[serde(default)]
+    pub matcher_label: Option<String>,
+    #[serde(default)]
+    pub grant_target_summary: Option<String>,
+    #[serde(default)]
+    pub risk_tags: Vec<String>,
     pub input: serde_json::Value,
     pub message: String,
 }

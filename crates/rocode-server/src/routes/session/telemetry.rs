@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
@@ -35,6 +36,17 @@ use super::effective_policy::build_session_effective_policy;
 use super::executions::build_session_execution_topology_snapshot;
 use super::session_crud::runtime_snapshot_or_default;
 
+pub(crate) const PERMISSION_GRANTED_BY_TURN_COUNT_METADATA_KEY: &str =
+    "permission_granted_by_turn_count";
+pub(crate) const PERMISSION_GRANTED_BY_SESSION_COUNT_METADATA_KEY: &str =
+    "permission_granted_by_session_count";
+pub(crate) const PERMISSION_GRANTED_BY_MATCHER_KIND_METADATA_KEY: &str =
+    "permission_granted_by_matcher_kind";
+pub(crate) const LAST_PERMISSION_MATCHER_KIND_METADATA_KEY: &str =
+    "last_permission_matcher_kind";
+pub(crate) const LAST_PERMISSION_GRANT_TARGET_METADATA_KEY: &str =
+    "last_permission_grant_target";
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionTelemetrySnapshot {
     pub runtime: SessionRuntimeState,
@@ -52,6 +64,20 @@ pub struct SessionTelemetrySnapshot {
     pub tool_trajectory_quality: Option<ToolTrajectoryQualitySummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_result_governance: Option<ToolResultGovernanceSummary>,
+    #[serde(default)]
+    pub pending_permission_count: u64,
+    #[serde(default)]
+    pub granted_by_turn_count: u64,
+    #[serde(default)]
+    pub granted_by_session_count: u64,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub granted_by_matcher_kind: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_permission_matcher_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_permission_grant_target: Option<String>,
+    #[serde(default)]
+    pub last_permission_miss_count: u64,
     #[serde(default)]
     pub pending_steering_count: u64,
     #[serde(default)]
@@ -112,6 +138,50 @@ pub struct SessionExecutionPreflightSummary {
     pub issues: Vec<rocode_tool::ExecutionPreflightIssue>,
     #[serde(default)]
     pub attachment_count: usize,
+}
+
+fn session_metadata_u64(
+    session: &Session,
+    key: &str,
+) -> u64 {
+    session
+        .record()
+        .metadata
+        .get(key)
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0)
+}
+
+fn session_metadata_string(
+    session: &Session,
+    key: &str,
+) -> Option<String> {
+    session
+        .record()
+        .metadata
+        .get(key)
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned)
+}
+
+fn session_metadata_string_count_map(
+    session: &Session,
+    key: &str,
+) -> BTreeMap<String, u64> {
+    session
+        .record()
+        .metadata
+        .get(key)
+        .and_then(|value| value.as_object())
+        .map(|object| {
+            object
+                .iter()
+                .filter_map(|(entry_key, value)| {
+                    value.as_u64().map(|count| (entry_key.clone(), count))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub(super) async fn get_session_telemetry(
@@ -210,6 +280,20 @@ pub(super) async fn build_session_telemetry_snapshot(
     let repair_query_snapshot = build_session_repair_query_snapshot(session);
     let tool_trajectory_quality = rocode_session::build_session_tool_trajectory_quality(session);
     let tool_result_governance = build_session_tool_result_governance_summary(session);
+    let pending_permission_count = u64::from(runtime.pending_permission.is_some());
+    let granted_by_turn_count =
+        session_metadata_u64(session, PERMISSION_GRANTED_BY_TURN_COUNT_METADATA_KEY);
+    let granted_by_session_count =
+        session_metadata_u64(session, PERMISSION_GRANTED_BY_SESSION_COUNT_METADATA_KEY);
+    let granted_by_matcher_kind =
+        session_metadata_string_count_map(session, PERMISSION_GRANTED_BY_MATCHER_KIND_METADATA_KEY);
+    let last_permission_matcher_kind =
+        session_metadata_string(session, "last_permission_hit_matcher_kind")
+            .or_else(|| session_metadata_string(session, LAST_PERMISSION_MATCHER_KIND_METADATA_KEY));
+    let last_permission_grant_target =
+        session_metadata_string(session, LAST_PERMISSION_GRANT_TARGET_METADATA_KEY);
+    let last_permission_miss_count =
+        session_metadata_u64(session, "last_permission_miss_count");
     // Steering telemetry: runtime view reads live session metadata, not persisted snapshot,
     // because steering can be consumed mid-turn before the next persist cycle.
     let record = session.record();
@@ -320,6 +404,13 @@ pub(super) async fn build_session_telemetry_snapshot(
         repair_query_snapshot,
         tool_trajectory_quality,
         tool_result_governance,
+        pending_permission_count,
+        granted_by_turn_count,
+        granted_by_session_count,
+        granted_by_matcher_kind,
+        last_permission_matcher_kind,
+        last_permission_grant_target,
+        last_permission_miss_count,
         pending_steering_count,
         consumed_steering_count,
         last_steering_injected_at,
@@ -785,6 +876,25 @@ pub(super) async fn persist_session_telemetry_metadata(
     snapshot.tool_trajectory_quality =
         rocode_session::build_session_tool_trajectory_quality(session);
     snapshot.tool_result_governance = build_session_tool_result_governance_summary(session);
+    snapshot.pending_permission_count = state
+        .runtime_telemetry
+        .runtime_state()
+        .get(&session_id)
+        .await
+        .map_or(0, |runtime| u64::from(runtime.pending_permission.is_some()));
+    snapshot.granted_by_turn_count =
+        session_metadata_u64(session, PERMISSION_GRANTED_BY_TURN_COUNT_METADATA_KEY);
+    snapshot.granted_by_session_count =
+        session_metadata_u64(session, PERMISSION_GRANTED_BY_SESSION_COUNT_METADATA_KEY);
+    snapshot.granted_by_matcher_kind =
+        session_metadata_string_count_map(session, PERMISSION_GRANTED_BY_MATCHER_KIND_METADATA_KEY);
+    snapshot.last_permission_matcher_kind =
+        session_metadata_string(session, "last_permission_hit_matcher_kind")
+            .or_else(|| session_metadata_string(session, LAST_PERMISSION_MATCHER_KIND_METADATA_KEY));
+    snapshot.last_permission_grant_target =
+        session_metadata_string(session, LAST_PERMISSION_GRANT_TARGET_METADATA_KEY);
+    snapshot.last_permission_miss_count =
+        session_metadata_u64(session, "last_permission_miss_count");
     // Patch 4: steering telemetry — populate from session metadata and runtime state.
     populate_steering_telemetry(&mut snapshot, session, &state).await;
 
@@ -869,7 +979,8 @@ mod tests {
     use rocode_orchestrator::ExecutionContext;
     use rocode_plugin::{global, Hook, HookEvent};
     use rocode_session::{
-        persist_session_telemetry_snapshot, MessageUsage, SessionTelemetrySnapshotVersion,
+        load_session_telemetry_snapshot, persist_session_telemetry_snapshot, MessageUsage,
+        SessionTelemetrySnapshotVersion,
     };
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -1637,6 +1748,13 @@ mod tests {
             repair_query_snapshot: None,
             tool_trajectory_quality: None,
             tool_result_governance: None,
+            pending_permission_count: 0,
+            granted_by_turn_count: 0,
+            granted_by_session_count: 0,
+            granted_by_matcher_kind: BTreeMap::new(),
+            last_permission_matcher_kind: None,
+            last_permission_grant_target: None,
+            last_permission_miss_count: 0,
             pending_steering_count: 0,
             consumed_steering_count: 0,
             last_steering_injected_at: None,
@@ -1900,6 +2018,89 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn permission_telemetry_read_model_surfaces_runtime_and_persisted_fields() {
+        let state = Arc::new(ServerState::new());
+        let mut session = {
+            let mut sessions = state.sessions.lock().await;
+            sessions.create("project", "/tmp/project")
+        };
+        let session_id = session.id.clone();
+        session.insert_metadata(
+            PERMISSION_GRANTED_BY_TURN_COUNT_METADATA_KEY.to_string(),
+            serde_json::json!(2),
+        );
+        session.insert_metadata(
+            PERMISSION_GRANTED_BY_SESSION_COUNT_METADATA_KEY.to_string(),
+            serde_json::json!(3),
+        );
+        session.insert_metadata(
+            PERMISSION_GRANTED_BY_MATCHER_KIND_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "scope_only": 4,
+                "structured_family": 1
+            }),
+        );
+        session.insert_metadata(
+            LAST_PERMISSION_MATCHER_KIND_METADATA_KEY.to_string(),
+            serde_json::json!("scope_only"),
+        );
+        session.insert_metadata(
+            LAST_PERMISSION_GRANT_TARGET_METADATA_KEY.to_string(),
+            serde_json::json!("Task flow: create task"),
+        );
+        session.insert_metadata(
+            "last_permission_miss_count".to_string(),
+            serde_json::json!(5),
+        );
+        state
+            .runtime_telemetry
+            .permission_requested(&session_id, "perm_1", serde_json::json!({"tool": "task_flow"}))
+            .await;
+
+        let runtime_snapshot = build_session_telemetry_snapshot(&state, &session_id, &session)
+            .await
+            .expect("runtime snapshot should build");
+        assert_eq!(runtime_snapshot.pending_permission_count, 1);
+        assert_eq!(runtime_snapshot.granted_by_turn_count, 2);
+        assert_eq!(runtime_snapshot.granted_by_session_count, 3);
+        assert_eq!(
+            runtime_snapshot.granted_by_matcher_kind.get("scope_only"),
+            Some(&4)
+        );
+        assert_eq!(
+            runtime_snapshot.last_permission_matcher_kind.as_deref(),
+            Some("scope_only")
+        );
+        assert_eq!(
+            runtime_snapshot.last_permission_grant_target.as_deref(),
+            Some("Task flow: create task")
+        );
+        assert_eq!(runtime_snapshot.last_permission_miss_count, 5);
+
+        persist_session_telemetry_metadata(&state, &mut session).await;
+
+        let persisted = load_session_telemetry_snapshot(&session)
+            .expect("persisted snapshot should round-trip");
+        assert_eq!(persisted.version, SessionTelemetrySnapshotVersion::V6);
+        assert_eq!(persisted.pending_permission_count, 1);
+        assert_eq!(persisted.granted_by_turn_count, 2);
+        assert_eq!(persisted.granted_by_session_count, 3);
+        assert_eq!(
+            persisted.granted_by_matcher_kind.get("scope_only"),
+            Some(&4)
+        );
+        assert_eq!(
+            persisted.last_permission_matcher_kind.as_deref(),
+            Some("scope_only")
+        );
+        assert_eq!(
+            persisted.last_permission_grant_target.as_deref(),
+            Some("Task flow: create task")
+        );
+        assert_eq!(persisted.last_permission_miss_count, 5);
+    }
+
     #[test]
     fn persisted_telemetry_snapshot_defaults_version_when_missing() {
         let value = serde_json::json!({
@@ -2061,6 +2262,13 @@ mod tests {
                     repair_query_snapshot: None,
                     tool_trajectory_quality: None,
                     tool_result_governance: None,
+                    pending_permission_count: 0,
+                    granted_by_turn_count: 0,
+                    granted_by_session_count: 0,
+                    granted_by_matcher_kind: BTreeMap::new(),
+                    last_permission_matcher_kind: None,
+                    last_permission_grant_target: None,
+            last_permission_miss_count: 0,
                     pending_steering_count: 0,
                     consumed_steering_count: 0,
                     last_steering_injected_at: None,

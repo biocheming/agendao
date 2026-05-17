@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use rocode_execution_types::{CompiledExecutionRequest, ExecutionRequestContext};
-use rocode_permission::{PermissionClass, PermissionLifetime};
+use rocode_permission::{PermissionClass, PermissionLifetime, PermissionMatcherKind};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::future::Future;
@@ -346,7 +346,13 @@ pub struct PermissionRequest {
     #[serde(default)]
     pub scope_key: Option<String>,
     #[serde(default)]
+    pub matcher_kind: Option<PermissionMatcherKind>,
+    #[serde(default)]
+    pub matcher_key: Option<String>,
+    #[serde(default)]
     pub origin_tool: Option<String>,
+    #[serde(default)]
+    pub risk_tags: Vec<String>,
     #[serde(default)]
     pub supported_lifetimes: Vec<PermissionLifetime>,
 }
@@ -363,6 +369,9 @@ impl PermissionRequest {
             metadata: HashMap::new(),
             always: Vec::new(),
             scope_key: None,
+            matcher_kind: None,
+            matcher_key: None,
+            risk_tags: Vec::new(),
             supported_lifetimes: default_supported_lifetimes_for_class(permission_class),
         }
     }
@@ -389,12 +398,32 @@ impl PermissionRequest {
     }
 
     pub fn with_scope_key(mut self, scope_key: impl Into<String>) -> Self {
-        self.scope_key = Some(scope_key.into());
+        let scope_key = scope_key.into();
+        if self.matcher_kind.is_none() {
+            self.matcher_kind = Some(PermissionMatcherKind::ScopeOnly);
+            self.matcher_key = Some(scope_key.clone());
+        }
+        self.scope_key = Some(scope_key);
         self
     }
 
     pub fn with_origin_tool(mut self, origin_tool: impl Into<String>) -> Self {
         self.origin_tool = Some(origin_tool.into());
+        self
+    }
+
+    pub fn with_matcher(
+        mut self,
+        matcher_kind: PermissionMatcherKind,
+        matcher_key: impl Into<String>,
+    ) -> Self {
+        self.matcher_kind = Some(matcher_kind);
+        self.matcher_key = Some(matcher_key.into());
+        self
+    }
+
+    pub fn with_risk_tag(mut self, risk_tag: impl Into<String>) -> Self {
+        self.risk_tags.push(risk_tag.into());
         self
     }
 
@@ -442,6 +471,14 @@ pub fn default_supported_lifetimes_for_class(
         ],
         PermissionClass::DangerousExec => vec![PermissionLifetime::Once],
     }
+}
+
+pub fn structured_dangerous_exec_lifetimes() -> Vec<PermissionLifetime> {
+    vec![
+        PermissionLifetime::Once,
+        PermissionLifetime::Turn,
+        PermissionLifetime::Session,
+    ]
 }
 
 pub fn workspace_scope_key(project_root: &str, path: &str) -> String {

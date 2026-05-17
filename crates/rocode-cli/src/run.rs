@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use rocode_agent::{AgentInfo, AgentRegistry};
 #[cfg(test)]
 use rocode_command::cli_panel::{truncate_display, wrap_display_text};
-use rocode_command::cli_permission::{prompt_permission, PermissionDecision, PermissionMemory};
+use rocode_command::cli_permission::{prompt_permission, PermissionDecision};
 use rocode_command::cli_prompt::{
     PromptCompletion, PromptFrame, PromptSession, PromptSessionEvent,
 };
@@ -286,7 +286,6 @@ struct CliExecutionRuntime {
     render_states: Arc<Mutex<HashMap<String, TerminalSemanticStreamRenderState>>>,
     /// Local CLI-only focus target. `None` means the root session remains visible.
     focused_session_id: Arc<Mutex<Option<String>>>,
-    permission_memory: Arc<AsyncMutex<PermissionMemory>>,
     show_thinking: Arc<AtomicBool>,
 }
 
@@ -714,7 +713,7 @@ mod tests {
         cli_session_update_requires_refresh, cli_set_root_server_session,
         cli_should_emit_scheduler_stage_block, CliExecutionRuntime, CliFrontendPhase,
         CliFrontendProjection, CliObservedExecutionTopology, CliRecentSessionInfo,
-        CliRetainedTranscript, CliSessionTokenStats, PermissionMemory, TerminalStreamAccumulator,
+        CliRetainedTranscript, CliSessionTokenStats, TerminalStreamAccumulator,
     };
     use crate::api_client::SessionListItem;
     use crate::api_client::{SessionListHints, SessionListTime};
@@ -852,7 +851,6 @@ mod tests {
             stream_accumulators: Arc::new(Mutex::new(HashMap::new())),
             render_states: Arc::new(Mutex::new(HashMap::new())),
             focused_session_id: Arc::new(Mutex::new(None)),
-            permission_memory: Arc::new(AsyncMutex::new(PermissionMemory::new())),
             show_thinking: Arc::new(AtomicBool::new(true)),
         }
     }
@@ -1296,6 +1294,11 @@ mod tests {
             cache_diagnostic: None,
             ingress_diagnostic: None,
             provider_diagnostic: None,
+            pending_permission_count: 0,
+            submitting_permission_count: 0,
+            last_permission_submit_error: None,
+            permission_submit_started_at: None,
+            permission_submit_completed_at: None,
             model_catalog: HashMap::new(),
             mcp_servers: Vec::new(),
             lsp_servers: Vec::new(),

@@ -8,7 +8,7 @@ use crate::{
     evaluate_permission_patterns, tool_to_permission, PermissionAction, PermissionRuleset,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionClass {
     InspectRead,
@@ -46,6 +46,41 @@ impl PermissionLifetime {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionMatcherKind {
+    ScopeOnly,
+    ExactInput,
+    StructuredFamily,
+    SemanticPattern,
+}
+
+impl PermissionMatcherKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ScopeOnly => "scope_only",
+            Self::ExactInput => "exact_input",
+            Self::StructuredFamily => "structured_family",
+            Self::SemanticPattern => "semantic_pattern",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermissionGrantDescriptor {
+    pub permission_class: Option<PermissionClass>,
+    #[serde(default)]
+    pub scope_key: Option<String>,
+    #[serde(default)]
+    pub matcher_kind: Option<PermissionMatcherKind>,
+    #[serde(default)]
+    pub matcher_key: Option<String>,
+    #[serde(default)]
+    pub origin_tool: Option<String>,
+    #[serde(default)]
+    pub risk_tags: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermissionInfo {
     pub id: String,
@@ -56,7 +91,13 @@ pub struct PermissionInfo {
     #[serde(default)]
     pub scope_key: Option<String>,
     #[serde(default)]
+    pub matcher_kind: Option<PermissionMatcherKind>,
+    #[serde(default)]
+    pub matcher_key: Option<String>,
+    #[serde(default)]
     pub origin_tool: Option<String>,
+    #[serde(default)]
+    pub risk_tags: Vec<String>,
     #[serde(default)]
     pub supported_lifetimes: Vec<PermissionLifetime>,
     pub session_id: String,
@@ -96,6 +137,17 @@ pub struct PendingPermission {
 pub enum AskOutcome {
     Granted,
     Pending,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+struct PermissionGrantKey {
+    permission_class: Option<PermissionClass>,
+    #[serde(default)]
+    scope_key: Option<String>,
+    #[serde(default)]
+    matcher_kind: Option<PermissionMatcherKind>,
+    #[serde(default)]
+    matcher_key: Option<String>,
 }
 
 pub struct PermissionEngine {
@@ -140,7 +192,49 @@ impl PermissionEngine {
             .unwrap_or_else(|| permission_type.to_string())
     }
 
-    fn to_keys(
+    fn descriptor_from_parts(
+        permission_class: Option<PermissionClass>,
+        scope_key: Option<&str>,
+        matcher_kind: Option<PermissionMatcherKind>,
+        matcher_key: Option<&str>,
+        origin_tool: Option<&str>,
+    ) -> PermissionGrantDescriptor {
+        PermissionGrantDescriptor {
+            permission_class,
+            scope_key: scope_key
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string),
+            matcher_kind,
+            matcher_key: matcher_key
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string),
+            origin_tool: origin_tool
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string),
+            risk_tags: Vec::new(),
+        }
+    }
+
+    fn serialize_key(key: &PermissionGrantKey) -> String {
+        serde_json::to_string(key).unwrap_or_else(|_| {
+            format!(
+                "{}|{}|{}|{}",
+                key.permission_class
+                    .map(PermissionClass::as_str)
+                    .unwrap_or("unknown"),
+                key.scope_key.as_deref().unwrap_or("*"),
+                key.matcher_kind
+                    .map(PermissionMatcherKind::as_str)
+                    .unwrap_or("legacy"),
+                key.matcher_key.as_deref().unwrap_or("*")
+            )
+        })
+    }
+
+    fn legacy_to_keys(
         permission_class: Option<PermissionClass>,
         scope_key: Option<&str>,
         pattern: Option<&Pattern>,
@@ -159,6 +253,95 @@ impl PermissionEngine {
             Some(Pattern::Single(s)) => vec![s.clone()],
             Some(Pattern::Multiple(v)) => v.clone(),
         }
+    }
+
+    fn descriptor_to_keys(
+        descriptor: &PermissionGrantDescriptor,
+        pattern: Option<&Pattern>,
+        permission_type: &str,
+    ) -> Vec<String> {
+        let mut keys = Vec::new();
+
+        if let Some(scope_key) = descriptor
+            .scope_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if matches!(
+                descriptor.matcher_kind,
+                None | Some(PermissionMatcherKind::ScopeOnly)
+            ) {
+                keys.push(Self::serialize_key(&PermissionGrantKey {
+                    permission_class: descriptor.permission_class,
+                    scope_key: Some(scope_key.to_string()),
+                    matcher_kind: Some(PermissionMatcherKind::ScopeOnly),
+                    matcher_key: Some(scope_key.to_string()),
+                }));
+            }
+        }
+
+        if let Some(matcher_kind) = descriptor.matcher_kind {
+            match matcher_kind {
+                PermissionMatcherKind::ScopeOnly => {}
+                PermissionMatcherKind::ExactInput
+                | PermissionMatcherKind::StructuredFamily
+                | PermissionMatcherKind::SemanticPattern => {
+                    if let Some(matcher_key) = descriptor
+                        .matcher_key
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                    {
+                        keys.push(Self::serialize_key(&PermissionGrantKey {
+                            permission_class: descriptor.permission_class,
+                            scope_key: descriptor.scope_key.clone(),
+                            matcher_kind: Some(matcher_kind),
+                            matcher_key: Some(matcher_key.to_string()),
+                        }));
+                    }
+                }
+            }
+        }
+
+        if keys.is_empty() {
+            keys.extend(Self::legacy_to_keys(
+                descriptor.permission_class,
+                descriptor.scope_key.as_deref(),
+                pattern,
+                permission_type,
+            ));
+            return keys;
+        }
+
+        keys.extend(Self::legacy_to_keys(
+            descriptor.permission_class,
+            descriptor.scope_key.as_deref(),
+            pattern,
+            permission_type,
+        ));
+        keys.sort();
+        keys.dedup();
+        keys
+    }
+
+    fn to_keys(
+        permission_class: Option<PermissionClass>,
+        scope_key: Option<&str>,
+        matcher_kind: Option<PermissionMatcherKind>,
+        matcher_key: Option<&str>,
+        origin_tool: Option<&str>,
+        pattern: Option<&Pattern>,
+        permission_type: &str,
+    ) -> Vec<String> {
+        let descriptor = Self::descriptor_from_parts(
+            permission_class,
+            scope_key,
+            matcher_kind,
+            matcher_key,
+            origin_tool,
+        );
+        Self::descriptor_to_keys(&descriptor, pattern, permission_type)
     }
 
     fn patterns(pattern: Option<&Pattern>) -> Vec<String> {
@@ -180,12 +363,23 @@ impl PermissionEngine {
         session_id: &str,
         permission_class: Option<PermissionClass>,
         scope_key: Option<&str>,
+        matcher_kind: Option<PermissionMatcherKind>,
+        matcher_key: Option<&str>,
+        origin_tool: Option<&str>,
         pattern: Option<&Pattern>,
         permission_type: &str,
     ) -> bool {
         let empty = HashMap::new();
         let approved_for_session = self.approved.get(session_id).unwrap_or(&empty);
-        let keys = Self::to_keys(permission_class, scope_key, pattern, permission_type);
+        let keys = Self::to_keys(
+            permission_class,
+            scope_key,
+            matcher_kind,
+            matcher_key,
+            origin_tool,
+            pattern,
+            permission_type,
+        );
         Self::covered(&keys, approved_for_session)
     }
 
@@ -194,12 +388,23 @@ impl PermissionEngine {
         session_id: &str,
         permission_class: Option<PermissionClass>,
         scope_key: Option<&str>,
+        matcher_kind: Option<PermissionMatcherKind>,
+        matcher_key: Option<&str>,
+        origin_tool: Option<&str>,
         pattern: Option<&Pattern>,
         permission_type: &str,
     ) -> bool {
         let empty = HashMap::new();
         let approved_for_turn = self.turn_approved.get(session_id).unwrap_or(&empty);
-        let keys = Self::to_keys(permission_class, scope_key, pattern, permission_type);
+        let keys = Self::to_keys(
+            permission_class,
+            scope_key,
+            matcher_kind,
+            matcher_key,
+            origin_tool,
+            pattern,
+            permission_type,
+        );
         Self::covered(&keys, approved_for_turn)
     }
 
@@ -208,11 +413,22 @@ impl PermissionEngine {
         session_id: &str,
         permission_class: Option<PermissionClass>,
         scope_key: Option<&str>,
+        matcher_kind: Option<PermissionMatcherKind>,
+        matcher_key: Option<&str>,
+        origin_tool: Option<&str>,
         permission_type: &str,
         pattern: Option<&Pattern>,
     ) {
         let approved_session = self.approved.entry(session_id.to_string()).or_default();
-        for key in Self::to_keys(permission_class, scope_key, pattern, permission_type) {
+        for key in Self::to_keys(
+            permission_class,
+            scope_key,
+            matcher_kind,
+            matcher_key,
+            origin_tool,
+            pattern,
+            permission_type,
+        ) {
             approved_session.insert(key, true);
         }
     }
@@ -222,6 +438,9 @@ impl PermissionEngine {
         session_id: &str,
         permission_class: Option<PermissionClass>,
         scope_key: Option<&str>,
+        matcher_kind: Option<PermissionMatcherKind>,
+        matcher_key: Option<&str>,
+        origin_tool: Option<&str>,
         permission_type: &str,
         pattern: Option<&Pattern>,
     ) {
@@ -229,7 +448,15 @@ impl PermissionEngine {
             .turn_approved
             .entry(session_id.to_string())
             .or_default();
-        for key in Self::to_keys(permission_class, scope_key, pattern, permission_type) {
+        for key in Self::to_keys(
+            permission_class,
+            scope_key,
+            matcher_kind,
+            matcher_key,
+            origin_tool,
+            pattern,
+            permission_type,
+        ) {
             approved_turn.insert(key, true);
         }
     }
@@ -240,7 +467,16 @@ impl PermissionEngine {
             [single] => Some(Pattern::Single(single.clone())),
             _ => Some(Pattern::Multiple(patterns.to_vec())),
         };
-        self.grant(session_id, None, None, permission_type, pattern.as_ref());
+        self.grant(
+            session_id,
+            None,
+            None,
+            None,
+            None,
+            None,
+            permission_type,
+            pattern.as_ref(),
+        );
     }
 
     pub fn evaluate_tool(
@@ -286,6 +522,9 @@ impl PermissionEngine {
             &session_id,
             info.permission_class,
             info.scope_key.as_deref(),
+            info.matcher_kind,
+            info.matcher_key.as_deref(),
+            info.origin_tool.as_deref(),
             info.pattern.as_ref(),
             &info.permission_type,
         ) {
@@ -296,6 +535,9 @@ impl PermissionEngine {
             &session_id,
             info.permission_class,
             info.scope_key.as_deref(),
+            info.matcher_kind,
+            info.matcher_key.as_deref(),
+            info.origin_tool.as_deref(),
             info.pattern.as_ref(),
             &info.permission_type,
         ) {
@@ -384,6 +626,9 @@ impl PermissionEngine {
                     session_id,
                     match_item.info.permission_class,
                     match_item.info.scope_key.as_deref(),
+                    match_item.info.matcher_kind,
+                    match_item.info.matcher_key.as_deref(),
+                    match_item.info.origin_tool.as_deref(),
                     &match_item.info.permission_type,
                     match_item.info.pattern.as_ref(),
                 );
@@ -393,6 +638,9 @@ impl PermissionEngine {
                     session_id,
                     match_item.info.permission_class,
                     match_item.info.scope_key.as_deref(),
+                    match_item.info.matcher_kind,
+                    match_item.info.matcher_key.as_deref(),
+                    match_item.info.origin_tool.as_deref(),
                     &match_item.info.permission_type,
                     match_item.info.pattern.as_ref(),
                 );
@@ -490,7 +738,10 @@ mod tests {
             pattern: Some(Pattern::Single("ls".to_string())),
             permission_class: Some(PermissionClass::DangerousExec),
             scope_key: Some("cmd:ls".to_string()),
+            matcher_kind: Some(PermissionMatcherKind::StructuredFamily),
+            matcher_key: Some("cmd:ls".to_string()),
             origin_tool: Some("bash".to_string()),
+            risk_tags: vec!["dangerous_exec".to_string()],
             supported_lifetimes: vec![
                 PermissionLifetime::Once,
                 PermissionLifetime::Turn,
@@ -523,7 +774,10 @@ mod tests {
             pattern: Some(Pattern::Single("cargo test".to_string())),
             permission_class: Some(PermissionClass::DangerousExec),
             scope_key: Some("cmd:cargo *".to_string()),
+            matcher_kind: Some(PermissionMatcherKind::StructuredFamily),
+            matcher_key: Some("cmd:cargo *".to_string()),
             origin_tool: Some("bash".to_string()),
+            risk_tags: vec!["dangerous_exec".to_string()],
             supported_lifetimes: vec![
                 PermissionLifetime::Once,
                 PermissionLifetime::Turn,
@@ -546,6 +800,9 @@ mod tests {
             "ses_turn",
             Some(PermissionClass::DangerousExec),
             Some("cmd:cargo *"),
+            Some(PermissionMatcherKind::StructuredFamily),
+            Some("cmd:cargo *"),
+            Some("bash"),
             Some(&Pattern::Single("cargo test".to_string())),
             "bash"
         ));
@@ -556,6 +813,9 @@ mod tests {
             "ses_turn",
             Some(PermissionClass::DangerousExec),
             Some("cmd:cargo *"),
+            Some(PermissionMatcherKind::StructuredFamily),
+            Some("cmd:cargo *"),
+            Some("bash"),
             Some(&Pattern::Single("cargo test".to_string())),
             "bash"
         ));
@@ -571,7 +831,10 @@ mod tests {
             pattern: Some(Pattern::Single("/repo/src/a.rs".to_string())),
             permission_class: Some(PermissionClass::WorkspaceWrite),
             scope_key: Some("workspace:/src".to_string()),
+            matcher_kind: Some(PermissionMatcherKind::ScopeOnly),
+            matcher_key: Some("workspace:/src".to_string()),
             origin_tool: Some("edit".to_string()),
+            risk_tags: vec!["workspace_write".to_string()],
             supported_lifetimes: vec![
                 PermissionLifetime::Once,
                 PermissionLifetime::Turn,
@@ -596,7 +859,10 @@ mod tests {
             pattern: Some(Pattern::Single("/repo/src/b.rs".to_string())),
             permission_class: Some(PermissionClass::WorkspaceWrite),
             scope_key: Some("workspace:/src".to_string()),
+            matcher_kind: Some(PermissionMatcherKind::ScopeOnly),
+            matcher_key: Some("workspace:/src".to_string()),
             origin_tool: Some("edit".to_string()),
+            risk_tags: vec!["workspace_write".to_string()],
             supported_lifetimes: vec![
                 PermissionLifetime::Once,
                 PermissionLifetime::Turn,
@@ -611,6 +877,145 @@ mod tests {
         };
 
         assert!(matches!(engine.ask(second).await, Ok(AskOutcome::Granted)));
+    }
+
+    #[tokio::test]
+    async fn structured_family_session_grant_matches_same_family_only() {
+        let mut engine = PermissionEngine::new();
+
+        let first = PermissionInfo {
+            id: "per_family_a".to_string(),
+            permission_type: "bash".to_string(),
+            pattern: Some(Pattern::Single("cargo check".to_string())),
+            permission_class: Some(PermissionClass::DangerousExec),
+            scope_key: Some("cmd:cargo *".to_string()),
+            matcher_kind: Some(PermissionMatcherKind::StructuredFamily),
+            matcher_key: Some("cmd:cargo *".to_string()),
+            origin_tool: Some("bash".to_string()),
+            risk_tags: vec!["dangerous_exec".to_string()],
+            supported_lifetimes: vec![
+                PermissionLifetime::Once,
+                PermissionLifetime::Turn,
+                PermissionLifetime::Session,
+            ],
+            session_id: "ses_family".to_string(),
+            message_id: "msg_family_a".to_string(),
+            call_id: None,
+            message: "Execute cargo check".to_string(),
+            metadata: HashMap::new(),
+            time: TimeInfo { created: 0 },
+        };
+
+        engine.ask(first).await.unwrap();
+        engine
+            .respond("ses_family", "per_family_a", Response::Always)
+            .unwrap();
+
+        let same_family = PermissionInfo {
+            id: "per_family_b".to_string(),
+            permission_type: "bash".to_string(),
+            pattern: Some(Pattern::Single("cargo test".to_string())),
+            permission_class: Some(PermissionClass::DangerousExec),
+            scope_key: Some("cmd:cargo *".to_string()),
+            matcher_kind: Some(PermissionMatcherKind::StructuredFamily),
+            matcher_key: Some("cmd:cargo *".to_string()),
+            origin_tool: Some("bash".to_string()),
+            risk_tags: vec!["dangerous_exec".to_string()],
+            supported_lifetimes: vec![
+                PermissionLifetime::Once,
+                PermissionLifetime::Turn,
+                PermissionLifetime::Session,
+            ],
+            session_id: "ses_family".to_string(),
+            message_id: "msg_family_b".to_string(),
+            call_id: None,
+            message: "Execute cargo test".to_string(),
+            metadata: HashMap::new(),
+            time: TimeInfo { created: 0 },
+        };
+
+        assert!(matches!(
+            engine.ask(same_family).await,
+            Ok(AskOutcome::Granted)
+        ));
+
+        let different_family = PermissionInfo {
+            id: "per_family_c".to_string(),
+            permission_type: "bash".to_string(),
+            pattern: Some(Pattern::Single("git status".to_string())),
+            permission_class: Some(PermissionClass::DangerousExec),
+            scope_key: Some("cmd:git *".to_string()),
+            matcher_kind: Some(PermissionMatcherKind::StructuredFamily),
+            matcher_key: Some("cmd:git *".to_string()),
+            origin_tool: Some("bash".to_string()),
+            risk_tags: vec!["dangerous_exec".to_string()],
+            supported_lifetimes: vec![
+                PermissionLifetime::Once,
+                PermissionLifetime::Turn,
+                PermissionLifetime::Session,
+            ],
+            session_id: "ses_family".to_string(),
+            message_id: "msg_family_c".to_string(),
+            call_id: None,
+            message: "Execute git status".to_string(),
+            metadata: HashMap::new(),
+            time: TimeInfo { created: 0 },
+        };
+
+        assert!(matches!(
+            engine.ask(different_family).await,
+            Ok(AskOutcome::Pending)
+        ));
+    }
+
+    #[tokio::test]
+    async fn exact_input_grant_does_not_cover_different_input() {
+        let mut engine = PermissionEngine::new();
+
+        let first = PermissionInfo {
+            id: "per_exact_a".to_string(),
+            permission_type: "bash".to_string(),
+            pattern: Some(Pattern::Single("rm -rf /tmp/x".to_string())),
+            permission_class: Some(PermissionClass::DangerousExec),
+            scope_key: None,
+            matcher_kind: Some(PermissionMatcherKind::ExactInput),
+            matcher_key: Some("rm -rf /tmp/x".to_string()),
+            origin_tool: Some("bash".to_string()),
+            risk_tags: vec!["dangerous_exec".to_string()],
+            supported_lifetimes: vec![PermissionLifetime::Once],
+            session_id: "ses_exact".to_string(),
+            message_id: "msg_exact_a".to_string(),
+            call_id: None,
+            message: "Execute exact command".to_string(),
+            metadata: HashMap::new(),
+            time: TimeInfo { created: 0 },
+        };
+
+        engine.ask(first).await.unwrap();
+        engine
+            .respond("ses_exact", "per_exact_a", Response::Always)
+            .unwrap();
+
+        let second = PermissionInfo {
+            id: "per_exact_b".to_string(),
+            permission_type: "bash".to_string(),
+            pattern: Some(Pattern::Single("rm -rf /tmp/y".to_string())),
+            permission_class: Some(PermissionClass::DangerousExec),
+            scope_key: None,
+            matcher_kind: Some(PermissionMatcherKind::ExactInput),
+            matcher_key: Some("rm -rf /tmp/y".to_string()),
+            origin_tool: Some("bash".to_string()),
+            risk_tags: vec!["dangerous_exec".to_string()],
+            supported_lifetimes: vec![PermissionLifetime::Once],
+            session_id: "ses_exact".to_string(),
+            message_id: "msg_exact_b".to_string(),
+            call_id: None,
+            message: "Execute different command".to_string(),
+            metadata: HashMap::new(),
+            time: TimeInfo { created: 0 },
+        };
+
+        assert!(matches!(engine.ask(second).await, Ok(AskOutcome::Pending)));
     }
 
     #[test]

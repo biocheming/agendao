@@ -6,7 +6,7 @@ use tokio::time::{timeout, Duration};
 
 use crate::{Metadata, Tool, ToolContext, ToolError, ToolResult};
 use rocode_core::process_registry::{global_registry, ProcessKind};
-use rocode_permission::BashArity;
+use rocode_permission::{BashArity, PermissionMatcherKind};
 use rocode_plugin::{HookContext, HookEvent};
 
 const DEFAULT_TIMEOUT_MS: u64 = 2 * 60 * 1000;
@@ -164,15 +164,22 @@ pub(crate) async fn authorize_bash_command(
     }
 
     if !parsed.patterns.is_empty() {
-        let scope_key = parsed
-            .command_family_scope_key()
-            .unwrap_or_else(|| "cmd:unknown".to_string());
+        let scope_key = parsed.command_family_scope_key();
         let patterns: Vec<String> = parsed.patterns.into_iter().collect();
         let always: Vec<String> = parsed.always.into_iter().collect();
         let mut req = crate::PermissionRequest::new("bash")
-            .with_patterns(patterns)
-            .with_scope_key(scope_key)
-            .with_metadata("description", serde_json::json!(description));
+            .with_patterns(patterns.clone())
+            .with_metadata("description", serde_json::json!(description))
+            .with_metadata("command", serde_json::json!(command))
+            .with_risk_tag("dangerous_exec");
+        if let Some(scope_key) = scope_key {
+            req = req
+                .with_scope_key(scope_key.clone())
+                .with_matcher(PermissionMatcherKind::StructuredFamily, scope_key)
+                .with_supported_lifetimes(crate::structured_dangerous_exec_lifetimes());
+        } else {
+            req = req.with_matcher(PermissionMatcherKind::ExactInput, command.to_string());
+        }
         for a in always {
             req = req.with_always(a);
         }
