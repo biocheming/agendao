@@ -2612,8 +2612,9 @@ impl SessionPrompt {
             // so the model can consume structured results from the previous turn.
             Self::inject_latest_tool_batch_summary(session, &mut chat_messages);
 
-            // Tool-boundary steering (Constitution §5, §9): drain pending steering
-            // and inject into BOTH the session transcript and the next request.
+            // Tool-boundary steering (Constitution §5, §9): drain pending steering,
+            // inject into chat_messages for the current request, and write a clean
+            // model-visible transcript record for future replay.
             if let Some(ref hook) = prompt_ctx.hooks.steering_boundary_hook {
                 let owner_id = session.record().id.clone();
                 let steering_msgs = hook(owner_id.clone()).await;
@@ -2624,35 +2625,42 @@ impl SessionPrompt {
                     .find_map(|sm| sm.source_session_id.clone());
                 let now = chrono::Utc::now().timestamp_millis();
                 for (i, sm) in steering_msgs.into_iter().enumerate() {
-                    // Append to session transcript so steering survives compact/
-                    // resume/recovery and is visible in replay (§5 owner session).
-                    let mut steering_msg =
+                    // Write the stable, model-visible transcript record.
+                    // Unlike the enqueue-time preview (runtime_hint=steering_preview),
+                    // this record IS replayed to the model in future turns so it
+                    // retains the steering context across compaction/resume.
+                    let mut record =
                         crate::SessionMessage::user(session.id.clone(), sm.text.clone());
-                    steering_msg.metadata.insert(
+                    record.metadata.insert(
                         "steering_mode".to_string(),
                         serde_json::json!("next_tool_boundary"),
                     );
-                    steering_msg
+                    record.metadata.insert(
+                        "steering_status".to_string(),
+                        serde_json::json!("consumed"),
+                    );
+                    record
                         .metadata
                         .insert("steering_index".to_string(), serde_json::json!(i));
-                    steering_msg
-                        .metadata
-                        .insert("steering_injected_at".to_string(), serde_json::json!(now));
-                    steering_msg.metadata.insert(
+                    record.metadata.insert(
+                        "steering_injected_at".to_string(),
+                        serde_json::json!(now),
+                    );
+                    record.metadata.insert(
                         "steering_owner_session_id".to_string(),
                         serde_json::json!(owner_id.clone()),
                     );
-                    steering_msg.metadata.insert(
+                    record.metadata.insert(
                         "steering_injected_during_active_run".to_string(),
                         serde_json::json!(true),
                     );
                     if let Some(ref source) = sm.source_session_id {
-                        steering_msg.metadata.insert(
+                        record.metadata.insert(
                             "steering_source_session_id".to_string(),
                             serde_json::json!(source),
                         );
                     }
-                    session.push_message(steering_msg);
+                    session.push_message(record);
 
                     // Inject into the current request's chat messages.
                     chat_messages.push(rocode_provider::Message::user(sm.text));

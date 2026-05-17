@@ -19,6 +19,10 @@ pub(super) const VOLATILE_SYSTEM_SECTION_TITLES: &[&str] = &[
 pub(super) enum HiddenRuntimeHint {
     ProposalNotice,
     SkillSaveSuggestion,
+    /// Steering preview messages written at enqueue time for UI feedback.
+    /// Hidden from model-visible replay so the model never sees the
+    /// "will be applied at next tool boundary" meta-notice as a user message.
+    SteeringPreview,
 }
 
 impl HiddenRuntimeHint {
@@ -26,6 +30,7 @@ impl HiddenRuntimeHint {
         match self {
             Self::ProposalNotice => "proposal_notice",
             Self::SkillSaveSuggestion => "skill_save_suggestion",
+            Self::SteeringPreview => "steering_preview",
         }
     }
 }
@@ -34,6 +39,7 @@ pub(super) fn parse_hidden_runtime_hint(value: &str) -> Option<HiddenRuntimeHint
     match value {
         "proposal_notice" => Some(HiddenRuntimeHint::ProposalNotice),
         "skill_save_suggestion" => Some(HiddenRuntimeHint::SkillSaveSuggestion),
+        "steering_preview" => Some(HiddenRuntimeHint::SteeringPreview),
         _ => None,
     }
 }
@@ -250,6 +256,10 @@ mod tests {
         assert_eq!(
             parse_hidden_runtime_hint("skill_save_suggestion"),
             Some(HiddenRuntimeHint::SkillSaveSuggestion)
+        );
+        assert_eq!(
+            parse_hidden_runtime_hint("steering_preview"),
+            Some(HiddenRuntimeHint::SteeringPreview)
         );
         assert!(parse_hidden_runtime_hint("unknown").is_none());
     }

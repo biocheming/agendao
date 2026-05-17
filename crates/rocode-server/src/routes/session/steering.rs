@@ -3,6 +3,7 @@
 
 use axum::extract::{Path, State};
 use axum::Json;
+use rocode_types::SessionMessage;
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -78,6 +79,83 @@ pub async fn submit_session_steering(
         store.enqueue(&owner_session_id, message);
         store.pending_count(&owner_session_id)
     };
+
+    // Immediate transcript echo: push two lines into the owner session so the
+    // user sees instant feedback even before the next tool boundary (§8 observability).
+    {
+        let mut sessions = state.sessions.lock().await;
+        if let Some(session) = sessions.get_mut(&owner_session_id) {
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            // Line 1: meta notice — when this steering will be applied.
+            let mut notice = SessionMessage::user(
+                &owner_session_id,
+                format!(
+                    "Steering: will be applied at next tool boundary (pending: {})",
+                    pending_count
+                ),
+            );
+            // Hidden from model-visible replay: this is UI feedback, not a user instruction.
+            notice.metadata.insert(
+                "runtime_hint".to_string(),
+                serde_json::json!("steering_preview"),
+            );
+            notice.metadata.insert(
+                "steering_mode".to_string(),
+                serde_json::json!("next_tool_boundary"),
+            );
+            notice.metadata.insert(
+                "steering_status".to_string(),
+                serde_json::json!("pending"),
+            );
+            notice.metadata.insert(
+                "steering_enqueued_at".to_string(),
+                serde_json::json!(now_ms),
+            );
+            notice.metadata.insert(
+                "steering_owner_session_id".to_string(),
+                serde_json::json!(&owner_session_id),
+            );
+            if let Some(ref source) = source_session_id {
+                notice.metadata.insert(
+                    "steering_source_session_id".to_string(),
+                    serde_json::json!(source),
+                );
+            }
+            session.push_message(notice);
+
+            // Line 2: the actual queued steering text.
+            let mut preview = SessionMessage::user(&owner_session_id, &text);
+            // Hidden from model-visible replay: the model must not see a duplicate
+            // of the steering text before it is consumed at the tool boundary.
+            preview.metadata.insert(
+                "runtime_hint".to_string(),
+                serde_json::json!("steering_preview"),
+            );
+            preview.metadata.insert(
+                "steering_mode".to_string(),
+                serde_json::json!("next_tool_boundary"),
+            );
+            preview.metadata.insert(
+                "steering_status".to_string(),
+                serde_json::json!("pending"),
+            );
+            preview.metadata.insert(
+                "steering_enqueued_at".to_string(),
+                serde_json::json!(now_ms),
+            );
+            preview.metadata.insert(
+                "steering_owner_session_id".to_string(),
+                serde_json::json!(&owner_session_id),
+            );
+            if let Some(ref source) = source_session_id {
+                preview.metadata.insert(
+                    "steering_source_session_id".to_string(),
+                    serde_json::json!(source),
+                );
+            }
+            session.push_message(preview);
+        }
+    }
 
     // Update runtime observable state (Constitution §8).
     state

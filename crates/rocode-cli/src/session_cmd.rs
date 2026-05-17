@@ -172,3 +172,37 @@ fn print_provisioned_external_adapter_session(
 
     Ok(())
 }
+
+/// Submit a mid-run steering message to a session.
+/// Constitution §9: CLI submits; runtime consumes at next tool boundary.
+pub(crate) async fn handle_steer_command(
+    session: String,
+    message: Vec<String>,
+    runtime_context: &FrontendRuntimeContext,
+) -> anyhow::Result<()> {
+    let text = message.join(" ");
+    if text.trim().is_empty() {
+        anyhow::bail!("steering message cannot be empty");
+    }
+
+    let client = session_client(runtime_context).await?;
+    let response = client.submit_steering(&session, text.trim()).await?;
+
+    let owner_session_id = response
+        .get("owner_session_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&session);
+    let pending_count = response
+        .get("pending_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    println!("Steering message enqueued");
+    println!("  Owner session: {owner_session_id}");
+    println!("  Pending count: {pending_count}");
+    if let Some(id) = response.get("id").and_then(|v| v.as_str()) {
+        println!("  Steer ID: {id}");
+    }
+
+    Ok(())
+}
