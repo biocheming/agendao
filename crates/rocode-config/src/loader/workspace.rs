@@ -1,11 +1,12 @@
 use crate::Config;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::discovery::{
-    detect_worktree_stop, find_up, load_agents_from_dir, load_commands_from_dir,
-    load_modes_from_dir, load_plugins_from_path, normalize_existing_path,
+    load_agents_from_dir, load_commands_from_dir, load_modes_from_dir, load_plugins_from_path,
+    normalize_existing_path,
 };
 use super::transforms::{apply_post_load_transforms, merge_agent_config};
 use super::{ConfigLoader, DIRECTORY_CONFIG_FILES};
@@ -81,10 +82,15 @@ impl ConfigAuthority {
                 .map(normalize_existing_path)
                 .unwrap_or_else(|| normalize_existing_path(project_dir))
         };
-        let stop_dir = detect_worktree_stop(&requested_dir);
-        let isolated_dir = find_up(".rocode", &requested_dir, &stop_dir)
-            .into_iter()
-            .next();
+        let isolated_candidate = requested_dir.join(".rocode");
+        let isolated_dir = if fs::metadata(&isolated_candidate)
+            .map(|meta| meta.is_dir())
+            .unwrap_or(false)
+        {
+            Some(isolated_candidate)
+        } else {
+            None
+        };
         let mode = if isolated_dir.is_some() {
             WorkspaceMode::Isolated
         } else {
@@ -122,9 +128,20 @@ impl ConfigLoader {
             return self.load_all(&identity.workspace_root);
         };
 
+        let mut has_local_config = false;
         for file_name in DIRECTORY_CONFIG_FILES {
             let path = config_dir.join(file_name);
-            self.load_from_file(&path)?;
+            if path.exists() {
+                has_local_config = true;
+                self.load_from_file(&path)?;
+            }
+        }
+
+        // A local `.rocode` directory does not automatically imply that it owns
+        // the entire config surface. Only an explicit local `rocode.json(c)`
+        // cuts off global config inheritance.
+        if !has_local_config {
+            self.load_global()?;
         }
 
         let commands = load_commands_from_dir(config_dir);

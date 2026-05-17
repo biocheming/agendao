@@ -13,9 +13,8 @@ use super::file_ops::{get_global_config_paths, parse_jsonc};
 use super::ConfigLoader;
 
 fn project_config_write_path(project_dir: &Path) -> PathBuf {
-    super::PROJECT_CONFIG_TARGETS
-        .iter()
-        .rev()
+    ["rocode.json", "rocode.jsonc", ".rocode/rocode.json", ".rocode/rocode.jsonc"]
+        .into_iter()
         .map(|target| project_dir.join(target))
         .find(|path| path.exists())
         .unwrap_or_else(|| project_dir.join(".rocode/rocode.json"))
