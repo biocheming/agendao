@@ -1,25 +1,23 @@
 # ROCode
 
-ROCode（RockyCode）是一个用 Rust 编写的高性能 AI 编码编排器。它将终端原生交互、多 Agent 协调、可扩展技能系统和多模型 Provider 整合为一个统一的开发工作流引擎。
+ROCode（RockyCode）是一个用 Rust 编写的本地编码智能体运行时。它把终端原生交互、多 Agent 协调、技能系统、多 Provider、持久化 session、memory 和 telemetry 组织成一个统一的开发工作流引擎。
 
-> **版本:** 2026.5.15 · **许可证:** MIT · **作者:** Biocheming
+> **版本:** 2026.5.17 · **许可证:** MIT · **作者:** Biocheming
 
 ---
 
-## 当前工程快照
+## 当前产品面
 
-如果你不是来看历史，而是想知道“现在这套系统已经收口到了哪一步”，先抓四条：
+如果你不是来看历史，而是想知道“这套系统当前的正式能力边界”，先抓四条：
 
-- **工具调用与 replay authority**
-  - assistant 历史 replay 已统一到共享 authority。
-  - canonical ordering、tool-result role discipline、raw replay shape 优先级都已进入正式实现与回归测试。
-- **tool repair / trajectory quality**
-  - repair telemetry 不再只是内部日志。
-  - persisted telemetry 已携带 repair summary、repair query snapshot 和 tool trajectory quality，CLI/TUI/Web 都能显示。
-- **prompt surface / context closure / cache diagnostics**
-  - ROCode 现在能解释 prefix stability、compaction boundary、cache explainability 和 child history isolation。
-- **前后端 / authority 边界**
-  - `rocode` 是产品壳，`rocode-cli` / `rocode-tui` / `rocode-web` 是前端层，`rocode-server` 是后端 authority；前端不再各自猜后端内部语义。
+- **统一 authority**
+  - `rocode` 是产品壳，`rocode-cli` / `rocode-tui` / `rocode-web` 是前端层，`rocode-server` 是后端 authority；副作用和读模型都应回到唯一 owner。
+- **长回合稳定性**
+  - replay authority、tool repair、tool-result governance、permission/steering、prompt surface、context closure 和 cache diagnostics 已经进入正式运行面。
+- **连续性与沉淀**
+  - scheduler continuity、memory validation/consolidation、skill hub lifecycle、proposal/review/gate 共同处理“怎样把一次工作持续做下去”。
+- **三端共享读面**
+  - CLI、TUI、Web 读取同一套 telemetry、runtime state、effective policy、provider descriptor、session/activity 读模型，而不是各自拼装解释。
 
 更细的文档状态判断，见 [documentation-status.md](documentation-status.md)。
 

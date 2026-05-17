@@ -1,6 +1,6 @@
 # ROCode 文档状态总表
 
-文档日期：`2026-05-15`
+文档日期：`2026-05-17`
 
 本文不是发布日志，也不是今天改了什么的流水账。它的作用只有一个：把 `rocode/docs` 里哪些文档是当前真相、哪些是设计参考、哪些已经主要转为复盘材料，统一说清楚。
 
@@ -37,7 +37,7 @@
 - `context-caching.md`
 - `tools.md`
 
-### 2. tool repair / telemetry / trajectory quality
+### 2. tool repair / telemetry / trajectory quality / runtime governance
 
 状态：`已进入正式读面`
 
@@ -46,7 +46,8 @@
 - repair summary、repair query snapshot、tool trajectory quality 不再只是内部调试数据。
 - persisted session telemetry 已携带这些结构化读面。
 - CLI / TUI / Web 都已经能展示 trajectory quality。
-- 这条线的定位是“解释工具轨迹质量和修复成本”，不是替代主执行逻辑。
+- permission、steering 和 tool-result governance 也应按同一原则理解：它们是运行治理读面，不是前端各自猜测的临时状态。
+- 这条线的定位是“解释工具轨迹质量、修复成本和运行治理状态”，不是替代主执行逻辑。
 
 对应文档：
 

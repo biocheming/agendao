@@ -1,6 +1,6 @@
 # ROCode Docs
 
-文档基线：`v2026.5.15`（更新日期：`2026-05-15`）
+文档基线：`v2026.5.17`（更新日期：`2026-05-17`）
 
 这里不是“今天改了什么”的补丁板，而是 ROCode 文档系统的正式入口。后续读 `rocode/docs` 时，先用这份文档判断每类文档的用途，再进入具体主题。
 
@@ -23,23 +23,20 @@
 - `tools.md`
 - `context-caching.md`
 
-## 当前工程快照
+## 当前产品面
 
-截至 `2026-05-15`，当前最值得明确的几条状态是：
+如果你是来判断“ROCode 现在已经具备哪些正式能力”，优先抓下面几条：
 
-- **工具调用准确率 / replay authority**
-  - 当前主收口已完成。
-  - assistant 历史 replay 现在有共享 authority，canonical ordering 已钉死，session/provider/orchestrator 都有守护。
-- **repair / telemetry / trajectory quality**
-  - 已经进入正式读面。
-  - repair summary、repair query snapshot、tool trajectory quality 已由 server 提供，并在 CLI/TUI/Web 展示。
-- **prompt surface / context closure / cache diagnostics**
-  - 核心能力已落地。
-  - 相关计划文档仍有价值，但应视为局部技术参考，而不是自动外推下一阶段的依据。
-- **frontend/backend decoupling**
-  - 主体已完成，当前更偏向边界守护和产品 polish。
-- **verifier mode**
-  - 主算法与主产品面已实现，剩余主要是 retry counters / frontend copy / polish。
+- **统一 authority 运行时**
+  - CLI、TUI、Web、Server 共用同一套 session、provider、tool、scheduler、skill、memory、telemetry authority。
+- **长回合上下文治理**
+  - replay authority、prompt surface、context closure、cache diagnostics 和 compaction 边界都已进入正式实现，而不是停留在局部约定。
+- **工具轨迹可解释**
+  - tool repair、trajectory quality、tool-result governance、permission/steering/runtime state 都已有正式读面，能被三端消费。
+- **方法沉淀与运行治理**
+  - skill hub、memory validation/consolidation、scheduler continuity、proposal/review/gate 已形成完整产品面。
+- **计划文档有边界**
+  - `plans/` 里的文档默认是局部设计与实施参考；只有被总览文档吸收的内容，才算当前产品真相。
 
 更细的判断见 `documentation-status.md`。
 
@@ -52,7 +49,7 @@
 - `installation.md`
   - 单一 `rocode` 分发入口的安装、升级、卸载，以及默认内嵌 Web 资源与可选外部覆盖说明
 - `../CHANGELOG.md`
-  - 当前版本发布说明与最近一次交付摘要
+  - 发布记录，不替代产品总览文档
 - `../USER_GUIDE.md`
   - 面向使用者的命令、scheduler、TUI 交互说明，以及 memory / skill 自进化使用心智
 - `skills.md`
