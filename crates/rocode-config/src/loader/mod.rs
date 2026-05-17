@@ -13,6 +13,7 @@ use crate::Config;
 use anyhow::{Context, Result};
 use std::env;
 use std::fs;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 pub(crate) use discovery::resolve_configured_path;
@@ -101,21 +102,16 @@ impl ConfigLoader {
         let global_config_paths = get_global_config_paths();
 
         for global_config_path in &global_config_paths {
-            for ext in &["jsonc", "json"] {
-                let path = global_config_path.with_extension(ext);
-                if path.exists() {
-                    self.load_from_file(&path)?;
-                    break;
-                }
-            }
+            self.load_from_file(global_config_path)?;
+        }
 
-            if let Some(global_config_dir) = global_config_path.parent() {
-                if let Some(migrated_path) =
-                    migrate_legacy_toml_config(global_config_dir, &mut self.config)
-                {
-                    if !self.config_paths.contains(&migrated_path) {
-                        self.config_paths.push(migrated_path);
-                    }
+        if let Some(global_config_dir) = global_config_paths.first().and_then(|path| path.parent())
+        {
+            if let Some(migrated_path) =
+                migrate_legacy_toml_config(global_config_dir, &mut self.config)
+            {
+                if !self.config_paths.contains(&migrated_path) {
+                    self.config_paths.push(migrated_path);
                 }
             }
         }
@@ -184,11 +180,18 @@ impl ConfigLoader {
 
         // Scan .rocode directories
         let directories = collect_rocode_directories(project_dir);
+        let global_config_dirs: HashSet<PathBuf> = get_global_config_paths()
+            .into_iter()
+            .filter_map(|path| path.parent().map(normalize_existing_path))
+            .collect();
         for dir in &directories {
-            // Load config files from discovered config dirs
-            for file_name in DIRECTORY_CONFIG_FILES {
-                let path = dir.join(file_name);
-                self.load_from_file(&path)?;
+            // Global config files are already loaded by load_global(); this pass only
+            // adds markdown sidecars and project-local .rocode config files.
+            if !global_config_dirs.contains(&normalize_existing_path(dir)) {
+                for file_name in DIRECTORY_CONFIG_FILES {
+                    let path = dir.join(file_name);
+                    self.load_from_file(&path)?;
+                }
             }
 
             // Load commands, agents, modes from markdown files

@@ -556,6 +556,112 @@ fn test_update_config_prefers_highest_precedence_existing_project_file() {
     assert_eq!(ui.show_thinking, Some(true));
 }
 
+#[test]
+fn test_load_global_supports_rocode_json() {
+    let temp = TestDir::new("rocode_global_json");
+    let config_home = temp.path.join("config-home");
+    let rocode_dir = config_home.join("rocode");
+    fs::create_dir_all(&rocode_dir).unwrap();
+    fs::write(
+        rocode_dir.join("rocode.json"),
+        r#"{ "model": "global-json-model", "theme": "light" }"#,
+    )
+    .unwrap();
+
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+    let mut loader = ConfigLoader::new();
+    loader.load_global().unwrap();
+    let cfg = loader.config();
+
+    assert_eq!(cfg.model.as_deref(), Some("global-json-model"));
+    assert_eq!(cfg.theme.as_deref(), Some("light"));
+
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
+#[test]
+fn test_load_global_prefers_json_over_jsonc_when_both_exist() {
+    let temp = TestDir::new("rocode_global_precedence");
+    let config_home = temp.path.join("config-home");
+    let rocode_dir = config_home.join("rocode");
+    fs::create_dir_all(&rocode_dir).unwrap();
+    fs::write(
+        rocode_dir.join("rocode.jsonc"),
+        r#"{ "model": "jsonc-model", "instructions": ["jsonc.md"] }"#,
+    )
+    .unwrap();
+    fs::write(
+        rocode_dir.join("rocode.json"),
+        r#"{ "model": "json-model", "instructions": ["json.md"] }"#,
+    )
+    .unwrap();
+
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+    let mut loader = ConfigLoader::new();
+    loader.load_global().unwrap();
+    let cfg = loader.config();
+
+    assert_eq!(cfg.model.as_deref(), Some("json-model"));
+    assert_eq!(
+        cfg.instructions,
+        vec!["jsonc.md".to_string(), "json.md".to_string()]
+    );
+
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
+#[test]
+fn test_load_all_does_not_double_load_global_config_files() {
+    let temp = TestDir::new("rocode_global_double_load");
+    let project = temp.path.join("repo");
+    let config_home = temp.path.join("config-home");
+    let rocode_dir = config_home.join("rocode");
+    fs::create_dir_all(project.join(".git")).unwrap();
+    fs::create_dir_all(&rocode_dir).unwrap();
+    fs::write(
+        rocode_dir.join("rocode.json"),
+        r#"{ "instructions": ["global.md"] }"#,
+    )
+    .unwrap();
+
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+    let mut loader = ConfigLoader::new();
+    let cfg = loader.load_all(&project).unwrap();
+
+    assert_eq!(cfg.instructions, vec!["global.md".to_string()]);
+
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
+#[test]
+fn test_update_global_config_preserves_existing_json_file() {
+    let temp = TestDir::new("rocode_update_global_json");
+    let config_home = temp.path.join("config-home");
+    let rocode_dir = config_home.join("rocode");
+    fs::create_dir_all(&rocode_dir).unwrap();
+    let config_path = rocode_dir.join("rocode.json");
+    fs::write(&config_path, r#"{ "theme": "dark" }"#).unwrap();
+
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+    let patch = Config {
+        model: Some("global-model".to_string()),
+        ..Default::default()
+    };
+    update_global_config(&patch).unwrap();
+
+    let content = fs::read_to_string(&config_path).unwrap();
+    let config: Config = serde_json::from_str(&content).unwrap();
+    assert_eq!(config.theme.as_deref(), Some("dark"));
+    assert_eq!(config.model.as_deref(), Some("global-model"));
+    assert!(!rocode_dir.join("rocode.jsonc").exists());
+
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
 // ── YAML frontmatter parsing tests ──────────────────────────────
 
 #[test]

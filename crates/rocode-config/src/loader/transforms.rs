@@ -272,22 +272,17 @@ pub fn write_config(project_dir: &Path, config: &Config) -> Result<()> {
 pub fn update_global_config(patch: &Config) -> Result<()> {
     let global_paths = get_global_config_paths();
 
-    // Try to find existing global config file.
-    // Prefer existing files in declaration order; if none exist, default to rocode.json.
+    // Prefer the active highest-precedence existing file; if none exist, default to rocode.json.
     let config_path = global_paths
         .iter()
-        .flat_map(|base| {
-            ["jsonc", "json"]
-                .into_iter()
-                .map(move |ext| base.with_extension(ext))
-        })
+        .rev()
         .find(|p| p.exists())
+        .cloned()
         .unwrap_or_else(|| {
             global_paths
                 .last()
                 .cloned()
-                .unwrap_or_else(|| PathBuf::from("rocode/rocode"))
-                .with_extension("json")
+                .unwrap_or_else(|| PathBuf::from("rocode/rocode.json"))
         });
 
     // Ensure parent directory exists
