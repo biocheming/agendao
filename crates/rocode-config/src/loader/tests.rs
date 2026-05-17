@@ -1,6 +1,7 @@
 use super::file_ops::{
     migrate_legacy_toml_config, parse_jsonc, resolve_file_references, substitute_env_vars,
 };
+use super::workspace::{ConfigAuthority, WorkspaceMode};
 use super::markdown_parser::{
     fallback_sanitize_yaml, parse_markdown_agent, parse_markdown_command,
     serde_yaml_frontmatter_to_json, split_frontmatter,
@@ -184,7 +185,7 @@ fn test_load_project_stops_at_git_root() {
 }
 
 #[test]
-fn test_load_project_finds_up_dot_rocode_configs() {
+fn test_resolve_uses_current_directory_dot_rocode_for_isolated_workspace() {
     let temp = TestDir::new("rocode_config_dotdir");
     let root = temp.path.join("repo");
     let child = root.join("service");
@@ -203,15 +204,100 @@ fn test_load_project_finds_up_dot_rocode_configs() {
     )
     .unwrap();
 
-    let mut loader = ConfigLoader::new();
-    loader.load_project(&child).unwrap();
-    let cfg = loader.config();
+    let resolved = ConfigAuthority::resolve(&child).unwrap();
+    let cfg = resolved.config;
 
+    assert_eq!(resolved.inputs.mode, WorkspaceMode::Isolated);
+    assert_eq!(
+        resolved.inputs.identity.config_dir,
+        Some(child.join(".rocode"))
+    );
     assert_eq!(cfg.default_agent.as_deref(), Some("reviewer"));
     assert_eq!(
         cfg.instructions,
-        vec!["root.md".to_string(), "child.md".to_string()]
+        vec!["child.md".to_string()]
     );
+}
+
+#[test]
+fn test_isolated_workspace_without_local_rocode_config_still_inherits_global_config() {
+    let temp = TestDir::new("rocode_isolated_inherits_global_without_local_config");
+    let root = temp.path.join("repo");
+    let child = root.join("service");
+    let config_home = temp.path.join("config-home");
+    let global_rocode_dir = config_home.join("rocode");
+
+    fs::create_dir_all(root.join(".git")).unwrap();
+    fs::create_dir_all(child.join(".rocode")).unwrap();
+    fs::create_dir_all(&global_rocode_dir).unwrap();
+    fs::write(
+        global_rocode_dir.join("rocode.json"),
+        r#"{ "model": "global-model", "theme": "light" }"#,
+    )
+    .unwrap();
+
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+    let resolved = ConfigAuthority::resolve(&child).unwrap();
+    let cfg = resolved.config;
+
+    assert_eq!(resolved.inputs.mode, WorkspaceMode::Isolated);
+    assert_eq!(cfg.model.as_deref(), Some("global-model"));
+    assert_eq!(cfg.theme.as_deref(), Some("light"));
+
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
+#[test]
+fn test_isolated_workspace_with_local_rocode_config_cuts_off_global_config() {
+    let temp = TestDir::new("rocode_isolated_local_config_cuts_global");
+    let root = temp.path.join("repo");
+    let child = root.join("service");
+    let local_rocode_dir = child.join(".rocode");
+    let config_home = temp.path.join("config-home");
+    let global_rocode_dir = config_home.join("rocode");
+
+    fs::create_dir_all(root.join(".git")).unwrap();
+    fs::create_dir_all(&local_rocode_dir).unwrap();
+    fs::create_dir_all(&global_rocode_dir).unwrap();
+    fs::write(
+        global_rocode_dir.join("rocode.json"),
+        r#"{ "model": "global-model", "theme": "light" }"#,
+    )
+    .unwrap();
+    fs::write(
+        local_rocode_dir.join("rocode.json"),
+        r#"{ "default_agent": "reviewer" }"#,
+    )
+    .unwrap();
+
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+    let resolved = ConfigAuthority::resolve(&child).unwrap();
+    let cfg = resolved.config;
+
+    assert_eq!(resolved.inputs.mode, WorkspaceMode::Isolated);
+    assert_eq!(cfg.default_agent.as_deref(), Some("reviewer"));
+    assert_eq!(cfg.model.as_deref(), None);
+    assert_eq!(cfg.theme.as_deref(), None);
+
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
+#[test]
+fn test_workspace_mode_ignores_ancestor_dot_rocode() {
+    let temp = TestDir::new("rocode_workspace_ancestor_dotdir");
+    let root = temp.path.join("repo");
+    let child = root.join("service");
+    fs::create_dir_all(root.join(".git")).unwrap();
+    fs::create_dir_all(root.join(".rocode")).unwrap();
+    fs::create_dir_all(&child).unwrap();
+
+    let resolved = ConfigAuthority::resolve_inputs(&child);
+
+    assert_eq!(resolved.mode, WorkspaceMode::Shared);
+    assert_eq!(resolved.identity.workspace_root, child);
+    assert_eq!(resolved.identity.config_dir, None);
 }
 
 #[test]
@@ -535,7 +621,7 @@ fn test_update_config() {
 #[test]
 fn test_update_config_prefers_highest_precedence_existing_project_file() {
     let temp = TestDir::new("rocode_update_config_precedence");
-    let config_path = temp.path.join(".rocode/rocode.jsonc");
+    let config_path = temp.path.join("rocode.jsonc");
     fs::create_dir_all(config_path.parent().expect("config dir")).unwrap();
     fs::write(&config_path, r#"{ "share": "manual" }"#).unwrap();
 
@@ -632,6 +718,41 @@ fn test_load_all_does_not_double_load_global_config_files() {
     let cfg = loader.load_all(&project).unwrap();
 
     assert_eq!(cfg.instructions, vec!["global.md".to_string()]);
+
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
+#[test]
+fn test_load_all_ignores_ancestor_dot_rocode_but_keeps_global_config() {
+    let temp = TestDir::new("rocode_ancestor_dotdir_ignored");
+    let repo = temp.path.join("repo");
+    let project_root = repo.join("project");
+    let child = project_root.join("lit");
+    let config_home = temp.path.join("config-home");
+    let rocode_dir = config_home.join("rocode");
+
+    fs::create_dir_all(repo.join(".git")).unwrap();
+    fs::create_dir_all(project_root.join(".rocode")).unwrap();
+    fs::create_dir_all(&child).unwrap();
+    fs::create_dir_all(&rocode_dir).unwrap();
+
+    fs::write(
+        project_root.join(".rocode/rocode.json"),
+        r#"{ "provider": { "sandbox": { "name": "Sandbox Only" } } }"#,
+    )
+    .unwrap();
+    fs::write(
+        rocode_dir.join("rocode.json"),
+        r#"{ "provider": { "global": { "name": "Global Provider" } } }"#,
+    )
+    .unwrap();
+
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+    let cfg = load_config(&child).unwrap();
+    let providers = cfg.provider.expect("provider map");
+    assert!(providers.contains_key("global"));
+    assert!(!providers.contains_key("sandbox"));
 
     std::env::remove_var("XDG_CONFIG_HOME");
 }

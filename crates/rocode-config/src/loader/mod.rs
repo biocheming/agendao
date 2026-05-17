@@ -47,8 +47,6 @@ pub struct ConfigLoader {
 const PROJECT_CONFIG_TARGETS: &[&str] = &[
     "rocode.jsonc",
     "rocode.json",
-    ".rocode/rocode.jsonc",
-    ".rocode/rocode.json",
 ];
 
 const DIRECTORY_CONFIG_FILES: &[&str] = &["rocode.jsonc", "rocode.json"];

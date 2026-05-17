@@ -85,15 +85,12 @@ pub(super) fn collect_rocode_directories(project_dir: &Path) -> Vec<PathBuf> {
         }
     }
 
-    // Project .rocode directories (walk up from project_dir to worktree root)
+    // Only the current workspace-local `.rocode` directory participates in
+    // config/command/agent discovery. Ancestor `.rocode` directories do not.
     let start_dir = normalize_existing_path(project_dir);
-    let stop_dir = detect_worktree_stop(&start_dir);
-    for marker in [".rocode"] {
-        let found = find_up(marker, &start_dir, &stop_dir);
-        // Reverse so ancestor dirs come first (lower priority)
-        for path in found.into_iter().rev() {
-            directories.push(path);
-        }
+    let local_rocode_dir = start_dir.join(".rocode");
+    if local_rocode_dir.is_dir() {
+        directories.push(local_rocode_dir);
     }
 
     // Home directory .rocode
