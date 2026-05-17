@@ -130,7 +130,7 @@ ROCode 现在区分：
 
 - 当前 workspace 下的 `.rocode/` 是本地运行时 authority
 - 项目配置入口通常是 `rocode.jsonc` / `rocode.json`
-- 全局配置默认在 `~/.config/rocode/rocode.jsonc`
+- 全局配置入口通常是 `~/.config/rocode/rocode.jsonc` / `~/.config/rocode/rocode.json`
 - 如果当前 workspace 是 isolated 模式，global config 的修改不会自动作用于当前 sandbox runtime
 
 如果你只想影响当前项目，优先改当前 workspace 的配置和 `.rocode/`，不要先改全局。
