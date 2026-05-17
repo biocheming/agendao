@@ -1252,18 +1252,15 @@ impl Prompt {
         if cache_read > 0 || cache_miss > 0 || cache_write > 0 {
             spans.push(Span::raw("  "));
             spans.push(Span::styled(
-                if cache_miss > 0 { "C H/M" } else { "C R/W" },
+                "C H/M/W",
                 Style::default().fg(theme.text_muted),
             ));
             spans.push(Span::styled(
                 format!(
-                    "{}/{}",
+                    "{}/{}/{}",
                     format_compact_number(cache_read),
-                    format_compact_number(if cache_miss > 0 {
-                        cache_miss
-                    } else {
-                        cache_write
-                    })
+                    format_compact_number(cache_miss),
+                    format_compact_number(cache_write)
                 ),
                 Style::default().fg(theme.text),
             ));

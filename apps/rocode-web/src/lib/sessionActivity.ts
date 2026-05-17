@@ -230,6 +230,13 @@ export interface SessionTelemetrySnapshotRecord {
   model_tool_repair_summary?: ModelToolRepairTelemetrySummaryRecord | null;
   tool_trajectory_quality?: ToolTrajectoryQualityRecord | null;
   tool_result_governance?: ToolResultGovernanceRecord | null;
+  pending_permission_count?: number;
+  granted_by_turn_count?: number;
+  granted_by_session_count?: number;
+  granted_by_matcher_kind?: Record<string, number> | null;
+  last_permission_matcher_kind?: string | null;
+  last_permission_grant_target?: string | null;
+  last_permission_miss_count?: number;
   memory?: SessionMemoryTelemetryRecord | null;
   cache_evidence?: Record<string, unknown> | null;
   cache_semantics?: Record<string, unknown> | null;

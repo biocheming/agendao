@@ -40,6 +40,8 @@ interface ComposerSectionProps {
   outputPricePerMillion?: number | null;
   activeStageId: string | null;
   provenance: BreadcrumbProvenance | null;
+  permissionStatusLabel?: string | null;
+  permissionStatusTone?: "muted" | "warning" | "destructive";
   onPreviewStage?: (stageId: string | null) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onRemoveReference: (reference: string) => void;

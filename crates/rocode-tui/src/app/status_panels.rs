@@ -915,6 +915,15 @@ impl App {
         }
 
         blocks.extend(ui_bridge_status_blocks(&ui_bridge));
+        blocks.extend(permission_interaction_status_blocks(
+            self.permission_runtime.pending_ids.len(),
+            self.permission_prompt.submitting_count(),
+            self.permission_prompt
+                .last_submit_error()
+                .or(self.permission_runtime.last_submit_error.as_deref()),
+            self.permission_runtime.last_submit_started_at.as_deref(),
+            self.permission_runtime.last_submit_completed_at.as_deref(),
+        ));
 
         blocks
     }
@@ -2213,6 +2222,38 @@ fn tui_usage_status_lines(
         )));
     }
 
+    // Permission Authority telemetry.
+    if telemetry.pending_permission_count > 0
+        || telemetry.granted_by_turn_count + telemetry.granted_by_session_count > 0
+        || telemetry.last_permission_miss_count > 0
+        || !telemetry.granted_by_matcher_kind.is_empty()
+    {
+        let matcher_breakdown: Vec<String> = telemetry
+            .granted_by_matcher_kind
+            .iter()
+            .map(|(k, v)| format!("{k}: {v}"))
+            .collect();
+        let matcher_summary = if matcher_breakdown.is_empty() {
+            "none".to_string()
+        } else {
+            matcher_breakdown.join(", ")
+        };
+        lines.push(StatusLine::title("Permission Authority"));
+        lines.push(StatusLine::normal(format!(
+            "Turn grants: {} · Session grants: {} · Pending: {} · Misses: {}",
+            telemetry.granted_by_turn_count,
+            telemetry.granted_by_session_count,
+            telemetry.pending_permission_count,
+            telemetry.last_permission_miss_count,
+        )));
+        if let Some(ref kind) = telemetry.last_permission_matcher_kind {
+            lines.push(StatusLine::muted(format!("  Last grant: {kind}")));
+        }
+        if !matcher_breakdown.is_empty() {
+            lines.push(StatusLine::muted(format!("  Matchers: {}", matcher_summary)));
+        }
+    }
+
     if telemetry.context_closure_contract.is_none() {
         if let Some(cache_semantics) = telemetry.cache_semantics.as_ref() {
             lines.push(StatusLine::muted(String::new()));
@@ -3157,6 +3198,33 @@ mod tests {
     };
 
     #[test]
+    fn permission_interaction_status_blocks_include_local_submit_state() {
+        let blocks = permission_interaction_status_blocks(
+            1,
+            1,
+            Some("network down"),
+            Some("2026-05-17T10:00:00Z"),
+            Some("2026-05-17T10:00:02Z"),
+        );
+
+        let rendered = blocks
+            .iter()
+            .map(|block| block.text.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("Permission Interaction"));
+        assert!(rendered.contains("Pending 1 · submitting 1"));
+        assert!(rendered.contains("Last submit started: 2026-05-17T10:00:00Z"));
+        assert!(rendered.contains("Last submit completed: 2026-05-17T10:00:02Z"));
+        assert!(rendered.contains("Last submit error: network down"));
+    }
+
+    #[test]
+    fn permission_interaction_status_blocks_omit_empty_state() {
+        assert!(permission_interaction_status_blocks(0, 0, None, None, None).is_empty());
+    }
+
+    #[test]
     fn session_insights_surface_effective_policy_sections() {
         let insights = SessionInsightsResponse {
             id: "sess_123".to_string(),
@@ -3439,6 +3507,13 @@ mod tests {
                     total_cost: 1.60,
                 },
             },
+            pending_permission_count: 0,
+            granted_by_turn_count: 0,
+            granted_by_session_count: 0,
+            granted_by_matcher_kind: Default::default(),
+            last_permission_matcher_kind: None,
+            last_permission_grant_target: None,
+            last_permission_miss_count: 0,
             tool_repair_summary: Some(rocode_types::SessionToolRepairTelemetrySummary {
                 total_tool_calls: 3,
                 repaired_tool_call_count: 2,
@@ -3817,6 +3892,71 @@ mod tests {
     }
 
     #[test]
+    fn usage_status_shows_permission_authority_for_miss_only() {
+        let telemetry = crate::api::SessionTelemetrySnapshot {
+            runtime: crate::api::SessionRuntimeState {
+                session_id: "sess_123".to_string(),
+                run_status: crate::api::SessionRunStatusKind::Idle,
+                current_message_id: None,
+                usage: None,
+                active_stage_id: None,
+                active_stage_count: 0,
+                active_tools: Vec::new(),
+                pending_question: None,
+                pending_permission: None,
+                attached_sessions: Vec::new(),
+            },
+            stages: Vec::new(),
+            topology: crate::api::SessionExecutionTopology {
+                session_id: "sess_123".to_string(),
+                active_count: 0,
+                done_count: 0,
+                running_count: 0,
+                waiting_count: 0,
+                cancelling_count: 0,
+                retry_count: 0,
+                updated_at: None,
+                roots: Vec::new(),
+            },
+            usage: rocode_session::SessionUsage::default(),
+            usage_books: SessionUsageBooks::default(),
+            tool_repair_summary: None,
+            model_tool_repair_summary: None,
+            repair_query_snapshot: None,
+            tool_trajectory_quality: None,
+            tool_result_governance: None,
+            pending_permission_count: 0,
+            granted_by_turn_count: 0,
+            granted_by_session_count: 0,
+            granted_by_matcher_kind: Default::default(),
+            last_permission_matcher_kind: None,
+            last_permission_grant_target: None,
+            last_permission_miss_count: 2,
+            memory: None,
+            cache_evidence: None,
+            context_explain: None,
+            ownership: None,
+            context_compaction_summary: None,
+            compaction_continuity: None,
+            context_compaction_lifecycle_summary: None,
+            context_pressure_governance_summary: None,
+            cache_semantics: None,
+            context_closure_contract: None,
+            prompt_surface_evidence: None,
+            ingress_stabilization: None,
+            execution_preflight_summary: None,
+            provider_diagnostic_summary: None,
+        };
+
+        let lines = tui_usage_status_lines("sess_123", &telemetry, None, None, None);
+        let texts = lines.into_iter().map(|line| line.text).collect::<Vec<_>>();
+        assert!(texts.iter().any(|line| line == "Permission Authority"));
+        assert!(texts
+            .iter()
+            .any(|line| line == "Turn grants: 0 · Session grants: 0 · Pending: 0 · Misses: 2"));
+    }
+
+    #[test]
     fn runtime_status_surfaces_local_ui_queue_metrics() {
         let telemetry = crate::api::SessionTelemetrySnapshot {
             runtime: crate::api::SessionRuntimeState {
@@ -3850,6 +3990,13 @@ mod tests {
             repair_query_snapshot: None,
             tool_trajectory_quality: None,
             tool_result_governance: None,
+            pending_permission_count: 0,
+            granted_by_turn_count: 0,
+            granted_by_session_count: 0,
+            granted_by_matcher_kind: Default::default(),
+            last_permission_matcher_kind: None,
+            last_permission_grant_target: None,
+            last_permission_miss_count: 0,
             memory: None,
             cache_evidence: None,
             context_explain: None,
@@ -4167,21 +4314,59 @@ fn tui_format_last_turn_usage(tokens: &crate::context::TokenUsage) -> String {
         ));
     }
     if tokens.cache_read > 0 || tokens.cache_miss > 0 || tokens.cache_write > 0 {
-        if tokens.cache_miss > 0 {
-            parts.push(format!(
-                "Cache H/M {}/{}",
-                tui_format_token_count(tokens.cache_read),
-                tui_format_token_count(tokens.cache_miss)
-            ));
-        } else {
-            parts.push(format!(
-                "Cache R/W {}/{}",
-                tui_format_token_count(tokens.cache_read),
-                tui_format_token_count(tokens.cache_write)
-            ));
-        }
+        parts.push(format!(
+            "Cache H/M/W {}/{}/{}",
+            tui_format_token_count(tokens.cache_read),
+            tui_format_token_count(tokens.cache_miss),
+            tui_format_token_count(tokens.cache_write)
+        ));
     }
     parts.join(" · ")
+}
+
+fn permission_interaction_status_blocks(
+    pending_count: usize,
+    submitting_count: usize,
+    last_submit_error: Option<&str>,
+    last_submit_started_at: Option<&str>,
+    last_submit_completed_at: Option<&str>,
+) -> Vec<StatusBlock> {
+    if pending_count == 0
+        && submitting_count == 0
+        && last_submit_error.is_none()
+        && last_submit_started_at.is_none()
+        && last_submit_completed_at.is_none()
+    {
+        return Vec::new();
+    }
+
+    let mut blocks = vec![
+        StatusBlock::muted(String::new()),
+        StatusBlock::title("Permission Interaction"),
+        StatusBlock::normal(format!(
+            "Pending {} · submitting {}",
+            pending_count, submitting_count
+        )),
+    ];
+    if let Some(started_at) = last_submit_started_at {
+        blocks.push(StatusBlock::muted(format!(
+            "Last submit started: {}",
+            started_at
+        )));
+    }
+    if let Some(completed_at) = last_submit_completed_at {
+        blocks.push(StatusBlock::muted(format!(
+            "Last submit completed: {}",
+            completed_at
+        )));
+    }
+    if let Some(error) = last_submit_error {
+        blocks.push(StatusBlock::warning(format!(
+            "Last submit error: {}",
+            error
+        )));
+    }
+    blocks
 }
 
 fn tui_format_token_count(value: u64) -> String {

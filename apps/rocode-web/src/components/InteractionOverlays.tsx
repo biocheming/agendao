@@ -10,6 +10,9 @@ interface InteractionOverlaysProps {
   questionAnswers: Record<number, QuestionAnswerValue>;
   questionSubmitting: boolean;
   permissionSubmitting: boolean;
+  permissionSubmitError: string | null;
+  permissionSubmitStartedAt: string | null;
+  permissionSubmitCompletedAt: string | null;
   onQuestionAnswerChange: (index: number, value: QuestionAnswerValue) => void;
   onRejectQuestion: () => void;
   onSubmitQuestion: () => void;
@@ -22,6 +25,9 @@ export function InteractionOverlays({
   questionAnswers,
   questionSubmitting,
   permissionSubmitting,
+  permissionSubmitError,
+  permissionSubmitStartedAt,
+  permissionSubmitCompletedAt,
   onQuestionAnswerChange,
   onRejectQuestion,
   onSubmitQuestion,
@@ -129,6 +135,30 @@ export function InteractionOverlays({
             </header>
             <div className="flex flex-col gap-5">
               {permission.message ? <p>{permission.message}</p> : null}
+              {permissionSubmitError ? (
+                <p
+                  className="rounded-2xl border border-rose-400/35 bg-rose-500/10 px-4 py-3 text-sm text-rose-100"
+                  data-testid="permission-submit-error"
+                >
+                  {permissionSubmitError}
+                </p>
+              ) : null}
+              {permissionSubmitStartedAt || permissionSubmitCompletedAt ? (
+                <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm text-muted-foreground">
+                  {permissionSubmitStartedAt ? (
+                    <>
+                      <dt>Submit started</dt>
+                      <dd data-testid="permission-submit-started">{permissionSubmitStartedAt}</dd>
+                    </>
+                  ) : null}
+                  {permissionSubmitCompletedAt ? (
+                    <>
+                      <dt>Last submit done</dt>
+                      <dd data-testid="permission-submit-completed">{permissionSubmitCompletedAt}</dd>
+                    </>
+                  ) : null}
+                </dl>
+              ) : null}
               <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
                 {permission.permission ? (
                   <div>
@@ -148,10 +178,28 @@ export function InteractionOverlays({
                     <dd>{permission.scope_label ?? permission.scope_key}</dd>
                   </div>
                 ) : null}
+                {permission.grant_target_summary ? (
+                  <div>
+                    <dt>Target</dt>
+                    <dd>{permission.grant_target_summary}</dd>
+                  </div>
+                ) : null}
+                {permission.matcher_label ? (
+                  <div>
+                    <dt>Match</dt>
+                    <dd>{permission.matcher_label}</dd>
+                  </div>
+                ) : null}
                 {permission.grant_hint ? (
                   <div>
                     <dt>Grant</dt>
                     <dd>{permission.grant_hint}</dd>
+                  </div>
+                ) : null}
+                {permission.risk_tags?.length ? (
+                  <div>
+                    <dt>Risk</dt>
+                    <dd>{permission.risk_tags.join(", ")}</dd>
                   </div>
                 ) : null}
                 {permission.command ? (

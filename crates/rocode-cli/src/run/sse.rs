@@ -39,6 +39,10 @@ fn split_repeatable_answer(answer: &str) -> Vec<String> {
         .collect()
 }
 
+fn permission_timestamp_now() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
 fn ingress_stabilization_label(value: Option<&serde_json::Value>) -> Option<String> {
     let value = value?.as_object()?;
     let source = value
@@ -583,6 +587,13 @@ fn handle_sse_event(runtime: &CliExecutionRuntime, event: CliServerEvent, style:
         }
         CliServerEvent::PermissionResolved { permission_id } => {
             tracing::debug!(permission_id, "permission resolved");
+            if let Ok(mut projection) = runtime.frontend_projection.lock() {
+                projection.pending_permission_count = 0;
+                projection.submitting_permission_count = 0;
+                projection.last_permission_submit_error = None;
+                projection.permission_submit_completed_at = Some(permission_timestamp_now());
+            }
+            cli_refresh_prompt(runtime);
         }
         CliServerEvent::ToolCallStarted {
             session_id,
@@ -830,6 +841,13 @@ async fn handle_permission_from_sse(
     permission_id: &str,
     info_json: &serde_json::Value,
 ) {
+    if let Ok(mut projection) = runtime.frontend_projection.lock() {
+        projection.pending_permission_count = 1;
+        projection.submitting_permission_count = 0;
+        projection.last_permission_submit_error = None;
+    }
+    cli_refresh_prompt(runtime);
+
     let info: crate::api_client::PermissionRequestInfo =
         match serde_json::from_value(info_json.clone()) {
             Ok(info) => info,
@@ -907,16 +925,6 @@ async fn handle_permission_from_sse(
         lifetimes
     };
 
-    {
-        let memory = runtime.permission_memory.lock().await;
-        if memory.is_granted(&permission, &patterns) {
-            let _ = api_client
-                .reply_permission(permission_id, "once", Some("auto-approved".to_string()))
-                .await;
-            return;
-        }
-    }
-
     let guard = runtime
         .spinner_guard
         .lock()
@@ -931,6 +939,9 @@ async fn handle_permission_from_sse(
         let permission_class = permission_class.clone();
         let scope_key = scope_key.clone();
         let scope_label = scope_label.clone();
+        let matcher_label = info.matcher_label.clone();
+        let grant_target_summary = info.grant_target_summary.clone();
+        let risk_tags = info.risk_tags.clone();
         let lifetimes = lifetimes.clone();
         tokio::task::spawn_blocking(move || {
             let style = CliStyle::detect();
@@ -939,9 +950,12 @@ async fn handle_permission_from_sse(
                 permission_class.as_deref(),
                 scope_key.as_deref(),
                 scope_label.as_deref(),
+                matcher_label.as_deref(),
+                grant_target_summary.as_deref(),
                 &patterns,
                 &metadata,
                 &lifetimes,
+                &risk_tags,
                 &style,
             )
         })
@@ -954,6 +968,13 @@ async fn handle_permission_from_sse(
         Ok(Ok(decision)) => decision,
         Ok(Err(error)) => {
             tracing::error!(permission_id, %error, "permission prompt IO error");
+            eprintln!("Permission prompt IO error for {permission_id}: {error}");
+            if let Ok(mut projection) = runtime.frontend_projection.lock() {
+                projection.submitting_permission_count = 0;
+                projection.last_permission_submit_error = Some(error.to_string());
+                projection.permission_submit_completed_at = Some(permission_timestamp_now());
+            }
+            cli_refresh_prompt(runtime);
             let _ = api_client
                 .reply_permission(
                     permission_id,
@@ -965,6 +986,13 @@ async fn handle_permission_from_sse(
         }
         Err(error) => {
             tracing::error!(permission_id, %error, "permission prompt task failed");
+            eprintln!("Permission prompt failed for {permission_id}: {error}");
+            if let Ok(mut projection) = runtime.frontend_projection.lock() {
+                projection.submitting_permission_count = 0;
+                projection.last_permission_submit_error = Some(error.to_string());
+                projection.permission_submit_completed_at = Some(permission_timestamp_now());
+            }
+            cli_refresh_prompt(runtime);
             let _ = api_client
                 .reply_permission(
                     permission_id,
@@ -978,24 +1006,39 @@ async fn handle_permission_from_sse(
 
     let (reply, message) = match decision {
         PermissionDecision::Allow => ("once", Some("approved".to_string())),
-        PermissionDecision::AllowTurn => {
-            let mut memory = runtime.permission_memory.lock().await;
-            memory.grant_turn(&permission, &patterns);
-            ("turn", Some("approved for turn".to_string()))
-        }
+        PermissionDecision::AllowTurn => ("turn", Some("approved for turn".to_string())),
         PermissionDecision::AllowSession => {
-            let mut memory = runtime.permission_memory.lock().await;
-            memory.grant_session(&permission, &patterns);
             ("session", Some("approved for session".to_string()))
         }
         PermissionDecision::Deny => ("reject", Some("rejected".to_string())),
     };
+
+    if let Ok(mut projection) = runtime.frontend_projection.lock() {
+        projection.submitting_permission_count = 1;
+        projection.last_permission_submit_error = None;
+        projection.permission_submit_started_at = Some(permission_timestamp_now());
+    }
+    cli_refresh_prompt(runtime);
 
     if let Err(error) = api_client
         .reply_permission(permission_id, reply, message)
         .await
     {
         tracing::error!(permission_id, %error, "failed to reply permission");
+        if let Ok(mut projection) = runtime.frontend_projection.lock() {
+            projection.submitting_permission_count = 0;
+            projection.last_permission_submit_error = Some(error.to_string());
+            projection.permission_submit_completed_at = Some(permission_timestamp_now());
+        }
+        cli_refresh_prompt(runtime);
+        eprintln!(
+            "Failed to submit permission reply for {permission_id}: {error}. Server may still be waiting."
+        );
+    } else {
+        if let Ok(mut projection) = runtime.frontend_projection.lock() {
+            projection.permission_submit_completed_at = Some(permission_timestamp_now());
+        }
+        cli_refresh_prompt(runtime);
     }
 }
 

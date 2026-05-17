@@ -737,6 +737,16 @@ mod tests {
                 batch_governed_count: 1,
                 transcript_fallback_count: 0,
             }),
+            pending_permission_count: 1,
+            granted_by_turn_count: 2,
+            granted_by_session_count: 3,
+            granted_by_matcher_kind: std::collections::BTreeMap::from([
+                ("scope_only".to_string(), 4),
+                ("structured_family".to_string(), 1),
+            ]),
+            last_permission_matcher_kind: Some("scope_only".to_string()),
+            last_permission_grant_target: Some("Task flow: create task".to_string()),
+            last_permission_miss_count: 3,
             memory: None,
             cache_evidence: None,
             context_explain: Some(SessionContextExplain {

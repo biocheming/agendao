@@ -786,19 +786,12 @@ impl Sidebar {
                         lines.push(Line::from(vec![
                             Span::styled("Cache  ", Style::default().fg(theme.text_muted)),
                             Span::styled(
-                                if session_cache_miss_tokens > 0 {
-                                    format!(
-                                        "H/M {} / {}",
-                                        format_compact_number(session_cache_read_tokens),
-                                        format_compact_number(session_cache_miss_tokens)
-                                    )
-                                } else {
-                                    format!(
-                                        "R/W {} / {}",
-                                        format_compact_number(session_cache_read_tokens),
-                                        format_compact_number(session_cache_write_tokens)
-                                    )
-                                },
+                                format!(
+                                    "H/M/W {} / {} / {}",
+                                    format_compact_number(session_cache_read_tokens),
+                                    format_compact_number(session_cache_miss_tokens),
+                                    format_compact_number(session_cache_write_tokens)
+                                ),
                                 Style::default().fg(theme.text),
                             ),
                         ]));
@@ -838,19 +831,12 @@ impl Sidebar {
                             lines.push(Line::from(vec![
                                 Span::styled("Cache  ", Style::default().fg(theme.text_muted)),
                                 Span::styled(
-                                    if turn.tokens.cache_miss > 0 {
-                                        format!(
-                                            "H/M {} / {}",
-                                            format_compact_number(turn.tokens.cache_read),
-                                            format_compact_number(turn.tokens.cache_miss)
-                                        )
-                                    } else {
-                                        format!(
-                                            "R/W {} / {}",
-                                            format_compact_number(turn.tokens.cache_read),
-                                            format_compact_number(turn.tokens.cache_write)
-                                        )
-                                    },
+                                    format!(
+                                        "H/M/W {} / {} / {}",
+                                        format_compact_number(turn.tokens.cache_read),
+                                        format_compact_number(turn.tokens.cache_miss),
+                                        format_compact_number(turn.tokens.cache_write)
+                                    ),
                                     Style::default().fg(theme.text),
                                 ),
                             ]));
@@ -2557,7 +2543,7 @@ mod tests {
         assert!(!rendered.contains("compact now"));
         assert!(rendered.contains("300K cumulative"));
         assert!(!rendered.contains("450K cumulative"));
-        assert!(rendered.contains("H/M 100K / 50K"));
+        assert!(rendered.contains("H/M/W 100K / 50K / 0"));
     }
 
     #[test]

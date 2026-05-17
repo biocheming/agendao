@@ -1,6 +1,12 @@
 use crossterm::event::{KeyEvent, MouseEvent};
 
 #[derive(Clone, Debug)]
+pub enum PermissionReplyOutcome {
+    Succeeded,
+    Failed { message: String },
+}
+
+#[derive(Clone, Debug)]
 pub enum Event {
     Key(KeyEvent),
     Mouse(MouseEvent),
@@ -38,6 +44,10 @@ pub enum CustomEvent {
         optimistic_message_id: String,
         response: Option<crate::api::PromptResponse>,
         error: Option<String>,
+    },
+    PermissionReplyFinished {
+        permission_id: String,
+        outcome: PermissionReplyOutcome,
     },
     StateChanged(StateChange),
 }

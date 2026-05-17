@@ -25,6 +25,9 @@ export interface PermissionInteractionRecord {
   permission_class_label?: string;
   scope_key?: string;
   scope_label?: string;
+  matcher_label?: string;
+  grant_target_summary?: string;
+  risk_tags?: string[];
   supported_lifetimes?: string[];
   grant_hint?: string;
   command?: string;
@@ -217,13 +220,21 @@ export function permissionInteractionFromEvent(
     permission_class_label: permissionClassLabel(permission_class),
     scope_key: typeof info.scope_key === "string" ? info.scope_key : undefined,
     scope_label: typeof info.scope_label === "string" ? info.scope_label : undefined,
+    matcher_label: typeof info.matcher_label === "string" ? info.matcher_label : undefined,
+    grant_target_summary:
+      typeof info.grant_target_summary === "string" ? info.grant_target_summary : undefined,
+    risk_tags: Array.isArray(info.risk_tags)
+      ? info.risk_tags.map((value) => String(value ?? "")).filter(Boolean)
+      : undefined,
     supported_lifetimes,
     grant_hint: permissionGrantHint(
-      typeof info.scope_label === "string"
-        ? info.scope_label
-        : typeof info.scope_key === "string"
-          ? info.scope_key
-          : undefined,
+      typeof info.grant_target_summary === "string"
+        ? info.grant_target_summary
+        : typeof info.scope_label === "string"
+          ? info.scope_label
+          : typeof info.scope_key === "string"
+            ? info.scope_key
+            : undefined,
       supported_lifetimes,
     ),
     command:

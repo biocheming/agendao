@@ -522,6 +522,33 @@ export function ExecutionActivityPanel({
               </p>
             </div>
           ) : null}
+          {(activity.telemetry?.pending_permission_count ?? 0) > 0
+            || (activity.telemetry?.granted_by_turn_count ?? 0) > 0
+            || (activity.telemetry?.granted_by_session_count ?? 0) > 0
+            || (activity.telemetry?.last_permission_miss_count ?? 0) > 0 ? (
+            <div className={sideSectionClass}>
+              <p className="roc-section-label">Permission Authority</p>
+              <div className="roc-rail-meta-list">
+                <span className="roc-badge px-3 py-1.5 text-xs">
+                  turn {activity.telemetry?.granted_by_turn_count ?? 0}
+                </span>
+                <span className="roc-badge px-3 py-1.5 text-xs">
+                  session {activity.telemetry?.granted_by_session_count ?? 0}
+                </span>
+                <span className="roc-badge px-3 py-1.5 text-xs">
+                  pending {activity.telemetry?.pending_permission_count ?? 0}
+                </span>
+                <span className="roc-badge px-3 py-1.5 text-xs">
+                  misses {activity.telemetry?.last_permission_miss_count ?? 0}
+                </span>
+              </div>
+              {activity.telemetry?.last_permission_matcher_kind ? (
+                <p className="text-xs text-muted-foreground">
+                  Last grant: {activity.telemetry.last_permission_matcher_kind}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
           {contextClosure ? (
             <div className={sideSectionClass}>
               <div className="roc-rail-section-header">
