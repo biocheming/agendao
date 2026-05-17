@@ -1,20 +1,16 @@
 use chrono::Local;
 
-// Embed prompt templates at compile time (matching TS originals from session/prompt/*.txt)
-const PROMPT_BEAST: &str = include_str!("prompt_templates/beast.txt");
-const PROMPT_GEMINI: &str = include_str!("prompt_templates/gemini.txt");
-const PROMPT_QWEN: &str = include_str!("prompt_templates/qwen.txt");
-const PROMPT_CODEX: &str = include_str!("prompt_templates/codex_header.txt");
-const PROMPT_TRINITY: &str = include_str!("prompt_templates/trinity.txt");
+const PROMPT_ROCODE_HEADER: &str = include_str!("prompt_templates/rocode_header.txt");
+const PROMPT_COMPATIBILITY_OVERLAY: &str =
+    include_str!("prompt_templates/compatibility_overlay.txt");
 const MAX_MCP_RESOURCE_CHARS: usize = 12_000;
 
 pub struct SystemPrompt;
 
 impl SystemPrompt {
-    /// Returns the codex/instructions prompt (used as base instructions).
-    /// TS: `SystemPrompt.instructions()` → `PROMPT_CODEX.trim()`
+    /// Returns the ROCode product header (used as base instructions).
     pub fn instructions() -> &'static str {
-        PROMPT_CODEX.trim()
+        PROMPT_ROCODE_HEADER.trim()
     }
 
     /// Wrap arbitrary text in a `<system-reminder>` block so it is treated as
@@ -38,36 +34,20 @@ impl SystemPrompt {
         Self::system_reminder(&body)
     }
 
-    /// Select the appropriate system prompt based on model API ID.
-    /// TS: `SystemPrompt.provider(model)` in session/system.ts
+    /// Build the composed system prompt for the target model family.
     ///
-    /// Matching rules (in priority order):
-    ///   - gpt-5       → PROMPT_CODEX
-    ///   - gpt-* / o1 / o3 → PROMPT_BEAST
-    ///   - gemini-*    → PROMPT_GEMINI
-    ///   - fallback    → PROMPT_QWEN (messages without todo)
-    pub fn for_model(model_api_id: &str) -> &'static str {
-        let id = model_api_id.to_lowercase();
-
-        if id.contains("gpt-5") {
-            return PROMPT_CODEX;
-        }
-        if id.contains("gpt-") || id.contains("o1") || id.contains("o3") {
-            return PROMPT_BEAST;
-        }
-        if id.contains("gemini-") {
-            return PROMPT_GEMINI;
-        }
-        if id.contains("trinity") {
-            return PROMPT_TRINITY;
-        }
-        // Default fallback — same as TS (qwen.txt = messages without todo)
-        PROMPT_QWEN
+    /// ROCode now uses a two-layer prompt surface:
+    ///   1. a single product header shared by all models
+    ///   2. a thin compatibility overlay for family-specific adaptation
+    pub fn for_model(_model_api_id: &str) -> String {
+        format!(
+            "{}\n\n{}",
+            PROMPT_ROCODE_HEADER.trim(),
+            PROMPT_COMPATIBILITY_OVERLAY.trim()
+        )
     }
 
     /// Build the environment context block.
-    /// TS: `SystemPrompt.environment(model)` in session/system.ts
-    ///
     /// Produces a string like:
     /// ```text
     /// You are powered by the model named test-model-large. The exact model ID is ethnopic/test-model-large
@@ -77,10 +57,13 @@ impl SystemPrompt {
     ///   Is directory a git repo: yes
     ///   Platform: linux
     ///   Today's date: Wed Feb 19 2026
+    ///   Current local time: 2026-02-19 14:03:07 +08:00
+    ///   Local timezone: CST
     /// </env>
     /// ```
     pub fn environment(env: &EnvironmentContext) -> String {
-        let mut lines = Vec::with_capacity(10);
+        let now = Local::now();
+        let mut lines = Vec::with_capacity(11);
 
         lines.push(format!(
             "You are powered by the model named {}. The exact model ID is {}/{}",
@@ -96,10 +79,12 @@ impl SystemPrompt {
             if env.is_git_repo { "yes" } else { "no" }
         ));
         lines.push(format!("  Platform: {}", env.platform));
+        lines.push(format!("  Today's date: {}", now.format("%a %b %d %Y")));
         lines.push(format!(
-            "  Today's date: {}",
-            Local::now().format("%a %b %d %Y")
+            "  Current local time: {}",
+            now.format("%Y-%m-%d %H:%M:%S %:z")
         ));
+        lines.push(format!("  Local timezone: {}", now.format("%Z")));
         lines.push("</env>".to_string());
 
         lines.join("\n")
@@ -155,35 +140,37 @@ mod tests {
 
     #[test]
     fn test_for_model_fallback() {
-        // Models without a specific match get the default (PROMPT_QWEN)
         let prompt = SystemPrompt::for_model("some-unknown-model");
-        assert!(prompt.contains("ROCode") || prompt.contains("rocode"));
+        assert!(prompt.contains("You are ROCode."));
+        assert!(prompt.contains("Compatibility overlay"));
     }
 
     #[test]
     fn test_for_model_gpt4() {
         let prompt = SystemPrompt::for_model("gpt-4o");
-        // beast.txt starts with "You are rocode, an agent"
-        assert!(prompt.contains("rocode"));
+        assert!(prompt.contains("You are ROCode."));
+        assert!(prompt.contains("Compatibility overlay"));
     }
 
     #[test]
     fn test_for_model_gpt5() {
         let prompt = SystemPrompt::for_model("gpt-5-turbo");
-        // codex_header.txt
-        assert!(prompt.contains("ROCode"));
+        assert!(prompt.contains("You are ROCode."));
+        assert!(prompt.contains("Compatibility overlay"));
     }
 
     #[test]
     fn test_for_model_gemini() {
         let prompt = SystemPrompt::for_model("gemini-2.0-flash");
-        assert!(prompt.contains("rocode"));
+        assert!(prompt.contains("You are ROCode."));
+        assert!(prompt.contains("Compatibility overlay"));
     }
 
     #[test]
     fn test_for_model_trinity() {
         let prompt = SystemPrompt::for_model("Trinity-Large");
-        assert!(prompt.contains("rocode"));
+        assert!(prompt.contains("You are ROCode."));
+        assert!(prompt.contains("Compatibility overlay"));
     }
 
     #[test]
@@ -201,6 +188,8 @@ mod tests {
         assert!(env.contains("/tmp/test"));
         assert!(env.contains("Is directory a git repo: yes"));
         assert!(env.contains("Platform: linux"));
+        assert!(env.contains("Current local time: "));
+        assert!(env.contains("Local timezone: "));
         assert!(env.contains("<env>"));
         assert!(env.contains("</env>"));
     }
@@ -222,7 +211,6 @@ mod tests {
     fn test_instructions() {
         let inst = SystemPrompt::instructions();
         assert!(!inst.is_empty());
-        // codex_header.txt starts with "You are ROCode"
         assert!(inst.starts_with("You are ROCode"));
     }
 

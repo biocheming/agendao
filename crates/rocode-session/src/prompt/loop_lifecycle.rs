@@ -584,9 +584,9 @@ mod cache_fingerprint_tests {
 
     #[test]
     fn stable_system_surface_projection_ignores_dynamic_tail_and_date() {
-        let first = "You are ROCode.\n  Today's date: Thu Apr 30 2026\n\n## Exact Recent Tail\n- user `m1`:\nold";
+        let first = "You are ROCode.\n  Today's date: Thu Apr 30 2026\n  Current local time: 2026-04-30 08:00:00 +08:00\n  Local timezone: CST\n\n## Exact Recent Tail\n- user `m1`:\nold";
         let second =
-            "You are ROCode.\n  Today's date: Fri May 01 2026\n\n## Exact Recent Tail\n- user `m2`:\nnew";
+            "You are ROCode.\n  Today's date: Fri May 01 2026\n  Current local time: 2026-05-01 09:15:42 +08:00\n  Local timezone: CST\n\n## Exact Recent Tail\n- user `m2`:\nnew";
 
         assert_ne!(
             rocode_provider::cache::text_fingerprint(first),
