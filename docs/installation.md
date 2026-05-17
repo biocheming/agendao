@@ -95,7 +95,7 @@ dist/release/rocode-<version>-<target>.tar.gz
 本仓库使用日期版本。发布或本地版本推进时，优先使用脚本维护版本信息：
 
 ```bash
-./scripts/release-date.sh 2026-05-15
+./scripts/release-date.sh 2026-05-17
 ```
 
 该脚本会更新 workspace 版本并调用：
@@ -142,7 +142,7 @@ which rocode
 成功安装后输出类似：
 
 ```
-ROCode 2026.5.15
+ROCode 2026.5.17
 ```
 
 查看完整构建信息：
@@ -154,14 +154,14 @@ rocode info
 输出包括编译器版本、目标平台、构建配置和数据路径：
 
 ```
-ROCode 2026.5.15
+ROCode 2026.5.17
 
 Build Info:
   Compiler:   rustc 1.xx.x
   Profile:    release
   Target:     x86_64-unknown-linux-gnu
   Host:       x86_64-unknown-linux-gnu
-  Built at:   2026-05-15T...
+  Built at:   2026-05-17T...
 
 Paths:
   Data:       ~/.local/share/rocode
@@ -336,7 +336,7 @@ rocode uninstall --dry-run                   # 仅预览将删除的文件
 
 ```bash
 rocode upgrade
-rocode upgrade v2026.5.15           # 升级到指定版本
+rocode upgrade v2026.5.17           # 升级到指定版本
 rocode upgrade --method brew       # 显式指定包管理器方式
 ```
 
