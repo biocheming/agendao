@@ -166,6 +166,16 @@ pub(super) fn normalize_stable_system_line<'a>(line: &'a str) -> Cow<'a, str> {
         let indent = &line[..indent_len];
         return Cow::Owned(format!("{indent}Today's date: <dynamic>"));
     }
+    if trimmed.starts_with("Current local time:") {
+        let indent_len = line.len().saturating_sub(trimmed.len());
+        let indent = &line[..indent_len];
+        return Cow::Owned(format!("{indent}Current local time: <dynamic>"));
+    }
+    if trimmed.starts_with("Local timezone:") {
+        let indent_len = line.len().saturating_sub(trimmed.len());
+        let indent = &line[..indent_len];
+        return Cow::Owned(format!("{indent}Local timezone: <dynamic>"));
+    }
     Cow::Borrowed(line)
 }
 
@@ -276,6 +286,14 @@ mod tests {
         assert_eq!(
             normalize_stable_system_line("  Today's date: Fri May 01 2026"),
             "  Today's date: <dynamic>"
+        );
+        assert_eq!(
+            normalize_stable_system_line("  Current local time: 2026-05-17 11:22:33 +08:00"),
+            "  Current local time: <dynamic>"
+        );
+        assert_eq!(
+            normalize_stable_system_line("  Local timezone: CST"),
+            "  Local timezone: <dynamic>"
         );
         assert_eq!(normalize_stable_system_line("static line"), "static line");
     }
