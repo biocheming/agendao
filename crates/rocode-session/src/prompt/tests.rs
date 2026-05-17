@@ -2877,6 +2877,95 @@ fn proposal_notice_is_hidden_from_model_prompt_surface() {
 }
 
 #[test]
+fn steering_preview_is_hidden_from_model_consumed_is_visible() {
+    let mut session = Session::new("proj", ".");
+    let sid = session.id.clone();
+
+    // Normal user message (model-visible baseline).
+    session.add_user_message("run the deploy");
+
+    // Simulate enqueue-time preview: both notice and text with runtime_hint=steering_preview.
+    let mut notice = SessionMessage::user(sid.as_str(), "Steering: will be applied at next tool boundary");
+    notice.metadata.insert(
+        "runtime_hint".to_string(),
+        serde_json::json!("steering_preview"),
+    );
+    notice.metadata.insert(
+        "steering_status".to_string(),
+        serde_json::json!("pending"),
+    );
+    session.push_message(notice);
+
+    let mut preview = SessionMessage::user(sid.as_str(), "switch to mode: cautious");
+    preview.metadata.insert(
+        "runtime_hint".to_string(),
+        serde_json::json!("steering_preview"),
+    );
+    preview.metadata.insert(
+        "steering_status".to_string(),
+        serde_json::json!("pending"),
+    );
+    session.push_message(preview);
+
+    // Normal assistant reply.
+    let mut assistant = SessionMessage::assistant(sid.as_str());
+    assistant.add_text("deploy started");
+    session.push_message(assistant);
+
+    // Simulate tool-boundary consumed record: same text, model-visible (no runtime_hint).
+    let mut consumed = SessionMessage::user(sid.as_str(), "switch to mode: cautious");
+    consumed.metadata.insert(
+        "steering_status".to_string(),
+        serde_json::json!("consumed"),
+    );
+    consumed.metadata.insert(
+        "steering_injected_at".to_string(),
+        serde_json::json!(chrono::Utc::now().timestamp_millis()),
+    );
+    session.push_message(consumed);
+
+    let provider_messages = SessionPrompt::build_chat_messages(&session.messages, None)
+        .expect("chat messages should build");
+    let rendered = provider_messages
+        .iter()
+        .map(|message| match &message.content {
+            rocode_provider::Content::Text(text) => text.clone(),
+            rocode_provider::Content::Parts(parts) => parts
+                .iter()
+                .filter_map(|part| part.text.clone())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Preview meta-notice must NOT appear in model context.
+    assert!(
+        !rendered.contains("will be applied at next tool boundary"),
+        "preview notice leaked into model context:\n{rendered}"
+    );
+    // Consumed steering record IS model-visible — must appear exactly once.
+    let steering_occurrences = rendered.matches("switch to mode: cautious").count();
+    assert_eq!(
+        steering_occurrences, 1,
+        "consumed steering should appear exactly once, got {steering_occurrences}:\n{rendered}"
+    );
+    // Verify the consumed record has the right metadata.
+    let model_context_char_len =
+        SessionPrompt::model_context_char_len(session.messages.last().unwrap());
+    assert!(
+        model_context_char_len > 0,
+        "consumed steering should contribute to model context length"
+    );
+
+    // Preview messages should contribute zero context.
+    let preview_msg = &session.messages[1]; // index 1 = notice
+    assert_eq!(SessionPrompt::model_context_char_len(preview_msg), 0);
+    let preview_text_msg = &session.messages[2]; // index 2 = preview text
+    assert_eq!(SessionPrompt::model_context_char_len(preview_text_msg), 0);
+}
+
+#[test]
 fn message_with_parts_filters_hidden_runtime_hints() {
     let mut session = Session::new("proj", ".");
     session.add_user_message("record the runtime hint but keep prompt clean");
