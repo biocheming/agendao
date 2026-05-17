@@ -1,6 +1,9 @@
 use std::collections::HashSet;
 
+use chrono::{SecondsFormat, Utc};
+
 use crate::components::{PermissionLifetime, PermissionRequest, PermissionType};
+use crate::event::{CustomEvent, PermissionReplyOutcome};
 
 use super::App;
 
@@ -108,7 +111,12 @@ impl App {
             permission_class: permission.permission_class.clone(),
             scope_key: permission.scope_key.clone(),
             scope_label: permission.scope_label.clone(),
+            matcher_label: permission.matcher_label.clone(),
+            grant_target_summary: permission.grant_target_summary.clone(),
+            risk_tags: permission.risk_tags.clone(),
             supported_lifetimes,
+            is_submitting: false,
+            submit_error: None,
         }
     }
 
@@ -179,25 +187,28 @@ impl App {
             return;
         };
 
-        match client.reply_permission(permission_id, reply, message) {
-            Ok(()) => {
-                self.permission_runtime.pending_ids.remove(permission_id);
-                self.permission_runtime
-                    .pending_requests
-                    .remove(permission_id);
-                self.permission_prompt.remove_request(permission_id);
-                self.toast.show(
-                    crate::components::ToastVariant::Success,
-                    "Permission updated",
-                    2000,
-                );
-            }
-            Err(error) => {
-                self.alert_dialog
-                    .set_message(&format!("Failed to submit permission response:\n{}", error));
-                self.open_alert_dialog();
-            }
+        if !self.permission_prompt.mark_submitting(permission_id) {
+            return;
         }
+        self.permission_runtime.last_submit_error = None;
+        self.permission_runtime.last_submit_started_at =
+            Some(Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true));
+
+        let permission_id = permission_id.to_string();
+        let reply = reply.to_string();
+        let context = self.context.clone();
+        std::thread::spawn(move || {
+            let outcome = match client.reply_permission_priority(&permission_id, &reply, message) {
+                Ok(()) => PermissionReplyOutcome::Succeeded,
+                Err(error) => PermissionReplyOutcome::Failed {
+                    message: error.to_string(),
+                },
+            };
+            let _ = context.emit_custom_event(CustomEvent::PermissionReplyFinished {
+                permission_id,
+                outcome,
+            });
+        });
     }
 
     pub(super) fn enqueue_permission_request(
@@ -215,6 +226,7 @@ impl App {
         self.permission_runtime
             .pending_requests
             .insert(permission.id.clone(), permission);
+        self.permission_runtime.last_submit_error = None;
     }
 
     pub(super) fn clear_permission_request(&mut self, permission_id: &str) {
@@ -222,6 +234,7 @@ impl App {
         self.permission_runtime
             .pending_requests
             .remove(permission_id);
+        self.permission_prompt.clear_submit_state(permission_id);
         self.permission_prompt.remove_request(permission_id);
     }
 }

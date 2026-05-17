@@ -13,8 +13,9 @@ use rocode_core::agent_task_registry::{global_task_registry, AgentTaskStatus};
 use crate::skill_support::{load_skills_prompt_context, LoadedSkillsPromptContext};
 use crate::{
     append_subsession_handoff_recent_tail_from_extra, append_tool_repair_event_map,
-    merge_tool_repair_telemetry, tool_repair_event, Metadata, PermissionRequest, TaskAgentInfo,
-    TaskAgentModel, Tool, ToolContext, ToolError, ToolResult,
+    merge_tool_repair_telemetry, structured_dangerous_exec_lifetimes, tool_repair_event,
+    Metadata, PermissionRequest, TaskAgentInfo, TaskAgentModel, Tool, ToolContext, ToolError,
+    ToolResult,
 };
 
 pub struct TaskTool;
@@ -349,6 +350,8 @@ Legacy aliases accepted for recovery only (prefer the canonical names above):
                 PermissionRequest::new("task")
                     .with_pattern(&dispatch_label)
                     .with_scope_key(input.dispatch.scope_key())
+                    .with_supported_lifetimes(structured_dangerous_exec_lifetimes())
+                    .with_risk_tag("dangerous_exec")
                     .with_metadata("description", serde_json::json!(&input.description))
                     .with_metadata("subagent_type", serde_json::json!(&dispatch_label))
                     .always_allow(),
@@ -887,6 +890,79 @@ mod tests {
             goal_text(&prompt_calls[0].1),
             Some("Please inspect runtime behavior")
         );
+    }
+
+    #[tokio::test]
+    async fn task_permission_request_uses_scope_only_matcher_and_session_lifetimes() {
+        let requests = Arc::new(Mutex::new(Vec::<crate::PermissionRequest>::new()));
+
+        let ctx = ToolContext::new("session-1".into(), "message-1".into(), ".".into())
+            .with_ask({
+                let requests = requests.clone();
+                move |req| {
+                    let requests = requests.clone();
+                    async move {
+                        requests.lock().await.push(req);
+                        Ok(())
+                    }
+                }
+            })
+            .with_get_agent_info(|name| async move {
+                if name == "build" {
+                    Ok(Some(TaskAgentInfo {
+                        name: "build".to_string(),
+                        model: None,
+                        can_use_task: true,
+                        steps: None,
+                        execution: None,
+                        max_tokens: None,
+                        temperature: None,
+                        top_p: None,
+                        variant: None,
+                    }))
+                } else {
+                    Ok(None)
+                }
+            })
+            .with_get_last_model(|_session_id| async move { Ok(Some("provider-x:model-y".into())) })
+            .with_create_subsession(|_agent, _title, _model, _disabled_tools| async move {
+                Ok("task_build_123".to_string())
+            })
+            .with_prompt_subsession(|_session_id, _prompt| async move {
+                Ok(summary("subagent output"))
+            });
+
+        TaskTool::new()
+            .execute(
+                serde_json::json!({
+                    "description": "Investigate issue",
+                    "prompt": "Please inspect runtime behavior",
+                    "subagent_type": "build"
+                }),
+                ctx,
+            )
+            .await
+            .expect("task should succeed");
+
+        let requests = requests.lock().await.clone();
+        let task_request = requests
+            .iter()
+            .find(|req| req.permission == "task")
+            .expect("task permission request should exist");
+        assert_eq!(task_request.scope_key.as_deref(), Some("task:agent:build"));
+        assert_eq!(
+            task_request.matcher_kind,
+            Some(rocode_permission::PermissionMatcherKind::ScopeOnly)
+        );
+        assert_eq!(task_request.matcher_key.as_deref(), Some("task:agent:build"));
+        assert_eq!(
+            task_request.supported_lifetimes,
+            structured_dangerous_exec_lifetimes()
+        );
+        assert!(task_request
+            .risk_tags
+            .iter()
+            .any(|tag| tag == "dangerous_exec"));
     }
 
     #[tokio::test]

@@ -148,6 +148,13 @@ pub(crate) enum Commands {
         #[arg(value_name = "NUMBER")]
         number: u32,
     },
+    #[command(about = "Submit a mid-run steering message to a session")]
+    Steer {
+        #[arg(short = 's', long, value_name = "SESSION_ID")]
+        session: String,
+        #[arg(value_name = "MESSAGE", trailing_var_arg = true)]
+        message: Vec<String>,
+    },
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -1063,6 +1070,50 @@ mod tests {
                 assert_eq!(output.format, ConfigOutputFormat::Json);
             }
             _ => panic!("expected config validation command"),
+        }
+    }
+
+    #[test]
+    fn steer_command_parses_session_and_message() {
+        let cli = Cli::parse_from([
+            "rocode",
+            "steer",
+            "--session",
+            "sess_abc123",
+            "stop after current tool",
+        ]);
+        match cli.command {
+            Commands::Steer { session, message } => {
+                assert_eq!(session, "sess_abc123");
+                assert_eq!(message.join(" "), "stop after current tool");
+            }
+            _ => panic!("expected steer command"),
+        }
+    }
+
+    #[test]
+    fn steer_command_parses_multi_word_message() {
+        let cli = Cli::parse_from([
+            "rocode",
+            "steer",
+            "-s",
+            "sess_xyz",
+            "please",
+            "switch",
+            "to",
+            "the",
+            "structured_family",
+            "matcher",
+        ]);
+        match cli.command {
+            Commands::Steer { session, message } => {
+                assert_eq!(session, "sess_xyz");
+                assert_eq!(
+                    message.join(" "),
+                    "please switch to the structured_family matcher"
+                );
+            }
+            _ => panic!("expected steer command"),
         }
     }
 }

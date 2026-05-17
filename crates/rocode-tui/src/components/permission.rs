@@ -128,7 +128,12 @@ pub struct PermissionRequest {
     pub permission_class: Option<String>,
     pub scope_key: Option<String>,
     pub scope_label: Option<String>,
+    pub matcher_label: Option<String>,
+    pub grant_target_summary: Option<String>,
+    pub risk_tags: Vec<String>,
     pub supported_lifetimes: Vec<PermissionLifetime>,
+    pub is_submitting: bool,
+    pub submit_error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -191,32 +196,84 @@ impl PermissionPrompt {
         self.requests.get(self.current_index)
     }
 
-    fn take_current_request(&mut self) -> Option<PermissionRequest> {
-        if self.current_index < self.requests.len() {
-            let request = self.requests.remove(self.current_index);
-            if self.requests.is_empty() {
-                self.is_open = false;
-            }
-            Some(request)
-        } else {
-            None
-        }
+    fn clone_current_request(&self) -> Option<PermissionRequest> {
+        self.current_request().cloned()
     }
 
     pub fn approve_once(&mut self) -> Option<PermissionRequest> {
-        self.take_current_request()
+        self.clone_current_request()
     }
 
     pub fn approve_turn(&mut self) -> Option<PermissionRequest> {
-        self.take_current_request()
+        self.clone_current_request()
     }
 
     pub fn approve_session(&mut self) -> Option<PermissionRequest> {
-        self.take_current_request()
+        self.clone_current_request()
     }
 
     pub fn deny(&mut self) -> Option<PermissionRequest> {
-        self.take_current_request()
+        self.clone_current_request()
+    }
+
+    pub fn mark_submitting(&mut self, request_id: &str) -> bool {
+        let Some(request) = self
+            .requests
+            .iter_mut()
+            .find(|request| request.id == request_id)
+        else {
+            return false;
+        };
+        request.is_submitting = true;
+        request.submit_error = None;
+        true
+    }
+
+    pub fn mark_submit_failed(&mut self, request_id: &str, message: String) -> bool {
+        let Some(request) = self
+            .requests
+            .iter_mut()
+            .find(|request| request.id == request_id)
+        else {
+            return false;
+        };
+        request.is_submitting = false;
+        request.submit_error = Some(message);
+        true
+    }
+
+    pub fn clear_submit_state(&mut self, request_id: &str) -> bool {
+        let Some(request) = self
+            .requests
+            .iter_mut()
+            .find(|request| request.id == request_id)
+        else {
+            return false;
+        };
+        let changed = request.is_submitting || request.submit_error.is_some();
+        request.is_submitting = false;
+        request.submit_error = None;
+        changed
+    }
+
+    pub fn is_current_request_submitting(&self) -> bool {
+        self.current_request()
+            .map(|request| request.is_submitting)
+            .unwrap_or(false)
+    }
+
+    pub fn submitting_count(&self) -> usize {
+        self.requests
+            .iter()
+            .filter(|request| request.is_submitting)
+            .count()
+    }
+
+    pub fn last_submit_error(&self) -> Option<&str> {
+        self.requests
+            .iter()
+            .rev()
+            .find_map(|request| request.submit_error.as_deref())
     }
 
     pub fn close(&mut self) {
@@ -235,6 +292,9 @@ impl PermissionPrompt {
 
     pub fn handle_click(&mut self, col: u16, row: u16) {
         if !self.is_open || self.requests.is_empty() {
+            return;
+        }
+        if self.is_current_request_submitting() {
             return;
         }
         // Button row is the last content line inside the border.
@@ -299,29 +359,37 @@ impl PermissionPrompt {
         };
 
         let width = area.width.saturating_sub(2).min(80);
-        let mut actions = vec![Span::styled(
-            "[1] Once  ",
-            Style::default().fg(theme.success),
-        )];
-        if request
-            .supported_lifetimes
-            .contains(&PermissionLifetime::Turn)
-        {
-            actions.push(Span::styled(
-                "[2] Turn  ",
-                Style::default().fg(theme.primary),
-            ));
-        }
-        if request
-            .supported_lifetimes
-            .contains(&PermissionLifetime::Session)
-        {
-            actions.push(Span::styled(
-                "[3] Session  ",
-                Style::default().fg(theme.primary),
-            ));
-        }
-        actions.push(Span::styled("[0] Deny", Style::default().fg(theme.error)));
+        let actions = if request.is_submitting {
+            vec![Span::styled(
+                "Submitting permission reply...",
+                Style::default().fg(theme.warning),
+            )]
+        } else {
+            let mut actions = vec![Span::styled(
+                "[1] Once  ",
+                Style::default().fg(theme.success),
+            )];
+            if request
+                .supported_lifetimes
+                .contains(&PermissionLifetime::Turn)
+            {
+                actions.push(Span::styled(
+                    "[2] Turn  ",
+                    Style::default().fg(theme.primary),
+                ));
+            }
+            if request
+                .supported_lifetimes
+                .contains(&PermissionLifetime::Session)
+            {
+                actions.push(Span::styled(
+                    "[3] Session  ",
+                    Style::default().fg(theme.primary),
+                ));
+            }
+            actions.push(Span::styled("[0] Deny", Style::default().fg(theme.error)));
+            actions
+        };
 
         let title = format!(
             "{} {} - Permission Request",
@@ -355,16 +423,35 @@ impl PermissionPrompt {
                 Span::styled(scope_label, Style::default().fg(theme.text)),
             ]));
         }
+        if let Some(target) = request.grant_target_summary.as_ref() {
+            content.push(Line::from(vec![
+                Span::styled("Target: ", Style::default().fg(theme.text_muted)),
+                Span::styled(target, Style::default().fg(theme.text)),
+            ]));
+        }
+        if let Some(matcher) = request.matcher_label.as_ref() {
+            content.push(Line::from(vec![
+                Span::styled("Match: ", Style::default().fg(theme.text_muted)),
+                Span::styled(matcher, Style::default().fg(theme.text)),
+            ]));
+        }
         if let Some(hint) = lifetime_hint(
             request
-                .scope_label
+                .grant_target_summary
                 .as_deref()
+                .or(request.scope_label.as_deref())
                 .or(request.scope_key.as_deref()),
             &request.supported_lifetimes,
         ) {
             content.push(Line::from(vec![
                 Span::styled("Grant: ", Style::default().fg(theme.text_muted)),
                 Span::styled(hint, Style::default().fg(theme.text)),
+            ]));
+        }
+        if !request.risk_tags.is_empty() {
+            content.push(Line::from(vec![
+                Span::styled("Risk: ", Style::default().fg(theme.text_muted)),
+                Span::styled(request.risk_tags.join(", "), Style::default().fg(theme.text)),
             ]));
         }
         content.extend([
@@ -375,6 +462,13 @@ impl PermissionPrompt {
             Line::from(""),
             Line::from(actions),
         ]);
+        if let Some(error) = request.submit_error.as_ref() {
+            content.push(Line::from(""));
+            content.push(Line::from(vec![
+                Span::styled("Last error: ", Style::default().fg(theme.error)),
+                Span::styled(error, Style::default().fg(theme.text)),
+            ]));
+        }
 
         let height = (content.len() as u16)
             .saturating_add(2)
@@ -409,5 +503,74 @@ impl PermissionPrompt {
 impl Default for PermissionPrompt {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_request() -> PermissionRequest {
+        PermissionRequest {
+            id: "perm-1".to_string(),
+            permission_type: PermissionType::Bash,
+            resource: "cargo test".to_string(),
+            tool_name: "bash".to_string(),
+            permission_class: Some("dangerous_exec".to_string()),
+            scope_key: None,
+            scope_label: None,
+            matcher_label: None,
+            grant_target_summary: None,
+            risk_tags: Vec::new(),
+            supported_lifetimes: vec![PermissionLifetime::Once],
+            is_submitting: false,
+            submit_error: None,
+        }
+    }
+
+    #[test]
+    fn approve_keeps_request_until_authority_clears_it() {
+        let mut prompt = PermissionPrompt::new();
+        prompt.add_request(sample_request());
+
+        let approved = prompt.approve_once().expect("request should exist");
+        assert_eq!(approved.id, "perm-1");
+        assert_eq!(prompt.pending_count(), 1);
+        assert!(prompt.current_request().is_some());
+
+        let removed = prompt
+            .remove_request("perm-1")
+            .expect("request should remove");
+        assert_eq!(removed.id, "perm-1");
+        assert_eq!(prompt.pending_count(), 0);
+    }
+
+    #[test]
+    fn submitting_and_failed_states_are_retained_locally() {
+        let mut prompt = PermissionPrompt::new();
+        prompt.add_request(sample_request());
+
+        assert!(prompt.mark_submitting("perm-1"));
+        assert!(prompt.is_current_request_submitting());
+        assert_eq!(
+            prompt
+                .current_request()
+                .and_then(|req| req.submit_error.as_deref()),
+            None
+        );
+
+        assert!(prompt.mark_submit_failed("perm-1", "network down".to_string()));
+        let request = prompt
+            .current_request()
+            .expect("request should still exist");
+        assert!(!request.is_submitting);
+        assert_eq!(request.submit_error.as_deref(), Some("network down"));
+
+        assert!(prompt.clear_submit_state("perm-1"));
+        let request = prompt
+            .current_request()
+            .expect("request should still exist");
+        assert!(!request.is_submitting);
+        assert!(request.submit_error.is_none());
     }
 }

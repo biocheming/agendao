@@ -239,7 +239,6 @@ async fn build_cli_execution_runtime(
         stream_accumulators: Arc::new(Mutex::new(HashMap::new())),
         render_states: Arc::new(Mutex::new(HashMap::new())),
         focused_session_id: Arc::new(Mutex::new(None)),
-        permission_memory: Arc::new(AsyncMutex::new(PermissionMemory::new())),
         show_thinking: Arc::new(AtomicBool::new(selection.show_thinking)),
     })
 }

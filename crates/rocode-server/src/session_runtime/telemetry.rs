@@ -715,7 +715,7 @@ impl RuntimeTelemetryAuthority {
         }
 
         Some(SessionTelemetrySnapshot {
-            version: SessionTelemetrySnapshotVersion::V5,
+            version: SessionTelemetrySnapshotVersion::V6,
             usage,
             stage_summaries: stage_summaries.into_iter().map(Into::into).collect(),
             tool_repair_summary,
@@ -724,6 +724,13 @@ impl RuntimeTelemetryAuthority {
             repair_query_snapshot: None,
             tool_trajectory_quality: None,
             tool_result_governance: None,
+            pending_permission_count: 0,
+            granted_by_turn_count: 0,
+            granted_by_session_count: 0,
+            granted_by_matcher_kind: std::collections::BTreeMap::new(),
+            last_permission_matcher_kind: None,
+            last_permission_grant_target: None,
+            last_permission_miss_count: 0,
             pending_steering_count: 0,
             consumed_steering_count: 0,
             last_steering_injected_at: None,
