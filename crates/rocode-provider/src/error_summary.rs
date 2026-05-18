@@ -1,7 +1,10 @@
 use crate::diagnostics::{provider_diagnostic_from_error_text, ProviderDiagnosticSummary};
 use crate::error_classification::classify_provider_error;
 use crate::error_code::StandardErrorCode;
-use crate::provider::{format_error_message, is_openai_error_retryable, ProviderError};
+use crate::provider::{
+    format_error_message, is_openai_error_retryable, is_retryable_stream_error_message,
+    ProviderError,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -138,11 +141,11 @@ fn provider_error_retryable(provider_id: &str, error: &ProviderError) -> bool {
             }
         }
         ProviderError::RateLimit | ProviderError::Timeout | ProviderError::NetworkError(_) => true,
+        ProviderError::StreamError(message) => is_retryable_stream_error_message(message),
         ProviderError::ApiError(_)
         | ProviderError::AuthError(_)
         | ProviderError::ModelNotFound(_)
         | ProviderError::InvalidRequest(_)
-        | ProviderError::StreamError(_)
         | ProviderError::ProviderNotFound(_)
         | ProviderError::ConfigError(_)
         | ProviderError::ContextOverflow(_) => false,
@@ -211,6 +214,18 @@ mod tests {
         assert_eq!(summary.kind, ProviderErrorKind::ApiError);
         assert_eq!(summary.standard_code, StandardErrorCode::RequestTooLarge);
         assert!(!summary.retryable);
+    }
+
+    #[test]
+    fn summarize_provider_error_marks_retryable_stream_fault() {
+        let summary = summarize_provider_error(
+            "deepseek",
+            Some("deepseek-v4-flash"),
+            &ProviderError::StreamError("error decoding response body".to_string()),
+        );
+
+        assert_eq!(summary.kind, ProviderErrorKind::StreamError);
+        assert!(summary.retryable);
     }
 
     #[test]
