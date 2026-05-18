@@ -30,6 +30,9 @@ const activity = {
       single_result_governed_count: 3,
       batch_governed_count: 2,
       transcript_fallback_count: 1,
+      artifact_fallback_count: 2,
+      total_original_chars: 150_000,
+      total_displayed_chars: 24_000,
     },
   },
   sessionInsights: {
@@ -53,6 +56,9 @@ const activity = {
         single_result_governed_count: 0,
         batch_governed_count: 0,
         transcript_fallback_count: 0,
+        artifact_fallback_count: 0,
+        total_original_chars: 0,
+        total_displayed_chars: 0,
       },
       last_run_status: "completed",
       updated_at: 1_715_000_000_000,
@@ -83,6 +89,9 @@ assert.match(html, /Tool Result Governance/);
 assert.match(html, /single 3/);
 assert.match(html, /batch 2/);
 assert.match(html, /transcript fallback 1/);
+assert.match(html, /artifact 2/);
+assert.match(html, /150,000/);
+assert.match(html, /24,000/);
 assert.doesNotMatch(html, /single 0/);
 assert.doesNotMatch(html, /batch 0/);
 assert.doesNotMatch(html, /transcript fallback 0/);

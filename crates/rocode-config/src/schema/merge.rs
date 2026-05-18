@@ -1240,6 +1240,8 @@ impl Config {
             repair_policy,
             experimental,
             env,
+            runtime_budget,
+            ..
         } = other;
 
         self.merge_replace_fields(
@@ -1292,6 +1294,13 @@ impl Config {
             plugin,
         );
         self.merge_sequence_fields(instructions, disabled_providers, enabled_providers);
+
+        // runtime_budget: replace on present — the budget authority has no
+        // per-key partial merge; a user-provided budget stanza replaces the
+        // previous one wholesale.
+        if runtime_budget.is_some() {
+            self.runtime_budget = runtime_budget;
+        }
     }
 }
 

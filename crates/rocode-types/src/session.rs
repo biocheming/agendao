@@ -1543,6 +1543,15 @@ pub struct ToolResultGovernanceSummary {
     pub single_result_governed_count: u64,
     pub batch_governed_count: u64,
     pub transcript_fallback_count: u64,
+    /// Number of single-results offloaded to artifact storage.
+    #[serde(default)]
+    pub artifact_fallback_count: u64,
+    /// Sum of original char counts before governance.
+    #[serde(default)]
+    pub total_original_chars: u64,
+    /// Sum of char counts after governance (preview / truncated).
+    #[serde(default)]
+    pub total_displayed_chars: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2029,6 +2038,12 @@ pub struct SessionTelemetrySnapshot {
     pub last_steering_injected_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_steering_source_session_id: Option<String>,
+    /// Latency (ms) from steering enqueue to consumption at tool boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_steering_latency_ms: Option<u64>,
+    /// Duration (ms) of the most recent permission pending→resolved cycle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_permission_pending_ms: Option<u64>,
     pub last_run_status: String,
     pub updated_at: i64,
 }

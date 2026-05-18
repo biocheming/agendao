@@ -433,6 +433,11 @@ async fn run_server_prompt_with_parts(
             Some(CliServerEvent::ConfigUpdated) => {
                 cli_handle_config_updated_from_sse(runtime, api_client).await;
             }
+            // P1-3: session.updated is the RECONCILE FALLBACK, not the primary
+            // refresh path. Incremental updates (output blocks, permission events,
+            // tool lifecycle) arrive via dedicated SSE event types and update the
+            // UI locally. This handler only fires for non-droppable reconcile reasons
+            // (turn.final, metadata.change, permission, steering, status.change).
             Some(CliServerEvent::SessionUpdated { session_id, source }) => {
                 handle_session_updated_from_sse(
                     runtime,
@@ -585,8 +590,14 @@ fn handle_sse_event(runtime: &CliExecutionRuntime, event: CliServerEvent, style:
                 "permission.requested reached sync handler — skipping"
             );
         }
-        CliServerEvent::PermissionResolved { permission_id } => {
-            tracing::debug!(permission_id, "permission resolved");
+        CliServerEvent::PermissionResolved {
+            session_id,
+            permission_id,
+        } => {
+            if !is_related_session(&session_id) {
+                return;
+            }
+            tracing::debug!(session_id, permission_id, "permission resolved");
             if let Ok(mut projection) = runtime.frontend_projection.lock() {
                 projection.pending_permission_count = 0;
                 projection.submitting_permission_count = 0;

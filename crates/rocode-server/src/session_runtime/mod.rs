@@ -9,7 +9,9 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use self::events::{broadcast_session_updated, emit_output_block_via_hook, DiffEntry};
+use self::events::{
+    broadcast_session_reconcile, emit_output_block_via_hook, DiffEntry, ReconcileReason,
+};
 use crate::runtime_control::{ExecutionPatch, ExecutionStatus, FieldUpdate, SessionRunStatus};
 use crate::ServerState;
 use rocode_command::output_blocks::{
@@ -228,10 +230,10 @@ impl SessionSchedulerLifecycleHook {
         }
 
         if message_snapshot.is_some() {
-            broadcast_session_updated(
+            broadcast_session_reconcile(
                 self.state.as_ref(),
                 self.session_id.clone(),
-                _source.to_string(),
+                ReconcileReason::Topology,
             );
         }
 
@@ -590,7 +592,7 @@ async fn update_active_scheduler_stage_message<T, F>(
     state: &Arc<ServerState>,
     session_id: &str,
     mut update: F,
-    source: &'static str,
+    _source: &'static str,
 ) -> Option<T>
 where
     F: FnMut(&mut SessionMessage) -> Option<T>,
@@ -608,7 +610,7 @@ where
         .runtime_telemetry
         .refresh_stage_summary_from_message(session_id, &message_snapshot)
         .await;
-    broadcast_session_updated(state, session_id.to_string(), source.to_string());
+    broadcast_session_reconcile(state, session_id.to_string(), ReconcileReason::Topology);
     Some(result)
 }
 

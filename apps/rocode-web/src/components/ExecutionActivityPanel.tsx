@@ -549,6 +549,60 @@ export function ExecutionActivityPanel({
               ) : null}
             </div>
           ) : null}
+          {activity.telemetry?.runtime_protocol ? (
+            <div className={sideSectionClass}>
+              <p className="roc-section-label">Runtime Protocol</p>
+              <div className="roc-rail-meta-list">
+                <span className="roc-badge px-3 py-1.5 text-xs">
+                  ingress {activity.telemetry.runtime_protocol.prompt_ingress}
+                </span>
+                <span className="roc-badge px-3 py-1.5 text-xs">
+                  steering {activity.telemetry.runtime_protocol.steering.pending_count}
+                </span>
+                <span className="roc-badge px-3 py-1.5 text-xs">
+                  interrupt {activity.telemetry.runtime_protocol.interrupt.phase}
+                </span>
+              </div>
+              {activity.telemetry.runtime_protocol.permission.pending ? (
+                <p className="text-xs text-muted-foreground">
+                  Permission {activity.telemetry.runtime_protocol.permission.pending_permission_id}
+                  {activity.telemetry.runtime_protocol.permission.pending_tool
+                    ? ` · ${activity.telemetry.runtime_protocol.permission.pending_tool}`
+                    : ""}
+                </p>
+              ) : null}
+              {activity.telemetry.runtime_protocol.steering.last_latency_ms != null ? (
+                <p className="text-xs text-muted-foreground">
+                  Steering latency {activity.telemetry.runtime_protocol.steering.last_latency_ms}ms
+                </p>
+              ) : null}
+              {activity.telemetry.runtime_protocol.permission.last_pending_duration_ms != null ? (
+                <p className="text-xs text-muted-foreground">
+                  Permission pending {activity.telemetry.runtime_protocol.permission.last_pending_duration_ms}ms
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+          {activity.telemetry?.event_bus_telemetry ? (
+            <div className={sideSectionClass}>
+              <p className="roc-section-label">Event Bus</p>
+              <div className="roc-rail-meta-list">
+                <span className="roc-badge px-3 py-1.5 text-xs">
+                  sends {activity.telemetry.event_bus_telemetry.send_count}
+                </span>
+                <span className="roc-badge px-3 py-1.5 text-xs">
+                  no-receiver {activity.telemetry.event_bus_telemetry.send_error_count}
+                </span>
+                <span className="roc-badge px-3 py-1.5 text-xs">
+                  max receivers {activity.telemetry.event_bus_telemetry.max_receivers}
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Last send {activity.telemetry.event_bus_telemetry.last_send_at_ms || 0} · last error{" "}
+                {activity.telemetry.event_bus_telemetry.last_send_error_at_ms || 0}
+              </p>
+            </div>
+          ) : null}
           {contextClosure ? (
             <div className={sideSectionClass}>
               <div className="roc-rail-section-header">

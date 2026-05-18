@@ -34,6 +34,7 @@ struct ToolExecutionOptions {
     model_id: String,
     hooks: PromptHooks,
     repair_policy: rocode_types::RepairPolicy,
+    tool_result_budget: crate::tool_result_governance::ToolResultBudget,
 }
 
 const MAX_PERSISTED_SUBSESSION_HISTORY_TURNS: usize = 8;
@@ -295,6 +296,13 @@ impl SessionPrompt {
         model_id: &str,
     ) -> anyhow::Result<()> {
         let repair_policy = crate::compaction::effective_repair_policy(ctx.config_store.as_deref());
+        let tool_result_budget = crate::tool_result_governance::tool_result_budget(
+            ctx.config_store
+                .as_ref()
+                .map(|store| store.config())
+                .as_deref()
+                .and_then(|cfg| cfg.runtime_budget.as_ref()),
+        );
         Self::execute_tool_calls_with_hook(
             session,
             tool_registry,
@@ -305,6 +313,7 @@ impl SessionPrompt {
                 model_id: model_id.to_string(),
                 hooks: PromptHooks::default(),
                 repair_policy,
+                tool_result_budget,
             },
         )
         .await?;
@@ -717,13 +726,29 @@ impl SessionPrompt {
                     },
                 );
 
+                // P2-4: govern large tool results before they enter the transcript.
+                // Raw full content is artifact-backed; the transcript holds a governed preview.
+                let artifacts_root =
+                    crate::tool_result_governance::default_tool_result_artifacts_root(
+                        &session.record().directory,
+                    );
+                let mut gov_metadata = metadata.clone().unwrap_or_default();
+                let governed = crate::tool_result_governance::govern_tool_result_output(
+                    &session.id,
+                    &call_id,
+                    content.clone(),
+                    &mut gov_metadata,
+                    &artifacts_root,
+                    options.tool_result_budget,
+                );
+
                 Self::push_tool_result_part(
                     &mut msg,
                     call_id.clone(),
-                    content.clone(),
+                    governed.output,
                     is_error,
                     title.clone(),
-                    metadata.clone(),
+                    Some(gov_metadata),
                     attachments.clone(),
                 );
                 executed_calls += 1;
@@ -2215,6 +2240,75 @@ mod tests {
         assert_eq!(
             tool_name, "fail_tool",
             "strict mode should preserve original tool name, not reroute to invalid"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_tool_calls_reads_runtime_budget_from_config_store() {
+        let tool_registry = Arc::new(rocode_tool::ToolRegistry::new());
+        tool_registry.register(EchoTool).await;
+
+        let mut session = Session::new("proj", ".");
+        let sid = session.id.clone();
+        session
+            .messages_mut()
+            .push(SessionMessage::user(sid.clone(), "run large echo"));
+        let mut assistant = SessionMessage::assistant(sid);
+        assistant.add_tool_call(
+            "call_echo",
+            "echo_tool",
+            serde_json::json!({ "value": "Q".repeat(600) }),
+        );
+        session.messages_mut().push(assistant);
+
+        let provider: Arc<dyn Provider> =
+            Arc::new(StaticModelProvider::with_model("test-model", 8192, 1024));
+
+        let mut config = rocode_config::Config::default();
+        config.runtime_budget = Some(rocode_config::RuntimeBudgetConfig {
+            tool_result_max_chars: 128,
+            tool_result_preview_chars: 32,
+            ..rocode_config::RuntimeBudgetConfig::default()
+        });
+        let config_store = Arc::new(rocode_config::ConfigStore::new(config));
+        let ctx = ToolContext::new(session.id.clone(), "msg_test".to_string(), ".".to_string())
+            .with_config_store(config_store);
+
+        SessionPrompt::execute_tool_calls(
+            &mut session,
+            tool_registry,
+            ctx,
+            provider,
+            "mock",
+            "test-model",
+        )
+        .await
+        .expect("execute_tool_calls should succeed");
+
+        let tool_message = session
+            .messages
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, MessageRole::Tool))
+            .expect("tool message should exist");
+        let tool_result = tool_message
+            .parts
+            .iter()
+            .find_map(|part| match &part.part_type {
+                PartType::ToolResult {
+                    content, metadata, ..
+                } => Some((content.as_str(), metadata.as_ref())),
+                _ => None,
+            })
+            .expect("tool result should exist");
+
+        assert!(tool_result.0.contains("[tool result governed: output too large]"));
+        assert!(tool_result.0.contains("preview_chars: 32"));
+        assert_eq!(
+            tool_result
+                .1
+                .and_then(|m| m.get("tool_result_governed")),
+            Some(&serde_json::json!(true))
         );
     }
 

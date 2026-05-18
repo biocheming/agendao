@@ -280,6 +280,7 @@ pub struct PromptHooks {
 #[derive(Debug, Clone)]
 pub struct SteeringMessage {
     pub text: String,
+    pub created_at: i64,
     pub source_session_id: Option<String>,
 }
 

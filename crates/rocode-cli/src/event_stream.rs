@@ -44,7 +44,10 @@ pub enum CliServerEvent {
         info_json: serde_json::Value,
     },
     /// A permission request was resolved.
-    PermissionResolved { permission_id: String },
+    PermissionResolved {
+        session_id: String,
+        permission_id: String,
+    },
     /// A tool call started.
     ToolCallStarted {
         session_id: String,
@@ -149,7 +152,11 @@ async fn connect_and_consume(
     // relevant to our session (plus global events like config.updated).
     // This replaces most client-side is_my_session filtering, though we
     // keep the client-side checks as a defense-in-depth measure.
-    let url = format!("{}?session={}", server_url(base_url, "/event"), session_id,);
+    let url = format!(
+        "{}?session={}&tier=cli",
+        server_url(base_url, "/event"),
+        session_id,
+    );
     let client = reqwest::Client::new();
 
     let resp = client
@@ -354,6 +361,7 @@ fn parse_event(
             })
         }
         "permission.resolved" | "permission.replied" => {
+            let session_id = event_session_id.to_string();
             let permission_id = json
                 .get("permissionID")
                 .or_else(|| json.get("permissionId"))
@@ -363,7 +371,10 @@ fn parse_event(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            Some(CliServerEvent::PermissionResolved { permission_id })
+            Some(CliServerEvent::PermissionResolved {
+                session_id,
+                permission_id,
+            })
         }
         "tool_call.lifecycle" => {
             let tool_call_id = json

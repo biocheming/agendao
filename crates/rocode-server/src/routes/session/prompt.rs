@@ -31,7 +31,8 @@ use crate::routes::provider_diagnostics::attach_provider_diagnostic_from_error;
 use crate::routes::skill_catalog::enrich_scheduler_plan_skills;
 use crate::runtime_control::SessionRunStatus;
 use crate::session_runtime::events::{
-    broadcast_session_updated, emit_output_block_via_hook, server_output_block_hook, ServerEvent,
+    broadcast_session_reconcile, emit_output_block_via_hook, server_output_block_hook,
+    ReconcileReason, ServerEvent,
 };
 use crate::session_runtime::{
     assistant_visible_text, ensure_default_session_title,
@@ -1761,10 +1762,10 @@ async fn session_prompt_inner(
                             .as_ref(),
                     )
                     .await?;
-                    broadcast_session_updated(
+                    broadcast_session_reconcile(
                         state.as_ref(),
                         id.clone(),
-                        "prompt.command.awaiting_user",
+                        ReconcileReason::StatusChange,
                     );
                     persist_sessions_if_enabled(&state).await;
                     return Ok(Json(serde_json::json!({
@@ -1795,9 +1796,17 @@ async fn session_prompt_inner(
             }
         }
         if pending_command_cleared {
-            broadcast_session_updated(state.as_ref(), id.clone(), "prompt.command.accepted");
+            broadcast_session_reconcile(
+                state.as_ref(),
+                id.clone(),
+                ReconcileReason::StatusChange,
+            );
         }
-        broadcast_session_updated(state.as_ref(), id.clone(), "prompt.smoke.accepted");
+        broadcast_session_reconcile(
+            state.as_ref(),
+            id.clone(),
+            ReconcileReason::StatusChange,
+        );
         persist_sessions_if_enabled(&state).await;
         return Ok(Json(serde_json::json!({
             "status": "accepted",
@@ -1974,7 +1983,11 @@ async fn session_prompt_inner(
         }
     }
     if pending_command_cleared {
-        broadcast_session_updated(state.as_ref(), id.clone(), "prompt.command.accepted");
+        broadcast_session_reconcile(
+            state.as_ref(),
+            id.clone(),
+            ReconcileReason::StatusChange,
+        );
         persist_sessions_if_enabled(&state).await;
     }
     if persisted_external_adapter_binding {
@@ -2169,10 +2182,10 @@ async fn session_prompt_inner(
                         let mut sessions = task_state.sessions.lock().await;
                         sessions.update(session.clone());
                     }
-                    broadcast_session_updated(
+                    broadcast_session_reconcile(
                         task_state.as_ref(),
                         session_id.clone(),
-                        "prompt.scheduler.error",
+                        ReconcileReason::StatusChange,
                     );
                     persist_sessions_if_enabled(&task_state).await;
                     return;
@@ -2196,10 +2209,10 @@ async fn session_prompt_inner(
                 let mut sessions = task_state.sessions.lock().await;
                 sessions.update(session.clone());
             }
-            broadcast_session_updated(
+            broadcast_session_reconcile(
                 task_state.as_ref(),
                 session_id.clone(),
-                "prompt.scheduler.pending",
+                ReconcileReason::StatusChange,
             );
 
             let agent_registry = Arc::new(AgentRegistry::from_config(&task_config));
@@ -2493,10 +2506,10 @@ async fn session_prompt_inner(
                 .get_message(&assistant_message_id)
                 .map(assistant_visible_text)
                 .unwrap_or_default();
-            broadcast_session_updated(
+            broadcast_session_reconcile(
                 task_state.as_ref(),
                 session_id.clone(),
-                "prompt.scheduler.completed",
+                ReconcileReason::StatusChange,
             );
             if let Some(output_hook) = output_block_hook.clone() {
                 if !assistant_text.trim().is_empty() {
@@ -2724,6 +2737,7 @@ async fn session_prompt_inner(
                                 .into_iter()
                                 .map(|m| rocode_session::prompt::SteeringMessage {
                                     text: m.text,
+                                    created_at: m.created_at,
                                     source_session_id: m.source_session_id,
                                 })
                                 .collect()
@@ -2820,7 +2834,7 @@ async fn session_prompt_inner(
             let mut sessions = task_state.sessions.lock().await;
             sessions.update(session.clone());
         }
-        broadcast_session_updated(task_state.as_ref(), session_id.clone(), "prompt.final");
+        broadcast_session_reconcile(task_state.as_ref(), session_id.clone(), ReconcileReason::TurnFinal);
         // Normal path reached — defuse the guard so we handle cleanup explicitly.
         _idle_guard.defuse();
         set_session_run_status(&task_state, &session_id, SessionRunStatus::Idle).await;

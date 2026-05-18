@@ -1926,6 +1926,18 @@ fn tui_runtime_status_lines(
             }
         )));
     }
+    if let Some(event_bus) = telemetry.event_bus_telemetry.as_ref() {
+        lines.push(StatusLine::muted(String::new()));
+        lines.push(StatusLine::title("Server Event Bus"));
+        lines.push(StatusLine::normal(format!(
+            "Sends: {} · no receiver: {} · max receivers: {}",
+            event_bus.send_count, event_bus.send_error_count, event_bus.max_receivers,
+        )));
+        lines.push(StatusLine::muted(format!(
+            "  Last send {} · last error {}",
+            event_bus.last_send_at_ms, event_bus.last_send_error_at_ms,
+        )));
+    }
 
     if let Some(question) = runtime.pending_question.as_ref() {
         lines.push(StatusLine::muted(String::new()));
@@ -1934,11 +1946,43 @@ fn tui_runtime_status_lines(
             question.request_id
         )));
     }
+    if let Some(protocol) = telemetry.runtime_protocol.as_ref() {
+        lines.push(StatusLine::normal(format!(
+            "Ingress: {}",
+            match protocol.prompt_ingress {
+                crate::api::PromptIngressDisposition::AcceptNow => "accept_now",
+                crate::api::PromptIngressDisposition::QueueAsSteering => "queue_as_steering",
+                crate::api::PromptIngressDisposition::BlockedOnQuestion => "blocked_on_question",
+                crate::api::PromptIngressDisposition::BlockedOnPermission => {
+                    "blocked_on_permission"
+                }
+                crate::api::PromptIngressDisposition::AwaitingInterrupt => "awaiting_interrupt",
+            }
+        )));
+    }
     if let Some(permission) = runtime.pending_permission.as_ref() {
         lines.push(StatusLine::warning(format!(
             "Pending permission: {}",
             permission.permission_id
         )));
+    }
+    if let Some(protocol) = telemetry.runtime_protocol.as_ref() {
+        if protocol.steering.pending_count > 0 {
+            lines.push(StatusLine::warning(format!(
+                "Pending steering: {}",
+                protocol.steering.pending_count
+            )));
+        }
+        if protocol.interrupt.phase == crate::api::InterruptPhase::Requested {
+            lines.push(StatusLine::warning(format!(
+                "Interrupt requested: {}",
+                match protocol.interrupt.target {
+                    Some(crate::api::InterruptTarget::Run) => "run",
+                    Some(crate::api::InterruptTarget::Stage) => "stage",
+                    None => "unknown",
+                }
+            )));
+        }
     }
 
     if !runtime.attached_sessions.is_empty() {
@@ -2215,11 +2259,18 @@ fn tui_usage_status_lines(
         lines.push(StatusLine::muted(String::new()));
         lines.push(StatusLine::title("Tool Result Governance"));
         lines.push(StatusLine::normal(format!(
-            "Single-result governed: {} · Batch governed: {} · Transcript fallback: {}",
+            "Single-result governed: {} · Batch governed: {} · Transcript fallback: {} · Artifact fallback: {}",
             governance.single_result_governed_count,
             governance.batch_governed_count,
-            governance.transcript_fallback_count
+            governance.transcript_fallback_count,
+            governance.artifact_fallback_count,
         )));
+        if governance.total_original_chars > 0 {
+            lines.push(StatusLine::muted(format!(
+                "  Chars: {} original → {} displayed",
+                governance.total_original_chars, governance.total_displayed_chars,
+            )));
+        }
     }
 
     // Permission Authority telemetry.
@@ -3619,6 +3670,9 @@ mod tests {
                 single_result_governed_count: 2,
                 batch_governed_count: 1,
                 transcript_fallback_count: 0,
+                artifact_fallback_count: 1,
+                total_original_chars: 96_000,
+                total_displayed_chars: 16_000,
             }),
             memory: None,
             cache_evidence: None,
@@ -3796,6 +3850,8 @@ mod tests {
             ingress_stabilization: None,
             execution_preflight_summary: None,
             provider_diagnostic_summary: None,
+            runtime_protocol: None,
+            event_bus_telemetry: None,
         };
 
         let lines = tui_usage_status_lines(
@@ -3946,6 +4002,8 @@ mod tests {
             ingress_stabilization: None,
             execution_preflight_summary: None,
             provider_diagnostic_summary: None,
+            runtime_protocol: None,
+            event_bus_telemetry: None,
         };
 
         let lines = tui_usage_status_lines("sess_123", &telemetry, None, None, None);
@@ -4011,6 +4069,8 @@ mod tests {
             ingress_stabilization: None,
             execution_preflight_summary: None,
             provider_diagnostic_summary: None,
+            runtime_protocol: None,
+            event_bus_telemetry: None,
         };
         let ui_bridge = crate::bridge::UiBridgeSnapshot {
             revision: 7,

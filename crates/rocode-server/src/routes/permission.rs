@@ -243,6 +243,17 @@ fn increment_session_metadata_map_counter(
     session.insert_metadata(key.to_string(), serde_json::Value::Object(object));
 }
 
+fn record_permission_pending_duration(
+    session: &mut rocode_session::Session,
+    requested_at_ms: u64,
+) {
+    let now = chrono::Utc::now().timestamp_millis().max(0) as u64;
+    session.insert_metadata(
+        "last_permission_pending_ms".to_string(),
+        serde_json::json!(now.saturating_sub(requested_at_ms)),
+    );
+}
+
 fn record_permission_grant_telemetry(
     session: &mut rocode_session::Session,
     permission: &PermissionInfo,
@@ -413,10 +424,10 @@ pub(crate) async fn request_permission(
         .await;
 
     // Push session.updated so frontend refresh path triggers for pending state.
-    crate::session_runtime::events::broadcast_session_updated(
+    crate::session_runtime::events::broadcast_session_reconcile(
         &state,
         &session_id,
-        "permission.pending",
+        crate::session_runtime::events::ReconcileReason::Permission,
     );
 
     let wait_result = tokio::time::timeout(std::time::Duration::from_secs(300), rx).await;
@@ -441,30 +452,40 @@ pub(crate) async fn request_permission(
             ))),
         },
         Ok(Err(_)) => {
+            let mut sessions = state.sessions.lock().await;
+            if let Some(session) = sessions.get_mut(&session_id) {
+                record_permission_pending_duration(session, info.time.created);
+            }
+            drop(sessions);
             PERMISSION_ENGINE
                 .lock()
                 .await
                 .remove_pending(&permission_id);
             // Pending cleared — broadcast so frontend doesn't see stale pending.
-            crate::session_runtime::events::broadcast_session_updated(
+            crate::session_runtime::events::broadcast_session_reconcile(
                 &state,
                 &session_id,
-                "permission.resolved",
+                crate::session_runtime::events::ReconcileReason::Permission,
             );
             Err(rocode_tool::ToolError::ExecutionError(
                 "Permission response channel closed".to_string(),
             ))
         }
         Err(_) => {
+            let mut sessions = state.sessions.lock().await;
+            if let Some(session) = sessions.get_mut(&session_id) {
+                record_permission_pending_duration(session, info.time.created);
+            }
+            drop(sessions);
             PERMISSION_ENGINE
                 .lock()
                 .await
                 .remove_pending(&permission_id);
             // Pending cleared — broadcast so frontend doesn't see stale pending.
-            crate::session_runtime::events::broadcast_session_updated(
+            crate::session_runtime::events::broadcast_session_reconcile(
                 &state,
                 &session_id,
-                "permission.resolved",
+                crate::session_runtime::events::ReconcileReason::Permission,
             );
             Err(rocode_tool::ToolError::PermissionDenied(
                 "Permission request timed out".to_string(),
@@ -521,11 +542,17 @@ pub(crate) async fn reply_permission(
         if let Some(session) = sessions.get_mut(&session_id) {
             let matcher_kind = permission_matcher_kind_key(&permission);
             record_permission_grant_telemetry(session, &permission, response);
+            record_permission_pending_duration(session, permission.time.created);
             // Store structured hit reason for telemetry read model (plan §8 path C).
             session.insert_metadata(
                 "last_permission_hit_matcher_kind".to_string(),
                 serde_json::json!(matcher_kind),
             );
+        }
+    } else {
+        let mut sessions = state.sessions.lock().await;
+        if let Some(session) = sessions.get_mut(&session_id) {
+            record_permission_pending_duration(session, permission.time.created);
         }
     }
     // Note: miss_count is incremented in request_permission() when AskOutcome::Pending —
@@ -545,10 +572,10 @@ pub(crate) async fn reply_permission(
         .await;
 
     // Push session.updated so frontend refresh path triggers (plan §8 path D).
-    crate::session_runtime::events::broadcast_session_updated(
+    crate::session_runtime::events::broadcast_session_reconcile(
         &state,
         &session_id,
-        "permission.resolved",
+        crate::session_runtime::events::ReconcileReason::Permission,
     );
     Ok(Json(true))
 }

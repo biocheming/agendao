@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import type { useExecutionActivity } from "../hooks/useExecutionActivity";
 import {
   type MemoryDetailResponseRecord,
@@ -91,7 +91,11 @@ function totalUsageTokens(usage?: {
   );
 }
 
-export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanelProps) {
+// P2-3: side panel uses selector-local reads via memo().
+export const SessionInsightsPanel = memo(function SessionInsightsPanel({
+  activity,
+  apiJson,
+}: SessionInsightsPanelProps) {
   const insights = activity.sessionInsights;
   const telemetry = insights?.telemetry ?? null;
   const runtimeTelemetry = activity.telemetry ?? null;
@@ -268,10 +272,19 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
                     <span className="roc-badge px-2.5 py-1 text-xs">
                       transcript fallback {toolResultGovernance?.transcript_fallback_count ?? 0}
                     </span>
+                    <span className="roc-badge px-2.5 py-1 text-xs">
+                      artifact {toolResultGovernance?.artifact_fallback_count ?? 0}
+                    </span>
                   </div>
-                  <p className="text-sm text-muted-foreground leading-relaxed">
-                    Shows how many finalized tool results were governed into preview/artifact form before entering transcript and replay surfaces.
-                  </p>
+                  {(toolResultGovernance?.total_original_chars ?? 0) > 0 ? (
+                    <p className="text-sm text-muted-foreground leading-relaxed">
+                      Chars: {(toolResultGovernance?.total_original_chars ?? 0).toLocaleString()} original → {(toolResultGovernance?.total_displayed_chars ?? 0).toLocaleString()} displayed. Full results are artifact-backed — fetched on demand, not held in UI store.
+                    </p>
+                  ) : (
+                    <p className="text-sm text-muted-foreground leading-relaxed">
+                      Shows how many finalized tool results were governed into preview/artifact form before entering transcript and replay surfaces.
+                    </p>
+                  )}
                 </div>
               ) : null}
               {telemetry.compaction_continuity ? (
@@ -677,4 +690,4 @@ export function SessionInsightsPanel({ activity, apiJson }: SessionInsightsPanel
       )}
     </div>
   );
-}
+});

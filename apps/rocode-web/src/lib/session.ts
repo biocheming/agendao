@@ -62,6 +62,9 @@ export interface ToolResultGovernanceRecord {
   single_result_governed_count: number;
   batch_governed_count: number;
   transcript_fallback_count: number;
+  artifact_fallback_count: number;
+  total_original_chars: number;
+  total_displayed_chars: number;
 }
 
 export interface PersistedSessionTelemetrySnapshot {

@@ -17,7 +17,7 @@ use crate::context::{
 use crate::event::{CustomEvent, Event};
 use crate::router::Router;
 use crate::theme::Theme;
-use rocode_config::{Config as AppConfig, UiPreferencesConfig};
+use rocode_config::{Config as AppConfig, RuntimeBudgetConfig, UiPreferencesConfig};
 use rocode_core::process_registry::ProcessInfo;
 use rocode_runtime_context::ResolvedWorkspaceContext;
 use rocode_state::RecentModelEntry;
@@ -344,6 +344,7 @@ pub struct AppContext {
     pub pending_permissions: RwLock<usize>,
     pub queued_prompts: RwLock<HashMap<String, usize>>,
     ui_preferences: RwLock<UiPreferencesState>,
+    runtime_budget: RwLock<RuntimeBudgetConfig>,
     recent_models: RwLock<Vec<(String, String)>>,
     pub has_connected_provider: RwLock<bool>,
     pub processes: RwLock<Vec<ProcessInfo>>,
@@ -375,6 +376,7 @@ impl AppContext {
             pending_permissions: RwLock::new(0),
             queued_prompts: RwLock::new(HashMap::new()),
             ui_preferences: RwLock::new(UiPreferencesState::default()),
+            runtime_budget: RwLock::new(RuntimeBudgetConfig::default()),
             recent_models: RwLock::new(Vec::new()),
             has_connected_provider: RwLock::new(false),
             processes: RwLock::new(Vec::new()),
@@ -941,6 +943,9 @@ impl AppContext {
     }
 
     pub fn apply_config(&self, config: &AppConfig) {
+        let runtime_budget = RuntimeBudgetConfig::from_config(Some(config));
+        self.ui_bridge.set_capacity(runtime_budget.max_ui_bridge_queue);
+        *self.runtime_budget.write() = runtime_budget;
         let ui = config.ui_preferences.as_ref();
         let theme_name = ui
             .and_then(|prefs| prefs.theme.as_deref())
@@ -970,6 +975,10 @@ impl AppContext {
 
     pub fn ui_preferences(&self) -> UiPreferencesState {
         self.ui_preferences.read().clone()
+    }
+
+    pub fn runtime_budget(&self) -> RuntimeBudgetConfig {
+        self.runtime_budget.read().clone()
     }
 
     pub fn show_header_enabled(&self) -> bool {
@@ -1086,14 +1095,14 @@ impl AppContext {
                     PermissionRequestInfo {
                         id: perm.permission_id.clone(),
                         session_id: runtime.session_id.clone(),
-                        tool: String::new(), // Extract from info if needed
+                        tool: perm.tool.clone().unwrap_or_default(),
                         permission_class: None,
                         scope_key: None,
                         scope_label: None,
                         matcher_label: None,
                         grant_target_summary: None,
                         risk_tags: Vec::new(),
-                        input: perm.info.clone(),
+                        input: serde_json::Value::Null,
                         message: String::new(),
                     },
                 )

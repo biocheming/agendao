@@ -18,7 +18,7 @@ use rocode_orchestrator::runtime::traits::{LoopSink, ToolDispatcher};
 use rocode_provider::{Provider, ToolDefinition};
 
 use crate::tool_result_governance::{
-    default_tool_result_artifacts_root, govern_tool_result_output,
+    default_tool_result_artifacts_root, govern_tool_result_output, ToolResultBudget,
 };
 use crate::Session;
 
@@ -272,6 +272,7 @@ pub(super) struct SessionStepSink<'a> {
     pub(super) step_complete: Arc<AtomicBool>,
     pub(super) assistant_output_started: bool,
     pub(super) reasoning_output_started: bool,
+    pub(super) tool_result_budget: ToolResultBudget,
 }
 
 impl<'a> SessionStepSink<'a> {
@@ -282,6 +283,7 @@ impl<'a> SessionStepSink<'a> {
         event_broadcast: Option<&'a EventBroadcastHook>,
         output_block_hook: Option<&'a OutputBlockHook>,
         step_complete: Arc<AtomicBool>,
+        tool_result_budget: ToolResultBudget,
     ) -> Self {
         Self {
             session,
@@ -303,6 +305,7 @@ impl<'a> SessionStepSink<'a> {
             step_complete,
             assistant_output_started: false,
             reasoning_output_started: false,
+            tool_result_budget,
         }
     }
 
@@ -809,6 +812,7 @@ impl<'a> LoopSink for SessionStepSink<'a> {
             result.output.clone(),
             &mut metadata_map,
             &artifacts_root,
+            self.tool_result_budget,
         );
         let (attachments, _) = SessionPrompt::extract_tool_attachments_from_metadata(
             &mut metadata_map,

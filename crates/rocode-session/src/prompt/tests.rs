@@ -6,7 +6,8 @@ use super::skill_reflection::{
 use super::*;
 use crate::message::MessagePart;
 use crate::tool_result_governance::{
-    default_tool_result_artifacts_root, govern_tool_result_output, SINGLE_TOOL_RESULT_MAX_CHARS,
+    default_tool_result_artifacts_root, govern_tool_result_output, ToolResultBudget,
+    SINGLE_TOOL_RESULT_MAX_CHARS,
 };
 use crate::SessionMessage;
 use async_trait::async_trait;
@@ -161,7 +162,7 @@ fn large_tool_result_is_governed_into_preview_and_artifact() {
     let large = "A".repeat(SINGLE_TOOL_RESULT_MAX_CHARS + 2048);
 
     let governed =
-        govern_tool_result_output("session-1", "call-1", large, &mut metadata, &artifacts_root);
+        govern_tool_result_output("session-1", "call-1", large, &mut metadata, &artifacts_root, ToolResultBudget::legacy());
 
     assert!(governed.degraded);
     assert!(governed
@@ -192,6 +193,7 @@ fn small_tool_result_is_not_governed() {
         "short tool output".to_string(),
         &mut metadata,
         &artifacts_root,
+        ToolResultBudget::legacy(),
     );
 
     assert!(!governed.degraded);
@@ -213,6 +215,7 @@ fn append_stream_tool_results_as_message_preserves_governed_preview() {
         "Z".repeat(SINGLE_TOOL_RESULT_MAX_CHARS + 4096),
         &mut metadata,
         &artifacts_root,
+        ToolResultBudget::legacy(),
     );
     let stream_results = vec![(
         "call-1".to_string(),
@@ -223,7 +226,12 @@ fn append_stream_tool_results_as_message_preserves_governed_preview() {
         None,
     )];
 
-    SessionPrompt::append_stream_tool_results_as_message(&mut session, &session_id, stream_results);
+    SessionPrompt::append_stream_tool_results_as_message(
+        &mut session,
+        &session_id,
+        stream_results,
+        None,
+    );
 
     let tool_message = session
         .record()
@@ -285,7 +293,12 @@ fn append_stream_tool_results_as_message_applies_batch_budget_without_reordering
         ),
     ];
 
-    SessionPrompt::append_stream_tool_results_as_message(&mut session, &session_id, stream_results);
+    SessionPrompt::append_stream_tool_results_as_message(
+        &mut session,
+        &session_id,
+        stream_results,
+        None,
+    );
 
     let tool_message = session
         .record()
@@ -316,6 +329,65 @@ fn append_stream_tool_results_as_message_applies_batch_budget_without_reordering
     assert_eq!(
         results[1]
             .2
+            .and_then(|m| m.get("tool_result_batch_governed")),
+        Some(&serde_json::json!(true))
+    );
+}
+
+#[test]
+fn append_stream_tool_results_as_message_reads_runtime_budget_from_config_store() {
+    let dir = tempdir().expect("tempdir");
+    let mut session = Session::new("proj", dir.path().to_string_lossy().as_ref());
+    let session_id = session.id.clone();
+    let stream_results = vec![(
+        "call-1".to_string(),
+        "Y".repeat(600),
+        false,
+        Some("govern me".to_string()),
+        None,
+        None,
+    )];
+
+    let mut config = rocode_config::Config::default();
+    config.runtime_budget = Some(rocode_config::RuntimeBudgetConfig {
+        tool_result_max_chars: 128,
+        tool_batch_aggregate_max_chars: 128,
+        tool_result_preview_chars: 32,
+        ..rocode_config::RuntimeBudgetConfig::default()
+    });
+    let config_store = ConfigStore::new(config);
+
+    SessionPrompt::append_stream_tool_results_as_message(
+        &mut session,
+        &session_id,
+        stream_results,
+        Some(&config_store),
+    );
+
+    let tool_message = session
+        .record()
+        .messages
+        .last()
+        .expect("tool message should be appended");
+    let tool_result = tool_message
+        .parts
+        .iter()
+        .find_map(|part| match &part.part_type {
+            PartType::ToolResult {
+                content, metadata, ..
+            } => Some((content, metadata)),
+            _ => None,
+        })
+        .expect("tool result part should exist");
+
+    assert!(tool_result
+        .0
+        .contains("[tool result governed: output too large]"));
+    assert!(tool_result.0.contains("preview_chars: 32"));
+    assert_eq!(
+        tool_result
+            .1
+            .as_ref()
             .and_then(|m| m.get("tool_result_batch_governed")),
         Some(&serde_json::json!(true))
     );

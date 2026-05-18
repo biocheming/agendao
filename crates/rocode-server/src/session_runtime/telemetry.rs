@@ -7,9 +7,11 @@ use crate::runtime_control::{
     build_session_execution_topology, ExecutionKind, ExecutionRecord, QuestionInfo, QuestionReply,
     RuntimeControlRegistry, SessionExecutionTopology, SessionRunStatus, TopologyChangeContext,
 };
-use crate::session_runtime::events::{DiffEntry, QuestionResolutionKind, ServerEvent};
+use crate::session_runtime::events::{DiffEntry, EventBusTelemetry, QuestionResolutionKind, ServerEvent};
 use crate::session_runtime::stage_summary::StageSummaryStore;
-use crate::session_runtime::state::{RuntimeStateStore, SessionRuntimeState};
+use crate::session_runtime::state::{
+    InterruptTarget, RuntimeStateStore, SessionRuntimeState,
+};
 use crate::stage_event_log::{EventFilter, StageEventLog};
 use rocode_command::stage_protocol::{telemetry_event_names, EventScope, StageEvent, StageSummary};
 use rocode_plugin::{HookContext, HookEvent};
@@ -20,6 +22,7 @@ use rocode_types::{SessionMemoryTelemetrySummary, SessionToolRepairTelemetrySumm
 
 pub(crate) struct RuntimeTelemetryAuthority {
     event_bus: broadcast::Sender<String>,
+    event_bus_telemetry: Option<Arc<EventBusTelemetry>>,
     runtime_state: Arc<RuntimeStateStore>,
     runtime_control: Arc<RuntimeControlRegistry>,
     stage_event_log: Arc<StageEventLog>,
@@ -27,27 +30,35 @@ pub(crate) struct RuntimeTelemetryAuthority {
 }
 
 impl RuntimeTelemetryAuthority {
-    pub(crate) fn new(event_bus: broadcast::Sender<String>) -> Self {
+    pub(crate) fn new(
+        event_bus: broadcast::Sender<String>,
+        event_bus_telemetry: Option<Arc<EventBusTelemetry>>,
+    ) -> Self {
         let runtime_state = Arc::new(RuntimeStateStore::new());
         let stage_event_log = Arc::new(StageEventLog::new());
         let stage_summaries = Arc::new(StageSummaryStore::new());
         let callback_event_bus = event_bus.clone();
+        let callback_telemetry = event_bus_telemetry.clone();
         let callback_stage_event_log = stage_event_log.clone();
         let runtime_control = Arc::new(RuntimeControlRegistry::with_topology_callback(Arc::new(
             move |ctx: &TopologyChangeContext| {
                 let log = callback_stage_event_log.clone();
                 let event_bus = callback_event_bus.clone();
+                let telemetry = callback_telemetry.clone();
                 let session_id = ctx.session_id.clone();
                 let event = Self::topology_changed_stage_event(ctx);
                 tokio::spawn(async move {
-                    Self::record_transportable_stage_event(log, &event_bus, &session_id, event)
-                        .await;
+                    Self::record_transportable_stage_event(
+                        log, &event_bus, telemetry.as_deref(), &session_id, event,
+                    )
+                    .await;
                 });
             },
         )));
 
         Self {
             event_bus,
+            event_bus_telemetry,
             runtime_state,
             runtime_control,
             stage_event_log,
@@ -392,8 +403,13 @@ impl RuntimeTelemetryAuthority {
         permission_id: &str,
         info: serde_json::Value,
     ) {
+        let requested_at = chrono::Utc::now().timestamp_millis();
+        let tool = info
+            .get("tool")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned);
         self.runtime_state
-            .permission_requested(session_id, permission_id, info.clone())
+            .permission_requested(session_id, permission_id, requested_at, tool)
             .await;
         self.record_stage_event(
             session_id,
@@ -530,6 +546,16 @@ impl RuntimeTelemetryAuthority {
     ) {
         self.runtime_state
             .steering_enqueued(owner_session_id, summary)
+            .await;
+    }
+
+    pub(crate) async fn interrupt_requested(
+        &self,
+        session_id: &str,
+        target: InterruptTarget,
+    ) {
+        self.runtime_state
+            .interrupt_requested(session_id, chrono::Utc::now().timestamp_millis(), target)
             .await;
     }
 
@@ -735,6 +761,8 @@ impl RuntimeTelemetryAuthority {
             consumed_steering_count: 0,
             last_steering_injected_at: None,
             last_steering_source_session_id: None,
+            last_steering_latency_ms: None,
+            last_permission_pending_ms: None,
             last_run_status: last_run_status.into(),
             updated_at: chrono::Utc::now().timestamp_millis(),
         })
@@ -766,6 +794,7 @@ impl RuntimeTelemetryAuthority {
         Self::record_transportable_stage_event(
             self.stage_event_log.clone(),
             &self.event_bus,
+            self.event_bus_telemetry.as_deref(),
             session_id,
             event,
         )
@@ -775,19 +804,30 @@ impl RuntimeTelemetryAuthority {
     async fn record_transportable_stage_event(
         stage_event_log: Arc<StageEventLog>,
         event_bus: &broadcast::Sender<String>,
+        event_bus_telemetry: Option<&EventBusTelemetry>,
         session_id: &str,
         event: StageEvent,
     ) {
         if let Some(transport) = ServerEvent::from_stage_event(&event) {
-            Self::broadcast_server_event_payload(event_bus, &transport);
+            Self::broadcast_server_event_payload(event_bus, event_bus_telemetry, &transport);
         }
         stage_event_log.record(session_id, event).await;
     }
 
-    fn broadcast_server_event_payload(event_bus: &broadcast::Sender<String>, event: &ServerEvent) {
+    fn broadcast_server_event_payload(
+        event_bus: &broadcast::Sender<String>,
+        event_bus_telemetry: Option<&EventBusTelemetry>,
+        event: &ServerEvent,
+    ) {
         if let Some(payload) = event.to_json_string() {
-            if let Err(error) = event_bus.send(payload) {
-                tracing::warn!(%error, "failed to broadcast runtime telemetry event");
+            let receiver_count = event_bus.receiver_count();
+            if event_bus.send(payload).is_err() {
+                tracing::warn!("failed to broadcast runtime telemetry event (no active receivers)");
+                if let Some(telemetry) = event_bus_telemetry {
+                    telemetry.record_send_error();
+                }
+            } else if let Some(telemetry) = event_bus_telemetry {
+                telemetry.record_send(receiver_count);
             }
         }
     }

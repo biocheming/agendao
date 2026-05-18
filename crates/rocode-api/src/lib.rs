@@ -335,7 +335,9 @@ pub struct PendingQuestionSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingPermissionSummary {
     pub permission_id: String,
-    pub info: serde_json::Value,
+    pub requested_at: i64,
+    #[serde(default)]
+    pub tool: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -478,6 +480,87 @@ pub struct SessionTelemetrySnapshot {
     pub execution_preflight_summary: Option<SessionExecutionPreflightSummary>,
     #[serde(default)]
     pub provider_diagnostic_summary: Option<ProviderDiagnosticSummary>,
+    #[serde(default)]
+    pub runtime_protocol: Option<SessionRuntimeProtocolSummary>,
+    #[serde(default)]
+    pub event_bus_telemetry: Option<EventBusTelemetrySummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EventBusTelemetrySummary {
+    pub send_count: u64,
+    pub send_error_count: u64,
+    pub max_receivers: u64,
+    pub last_send_at_ms: u64,
+    pub last_send_error_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptIngressDisposition {
+    AcceptNow,
+    QueueAsSteering,
+    BlockedOnQuestion,
+    BlockedOnPermission,
+    AwaitingInterrupt,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InterruptPhase {
+    #[default]
+    Idle,
+    Requested,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InterruptTarget {
+    Run,
+    Stage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermissionRuntimeSummary {
+    pub pending: bool,
+    #[serde(default)]
+    pub pending_permission_id: Option<String>,
+    #[serde(default)]
+    pub pending_since_ms: Option<i64>,
+    #[serde(default)]
+    pub pending_tool: Option<String>,
+    #[serde(default)]
+    pub last_pending_duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SteeringRuntimeSummary {
+    pub pending_count: u64,
+    #[serde(default)]
+    pub last_enqueued_at_ms: Option<i64>,
+    #[serde(default)]
+    pub last_consumed_at_ms: Option<i64>,
+    #[serde(default)]
+    pub last_source_session_id: Option<String>,
+    #[serde(default)]
+    pub last_latency_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InterruptRuntimeSummary {
+    pub phase: InterruptPhase,
+    #[serde(default)]
+    pub requested_at_ms: Option<i64>,
+    #[serde(default)]
+    pub target: Option<InterruptTarget>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionRuntimeProtocolSummary {
+    pub prompt_ingress: PromptIngressDisposition,
+    pub permission: PermissionRuntimeSummary,
+    pub steering: SteeringRuntimeSummary,
+    pub interrupt: InterruptRuntimeSummary,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1084,4 +1167,268 @@ pub struct ApiDiffEntry {
     pub path: String,
     pub additions: u64,
     pub deletions: u64,
+}
+
+// ── Canonical Runtime Event Surface (P1-1) ─────────────────────────────────
+// Authority definition shared with rocode-server::session_runtime::events.
+// Frontends (CLI/TUI/Web) reference this enum to negotiate subscription tiers
+// and decide how to consume each event kind.
+
+/// Authority enum for every event that crosses the server→frontend boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CanonicalEventKind {
+    MessageDelta,
+    MessageCompleted,
+    ToolCallStarted,
+    ToolCallDelta,
+    ToolCallCompleted,
+    PermissionPending,
+    PermissionResolved,
+    SteeringQueued,
+    SteeringConsumed,
+    RuntimeStatusChanged,
+    SessionReconcile,
+}
+
+impl CanonicalEventKind {
+    pub fn is_high_frequency(self) -> bool {
+        matches!(self, Self::MessageDelta | Self::ToolCallDelta)
+    }
+
+    pub fn is_mergeable(self) -> bool {
+        matches!(self, Self::MessageDelta | Self::ToolCallDelta)
+    }
+
+    pub fn is_droppable(self) -> bool {
+        matches!(self, Self::MessageDelta | Self::ToolCallDelta)
+    }
+
+    pub fn is_must_deliver(self) -> bool {
+        !self.is_droppable()
+    }
+}
+
+// ── Frontend Subscription Capability Model (P2-1) ────────────────────────
+// Authority for per-frontend event subscription negotiation.
+// Defined once in rocode-api; no frontend may hardcode its own copy of these
+// defaults or capability flags.
+
+/// Per-frontend subscription capabilities.
+///
+/// Each field corresponds to one category of server→frontend event traffic.
+/// A `false` value means the frontend does NOT need this category; the server
+/// may skip or coalesce corresponding events for this connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FrontendSubscriptionCapabilities {
+    /// Streaming text deltas for assistant messages.
+    pub message_text_delta: bool,
+    /// Streaming output / progress from running tools.
+    pub tool_progress: bool,
+    /// Reasoning / chain-of-thought deltas.
+    pub reasoning_delta: bool,
+    /// High-frequency runtime telemetry live view (stage summaries, counters).
+    pub runtime_live_view: bool,
+    /// Final-only mode: only non-droppable events (message completed,
+    /// tool completed, permission resolved, runtime status, reconcile).
+    /// When true, the server skips all delta events regardless of other flags.
+    pub final_only: bool,
+}
+
+impl Default for FrontendSubscriptionCapabilities {
+    fn default() -> Self {
+        // Compatible default: full capabilities, matching pre-P2-1 behavior.
+        Self {
+            message_text_delta: true,
+            tool_progress: true,
+            reasoning_delta: true,
+            runtime_live_view: true,
+            final_only: false,
+        }
+    }
+}
+
+/// Subscription tier — a named preset of capabilities.
+///
+/// Three tiers are defined. Each frontend picks the tier that matches its
+/// rendering model and user experience requirements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FrontendSubscriptionTier {
+    /// TUI: high-frequency incremental rendering with live view.
+    TuiHighFrequency,
+    /// Web: medium-frequency, local coalescing of tool progress.
+    WebMediumFrequency,
+    /// CLI: low-frequency summary with must-deliver events only.
+    CliLowFrequency,
+}
+
+impl FrontendSubscriptionTier {
+    /// Canonical default capabilities for each tier.
+    /// These are the single authority — frontends reference these, they do not
+    /// define their own copies.
+    pub fn default_capabilities(self) -> FrontendSubscriptionCapabilities {
+        match self {
+            Self::TuiHighFrequency => FrontendSubscriptionCapabilities {
+                message_text_delta: true,
+                tool_progress: true,
+                reasoning_delta: true,
+                runtime_live_view: true,
+                final_only: false,
+            },
+            Self::WebMediumFrequency => FrontendSubscriptionCapabilities {
+                message_text_delta: true,
+                tool_progress: true,
+                reasoning_delta: false,
+                runtime_live_view: true,
+                final_only: false,
+            },
+            Self::CliLowFrequency => FrontendSubscriptionCapabilities {
+                message_text_delta: false,
+                tool_progress: false,
+                reasoning_delta: false,
+                runtime_live_view: false,
+                final_only: true,
+            },
+        }
+    }
+}
+
+/// Resolved subscription: a tier + any explicit overrides.
+///
+/// This is what the server computes per-connection. It is the result of
+/// merging the client-requested tier (or explicit caps) with the server's
+/// compatible-default fallback.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolvedFrontendSubscription {
+    pub capabilities: FrontendSubscriptionCapabilities,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tier: Option<FrontendSubscriptionTier>,
+    /// True when the client sent no capability / tier parameters at all.
+    #[serde(default)]
+    pub is_legacy_compat: bool,
+}
+
+impl ResolvedFrontendSubscription {
+    pub fn legacy_default() -> Self {
+        Self {
+            capabilities: FrontendSubscriptionCapabilities::default(),
+            tier: None,
+            is_legacy_compat: true,
+        }
+    }
+
+    pub fn from_tier(tier: FrontendSubscriptionTier) -> Self {
+        Self {
+            capabilities: tier.default_capabilities(),
+            tier: Some(tier),
+            is_legacy_compat: false,
+        }
+    }
+
+    /// Single wire-format entry point. Every call site that parses a tier
+    /// query parameter MUST use this function. The mapping from wire string
+    /// to tier+capabilities is defined exactly once.
+    pub fn from_wire_tier(wire: Option<&str>) -> Self {
+        match wire {
+            Some("tui") => Self::from_tier(FrontendSubscriptionTier::TuiHighFrequency),
+            Some("web") => Self::from_tier(FrontendSubscriptionTier::WebMediumFrequency),
+            Some("cli") => Self::from_tier(FrontendSubscriptionTier::CliLowFrequency),
+            _ => Self::legacy_default(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod subscription_tests {
+    use super::*;
+
+    #[test]
+    fn default_caps_are_full_for_backward_compat() {
+        let caps = FrontendSubscriptionCapabilities::default();
+        assert!(caps.message_text_delta);
+        assert!(caps.tool_progress);
+        assert!(!caps.final_only);
+    }
+
+    #[test]
+    fn cli_tier_is_final_only_and_skips_deltas() {
+        let caps = FrontendSubscriptionTier::CliLowFrequency.default_capabilities();
+        assert!(!caps.message_text_delta);
+        assert!(!caps.tool_progress);
+        assert!(!caps.reasoning_delta);
+        assert!(caps.final_only);
+    }
+
+    #[test]
+    fn tui_tier_gets_full_capabilities() {
+        let caps = FrontendSubscriptionTier::TuiHighFrequency.default_capabilities();
+        assert!(caps.message_text_delta);
+        assert!(caps.tool_progress);
+        assert!(caps.reasoning_delta);
+        assert!(!caps.final_only);
+    }
+
+    #[test]
+    fn web_tier_excludes_reasoning_delta() {
+        let caps = FrontendSubscriptionTier::WebMediumFrequency.default_capabilities();
+        assert!(caps.message_text_delta);
+        assert!(!caps.reasoning_delta);
+        assert!(!caps.final_only);
+    }
+
+    #[test]
+    fn resolved_from_tier_cli_is_final_only() {
+        let sub = ResolvedFrontendSubscription::from_tier(FrontendSubscriptionTier::CliLowFrequency);
+        assert!(!sub.is_legacy_compat);
+        assert!(sub.capabilities.final_only);
+    }
+
+    #[test]
+    fn legacy_default_is_full_compat() {
+        let sub = ResolvedFrontendSubscription::legacy_default();
+        assert!(sub.is_legacy_compat);
+        assert!(!sub.capabilities.final_only);
+    }
+
+    #[test]
+    fn from_wire_tier_is_single_wire_parsing_authority() {
+        let sub = ResolvedFrontendSubscription::from_wire_tier(Some("cli"));
+        assert!(!sub.is_legacy_compat);
+        assert!(sub.capabilities.final_only);
+
+        let sub = ResolvedFrontendSubscription::from_wire_tier(Some("web"));
+        assert!(!sub.is_legacy_compat);
+        assert!(!sub.capabilities.reasoning_delta);
+
+        let sub = ResolvedFrontendSubscription::from_wire_tier(Some("tui"));
+        assert!(!sub.is_legacy_compat);
+        assert!(sub.capabilities.reasoning_delta);
+
+        let sub = ResolvedFrontendSubscription::from_wire_tier(None);
+        assert!(sub.is_legacy_compat);
+
+        let sub = ResolvedFrontendSubscription::from_wire_tier(Some("unknown"));
+        assert!(sub.is_legacy_compat);
+    }
+
+    #[test]
+    fn subscription_capabilities_roundtrip_via_json() {
+        let caps = FrontendSubscriptionTier::WebMediumFrequency.default_capabilities();
+        let json = serde_json::to_value(&caps).expect("serialize");
+        let parsed: FrontendSubscriptionCapabilities =
+            serde_json::from_value(json).expect("deserialize");
+        assert_eq!(parsed, caps);
+    }
+
+    #[test]
+    fn resolved_subscription_roundtrip_via_json() {
+        let sub = ResolvedFrontendSubscription::from_tier(FrontendSubscriptionTier::TuiHighFrequency);
+        let json = serde_json::to_value(&sub).expect("serialize");
+        let parsed: ResolvedFrontendSubscription =
+            serde_json::from_value(json).expect("deserialize");
+        assert!(!parsed.is_legacy_compat);
+        assert_eq!(parsed.capabilities, sub.capabilities);
+    }
 }

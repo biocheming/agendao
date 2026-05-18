@@ -184,6 +184,8 @@ fn build_event_url(base_event_url: &str, session_id: Option<&str>) -> Url {
     if let Some(session_id) = session_id {
         url.query_pairs_mut().append_pair("session", session_id);
     }
+    // P2-1: TUI defaults to high-frequency tier.
+    url.query_pairs_mut().append_pair("tier", "tui");
     url
 }
 
@@ -519,14 +521,14 @@ mod tests {
         let url = build_event_url("http://localhost:3000/event", Some("session-1"));
         assert_eq!(
             url.as_str(),
-            "http://localhost:3000/event?session=session-1"
+            "http://localhost:3000/event?session=session-1&tier=tui"
         );
     }
 
     #[test]
     fn build_event_url_leaves_unfiltered_stream_plain() {
         let url = build_event_url("http://localhost:3000/event", None);
-        assert_eq!(url.as_str(), "http://localhost:3000/event");
+        assert_eq!(url.as_str(), "http://localhost:3000/event?tier=tui");
     }
 
     #[test]

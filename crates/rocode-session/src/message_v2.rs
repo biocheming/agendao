@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use rocode_provider::{
-    parse_api_call_error, parse_stream_error, Content, ContentPart, ImageUrl,
-    Message as ProviderMessage, ParsedAPICallError, ParsedStreamError, ProviderError, Role,
-    ToolResult as ProviderToolResult, ToolUse,
+    is_retryable_stream_error_message, parse_api_call_error, parse_stream_error, Content,
+    ContentPart, ImageUrl, Message as ProviderMessage, ParsedAPICallError, ParsedStreamError,
+    ProviderError, Role, ToolResult as ProviderToolResult, ToolUse,
 };
 pub use rocode_types::{
     AgentPart, AgentSource, CacheTokens, CompactionPart, CompletedTime, ErrorTime, FilePart,
@@ -470,7 +470,10 @@ pub fn error_from_anyhow(e: anyhow::Error, provider_id: &str) -> MessageError {
     }
 
     // 8. Generic connection / network errors that are retryable.
-    if err_str.contains("connection") || err_str.contains("reset") || err_str.contains("timed out")
+    if err_str.contains("connection")
+        || err_str.contains("reset")
+        || err_str.contains("timed out")
+        || is_retryable_stream_error_message(&err_str)
     {
         return MessageError::ApiError {
             message: err_str,
