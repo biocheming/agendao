@@ -7,6 +7,7 @@ use crate::runtime::normalizer;
 use crate::runtime::policy::{LoopPolicy, ModelContextLimits, ToolDedupScope, ToolErrorStrategy};
 use crate::runtime::traits::{LoopSink, ModelCaller, ToolDispatcher};
 use futures::StreamExt;
+use rocode_provider::is_retryable_stream_error_message;
 use std::collections::HashSet;
 use tracing::Instrument;
 
@@ -16,6 +17,24 @@ use tracing::Instrument;
 
 const CHECKPOINT_COMPACTION_MAX_SUMMARY_CHARS: usize = 500;
 const CHECKPOINT_COMPACTION_MAX_PART_CHARS: usize = 160;
+const MAX_INITIAL_STREAM_RETRIES: u32 = 1;
+
+fn can_retry_initial_stream_fault(
+    error: &rocode_provider::ProviderError,
+    saw_visible_stream_output: bool,
+) -> bool {
+    if saw_visible_stream_output {
+        return false;
+    }
+    match error {
+        rocode_provider::ProviderError::Timeout
+        | rocode_provider::ProviderError::NetworkError(_) => true,
+        rocode_provider::ProviderError::StreamError(message) => {
+            is_retryable_stream_error_message(message)
+        }
+        _ => false,
+    }
+}
 
 struct LoopConversation<'a> {
     messages: &'a mut Vec<rocode_provider::Message>,
@@ -528,84 +547,125 @@ pub async fn run_loop<S: LoopSink>(
             tools: tool_defs,
         };
 
-        let raw_stream = model.call_stream(req).await?;
-        // Wrap with assemble_tool_calls to normalize Start+Delta→End.
-        let mut stream = rocode_provider::assemble_tool_calls(raw_stream);
-
         // ── Consume stream: normalize → dispatch to sink ─────────────
         let mut step_content = String::new();
         let mut step_reasoning = String::new();
         let mut step_tool_calls: Vec<ToolCallReady> = Vec::new();
-        let mut step_usage: Option<StepUsage> = None;
-        let mut had_error = false;
+        let mut step_usage: Option<StepUsage>;
+        let mut had_error: bool;
+        let mut stream_retry_count = 0;
 
-        while let Some(event_result) = stream.next().await {
-            // ── Cancellation checkpoint 2: after each event ───────────
-            if cancel.is_cancelled() {
-                tracing::info!(step, "cancelled during stream consumption");
-                sink.on_step_boundary(&StepBoundary::End {
-                    step,
-                    finish_reason: FinishReason::Cancelled,
-                    tool_calls_count: 0,
-                    had_error,
-                    usage: step_usage,
-                })
-                .await
-                .map_err(|e| LoopError::SinkError(e.to_string()))?;
-                return Ok(LoopOutcome {
-                    content,
-                    total_steps: step,
-                    total_tool_calls,
-                    finish_reason: FinishReason::Cancelled,
-                });
-            }
+        'stream_attempt: loop {
+            step_content.clear();
+            step_reasoning.clear();
+            step_tool_calls.clear();
+            step_usage = None;
+            had_error = false;
+            let mut saw_visible_stream_output = false;
 
-            match event_result {
-                Ok(stream_event) => {
-                    let loop_events = normalizer::normalize(stream_event);
-                    for loop_event in loop_events {
-                        sink.on_event(&loop_event)
-                            .await
-                            .map_err(|e| LoopError::SinkError(e.to_string()))?;
+            let raw_stream = model.call_stream(req.clone()).await?;
+            // Wrap with assemble_tool_calls to normalize Start+Delta→End.
+            let mut stream = rocode_provider::assemble_tool_calls(raw_stream);
 
-                        match loop_event {
-                            LoopEvent::TextChunk(text) => step_content.push_str(&text),
-                            LoopEvent::ReasoningChunk { text, .. } => {
-                                step_reasoning.push_str(&text)
-                            }
-                            LoopEvent::ToolCallReady(tc) => step_tool_calls.push(tc),
-                            LoopEvent::StepDone { usage: Some(u), .. } => {
-                                if let Some(existing) = step_usage.as_mut() {
-                                    existing.merge_snapshot(&u);
-                                } else {
-                                    step_usage = Some(u);
-                                }
-                            }
-                            LoopEvent::StepDone { usage: None, .. } => {}
-                            LoopEvent::Error(_) => had_error = true,
-                            _ => {}
-                        }
-                    }
-                }
-                Err(provider_err) => {
-                    let failure = model.model_failure_from_provider_error(&provider_err);
-                    let err_msg = failure.message().to_string();
-                    let err_event = LoopEvent::Error(err_msg.clone());
-                    sink.on_event(&err_event)
-                        .await
-                        .map_err(|e| LoopError::SinkError(e.to_string()))?;
+            while let Some(event_result) = stream.next().await {
+                // ── Cancellation checkpoint 2: after each event ───────────
+                if cancel.is_cancelled() {
+                    tracing::info!(step, "cancelled during stream consumption");
                     sink.on_step_boundary(&StepBoundary::End {
                         step,
-                        finish_reason: FinishReason::Error(err_msg.clone()),
+                        finish_reason: FinishReason::Cancelled,
                         tool_calls_count: 0,
-                        had_error: true,
+                        had_error,
                         usage: step_usage,
                     })
                     .await
                     .map_err(|e| LoopError::SinkError(e.to_string()))?;
-                    return Err(LoopError::ModelError(failure));
+                    return Ok(LoopOutcome {
+                        content,
+                        total_steps: step,
+                        total_tool_calls,
+                        finish_reason: FinishReason::Cancelled,
+                    });
+                }
+
+                match event_result {
+                    Ok(stream_event) => {
+                        let loop_events = normalizer::normalize(stream_event);
+                        for loop_event in loop_events {
+                            sink.on_event(&loop_event)
+                                .await
+                                .map_err(|e| LoopError::SinkError(e.to_string()))?;
+
+                            match loop_event {
+                                LoopEvent::TextChunk(text) => {
+                                    if !text.is_empty() {
+                                        saw_visible_stream_output = true;
+                                    }
+                                    step_content.push_str(&text);
+                                }
+                                LoopEvent::ReasoningChunk { text, .. } => {
+                                    if !text.is_empty() {
+                                        saw_visible_stream_output = true;
+                                    }
+                                    step_reasoning.push_str(&text)
+                                }
+                                LoopEvent::ToolCallProgress { .. } => {
+                                    saw_visible_stream_output = true;
+                                }
+                                LoopEvent::ToolCallReady(tc) => {
+                                    saw_visible_stream_output = true;
+                                    step_tool_calls.push(tc);
+                                }
+                                LoopEvent::StepDone { usage: Some(u), .. } => {
+                                    if let Some(existing) = step_usage.as_mut() {
+                                        existing.merge_snapshot(&u);
+                                    } else {
+                                        step_usage = Some(u);
+                                    }
+                                }
+                                LoopEvent::StepDone { usage: None, .. } => {}
+                                LoopEvent::Error(_) => had_error = true,
+                            }
+                        }
+                    }
+                    Err(provider_err) => {
+                        if stream_retry_count < MAX_INITIAL_STREAM_RETRIES
+                            && can_retry_initial_stream_fault(
+                                &provider_err,
+                                saw_visible_stream_output,
+                            )
+                        {
+                            stream_retry_count += 1;
+                            tracing::warn!(
+                                step,
+                                retry = stream_retry_count,
+                                error = %provider_err,
+                                "retrying model stream after transient stream fault before visible output"
+                            );
+                            continue 'stream_attempt;
+                        }
+
+                        let failure = model.model_failure_from_provider_error(&provider_err);
+                        let err_msg = failure.message().to_string();
+                        let err_event = LoopEvent::Error(err_msg.clone());
+                        sink.on_event(&err_event)
+                            .await
+                            .map_err(|e| LoopError::SinkError(e.to_string()))?;
+                        sink.on_step_boundary(&StepBoundary::End {
+                            step,
+                            finish_reason: FinishReason::Error(err_msg.clone()),
+                            tool_calls_count: 0,
+                            had_error: true,
+                            usage: step_usage,
+                        })
+                        .await
+                        .map_err(|e| LoopError::SinkError(e.to_string()))?;
+                        return Err(LoopError::ModelError(failure));
+                    }
                 }
             }
+
+            break 'stream_attempt;
         }
 
         // Keep latest content for the outcome.

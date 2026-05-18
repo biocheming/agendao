@@ -6,7 +6,7 @@ mod tests {
     use crate::runtime::traits::*;
     use async_trait::async_trait;
     use futures::{stream, StreamExt};
-    use rocode_provider::{StreamEvent, StreamResult, ToolDefinition};
+    use rocode_provider::{ProviderError, StreamEvent, StreamResult, ToolDefinition};
     use serde_json::json;
     use std::sync::{Arc, Mutex};
 
@@ -55,6 +55,44 @@ mod tests {
 
         fn context_limits(&self) -> Option<ModelContextLimits> {
             self.context_limits
+        }
+    }
+
+    struct FakeResultModelCaller {
+        streams: Mutex<Vec<Vec<Result<StreamEvent, ProviderError>>>>,
+        request_count: Mutex<u32>,
+    }
+
+    impl FakeResultModelCaller {
+        fn new(streams: Vec<Vec<Result<StreamEvent, ProviderError>>>) -> Self {
+            let mut s = streams;
+            s.reverse();
+            Self {
+                streams: Mutex::new(s),
+                request_count: Mutex::new(0),
+            }
+        }
+
+        fn request_count(&self) -> u32 {
+            *self.request_count.lock().unwrap()
+        }
+    }
+
+    #[async_trait]
+    impl ModelCaller for FakeResultModelCaller {
+        async fn call_stream(&self, _req: LoopRequest) -> Result<StreamResult, LoopError> {
+            *self.request_count.lock().unwrap() += 1;
+            let events = self
+                .streams
+                .lock()
+                .unwrap()
+                .pop()
+                .ok_or_else(|| LoopError::Other("no more fake streams".into()))?;
+            Ok(Box::pin(stream::iter(events)))
+        }
+
+        fn context_limits(&self) -> Option<ModelContextLimits> {
+            None
         }
     }
 
@@ -566,6 +604,65 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn golden_transient_stream_fault_retries_once_before_visible_output() {
+        let model = FakeResultModelCaller::new(vec![
+            vec![Err(ProviderError::StreamError(
+                "error decoding response body".to_string(),
+            ))],
+            vec![
+                Ok(StreamEvent::TextDelta("recovered".into())),
+                Ok(StreamEvent::FinishStep {
+                    finish_reason: Some("stop".into()),
+                    usage: Default::default(),
+                    provider_metadata: None,
+                }),
+                Ok(StreamEvent::Done),
+            ],
+        ]);
+        let tools = FakeToolDispatcher::new();
+        let mut sink = RecordingSink::default();
+
+        let outcome = run_loop(
+            &model,
+            &tools,
+            &mut sink,
+            &default_policy(),
+            &NeverCancel,
+            vec![user_msg("retry this")],
+        )
+        .await
+        .expect("initial transient stream fault should recover");
+
+        assert_eq!(outcome.content, "recovered");
+        assert_eq!(model.request_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn golden_transient_stream_fault_after_visible_output_does_not_retry() {
+        let model = FakeResultModelCaller::new(vec![vec![
+            Ok(StreamEvent::TextDelta("partial ".into())),
+            Err(ProviderError::StreamError(
+                "error decoding response body".to_string(),
+            )),
+        ]]);
+        let tools = FakeToolDispatcher::new();
+        let mut sink = RecordingSink::default();
+
+        let result = run_loop(
+            &model,
+            &tools,
+            &mut sink,
+            &default_policy(),
+            &NeverCancel,
+            vec![user_msg("do not replay visible partials")],
+        )
+        .await;
+
+        assert!(matches!(result, Err(LoopError::ModelError(_))));
+        assert_eq!(model.request_count(), 1);
     }
 
     /// Fixture 7: Reasoning events mixed with text.

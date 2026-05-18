@@ -111,10 +111,11 @@ impl crate::retry::IsRetryable for ProviderError {
             | ProviderError::AuthError(_)
             | ProviderError::ModelNotFound(_)
             | ProviderError::InvalidRequest(_)
-            | ProviderError::StreamError(_)
             | ProviderError::ProviderNotFound(_)
             | ProviderError::ConfigError(_)
             | ProviderError::ContextOverflow(_) => None,
+            ProviderError::StreamError(message) => is_retryable_stream_error_message(message)
+                .then(|| format!("Transient stream error: {message}")),
         }
     }
 }
@@ -239,6 +240,24 @@ pub(crate) fn format_error_message(provider_id: &str, error: &ProviderError) -> 
         }
     }
     error.to_string()
+}
+
+pub fn is_retryable_stream_error_message(message: &str) -> bool {
+    let lower = message.trim().to_ascii_lowercase();
+    [
+        "error decoding response body",
+        "decode response body",
+        "unexpected eof",
+        "connection reset",
+        "connection closed",
+        "channel closed",
+        "body write aborted",
+        "broken pipe",
+        "stream closed",
+        "timed out",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
 }
 
 pub(crate) fn is_openai_error_retryable(status: u16) -> bool {
@@ -466,6 +485,19 @@ mod tests {
         assert!(is_openai_error_retryable(404));
         assert!(is_openai_error_retryable(429));
         assert!(!is_openai_error_retryable(401));
+    }
+
+    #[test]
+    fn test_retryable_stream_error_message() {
+        assert!(is_retryable_stream_error_message(
+            "error decoding response body"
+        ));
+        assert!(is_retryable_stream_error_message(
+            "unexpected EOF while reading chunked body"
+        ));
+        assert!(!is_retryable_stream_error_message(
+            "provider returned malformed tool payload"
+        ));
     }
 
     #[test]
