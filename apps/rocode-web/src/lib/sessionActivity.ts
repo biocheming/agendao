@@ -245,6 +245,52 @@ export interface SessionTelemetrySnapshotRecord {
   prompt_surface_evidence?: Record<string, unknown> | null;
   ingress_stabilization?: Record<string, unknown> | null;
   provider_diagnostic_summary?: Record<string, unknown> | null;
+  runtime_protocol?: SessionRuntimeProtocolRecord | null;
+  event_bus_telemetry?: EventBusTelemetryRecord | null;
+}
+
+export interface EventBusTelemetryRecord {
+  send_count: number;
+  send_error_count: number;
+  max_receivers: number;
+  last_send_at_ms: number;
+  last_send_error_at_ms: number;
+}
+
+export type PromptIngressDispositionRecord =
+  | "accept_now"
+  | "queue_as_steering"
+  | "blocked_on_question"
+  | "blocked_on_permission"
+  | "awaiting_interrupt";
+
+export interface PermissionRuntimeSummaryRecord {
+  pending: boolean;
+  pending_permission_id?: string | null;
+  pending_since_ms?: number | null;
+  pending_tool?: string | null;
+  last_pending_duration_ms?: number | null;
+}
+
+export interface SteeringRuntimeSummaryRecord {
+  pending_count: number;
+  last_enqueued_at_ms?: number | null;
+  last_consumed_at_ms?: number | null;
+  last_source_session_id?: string | null;
+  last_latency_ms?: number | null;
+}
+
+export interface InterruptRuntimeSummaryRecord {
+  phase: "idle" | "requested";
+  requested_at_ms?: number | null;
+  target?: "run" | "stage" | null;
+}
+
+export interface SessionRuntimeProtocolRecord {
+  prompt_ingress: PromptIngressDispositionRecord;
+  permission: PermissionRuntimeSummaryRecord;
+  steering: SteeringRuntimeSummaryRecord;
+  interrupt: InterruptRuntimeSummaryRecord;
 }
 
 export interface ActivityEventRecord {

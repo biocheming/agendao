@@ -27,7 +27,9 @@ use rocode_provider::transform::{apply_caching, ProviderType};
 use rocode_provider::{Provider, ToolDefinition};
 use rocode_types::SessionContinuityPacket;
 
-use crate::tool_result_governance::{default_tool_result_artifacts_root, govern_tool_result_batch};
+use crate::tool_result_governance::{
+    default_tool_result_artifacts_root, govern_tool_result_batch, tool_result_budget,
+};
 use crate::{MessageRole, Session, SessionMessage};
 
 use super::runtime_step::{SessionStepRuntimeOutput, SessionStepSink, SessionStepToolDispatcher};
@@ -235,10 +237,12 @@ mod steering_transcript_tests {
             vec![
                 crate::prompt::SteeringMessage {
                     text: "stop and explain".to_string(),
+                    created_at: 1,
                     source_session_id: None,
                 },
                 crate::prompt::SteeringMessage {
                     text: "do not write code".to_string(),
+                    created_at: 2,
                     source_session_id: Some("attached_ses".to_string()),
                 },
             ],
@@ -1036,14 +1040,21 @@ impl SessionPrompt {
         session: &mut Session,
         session_id: &str,
         stream_tool_results: Vec<super::StreamToolResultEntry>,
+        config_store: Option<&rocode_config::ConfigStore>,
     ) {
         if stream_tool_results.is_empty() {
             return;
         }
 
         let artifacts_root = default_tool_result_artifacts_root(&session.record().directory);
+        let config = config_store.map(|store| store.config());
         let stream_tool_results =
-            govern_tool_result_batch(session_id, stream_tool_results, &artifacts_root);
+            govern_tool_result_batch(
+                session_id,
+                stream_tool_results,
+                &artifacts_root,
+                tool_result_budget(config.as_deref().and_then(|cfg| cfg.runtime_budget.as_ref())),
+            );
 
         let mut tool_msg = SessionMessage::tool(session_id.to_string());
         for (tool_call_id, content, is_error, title, metadata, attachments) in stream_tool_results {
@@ -1475,6 +1486,14 @@ impl SessionPrompt {
             input.step_ctx.hooks.event_broadcast.as_ref(),
             input.step_ctx.hooks.output_block_hook.as_ref(),
             step_complete,
+            tool_result_budget(
+                input.step_ctx
+                    .config_store
+                    .as_ref()
+                    .map(|store| store.config())
+                    .as_deref()
+                    .and_then(|cfg| cfg.runtime_budget.as_ref()),
+            ),
         );
         let policy = LoopPolicy {
             max_steps: Some(MAX_STEPS),
@@ -2624,6 +2643,13 @@ impl SessionPrompt {
                     .rev()
                     .find_map(|sm| sm.source_session_id.clone());
                 let now = chrono::Utc::now().timestamp_millis();
+                let last_latency_ms = steering_msgs
+                    .iter()
+                    .rev()
+                    .find_map(|sm| {
+                        (sm.created_at > 0)
+                            .then_some(now.saturating_sub(sm.created_at) as u64)
+                    });
                 for (i, sm) in steering_msgs.into_iter().enumerate() {
                     // Write the stable, model-visible transcript record.
                     // Unlike the enqueue-time preview (runtime_hint=steering_preview),
@@ -2686,6 +2712,10 @@ impl SessionPrompt {
                 session.insert_metadata(
                     "last_steering_source_session_id".to_string(),
                     serde_json::json!(last_source),
+                );
+                session.insert_metadata(
+                    "last_steering_latency_ms".to_string(),
+                    serde_json::json!(last_latency_ms),
                 );
             }
 
@@ -2885,6 +2915,7 @@ impl SessionPrompt {
                 session,
                 &session_id,
                 step_output.stream_tool_results,
+                self.config_store.as_deref(),
             );
 
             let has_tool_calls = session

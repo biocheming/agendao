@@ -11,7 +11,8 @@ use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::session_runtime::events::{
-    broadcast_session_updated, send_sse_server_event, sse_output_block_hook, ServerEvent,
+    broadcast_session_reconcile, send_sse_server_event, sse_output_block_hook,
+    ReconcileReason, ServerEvent,
 };
 use crate::{ApiError, ServerState};
 use rocode_agent::{AgentInfo, AgentRegistry};
@@ -144,6 +145,11 @@ pub(crate) async fn stream_message(
     Json(req): Json<SendMessageRequest>,
 ) -> std::result::Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>, ApiError>
 {
+    // P2-1 note: subscription negotiation for the main SSE path lives in
+    // routes/mod.rs event_stream() which reads `?tier=` from EventStreamQuery.
+    // The session-specific stream endpoint inherits the legacy full-capability
+    // default until P2-2 adds per-connection subscription persistence.
+
     if req.agent.is_some() && req.scheduler_profile.is_some() {
         return Err(ApiError::BadRequest(
             "`agent` and `scheduler_profile` are mutually exclusive".to_string(),
@@ -243,7 +249,11 @@ pub(crate) async fn stream_message(
         (selected_variant, session.clone())
     };
 
-    broadcast_session_updated(state.as_ref(), session_id.clone(), "stream.request");
+    broadcast_session_reconcile(
+        state.as_ref(),
+        session_id.clone(),
+        ReconcileReason::StatusChange,
+    );
 
     let resolved_tool_surface =
         rocode_session::resolve_tool_surface(state.tool_registry.as_ref()).await;
@@ -492,10 +502,10 @@ pub(crate) async fn stream_message(
             sessions.update(session.clone());
         }
         emit_latest_assistant_usage(&stream_state, &stream_tx, &stream_session_id, &session).await;
-        broadcast_session_updated(
+        broadcast_session_reconcile(
             stream_state.as_ref(),
             stream_session_id.clone(),
-            "stream.final",
+            ReconcileReason::TurnFinal,
         );
 
         if let Err(err) = stream_state

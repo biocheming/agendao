@@ -137,6 +137,14 @@ pub(super) fn cli_usage_snapshot_lines(
             "  Transcript fallback: {}",
             governance.transcript_fallback_count
         ));
+        lines.push(format!(
+            "  Artifact fallback: {}",
+            governance.artifact_fallback_count
+        ));
+        lines.push(format!(
+            "  Chars: {} original → {} displayed",
+            governance.total_original_chars, governance.total_displayed_chars,
+        ));
     }
 
     if telemetry.context_closure_contract.is_none() {
@@ -736,6 +744,9 @@ mod tests {
                 single_result_governed_count: 2,
                 batch_governed_count: 1,
                 transcript_fallback_count: 0,
+                artifact_fallback_count: 1,
+                total_original_chars: 96_000,
+                total_displayed_chars: 16_000,
             }),
             pending_permission_count: 1,
             granted_by_turn_count: 2,
@@ -919,6 +930,8 @@ mod tests {
             ingress_stabilization: None,
             execution_preflight_summary: None,
             provider_diagnostic_summary: None,
+            runtime_protocol: None,
+            event_bus_telemetry: None,
         };
 
         let lines = cli_usage_snapshot_lines("sess_123", &telemetry, Some(&projection));

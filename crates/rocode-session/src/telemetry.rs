@@ -222,6 +222,9 @@ pub fn build_session_tool_result_governance_summary(
     let mut single_result_governed_count = 0u64;
     let mut batch_governed_count = 0u64;
     let mut transcript_fallback_count = 0u64;
+    let mut artifact_fallback_count = 0u64;
+    let mut total_original_chars = 0u64;
+    let mut total_displayed_chars = 0u64;
 
     for message in &session.messages {
         for part in &message.parts {
@@ -253,12 +256,30 @@ pub fn build_session_tool_result_governance_summary(
             {
                 transcript_fallback_count += 1;
             }
+            // Artifact fallback: result was offloaded to disk (not transcript fallback).
+            if metadata.get("tool_result_artifact_path").and_then(|v| v.as_str()).is_some() {
+                artifact_fallback_count += 1;
+            }
+            // Original vs displayed char counts from production metadata.
+            if let Some(chars) = metadata
+                .get("tool_result_original_chars")
+                .and_then(|v| v.as_u64())
+            {
+                total_original_chars += chars;
+            }
+            if let Some(chars) = metadata
+                .get("tool_result_governed_chars")
+                .and_then(|v| v.as_u64())
+            {
+                total_displayed_chars += chars;
+            }
         }
     }
 
     if single_result_governed_count == 0
         && batch_governed_count == 0
         && transcript_fallback_count == 0
+        && artifact_fallback_count == 0
     {
         return None;
     }
@@ -267,6 +288,9 @@ pub fn build_session_tool_result_governance_summary(
         single_result_governed_count,
         batch_governed_count,
         transcript_fallback_count,
+        artifact_fallback_count,
+        total_original_chars,
+        total_displayed_chars,
     })
 }
 
@@ -758,6 +782,8 @@ mod tests {
             consumed_steering_count: 0,
             last_steering_injected_at: None,
             last_steering_source_session_id: None,
+            last_steering_latency_ms: None,
+            last_permission_pending_ms: None,
             last_run_status: "completed".to_string(),
             updated_at: 123,
         }
@@ -1387,6 +1413,8 @@ mod tests {
             consumed_steering_count: 0,
             last_steering_injected_at: None,
             last_steering_source_session_id: None,
+            last_steering_latency_ms: None,
+            last_permission_pending_ms: None,
             last_run_status: "completed".to_string(),
             updated_at: 123,
         };
@@ -1436,6 +1464,18 @@ mod tests {
                         "tool_result_batch_governed".to_string(),
                         serde_json::json!(true),
                     ),
+                    (
+                        "tool_result_artifact_path".to_string(),
+                        serde_json::json!("/tmp/artifact-1.json"),
+                    ),
+                    (
+                        "tool_result_original_chars".to_string(),
+                        serde_json::json!(50_000u64),
+                    ),
+                    (
+                        "tool_result_governed_chars".to_string(),
+                        serde_json::json!(8_000u64),
+                    ),
                 ])),
                 attachments: None,
             },
@@ -1465,5 +1505,8 @@ mod tests {
         assert_eq!(summary.single_result_governed_count, 1);
         assert_eq!(summary.batch_governed_count, 1);
         assert_eq!(summary.transcript_fallback_count, 1);
+        assert_eq!(summary.artifact_fallback_count, 1);
+        assert_eq!(summary.total_original_chars, 50_000);
+        assert_eq!(summary.total_displayed_chars, 8_000);
     }
 }

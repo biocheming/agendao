@@ -6,6 +6,7 @@ use axum::{
 };
 
 use crate::session_runtime::request_active_scheduler_stage_abort;
+use crate::session_runtime::state::InterruptTarget;
 use crate::{ApiError, Result, ServerState};
 use rocode_orchestrator::OrchestratorError;
 
@@ -68,6 +69,20 @@ pub(super) async fn abort_session_execution(
     if !scheduler_stage_only && state.runtime_telemetry.has_prompt_run(session_id).await {
         prompt_running = true;
         state.prompt_runner.cancel(session_id).await;
+    }
+
+    if scheduler_running || prompt_running {
+        state
+            .runtime_telemetry
+            .interrupt_requested(
+                session_id,
+                if scheduler_stage_only {
+                    InterruptTarget::Stage
+                } else {
+                    InterruptTarget::Run
+                },
+            )
+            .await;
     }
 
     let scheduler_abort_info = if scheduler_running {

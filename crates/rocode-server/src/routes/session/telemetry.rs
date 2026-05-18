@@ -116,6 +116,63 @@ pub struct SessionTelemetrySnapshot {
     pub execution_preflight_summary: Option<SessionExecutionPreflightSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_diagnostic_summary: Option<rocode_provider::ProviderDiagnosticSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_protocol: Option<SessionRuntimeProtocolSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_bus_telemetry: Option<rocode_api::EventBusTelemetrySummary>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptIngressDisposition {
+    AcceptNow,
+    QueueAsSteering,
+    BlockedOnQuestion,
+    BlockedOnPermission,
+    AwaitingInterrupt,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PermissionRuntimeSummary {
+    pub pending: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_permission_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_since_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_tool: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_pending_duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SteeringRuntimeSummary {
+    pub pending_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_enqueued_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_consumed_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_source_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_latency_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InterruptRuntimeSummary {
+    pub phase: crate::session_runtime::state::InterruptPhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<crate::session_runtime::state::InterruptTarget>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionRuntimeProtocolSummary {
+    pub prompt_ingress: PromptIngressDisposition,
+    pub permission: PermissionRuntimeSummary,
+    pub steering: SteeringRuntimeSummary,
+    pub interrupt: InterruptRuntimeSummary,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -182,6 +239,84 @@ fn session_metadata_string_count_map(
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn session_metadata_optional_u64(session: &Session, key: &str) -> Option<u64> {
+    session
+        .record()
+        .metadata
+        .get(key)
+        .and_then(|value| value.as_u64())
+}
+
+fn build_runtime_protocol_summary(
+    runtime: &SessionRuntimeState,
+    session: &Session,
+) -> SessionRuntimeProtocolSummary {
+    let permission = PermissionRuntimeSummary {
+        pending: runtime.pending_permission.is_some(),
+        pending_permission_id: runtime
+            .pending_permission
+            .as_ref()
+            .map(|pending| pending.permission_id.clone()),
+        pending_since_ms: runtime
+            .pending_permission
+            .as_ref()
+            .map(|pending| pending.requested_at),
+        pending_tool: runtime
+            .pending_permission
+            .as_ref()
+            .and_then(|pending| pending.tool.clone()),
+        last_pending_duration_ms: session_metadata_optional_u64(session, "last_permission_pending_ms"),
+    };
+    let steering = SteeringRuntimeSummary {
+        pending_count: runtime.pending_steering.len() as u64,
+        last_enqueued_at_ms: runtime.pending_steering.last().map(|pending| pending.created_at),
+        last_consumed_at_ms: session
+            .record()
+            .metadata
+            .get("last_steering_injected_at")
+            .and_then(|value| value.as_i64()),
+        last_source_session_id: session
+            .record()
+            .metadata
+            .get("last_steering_source_session_id")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                runtime
+                    .pending_steering
+                    .iter()
+                    .rev()
+                    .find_map(|pending| pending.source_session_id.clone())
+            }),
+        last_latency_ms: session_metadata_optional_u64(session, "last_steering_latency_ms"),
+    };
+    let interrupt = InterruptRuntimeSummary {
+        phase: runtime.interrupt.phase,
+        requested_at_ms: runtime.interrupt.requested_at,
+        target: runtime.interrupt.target,
+    };
+    let prompt_ingress = if interrupt.phase
+        == crate::session_runtime::state::InterruptPhase::Requested
+    {
+        PromptIngressDisposition::AwaitingInterrupt
+    } else if permission.pending {
+        PromptIngressDisposition::BlockedOnPermission
+    } else if runtime.pending_question.is_some() {
+        PromptIngressDisposition::BlockedOnQuestion
+    } else if matches!(runtime.run_status, crate::session_runtime::state::RunStatus::Idle) {
+        PromptIngressDisposition::AcceptNow
+    } else {
+        PromptIngressDisposition::QueueAsSteering
+    };
+
+    SessionRuntimeProtocolSummary {
+        prompt_ingress,
+        permission,
+        steering,
+        interrupt,
+    }
 }
 
 pub(super) async fn get_session_telemetry(
@@ -392,6 +527,8 @@ pub(super) async fn build_session_telemetry_snapshot(
         .as_ref()
         .and_then(SessionDiagnosticsSidecar::latest_provider_diagnostic_value)
         .and_then(|value| serde_json::from_value(value).ok());
+    let runtime_protocol = Some(build_runtime_protocol_summary(&runtime, session));
+    let event_bus_telemetry = state.event_bus_telemetry.as_ref().map(|telemetry| telemetry.snapshot());
 
     Ok(SessionTelemetrySnapshot {
         runtime,
@@ -430,6 +567,8 @@ pub(super) async fn build_session_telemetry_snapshot(
         ingress_stabilization,
         execution_preflight_summary,
         provider_diagnostic_summary,
+        runtime_protocol,
+        event_bus_telemetry,
     })
 }
 
@@ -970,7 +1109,7 @@ fn build_session_multimodal_insight(session: &Session) -> Option<SessionMultimod
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime_control::SessionExecutionTopology;
+    use crate::runtime_control::{SessionExecutionTopology, SessionRunStatus};
     use crate::session_runtime::state::SessionRuntimeState;
     use crate::session_runtime::{emit_scheduler_stage_message, SchedulerStageMessageInput};
     use crate::ServerState;
@@ -1031,6 +1170,22 @@ mod tests {
         assert_eq!(usage.input_tokens, 12);
         assert_eq!(usage.output_tokens, 8);
         assert_eq!(runtime.usage.as_ref().map(|v| v.total_cost), Some(0.42));
+    }
+
+    async fn seed_permission_session(state: &ServerState) -> (String, Session) {
+        let mut session = {
+            let mut sessions = state.sessions.lock().await;
+            sessions.create("project", "/tmp/project")
+        };
+        let sid = session.id.clone();
+        session.insert_metadata(PERMISSION_GRANTED_BY_TURN_COUNT_METADATA_KEY.to_string(), serde_json::json!(2));
+        session.insert_metadata(PERMISSION_GRANTED_BY_SESSION_COUNT_METADATA_KEY.to_string(), serde_json::json!(3));
+        session.insert_metadata(PERMISSION_GRANTED_BY_MATCHER_KIND_METADATA_KEY.to_string(), serde_json::json!({"scope_only":4,"structured_family":1}));
+        session.insert_metadata(LAST_PERMISSION_MATCHER_KIND_METADATA_KEY.to_string(), serde_json::json!("scope_only"));
+        session.insert_metadata(LAST_PERMISSION_GRANT_TARGET_METADATA_KEY.to_string(), serde_json::json!("Task flow: create task"));
+        session.insert_metadata("last_permission_miss_count".to_string(), serde_json::json!(5));
+        state.runtime_telemetry.permission_requested(&sid, "perm_1", serde_json::json!({"tool":"task_flow"})).await;
+        (sid, session)
     }
 
     #[test]
@@ -1943,6 +2098,8 @@ mod tests {
                 model_id: Some("deepseek-reasoner".to_string()),
                 message: "rejected replay".to_string(),
             }),
+            runtime_protocol: None,
+            event_bus_telemetry: None,
         };
 
         let value = serde_json::to_value(&snapshot).expect("snapshot should serialize");
@@ -2021,42 +2178,7 @@ mod tests {
     #[tokio::test]
     async fn permission_telemetry_read_model_surfaces_runtime_and_persisted_fields() {
         let state = Arc::new(ServerState::new());
-        let mut session = {
-            let mut sessions = state.sessions.lock().await;
-            sessions.create("project", "/tmp/project")
-        };
-        let session_id = session.id.clone();
-        session.insert_metadata(
-            PERMISSION_GRANTED_BY_TURN_COUNT_METADATA_KEY.to_string(),
-            serde_json::json!(2),
-        );
-        session.insert_metadata(
-            PERMISSION_GRANTED_BY_SESSION_COUNT_METADATA_KEY.to_string(),
-            serde_json::json!(3),
-        );
-        session.insert_metadata(
-            PERMISSION_GRANTED_BY_MATCHER_KIND_METADATA_KEY.to_string(),
-            serde_json::json!({
-                "scope_only": 4,
-                "structured_family": 1
-            }),
-        );
-        session.insert_metadata(
-            LAST_PERMISSION_MATCHER_KIND_METADATA_KEY.to_string(),
-            serde_json::json!("scope_only"),
-        );
-        session.insert_metadata(
-            LAST_PERMISSION_GRANT_TARGET_METADATA_KEY.to_string(),
-            serde_json::json!("Task flow: create task"),
-        );
-        session.insert_metadata(
-            "last_permission_miss_count".to_string(),
-            serde_json::json!(5),
-        );
-        state
-            .runtime_telemetry
-            .permission_requested(&session_id, "perm_1", serde_json::json!({"tool": "task_flow"}))
-            .await;
+        let (session_id, mut session) = seed_permission_session(&state).await;
 
         let runtime_snapshot = build_session_telemetry_snapshot(&state, &session_id, &session)
             .await
@@ -2077,6 +2199,23 @@ mod tests {
             Some("Task flow: create task")
         );
         assert_eq!(runtime_snapshot.last_permission_miss_count, 5);
+        let runtime_protocol = runtime_snapshot
+            .runtime_protocol
+            .as_ref()
+            .expect("runtime protocol summary should exist");
+        assert_eq!(
+            runtime_protocol.prompt_ingress,
+            PromptIngressDisposition::BlockedOnPermission
+        );
+        assert!(runtime_protocol.permission.pending);
+        assert_eq!(
+            runtime_protocol.permission.pending_permission_id.as_deref(),
+            Some("perm_1")
+        );
+        assert_eq!(
+            runtime_protocol.permission.pending_tool.as_deref(),
+            Some("task_flow")
+        );
 
         persist_session_telemetry_metadata(&state, &mut session).await;
 
@@ -2099,6 +2238,50 @@ mod tests {
             Some("Task flow: create task")
         );
         assert_eq!(persisted.last_permission_miss_count, 5);
+    }
+
+    #[tokio::test]
+    async fn runtime_protocol_summary_surfaces_interrupt_state() {
+        let state = Arc::new(ServerState::new());
+        let session = {
+            let mut sessions = state.sessions.lock().await;
+            let session = sessions.create("project", "/tmp/project");
+            let session_id = session.id.clone();
+            sessions
+                .get(&session_id)
+                .cloned()
+                .expect("session should exist")
+        };
+        state
+            .runtime_telemetry
+            .set_session_run_status(&session.id, SessionRunStatus::Busy)
+            .await;
+        state
+            .runtime_telemetry
+            .interrupt_requested(
+                &session.id,
+                crate::session_runtime::state::InterruptTarget::Run,
+            )
+            .await;
+
+        let snapshot = build_session_telemetry_snapshot(&state, &session.id, &session)
+            .await
+            .expect("runtime snapshot should build");
+        let runtime_protocol = snapshot
+            .runtime_protocol
+            .expect("runtime protocol summary should exist");
+        assert_eq!(
+            runtime_protocol.prompt_ingress,
+            PromptIngressDisposition::AwaitingInterrupt
+        );
+        assert_eq!(
+            runtime_protocol.interrupt.phase,
+            crate::session_runtime::state::InterruptPhase::Requested
+        );
+        assert_eq!(
+            runtime_protocol.interrupt.target,
+            Some(crate::session_runtime::state::InterruptTarget::Run)
+        );
     }
 
     #[test]
@@ -2273,6 +2456,8 @@ mod tests {
                     consumed_steering_count: 0,
                     last_steering_injected_at: None,
                     last_steering_source_session_id: None,
+                    last_steering_latency_ms: None,
+                    last_permission_pending_ms: None,
                     last_run_status: "completed".to_string(),
                     updated_at: 123,
                 },

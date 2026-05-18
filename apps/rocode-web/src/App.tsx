@@ -136,6 +136,21 @@ import {
 
 type ThemeId = "daylight" | "sunset" | "cobalt";
 
+function readRuntimeBudgetNumber(
+  config: Record<string, unknown> | null | undefined,
+  snakeKey: string,
+  fallback: number,
+): number {
+  const runtimeBudget = config?.runtimeBudget;
+  if (!runtimeBudget || typeof runtimeBudget !== "object" || Array.isArray(runtimeBudget)) {
+    return fallback;
+  }
+  const record = runtimeBudget as Record<string, unknown>;
+  const camelKey = snakeKey.replace(/_([a-z])/g, (_, chr: string) => chr.toUpperCase());
+  const value = record[snakeKey] ?? record[camelKey];
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
 interface ExecutionMode {
   id: string;
   name: string;
@@ -1280,7 +1295,23 @@ export default function App() {
   const autoPreviewSignatureRef = useRef<string>("");
   const liveBlocksRef = useRef<SessionLiveBlockCache>({});
   const optimisticMessagesRef = useRef<SessionOptimisticFeedCache>({});
+  const maxPendingOutputBlocks = useMemo(
+    () =>
+      readRuntimeBudgetNumber(workspaceContext?.config, "web_max_pending_output_blocks", 256),
+    [workspaceContext?.config],
+  );
   const pendingOutputBlocksRef = useRef<Record<string, OutputBlock[]>>({});
+
+  // P2-3: viewport budget for rendered messages. When exceeded, only the most
+  // recent messages are rendered. Full transcript is preserved in state.
+  // Derived from rocode_config::RuntimeBudgetConfig.tui_max_viewport_messages.
+  const MAX_RENDERED_MESSAGES = 200;
+  const renderedMessages = useMemo(
+    () => messages.length > MAX_RENDERED_MESSAGES
+      ? messages.slice(messages.length - MAX_RENDERED_MESSAGES)
+      : messages,
+    [messages, MAX_RENDERED_MESSAGES],
+  );
   const outputFlushFrameRef = useRef<number | null>(null);
   const pendingSessionRefreshTimerRef = useRef<number | null>(null);
   const pendingHistoryReloadTimerRef = useRef<number | null>(null);
@@ -2259,6 +2290,9 @@ export default function App() {
             ? event.session_id
             : undefined;
 
+      // P1-3 PRIMARY incremental path: output blocks deliver message deltas
+      // and tool progress directly. UI updates here; session.updated is only
+      // the reconcile fallback for non-droppable reasons.
       if (type === "output_block" && eventSessionId === selectedSessionRef.current) {
         const rawBlock = event.block as OutputBlock | undefined;
         const block = rawBlock
@@ -2278,6 +2312,8 @@ export default function App() {
         }
         const queue = pendingOutputBlocksRef.current[eventSessionId] ?? [];
         queue.push(block);
+        // P2-3: enforce one-deep-ish cap. Drop oldest if over budget.
+        while (queue.length > maxPendingOutputBlocks) queue.shift();
         pendingOutputBlocksRef.current[eventSessionId] = queue;
         schedulePendingOutputBlockFlush();
         return;
@@ -2301,10 +2337,21 @@ export default function App() {
         return;
       }
 
+      // P1-3: session.updated is the RECONCILE FALLBACK, not the primary
+      // refresh path. Incremental updates (output blocks, permission
+      // requested/resolved) are the PRIMARY mechanism and update the UI
+      // locally via setMessages / setPermission / setRuntimeStatus.
+      // This handler exists to reconcile state after non-droppable events
+      // (turn.final, metadata.change, permission, steering, status.change).
       if (type === "session.updated") {
-        scheduleSessionRefresh();
-        if (eventSessionId === selectedSessionRef.current) {
-          scheduleSelectedHistoryReload(eventSessionId);
+        // P1-2: high-frequency topology reconciles are handled via output
+        // blocks — skip the full session refresh to avoid redundant work.
+        const source = typeof event.source === "string" ? event.source : "";
+        if (source !== "topology") {
+          scheduleSessionRefresh();
+          if (eventSessionId === selectedSessionRef.current) {
+            scheduleSelectedHistoryReload(eventSessionId);
+          }
         }
         return;
       }
@@ -2383,7 +2430,7 @@ export default function App() {
       while (active) {
         controller = new AbortController();
         try {
-          const response = await fetch(apiUrl("/event"), {
+          const response = await fetch(apiUrl("/event?tier=web"), {
             headers: { Accept: "text/event-stream" },
             signal: controller.signal,
           });

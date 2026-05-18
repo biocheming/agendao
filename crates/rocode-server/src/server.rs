@@ -38,6 +38,7 @@ use rocode_storage::{Database, MemoryRepository, MessageRepository, SessionRepos
 
 use crate::routes;
 use crate::runtime_control::RuntimeControlRegistry;
+use crate::session_runtime::events::EventBusTelemetry;
 use crate::session_runtime::memory::RuntimeMemoryAuthority;
 use crate::session_runtime::steering::SessionSteeringQueueStore;
 use crate::session_runtime::telemetry::RuntimeTelemetryAuthority;
@@ -242,6 +243,10 @@ pub struct ServerState {
     pub(crate) runtime_control: Arc<RuntimeControlRegistry>,
     pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) event_bus: broadcast::Sender<String>,
+    /// Observable event bus telemetry (P0-2). Tracks send volume, errors, and
+    /// receiver count so operators can distinguish event backlog from other
+    /// sources of CPU/memory pressure.
+    pub(crate) event_bus_telemetry: Option<Arc<EventBusTelemetry>>,
     pub(crate) api_perf: Arc<ApiPerfCounters>,
     pub(crate) session_repo: Option<SessionRepository>,
     pub(crate) message_repo: Option<MessageRepository>,
@@ -297,7 +302,11 @@ impl ServerState {
             Some(config_store.clone()),
         ));
         let (tx, _) = broadcast::channel(1024);
-        let runtime_telemetry = Arc::new(RuntimeTelemetryAuthority::new(tx.clone()));
+        let event_bus_telemetry = Arc::new(EventBusTelemetry::default());
+        let runtime_telemetry = Arc::new(RuntimeTelemetryAuthority::new(
+            tx.clone(),
+            Some(event_bus_telemetry.clone()),
+        ));
         let runtime_control = runtime_telemetry.runtime_control();
         let steering_store = Arc::new(tokio::sync::Mutex::new(SessionSteeringQueueStore::new()));
         Self {
@@ -322,6 +331,7 @@ impl ServerState {
             runtime_control,
             auth_manager: Arc::new(AuthManager::new()),
             event_bus: tx,
+            event_bus_telemetry: Some(event_bus_telemetry),
             api_perf: Arc::new(ApiPerfCounters::new()),
             session_repo: None,
             message_repo: None,
@@ -493,8 +503,14 @@ impl ServerState {
     }
 
     pub fn broadcast(&self, event: &str) {
-        if let Err(error) = self.event_bus.send(event.to_string()) {
-            tracing::warn!(%error, "failed to broadcast server event");
+        let receiver_count = self.event_bus.receiver_count();
+        if self.event_bus.send(event.to_string()).is_err() {
+            tracing::warn!("failed to broadcast server event (no active receivers)");
+            if let Some(ref telemetry) = self.event_bus_telemetry {
+                telemetry.record_send_error();
+            }
+        } else if let Some(ref telemetry) = self.event_bus_telemetry {
+            telemetry.record_send(receiver_count);
         }
     }
 

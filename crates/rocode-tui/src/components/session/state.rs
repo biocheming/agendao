@@ -112,6 +112,10 @@ struct SessionMessagesSnapshot {
 }
 
 impl SessionMessagesSnapshot {
+    /// P2-3: max messages rendered in the session viewport.
+    /// Derived from rocode_config::RuntimeBudgetConfig.tui_max_viewport_messages (default 200).
+    const MAX_VIEWPORT_MESSAGES: usize = 200;
+
     fn capture(context: &Arc<AppContext>, session_id: &str) -> Self {
         let theme = context.theme.read().clone();
         let show_scrollbar = context.show_scrollbar_enabled();
@@ -120,7 +124,7 @@ impl SessionMessagesSnapshot {
         let show_tool_details = context.show_tool_details_enabled();
         let semantic_hl = context.semantic_highlight_enabled();
         let fallback_model = context.current_model();
-        let (messages, revert_info) = {
+        let (mut messages, revert_info) = {
             let session_ctx = context.session.read();
             (
                 session_ctx
@@ -131,6 +135,15 @@ impl SessionMessagesSnapshot {
                 session_ctx.revert.get(session_id).cloned(),
             )
         };
+
+        // P2-3: UUID-anchored viewport capping. When messages exceed the
+        // budget, keep only the last MAX_VIEWPORT_MESSAGES. The anchor is
+        // the count-based slice — if compaction changes the UUID set, we
+        // fall back to showing as many as the budget allows.
+        let total = messages.len();
+        if total > Self::MAX_VIEWPORT_MESSAGES {
+            messages = messages.split_off(total.saturating_sub(Self::MAX_VIEWPORT_MESSAGES));
+        }
 
         Self {
             theme,

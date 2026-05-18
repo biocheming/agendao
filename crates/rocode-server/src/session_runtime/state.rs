@@ -45,6 +45,8 @@ pub struct SessionRuntimeState {
     /// Constitution §8: pending steering messages must be observable.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_steering: Vec<PendingSteeringMessageSummary>,
+    #[serde(default)]
+    pub interrupt: InterruptRuntimeState,
     pub attached_sessions: Vec<AttachedSessionSummary>,
 }
 
@@ -61,6 +63,7 @@ impl SessionRuntimeState {
             pending_question: None,
             pending_permission: None,
             pending_steering: Vec::new(),
+            interrupt: InterruptRuntimeState::default(),
             attached_sessions: Vec::new(),
         }
     }
@@ -106,7 +109,9 @@ pub struct PendingQuestionSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingPermissionSummary {
     pub permission_id: String,
-    pub info: serde_json::Value,
+    pub requested_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
 }
 
 /// Summary of a pending steering message waiting for the next tool boundary.
@@ -115,12 +120,51 @@ pub struct PendingPermissionSummary {
 pub struct PendingSteeringMessageSummary {
     pub id: String,
     pub owner_session_id: String,
-    pub text: String,
     pub created_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_session_id: Option<String>,
     /// Always "next_tool_boundary" in P0.
     pub deliver_at: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InterruptPhase {
+    #[default]
+    Idle,
+    Requested,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InterruptTarget {
+    Run,
+    Stage,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct InterruptRuntimeState {
+    pub phase: InterruptPhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<InterruptTarget>,
+}
+
+#[derive(Debug, Clone)]
+pub enum RuntimeProtocolUpdate {
+    PermissionRequested {
+        permission_id: String,
+        requested_at: i64,
+        tool: Option<String>,
+    },
+    PermissionResolved,
+    SteeringEnqueued(PendingSteeringMessageSummary),
+    SteeringCleared,
+    InterruptRequested {
+        requested_at: i64,
+        target: InterruptTarget,
+    },
 }
 
 /// Summary of an attached session.
@@ -176,6 +220,45 @@ impl RuntimeStateStore {
         guard.remove(session_id);
     }
 
+    pub async fn apply_protocol_update(&self, session_id: &str, update: RuntimeProtocolUpdate) {
+        self.update(session_id, |s| match update {
+            RuntimeProtocolUpdate::PermissionRequested {
+                permission_id,
+                requested_at,
+                tool,
+            } => {
+                s.run_status = RunStatus::WaitingOnUser;
+                s.pending_permission = Some(PendingPermissionSummary {
+                    permission_id,
+                    requested_at,
+                    tool,
+                });
+            }
+            RuntimeProtocolUpdate::PermissionResolved => {
+                s.pending_permission = None;
+                if s.run_status == RunStatus::WaitingOnUser && s.pending_question.is_none() {
+                    s.run_status = RunStatus::Running;
+                }
+            }
+            RuntimeProtocolUpdate::SteeringEnqueued(summary) => {
+                s.pending_steering.push(summary);
+            }
+            RuntimeProtocolUpdate::SteeringCleared => {
+                s.pending_steering.clear();
+            }
+            RuntimeProtocolUpdate::InterruptRequested {
+                requested_at,
+                target,
+            } => {
+                s.run_status = RunStatus::Cancelling;
+                s.interrupt.phase = InterruptPhase::Requested;
+                s.interrupt.requested_at = Some(requested_at);
+                s.interrupt.target = Some(target);
+            }
+        })
+        .await;
+    }
+
     // ── Convenience mutators ────────────────────────────────────────────
 
     /// Mark the session as running with the given message id.
@@ -183,6 +266,7 @@ impl RuntimeStateStore {
         self.update(session_id, |s| {
             s.run_status = RunStatus::Running;
             s.current_message_id = message_id;
+            s.interrupt = InterruptRuntimeState::default();
         })
         .await;
     }
@@ -192,6 +276,7 @@ impl RuntimeStateStore {
     pub async fn mark_compacting(&self, session_id: &str) {
         self.update(session_id, |s| {
             s.run_status = RunStatus::Compacting;
+            s.interrupt = InterruptRuntimeState::default();
         })
         .await;
     }
@@ -206,6 +291,7 @@ impl RuntimeStateStore {
             s.active_stage_count = 0;
             s.pending_question = None;
             s.pending_permission = None;
+            s.interrupt = InterruptRuntimeState::default();
             // attached_sessions are NOT cleared here — they persist until
             // explicit detach events.
         })
@@ -287,18 +373,14 @@ impl RuntimeStateStore {
         session_id: &str,
         summary: PendingSteeringMessageSummary,
     ) {
-        self.update(session_id, |s| {
-            s.pending_steering.push(summary);
-        })
-        .await;
+        self.apply_protocol_update(session_id, RuntimeProtocolUpdate::SteeringEnqueued(summary))
+            .await;
     }
 
     /// Clear all pending steering messages for a session.
     pub async fn steering_cleared(&self, session_id: &str) {
-        self.update(session_id, |s| {
-            s.pending_steering.clear();
-        })
-        .await;
+        self.apply_protocol_update(session_id, RuntimeProtocolUpdate::SteeringCleared)
+            .await;
     }
 
     /// Clear a pending question.
@@ -318,27 +400,39 @@ impl RuntimeStateStore {
         &self,
         session_id: &str,
         permission_id: &str,
-        info: serde_json::Value,
+        requested_at: i64,
+        tool: Option<String>,
     ) {
-        self.update(session_id, |s| {
-            s.run_status = RunStatus::WaitingOnUser;
-            s.pending_permission = Some(PendingPermissionSummary {
+        self.apply_protocol_update(
+            session_id,
+            RuntimeProtocolUpdate::PermissionRequested {
                 permission_id: permission_id.to_string(),
-                info,
-            });
-        })
+                requested_at,
+                tool,
+            },
+        )
         .await;
     }
 
     /// Clear a pending permission request.
     pub async fn permission_resolved(&self, session_id: &str) {
-        self.update(session_id, |s| {
-            s.pending_permission = None;
-            // Revert to Running only if not waiting on something else.
-            if s.run_status == RunStatus::WaitingOnUser && s.pending_question.is_none() {
-                s.run_status = RunStatus::Running;
-            }
-        })
+        self.apply_protocol_update(session_id, RuntimeProtocolUpdate::PermissionResolved)
+            .await;
+    }
+
+    pub async fn interrupt_requested(
+        &self,
+        session_id: &str,
+        requested_at: i64,
+        target: InterruptTarget,
+    ) {
+        self.apply_protocol_update(
+            session_id,
+            RuntimeProtocolUpdate::InterruptRequested {
+                requested_at,
+                target,
+            },
+        )
         .await;
     }
 
@@ -465,11 +559,17 @@ mod tests {
         assert!(state.pending_question.is_none());
 
         store
-            .permission_requested("ses_1", "perm_1", serde_json::json!({"tool": "bash"}))
+            .permission_requested("ses_1", "perm_1", 123, Some("bash".to_string()))
             .await;
         let state = store.get("ses_1").await.unwrap();
         assert_eq!(state.run_status, RunStatus::WaitingOnUser);
-        assert!(state.pending_permission.is_some());
+        assert_eq!(
+            state
+                .pending_permission
+                .as_ref()
+                .map(|pending| pending.tool.as_deref()),
+            Some(Some("bash"))
+        );
 
         store.permission_resolved("ses_1").await;
         let state = store.get("ses_1").await.unwrap();
@@ -544,7 +644,7 @@ mod tests {
             .question_created("ses_1", "q_1", serde_json::json!("q"))
             .await;
         store
-            .permission_requested("ses_1", "p_1", serde_json::json!("p"))
+            .permission_requested("ses_1", "p_1", 456, None)
             .await;
         let state = store.get("ses_1").await.unwrap();
         assert_eq!(state.run_status, RunStatus::WaitingOnUser);
@@ -569,7 +669,6 @@ mod tests {
                 PendingSteeringMessageSummary {
                     id: "steer_1".to_string(),
                     owner_session_id: "ses_1".to_string(),
-                    text: "pause".to_string(),
                     created_at: 1,
                     source_session_id: Some("child_1".to_string()),
                     deliver_at: "next_tool_boundary".to_string(),
@@ -582,7 +681,6 @@ mod tests {
                 PendingSteeringMessageSummary {
                     id: "steer_2".to_string(),
                     owner_session_id: "ses_1".to_string(),
-                    text: "explain".to_string(),
                     created_at: 2,
                     source_session_id: None,
                     deliver_at: "next_tool_boundary".to_string(),
@@ -608,5 +706,97 @@ mod tests {
             .expect("runtime state should still exist")
             .pending_steering
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn interrupt_protocol_is_requested_and_cleared_by_run_lifecycle() {
+        let store = RuntimeStateStore::new();
+        store.mark_running("ses_1", None).await;
+
+        store
+            .interrupt_requested("ses_1", 789, InterruptTarget::Run)
+            .await;
+        let state = store.get("ses_1").await.expect("runtime state should exist");
+        assert_eq!(state.run_status, RunStatus::Cancelling);
+        assert_eq!(state.interrupt.phase, InterruptPhase::Requested);
+        assert_eq!(state.interrupt.requested_at, Some(789));
+        assert_eq!(state.interrupt.target, Some(InterruptTarget::Run));
+
+        store.mark_idle("ses_1").await;
+        let state = store
+            .get("ses_1")
+            .await
+            .expect("runtime state should still exist after idle");
+        assert_eq!(state.interrupt.phase, InterruptPhase::Idle);
+        assert_eq!(state.interrupt.requested_at, None);
+        assert_eq!(state.interrupt.target, None);
+    }
+
+    /// P3-4: after idle, transient runtime state must be cleared.
+    /// mark_idle clears permission, question, active tools, and interrupt.
+    /// Steering is NOT cleared (consumed at tool boundaries within a run).
+    #[tokio::test]
+    async fn mark_idle_clears_permission_and_interrupt_not_steering() {
+        let store = RuntimeStateStore::new();
+        store.mark_running("ses_idle", None).await;
+
+        store
+            .permission_requested("ses_idle", "perm_1", 1000, Some("bash".to_string()))
+            .await;
+        store
+            .interrupt_requested("ses_idle", 42, InterruptTarget::Run)
+            .await;
+        store
+            .steering_enqueued(
+                "ses_idle",
+                PendingSteeringMessageSummary {
+                    id: "steer_1".to_string(),
+                    owner_session_id: "ses_idle".to_string(),
+                    created_at: 1000,
+                    deliver_at: "next_tool_boundary".to_string(),
+                    source_session_id: None,
+                },
+            )
+            .await;
+
+        store.mark_idle("ses_idle").await;
+
+        let state = store
+            .get("ses_idle")
+            .await
+            .expect("runtime state should exist after idle");
+        assert!(state.pending_permission.is_none(), "permission should be cleared by mark_idle");
+        assert_eq!(state.interrupt.phase, InterruptPhase::Idle, "interrupt should reset");
+        assert!(!state.pending_steering.is_empty(), "steering survives idle (consumed at tool boundary)");
+    }
+
+    /// P3-4: after interrupt → idle → run, the next turn's runtime state
+    /// must not carry any interrupt residue into the new run.
+    #[tokio::test]
+    async fn interrupt_cleared_before_next_run_does_not_reappear() {
+        let store = RuntimeStateStore::new();
+        store.mark_running("ses_int_2", None).await;
+        store
+            .interrupt_requested("ses_int_2", 42, InterruptTarget::Run)
+            .await;
+
+        // Interrupt consumed: mark idle then start a new run.
+        store.mark_idle("ses_int_2").await;
+        store.mark_running("ses_int_2", None).await;
+
+        let state = store
+            .get("ses_int_2")
+            .await
+            .expect("runtime state should exist");
+        assert_eq!(
+            state.interrupt.phase,
+            InterruptPhase::Idle,
+            "interrupt phase should reset after idle+run"
+        );
+        assert_eq!(
+            state.run_status,
+            RunStatus::Running,
+            "new run should be Running, not Cancelling"
+        );
     }
 }

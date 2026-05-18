@@ -1,4 +1,5 @@
 use std::convert::Infallible;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use axum::response::sse::Event;
@@ -10,6 +11,70 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use crate::ServerState;
+
+/// Observable telemetry for the server event bus.
+///
+/// Constitution §8: every active executor must be observable in its authority
+/// registry. These counters let operators answer "are events flowing?" and
+/// "how many clients are attached?".
+///
+/// NOTE: The underlying `tokio::broadcast::Sender` does not expose per-receiver
+/// lag or buffer fill. `send_error_count` counts "no active receiver" events,
+/// not backpressure. This telemetry should be read alongside per-connection
+/// SSE queue metrics for a complete picture of event delivery health.
+#[derive(Debug)]
+pub struct EventBusTelemetry {
+    /// Total events sent to the broadcast channel (successful sends).
+    pub send_count: AtomicU64,
+    /// Failed sends — `broadcast::Sender::send()` fails when zero receivers are
+    /// active, not when receivers are full/lagged.
+    pub send_error_count: AtomicU64,
+    /// Peak number of concurrent receivers ever observed.
+    pub max_receivers: AtomicU64,
+    /// Timestamp (ms) of the most recent successful send.
+    pub last_send_at_ms: AtomicU64,
+    /// Timestamp (ms) of the most recent send error.
+    pub last_send_error_at_ms: AtomicU64,
+}
+
+impl Default for EventBusTelemetry {
+    fn default() -> Self {
+        Self {
+            send_count: AtomicU64::new(0),
+            send_error_count: AtomicU64::new(0),
+            max_receivers: AtomicU64::new(0),
+            last_send_at_ms: AtomicU64::new(0),
+            last_send_error_at_ms: AtomicU64::new(0),
+        }
+    }
+}
+
+impl EventBusTelemetry {
+    pub fn record_send(&self, receiver_count: usize) {
+        self.send_count.fetch_add(1, Ordering::Relaxed);
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        self.last_send_at_ms.store(now, Ordering::Relaxed);
+        self.max_receivers
+            .fetch_max(receiver_count as u64, Ordering::Relaxed);
+    }
+
+    pub fn record_send_error(&self) {
+        self.send_error_count.fetch_add(1, Ordering::Relaxed);
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        self.last_send_error_at_ms.store(now, Ordering::Relaxed);
+    }
+
+    /// Snapshot suitable for telemetry export.
+    pub fn snapshot(&self) -> rocode_api::EventBusTelemetrySummary {
+        rocode_api::EventBusTelemetrySummary {
+            send_count: self.send_count.load(Ordering::Relaxed),
+            send_error_count: self.send_error_count.load(Ordering::Relaxed),
+            max_receivers: self.max_receivers.load(Ordering::Relaxed),
+            last_send_at_ms: self.last_send_at_ms.load(Ordering::Relaxed),
+            last_send_error_at_ms: self.last_send_error_at_ms.load(Ordering::Relaxed),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -433,23 +498,61 @@ pub(crate) fn sse_output_block_hook(
     })
 }
 
-pub(crate) fn broadcast_session_updated(
+/// Reconcile reason — categorises every `session.updated` / `SessionReconcile`
+/// emit site so we can measure which paths still drive full refreshes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReconcileReason {
+    /// Final alignment after a turn completes (prompt.final, prompt.completed).
+    TurnFinal,
+    /// Session metadata mutation (title, compact, delete, fork).
+    MetadataChange,
+    /// Permission state changed (pending / resolved).
+    Permission,
+    /// Steering message enqueued or consumed.
+    Steering,
+    /// Run status transition (idle → running → completed).
+    StatusChange,
+    /// Scheduler / stage topology changed.
+    Topology,
+}
+
+impl ReconcileReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::TurnFinal => "turn.final",
+            Self::MetadataChange => "metadata.change",
+            Self::Permission => "permission",
+            Self::Steering => "steering",
+            Self::StatusChange => "status.change",
+            Self::Topology => "topology",
+        }
+    }
+}
+
+/// P1-2: canonical session reconcile event.
+///
+/// This is the downgraded successor to `session.updated`. It carries a
+/// `ReconcileReason` so frontends can decide whether to do a full state
+/// refresh (metadata change) or just reconcile incremental deltas (turn final).
+pub(crate) fn broadcast_session_reconcile(
     state: &ServerState,
     session_id: impl Into<String>,
-    source: impl Into<String>,
+    reason: ReconcileReason,
 ) {
     let session_id = session_id.into();
-    let source = source.into();
+    let source = reason.as_str();
     broadcast_server_event(
         state,
         &ServerEvent::SessionUpdated {
             session_id: session_id.clone(),
-            source: source.clone(),
+            source: source.to_string(),
         },
     );
     let telemetry = state.runtime_telemetry.clone();
     tokio::spawn(async move {
-        telemetry.record_session_updated(&session_id, &source).await;
+        telemetry
+            .record_session_updated(&session_id, &source)
+            .await;
     });
 }
 
@@ -460,7 +563,8 @@ pub(crate) fn broadcast_config_updated(state: &ServerState) {
 #[cfg(test)]
 mod tests {
     use super::{
-        broadcast_session_updated, DiffEntry, QuestionResolutionKind, ServerEvent, ToolCallPhase,
+        broadcast_session_reconcile, DiffEntry, EventBusTelemetry, QuestionResolutionKind,
+        ReconcileReason, ServerEvent, ToolCallPhase,
     };
     use crate::ServerState;
     use rocode_command::output_blocks::{OutputBlock, StatusBlock};
@@ -618,7 +722,7 @@ mod tests {
     }
 
     #[test]
-    fn broadcast_session_updated_emits_server_event_payload() {
+    fn broadcast_session_reconcile_emits_server_event_payload() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -627,15 +731,29 @@ mod tests {
             let state = ServerState::new();
             let mut rx = state.event_bus.subscribe();
 
-            broadcast_session_updated(&state, "session-1", "prompt.final");
+            broadcast_session_reconcile(&state, "session-1", ReconcileReason::TurnFinal);
 
             let payload = rx.recv().await.expect("session.updated payload");
             let value: serde_json::Value =
                 serde_json::from_str(&payload).expect("valid json payload");
             assert_eq!(value["type"], "session.updated");
             assert_eq!(value["sessionID"], "session-1");
-            assert_eq!(value["source"], "prompt.final");
+            assert_eq!(value["source"], "turn.final");
         });
+    }
+
+    #[test]
+    fn event_bus_telemetry_snapshot_reports_counters() {
+        let telemetry = EventBusTelemetry::default();
+        telemetry.record_send(3);
+        telemetry.record_send_error();
+
+        let snapshot = telemetry.snapshot();
+        assert_eq!(snapshot.send_count, 1);
+        assert_eq!(snapshot.send_error_count, 1);
+        assert_eq!(snapshot.max_receivers, 3);
+        assert!(snapshot.last_send_at_ms > 0);
+        assert!(snapshot.last_send_error_at_ms > 0);
     }
 
     #[test]
@@ -707,55 +825,410 @@ mod tests {
     }
 
     #[test]
-    fn legacy_question_replied_deserializes_as_question_resolved() {
-        let event: ServerEvent = serde_json::from_value(serde_json::json!({
-            "type": "question.replied",
-            "sessionID": "session-1",
-            "requestID": "question-1",
-            "answers": [["Yes"]],
-        }))
-        .expect("legacy event");
+    fn legacy_wire_aliases_deserialize_to_canonical_variants() {
+        let cases: &[(&str, serde_json::Value)] = &[
+            ("question.replied", serde_json::json!({
+                "type": "question.replied", "sessionID": "s-1", "requestID": "q-1",
+                "answers": [["Yes"]],
+            })),
+            ("permission.replied", serde_json::json!({
+                "type": "permission.replied", "sessionID": "s-1", "requestID": "p-1",
+                "reply": "once",
+            })),
+            ("session.diff", serde_json::json!({
+                "type": "session.diff", "sessionID": "s-1",
+                "diff": [{"path": "src/main.rs", "additions": 1, "deletions": 0}],
+            })),
+        ];
+        for (alias, json) in cases {
+            let event: ServerEvent =
+                serde_json::from_value(json.clone()).expect(&format!("legacy event {alias}"));
+            match alias.as_ref() {
+                "question.replied" => assert!(matches!(
+                    event, ServerEvent::QuestionResolved { request_id, .. }
+                        if request_id == "q-1"
+                )),
+                "permission.replied" => assert!(matches!(
+                    event, ServerEvent::PermissionResolved { permission_id, .. }
+                        if permission_id == "p-1"
+                )),
+                "session.diff" => assert!(matches!(
+                    event, ServerEvent::DiffUpdated { session_id, diff }
+                        if session_id == "s-1" && diff.len() == 1
+                )),
+                _ => panic!("unexpected alias {alias}"),
+            }
+        }
+    }
+}
 
+// ── Canonical Runtime Event Surface ──────────────────────────────────────────
+//
+// Constitution §6 (single plugin contract) and §8 (observability rights):
+// every event that crosses the server→frontend boundary MUST belong to one of
+// the canonical kinds defined below. No frontend may invent its own event
+// semantics; all adapters reference this single authority.
+//
+// This surface is the foundation for P1-2 (session.updated downgrade) and
+// P1-3 (frontend incremental update). Until every canonical kind has a
+// concrete delivery path, session.updated remains the reconcile fallback.
+//
+// ── Canonical Event Kinds ────────────────────────────────────────────────────
+//
+// Kind                  High-freq  Mergeable  Droppable  Must-deliver  Notes
+// ───────────────────── ─────────  ─────────  ─────────  ────────────  ───────
+// message_delta         yes        yes        yes        no            Streaming text; final completed msg provides the complete content.
+// message_completed     no         no         no         yes           One per assistant/tool message. Carries finish reason, usage.
+// tool_call_started     no         no         no         yes           Emitted when tool execution begins.
+// tool_call_delta       yes        yes        yes        no            Progress/streaming output from a running tool.
+// tool_call_completed   no         no         no         yes           Carries final output, exit code, timing.
+// permission_pending    no         no         no         yes           Triggers UI permission prompt.
+// permission_resolved   no         no         no         yes           Carries grant/deny decision.
+// steering_queued       no         no         no         yes           User injected mid-run steering; UI shows pending preview.
+// steering_consumed     no         no         no         yes           Steering was applied at next tool boundary.
+// runtime_status_changed no        no         no         yes           Run status transition (idle→running→completed/error).
+// session_reconcile     no         no         no         yes           Final alignment event; replaces wholesale session.updated refresh.
+//
+// Existing ServerEvent variants map to canonical kinds as follows:
+//
+//   ServerEvent::OutputBlock        → message_delta (text) or tool_call_delta (tool output)
+//   ServerEvent::Usage              → (no canonical kind; usage is a side-channel metric)
+//   ServerEvent::Error              → runtime_status_changed (when done=true) or message_completed (error finish)
+//   ServerEvent::SessionUpdated     → session_reconcile (P1-2: downgraded to fallback)
+//   ServerEvent::SessionStatus      → runtime_status_changed
+//   ServerEvent::PermissionRequested→ permission_pending
+//   ServerEvent::PermissionResolved → permission_resolved
+//   ServerEvent::ToolCallLifecycle  → tool_call_started / tool_call_completed
+//   ServerEvent::ConfigUpdated      → (no canonical kind; infrastructure event)
+//   ServerEvent::TopologyChanged    → (no canonical kind; infrastructure event)
+//
+// Events without a canonical kind are server-internal or infrastructure
+// signals that frontends observe via telemetry snapshots, not via the
+// streaming event path.
+
+#[cfg(test)]
+/// Authority enum for every event that crosses the server→frontend boundary.
+///
+/// This is the single source of truth that P1-2 and P1-3 build on.
+/// Frontends subscribe to these kinds; server-side emitters map concrete
+/// `ServerEvent` payloads into the appropriate canonical kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CanonicalEventKind {
+    /// High-frequency streaming text from an assistant message.
+    /// Mergeable: consecutive deltas for the same message can be coalesced.
+    /// Droppable: if backpressure requires it; the completed message provides
+    ///   the authoritative final text.
+    MessageDelta,
+    /// A message (assistant, tool, or user) has been finalized in the transcript.
+    /// Carries finish reason, usage, and the complete message content.
+    /// Must-deliver: frontends MUST receive this to stay in sync.
+    MessageCompleted,
+    /// A tool call has started executing.
+    ToolCallStarted,
+    /// High-frequency streaming output from a running tool (e.g. terminal output,
+    /// long-running process stdout).
+    /// Mergeable: consecutive deltas for the same tool call can be coalesced.
+    /// Droppable: the completed event carries the final output.
+    ToolCallDelta,
+    /// A tool call has completed with final output, exit code, and timing.
+    ToolCallCompleted,
+    /// A permission request is pending user action.
+    PermissionPending,
+    /// A permission request has been resolved (granted or denied).
+    PermissionResolved,
+    /// A mid-run steering message has been queued for the next tool boundary.
+    SteeringQueued,
+    /// A steering message has been consumed (injected at a tool boundary).
+    SteeringConsumed,
+    /// The session run status has changed (idle, running, completed, error).
+    RuntimeStatusChanged,
+    /// Final alignment event. Replaces wholesale `session.updated` refresh.
+    /// Frontends use this to reconcile local state after incremental updates.
+    SessionReconcile,
+}
+
+#[cfg(test)]
+impl CanonicalEventKind {
+    /// Whether this event kind produces high-frequency traffic.
+    /// High-frequency events are candidates for merging and dropping under backpressure.
+    pub fn is_high_frequency(self) -> bool {
+        matches!(self, Self::MessageDelta | Self::ToolCallDelta)
+    }
+
+    /// Whether consecutive events of this kind for the same entity
+    /// (same message, same tool call) can be coalesced into a single event.
+    pub fn is_mergeable(self) -> bool {
+        matches!(self, Self::MessageDelta | Self::ToolCallDelta)
+    }
+
+    /// Whether this event can be dropped under extreme backpressure
+    /// without breaking the frontend's ability to reach a consistent state.
+    /// Droppable events must have a corresponding must-deliver event
+    /// that carries the authoritative final state.
+    pub fn is_droppable(self) -> bool {
+        matches!(self, Self::MessageDelta | Self::ToolCallDelta)
+    }
+
+    /// Whether this event MUST reach every active frontend.
+    /// If false, the event can be skipped for certain subscription tiers
+    /// (e.g. final-only mode, CLI summary mode).
+    pub fn is_must_deliver(self) -> bool {
+        !self.is_droppable()
+    }
+}
+
+#[cfg(test)]
+/// Registry of all canonical event kinds with their attributes.
+///
+/// This is the authority read by P1-2 subscription negotiation and P1-3
+/// frontend incremental update logic.
+pub struct CanonicalEventRegistry;
+
+#[cfg(test)]
+impl CanonicalEventRegistry {
+    /// Every canonical event kind, in order of definition.
+    pub fn all() -> &'static [CanonicalEventKind] {
+        &[
+            CanonicalEventKind::MessageDelta,
+            CanonicalEventKind::MessageCompleted,
+            CanonicalEventKind::ToolCallStarted,
+            CanonicalEventKind::ToolCallDelta,
+            CanonicalEventKind::ToolCallCompleted,
+            CanonicalEventKind::PermissionPending,
+            CanonicalEventKind::PermissionResolved,
+            CanonicalEventKind::SteeringQueued,
+            CanonicalEventKind::SteeringConsumed,
+            CanonicalEventKind::RuntimeStatusChanged,
+            CanonicalEventKind::SessionReconcile,
+        ]
+    }
+
+    /// Kinds for CLI low-frequency / summary mode.
+    ///
+    /// This is the set of all non-droppable events — every event whose delivery
+    /// is required for the frontend to maintain a consistent state, minus
+    /// streaming deltas. Derived from the attribute table: `!k.is_droppable()`.
+    /// This is NOT a hand-picked subset; it is mechanically derived from the
+    /// canonical attributes so the "must deliver" contract cannot drift.
+    pub fn cli_low_frequency() -> Vec<CanonicalEventKind> {
+        Self::all()
+            .iter()
+            .filter(|k| !k.is_droppable())
+            .copied()
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod canonical_event_tests {
+    use super::*;
+
+    #[test]
+    fn all_kinds_have_consistent_attribute_rules() {
+        for kind in CanonicalEventRegistry::all() {
+            // mergeable implies high-frequency (you don't merge rare events).
+            if kind.is_mergeable() {
+                assert!(
+                    kind.is_high_frequency(),
+                    "{kind:?}: mergeable events must be high-frequency"
+                );
+            }
+            // droppable implies mergeable (you can only drop if you can merge first).
+            if kind.is_droppable() {
+                assert!(
+                    kind.is_mergeable(),
+                    "{kind:?}: droppable events must be mergeable"
+                );
+            }
+            // must-deliver is the inverse of droppable.
+            assert_eq!(
+                kind.is_must_deliver(),
+                !kind.is_droppable(),
+                "{kind:?}: must_deliver must be !droppable"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_kind_droppable_contract_is_consistent() {
+        // Table-driven: each (kind, expected_droppable, expected_must_deliver).
+        let cases = &[
+            (CanonicalEventKind::MessageDelta, true, false),
+            (CanonicalEventKind::MessageCompleted, false, true),
+            (CanonicalEventKind::ToolCallDelta, true, false),
+            (CanonicalEventKind::ToolCallStarted, false, true),
+            (CanonicalEventKind::ToolCallCompleted, false, true),
+            (CanonicalEventKind::PermissionPending, false, true),
+            (CanonicalEventKind::PermissionResolved, false, true),
+            (CanonicalEventKind::SteeringQueued, false, true),
+            (CanonicalEventKind::SteeringConsumed, false, true),
+            (CanonicalEventKind::SessionReconcile, false, true),
+            (CanonicalEventKind::RuntimeStatusChanged, false, true),
+        ];
+        for (kind, expect_droppable, expect_must_deliver) in cases {
+            assert_eq!(
+                kind.is_droppable(),
+                *expect_droppable,
+                "{kind:?}.is_droppable()"
+            );
+            assert_eq!(
+                kind.is_must_deliver(),
+                *expect_must_deliver,
+                "{kind:?}.is_must_deliver()"
+            );
+            assert_eq!(kind.is_must_deliver(), !kind.is_droppable(),
+                "{kind:?}: must_deliver != !droppable");
+        }
+    }
+
+    #[test]
+    fn cli_low_frequency_is_mechanically_derived_from_non_droppable() {
+        let kinds = CanonicalEventRegistry::cli_low_frequency();
+        for &kind in CanonicalEventRegistry::all() {
+            if !kind.is_droppable() {
+                assert!(
+                    kinds.contains(&kind),
+                    "{kind:?} is non-droppable but missing from cli_low_frequency"
+                );
+            }
+        }
+        for &kind in &kinds {
+            assert!(!kind.is_droppable(), "{kind:?} in cli_low_frequency must be non-droppable");
+        }
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use rocode_command::stage_protocol::{telemetry_event_names, EventScope, StageEvent};
+
+    fn stage_event(event_type: &str, payload: serde_json::Value) -> StageEvent {
+        StageEvent {
+            event_id: format!("evt_{}", uuid::Uuid::new_v4().simple()),
+            scope: EventScope::Session,
+            stage_id: None,
+            execution_id: None,
+            event_type: event_type.to_string(),
+            ts: chrono::Utc::now().timestamp_millis(),
+            payload,
+        }
+    }
+
+    // ── Permission lifecycle: pending → resolved ───────────────────────────
+
+    #[test]
+    fn permission_pending_maps_to_correct_server_event() {
+        let event = stage_event(
+            telemetry_event_names::PERMISSION_REQUESTED,
+            serde_json::json!({
+                "sessionID": "sess-1",
+                "permissionID": "perm-1",
+                "info": { "tool": "bash", "pattern": "rm -rf" },
+            }),
+        );
+        let transport = ServerEvent::from_stage_event(&event)
+            .expect("permission.requested should map to a ServerEvent");
         assert!(matches!(
-            event,
-            ServerEvent::QuestionResolved { request_id, .. } if request_id == "question-1"
+            transport,
+            ServerEvent::PermissionRequested { ref session_id, ref permission_id, .. }
+                if session_id == "sess-1" && permission_id == "perm-1"
         ));
     }
 
     #[test]
-    fn legacy_permission_replied_deserializes_as_permission_resolved() {
-        let event: ServerEvent = serde_json::from_value(serde_json::json!({
-            "type": "permission.replied",
-            "sessionID": "session-1",
-            "requestID": "permission-1",
-            "reply": "once",
-        }))
-        .expect("legacy event");
-
+    fn permission_resolved_maps_to_correct_server_event() {
+        let event = stage_event(
+            telemetry_event_names::PERMISSION_RESOLVED,
+            serde_json::json!({
+                "sessionID": "sess-1",
+                "permissionID": "perm-1",
+                "reply": "once",
+            }),
+        );
+        let transport = ServerEvent::from_stage_event(&event)
+            .expect("permission.resolved should map to a ServerEvent");
         assert!(matches!(
-            event,
-            ServerEvent::PermissionResolved { permission_id, .. }
-                if permission_id == "permission-1"
+            transport,
+            ServerEvent::PermissionResolved { ref session_id, ref permission_id, ref reply, .. }
+                if session_id == "sess-1" && permission_id == "perm-1" && reply == "once"
+        ));
+    }
+
+    // ── Tool call lifecycle: started → completed ───────────────────────────
+
+    #[test]
+    fn tool_call_started_maps_to_correct_server_event() {
+        let event = stage_event(
+            telemetry_event_names::TOOL_STARTED,
+            serde_json::json!({
+                "sessionID": "sess-1",
+                "toolCallId": "call-1",
+                "toolName": "bash",
+            }),
+        );
+        // ToolCallStarted goes through the ToolCallLifecycle mapping.
+        let transport = ServerEvent::from_stage_event(&event)
+            .expect("tool_call.started should map to a ServerEvent");
+        assert!(matches!(
+            transport,
+            ServerEvent::ToolCallLifecycle { ref session_id, ref tool_call_id, phase: ToolCallPhase::Start, .. }
+                if session_id == "sess-1" && tool_call_id == "call-1"
         ));
     }
 
     #[test]
-    fn legacy_session_diff_deserializes_as_diff_updated() {
-        let event: ServerEvent = serde_json::from_value(serde_json::json!({
-            "type": "session.diff",
-            "sessionID": "session-1",
-            "diff": [{
-                "path": "src/main.rs",
-                "additions": 1,
-                "deletions": 0,
-            }],
-        }))
-        .expect("legacy event");
-
+    fn tool_call_completed_maps_to_correct_server_event() {
+        let event = stage_event(
+            telemetry_event_names::TOOL_COMPLETED,
+            serde_json::json!({
+                "sessionID": "sess-1",
+                "toolCallId": "call-1",
+                "toolName": "bash",
+            }),
+        );
+        let transport = ServerEvent::from_stage_event(&event)
+            .expect("tool_call.completed should map to a ServerEvent");
         assert!(matches!(
-            event,
-            ServerEvent::DiffUpdated { session_id, diff }
-                if session_id == "session-1" && diff.len() == 1
+            transport,
+            ServerEvent::ToolCallLifecycle { phase: ToolCallPhase::Complete, .. }
         ));
+    }
+
+    // ── Reconcile / session.updated lifecycle ──────────────────────────────
+
+    #[test]
+    fn session_updated_maps_to_correct_server_event() {
+        let event = stage_event(
+            telemetry_event_names::SESSION_UPDATED,
+            serde_json::json!({
+                "sessionID": "sess-1",
+                "source": "turn.final",
+            }),
+        );
+        let transport = ServerEvent::from_stage_event(&event)
+            .expect("session.updated should map to a ServerEvent");
+        assert!(matches!(
+            transport,
+            ServerEvent::SessionUpdated { ref session_id, ref source }
+                if session_id == "sess-1" && source == "turn.final"
+        ));
+    }
+
+    // ── ReconcileReason wire contract ────────────────────────────────────
+    // These strings are the wire protocol between server and all three
+    // frontends. Changing any of them breaks CLI/TUI/Web source-string
+    // matching. The CLI-side counterpart is cli_session_update_requires_refresh
+    // in session_projection.rs.
+
+    #[test]
+    fn reconcile_reason_wire_strings_are_stable() {
+        assert_eq!(ReconcileReason::TurnFinal.as_str(), "turn.final");
+        assert_eq!(ReconcileReason::MetadataChange.as_str(), "metadata.change");
+        assert_eq!(ReconcileReason::Permission.as_str(), "permission");
+        assert_eq!(ReconcileReason::Steering.as_str(), "steering");
+        assert_eq!(ReconcileReason::StatusChange.as_str(), "status.change");
+        assert_eq!(ReconcileReason::Topology.as_str(), "topology");
     }
 }

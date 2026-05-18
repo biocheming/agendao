@@ -45,17 +45,29 @@ pub struct UiBridge {
     high_water_mark: Arc<AtomicUsize>,
     coalesced_events: Arc<AtomicU64>,
     dropped_events: Arc<AtomicU64>,
+    capacity: Arc<AtomicUsize>,
     notify: Arc<Notify>,
 }
 
 #[cfg(test)]
-const MAX_UI_BRIDGE_QUEUE: usize = 64;
+const DEFAULT_UI_BRIDGE_QUEUE: usize = 64;
 #[cfg(not(test))]
-const MAX_UI_BRIDGE_QUEUE: usize = 4_096;
+const DEFAULT_UI_BRIDGE_QUEUE: usize = 4_096;
 
 impl UiBridge {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            capacity: Arc::new(AtomicUsize::new(DEFAULT_UI_BRIDGE_QUEUE)),
+            ..Self::default()
+        }
+    }
+
+    pub fn set_capacity(&self, capacity: usize) {
+        self.capacity.store(capacity.max(1), Ordering::SeqCst);
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity.load(Ordering::SeqCst)
     }
 
     pub fn emit(&self, event: Event) -> bool {
@@ -68,7 +80,7 @@ impl UiBridge {
             queue[index] = event;
             self.coalesced_events.fetch_add(1, Ordering::SeqCst);
         } else {
-            if queue.len() >= MAX_UI_BRIDGE_QUEUE {
+            if queue.len() >= self.capacity() {
                 queue.pop_front();
                 self.dropped_events.fetch_add(1, Ordering::SeqCst);
             }
@@ -98,7 +110,7 @@ impl UiBridge {
             high_water_mark: self.high_water_mark.load(Ordering::SeqCst),
             coalesced_events: self.coalesced_events.load(Ordering::SeqCst),
             dropped_events: self.dropped_events.load(Ordering::SeqCst),
-            capacity: MAX_UI_BRIDGE_QUEUE,
+            capacity: self.capacity(),
         }
     }
 
@@ -154,8 +166,6 @@ fn scheduler_stage_output_block_identity(event: &Event) -> Option<(&str, Option<
     }
     Some((session_id.as_str(), id.as_deref(), kind))
 }
-
-const MAX_EVENTS_PER_FRAME: usize = 256;
 
 #[derive(Default)]
 struct RuntimeErrorSink {
@@ -491,7 +501,13 @@ async fn run_app_async(app: Arc<Mutex<App>>) -> anyhow::Result<()> {
                 should_draw |= process_app_event_blocking(&app, &Event::Tick)?;
             }
 
-            should_draw |= drain_app_pending_events_blocking(&app, MAX_EVENTS_PER_FRAME)?;
+            let max_events_per_frame = app
+                .lock()
+                .context_handle()
+                .runtime_budget()
+                .max_events_per_frame
+                .max(1);
+            should_draw |= drain_app_pending_events_blocking(&app, max_events_per_frame)?;
 
             let bridge_event = polled_event.as_ref().and_then(|event| {
                 if map_crossterm_event(event.clone()).is_some() {
@@ -656,7 +672,7 @@ mod tests {
     fn ui_bridge_caps_pending_queue_length() {
         let bridge = UiBridge::new();
 
-        for index in 0..(MAX_UI_BRIDGE_QUEUE + 5) {
+        for index in 0..(DEFAULT_UI_BRIDGE_QUEUE + 5) {
             bridge.emit(message_delta_event(
                 "session-1",
                 &format!("msg-{index}"),
@@ -665,8 +681,8 @@ mod tests {
         }
 
         let snapshot = bridge.snapshot();
-        assert_eq!(snapshot.pending_events, MAX_UI_BRIDGE_QUEUE);
+        assert_eq!(snapshot.pending_events, DEFAULT_UI_BRIDGE_QUEUE);
         assert_eq!(snapshot.dropped_events, 5);
-        assert_eq!(snapshot.high_water_mark, MAX_UI_BRIDGE_QUEUE);
+        assert_eq!(snapshot.high_water_mark, DEFAULT_UI_BRIDGE_QUEUE);
     }
 }

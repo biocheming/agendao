@@ -1,3 +1,4 @@
+use crate::runtime_budget::RuntimeBudgetConfig;
 use rocode_types::RepairPolicy;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
@@ -181,6 +182,17 @@ pub struct Config {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env: Option<HashMap<String, String>>,
+
+    /// Runtime budget authority (§5). When absent, Default applies.
+    /// Every numerical budget/limit that governs runtime resource usage
+    /// is read from this single struct — no semantic duplicates elsewhere.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "runtimeBudget",
+        alias = "runtime_budget"
+    )]
+    pub runtime_budget: Option<RuntimeBudgetConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

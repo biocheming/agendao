@@ -16,7 +16,7 @@ use rocode_types::{
 use serde::Deserialize;
 
 use crate::runtime_control::SessionRunStatus;
-use crate::session_runtime::events::broadcast_session_updated;
+use crate::session_runtime::events::{broadcast_session_reconcile, ReconcileReason};
 use crate::{ApiError, Result, ServerState};
 
 use super::scheduler::resolve_scheduler_request_defaults_validated;
@@ -879,7 +879,7 @@ pub(super) async fn set_session_title(
     sessions.update(updated.clone());
     let info = session_to_info(&updated);
     drop(sessions);
-    broadcast_session_updated(state.as_ref(), id, "session.title.set");
+    broadcast_session_reconcile(state.as_ref(), id, ReconcileReason::MetadataChange);
     persist_sessions_if_enabled(&state).await;
     Ok(Json(info))
 }
@@ -1028,6 +1028,8 @@ mod tests {
             consumed_steering_count: 0,
             last_steering_injected_at: None,
             last_steering_source_session_id: None,
+            last_steering_latency_ms: None,
+            last_permission_pending_ms: None,
             last_run_status: "completed".to_string(),
             updated_at: 123,
         };
@@ -1116,6 +1118,8 @@ mod tests {
                 consumed_steering_count: 0,
                 last_steering_injected_at: None,
                 last_steering_source_session_id: None,
+                last_steering_latency_ms: None,
+                last_permission_pending_ms: None,
                 last_run_status: "completed".to_string(),
                 updated_at: 123,
             },
@@ -1550,7 +1554,7 @@ pub(super) async fn start_compaction(
         rocode_session::compact_session_now_with_focus_result(session, req.focus.as_deref());
     drop(sessions);
     set_session_run_status(&state, &id, SessionRunStatus::Idle).await;
-    broadcast_session_updated(state.as_ref(), &id, "session.compact");
+    broadcast_session_reconcile(state.as_ref(), &id, ReconcileReason::MetadataChange);
     persist_sessions_if_enabled(&state).await;
     Ok(Json(CompactResponse {
         success: outcome.success(),

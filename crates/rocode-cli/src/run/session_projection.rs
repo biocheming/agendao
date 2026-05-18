@@ -571,8 +571,49 @@ fn cli_runtime_snapshot_lines(
         lines.push(String::new());
         lines.push(format!("Pending question: {}", question.request_id));
     }
-    if let Some(permission) = runtime.pending_permission.as_ref() {
-        lines.push(format!("Pending permission: {}", permission.permission_id));
+    if let Some(protocol) = telemetry.runtime_protocol.as_ref() {
+        let ingress = match protocol.prompt_ingress {
+            crate::api_client::PromptIngressDisposition::AcceptNow => "accept_now",
+            crate::api_client::PromptIngressDisposition::QueueAsSteering => "queue_as_steering",
+            crate::api_client::PromptIngressDisposition::BlockedOnQuestion => {
+                "blocked_on_question"
+            }
+            crate::api_client::PromptIngressDisposition::BlockedOnPermission => {
+                "blocked_on_permission"
+            }
+            crate::api_client::PromptIngressDisposition::AwaitingInterrupt => {
+                "awaiting_interrupt"
+            }
+        };
+        lines.push(format!("Runtime ingress: {ingress}"));
+        if protocol.permission.pending {
+            lines.push(format!(
+                "Pending permission: {}",
+                protocol
+                    .permission
+                    .pending_permission_id
+                    .as_deref()
+                    .unwrap_or("unknown")
+            ));
+        }
+        if protocol.steering.pending_count > 0 {
+            lines.push(format!(
+                "Pending steering: {}",
+                protocol.steering.pending_count
+            ));
+        }
+    }
+    if let Some(event_bus) = telemetry.event_bus_telemetry.as_ref() {
+        lines.push(String::new());
+        lines.push("Event bus".to_string());
+        lines.push(format!(
+            "  Sends: {} · No receiver: {} · Max receivers: {}",
+            event_bus.send_count, event_bus.send_error_count, event_bus.max_receivers,
+        ));
+        lines.push(format!(
+            "  Last send: {} · Last error: {}",
+            event_bus.last_send_at_ms, event_bus.last_send_error_at_ms,
+        ));
     }
     if telemetry.granted_by_turn_count + telemetry.granted_by_session_count > 0
         || telemetry.last_permission_miss_count > 0
@@ -1846,9 +1887,21 @@ fn cli_focus_root_session(runtime: &CliExecutionRuntime) -> io::Result<bool> {
 }
 
 fn cli_session_update_requires_refresh(source: Option<&str>) -> bool {
+    // P1-2: server now emits typed ReconcileReason source strings.
+    // Full refresh: turn finished, metadata changed, permission resolved.
+    // Skipped: high-frequency topology stage deltas (handled via output blocks).
     matches!(
         source,
         Some(
+            // New ReconcileReason-based sources (P1-2):
+            "turn.final"
+                | "metadata.change"
+                | "permission"
+                | "steering"
+                | "status.change"
+                | "legacy.compat"
+        ) | Some(
+            // Legacy sources still emitted by unmigrated paths:
             "prompt.final"
                 | "stream.final"
                 | "prompt.completed"
@@ -1890,6 +1943,23 @@ mod session_update_refresh_tests {
         assert!(!cli_session_update_requires_refresh(Some(
             "prompt.scheduler.stage.content"
         )));
+    }
+
+    #[test]
+    fn cli_refreshes_for_new_reconcile_reason_strings() {
+        // TurnFinal, MetadataChange, Permission, Steering, StatusChange → refresh.
+        assert!(cli_session_update_requires_refresh(Some("turn.final")));
+        assert!(cli_session_update_requires_refresh(Some("metadata.change")));
+        assert!(cli_session_update_requires_refresh(Some("permission")));
+        assert!(cli_session_update_requires_refresh(Some("steering")));
+        assert!(cli_session_update_requires_refresh(Some("status.change")));
+        assert!(cli_session_update_requires_refresh(Some("legacy.compat")));
+    }
+
+    #[test]
+    fn cli_skips_refresh_for_topology_reconcile() {
+        // High-frequency topology stage deltas should NOT trigger full refresh.
+        assert!(!cli_session_update_requires_refresh(Some("topology")));
     }
 }
 
@@ -2390,6 +2460,8 @@ mod session_projection_tests {
             ingress_stabilization: None,
             execution_preflight_summary: None,
             provider_diagnostic_summary: None,
+            runtime_protocol: None,
+            event_bus_telemetry: None,
         };
 
         let lines = cli_runtime_snapshot_lines("sess_123", &telemetry);

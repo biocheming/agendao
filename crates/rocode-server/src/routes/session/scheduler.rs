@@ -27,7 +27,8 @@ use crate::request_options::{resolve_compiled_execution_request, ExecutionResolu
 use crate::routes::skill_catalog::enrich_scheduler_plan_skills;
 use crate::runtime_control::SessionRunStatus;
 use crate::session_runtime::events::{
-    broadcast_session_updated, emit_output_block_via_hook, server_output_block_hook,
+    broadcast_session_reconcile, emit_output_block_via_hook, server_output_block_hook,
+    ReconcileReason,
 };
 use crate::session_runtime::{
     assistant_visible_text, ensure_default_session_title,
@@ -2481,10 +2482,10 @@ pub async fn run_local_scheduler_prompt(
                 let mut sessions = state.sessions.lock().await;
                 sessions.update(session.clone());
             }
-            broadcast_session_updated(
+            broadcast_session_reconcile(
                 state.as_ref(),
                 session_id.clone(),
-                "scheduler.pre_dispatch_blocked",
+                ReconcileReason::StatusChange,
             );
             set_session_run_status(&state, &session_id, SessionRunStatus::Idle).await;
 
@@ -2784,7 +2785,7 @@ pub async fn run_local_scheduler_prompt(
         let mut sessions = state.sessions.lock().await;
         sessions.update(session.clone());
     }
-    broadcast_session_updated(state.as_ref(), session_id.clone(), "prompt.completed");
+    broadcast_session_reconcile(state.as_ref(), session_id.clone(), ReconcileReason::TurnFinal);
     set_session_run_status(&state, &session_id, SessionRunStatus::Idle).await;
 
     if let Some(output_hook) = output_hook {

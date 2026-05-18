@@ -23,7 +23,6 @@ impl PendingSteeringMessage {
         PendingSteeringMessageSummary {
             id: self.id.clone(),
             owner_session_id: self.owner_session_id.clone(),
-            text: self.text.clone(),
             created_at: self.created_at,
             source_session_id: self.source_session_id.clone(),
             deliver_at: self.deliver_at.clone(),

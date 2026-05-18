@@ -103,6 +103,10 @@ const ANSI_DIM: &str = "\x1b[90m";
 const ANSI_BOLD: &str = "\x1b[1m";
 
 fn session_update_requires_sync(source: Option<&str>) -> bool {
+    // P1-2: exclude high-frequency sources that are handled incrementally
+    // via output blocks. "topology" (ReconcileReason::Topology) is the new
+    // canonical source for scheduler stage deltas — it fires on every stage
+    // message change and must NOT trigger a full session sync.
     !matches!(
         source,
         Some(
@@ -111,6 +115,7 @@ fn session_update_requires_sync(source: Option<&str>) -> bool {
                 | "prompt.scheduler.stage.content"
                 | "prompt.scheduler.stage.reasoning"
                 | "prompt.scheduler.stage.child.final"
+                | "topology"
         )
     )
 }
@@ -1482,6 +1487,10 @@ impl App {
                         .perf
                         .session_updated_events
                         .saturating_add(1);
+                    // P1-3: session.updated is the RECONCILE FALLBACK path.
+                    // Incremental updates (output blocks, custom events) are the
+                    // PRIMARY refresh mechanism. This handler only triggers a
+                    // debounced full sync for non-droppable reconcile reasons.
                     if let Route::Session { session_id: active } = self.context.current_route() {
                         if active == *session_id && session_update_requires_sync(source.as_deref())
                         {

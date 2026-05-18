@@ -224,13 +224,28 @@ struct EventStreamQuery {
     /// to this session (or global events like `config.updated`) are forwarded.
     #[serde(default)]
     session: Option<String>,
+    /// P2-1: subscription tier override (tui, web, cli). When absent, the
+    /// server applies the legacy compatible default (full capabilities).
+    #[serde(default)]
+    tier: Option<String>,
 }
 
 async fn event_stream(
     State(state): State<Arc<ServerState>>,
     Query(query): Query<EventStreamQuery>,
 ) -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
-    stream_server_events(state.event_bus.subscribe(), query.session)
+    // P2-1: resolve subscription capabilities via the single wire-format
+    // entry point in rocode-api. No other module parses tier strings.
+    let subscription = rocode_api::ResolvedFrontendSubscription::from_wire_tier(
+        query.tier.as_deref(),
+    );
+    tracing::debug!(
+        tier = query.tier.as_deref().unwrap_or("default"),
+        is_legacy = subscription.is_legacy_compat,
+        "resolved frontend subscription for /event SSE"
+    );
+    // P2-2: pass subscription into stream_server_events for capability-based filtering.
+    stream_server_events(state.event_bus.subscribe(), query.session, subscription)
 }
 
 const EVENT_OUTPUT_BLOCK_BATCH_MS: u64 = 16;
@@ -238,6 +253,7 @@ const EVENT_OUTPUT_BLOCK_BATCH_MS: u64 = 16;
 pub(crate) fn stream_server_events(
     mut rx: broadcast::Receiver<String>,
     session_filter: Option<String>,
+    subscription: rocode_api::ResolvedFrontendSubscription,
 ) -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
     let (tx, out_rx) = mpsc::channel(128);
 
@@ -256,6 +272,17 @@ pub(crate) fn stream_server_events(
                 Some(sid) => sid == filter.as_str(),
                 None => true, // global events pass through
             }
+        };
+
+        // P2-2: subscription-aware event filter.
+        let caps = subscription.capabilities;
+        let skipped_count = std::sync::atomic::AtomicU64::new(0);
+        let subscribable = |event: &ServerEvent| -> bool {
+            let ok = event_passes_subscription_caps(event, &caps);
+            if !ok {
+                skipped_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            ok
         };
 
         // Same check but for raw JSON strings that failed to parse as ServerEvent.
@@ -290,6 +317,10 @@ pub(crate) fn stream_server_events(
                                 if let Some(next) = parse_server_event(&raw) {
                                     // Apply session filter — skip events for other sessions.
                                     if !matches_filter(&next) {
+                                        continue;
+                                    }
+                                    // P2-2: apply subscription capability filter.
+                                    if !subscribable(&next) {
                                         continue;
                                     }
                                     if let Some(current) = pending.as_mut() {
@@ -334,6 +365,14 @@ pub(crate) fn stream_server_events(
                                 }
                             }
                             Err(broadcast::error::RecvError::Closed) => {
+                                let skipped = skipped_count.load(std::sync::atomic::Ordering::Relaxed);
+                                if skipped > 0 {
+                                    tracing::debug!(
+                                        skipped,
+                                        tier = ?subscription.tier,
+                                        "SSE event stream closed; subscription-filtered events skipped"
+                                    );
+                                }
                                 if let Some(flushed) = pending.take() {
                                     if let Err(error) = send_server_event_json(&tx, &flushed).await {
                                         let _ = error;
@@ -361,6 +400,10 @@ pub(crate) fn stream_server_events(
                         if let Some(event) = parse_server_event(&raw) {
                             // Apply session filter.
                             if !matches_filter(&event) {
+                                continue;
+                            }
+                            // P2-2: apply subscription capability filter (same as pending branch).
+                            if !subscribable(&event) {
                                 continue;
                             }
                             if is_mergeable_output_delta(&event) {
@@ -391,6 +434,45 @@ pub(crate) fn stream_server_events(
 
 fn parse_server_event(raw: &str) -> Option<ServerEvent> {
     serde_json::from_str(raw).ok()
+}
+
+/// P2-2: subscription capability filter — pure function for testability.
+/// Returns true if the event should be forwarded to this subscriber.
+fn event_passes_subscription_caps(
+    event: &ServerEvent,
+    caps: &rocode_api::FrontendSubscriptionCapabilities,
+) -> bool {
+    if !caps.final_only && caps.reasoning_delta && caps.message_text_delta
+        && caps.tool_progress && caps.runtime_live_view
+    {
+        return true; // full capabilities — no filtering needed
+    }
+    match event {
+        ServerEvent::OutputBlock { block, .. } => {
+            let kind = block.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            match kind {
+                "reasoning" => !caps.final_only && caps.reasoning_delta,
+                "message" => !caps.final_only && caps.message_text_delta,
+                "scheduler_stage" | "tool" => !caps.final_only && caps.tool_progress,
+                _ => !caps.final_only,
+            }
+        }
+        ServerEvent::Usage { .. } => !caps.final_only && caps.runtime_live_view,
+        // Non-droppable events: always pass.
+        ServerEvent::SessionUpdated { .. }
+        | ServerEvent::SessionStatus { .. }
+        | ServerEvent::Error { .. }
+        | ServerEvent::PermissionRequested { .. }
+        | ServerEvent::PermissionResolved { .. }
+        | ServerEvent::QuestionCreated { .. }
+        | ServerEvent::QuestionResolved { .. }
+        | ServerEvent::ToolCallLifecycle { .. }
+        | ServerEvent::ConfigUpdated
+        | ServerEvent::TopologyChanged { .. }
+        | ServerEvent::AttachedSessionAttached { .. }
+        | ServerEvent::AttachedSessionDetached { .. }
+        | ServerEvent::DiffUpdated { .. } => true,
+    }
 }
 
 fn is_mergeable_output_delta(event: &ServerEvent) -> bool {
@@ -1183,5 +1265,148 @@ mod tests {
 
         assert!(!merge_output_block_delta(&mut current, &full));
         assert!(!merge_output_block_delta(&mut current, &usage));
+    }
+
+    // ── P2-2 subscription filter tests ──────────────────────────────────
+
+    fn reasoning_block() -> ServerEvent {
+        ServerEvent::OutputBlock {
+            session_id: "sess-1".to_string(),
+            id: Some("block-1".to_string()),
+            block: serde_json::json!({"kind": "reasoning", "phase": "delta", "text": "think"}),
+        }
+    }
+
+    fn message_block() -> ServerEvent {
+        ServerEvent::OutputBlock {
+            session_id: "sess-1".to_string(),
+            id: Some("block-1".to_string()),
+            block: serde_json::json!({"kind": "message", "phase": "delta", "text": "hello"}),
+        }
+    }
+
+    fn caps(full: bool) -> rocode_api::FrontendSubscriptionCapabilities {
+        if full {
+            return rocode_api::FrontendSubscriptionCapabilities::default();
+        }
+        rocode_api::FrontendSubscriptionTier::CliLowFrequency.default_capabilities()
+    }
+
+    #[test]
+    fn full_capabilities_pass_everything() {
+        let c = caps(true);
+        assert!(event_passes_subscription_caps(&reasoning_block(), &c));
+        assert!(event_passes_subscription_caps(&message_block(), &c));
+    }
+
+    #[test]
+    fn final_only_skips_deltas_passes_non_droppable() {
+        let c = caps(false);
+        assert!(!event_passes_subscription_caps(&reasoning_block(), &c));
+        assert!(!event_passes_subscription_caps(&message_block(), &c));
+        // Non-droppable events always pass.
+        let perm = ServerEvent::PermissionResolved {
+            session_id: "sess-1".to_string(),
+            permission_id: "p-1".to_string(),
+            reply: "once".to_string(),
+            message: None,
+        };
+        assert!(event_passes_subscription_caps(&perm, &c));
+        let session = ServerEvent::SessionUpdated {
+            session_id: "sess-1".to_string(),
+            source: "turn.final".to_string(),
+        };
+        assert!(event_passes_subscription_caps(&session, &c));
+    }
+
+    /// P2-2 regression: the pending.is_none() branch in stream_server_events
+    /// must call subscribable() before sending or buffering the first event.
+    /// This test verifies the pure function rejects the event types that hit
+    /// the pending.is_none() path. The companion integration test
+    /// (cli_stream_filters_first_event) guards against removal of the call site.
+    #[test]
+    fn first_event_pure_function_rejects_usage_and_message_delta_in_final_only() {
+        let c = caps(false);
+        assert!(!event_passes_subscription_caps(&usage_event(), &c));
+        assert!(!event_passes_subscription_caps(&message_block(), &c));
+    }
+
+    fn usage_event() -> ServerEvent {
+        ServerEvent::Usage {
+            session_id: Some("sess-1".to_string()),
+            prompt_tokens: 1,
+            completion_tokens: 2,
+            message_id: None,
+        }
+    }
+
+    /// P2-2 integration: guards against removal of the subscribable() call
+    /// in stream_server_events()'s pending.is_none() branch. Sends a message
+    /// delta followed by a session.updated through a real broadcast channel
+    /// with CLI-tier subscription, then asserts the delta is filtered.
+    #[tokio::test]
+    async fn cli_stream_filters_first_event_in_pending_is_none_path() {
+        use tokio::sync::broadcast;
+        let (tx, _) = broadcast::channel::<String>(16);
+        let rx = tx.subscribe();
+
+        let cli_sub = rocode_api::ResolvedFrontendSubscription::from_tier(
+            rocode_api::FrontendSubscriptionTier::CliLowFrequency,
+        );
+        let sse = super::stream_server_events(rx, None, cli_sub);
+
+        // First event: a non-mergeable Usage — hits the pending.is_none()
+        // direct-send path. With CLI tier, it must be filtered.
+        tx.send(
+            serde_json::json!({
+                "type": "usage", "sessionID": "sess-1",
+                "prompt_tokens": 10, "completion_tokens": 20
+            })
+            .to_string(),
+        )
+        .expect("send usage");
+
+        // Second event: a message delta — mergeable, would enter pending
+        // buffer. With CLI tier, must be filtered.
+        tx.send(
+            serde_json::json!({
+                "type": "output_block", "sessionID": "sess-1", "id": "block-1",
+                "block": { "kind": "message", "phase": "delta", "text": "hello" }
+            })
+            .to_string(),
+        )
+        .expect("send message delta");
+
+        // Third event: session.updated — must pass for CLI tier.
+        tx.send(
+            serde_json::json!({
+                "type": "session.updated", "sessionID": "sess-1",
+                "source": "turn.final"
+            })
+            .to_string(),
+        )
+        .expect("send session.updated");
+
+        // Close the broadcast channel so the SSE stream task exits and the
+        // body completes. Without this, to_bytes blocks forever on the live stream.
+        drop(tx);
+
+        use axum::response::IntoResponse;
+        let body = sse.into_response().into_body();
+        let collected = axum::body::to_bytes(body, 4096).await.expect("collect body");
+        let text = std::str::from_utf8(&collected).expect("utf-8");
+
+        assert!(
+            !text.contains("\"usage\""),
+            "CLI tier must filter Usage in pending.is_none() path; got:\n{text}"
+        );
+        assert!(
+            !text.contains("\"message\""),
+            "CLI tier must filter message delta in pending buffer path; got:\n{text}"
+        );
+        assert!(
+            text.contains("session.updated"),
+            "CLI tier must deliver session.updated; got:\n{text}"
+        );
     }
 }

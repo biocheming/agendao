@@ -3,9 +3,39 @@ use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 
+// Legacy constants — prefer reading from rocode_config::RuntimeBudgetConfig.
+// These exist for backward compatibility; new code should use budget_authority().
 pub const SINGLE_TOOL_RESULT_MAX_CHARS: usize = 32_000;
 pub const TOOL_RESULT_BATCH_MAX_CHARS: usize = 120_000;
 const TOOL_RESULT_PREVIEW_CHARS: usize = 8_000;
+
+/// Read tool result budget from the canonical authority.
+/// Falls back to the legacy constants when no config store is available
+/// (standalone / non-server contexts).
+pub fn tool_result_budget(config: Option<&rocode_config::RuntimeBudgetConfig>) -> ToolResultBudget {
+    config.map_or_else(ToolResultBudget::legacy, |b| ToolResultBudget {
+        max_single_chars: b.tool_result_max_chars,
+        max_batch_chars: b.tool_batch_aggregate_max_chars,
+        preview_chars: b.tool_result_preview_chars,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ToolResultBudget {
+    pub max_single_chars: usize,
+    pub max_batch_chars: usize,
+    pub preview_chars: usize,
+}
+
+impl ToolResultBudget {
+    pub fn legacy() -> Self {
+        Self {
+            max_single_chars: SINGLE_TOOL_RESULT_MAX_CHARS,
+            max_batch_chars: TOOL_RESULT_BATCH_MAX_CHARS,
+            preview_chars: TOOL_RESULT_PREVIEW_CHARS,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct GovernedToolResultOutput {
@@ -31,9 +61,10 @@ pub fn govern_tool_result_output(
     output: String,
     metadata: &mut HashMap<String, serde_json::Value>,
     artifacts_root: &Path,
+    budget: ToolResultBudget,
 ) -> GovernedToolResultOutput {
     let original_chars = output.chars().count();
-    if original_chars <= SINGLE_TOOL_RESULT_MAX_CHARS {
+    if original_chars <= budget.max_single_chars {
         return GovernedToolResultOutput {
             governed_chars: original_chars,
             output,
@@ -54,7 +85,7 @@ pub fn govern_tool_result_output(
             .unwrap_or("text/plain"),
     )
     .ok();
-    let preview: String = output.chars().take(TOOL_RESULT_PREVIEW_CHARS).collect();
+    let preview: String = output.chars().take(budget.preview_chars).collect();
     let governed = build_governed_preview(
         original_chars,
         preview.chars().count(),
@@ -105,12 +136,13 @@ pub fn govern_tool_result_batch(
     session_id: &str,
     stream_tool_results: Vec<GovernedStreamToolResultEntry>,
     artifacts_root: &Path,
+    budget: ToolResultBudget,
 ) -> Vec<GovernedStreamToolResultEntry> {
     let total_chars: usize = stream_tool_results
         .iter()
         .map(|(_, content, _, _, _, _)| content.chars().count())
         .sum();
-    if total_chars <= TOOL_RESULT_BATCH_MAX_CHARS {
+    if total_chars <= budget.max_batch_chars {
         return stream_tool_results;
     }
 
@@ -124,7 +156,7 @@ pub fn govern_tool_result_batch(
     let mut rewritten: HashMap<usize, GovernedStreamToolResultEntry> = HashMap::new();
     for (original_index, (tool_call_id, content, is_error, title, metadata, attachments)) in indexed
     {
-        if current_total <= TOOL_RESULT_BATCH_MAX_CHARS {
+        if current_total <= budget.max_batch_chars {
             rewritten.insert(
                 original_index,
                 (
@@ -154,6 +186,7 @@ pub fn govern_tool_result_batch(
             content.clone(),
             &mut metadata_map,
             artifacts_root,
+            budget,
         );
         current_total = current_total
             .saturating_sub(content.chars().count())
@@ -244,6 +277,7 @@ mod tests {
             "short output".to_string(),
             &mut metadata,
             dir.path(),
+            ToolResultBudget::legacy(),
         );
         assert!(!governed.degraded);
         assert_eq!(governed.output, "short output");
@@ -257,7 +291,7 @@ mod tests {
         let mut metadata = HashMap::new();
         let large = "x".repeat(SINGLE_TOOL_RESULT_MAX_CHARS + 1024);
         let governed =
-            govern_tool_result_output("session-1", "call-1", large, &mut metadata, dir.path());
+            govern_tool_result_output("session-1", "call-1", large, &mut metadata, dir.path(), ToolResultBudget::legacy());
         assert!(governed.degraded);
         assert!(governed
             .output
@@ -308,7 +342,7 @@ mod tests {
             ),
         ];
 
-        let governed = govern_tool_result_batch("session-1", batch, dir.path());
+        let governed = govern_tool_result_batch("session-1", batch, dir.path(), ToolResultBudget::legacy());
         assert_eq!(governed.len(), 3);
         assert_eq!(governed[0].0, "call-1");
         assert_eq!(governed[1].0, "call-2");

@@ -8,6 +8,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::session_runtime::steering::PendingSteeringMessage;
+use crate::session_runtime::events::{broadcast_session_reconcile, ReconcileReason};
 use crate::{ApiError, Result, ServerState};
 
 #[derive(Debug, Deserialize)]
@@ -163,11 +164,11 @@ pub async fn submit_session_steering(
         .steering_enqueued(&owner_session_id, summary)
         .await;
 
-    // Signal session update hook.
-    state
-        .runtime_telemetry
-        .record_session_updated(&owner_session_id, "steering_enqueued")
-        .await;
+    broadcast_session_reconcile(
+        state.as_ref(),
+        owner_session_id.clone(),
+        ReconcileReason::Steering,
+    );
 
     Ok(Json(SubmitSteeringResponse {
         id: steer_id,
