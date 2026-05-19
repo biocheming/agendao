@@ -1,10 +1,14 @@
 use futures::StreamExt;
 use rocode_command::cli_style::CliStyle;
 use rocode_command::output_blocks::{
-    render_cli_block_rich, BlockTone, MessageBlock, MessagePhase, MessageRole, OutputBlock,
-    QueueItemBlock, ReasoningBlock, SchedulerDecisionBlock, SchedulerDecisionField,
+    BlockTone, MessageBlock, MessagePhase, MessageRole, OutputBlock, QueueItemBlock,
+    ReasoningBlock, SchedulerDecisionBlock, SchedulerDecisionField,
     SchedulerDecisionRenderSpec, SchedulerDecisionSection, SchedulerStageBlock, SessionEventBlock,
     SessionEventField, StatusBlock, ToolBlock, ToolPhase,
+};
+use rocode_command::terminal_presentation::{
+    render_terminal_stream_block_semantic, TerminalSemanticStreamRenderState,
+    TerminalStreamAccumulator,
 };
 use rocode_config::schema::ShareMode;
 use rocode_runtime_context::ResolvedWorkspaceContext;
@@ -15,6 +19,12 @@ use std::sync::Arc;
 
 use crate::cli::RunOutputFormat;
 use crate::util::{parse_bool_env, parse_http_json, server_url};
+
+#[derive(Default)]
+struct RemoteSemanticRenderState {
+    accumulator: TerminalStreamAccumulator,
+    semantic: TerminalSemanticStreamRenderState,
+}
 
 #[derive(Debug, Deserialize)]
 struct RemoteSessionInfo {
@@ -500,6 +510,7 @@ pub(crate) async fn consume_remote_sse(
     let mut buffer = String::new();
     let mut current_event: Option<String> = None;
     let mut current_data: Vec<String> = Vec::new();
+    let mut semantic_state = RemoteSemanticRenderState::default();
 
     loop {
         let Some(chunk) = StreamExt::next(&mut stream).await else {
@@ -522,6 +533,7 @@ pub(crate) async fn consume_remote_sse(
                     &show_thinking,
                     session_id,
                     &format,
+                    &mut semantic_state,
                     current_event.take(),
                     data,
                 )
@@ -544,6 +556,7 @@ pub(crate) async fn consume_remote_sse(
             &show_thinking,
             session_id,
             &format,
+            &mut semantic_state,
             current_event.take(),
             current_data.join("\n"),
         )
@@ -559,6 +572,7 @@ async fn dispatch_remote_sse_event(
     show_thinking: &Arc<AtomicBool>,
     session_id: &str,
     format: &RunOutputFormat,
+    semantic_state: &mut RemoteSemanticRenderState,
     event_name: Option<String>,
     data: String,
 ) -> anyhow::Result<()> {
@@ -620,7 +634,18 @@ async fn dispatch_remote_sse_event(
                 return Ok(());
             }
             let style = CliStyle::detect();
-            print!("{}", render_cli_block_rich(&block, &style));
+            let block_id = parsed.get("id").and_then(|value| value.as_str());
+            semantic_state
+                .accumulator
+                .apply_output_block(block_id, &block);
+            let rendered = render_terminal_stream_block_semantic(
+                &mut semantic_state.semantic,
+                &semantic_state.accumulator,
+                &block,
+                &style,
+                show_thinking.load(Ordering::SeqCst),
+            );
+            print!("{rendered}");
             io::stdout().flush()?;
         }
         return Ok(());
@@ -712,9 +737,11 @@ pub(crate) async fn run_non_interactive_attach(options: RemoteAttachOptions) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::parse_output_block;
+    use super::{parse_output_block, RemoteSemanticRenderState};
     use rocode_command::governance_fixtures::canonical_scheduler_stage_fixture;
-    use rocode_command::output_blocks::{MessagePhase, OutputBlock};
+    use rocode_command::cli_style::CliStyle;
+    use rocode_command::output_blocks::{MessageBlock, MessagePhase, MessageRole, OutputBlock};
+    use rocode_command::terminal_presentation::render_terminal_stream_block_semantic;
 
     #[test]
     fn parses_canonical_scheduler_stage_payload() {
@@ -736,5 +763,44 @@ mod tests {
             OutputBlock::Reasoning(reasoning)
                 if reasoning.phase == MessagePhase::Delta && reasoning.text == "thinking"
         ));
+    }
+
+    #[test]
+    fn remote_semantic_render_keeps_single_assistant_header_across_full_messages() {
+        let style = CliStyle::plain();
+        let mut semantic_state = RemoteSemanticRenderState::default();
+        let rendered = [
+            OutputBlock::Message(MessageBlock::full(
+                MessageRole::Assistant,
+                "五".to_string(),
+            )),
+            OutputBlock::Message(MessageBlock::full(
+                MessageRole::Assistant,
+                "、".to_string(),
+            )),
+            OutputBlock::Message(MessageBlock::full(
+                MessageRole::Assistant,
+                "授权".to_string(),
+            )),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, block)| {
+            let id = format!("assistant-{}", index + 1);
+            semantic_state
+                .accumulator
+                .apply_output_block(Some(id.as_str()), &block);
+            render_terminal_stream_block_semantic(
+                &mut semantic_state.semantic,
+                &semantic_state.accumulator,
+                &block,
+                &style,
+                true,
+            )
+        })
+        .collect::<String>();
+
+        assert_eq!(rendered.matches("[message:assistant]").count(), 1, "{rendered}");
+        assert_eq!(rendered, "[message:assistant] 五、授权");
     }
 }
