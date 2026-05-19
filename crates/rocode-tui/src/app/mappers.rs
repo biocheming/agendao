@@ -282,6 +282,7 @@ fn task_kind_from_tool_name(name: &str) -> TaskKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::{MessageTokensInfo, SessionTimeInfo};
 
     #[test]
     fn merge_adjacent_textual_parts_coalesces_reasoning_and_text() {
@@ -360,6 +361,297 @@ mod tests {
             ContextMessagePart::ToolCall { arguments, .. }
                 if arguments == "{\"file_path\":\"/tmp/normalized.txt\"}"
         ));
+    }
+
+    #[test]
+    fn incremental_sync_preserves_local_streaming_assistant_message_with_same_id() {
+        let session_id = "session-1";
+        let now = Utc::now().timestamp_millis();
+        let mut session_ctx = crate::context::SessionContext::new();
+        session_ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Session".to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+
+        session_ctx.apply_output_block_incremental(
+            session_id,
+            Some("assistant-1"),
+            &serde_json::json!({
+                "kind": "message",
+                "phase": "delta",
+                "role": "assistant",
+                "text": "hello world"
+            }),
+        );
+
+        let before_sync = session_ctx
+            .messages
+            .get(session_id)
+            .and_then(|messages| messages.iter().find(|message| message.id == "assistant-1"))
+            .map(|message| message.content.clone())
+            .expect("streaming assistant message should exist");
+        assert_eq!(before_sync, "hello world");
+
+        let session = SessionInfo {
+            id: session_id.to_string(),
+            slug: "session-1".to_string(),
+            project_id: "project".to_string(),
+            directory: ".".to_string(),
+            parent_id: None,
+            title: "Session".to_string(),
+            version: "1".to_string(),
+            time: SessionTimeInfo {
+                created: now,
+                updated: now + 1000,
+                compacting: None,
+                archived: None,
+            },
+            summary: None,
+            share: None,
+            permission: None,
+            revert: None,
+            fork: None,
+            telemetry: None,
+            metadata: None,
+        };
+        let mapped_messages = vec![map_api_message(&MessageInfo {
+            id: "assistant-1".to_string(),
+            session_id: session_id.to_string(),
+            role: "assistant".to_string(),
+            created_at: now + 500,
+            completed_at: None,
+            agent: None,
+            model: None,
+            mode: None,
+            finish: None,
+            error: None,
+            cost: 0.0,
+            tokens: MessageTokensInfo::default(),
+            parts: vec![crate::api::MessagePart {
+                id: "p1".to_string(),
+                part_type: "text".to_string(),
+                text: Some("hello".to_string()),
+                file: None,
+                tool_call: None,
+                tool_result: None,
+                synthetic: None,
+                ignored: None,
+            }],
+            metadata: None,
+            multimodal: None,
+        })];
+
+        apply_incremental_session_sync(&mut session_ctx, session_id, &session, mapped_messages);
+
+        let after_sync = session_ctx
+            .messages
+            .get(session_id)
+            .and_then(|messages| messages.iter().find(|message| message.id == "assistant-1"))
+            .map(|message| message.content.clone())
+            .expect("assistant message should still exist after sync");
+        assert_eq!(after_sync, "hello world");
+    }
+
+    #[test]
+    fn incremental_sync_replaces_completed_assistant_message_with_server_version() {
+        let session_id = "session-1";
+        let now = Utc::now().timestamp_millis();
+        let mut session_ctx = crate::context::SessionContext::new();
+        session_ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Session".to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+
+        session_ctx.add_message(
+            session_id,
+            Message {
+                id: "assistant-1".to_string(),
+                role: MessageRole::Assistant,
+                content: "hello world".to_string(),
+                created_at: Utc::now(),
+                agent: None,
+                model: None,
+                mode: None,
+                finish: Some("stop".to_string()),
+                error: None,
+                completed_at: Some(Utc::now()),
+                cost: 0.0,
+                tokens: TokenUsage::default(),
+                metadata: None,
+                multimodal: None,
+                parts: vec![ContextMessagePart::Text {
+                    text: "hello world".to_string(),
+                }],
+            },
+        );
+
+        let session = SessionInfo {
+            id: session_id.to_string(),
+            slug: "session-1".to_string(),
+            project_id: "project".to_string(),
+            directory: ".".to_string(),
+            parent_id: None,
+            title: "Session".to_string(),
+            version: "1".to_string(),
+            time: SessionTimeInfo {
+                created: now,
+                updated: now + 1000,
+                compacting: None,
+                archived: None,
+            },
+            summary: None,
+            share: None,
+            permission: None,
+            revert: None,
+            fork: None,
+            telemetry: None,
+            metadata: None,
+        };
+        let mapped_messages = vec![map_api_message(&MessageInfo {
+            id: "assistant-1".to_string(),
+            session_id: session_id.to_string(),
+            role: "assistant".to_string(),
+            created_at: now + 500,
+            completed_at: Some(now + 700),
+            agent: None,
+            model: None,
+            mode: None,
+            finish: Some("stop".to_string()),
+            error: None,
+            cost: 0.0,
+            tokens: MessageTokensInfo::default(),
+            parts: vec![crate::api::MessagePart {
+                id: "p1".to_string(),
+                part_type: "text".to_string(),
+                text: Some("hello".to_string()),
+                file: None,
+                tool_call: None,
+                tool_result: None,
+                synthetic: None,
+                ignored: None,
+            }],
+            metadata: None,
+            multimodal: None,
+        })];
+
+        apply_incremental_session_sync(&mut session_ctx, session_id, &session, mapped_messages);
+
+        let after_sync = session_ctx
+            .messages
+            .get(session_id)
+            .and_then(|messages| messages.iter().find(|message| message.id == "assistant-1"))
+            .map(|message| message.content.clone())
+            .expect("assistant message should still exist after sync");
+        assert_eq!(after_sync, "hello");
+    }
+
+    #[test]
+    fn incremental_sync_preserves_local_streaming_reasoning_when_server_lags() {
+        let session_id = "session-1";
+        let now = Utc::now().timestamp_millis();
+        let mut session_ctx = crate::context::SessionContext::new();
+        session_ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Session".to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+
+        session_ctx.apply_output_block_incremental(
+            session_id,
+            Some("assistant-1"),
+            &serde_json::json!({
+                "kind": "reasoning",
+                "phase": "start",
+                "text": ""
+            }),
+        );
+        session_ctx.apply_output_block_incremental(
+            session_id,
+            Some("assistant-1"),
+            &serde_json::json!({
+                "kind": "reasoning",
+                "phase": "delta",
+                "text": "thinking more"
+            }),
+        );
+
+        let session = SessionInfo {
+            id: session_id.to_string(),
+            slug: "session-1".to_string(),
+            project_id: "project".to_string(),
+            directory: ".".to_string(),
+            parent_id: None,
+            title: "Session".to_string(),
+            version: "1".to_string(),
+            time: SessionTimeInfo {
+                created: now,
+                updated: now + 1000,
+                compacting: None,
+                archived: None,
+            },
+            summary: None,
+            share: None,
+            permission: None,
+            revert: None,
+            fork: None,
+            telemetry: None,
+            metadata: None,
+        };
+        let mapped_messages = vec![map_api_message(&MessageInfo {
+            id: "assistant-1".to_string(),
+            session_id: session_id.to_string(),
+            role: "assistant".to_string(),
+            created_at: now + 500,
+            completed_at: None,
+            agent: None,
+            model: None,
+            mode: None,
+            finish: None,
+            error: None,
+            cost: 0.0,
+            tokens: MessageTokensInfo::default(),
+            parts: vec![crate::api::MessagePart {
+                id: "p1".to_string(),
+                part_type: "reasoning".to_string(),
+                text: Some("thinking".to_string()),
+                file: None,
+                tool_call: None,
+                tool_result: None,
+                synthetic: None,
+                ignored: None,
+            }],
+            metadata: None,
+            multimodal: None,
+        })];
+
+        apply_incremental_session_sync(&mut session_ctx, session_id, &session, mapped_messages);
+
+        let after_sync = session_ctx
+            .messages
+            .get(session_id)
+            .and_then(|messages| messages.iter().find(|message| message.id == "assistant-1"))
+            .and_then(|message| {
+                message.parts.iter().find_map(|part| match part {
+                    ContextMessagePart::Reasoning { text } => Some(text.clone()),
+                    _ => None,
+                })
+            })
+            .expect("reasoning part should still exist after sync");
+        assert_eq!(after_sync, "thinking more");
     }
 }
 

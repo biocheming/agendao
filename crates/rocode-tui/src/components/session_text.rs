@@ -21,16 +21,37 @@ pub struct MessageTextRender {
     pub source_len: usize,
 }
 
+#[cfg(test)]
 pub fn render_message_text_part(
     message: &Message,
     text: &str,
     theme: &Theme,
     marker_color: Color,
 ) -> MessageTextRender {
+    render_message_text_part_with_width(message, text, theme, marker_color, None)
+}
+
+#[cfg(test)]
+pub fn render_reasoning_part(
+    text: &str,
+    theme: &Theme,
+    collapsed: bool,
+    preview_lines: usize,
+) -> ReasoningRender {
+    render_reasoning_part_with_width(text, theme, collapsed, preview_lines, None)
+}
+
+pub(super) fn render_message_text_part_with_width(
+    message: &Message,
+    text: &str,
+    theme: &Theme,
+    marker_color: Color,
+    max_width: Option<u16>,
+) -> MessageTextRender {
     let metadata = message.metadata.as_ref();
 
     if let Some(stage) = scheduler_stage(metadata) {
-        if let Some(lines) = render_decision_stage_part(text, stage, metadata, theme, marker_color)
+        if let Some(lines) = render_decision_stage_part(text, stage, metadata, theme, marker_color, max_width)
         {
             return MessageTextRender {
                 lines,
@@ -39,7 +60,7 @@ pub fn render_message_text_part(
             };
         }
 
-        let lines = render_scheduler_stage_part(text, stage, metadata, theme, marker_color);
+        let lines = render_scheduler_stage_part(text, stage, metadata, theme, marker_color, max_width);
         return MessageTextRender {
             lines,
             allow_semantic_highlighting: false,
@@ -48,13 +69,23 @@ pub fn render_message_text_part(
     }
 
     MessageTextRender {
-        lines: render_text_part(text, theme, marker_color),
+        lines: render_text_part_with_width(text, theme, marker_color, max_width),
         allow_semantic_highlighting: true,
         source_len: text.len(),
     }
 }
 
+#[cfg(test)]
 pub fn render_text_part(text: &str, theme: &Theme, marker_color: Color) -> Vec<Line<'static>> {
+    render_text_part_with_width(text, theme, marker_color, None)
+}
+
+fn render_text_part_with_width(
+    text: &str,
+    theme: &Theme,
+    marker_color: Color,
+    max_width: Option<u16>,
+) -> Vec<Line<'static>> {
     let cleaned = strip_think_tags(text);
     let renderer = MarkdownRenderer::new(theme.clone());
     let mut lines = Vec::new();
@@ -62,7 +93,7 @@ pub fn render_text_part(text: &str, theme: &Theme, marker_color: Color) -> Vec<L
 
     for raw_line in cleaned.lines() {
         if is_system_reminder_display_line(raw_line) {
-            flush_markdown_buffer(&renderer, &mut lines, &mut markdown_buffer);
+            flush_markdown_buffer(&renderer, &mut lines, &mut markdown_buffer, max_width);
             if !lines.last().is_none_or(line_is_blank) {
                 lines.push(Line::from(""));
             }
@@ -72,7 +103,7 @@ pub fn render_text_part(text: &str, theme: &Theme, marker_color: Color) -> Vec<L
         }
     }
 
-    flush_markdown_buffer(&renderer, &mut lines, &mut markdown_buffer);
+    flush_markdown_buffer(&renderer, &mut lines, &mut markdown_buffer, max_width);
     apply_assistant_marker(lines, marker_color)
 }
 
@@ -81,11 +112,12 @@ pub struct ReasoningRender {
     pub collapsible: bool,
 }
 
-pub fn render_reasoning_part(
+pub(super) fn render_reasoning_part_with_width(
     text: &str,
     theme: &Theme,
     collapsed: bool,
     preview_lines: usize,
+    max_width: Option<u16>,
 ) -> ReasoningRender {
     let cleaned = strip_think_tags(&text.replace("[REDACTED]", ""))
         .trim()
@@ -99,7 +131,7 @@ pub fn render_reasoning_part(
 
     let mut lines = Vec::new();
     let renderer = MarkdownRenderer::new(theme.clone()).with_concealed(true);
-    let content_lines = renderer.to_lines(&cleaned);
+    let content_lines = renderer.to_lines(&cleaned, max_width);
     let total_content_lines = content_lines.len();
     let collapsible = total_content_lines > preview_lines;
 
@@ -279,6 +311,7 @@ fn render_scheduler_stage_part(
     metadata: Option<&HashMap<String, Value>>,
     theme: &Theme,
     marker_color: Color,
+    max_width: Option<u16>,
 ) -> Vec<Line<'static>> {
     let block = metadata.and_then(|m| SchedulerStageBlock::from_metadata(text, m));
     let profile = block
@@ -303,13 +336,13 @@ fn render_scheduler_stage_part(
                 Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
             ),
         ]));
-        append_decision_card_body(&mut lines, card, theme);
+        append_decision_card_body(&mut lines, card, theme, max_width);
         return apply_assistant_marker(lines, marker_color);
     }
 
     let cleaned = strip_think_tags(body);
     let renderer = MarkdownRenderer::new(theme.clone());
-    let body_lines = renderer.to_lines(&cleaned);
+    let body_lines = renderer.to_lines(&cleaned, max_width);
     lines.extend(body_lines);
 
     apply_assistant_marker(lines, marker_color)
@@ -345,6 +378,7 @@ fn render_decision_stage_part(
     metadata: Option<&HashMap<String, Value>>,
     theme: &Theme,
     marker_color: Color,
+    max_width: Option<u16>,
 ) -> Option<Vec<Line<'static>>> {
     let decision = decision_card_from_message(stage, text, metadata?)?;
 
@@ -372,7 +406,7 @@ fn render_decision_stage_part(
         ),
     ]));
 
-    append_decision_card_body(&mut lines, decision, theme);
+    append_decision_card_body(&mut lines, decision, theme, max_width);
 
     Some(apply_assistant_marker(lines, marker_color))
 }
@@ -406,6 +440,7 @@ fn append_decision_card_body(
     lines: &mut Vec<Line<'static>>,
     decision: DecisionCard,
     theme: &Theme,
+    max_width: Option<u16>,
 ) {
     for field in decision.fields {
         lines.push(route_field_line(
@@ -430,7 +465,7 @@ fn append_decision_card_body(
             ),
         ]));
         let renderer = MarkdownRenderer::new(theme.clone());
-        for line in renderer.to_lines(&section.body) {
+        for line in renderer.to_lines(&section.body, max_width) {
             let mut spans = vec![Span::styled("  ", Style::default().fg(theme.text_muted))];
             spans.extend(line.spans);
             lines.push(Line::from(spans));
@@ -728,6 +763,7 @@ fn flush_markdown_buffer(
     renderer: &MarkdownRenderer,
     lines: &mut Vec<Line<'static>>,
     markdown_buffer: &mut Vec<String>,
+    max_width: Option<u16>,
 ) {
     if markdown_buffer.is_empty() {
         return;
@@ -739,7 +775,7 @@ fn flush_markdown_buffer(
         return;
     }
 
-    lines.extend(renderer.to_lines(&markdown));
+    lines.extend(renderer.to_lines(&markdown, max_width));
 }
 
 fn is_system_reminder_display_line(line: &str) -> bool {

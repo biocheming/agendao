@@ -592,7 +592,7 @@ fn render_shared_block_items(
                 bg,
             )),
             TerminalToolBlockItem::Markdown { content } => {
-                for markdown_line in MarkdownRenderer::new(theme.clone()).to_lines(&content) {
+                for markdown_line in MarkdownRenderer::new(theme.clone()).to_lines(&content, None) {
                     lines.push(block_markdown_line(markdown_line, theme, bg));
                 }
             }

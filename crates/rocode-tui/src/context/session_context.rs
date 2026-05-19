@@ -290,7 +290,7 @@ impl SessionContext {
 
     pub fn upsert_messages_incremental(&mut self, session_id: &str, incoming: Vec<Message>) {
         for message in incoming {
-            self.upsert_message(session_id, message);
+            self.upsert_message_for_incremental_sync(session_id, message);
         }
     }
 
@@ -314,6 +314,175 @@ impl SessionContext {
         let message_id = message.id.clone();
         messages.push(message);
         index.insert(message_id, messages.len().saturating_sub(1));
+    }
+
+    fn upsert_message_for_incremental_sync(&mut self, session_id: &str, message: Message) {
+        let messages = self.messages.entry(session_id.to_string()).or_default();
+        let index = self
+            .message_index
+            .entry(session_id.to_string())
+            .or_default();
+        if let Some(existing_pos) = index.get(&message.id).copied() {
+            if let Some(existing) = messages.get_mut(existing_pos) {
+                *existing = Self::merge_incremental_sync_message(existing, message);
+                return;
+            }
+            index.clear();
+            for (pos, msg) in messages.iter().enumerate() {
+                index.insert(msg.id.clone(), pos);
+            }
+        }
+        let message_id = message.id.clone();
+        messages.push(message);
+        index.insert(message_id, messages.len().saturating_sub(1));
+    }
+
+    fn merge_incremental_sync_message(existing: &Message, incoming: Message) -> Message {
+        if !Self::should_preserve_local_streaming_assistant(existing, &incoming) {
+            return incoming;
+        }
+
+        let existing_text = Self::message_part_text_content(&existing.parts);
+        let incoming_text = Self::message_part_text_content(&incoming.parts);
+        let preserve_text = Self::should_preserve_streaming_text(
+            existing_text.as_deref(),
+            incoming_text.as_deref(),
+        );
+
+        let existing_reasoning = Self::message_part_reasoning_content(&existing.parts);
+        let incoming_reasoning = Self::message_part_reasoning_content(&incoming.parts);
+        let preserve_reasoning = Self::should_preserve_streaming_text(
+            existing_reasoning.as_deref(),
+            incoming_reasoning.as_deref(),
+        );
+
+        if !preserve_text && !preserve_reasoning {
+            return incoming;
+        }
+
+        let mut merged = incoming;
+        merged.parts = Self::merge_incremental_sync_parts(
+            &existing.parts,
+            &merged.parts,
+            existing_text.as_deref(),
+            existing_reasoning.as_deref(),
+            preserve_text,
+            preserve_reasoning,
+        );
+        if merged.agent.is_none() {
+            merged.agent = existing.agent.clone();
+        }
+        if merged.model.is_none() {
+            merged.model = existing.model.clone();
+        }
+        if merged.mode.is_none() {
+            merged.mode = existing.mode.clone();
+        }
+        Self::refresh_message_content(&mut merged);
+        merged
+    }
+
+    fn should_preserve_local_streaming_assistant(existing: &Message, incoming: &Message) -> bool {
+        existing.id == incoming.id
+            && existing.completed_at.is_none()
+            && incoming.completed_at.is_none()
+            && (Self::message_part_text_content(&existing.parts).is_some()
+                || Self::message_part_reasoning_content(&existing.parts).is_some())
+    }
+
+    fn should_preserve_streaming_text(
+        existing: Option<&str>,
+        incoming: Option<&str>,
+    ) -> bool {
+        let Some(existing) = existing.filter(|value| !value.is_empty()) else {
+            return false;
+        };
+        match incoming {
+            Some(incoming) if !incoming.is_empty() => {
+                existing.len() > incoming.len() && existing.starts_with(incoming)
+            }
+            _ => true,
+        }
+    }
+
+    fn message_part_text_content(parts: &[MessagePart]) -> Option<String> {
+        let mut text = String::new();
+        for part in parts {
+            if let MessagePart::Text { text: value } = part {
+                text.push_str(value);
+            }
+        }
+        (!text.is_empty()).then_some(text)
+    }
+
+    fn message_part_reasoning_content(parts: &[MessagePart]) -> Option<String> {
+        let mut text = String::new();
+        for part in parts {
+            if let MessagePart::Reasoning { text: value } = part {
+                text.push_str(value);
+            }
+        }
+        (!text.is_empty()).then_some(text)
+    }
+
+    fn merge_incremental_sync_parts(
+        existing_parts: &[MessagePart],
+        incoming_parts: &[MessagePart],
+        existing_text: Option<&str>,
+        existing_reasoning: Option<&str>,
+        preserve_text: bool,
+        preserve_reasoning: bool,
+    ) -> Vec<MessagePart> {
+        let mut merged = Vec::with_capacity(incoming_parts.len().max(existing_parts.len()));
+        let mut inserted_text = false;
+        let mut inserted_reasoning = false;
+
+        for part in incoming_parts {
+            match part {
+                MessagePart::Text { .. } if preserve_text => {
+                    if !inserted_text {
+                        merged.push(MessagePart::Text {
+                            text: existing_text.unwrap_or_default().to_string(),
+                        });
+                        inserted_text = true;
+                    }
+                }
+                MessagePart::Reasoning { .. } if preserve_reasoning => {
+                    if !inserted_reasoning {
+                        merged.push(MessagePart::Reasoning {
+                            text: existing_reasoning.unwrap_or_default().to_string(),
+                        });
+                        inserted_reasoning = true;
+                    }
+                }
+                other => merged.push(other.clone()),
+            }
+        }
+
+        if preserve_reasoning && !inserted_reasoning {
+            if let Some(reasoning) = existing_reasoning.filter(|value| !value.is_empty()) {
+                merged.insert(
+                    0,
+                    MessagePart::Reasoning {
+                        text: reasoning.to_string(),
+                    },
+                );
+            }
+        }
+
+        if preserve_text && !inserted_text {
+            if let Some(text) = existing_text.filter(|value| !value.is_empty()) {
+                merged.push(MessagePart::Text {
+                    text: text.to_string(),
+                });
+            }
+        }
+
+        if merged.is_empty() {
+            return existing_parts.to_vec();
+        }
+
+        merged
     }
 
     pub fn set_status(&mut self, session_id: &str, status: SessionStatus) {

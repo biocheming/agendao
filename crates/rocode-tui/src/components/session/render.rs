@@ -922,11 +922,12 @@ fn render_assistant_thinking_output(
     let reasoning_id = format!("{}:{}", msg.id, item.part_index);
     let is_live_reasoning = msg.completed_at.is_none();
     let collapsed = !is_live_reasoning && !expanded_reasoning.contains(&reasoning_id);
-    let rendered = super::session_text::render_reasoning_part(
+    let rendered = super::session_text::render_reasoning_part_with_width(
         &item.text,
         &context.theme,
         collapsed,
         THINKING_PREVIEW_LINES,
+        Some(context.content_width as u16),
     );
     if rendered.lines.is_empty() {
         return empty_assistant_segment_output();
@@ -1069,7 +1070,7 @@ fn build_assistant_text_segment_output(
     resources: &SessionRenderResources<'_>,
 ) -> AssistantSegmentRenderOutput {
     let rendered =
-        super::session_text::render_message_text_part(msg, text, &resources.theme, style.marker);
+        super::session_text::render_message_text_part_with_width(msg, text, &resources.theme, style.marker, Some(resources.content_width as u16));
     let mut text_lines = rendered.lines;
     if resources.semantic_hl
         && rendered.allow_semantic_highlighting
@@ -1637,7 +1638,7 @@ fn context_usage_bar(percent: Option<u64>, width: usize) -> String {
     rocode_types::context_usage_bar(percent, width)
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 fn format_context_usage_label(used: u64, limit: Option<u64>) -> String {
     let Some(limit) = limit.filter(|limit| *limit > 0) else {
         return format_compact_number(used);

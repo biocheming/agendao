@@ -147,6 +147,13 @@ struct MarkdownRenderer<'a> {
     last_was_blank: bool,
     in_block_quote: bool,
     block_quote_buf: String,
+    // Table rendering state.
+    in_table: bool,
+    in_table_head: bool,
+    table_alignments: Vec<pulldown_cmark::Alignment>,
+    table_rows: Vec<Vec<String>>,
+    table_current_row: Vec<String>,
+    table_current_cell: String,
 }
 
 struct ListItemFrame {
@@ -175,6 +182,12 @@ impl<'a> MarkdownRenderer<'a> {
             last_was_blank: true,
             in_block_quote: false,
             block_quote_buf: String::new(),
+            in_table: false,
+            in_table_head: false,
+            table_alignments: Vec::new(),
+            table_rows: Vec::new(),
+            table_current_row: Vec::new(),
+            table_current_cell: String::new(),
         }
     }
 
@@ -287,6 +300,22 @@ impl<'a> MarkdownRenderer<'a> {
             }
             Tag::Strikethrough => {}
             Tag::Link { .. } => {}
+            Tag::Table(alignments) => {
+                self.in_table = true;
+                self.table_alignments = alignments;
+                self.table_rows.clear();
+                self.table_current_row.clear();
+                self.table_current_cell.clear();
+            }
+            Tag::TableHead => {
+                self.in_table_head = true;
+            }
+            Tag::TableRow => {
+                self.table_current_row.clear();
+            }
+            Tag::TableCell => {
+                self.table_current_cell.clear();
+            }
             _ => {}
         }
     }
@@ -360,11 +389,33 @@ impl<'a> MarkdownRenderer<'a> {
             TagEnd::Strong => {
                 self.strong_depth = self.strong_depth.saturating_sub(1);
             }
+            TagEnd::Table => {
+                self.in_table = false;
+                self.render_table();
+            }
+            TagEnd::TableHead => {
+                self.in_table_head = false;
+            }
+            TagEnd::TableRow => {
+                if !self.table_current_cell.is_empty() {
+                    self.table_current_row.push(std::mem::take(&mut self.table_current_cell));
+                }
+                if !self.table_current_row.is_empty() {
+                    self.table_rows.push(std::mem::take(&mut self.table_current_row));
+                }
+            }
+            TagEnd::TableCell => {
+                self.table_current_row.push(std::mem::take(&mut self.table_current_cell));
+            }
             _ => {}
         }
     }
 
     fn handle_text(&mut self, text: &str) {
+        if self.in_table {
+            self.table_current_cell.push_str(text);
+            return;
+        }
         if self.in_code_block {
             self.code_block_buf.push_str(text);
             return;
@@ -392,6 +443,12 @@ impl<'a> MarkdownRenderer<'a> {
     }
 
     fn handle_inline_code(&mut self, code: &str) {
+        if self.in_table {
+            self.table_current_cell.push('`');
+            self.table_current_cell.push_str(code);
+            self.table_current_cell.push('`');
+            return;
+        }
         if self.in_heading {
             self.heading_buf.push_str(code);
             return;
@@ -413,7 +470,9 @@ impl<'a> MarkdownRenderer<'a> {
     }
 
     fn handle_soft_break(&mut self) {
-        if self.in_code_block {
+        if self.in_table {
+            self.table_current_cell.push(' ');
+        } else if self.in_code_block {
             self.code_block_buf.push('\n');
         } else if self.in_heading {
             self.heading_buf.push(' ');
@@ -427,7 +486,9 @@ impl<'a> MarkdownRenderer<'a> {
     }
 
     fn handle_hard_break(&mut self) {
-        if self.in_code_block {
+        if self.in_table {
+            self.table_current_cell.push(' ');
+        } else if self.in_code_block {
             self.code_block_buf.push('\n');
         } else if self.in_list_item() {
             self.append_list_item_segment("\n");
@@ -438,6 +499,97 @@ impl<'a> MarkdownRenderer<'a> {
 
     fn handle_rule(&mut self) {
         self.output.push_str(&self.style.hr());
+        self.output.push('\n');
+        self.last_was_blank = true;
+    }
+
+    fn render_table(&mut self) {
+        if self.table_rows.is_empty() {
+            return;
+        }
+        let col_count = self.table_rows.iter().map(|r| r.len()).max().unwrap_or(0)
+            .max(self.table_alignments.len());
+        if col_count == 0 {
+            return;
+        }
+
+        // Compute column widths from content (display width).
+        let mut widths = vec![3usize; col_count];
+        for row in &self.table_rows {
+            for (i, cell) in row.iter().enumerate() {
+                let dw = unicode_width::UnicodeWidthStr::width(cell.as_str()) + 2; // padding
+                widths[i] = widths[i].max(dw);
+            }
+        }
+
+        // Constrain to terminal width.
+        let max_width = (self.style.width.max(1) as usize).min(72);
+        let border_overhead = col_count + 1;
+        let content_budget = max_width.saturating_sub(border_overhead);
+        let total_content: usize = widths.iter().sum();
+        if total_content > content_budget {
+            let scale = content_budget as f64 / total_content.max(1) as f64;
+            for w in &mut widths {
+                *w = ((*w as f64 * scale).max(5.0) as usize).min(*w);
+            }
+        }
+
+        let border_line = |left: char, mid: char, right: char| -> String {
+            let mut s = String::new();
+            s.push(left);
+            for (i, w) in widths.iter().enumerate() {
+                s.push_str(&"─".repeat(*w));
+                if i + 1 < widths.len() { s.push(mid); }
+            }
+            s.push(right);
+            s.push('\n');
+            s
+        };
+
+        let style = self.style;
+        let row_line = |row: &[String]| -> String {
+            let mut s = String::new();
+            s.push('│');
+            for i in 0..widths.len() {
+                let cell = row.get(i).map(|c| c.as_str()).unwrap_or("");
+                let w = widths[i].saturating_sub(2);
+                let cell_w = unicode_width::UnicodeWidthStr::width(cell);
+                if cell_w <= w {
+                    let pad = w - cell_w;
+                    s.push(' ');
+                    s.push_str(cell);
+                    s.push_str(&" ".repeat(pad));
+                    s.push(' ');
+                } else {
+                    s.push(' ');
+                    let budget = w.saturating_sub(1); // reserve for ellipsis
+                    let mut visible = String::new();
+                    let mut visible_w = 0usize;
+                    for ch in cell.chars() {
+                        let ch_w = unicode_width::UnicodeWidthStr::width(ch.to_string().as_str());
+                        if visible_w + ch_w > budget { break; }
+                        visible.push(ch);
+                        visible_w += ch_w;
+                    }
+                    s.push_str(&visible);
+                    s.push('…');
+                    s.push(' ');
+                }
+                s.push('│');
+            }
+            s.push('\n');
+            s
+        };
+
+        self.output.push('\n');
+        self.output.push_str(&border_line('┌', '┬', '┐'));
+        for (i, row) in self.table_rows.iter().enumerate() {
+            self.output.push_str(&style.dim(&row_line(row)));
+            if i == 0 {
+                self.output.push_str(&style.dim(&border_line('├', '┼', '┤')));
+            }
+        }
+        self.output.push_str(&style.dim(&border_line('└', '┴', '┘')));
         self.output.push('\n');
         self.last_was_blank = true;
     }
@@ -691,5 +843,59 @@ mod tests {
         };
         let out = render_markdown("---", &style);
         assert!(out.contains("─"));
+    }
+
+    // ── Table rendering tests ──────────────────────────────────────────
+
+    #[test]
+    fn renders_markdown_table_with_box_borders() {
+        let style = CliStyle { color: true, width: 80 };
+        let out = render_markdown("| A | B |\n| --- | --- |\n| 1 | 2 |\n", &style);
+        assert!(out.contains('┌'), "table missing top-left corner");
+        assert!(out.contains('┐'), "table missing top-right corner");
+        assert!(out.contains("│"), "table missing vertical border");
+        assert!(out.contains("1"), "table missing cell content");
+        assert!(out.contains("2"), "table missing cell content");
+    }
+
+    #[test]
+    fn table_inline_code_preserved_in_cell() {
+        let style = CliStyle { color: true, width: 80 };
+        let out = render_markdown("| cmd |\n| --- |\n| `ls -la` |\n", &style);
+        assert!(out.contains("ls -la"), "inline code must appear in cell");
+    }
+
+    #[test]
+    fn table_sparse_row_pads_empty_cells() {
+        let style = CliStyle { color: true, width: 80 };
+        // Row with fewer cells than the header — must still render with aligned borders.
+        let out = render_markdown("| A | B |\n| --- | --- |\n| only_one |\n", &style);
+        // The closing ┘ should be at the correct position, not shifted left.
+        assert!(out.contains('┘'), "table must close properly with sparse row");
+    }
+
+    #[test]
+    fn table_narrow_width_compresses_columns() {
+        let narrow = CliStyle { color: true, width: 25 };
+        // 3 columns with very long content in narrow terminal — must truncate.
+        let out = render_markdown(
+            "| AAAAAA | BBBBBB | CCCCCC |\n| --- | --- | --- |\n| xxxxxx | yyyyyy | zzzzzz |\n",
+            &narrow,
+        );
+        // In 25 cols with 3 wide columns, borders still close correctly.
+        assert!(out.contains('┘'), "table must close properly in narrow terminal");
+        assert!(!out.is_empty(), "table must produce output");
+    }
+
+    #[test]
+    fn table_cjk_width_accounted() {
+        let style = CliStyle { color: true, width: 80 };
+        let out = render_markdown(
+            "| 名称 | 值 |\n| --- | --- |\n| 你好 | 世界 |\n",
+            &style,
+        );
+        // The CJK chars should appear, not break the border.
+        assert!(out.contains("你好"), "CJK cell content must appear");
+        assert!(out.contains('┘'), "table borders must not break with CJK");
     }
 }

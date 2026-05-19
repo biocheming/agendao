@@ -63,7 +63,12 @@ impl TableBuilder {
         });
     }
 
-    fn render(mut self, lines: &mut Vec<Line<'static>>, theme: &Theme) {
+    fn render(
+        mut self,
+        lines: &mut Vec<Line<'static>>,
+        theme: &Theme,
+        available_width: u16,
+    ) {
         self.finish_row();
         if self.rows.is_empty() {
             return;
@@ -80,44 +85,98 @@ impl TableBuilder {
             return;
         }
 
-        let mut widths = vec![1usize; col_count];
+        // Compute per-column content widths.
+        let mut content_widths = vec![1usize; col_count];
         for row in &self.rows {
             for (idx, cell) in row.cells.iter().enumerate() {
-                widths[idx] = widths[idx].max(cell_span_width(cell));
+                content_widths[idx] = content_widths[idx].max(cell_span_width(cell));
             }
         }
 
-        lines.push(table_border_line(
-            '┌',
-            '┬',
-            '┐',
-            &widths,
-            theme.markdown_horizontal_rule,
-        ));
+        // Table width = sum(content_width + 2 padding) + (col_count + 1) borders.
+        let table_total: usize = content_widths.iter().map(|w| w + 2).sum::<usize>() + col_count + 1;
+        let avail = available_width.max(1) as usize;
 
-        for (idx, row) in self.rows.iter().enumerate() {
-            lines.push(table_row_line(row, &widths, &self.alignments, theme));
+        if table_total <= avail {
+            // Fits: render as-is.
+            let widths = content_widths;
+            Self::emit_box_table(lines, &self.rows, &widths, &self.alignments, theme);
+        } else {
+            // Compress each column proportionally.
+            let border_overhead = 2 * col_count + col_count + 1; // padding + borders
+            let content_budget = avail.saturating_sub(border_overhead).max(col_count);
+            let compressed: Vec<usize> = content_widths.iter().map(|&w| {
+                let share = (w as f64 / table_total.max(1) as f64) * content_budget as f64;
+                share.max(3.0).min(w as f64) as usize
+            }).collect();
 
+            if compressed.iter().sum::<usize>() + border_overhead <= avail {
+                Self::emit_box_table(lines, &self.rows, &compressed, &self.alignments, theme);
+            } else {
+                // Too narrow even compressed — degrade to stacked.
+                Self::emit_stacked_table(lines, &self.rows, theme, available_width.max(1));
+            }
+        }
+    }
+
+    fn emit_box_table(
+        lines: &mut Vec<Line<'static>>,
+        rows: &[TableRow],
+        widths: &[usize],
+        alignments: &[Alignment],
+        theme: &Theme,
+    ) {
+        lines.push(table_border_line('┌', '┬', '┐', widths, theme.markdown_horizontal_rule));
+        for (idx, row) in rows.iter().enumerate() {
+            lines.push(table_row_line(row, widths, alignments, theme));
             let is_header_break =
-                row.is_header && self.rows.get(idx + 1).is_some_and(|next| !next.is_header);
+                row.is_header && rows.get(idx + 1).is_some_and(|next| !next.is_header);
             if is_header_break {
-                lines.push(table_border_line(
-                    '├',
-                    '┼',
-                    '┤',
-                    &widths,
-                    theme.markdown_horizontal_rule,
-                ));
+                lines.push(table_border_line('├', '┼', '┤', widths, theme.markdown_horizontal_rule));
             }
         }
+        lines.push(table_border_line('└', '┴', '┘', widths, theme.markdown_horizontal_rule));
+    }
 
-        lines.push(table_border_line(
-            '└',
-            '┴',
-            '┘',
-            &widths,
-            theme.markdown_horizontal_rule,
-        ));
+    /// Narrow-width degradation: render each row as `Header: Value` pairs.
+    fn emit_stacked_table(
+        lines: &mut Vec<Line<'static>>,
+        rows: &[TableRow],
+        theme: &Theme,
+        avail: u16,
+    ) {
+        let header_style = Style::default()
+            .fg(theme.markdown_heading)
+            .add_modifier(Modifier::BOLD);
+        let body_style = Style::default().fg(theme.text);
+        let dim_style = Style::default().fg(theme.markdown_horizontal_rule);
+
+        let header_labels: Vec<String> = rows
+            .iter()
+            .find(|r| r.is_header)
+            .map(|r| r.cells.iter().map(|c| c.iter().map(|s| s.content.as_ref().to_string()).collect::<Vec<_>>().join(" ")).collect())
+            .unwrap_or_default();
+
+        for row in rows {
+            if row.is_header {
+                continue;
+            }
+            lines.push(Line::from(Span::styled(
+                "─".repeat(avail.min(40) as usize),
+                dim_style,
+            )));
+            for (idx, cell) in row.cells.iter().enumerate() {
+                let label = header_labels.get(idx).map(|s| s.as_str()).unwrap_or("?");
+                let mut spans: Vec<Span<'static>> = vec![
+                    Span::styled(format!("{label}: "), header_style),
+                ];
+                spans.extend(cell.iter().cloned().map(|s| Span::styled(
+                    s.content.to_string(),
+                    body_style,
+                )));
+                lines.push(Line::from(spans));
+            }
+        }
     }
 }
 
@@ -137,12 +196,12 @@ impl MarkdownRenderer {
     }
 
     pub fn render(&self, text: &str, frame: &mut Frame, area: Rect) {
-        let lines = self.to_lines(text);
+        let lines = self.to_lines(text, Some(area.width));
         let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
         frame.render_widget(paragraph, area);
     }
 
-    pub fn to_lines(&self, text: &str) -> Vec<Line<'static>> {
+    pub fn to_lines(&self, text: &str, available_width: Option<u16>) -> Vec<Line<'static>> {
         let mut options = Options::empty();
         options.insert(Options::ENABLE_STRIKETHROUGH);
         options.insert(Options::ENABLE_TABLES);
@@ -150,6 +209,12 @@ impl MarkdownRenderer {
         options.insert(Options::ENABLE_FOOTNOTES);
 
         let parser = Parser::new_ext(text, options);
+
+        // Default to 80 columns when caller doesn't know the width.
+        // This ensures table compression can activate on narrow terminals
+        // even when the call site hasn't been refactored to thread area.width.
+        const DEFAULT_CONTENT_WIDTH: u16 = 80;
+        let avail = available_width.unwrap_or(DEFAULT_CONTENT_WIDTH);
 
         let mut lines: Vec<Line<'static>> = Vec::new();
         let mut current: Vec<Span<'static>> = Vec::new();
@@ -350,7 +415,7 @@ impl MarkdownRenderer {
                     }
                     TagEnd::Table => {
                         if let Some(tbl) = table.take() {
-                            tbl.render(&mut lines, &self.theme);
+                            tbl.render(&mut lines, &self.theme, avail);
                         } else {
                             flush_line(&mut lines, &mut current);
                         }
@@ -561,18 +626,76 @@ fn table_row_line(
         if left_pad > 0 {
             spans.push(Span::styled(" ".repeat(left_pad), content_style));
         }
-        if row.is_header {
-            for span in cell {
-                spans.push(Span::styled(
-                    span.content.to_string(),
-                    span.style
-                        .fg(theme.markdown_heading)
-                        .add_modifier(Modifier::BOLD),
-                ));
+
+        // Emit cell spans, truncating if they exceed the assigned width budget.
+        let budget = *width;
+        if cell_width <= budget {
+            // Fits — no truncation needed.
+            if row.is_header {
+                for span in cell {
+                    spans.push(Span::styled(
+                        span.content.to_string(),
+                        span.style.fg(theme.markdown_heading).add_modifier(Modifier::BOLD),
+                    ));
+                }
+            } else {
+                spans.extend(cell);
             }
         } else {
-            spans.extend(cell);
+            // Truncate: emit spans up to budget. Reserve 1 width for ellipsis
+            // when we know truncation will happen (cell_width > budget).
+            let needs_ellipsis = cell_width > budget;
+            let ellipsis = if needs_ellipsis { 1usize } else { 0usize };
+            let effective_budget = budget.saturating_sub(ellipsis);
+            let mut emitted = 0usize;
+
+            for span in &cell {
+                let sw = UnicodeWidthStr::width(span.content.as_ref());
+                let remaining = effective_budget.saturating_sub(emitted);
+                if remaining == 0 {
+                    break;
+                }
+                if sw <= remaining {
+                    // Full span fits within (budget - ellipsis).
+                    if row.is_header {
+                        spans.push(Span::styled(
+                            span.content.to_string(),
+                            span.style.fg(theme.markdown_heading).add_modifier(Modifier::BOLD),
+                        ));
+                    } else {
+                        spans.push(span.clone());
+                    }
+                    emitted += sw;
+                } else {
+                    // Partial span: take characters by display width.
+                    let mut prefix = String::new();
+                    let mut prefix_w = 0usize;
+                    for ch in span.content.chars() {
+                        let ch_w = UnicodeWidthStr::width(ch.to_string().as_str());
+                        if prefix_w + ch_w > remaining {
+                            break;
+                        }
+                        prefix.push(ch);
+                        prefix_w += ch_w;
+                    }
+                    if !prefix.is_empty() {
+                        if row.is_header {
+                            spans.push(Span::styled(
+                                prefix,
+                                span.style.fg(theme.markdown_heading).add_modifier(Modifier::BOLD),
+                            ));
+                        } else {
+                            spans.push(Span::styled(prefix, span.style));
+                        }
+                    }
+                    emitted = effective_budget; // force break
+                }
+            }
+            if needs_ellipsis {
+                spans.push(Span::styled("…", content_style));
+            }
         }
+
         if right_pad > 0 {
             spans.push(Span::styled(" ".repeat(right_pad), content_style));
         }
