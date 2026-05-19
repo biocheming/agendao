@@ -1589,4 +1589,47 @@ mod tests {
 
         assert_eq!(rendered, "[message:assistant] 中国");
     }
+
+    #[test]
+    fn semantic_stream_renderer_keeps_single_assistant_header_across_many_text_deltas() {
+        let style = CliStyle::plain();
+        let mut accumulator = TerminalStreamAccumulator::new();
+        let mut state = TerminalSemanticStreamRenderState::default();
+
+        let deltas = [
+            "## ",
+            "\n",
+            "五",
+            "、",
+            "授权",
+            "发明专利",
+            "\n",
+            "| 序号 | 专利名称 |\n",
+        ];
+
+        let mut rendered = String::new();
+        for delta in deltas {
+            accumulator.apply_output_block(
+                Some("assistant-1"),
+                &OutputBlock::Message(OutputMessageBlock::delta(
+                    OutputMessageRole::Assistant,
+                    delta,
+                )),
+            );
+            rendered.push_str(&render_terminal_stream_block_semantic(
+                &mut state,
+                &accumulator,
+                &OutputBlock::Message(OutputMessageBlock::delta(
+                    OutputMessageRole::Assistant,
+                    delta,
+                )),
+                &style,
+                true,
+            ));
+        }
+
+        assert_eq!(rendered.matches("[message:assistant]").count(), 1);
+        assert!(rendered.contains("五、授权发明专利"));
+        assert!(rendered.contains("| 序号 | 专利名称 |"));
+    }
 }
