@@ -395,19 +395,17 @@ fn strip_think_tags(text: &str) -> String {
 }
 
 fn render_reasoning_rich(reasoning: &ReasoningBlock, style: &CliStyle) -> String {
+    let header_bullet = style.bold_yellow(style.bullet());
+    let header_label = style.bold_yellow("Thinking");
+    let continuation_prefix = "  ";
     match reasoning.phase {
-        MessagePhase::Start => format!(
-            "  {} {}\n  {} ",
-            style.dim("╭"),
-            style.dim("thinking"),
-            style.dim("│")
-        ),
+        MessagePhase::Start => format!("{header_bullet} {header_label} "),
         MessagePhase::Delta => {
             let cleaned = strip_think_tags(&reasoning.text);
             if cleaned.is_empty() {
                 String::new()
             } else {
-                let indented = indent_continuation_lines(&cleaned, "│ ");
+                let indented = indent_continuation_lines(&cleaned, continuation_prefix);
                 style.dim(&indented)
             }
         }
@@ -417,13 +415,8 @@ fn render_reasoning_rich(reasoning: &ReasoningBlock, style: &CliStyle) -> String
             if cleaned.is_empty() {
                 String::new()
             } else {
-                let indented = indent_continuation_lines(&cleaned, "│ ");
-                format!(
-                    "  {} {}\n  {}\n",
-                    style.dim("╭"),
-                    style.dim("thinking"),
-                    style.dim(&format!("│ {}", indented))
-                )
+                let indented = indent_continuation_lines(&cleaned, continuation_prefix);
+                format!("{header_bullet} {header_label} {}\n", style.dim(&indented))
             }
         }
     }
@@ -1485,7 +1478,8 @@ mod tests {
         };
         let out = render_cli_block_rich(&OutputBlock::Reasoning(ReasoningBlock::start()), &style);
         assert!(!out.starts_with('\n'));
-        assert!(out.contains("thinking"));
+        assert!(out.contains("●"));
+        assert!(out.contains("Thinking"));
     }
 
     #[test]
@@ -1496,6 +1490,25 @@ mod tests {
         };
         let out = render_cli_block_rich(&OutputBlock::Reasoning(ReasoningBlock::end()), &style);
         assert_eq!(out, "\n");
+    }
+
+    #[test]
+    fn rich_reasoning_full_uses_semantic_header_and_indented_body() {
+        let style = CliStyle {
+            color: true,
+            width: 80,
+        };
+        let out = render_cli_block_rich(
+            &OutputBlock::Reasoning(ReasoningBlock::full(
+                "line one\nline two".to_string(),
+            )),
+            &style,
+        );
+
+        assert!(out.contains("●"));
+        assert!(out.contains("Thinking"));
+        assert!(out.contains("line one"));
+        assert!(out.contains("  line two"));
     }
 
     #[test]
