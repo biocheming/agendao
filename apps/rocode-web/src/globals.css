@@ -305,6 +305,38 @@ html[data-theme="cobalt"] {
     text-wrap: pretty;
   }
 
+  /* P2-4: markdown table layout — constrain tables to message width. */
+  .roc-message-body table {
+    @apply w-full max-w-full;
+    table-layout: auto;
+    border-collapse: collapse;
+    font-size: 0.925em;
+  }
+
+  .roc-message-body th,
+  .roc-message-body td {
+    @apply border border-border/40 px-2 py-1 text-left align-top;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    max-width: 36rem;
+  }
+
+  .roc-message-body th {
+    @apply bg-muted/50 font-semibold;
+  }
+
+  /* Narrow screen: allow horizontal scroll on the message body
+     when a table is wider than the viewport. */
+  @media (max-width: 480px) {
+    .roc-message-body {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .roc-message-body table {
+      min-width: 100%;
+    }
+  }
+
   .roc-message-footer {
     @apply mt-2 flex items-center justify-end gap-2 border-t border-border/30 pt-1.5;
   }
