@@ -10,6 +10,11 @@ use tokio::sync::mpsc;
 
 use crate::util::server_url;
 
+/// Interactive CLI renders assistant/tool output incrementally, so it must
+/// subscribe to a high-frequency tier instead of the low-frequency `cli`
+/// tier, which is final-only and strips `output_block` events server-side.
+const INTERACTIVE_CLI_SSE_TIER: &str = "tui";
+
 // ── Event types ──────────────────────────────────────────────────────
 
 /// Events the CLI cares about, parsed from the SSE stream.
@@ -152,11 +157,7 @@ async fn connect_and_consume(
     // relevant to our session (plus global events like config.updated).
     // This replaces most client-side is_my_session filtering, though we
     // keep the client-side checks as a defense-in-depth measure.
-    let url = format!(
-        "{}?session={}&tier=cli",
-        server_url(base_url, "/event"),
-        session_id,
-    );
+    let url = interactive_cli_sse_url(base_url, session_id);
     let client = reqwest::Client::new();
 
     let resp = client
@@ -233,6 +234,15 @@ async fn connect_and_consume(
             }
         }
     }
+}
+
+fn interactive_cli_sse_url(base_url: &str, session_id: &str) -> String {
+    format!(
+        "{}?session={}&tier={}",
+        server_url(base_url, "/event"),
+        session_id,
+        INTERACTIVE_CLI_SSE_TIER,
+    )
 }
 
 /// Parse an SSE event JSON payload into a `CliServerEvent`.
@@ -534,7 +544,7 @@ fn parse_event(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_event, CliServerEvent};
+    use super::{interactive_cli_sse_url, parse_event, CliServerEvent};
 
     #[test]
     fn output_block_is_filtered_to_current_session() {
@@ -570,6 +580,12 @@ mod tests {
             other_event,
             Some(CliServerEvent::OutputBlock { session_id, .. }) if session_id == "session-2"
         ));
+    }
+
+    #[test]
+    fn interactive_cli_subscribes_to_high_frequency_sse_tier() {
+        let url = interactive_cli_sse_url("http://127.0.0.1:8757", "session-1");
+        assert_eq!(url, "http://127.0.0.1:8757/event?session=session-1&tier=tui");
     }
 
     #[test]
