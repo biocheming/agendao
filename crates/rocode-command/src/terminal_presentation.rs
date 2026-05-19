@@ -386,8 +386,8 @@ pub struct TerminalSemanticStreamRenderState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum TerminalSemanticPartState {
-    Text { emitted_len: usize },
-    Reasoning { started: bool, emitted_len: usize },
+    Text { emitted_text: String },
+    Reasoning { started: bool, emitted_text: String },
     ToolCall { started: bool, completed: bool },
     File,
     Image,
@@ -582,6 +582,10 @@ fn render_semantic_text_lines(
     out
 }
 
+fn semantic_delta_suffix<'a>(emitted_text: &str, current_text: &'a str) -> Option<&'a str> {
+    current_text.strip_prefix(emitted_text)
+}
+
 pub fn render_terminal_stream_block_semantic(
     state: &mut TerminalSemanticStreamRenderState,
     accumulator: &TerminalStreamAccumulator,
@@ -631,12 +635,16 @@ pub fn render_terminal_stream_block_semantic(
                 let entry = state
                     .part_states
                     .entry(part_index)
-                    .or_insert(TerminalSemanticPartState::Text { emitted_len: 0 });
-                let TerminalSemanticPartState::Text { emitted_len } = entry else {
+                    .or_insert_with(|| TerminalSemanticPartState::Text {
+                        emitted_text: String::new(),
+                    });
+                let TerminalSemanticPartState::Text { emitted_text } = entry else {
                     continue;
                 };
-                if text.len() > *emitted_len {
-                    let delta = &text[*emitted_len..];
+                if let Some(delta) = semantic_delta_suffix(emitted_text, &text) {
+                    if delta.is_empty() {
+                        continue;
+                    }
                     out.push_str(&render_terminal_stream_block_with_state(
                         &mut state.boundary,
                         &OutputBlock::Message(OutputMessageBlock::delta(
@@ -645,7 +653,17 @@ pub fn render_terminal_stream_block_semantic(
                         )),
                         style,
                     ));
-                    *emitted_len = text.len();
+                    *emitted_text = text;
+                } else {
+                    out.push_str(&render_terminal_stream_block_with_state(
+                        &mut state.boundary,
+                        &OutputBlock::Message(OutputMessageBlock::full(
+                            OutputMessageRole::Assistant,
+                            text.clone(),
+                        )),
+                        style,
+                    ));
+                    *emitted_text = text;
                 }
             }
             TerminalAssistantSegment::Reasoning { part_index, text } => {
@@ -653,12 +671,12 @@ pub fn render_terminal_stream_block_semantic(
                 let entry = state.part_states.entry(part_index).or_insert(
                     TerminalSemanticPartState::Reasoning {
                         started: false,
-                        emitted_len: 0,
+                        emitted_text: String::new(),
                     },
                 );
                 let TerminalSemanticPartState::Reasoning {
                     started,
-                    emitted_len,
+                    emitted_text,
                 } = entry
                 else {
                     continue;
@@ -666,19 +684,19 @@ pub fn render_terminal_stream_block_semantic(
                 if !*started {
                     emit_start = true;
                 }
-                let prior_len = *emitted_len;
+                let prior_text = emitted_text.clone();
                 if emit_start {
                     out.push_str(&render_semantic_reasoning_start(state, style));
                 }
                 let entry = state.part_states.entry(part_index).or_insert(
                     TerminalSemanticPartState::Reasoning {
                         started: false,
-                        emitted_len: 0,
+                        emitted_text: String::new(),
                     },
                 );
                 let TerminalSemanticPartState::Reasoning {
                     started,
-                    emitted_len,
+                    emitted_text,
                 } = entry
                 else {
                     continue;
@@ -686,14 +704,23 @@ pub fn render_terminal_stream_block_semantic(
                 if emit_start {
                     *started = true;
                 }
-                if text.len() > prior_len {
-                    let delta = &text[prior_len..];
+                if let Some(delta) = semantic_delta_suffix(&prior_text, &text) {
+                    if delta.is_empty() {
+                        continue;
+                    }
                     out.push_str(&render_terminal_stream_block_with_state(
                         &mut state.boundary,
                         &OutputBlock::Reasoning(OutputReasoningBlock::delta(delta)),
                         style,
                     ));
-                    *emitted_len = text.len();
+                    *emitted_text = text;
+                } else {
+                    out.push_str(&render_terminal_stream_block_with_state(
+                        &mut state.boundary,
+                        &OutputBlock::Reasoning(OutputReasoningBlock::full(text.clone())),
+                        style,
+                    ));
+                    *emitted_text = text;
                 }
             }
             TerminalAssistantSegment::ToolCall {
@@ -1524,5 +1551,42 @@ mod tests {
         assert!(rendered.contains("type: image/png"));
         assert!(rendered.contains("[image] inline image"));
         assert!(rendered.contains("size: 4 B"));
+    }
+
+    #[test]
+    fn semantic_stream_renderer_handles_unicode_after_stale_ascii_prefix_state() {
+        let style = CliStyle::plain();
+        let mut accumulator = TerminalStreamAccumulator::new();
+        accumulator.apply_output_block(
+            Some("assistant-1"),
+            &OutputBlock::Message(OutputMessageBlock::full(
+                OutputMessageRole::Assistant,
+                "中国".to_string(),
+            )),
+        );
+
+        let mut state = TerminalSemanticStreamRenderState {
+            boundary: TerminalStreamRenderState::default(),
+            current_message_id: Some("assistant-1".to_string()),
+            part_states: HashMap::from([(
+                0,
+                TerminalSemanticPartState::Text {
+                    emitted_text: "a".to_string(),
+                },
+            )]),
+        };
+
+        let rendered = render_terminal_stream_block_semantic(
+            &mut state,
+            &accumulator,
+            &OutputBlock::Message(OutputMessageBlock::full(
+                OutputMessageRole::Assistant,
+                "中国".to_string(),
+            )),
+            &style,
+            true,
+        );
+
+        assert_eq!(rendered, "[message:assistant] 中国");
     }
 }
