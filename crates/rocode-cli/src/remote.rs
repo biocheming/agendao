@@ -803,4 +803,78 @@ mod tests {
         assert_eq!(rendered.matches("[message:assistant]").count(), 1, "{rendered}");
         assert_eq!(rendered, "[message:assistant] 五、授权");
     }
+
+    #[test]
+    fn remote_semantic_render_keeps_single_assistant_header_across_start_delta_end_stream() {
+        let style = CliStyle::plain();
+        let mut semantic_state = RemoteSemanticRenderState::default();
+        let rendered = [
+            OutputBlock::Message(MessageBlock::start(MessageRole::Assistant)),
+            OutputBlock::Message(MessageBlock::delta(
+                MessageRole::Assistant,
+                "快速".to_string(),
+            )),
+            OutputBlock::Message(MessageBlock::delta(
+                MessageRole::Assistant,
+                "上升".to_string(),
+            )),
+            OutputBlock::Message(MessageBlock::delta(
+                MessageRole::Assistant,
+                "期".to_string(),
+            )),
+            OutputBlock::Message(MessageBlock::end(MessageRole::Assistant)),
+        ]
+        .into_iter()
+        .map(|block| {
+            semantic_state
+                .accumulator
+                .apply_output_block(Some("assistant-1"), &block);
+            render_terminal_stream_block_semantic(
+                &mut semantic_state.semantic,
+                &semantic_state.accumulator,
+                &block,
+                &style,
+                true,
+            )
+        })
+        .collect::<String>();
+
+        assert_eq!(rendered.matches("[message:assistant]").count(), 1, "{rendered}");
+        assert_eq!(rendered, "[message:assistant] 快速上升期");
+    }
+
+    #[test]
+    fn remote_semantic_render_keeps_single_assistant_header_without_explicit_block_id() {
+        let style = CliStyle::plain();
+        let mut semantic_state = RemoteSemanticRenderState::default();
+        let rendered = [
+            OutputBlock::Message(MessageBlock::delta(
+                MessageRole::Assistant,
+                "快速".to_string(),
+            )),
+            OutputBlock::Message(MessageBlock::delta(
+                MessageRole::Assistant,
+                "上升".to_string(),
+            )),
+            OutputBlock::Message(MessageBlock::delta(
+                MessageRole::Assistant,
+                "期".to_string(),
+            )),
+        ]
+        .into_iter()
+        .map(|block| {
+            semantic_state.accumulator.apply_output_block(None, &block);
+            render_terminal_stream_block_semantic(
+                &mut semantic_state.semantic,
+                &semantic_state.accumulator,
+                &block,
+                &style,
+                true,
+            )
+        })
+        .collect::<String>();
+
+        assert_eq!(rendered.matches("[message:assistant]").count(), 1, "{rendered}");
+        assert_eq!(rendered, "[message:assistant] 快速上升期");
+    }
 }
