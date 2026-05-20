@@ -1,5 +1,5 @@
 use frontend_state_types::{
-    CliFrontendProjection, CliMcpServerStatus, CliModelCatalogEntry, CliRetainedTranscript,
+    CliFrontendProjection, CliMcpServerStatus, CliModelCatalogEntry, CliVisibleTranscript,
     CliSessionTokenStats,
 };
 
@@ -234,7 +234,7 @@ async fn build_cli_execution_runtime(
         api_client: None,
         server_session_id: None,
         related_session_ids: Arc::new(Mutex::new(BTreeSet::new())),
-        root_session_transcript: Arc::new(Mutex::new(CliRetainedTranscript::default())),
+        root_session_transcript: Arc::new(Mutex::new(CliVisibleTranscript::default())),
         attached_session_transcripts: Arc::new(Mutex::new(HashMap::new())),
         stream_accumulators: Arc::new(Mutex::new(HashMap::new())),
         render_states: Arc::new(Mutex::new(HashMap::new())),

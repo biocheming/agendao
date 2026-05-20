@@ -527,7 +527,10 @@ impl LiveSnapshotCoalescer {
             // re-merge this snapshot with a previous delta block.
             obj.insert("phase".to_string(), serde_json::json!("full"));
         }
-        if let Some(ref t) = self.telemetry { t.record_coalesced_snapshot(); }
+        if let Some(ref t) = self.telemetry {
+            t.record_coalesced_snapshot();
+            t.record_full_snapshot_emitted();
+        }
         ServerEvent::OutputBlock {
             session_id,
             block,

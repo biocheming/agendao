@@ -778,25 +778,9 @@ function upsertFeedMessage(
   return next;
 }
 
-function updateLastMatchingMessage(
-  messages: FeedMessage[],
-  predicate: (message: FeedMessage) => boolean,
-  incomingText: string,
-): FeedMessage[] {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const candidate = messages[index];
-    if (!predicate(candidate)) continue;
-    const next = [...messages];
-    next[index] = { ...candidate, text: `${candidate.text}${incomingText}` };
-    return next;
-  }
-  return messages;
-}
-
 function appendStreamingDelta(
   messages: FeedMessage[],
   block: OutputBlock,
-  predicate: (message: FeedMessage) => boolean,
 ): FeedMessage[] {
   const normalizedBlock = normalizeOutputBlock(block);
   const incomingText = normalizedBlock.text ?? "";
@@ -823,7 +807,7 @@ function appendStreamingDelta(
     });
   }
 
-  return updateLastMatchingMessage(messages, predicate, incomingText);
+  return messages;
 }
 
 function applyOutputBlock(
@@ -832,6 +816,7 @@ function applyOutputBlock(
   showThinking: boolean,
 ): FeedMessage[] {
   const normalizedBlock = normalizeOutputBlock(block);
+  const phase = normalizedBlock.phase === "snapshot" ? "full" : normalizedBlock.phase;
   if (normalizedBlock.kind === "reasoning" && !showThinking) {
     return messages;
   }
@@ -840,35 +825,36 @@ function applyOutputBlock(
   }
 
   if (normalizedBlock.kind === "message") {
-    if (normalizedBlock.phase === "start") {
+    if (phase === "start") {
       return upsertFeedMessage(messages, normalizedBlock, { text: "" });
     }
-    if (normalizedBlock.phase === "delta") {
-      return appendStreamingDelta(
-        messages,
-        normalizedBlock,
-        (message) => message.kind === "message" && message.role === normalizedBlock.role,
-      );
+    if (phase === "delta") {
+      return appendStreamingDelta(messages, normalizedBlock);
     }
-    if (normalizedBlock.phase === "end") {
+    if (phase === "end") {
       return messages;
+    }
+    // P3-I: "full"/"snapshot" phase (coalesced snapshot from server) must upsert by
+    // identity, not blind-insert. Without this, every full snapshot creates
+    // a new feed entry and the visible feed replays instead of replacing.
+    if (phase === "full") {
+      return upsertFeedMessage(messages, normalizedBlock);
     }
     return insertFeedMessageByPresentation(messages, toFeedMessage(normalizedBlock));
   }
 
   if (normalizedBlock.kind === "reasoning") {
-    if (normalizedBlock.phase === "start") {
+    if (phase === "start") {
       return upsertFeedMessage(messages, normalizedBlock, { text: "" });
     }
-    if (normalizedBlock.phase === "delta") {
-      return appendStreamingDelta(
-        messages,
-        normalizedBlock,
-        (message) => message.kind === "reasoning",
-      );
+    if (phase === "delta") {
+      return appendStreamingDelta(messages, normalizedBlock);
     }
-    if (normalizedBlock.phase === "end") {
+    if (phase === "end") {
       return messages;
+    }
+    if (phase === "full") {
+      return upsertFeedMessage(messages, normalizedBlock);
     }
     return insertFeedMessageByPresentation(messages, toFeedMessage(normalizedBlock));
   }
@@ -1121,23 +1107,6 @@ function mergeLiveTextBlock(messages: FeedMessage[], block: OutputBlock, showThi
       anchorId: candidate.anchorId ?? normalizedBlock.id,
     };
     return next;
-  }
-
-  if (!normalizedBlock.id) {
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const candidate = messages[index];
-      if (candidate.kind !== normalizedBlock.kind) continue;
-      if (normalizedBlock.kind === "message" && candidate.role !== normalizedBlock.role) continue;
-      const next = [...messages];
-      next[index] = {
-        ...candidate,
-        ...normalizedBlock,
-        text: reconcileStreamingText(candidate.text ?? "", blockText),
-        feedId: candidate.feedId,
-        anchorId: candidate.anchorId ?? normalizedBlock.id,
-      };
-      return next;
-    }
   }
 
   return insertFeedMessageByPresentation(messages, {

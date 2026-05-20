@@ -41,6 +41,12 @@ pub struct EventBusTelemetry {
     pub coalesced_snapshot_count: AtomicU64,
     /// Output blocks received without live_identity (legacy passthrough).
     pub identity_missing_count: AtomicU64,
+    /// P3-I: Coalesced full snapshots emitted to frontends.
+    /// If a frontend's visible state is append-only (instead of replace),
+    /// this count will diverge from the number of visible entries. This
+    /// counter provides the server-side reference point for detecting
+    /// visible-state replay.
+    pub full_snapshot_emitted_count: AtomicU64,
 }
 
 impl Default for EventBusTelemetry {
@@ -53,6 +59,7 @@ impl Default for EventBusTelemetry {
             last_send_error_at_ms: AtomicU64::new(0),
             coalesced_snapshot_count: AtomicU64::new(0),
             identity_missing_count: AtomicU64::new(0),
+            full_snapshot_emitted_count: AtomicU64::new(0),
         }
     }
 }
@@ -80,6 +87,10 @@ impl EventBusTelemetry {
 
     pub fn record_identity_missing(&self) {
         self.identity_missing_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_full_snapshot_emitted(&self) {
+        self.full_snapshot_emitted_count.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Snapshot suitable for telemetry export.

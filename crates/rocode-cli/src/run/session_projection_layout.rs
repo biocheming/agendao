@@ -1,7 +1,8 @@
 #[cfg(test)]
 use super::{
     cli_active_stage_context_lines, CliFrontendPhase, CliFrontendProjection,
-    CliObservedExecutionTopology, CliRetainedTranscript, CliStyle, SchedulerStageBlock,
+    CliObservedExecutionTopology, CliStyle, CliVisibleTranscript,
+    SchedulerStageBlock,
 };
 #[cfg(test)]
 use crate::run::session_projection_usage::format_token_count;
@@ -369,14 +370,14 @@ fn cli_active_stage_panel_lines(
 
 #[cfg(test)]
 fn cli_messages_footer(
-    transcript: &CliRetainedTranscript,
+    transcript: &CliVisibleTranscript,
     width: usize,
     max_rows: usize,
     scroll_offset: usize,
 ) -> String {
     let total = transcript.total_rows(width);
     if total <= max_rows {
-        return "retained transcript".to_string();
+        return "visible transcript".to_string();
     }
     if scroll_offset == 0 {
         format!("↑ /up to scroll · {} lines total", total)

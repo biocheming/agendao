@@ -737,9 +737,34 @@ fn handle_sse_event(
                         live_identity.as_ref(),
                         style,
                     );
-                    cli_cache_root_session_rendered(runtime, &rendered);
-                    if cli_is_root_focused(runtime) {
-                        let _ = print_rendered(runtime.terminal_surface.as_deref(), &rendered);
+                    // P3-I: Identity-bearing blocks with surface use live slots
+                    // (replace model). Other paths keep append-only.
+                    let use_live_slot = live_identity.is_some()
+                        && runtime.terminal_surface.is_some();
+                    if use_live_slot {
+                        let identity = live_identity.as_ref().unwrap();
+                        let slot_key =
+                            format!("{}:{}", identity.message_id, identity.part_key);
+                        let plain =
+                            rocode_util::util::color::strip_ansi(&rendered);
+                        let surface = runtime.terminal_surface.as_ref().unwrap();
+                        if identity.phase == rocode_types::LivePartPhase::End {
+                            let _ = surface.commit_live_slot(&slot_key);
+                        } else {
+                            let _ = surface.apply_live_slot(
+                                &slot_key,
+                                rendered.clone(),
+                                plain,
+                            );
+                        }
+                    } else {
+                        cli_cache_root_session_rendered(runtime, &rendered);
+                        if cli_is_root_focused(runtime) {
+                            let _ = print_rendered(
+                                runtime.terminal_surface.as_deref(),
+                                &rendered,
+                            );
+                        }
                     }
                 }
             }
