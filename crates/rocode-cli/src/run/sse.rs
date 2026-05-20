@@ -518,7 +518,11 @@ async fn cli_handle_config_updated_from_sse(
 
 /// Handle an incoming SSE event from the server — update topology,
 /// frontend projection, and render output blocks.
-fn handle_sse_event(runtime: &CliExecutionRuntime, event: CliServerEvent, style: &CliStyle) {
+fn handle_sse_event(
+    runtime: &CliExecutionRuntime,
+    event: CliServerEvent,
+    style: &CliStyle,
+) {
     let root_session_id = runtime.server_session_id.as_deref();
     let focused_session_id = cli_focused_session_id(runtime);
     let is_root_session = |event_session_id: &str| {
