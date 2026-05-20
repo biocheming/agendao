@@ -582,6 +582,30 @@ fn render_semantic_text_lines(
     out
 }
 
+fn render_semantic_assistant_text_rewrite(
+    boundary: &mut TerminalStreamRenderState,
+    text: &str,
+    style: &CliStyle,
+) -> String {
+    let mut out = render_terminal_stream_boundary_prefix(boundary);
+    if !boundary.assistant_visible {
+        out.push_str(&render_cli_block_rich(
+            &OutputBlock::Message(OutputMessageBlock::start(OutputMessageRole::Assistant)),
+            style,
+        ));
+        boundary.assistant_open = true;
+        boundary.assistant_visible = true;
+    }
+    out.push_str(&render_cli_block_rich(
+        &OutputBlock::Message(OutputMessageBlock::delta(
+            OutputMessageRole::Assistant,
+            text.to_string(),
+        )),
+        style,
+    ));
+    out
+}
+
 fn semantic_delta_suffix<'a>(emitted_text: &str, current_text: &'a str) -> Option<&'a str> {
     current_text.strip_prefix(emitted_text)
 }
@@ -655,12 +679,9 @@ pub fn render_terminal_stream_block_semantic(
                     ));
                     *emitted_text = text;
                 } else {
-                    out.push_str(&render_terminal_stream_block_with_state(
+                    out.push_str(&render_semantic_assistant_text_rewrite(
                         &mut state.boundary,
-                        &OutputBlock::Message(OutputMessageBlock::full(
-                            OutputMessageRole::Assistant,
-                            text.clone(),
-                        )),
+                        &text,
                         style,
                     ));
                     *emitted_text = text;
@@ -1162,6 +1183,57 @@ mod tests {
     }
 
     #[test]
+    fn accumulator_routes_new_assistant_delta_without_id_to_latest_open_assistant() {
+        let mut accumulator = TerminalStreamAccumulator::new();
+
+        assert!(accumulator.apply_output_block(
+            Some("assistant-1"),
+            &OutputBlock::Message(OutputMessageBlock::delta(
+                OutputMessageRole::Assistant,
+                "previous answer"
+            ))
+        ));
+        assert!(accumulator.apply_output_block(
+            Some("assistant-2"),
+            &OutputBlock::Message(OutputMessageBlock::start(OutputMessageRole::Assistant))
+        ));
+        assert!(accumulator.apply_output_block(
+            None,
+            &OutputBlock::Message(OutputMessageBlock::delta(
+                OutputMessageRole::Assistant,
+                "new answer"
+            ))
+        ));
+
+        let previous = accumulator
+            .message("assistant-1")
+            .expect("previous assistant should exist");
+        let current = accumulator
+            .message("assistant-2")
+            .expect("current assistant should exist");
+
+        let previous_text = previous
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                TerminalMessagePart::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        let current_text = current
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                TerminalMessagePart::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+
+        assert_eq!(previous_text, "previous answer");
+        assert_eq!(current_text, "new answer");
+    }
+
+    #[test]
     fn compose_assistant_segments_orders_reasoning_and_tools_before_final_text() {
         let msg = message(
             "assistant-1",
@@ -1631,5 +1703,164 @@ mod tests {
         assert_eq!(rendered.matches("[message:assistant]").count(), 1);
         assert!(rendered.contains("五、授权发明专利"));
         assert!(rendered.contains("| 序号 | 专利名称 |"));
+    }
+
+    #[test]
+    fn semantic_stream_renderer_handles_five_assistant_messages_separated_by_four_tool_cycles() {
+        let style = CliStyle::plain();
+        let mut accumulator = TerminalStreamAccumulator::new();
+        let mut state = TerminalSemanticStreamRenderState::default();
+        let mut rendered = String::new();
+
+        let mut push = |id: &str, block: OutputBlock| {
+            accumulator.apply_output_block(Some(id), &block);
+            rendered.push_str(&render_terminal_stream_block_semantic(
+                &mut state,
+                &accumulator,
+                &block,
+                &style,
+                true,
+            ));
+        };
+
+        for step in 1..=4 {
+            let assistant_id = format!("assistant-{step}");
+            let tool_id = format!("tool-{step}");
+
+            push(
+                &assistant_id,
+                OutputBlock::Reasoning(OutputReasoningBlock::start()),
+            );
+            push(
+                &assistant_id,
+                OutputBlock::Reasoning(OutputReasoningBlock::delta(format!(
+                    "thinking {step}"
+                ))),
+            );
+            push(
+                &assistant_id,
+                OutputBlock::Tool(OutputToolBlock::start("websearch")),
+            );
+            push(
+                &tool_id,
+                OutputBlock::Tool(OutputToolBlock::done(
+                    "websearch",
+                    Some(format!("result {step}")),
+                )),
+            );
+            push(
+                &assistant_id,
+                OutputBlock::Reasoning(OutputReasoningBlock::end()),
+            );
+            push(
+                &assistant_id,
+                OutputBlock::Message(OutputMessageBlock::end(OutputMessageRole::Assistant)),
+            );
+        }
+
+        let final_id = "assistant-5";
+        for delta in [
+            "快速",
+            "上升",
+            "期",
+            "，",
+            "从副研究员晋升为正高级工程师",
+            "，",
+            "作为通讯作者发表了包括 ",
+            "*Nucleic Acids Research*",
+            "、",
+            "*J. Med. Chem.*",
+            " 等在内的约 20 篇论文",
+        ] {
+            push(
+                final_id,
+                OutputBlock::Message(OutputMessageBlock::delta(
+                    OutputMessageRole::Assistant,
+                    delta,
+                )),
+            );
+        }
+
+        assert_eq!(
+            rendered.matches("[message:assistant]").count(),
+            1,
+            "{rendered}"
+        );
+        assert!(rendered.contains("快速上升期"), "{rendered}");
+        assert!(rendered.contains("*Nucleic Acids Research*"), "{rendered}");
+        assert!(rendered.contains("*J. Med. Chem.*"), "{rendered}");
+    }
+
+    #[test]
+    fn semantic_stream_renderer_reopens_assistant_header_after_non_prefix_text_rewrite() {
+        let style = CliStyle::plain();
+        let mut accumulator = TerminalStreamAccumulator::new();
+        let mut state = TerminalSemanticStreamRenderState::default();
+        let mut rendered = String::new();
+
+        accumulator.apply_output_block(
+            Some("assistant-1"),
+            &OutputBlock::Message(OutputMessageBlock::delta(
+                OutputMessageRole::Assistant,
+                "快速".to_string(),
+            )),
+        );
+        rendered.push_str(&render_terminal_stream_block_semantic(
+            &mut state,
+            &accumulator,
+            &OutputBlock::Message(OutputMessageBlock::delta(
+                OutputMessageRole::Assistant,
+                "快速".to_string(),
+            )),
+            &style,
+            true,
+        ));
+
+        // Simulate an upstream rewrite where the currently accumulated text is
+        // no longer prefixed by the previously emitted text.
+        accumulator.apply_output_block(
+            Some("assistant-1"),
+            &OutputBlock::Message(OutputMessageBlock::full(
+                OutputMessageRole::Assistant,
+                "上升期".to_string(),
+            )),
+        );
+        rendered.push_str(&render_terminal_stream_block_semantic(
+            &mut state,
+            &accumulator,
+            &OutputBlock::Message(OutputMessageBlock::full(
+                OutputMessageRole::Assistant,
+                "上升期".to_string(),
+            )),
+            &style,
+            true,
+        ));
+
+        accumulator.apply_output_block(
+            Some("assistant-1"),
+            &OutputBlock::Message(OutputMessageBlock::delta(
+                OutputMessageRole::Assistant,
+                "，".to_string(),
+            )),
+        );
+        rendered.push_str(&render_terminal_stream_block_semantic(
+            &mut state,
+            &accumulator,
+            &OutputBlock::Message(OutputMessageBlock::delta(
+                OutputMessageRole::Assistant,
+                "，".to_string(),
+            )),
+            &style,
+            true,
+        ));
+
+        assert_eq!(
+            rendered.matches("[message:assistant]").count(),
+            2,
+            "{rendered}"
+        );
+        assert!(rendered.contains("[message:assistant] 快速"), "{rendered}");
+        assert!(rendered.contains("[message:assistant] 上升期"), "{rendered}");
+        assert!(rendered.ends_with('，'), "{rendered}");
     }
 }
