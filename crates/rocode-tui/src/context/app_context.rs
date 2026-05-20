@@ -342,7 +342,6 @@ pub struct AppContext {
     dialog_lifecycle: RwLock<DialogLifecycleState>,
     pub animations_enabled: RwLock<bool>,
     pub pending_permissions: RwLock<usize>,
-    pub queued_prompts: RwLock<HashMap<String, usize>>,
     ui_preferences: RwLock<UiPreferencesState>,
     runtime_budget: RwLock<RuntimeBudgetConfig>,
     recent_models: RwLock<Vec<(String, String)>>,
@@ -374,7 +373,6 @@ impl AppContext {
             dialog_lifecycle: RwLock::new(DialogLifecycleState::default()),
             animations_enabled: RwLock::new(true),
             pending_permissions: RwLock::new(0),
-            queued_prompts: RwLock::new(HashMap::new()),
             ui_preferences: RwLock::new(UiPreferencesState::default()),
             runtime_budget: RwLock::new(RuntimeBudgetConfig::default()),
             recent_models: RwLock::new(Vec::new()),
@@ -775,20 +773,13 @@ impl AppContext {
         *self.pending_permissions.write() = count;
     }
 
-    pub fn set_queued_prompts(&self, session_id: &str, count: usize) {
-        let mut queued = self.queued_prompts.write();
-        if count == 0 {
-            queued.remove(session_id);
-        } else {
-            queued.insert(session_id.to_string(), count);
-        }
-    }
-
     pub fn queued_prompts_for_session(&self, session_id: &str) -> usize {
-        self.queued_prompts
+        self.session
             .read()
-            .get(session_id)
-            .copied()
+            .session_runtime
+            .as_ref()
+            .filter(|runtime| runtime.session_id == session_id)
+            .map(|runtime| runtime.pending_followup_count as usize)
             .unwrap_or(0)
     }
 
@@ -1315,6 +1306,7 @@ mod tests {
             active_tools: Vec::new(),
             pending_question: None,
             pending_permission: None,
+            pending_followup_count: 0,
             attached_sessions: Vec::new(),
         });
         state.stage_summaries = vec![stage_summary("stage-exec", Some(1_105_000))];
@@ -1340,6 +1332,7 @@ mod tests {
             active_tools: Vec::new(),
             pending_question: None,
             pending_permission: None,
+            pending_followup_count: 0,
             attached_sessions: Vec::new(),
         });
         state.stage_summaries = vec![stage_summary("stage-exec", Some(990_000))];
@@ -1364,6 +1357,7 @@ mod tests {
             active_tools: Vec::new(),
             pending_question: None,
             pending_permission: None,
+            pending_followup_count: 0,
             attached_sessions: Vec::new(),
         });
         state.stage_summaries = vec![stage_summary("stage-exec", Some(256_000))];

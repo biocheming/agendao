@@ -245,7 +245,9 @@ async fn event_stream(
         "resolved frontend subscription for /event SSE"
     );
     // P2-2: pass subscription into stream_server_events for capability-based filtering.
-    stream_server_events(state.event_bus.subscribe(), query.session, subscription)
+    // P3-H: pass telemetry for observability counters.
+    let telemetry = state.event_bus_telemetry.clone();
+    stream_server_events(state.event_bus.subscribe(), query.session, subscription, telemetry)
 }
 
 const EVENT_OUTPUT_BLOCK_BATCH_MS: u64 = 16;
@@ -254,6 +256,7 @@ pub(crate) fn stream_server_events(
     mut rx: broadcast::Receiver<String>,
     session_filter: Option<String>,
     subscription: rocode_api::ResolvedFrontendSubscription,
+    event_bus_telemetry: Option<std::sync::Arc<crate::session_runtime::events::EventBusTelemetry>>,
 ) -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
     let (tx, out_rx) = mpsc::channel(128);
 
@@ -272,6 +275,14 @@ pub(crate) fn stream_server_events(
                 Some(sid) => sid == filter.as_str(),
                 None => true, // global events pass through
             }
+        };
+
+        // P3-B: coalesce deltas into full-so-far snapshots keyed by live identity.
+        // When a delta carries a LiveMessagePartIdentity, the text accumulates
+        // here and downstream sees the complete text so far, not a raw token fragment.
+        let mut snapshot_coalescer = match event_bus_telemetry {
+            Some(ref t) => LiveSnapshotCoalescer::with_telemetry(t.clone()),
+            None => LiveSnapshotCoalescer::new(),
         };
 
         // P2-2: subscription-aware event filter.
@@ -323,6 +334,9 @@ pub(crate) fn stream_server_events(
                                     if !subscribable(&next) {
                                         continue;
                                     }
+                                    // P3-B: only events this subscriber can actually receive
+                                    // should enter the per-connection snapshot cache.
+                                    let next = snapshot_coalescer.coalesce(next);
                                     if let Some(current) = pending.as_mut() {
                                         if merge_output_block_delta(current, &next) {
                                             continue;
@@ -406,6 +420,7 @@ pub(crate) fn stream_server_events(
                             if !subscribable(&event) {
                                 continue;
                             }
+                            let event = snapshot_coalescer.coalesce(event);
                             if is_mergeable_output_delta(&event) {
                                 pending = Some(event);
                                 pending_due_at = Some(tokio::time::Instant::now() + delay);
@@ -430,6 +445,99 @@ pub(crate) fn stream_server_events(
     });
 
     Sse::new(ReceiverStream::new(out_rx))
+}
+
+// ── P3-B: Live Snapshot Coalescer ──────────────────────────────────────
+// Accumulates delta text per {message_id, part_key} and replaces deltas
+// with the full accumulated snapshot. The frontend sees only the complete
+// text-so-far, never raw token fragments.
+
+struct LiveSnapshotCoalescer {
+    /// key = "{message_id}:{part_key}" → accumulated text so far.
+    accum: std::collections::HashMap<String, String>,
+    /// P3-H: Optional telemetry for observability counters.
+    telemetry: Option<std::sync::Arc<crate::session_runtime::events::EventBusTelemetry>>,
+}
+
+fn key_for(session_id: &str, identity: &rocode_types::LiveMessagePartIdentity) -> String {
+    format!("{}:{}:{}", session_id, identity.message_id, identity.part_key)
+}
+
+impl LiveSnapshotCoalescer {
+    fn new() -> Self {
+        Self { accum: std::collections::HashMap::new(), telemetry: None }
+    }
+
+    fn with_telemetry(telemetry: std::sync::Arc<crate::session_runtime::events::EventBusTelemetry>) -> Self {
+        Self { accum: std::collections::HashMap::new(), telemetry: Some(telemetry) }
+    }
+
+    fn coalesce(&mut self, event: ServerEvent) -> ServerEvent {
+        let ServerEvent::OutputBlock {
+            session_id,
+            mut block,
+            id,
+            live_identity,
+        } = event else {
+            return event;
+        };
+        let Some(ref identity) = live_identity else {
+            if let Some(ref t) = self.telemetry { t.record_identity_missing(); }
+            return ServerEvent::OutputBlock { session_id, block, id, live_identity };
+        };
+
+        // P3-B1 scope: only assistant text / reasoning participate in
+        // full-so-far snapshot coalescing. Other live identities are introduced
+        // in later patches and must pass through untouched for now.
+        if !matches!(
+            identity.part_kind,
+            rocode_types::LiveMessagePartKind::AssistantText
+                | rocode_types::LiveMessagePartKind::AssistantReasoning
+        ) {
+            return ServerEvent::OutputBlock { session_id, block, id, live_identity };
+        }
+
+        // End phase: clear accumulated state so the key doesn't grow unbounded.
+        if identity.phase == rocode_types::LivePartPhase::End {
+            let key = key_for(&session_id, identity);
+            self.accum.remove(&key);
+            return ServerEvent::OutputBlock { session_id, block, id, live_identity };
+        }
+
+        // Only coalesce Append (delta) and Snapshot phases.
+        if !matches!(identity.phase, rocode_types::LivePartPhase::Append | rocode_types::LivePartPhase::Snapshot) {
+            return ServerEvent::OutputBlock { session_id, block, id, live_identity };
+        }
+
+        let key = key_for(&session_id, identity);
+        let text = block.get("text").and_then(|v| v.as_str()).unwrap_or("");
+
+        let accumulated = if identity.phase == rocode_types::LivePartPhase::Append {
+            self.accum.entry(key.clone()).or_default().push_str(text);
+            self.accum[&key].clone()
+        } else {
+            // Snapshot: full text already present, track it for later deltas.
+            self.accum.insert(key, text.to_string());
+            text.to_string()
+        };
+
+        if let Some(obj) = block.as_object_mut() {
+            obj.insert("text".to_string(), serde_json::json!(accumulated));
+            // Set block phase to "full" so merge_output_block_delta() does NOT
+            // re-merge this snapshot with a previous delta block.
+            obj.insert("phase".to_string(), serde_json::json!("full"));
+        }
+        if let Some(ref t) = self.telemetry { t.record_coalesced_snapshot(); }
+        ServerEvent::OutputBlock {
+            session_id,
+            block,
+            id,
+            live_identity: Some(rocode_types::LiveMessagePartIdentity {
+                phase: rocode_types::LivePartPhase::Snapshot,
+                ..identity.clone()
+            }),
+        }
+    }
 }
 
 fn parse_server_event(raw: &str) -> Option<ServerEvent> {
@@ -471,7 +579,8 @@ fn event_passes_subscription_caps(
         | ServerEvent::TopologyChanged { .. }
         | ServerEvent::AttachedSessionAttached { .. }
         | ServerEvent::AttachedSessionDetached { .. }
-        | ServerEvent::DiffUpdated { .. } => true,
+        | ServerEvent::DiffUpdated { .. }
+        | ServerEvent::ControlInputTransition { .. } => true,
     }
 }
 
@@ -497,11 +606,13 @@ fn merge_output_block_delta(current: &mut ServerEvent, next: &ServerEvent) -> bo
             session_id: current_session,
             id: current_id,
             block: current_block,
+            ..
         },
         ServerEvent::OutputBlock {
             session_id: next_session,
             id: next_id,
             block: next_block,
+            ..
         },
     ) = (current, next)
     else {
@@ -1183,21 +1294,17 @@ mod tests {
             session_id: "session-a".to_string(),
             id: Some("msg-1".to_string()),
             block: json!({
-                "kind": "message",
-                "phase": "delta",
-                "role": "assistant",
-                "text": "hel",
+                "kind": "message", "phase": "delta", "role": "assistant", "text": "hel",
             }),
+            live_identity: None,
         };
         let next = ServerEvent::OutputBlock {
             session_id: "session-a".to_string(),
             id: Some("msg-1".to_string()),
             block: json!({
-                "kind": "message",
-                "phase": "delta",
-                "role": "assistant",
-                "text": "lo",
+                "kind": "message", "phase": "delta", "role": "assistant", "text": "lo",
             }),
+            live_identity: None,
         };
 
         assert!(merge_output_block_delta(&mut current, &next));
@@ -1215,22 +1322,14 @@ mod tests {
         let mut current = ServerEvent::OutputBlock {
             session_id: "session-a".to_string(),
             id: Some("msg-1".to_string()),
-            block: json!({
-                "kind": "message",
-                "phase": "delta",
-                "role": "assistant",
-                "text": "hel",
-            }),
+            block: json!({ "kind": "message", "phase": "delta", "role": "assistant", "text": "hel" }),
+            live_identity: None,
         };
         let next = ServerEvent::OutputBlock {
             session_id: "session-a".to_string(),
             id: Some("msg-2".to_string()),
-            block: json!({
-                "kind": "message",
-                "phase": "delta",
-                "role": "assistant",
-                "text": "lo",
-            }),
+            block: json!({ "kind": "message", "phase": "delta", "role": "assistant", "text": "lo" }),
+            live_identity: None,
         };
 
         assert!(!merge_output_block_delta(&mut current, &next));
@@ -1241,20 +1340,14 @@ mod tests {
         let mut current = ServerEvent::OutputBlock {
             session_id: "session-a".to_string(),
             id: Some("reasoning-1".to_string()),
-            block: json!({
-                "kind": "reasoning",
-                "phase": "delta",
-                "text": "thinking",
-            }),
+            block: json!({ "kind": "reasoning", "phase": "delta", "text": "thinking" }),
+            live_identity: None,
         };
         let full = ServerEvent::OutputBlock {
             session_id: "session-a".to_string(),
             id: Some("reasoning-1".to_string()),
-            block: json!({
-                "kind": "reasoning",
-                "phase": "full",
-                "text": "thinking done",
-            }),
+            block: json!({ "kind": "reasoning", "phase": "full", "text": "thinking done" }),
+            live_identity: None,
         };
         let usage = ServerEvent::Usage {
             session_id: Some("session-a".to_string()),
@@ -1274,6 +1367,7 @@ mod tests {
             session_id: "sess-1".to_string(),
             id: Some("block-1".to_string()),
             block: serde_json::json!({"kind": "reasoning", "phase": "delta", "text": "think"}),
+            live_identity: None,
         }
     }
 
@@ -1282,6 +1376,7 @@ mod tests {
             session_id: "sess-1".to_string(),
             id: Some("block-1".to_string()),
             block: serde_json::json!({"kind": "message", "phase": "delta", "text": "hello"}),
+            live_identity: None,
         }
     }
 
@@ -1319,6 +1414,197 @@ mod tests {
         assert!(event_passes_subscription_caps(&session, &c));
     }
 
+    // ── P3-B live snapshot coalescer tests ─────────────────────────────
+
+    fn coalesce_delta(text: &str, msg_id: &str, part_key: &str) -> ServerEvent {
+        ServerEvent::OutputBlock {
+            session_id: "sess-1".to_string(),
+            id: Some("block-1".to_string()),
+            block: serde_json::json!({ "kind": "message", "phase": "delta", "text": text }),
+            live_identity: Some(rocode_types::LiveMessagePartIdentity {
+                message_id: msg_id.to_string(),
+                part_key: part_key.to_string(),
+                part_kind: rocode_types::LiveMessagePartKind::AssistantText,
+                phase: rocode_types::LivePartPhase::Append,
+                legacy_block_id: Some("block-1".to_string()),
+            }),
+        }
+    }
+
+    fn snapshot_block_text(event: &ServerEvent) -> Option<String> {
+        let ServerEvent::OutputBlock { ref block, .. } = event else { return None };
+        block.get("text").and_then(|v| v.as_str()).map(|s| s.to_string())
+    }
+
+    fn snapshot_phase(event: &ServerEvent) -> Option<rocode_types::LivePartPhase> {
+        let ServerEvent::OutputBlock { ref live_identity, .. } = event else { return None };
+        live_identity.as_ref().map(|id| id.phase)
+    }
+
+    #[test]
+    fn coalescer_accumulates_deltas_into_growing_snapshot() {
+        let mut c = LiveSnapshotCoalescer::new();
+
+        let s1 = c.coalesce(coalesce_delta("hello", "msg-1", "text/main"));
+        assert_eq!(snapshot_block_text(&s1), Some("hello".to_string()));
+
+        let s2 = c.coalesce(coalesce_delta(" world", "msg-1", "text/main"));
+        assert_eq!(snapshot_block_text(&s2), Some("hello world".to_string()));
+        assert_eq!(snapshot_phase(&s2), Some(rocode_types::LivePartPhase::Snapshot));
+    }
+
+    #[test]
+    fn coalescer_isolates_different_messages() {
+        let mut c = LiveSnapshotCoalescer::new();
+
+        let s1 = c.coalesce(coalesce_delta("msg1", "msg-1", "text/main"));
+        assert_eq!(snapshot_block_text(&s1), Some("msg1".to_string()));
+
+        let s2 = c.coalesce(coalesce_delta("msg2", "msg-2", "text/main"));
+        assert_eq!(snapshot_block_text(&s2), Some("msg2".to_string()));
+    }
+
+    #[test]
+    fn coalescer_isolates_different_part_keys() {
+        let mut c = LiveSnapshotCoalescer::new();
+
+        let s1 = c.coalesce(coalesce_delta("thinking", "msg-1", "reasoning/main"));
+        assert_eq!(snapshot_block_text(&s1), Some("thinking".to_string()));
+
+        let s2 = c.coalesce(coalesce_delta("output", "msg-1", "text/main"));
+        assert_eq!(snapshot_block_text(&s2), Some("output".to_string()));
+    }
+
+    #[test]
+    fn coalescer_passes_through_non_delta_unchanged() {
+        let mut c = LiveSnapshotCoalescer::new();
+        let perm = ServerEvent::PermissionResolved {
+            session_id: "sess-1".to_string(),
+            permission_id: "p-1".to_string(),
+            reply: "once".to_string(),
+            message: None,
+        };
+        let result = c.coalesce(perm);
+        // Permission events pass through unchanged — verify the session_id is intact.
+        assert_eq!(result.session_id(), Some("sess-1"));
+    }
+
+    #[test]
+    fn coalescer_clears_state_on_end_phase() {
+        let mut c = LiveSnapshotCoalescer::new();
+        c.coalesce(coalesce_delta("hello", "msg-1", "text/main"));
+        assert_eq!(c.accum.len(), 1, "accum should track one entry");
+
+        // End phase on the same identity must clear the entry.
+        let end = ServerEvent::OutputBlock {
+            session_id: "sess-1".to_string(),
+            id: Some("block-1".to_string()),
+            block: serde_json::json!({ "kind": "message", "phase": "end" }),
+            live_identity: Some(rocode_types::LiveMessagePartIdentity {
+                message_id: "msg-1".to_string(),
+                part_key: "text/main".to_string(),
+                part_kind: rocode_types::LiveMessagePartKind::AssistantText,
+                phase: rocode_types::LivePartPhase::End,
+                legacy_block_id: Some("block-1".to_string()),
+            }),
+        };
+        c.coalesce(end);
+        assert!(c.accum.is_empty(), "End must clear accumulated state");
+    }
+
+    #[test]
+    fn coalescer_isolates_different_sessions() {
+        let mut c = LiveSnapshotCoalescer::new();
+
+        // Same msg_id + part_key, different sessions — must not cross-contaminate.
+        let s1 = c.coalesce(coalesce_delta("session-a", "msg-1", "text/main"));
+        assert_eq!(snapshot_block_text(&s1), Some("session-a".to_string()));
+
+        let s2_block = ServerEvent::OutputBlock {
+            session_id: "sess-2".to_string(),
+            id: Some("block-2".to_string()),
+            block: serde_json::json!({ "kind": "message", "phase": "delta", "text": "session-b" }),
+            live_identity: Some(rocode_types::LiveMessagePartIdentity {
+                message_id: "msg-1".to_string(),
+                part_key: "text/main".to_string(),
+                part_kind: rocode_types::LiveMessagePartKind::AssistantText,
+                phase: rocode_types::LivePartPhase::Append,
+                legacy_block_id: Some("block-2".to_string()),
+            }),
+        };
+        let s2 = c.coalesce(s2_block);
+        assert_eq!(
+            snapshot_block_text(&s2),
+            Some("session-b".to_string()),
+            "different sessions must not share accumulated text"
+        );
+    }
+
+    #[test]
+    fn coalescer_snapshot_has_full_phase_not_delta() {
+        let mut c = LiveSnapshotCoalescer::new();
+        let result = c.coalesce(coalesce_delta("test", "msg-1", "text/main"));
+        let ServerEvent::OutputBlock { ref block, .. } = result else { panic!("expected OutputBlock") };
+        assert_eq!(
+            block.get("phase").and_then(|v| v.as_str()),
+            Some("full"),
+            "snapshot must set block phase to 'full' so merge_output_block_delta skips it"
+        );
+    }
+
+    #[test]
+    fn coalescer_passes_through_output_block_without_live_identity() {
+        let mut c = LiveSnapshotCoalescer::new();
+        let block = ServerEvent::OutputBlock {
+            session_id: "sess-1".to_string(),
+            id: Some("block-1".to_string()),
+            block: serde_json::json!({ "kind": "message", "phase": "delta", "text": "legacy" }),
+            live_identity: None,
+        };
+        let result = c.coalesce(block);
+        assert_eq!(
+            snapshot_block_text(&result),
+            Some("legacy".to_string()),
+            "legacy blocks without live_identity should pass through unchanged"
+        );
+    }
+
+    #[test]
+    fn coalescer_passes_through_non_text_live_identity_unchanged() {
+        let mut c = LiveSnapshotCoalescer::new();
+        let block = ServerEvent::OutputBlock {
+            session_id: "sess-1".to_string(),
+            id: Some("tool-1".to_string()),
+            block: serde_json::json!({
+                "kind": "tool",
+                "phase": "running",
+                "name": "write_file",
+                "detail": "chunk-1"
+            }),
+            live_identity: Some(rocode_types::LiveMessagePartIdentity {
+                message_id: "msg-1".to_string(),
+                part_key: "tool_call/call-1".to_string(),
+                part_kind: rocode_types::LiveMessagePartKind::ToolCall,
+                phase: rocode_types::LivePartPhase::Append,
+                legacy_block_id: Some("tool-1".to_string()),
+            }),
+        };
+        let result = c.coalesce(block);
+        let ServerEvent::OutputBlock { block, live_identity, .. } = result else {
+            panic!("expected OutputBlock")
+        };
+        assert_eq!(block["kind"], "tool");
+        assert_eq!(block["phase"], "running");
+        assert_eq!(
+            live_identity.as_ref().map(|identity| identity.phase),
+            Some(rocode_types::LivePartPhase::Append)
+        );
+        assert!(
+            c.accum.is_empty(),
+            "non-text identities must not allocate snapshot cache entries"
+        );
+    }
+
     /// P2-2 regression: the pending.is_none() branch in stream_server_events
     /// must call subscribable() before sending or buffering the first event.
     /// This test verifies the pure function rejects the event types that hit
@@ -1353,7 +1639,7 @@ mod tests {
         let cli_sub = rocode_api::ResolvedFrontendSubscription::from_tier(
             rocode_api::FrontendSubscriptionTier::CliLowFrequency,
         );
-        let sse = super::stream_server_events(rx, None, cli_sub);
+        let sse = super::stream_server_events(rx, None, cli_sub, None);
 
         // First event: a non-mergeable Usage — hits the pending.is_none()
         // direct-send path. With CLI tier, it must be filtered.

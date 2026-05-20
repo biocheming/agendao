@@ -189,24 +189,6 @@ impl App {
                 });
             }
             Route::Session { session_id } => {
-                if self.is_session_busy(&session_id) {
-                    self.enqueue_prompt(
-                        &session_id,
-                        QueuedPrompt {
-                            input,
-                            display_text,
-                            parts,
-                            agent: selected_mode.agent,
-                            scheduler_profile: selected_mode.scheduler_profile,
-                            display_mode: selected_mode.display_mode,
-                            model,
-                            variant,
-                            idempotency_key: Some(format!("tui_{}", uuid::Uuid::new_v4().simple())),
-                        },
-                    );
-                    self.event_caused_change = true;
-                    return Ok(());
-                }
                 self.dispatch_prompt_to_session(PromptDispatchRequest {
                     session_id: &session_id,
                     display_text,
@@ -224,29 +206,6 @@ impl App {
         }
 
         Ok(())
-    }
-
-    pub(super) fn is_session_busy(&self, session_id: &str) -> bool {
-        let session_ctx = self.context.session.read();
-        !matches!(session_ctx.status(session_id), SessionStatus::Idle)
-    }
-
-    pub(super) fn enqueue_prompt(&mut self, session_id: &str, queued: QueuedPrompt) {
-        let count = {
-            let queue = self
-                .prompt_runtime
-                .pending_queue
-                .entry(session_id.to_string())
-                .or_default();
-            queue.push_back(queued);
-            queue.len()
-        };
-        self.context.set_queued_prompts(session_id, count);
-        self.toast.show(
-            ToastVariant::Info,
-            &format!("Session busy, queued prompt ({})", count),
-            2000,
-        );
     }
 
     pub(super) fn dispatch_prompt_to_session(&mut self, request: PromptDispatchRequest<'_>) {
@@ -307,44 +266,6 @@ impl App {
         });
     }
 
-    pub(super) fn dispatch_next_queued_prompt(&mut self, session_id: &str) -> bool {
-        if self.is_session_busy(session_id) {
-            return false;
-        }
-
-        let queued = {
-            let Some(queue) = self.prompt_runtime.pending_queue.get_mut(session_id) else {
-                self.context.set_queued_prompts(session_id, 0);
-                return false;
-            };
-            let queued = queue.pop_front();
-            let remaining = queue.len();
-            self.context.set_queued_prompts(session_id, remaining);
-            (queued, remaining == 0)
-        };
-
-        if queued.1 {
-            self.prompt_runtime.pending_queue.remove(session_id);
-        }
-
-        if let Some(queued) = queued.0 {
-            self.dispatch_prompt_to_session(PromptDispatchRequest {
-                session_id,
-                input: queued.input,
-                display_text: queued.display_text,
-                parts: queued.parts,
-                agent: queued.agent,
-                scheduler_profile: queued.scheduler_profile,
-                display_mode: queued.display_mode,
-                model: queued.model,
-                variant: queued.variant,
-                idempotency_key: queued.idempotency_key,
-            });
-            return true;
-        }
-
-        false
-    }
 
     pub(super) fn submit_shell_command(&mut self, command: String) -> anyhow::Result<()> {
         let command = command.trim().to_string();

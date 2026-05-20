@@ -178,7 +178,7 @@ impl App {
             let Some(question) = self
                 .question_runtime
                 .pending_questions
-                .get(&question_id)
+                .get::<str>(question_id.as_str())
                 .cloned()
             else {
                 continue;

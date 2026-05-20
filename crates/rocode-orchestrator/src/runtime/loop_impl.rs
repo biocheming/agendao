@@ -1,7 +1,7 @@
 use crate::runtime::events::{
-    CancelToken, FinishReason, LoopError, LoopEvent, LoopOutcome, LoopRequest, RequestViewMetrics,
-    RequestViewMutation, RequestViewMutationKind, StepBoundary, StepCheckpointDirective,
-    StepCheckpointSnapshot, StepUsage, ToolCallReady, ToolResult,
+    CancelToken, FinishReason, LoopError, LoopEvent, LoopOutcome, LoopRequest, ModelFailure,
+    RequestViewMetrics, RequestViewMutation, RequestViewMutationKind, StepBoundary,
+    StepCheckpointDirective, StepCheckpointSnapshot, StepUsage, ToolCallReady, ToolResult,
 };
 use crate::runtime::normalizer;
 use crate::runtime::policy::{LoopPolicy, ModelContextLimits, ToolDedupScope, ToolErrorStrategy};
@@ -33,6 +33,24 @@ fn can_retry_initial_stream_fault(
             is_retryable_stream_error_message(message)
         }
         _ => false,
+    }
+}
+
+fn stream_termination_from_provider_error(
+    error: &rocode_provider::ProviderError,
+) -> rocode_provider::StreamTermination {
+    match error {
+        rocode_provider::ProviderError::NetworkError(_) | rocode_provider::ProviderError::Timeout => {
+            rocode_provider::StreamTermination::TransportClosed
+        }
+        rocode_provider::ProviderError::StreamError(message) => {
+            rocode_provider::StreamTermination::StreamCorrupt {
+                message: message.clone(),
+            }
+        }
+        other => rocode_provider::StreamTermination::ProviderError {
+            message: other.to_string(),
+        },
     }
 }
 
@@ -532,6 +550,7 @@ pub async fn run_loop<S: LoopSink>(
                 total_steps: step,
                 total_tool_calls,
                 finish_reason: FinishReason::Cancelled,
+                stream_termination: None,
             });
         }
 
@@ -567,7 +586,57 @@ pub async fn run_loop<S: LoopSink>(
             // Wrap with assemble_tool_calls to normalize Start+Delta→End.
             let mut stream = rocode_provider::assemble_tool_calls(raw_stream);
 
-            while let Some(event_result) = stream.next().await {
+            loop {
+                // P3-F: stream idle timeout watchdog. If no event arrives
+                // within the configured window, the stream is treated as hung
+                // and the step terminates with a TransportTimeout.
+                let event_result = if let Some(timeout_ms) = policy.stream_event_timeout_ms {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_millis(timeout_ms),
+                        stream.next(),
+                    )
+                    .await
+                    {
+                        Ok(Some(result)) => result,
+                        Ok(None) => break, // stream ended normally
+                        Err(_elapsed) => {
+                            tracing::warn!(
+                                step,
+                                timeout_ms,
+                                "model stream idle timeout — no event in watchdog window"
+                            );
+                            let err_msg = format!(
+                                "Stream timed out after {}s with no events",
+                                timeout_ms / 1000
+                            );
+                            sink.on_event(&LoopEvent::Error(err_msg.clone()))
+                                .await
+                                .map_err(|e| LoopError::SinkError(e.to_string()))?;
+                            sink.on_step_boundary(&StepBoundary::End {
+                                step,
+                                finish_reason: FinishReason::Error(err_msg),
+                                tool_calls_count: 0,
+                                had_error: true,
+                                usage: step_usage,
+                            })
+                            .await
+                            .map_err(|e| LoopError::SinkError(e.to_string()))?;
+                            return Err(LoopError::ModelErrorWithTermination {
+                                failure: ModelFailure::Message(format!(
+                                    "stream transport timeout after {}s",
+                                    timeout_ms / 1000
+                                )),
+                                stream_termination: rocode_provider::StreamTermination::TransportTimeout,
+                            });
+                        }
+                    }
+                } else {
+                    match stream.next().await {
+                        Some(result) => result,
+                        None => break,
+                    }
+                };
+
                 // ── Cancellation checkpoint 2: after each event ───────────
                 if cancel.is_cancelled() {
                     tracing::info!(step, "cancelled during stream consumption");
@@ -585,6 +654,7 @@ pub async fn run_loop<S: LoopSink>(
                         total_steps: step,
                         total_tool_calls,
                         finish_reason: FinishReason::Cancelled,
+                        stream_termination: Some(rocode_provider::StreamTermination::Interrupted),
                     });
                 }
 
@@ -660,7 +730,10 @@ pub async fn run_loop<S: LoopSink>(
                         })
                         .await
                         .map_err(|e| LoopError::SinkError(e.to_string()))?;
-                        return Err(LoopError::ModelError(failure));
+                        return Err(LoopError::ModelErrorWithTermination {
+                            failure,
+                            stream_termination: stream_termination_from_provider_error(&provider_err),
+                        });
                     }
                 }
             }
@@ -701,6 +774,7 @@ pub async fn run_loop<S: LoopSink>(
                 total_steps: step,
                 total_tool_calls,
                 finish_reason: FinishReason::EndTurn,
+                stream_termination: Some(rocode_provider::StreamTermination::Completed),
             });
         }
 
@@ -734,6 +808,7 @@ pub async fn run_loop<S: LoopSink>(
                     total_steps: step,
                     total_tool_calls,
                     finish_reason: FinishReason::Cancelled,
+                    stream_termination: Some(rocode_provider::StreamTermination::Interrupted),
                 });
             }
 
@@ -858,5 +933,6 @@ pub async fn run_loop<S: LoopSink>(
         total_steps: step,
         total_tool_calls,
         finish_reason: FinishReason::MaxSteps,
+        stream_termination: Some(rocode_provider::StreamTermination::Completed),
     })
 }

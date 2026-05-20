@@ -15,9 +15,9 @@ use self::events::{
 use crate::runtime_control::{ExecutionPatch, ExecutionStatus, FieldUpdate, SessionRunStatus};
 use crate::ServerState;
 use rocode_command::output_blocks::{
-    MessageBlock, MessageRole as OutputMessageRole, OutputBlock, ReasoningBlock,
+    MessageBlock, MessagePhase, MessageRole as OutputMessageRole, OutputBlock, ReasoningBlock,
     SchedulerDecisionBlock, SchedulerDecisionField, SchedulerDecisionRenderSpec,
-    SchedulerDecisionSection, SchedulerStageBlock,
+    SchedulerDecisionSection, SchedulerStageBlock, ToolPhase,
 };
 use rocode_orchestrator::runtime::StepCheckpointDirective;
 use rocode_orchestrator::{
@@ -27,7 +27,10 @@ use rocode_orchestrator::{
     ToolOutput as OrchestratorToolOutput,
 };
 use rocode_provider::Provider;
-use rocode_session::prompt::{OutputBlockEvent, OutputBlockHook};
+use rocode_session::prompt::{
+    assistant_reasoning_live_identity, assistant_text_live_identity, tool_call_live_identity,
+    tool_result_live_identity, OutputBlockEvent, OutputBlockHook,
+};
 use rocode_session::snapshot::Snapshot;
 use rocode_session::{
     MessageRole, MessageUsage, PartType, Session, SessionContextKind, SessionMessage,
@@ -256,8 +259,89 @@ impl SessionSchedulerLifecycleHook {
                 session_id: self.session_id.clone(),
                 block: OutputBlock::SchedulerStage(Box::new(block)),
                 id: Some(message.id.clone()),
+                live_identity: None,
             })
             .await;
+        }
+    }
+
+    fn live_identity_for_block(
+        &self,
+        block: &OutputBlock,
+        id: Option<&str>,
+    ) -> Option<rocode_types::LiveMessagePartIdentity> {
+        match block {
+            OutputBlock::Message(message) if message.role == OutputMessageRole::Assistant => {
+                let message_id = id?;
+                let phase = match message.phase {
+                    MessagePhase::Start => {
+                        rocode_types::LivePartPhase::Start
+                    }
+                    MessagePhase::Delta => {
+                        rocode_types::LivePartPhase::Append
+                    }
+                    MessagePhase::Full => {
+                        rocode_types::LivePartPhase::Snapshot
+                    }
+                    MessagePhase::End => {
+                        rocode_types::LivePartPhase::End
+                    }
+                };
+                Some(assistant_text_live_identity(
+                    message_id,
+                    Some(message_id.to_string()),
+                    phase,
+                ))
+            }
+            OutputBlock::Reasoning(reasoning) => {
+                let message_id = id?;
+                let phase = match reasoning.phase {
+                    MessagePhase::Start => {
+                        rocode_types::LivePartPhase::Start
+                    }
+                    MessagePhase::Delta => {
+                        rocode_types::LivePartPhase::Append
+                    }
+                    MessagePhase::Full => {
+                        rocode_types::LivePartPhase::Snapshot
+                    }
+                    MessagePhase::End => {
+                        rocode_types::LivePartPhase::End
+                    }
+                };
+                Some(assistant_reasoning_live_identity(
+                    message_id,
+                    Some(message_id.to_string()),
+                    phase,
+                ))
+            }
+            OutputBlock::Tool(tool) => {
+                let tool_call_id = id?;
+                let message_id = self
+                    .active_stage_messages
+                    .try_lock()
+                    .ok()
+                    .and_then(|guard| guard.last().map(|active| active.message_id.clone()))?;
+                let phase = match tool.phase {
+                    ToolPhase::Start => {
+                        rocode_types::LivePartPhase::Start
+                    }
+                    ToolPhase::Running => {
+                        rocode_types::LivePartPhase::Append
+                    }
+                    ToolPhase::Done | ToolPhase::Error => {
+                        rocode_types::LivePartPhase::End
+                    }
+                };
+                let identity = match tool.phase {
+                    ToolPhase::Done | ToolPhase::Error => {
+                        tool_result_live_identity(&message_id, tool_call_id, phase)
+                    }
+                    _ => tool_call_live_identity(&message_id, tool_call_id, phase),
+                };
+                Some(identity)
+            }
+            _ => None,
         }
     }
 
@@ -266,10 +350,12 @@ impl SessionSchedulerLifecycleHook {
     }
 
     async fn emit_output_block(&self, session_id: String, block: OutputBlock, id: Option<String>) {
+        let live_identity = self.live_identity_for_block(&block, id.as_deref());
         self.emit_realtime_block(OutputBlockEvent {
             session_id,
             block,
             id,
+            live_identity,
         })
         .await;
     }
@@ -3188,6 +3274,7 @@ pub(crate) async fn emit_scheduler_stage_message(input: SchedulerStageMessageInp
                 session_id: session_id.to_string(),
                 block: OutputBlock::SchedulerStage(Box::new(block)),
                 id: Some(message_snapshot.id.clone()),
+                live_identity: None,
             },
         )
         .await;

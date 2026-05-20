@@ -618,18 +618,34 @@ mod tests {
             tokio::task::yield_now().await;
         };
 
-        let requested = rx.recv().await.expect("requested event");
-        let requested_json: serde_json::Value =
-            serde_json::from_str(&requested).expect("requested json");
-        assert_eq!(requested_json["type"], "permission.requested");
-        assert_eq!(requested_json["permissionID"], permission_id);
-        assert_eq!(requested_json["sessionID"], "session-1");
-
-        // Drain the session.updated event emitted by permission.pending broadcast.
-        let session_updated = rx.recv().await.expect("session.updated event");
-        let updated_json: serde_json::Value =
-            serde_json::from_str(&session_updated).expect("session.updated json");
-        assert_eq!(updated_json["type"], "session.updated");
+        let mut saw_requested = false;
+        let mut saw_control_queued = false;
+        let mut saw_pending_updated = false;
+        for _ in 0..4 {
+            let raw = rx.recv().await.expect("pending lifecycle event");
+            let json: serde_json::Value = serde_json::from_str(&raw).expect("pending lifecycle json");
+            match json["type"].as_str() {
+                Some("permission.requested") => {
+                    assert_eq!(json["permissionID"], permission_id);
+                    assert_eq!(json["sessionID"], "session-1");
+                    saw_requested = true;
+                }
+                Some("control_input.transition") if json["kind"] == "permission" => {
+                    assert_eq!(json["phase"], "queued");
+                    saw_control_queued = true;
+                }
+                Some("session.updated") => {
+                    saw_pending_updated = true;
+                }
+                _ => {}
+            }
+            if saw_requested && saw_control_queued && saw_pending_updated {
+                break;
+            }
+        }
+        assert!(saw_requested, "missing permission.requested event");
+        assert!(saw_control_queued, "missing permission queued control event");
+        assert!(saw_pending_updated, "missing pending session.updated reconcile");
 
         let reply = ReplyPermissionRequest {
             reply: "once".to_string(),
@@ -643,14 +659,43 @@ mod tests {
         .await
         .expect("reply should succeed");
 
-        // Drain the session.updated event emitted by permission.resolved broadcast.
-        let _resolved_updated = rx.recv().await.expect("session.updated after resolved");
-        let resolved = rx.recv().await.expect("resolved event");
-        let resolved_json: serde_json::Value =
-            serde_json::from_str(&resolved).expect("resolved json");
-        assert_eq!(resolved_json["type"], "permission.resolved");
-        assert_eq!(resolved_json["permissionID"], permission_id);
-        assert_eq!(resolved_json["reply"], "once");
+        let mut saw_consumed = false;
+        let mut saw_cleared = false;
+        let mut saw_resolved = false;
+        let mut saw_resolved_updated = false;
+        for _ in 0..6 {
+            let raw = rx.recv().await.expect("resolved lifecycle event");
+            let json: serde_json::Value =
+                serde_json::from_str(&raw).expect("resolved lifecycle json");
+            match json["type"].as_str() {
+                Some("permission.resolved") => {
+                    assert_eq!(json["permissionID"], permission_id);
+                    assert_eq!(json["reply"], "once");
+                    saw_resolved = true;
+                }
+                Some("control_input.transition") if json["kind"] == "permission" => {
+                    match json["phase"].as_str() {
+                        Some("consumed") => saw_consumed = true,
+                        Some("cleared") => saw_cleared = true,
+                        _ => {}
+                    }
+                }
+                Some("session.updated") => {
+                    saw_resolved_updated = true;
+                }
+                _ => {}
+            }
+            if saw_consumed && saw_cleared && saw_resolved && saw_resolved_updated {
+                break;
+            }
+        }
+        assert!(saw_consumed, "missing permission consumed control event");
+        assert!(saw_cleared, "missing permission cleared control event");
+        assert!(saw_resolved, "missing permission.resolved event");
+        assert!(
+            saw_resolved_updated,
+            "missing resolved session.updated reconcile"
+        );
 
         request_task
             .await

@@ -706,15 +706,25 @@ function historyTextBlockId(messageId: string, kind: "message" | "reasoning"): s
 }
 
 function normalizeStreamingBlockId(block: OutputBlock): string | undefined {
+  // P3-E: live_identity.message_id is the authoritative routing key for
+  // message/reasoning blocks (one per message). Tool blocks within the same
+  // message must retain their per-tool-call identity — routing them all to
+  // the parent message_id would collapse distinct tool calls into one feed
+  // item and break tool boundary semantics.
+  const identityId = block.live_identity?.message_id?.trim();
+  if (identityId && (block.kind === "message" || block.kind === "reasoning")) {
+    return identityId;
+  }
+
   const raw = typeof block.id === "string" ? block.id.trim() : "";
   if (!raw) return undefined;
+  if (block.kind === "message" || block.kind === "reasoning") {
+    return undefined;
+  }
   if (block.kind !== "message" && block.kind !== "reasoning") {
     return raw;
   }
-  if (raw.endsWith(":message") || raw.endsWith(":reasoning")) {
-    return raw;
-  }
-  return historyTextBlockId(raw, block.kind);
+  return undefined;
 }
 
 function normalizeOutputBlock(block: OutputBlock): OutputBlock {
@@ -2295,6 +2305,11 @@ export default function App() {
       // the reconcile fallback for non-droppable reasons.
       if (type === "output_block" && eventSessionId === selectedSessionRef.current) {
         const rawBlock = event.block as OutputBlock | undefined;
+        // P3-E: Parse live_identity from SSE wire format.
+        const rawLiveIdentity = event.live_identity as Record<string, unknown> | undefined;
+        const liveIdentity: OutputBlock["live_identity"] = rawLiveIdentity?.message_id
+          ? (rawLiveIdentity as unknown as OutputBlock["live_identity"])
+          : undefined;
         const block = rawBlock
           ? {
               ...rawBlock,
@@ -2304,6 +2319,7 @@ export default function App() {
                   : typeof event.id === "string"
                     ? event.id
                     : undefined,
+              live_identity: liveIdentity ?? rawBlock.live_identity,
             }
           : undefined;
         if (!block) return;

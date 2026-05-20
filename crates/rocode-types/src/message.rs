@@ -609,4 +609,146 @@ mod tests {
         assert_eq!(reasoning_parts, 1);
         assert_eq!(message.get_reasoning(), "alpha beta");
     }
+
+    // ── P3-H: Live identity wire format round-trip tests ──────────────
+
+    #[test]
+    fn live_message_part_kind_serde_round_trip() {
+        let variants = [
+            (LiveMessagePartKind::AssistantText, "assistant_text"),
+            (LiveMessagePartKind::AssistantReasoning, "assistant_reasoning"),
+            (LiveMessagePartKind::ToolCall, "tool_call"),
+            (LiveMessagePartKind::ToolResult, "tool_result"),
+            (LiveMessagePartKind::SchedulerStage, "scheduler_stage"),
+        ];
+        for (variant, wire) in variants {
+            let json = serde_json::to_string(&variant).expect("serialize");
+            assert_eq!(json, format!("\"{wire}\""));
+            let back: LiveMessagePartKind = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back, variant);
+        }
+    }
+
+    #[test]
+    fn live_part_phase_serde_round_trip() {
+        let phases = [
+            (LivePartPhase::Start, "start"),
+            (LivePartPhase::Append, "append"),
+            (LivePartPhase::Snapshot, "snapshot"),
+            (LivePartPhase::End, "end"),
+        ];
+        for (phase, wire) in phases {
+            let json = serde_json::to_string(&phase).expect("serialize");
+            assert_eq!(json, format!("\"{wire}\""));
+            let back: LivePartPhase = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back, phase);
+        }
+    }
+
+    #[test]
+    fn live_message_part_identity_serde_round_trip() {
+        let identity = LiveMessagePartIdentity {
+            message_id: "msg-1".to_string(),
+            part_key: "text/main".to_string(),
+            part_kind: LiveMessagePartKind::AssistantText,
+            phase: LivePartPhase::Snapshot,
+            legacy_block_id: Some("block-1".to_string()),
+        };
+        let json = serde_json::to_string(&identity).expect("serialize");
+        let back: LiveMessagePartIdentity = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, identity);
+    }
+
+    #[test]
+    fn live_message_part_identity_without_legacy_block_id() {
+        let identity = LiveMessagePartIdentity {
+            message_id: "msg-2".to_string(),
+            part_key: "tool_call/call-1".to_string(),
+            part_kind: LiveMessagePartKind::ToolCall,
+            phase: LivePartPhase::Start,
+            legacy_block_id: None,
+        };
+        let json = serde_json::to_string(&identity).expect("serialize");
+        assert!(!json.contains("legacy_block_id"));
+        let back: LiveMessagePartIdentity = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, identity);
+        assert!(back.legacy_block_id.is_none());
+    }
+
+    #[test]
+    fn live_message_part_identity_wire_field_names() {
+        let identity = LiveMessagePartIdentity {
+            message_id: "msg-1".to_string(),
+            part_key: "reasoning/main".to_string(),
+            part_kind: LiveMessagePartKind::AssistantReasoning,
+            phase: LivePartPhase::Append,
+            legacy_block_id: None,
+        };
+        let value = serde_json::to_value(&identity).expect("serialize");
+        assert_eq!(value["message_id"], "msg-1");
+        assert_eq!(value["part_key"], "reasoning/main");
+        assert_eq!(value["part_kind"], "assistant_reasoning");
+        assert_eq!(value["phase"], "append");
+        assert!(value.get("legacy_block_id").is_none());
+    }
+}
+
+// ── P3-A: Live Identity Contract ─────────────────────────────────────────
+// Stable identity for every live output crossing the server→frontend boundary.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveMessagePartKind {
+    AssistantText,
+    AssistantReasoning,
+    ToolCall,
+    ToolResult,
+    SchedulerStage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LivePartPhase {
+    Start,
+    Append,
+    Snapshot,
+    End,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlInputKind {
+    Followup,
+    Steering,
+    Interrupt,
+    Permission,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlInputPhase {
+    Ingress,
+    Queued,
+    Adopted,
+    Consumed,
+    Cleared,
+}
+
+/// Canonical identity for a live streaming message part.
+///
+/// `session_id` is intentionally NOT included here — it lives in the outer
+/// event envelope (OutputBlockEvent, ServerEvent::OutputBlock) where it has
+/// a single owner. This type is the `{message, part}` locator within a
+/// session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct LiveMessagePartIdentity {
+    /// The assistant/agent message this part belongs to.
+    pub message_id: String,
+    /// Stable key within the message, e.g. "text/main", "reasoning/main",
+    /// "tool_call/{call_id}", "tool_result/{call_id}".
+    pub part_key: String,
+    pub part_kind: LiveMessagePartKind,
+    pub phase: LivePartPhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy_block_id: Option<String>,
 }

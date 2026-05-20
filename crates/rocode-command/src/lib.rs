@@ -17,6 +17,7 @@ pub mod cli_style;
 pub mod governance_fixtures;
 #[cfg(test)]
 mod governance_tests;
+pub mod live_semantic_consumer;
 pub mod interactive;
 pub mod output_blocks;
 pub mod stage_protocol;

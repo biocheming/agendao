@@ -584,6 +584,7 @@ impl SessionContext {
         session_id: &str,
         block_id: Option<&str>,
         payload: &serde_json::Value,
+        live_identity: Option<&rocode_types::LiveMessagePartIdentity>,
     ) {
         self.ensure_streaming_session(session_id, None, None);
 
@@ -592,9 +593,9 @@ impl SessionContext {
         };
 
         match kind {
-            "message" => self.apply_message_block(session_id, block_id, payload),
-            "reasoning" => self.apply_reasoning_block(session_id, block_id, payload),
-            "tool" => self.apply_tool_block(session_id, block_id, payload),
+            "message" => self.apply_message_block(session_id, block_id, payload, live_identity),
+            "reasoning" => self.apply_reasoning_block(session_id, block_id, payload, live_identity),
+            "tool" => self.apply_tool_block(session_id, block_id, payload, live_identity),
             "scheduler_stage" => self.apply_scheduler_stage_block(session_id, block_id, payload),
             _ => return,
         }
@@ -610,6 +611,7 @@ impl SessionContext {
         session_id: &str,
         block_id: Option<&str>,
         payload: &serde_json::Value,
+        live_identity: Option<&rocode_types::LiveMessagePartIdentity>,
     ) {
         let role = match payload
             .get("role")
@@ -629,7 +631,16 @@ impl SessionContext {
             .and_then(|value| value.as_str())
             .unwrap_or_default();
 
-        let pos = self.ensure_message_for_block(session_id, block_id, role.clone());
+        // P3-E: Use live_identity.message_id as the authoritative routing key.
+        let routing_id = live_identity
+            .map(|id| id.message_id.to_string())
+            .or_else(|| {
+                block_id
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| self.generated_streaming_id(session_id, "message"));
+        let pos = self.ensure_message_for_block(session_id, Some(&routing_id), role.clone());
         let Some(message) = self
             .messages
             .get_mut(session_id)
@@ -681,26 +692,19 @@ impl SessionContext {
         session_id: &str,
         block_id: Option<&str>,
         payload: &serde_json::Value,
+        live_identity: Option<&rocode_types::LiveMessagePartIdentity>,
     ) {
-        // When block_id is None or empty, fall back to the last assistant message
-        // for this session so reasoning is not silently discarded.
-        let fallback_id;
-        let message_id = match block_id {
-            Some(id) if !id.is_empty() => id,
-            _ => {
-                fallback_id = self
-                    .messages
-                    .get(session_id)
-                    .and_then(|msgs| {
-                        msgs.iter()
-                            .rev()
-                            .find(|m| m.role == MessageRole::Assistant)
-                            .map(|m| m.id.clone())
-                    })
-                    .unwrap_or_else(|| format!("_reasoning_{session_id}"));
-                &fallback_id
-            }
-        };
+        // P3-E: Use live_identity.message_id as the authoritative routing key.
+        // Without identity or block_id, create a fresh streaming placeholder
+        // instead of guessing "last assistant".
+        let message_id = live_identity
+            .map(|id| id.message_id.to_string())
+            .or_else(|| {
+                block_id
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| self.generated_streaming_id(session_id, "reasoning"));
         let phase = payload
             .get("phase")
             .and_then(|value| value.as_str())
@@ -709,7 +713,7 @@ impl SessionContext {
             .get("text")
             .and_then(|value| value.as_str())
             .unwrap_or_default();
-        self.update_reasoning_incremental(session_id, message_id, phase, text);
+        self.update_reasoning_incremental(session_id, &message_id, phase, text);
     }
 
     fn apply_tool_block(
@@ -717,8 +721,12 @@ impl SessionContext {
         session_id: &str,
         block_id: Option<&str>,
         payload: &serde_json::Value,
+        live_identity: Option<&rocode_types::LiveMessagePartIdentity>,
     ) {
-        let tool_call_id = block_id.unwrap_or_default();
+        let tool_call_id = block_id
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| self.generated_streaming_id(session_id, "tool"));
         let tool_name = payload
             .get("name")
             .and_then(|value| value.as_str())
@@ -733,7 +741,19 @@ impl SessionContext {
             .unwrap_or_default()
             .to_string();
 
-        let pos = self.ensure_message_for_block(session_id, None, MessageRole::Assistant);
+        // P3-E: Route tool blocks by live_identity.message_id (parent assistant
+        // message). The tool_call_id distinguishes individual tools within that
+        // message. When identity is missing, use explicit block_id or a fresh
+        // placeholder instead of guessing "last assistant".
+        let routing_id = live_identity
+            .map(|id| id.message_id.to_string())
+            .or_else(|| {
+                block_id
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| self.generated_streaming_id(session_id, "assistant"));
+        let pos = self.ensure_message_for_block(session_id, Some(&routing_id), MessageRole::Assistant);
         let Some(message) = self
             .messages
             .get_mut(session_id)
@@ -752,7 +772,7 @@ impl SessionContext {
                 }) = message.parts.iter_mut().find(|part| {
                     matches!(
                         part,
-                        MessagePart::ToolCall { id, .. } if id == tool_call_id
+                        MessagePart::ToolCall { id, .. } if *id == tool_call_id
                     )
                 }) {
                     *name = tool_name.to_string();
@@ -770,7 +790,7 @@ impl SessionContext {
                 if let Some(part) = message.parts.iter_mut().find(|part| {
                     matches!(
                         part,
-                        MessagePart::ToolResult { id, .. } if id == tool_call_id
+                        MessagePart::ToolResult { id, .. } if *id == tool_call_id
                     )
                 }) {
                     if let MessagePart::ToolResult {
@@ -876,6 +896,11 @@ impl SessionContext {
         messages.push(Self::streaming_placeholder_message(&generated_id, role));
         index.insert(generated_id, pos);
         pos
+    }
+
+    fn generated_streaming_id(&self, session_id: &str, prefix: &str) -> String {
+        let sequence = self.messages.get(session_id).map(|messages| messages.len()).unwrap_or(0);
+        format!("{prefix}_{session_id}_{sequence}")
     }
 
     fn order_current_turn_for_presentation(&mut self, session_id: &str) {
@@ -1232,6 +1257,7 @@ mod tests {
                 "done_agent_count": 0,
                 "total_agent_count": 0
             }),
+            None,
         );
 
         let parent_messages = ctx.messages.get("parent").expect("parent messages");
@@ -1299,6 +1325,7 @@ mod tests {
                 "role": "assistant",
                 "text": "final"
             }),
+            None,
         );
         ctx.apply_output_block_incremental(
             "session-1",
@@ -1319,6 +1346,7 @@ mod tests {
                 "done_agent_count": 0,
                 "total_agent_count": 0
             }),
+            None,
         );
 
         let ids = ctx
@@ -1344,6 +1372,7 @@ mod tests {
                 "role": "assistant",
                 "text": "hello child"
             }),
+            None,
         );
 
         let child = ctx
@@ -1372,6 +1401,7 @@ mod tests {
                 "phase": "start",
                 "text": ""
             }),
+            None,
         );
         ctx.apply_output_block_incremental(
             "session-1",
@@ -1381,6 +1411,7 @@ mod tests {
                 "phase": "delta",
                 "text": "thinking..."
             }),
+            None,
         );
         ctx.apply_output_block_incremental(
             "session-1",
@@ -1391,6 +1422,7 @@ mod tests {
                 "role": "assistant",
                 "text": ""
             }),
+            None,
         );
 
         let message = ctx

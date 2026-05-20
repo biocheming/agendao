@@ -92,6 +92,7 @@ async fn frontend_smoke_output_block(
             session_id: req.session_id,
             block: req.block,
             id: req.id,
+            live_identity: None,
         },
     );
     Json(true)

@@ -1400,6 +1400,7 @@ mod tests {
             tool_trajectory_quality: Some(quality),
             tool_result_governance: None,
             pending_permission_count: 1,
+            pending_followup_count: 0,
             granted_by_turn_count: 2,
             granted_by_session_count: 3,
             granted_by_matcher_kind: std::collections::BTreeMap::from([

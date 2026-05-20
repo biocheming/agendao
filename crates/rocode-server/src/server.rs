@@ -239,6 +239,7 @@ pub struct ServerState {
     pub(crate) runtime_memory: Arc<RuntimeMemoryAuthority>,
     pub(crate) runtime_telemetry: Arc<RuntimeTelemetryAuthority>,
     pub(crate) steering_store: Arc<tokio::sync::Mutex<SessionSteeringQueueStore>>,
+    pub(crate) queued_followups: Arc<tokio::sync::Mutex<HashMap<String, serde_json::Value>>>,
     // Shared runtime registries still used by server routes and session runtime.
     pub(crate) runtime_control: Arc<RuntimeControlRegistry>,
     pub(crate) auth_manager: Arc<AuthManager>,
@@ -309,6 +310,7 @@ impl ServerState {
         ));
         let runtime_control = runtime_telemetry.runtime_control();
         let steering_store = Arc::new(tokio::sync::Mutex::new(SessionSteeringQueueStore::new()));
+        let queued_followups = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         Self {
             workspace_root: normalize_workspace_root(workspace_root),
             sessions: Mutex::new(SessionManager::new()),
@@ -328,6 +330,7 @@ impl ServerState {
             runtime_memory,
             runtime_telemetry,
             steering_store,
+            queued_followups,
             runtime_control,
             auth_manager: Arc::new(AuthManager::new()),
             event_bus: tx,

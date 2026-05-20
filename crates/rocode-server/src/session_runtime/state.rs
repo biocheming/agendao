@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 
 use rocode_session::SessionUsage;
-use rocode_types::SessionContextKind;
+use rocode_types::{ControlInputKind, ControlInputPhase, SessionContextKind};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
@@ -42,6 +42,8 @@ pub struct SessionRuntimeState {
     pub pending_question: Option<PendingQuestionSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending_permission: Option<PendingPermissionSummary>,
+    #[serde(default)]
+    pub pending_followup_count: u64,
     /// Constitution §8: pending steering messages must be observable.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_steering: Vec<PendingSteeringMessageSummary>,
@@ -62,6 +64,7 @@ impl SessionRuntimeState {
             active_tools: Vec::new(),
             pending_question: None,
             pending_permission: None,
+            pending_followup_count: 0,
             pending_steering: Vec::new(),
             interrupt: InterruptRuntimeState::default(),
             attached_sessions: Vec::new(),
@@ -165,6 +168,14 @@ pub enum RuntimeProtocolUpdate {
         requested_at: i64,
         target: InterruptTarget,
     },
+    /// P3-G: Unified control input lifecycle transition.
+    /// `kind` identifies which control path. `phase` is the new phase.
+    /// `at` is epoch-millis of the transition.
+    ControlInputTransition {
+        kind: ControlInputKind,
+        phase: ControlInputPhase,
+        at: i64,
+    },
 }
 
 /// Summary of an attached session.
@@ -254,6 +265,27 @@ impl RuntimeStateStore {
                 s.interrupt.phase = InterruptPhase::Requested;
                 s.interrupt.requested_at = Some(requested_at);
                 s.interrupt.target = Some(target);
+            }
+            RuntimeProtocolUpdate::ControlInputTransition {
+                kind,
+                phase,
+                at,
+            } => {
+                let _ = at;
+                match (kind, phase) {
+                    (ControlInputKind::Followup, ControlInputPhase::Queued) => {
+                        s.pending_followup_count = s.pending_followup_count.saturating_add(1);
+                    }
+                    (ControlInputKind::Followup, ControlInputPhase::Adopted)
+                    | (ControlInputKind::Followup, ControlInputPhase::Consumed)
+                    | (ControlInputKind::Followup, ControlInputPhase::Cleared) => {
+                        s.pending_followup_count = 0;
+                    }
+                    _ => {
+                        // Other control transitions remain represented by
+                        // their dedicated runtime fields.
+                    }
+                }
             }
         })
         .await;
@@ -797,6 +829,50 @@ mod tests {
             state.run_status,
             RunStatus::Running,
             "new run should be Running, not Cancelling"
+        );
+    }
+
+    #[tokio::test]
+    async fn followup_control_transitions_update_pending_count() {
+        let store = RuntimeStateStore::new();
+        store.mark_running("ses_followup", None).await;
+
+        store
+            .apply_protocol_update(
+                "ses_followup",
+                RuntimeProtocolUpdate::ControlInputTransition {
+                    kind: ControlInputKind::Followup,
+                    phase: ControlInputPhase::Queued,
+                    at: 1,
+                },
+            )
+            .await;
+        assert_eq!(
+            store
+                .get("ses_followup")
+                .await
+                .expect("runtime state should exist")
+                .pending_followup_count,
+            1
+        );
+
+        store
+            .apply_protocol_update(
+                "ses_followup",
+                RuntimeProtocolUpdate::ControlInputTransition {
+                    kind: ControlInputKind::Followup,
+                    phase: ControlInputPhase::Consumed,
+                    at: 2,
+                },
+            )
+            .await;
+        assert_eq!(
+            store
+                .get("ses_followup")
+                .await
+                .expect("runtime state should exist")
+                .pending_followup_count,
+            0
         );
     }
 }

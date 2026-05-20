@@ -387,6 +387,7 @@ mod tests {
                 "role": "assistant",
                 "text": "hello world"
             }),
+            None,
         );
 
         let before_sync = session_ctx
@@ -578,6 +579,7 @@ mod tests {
                 "phase": "start",
                 "text": ""
             }),
+            None,
         );
         session_ctx.apply_output_block_incremental(
             session_id,
@@ -587,6 +589,7 @@ mod tests {
                 "phase": "delta",
                 "text": "thinking more"
             }),
+            None,
         );
 
         let session = SessionInfo {

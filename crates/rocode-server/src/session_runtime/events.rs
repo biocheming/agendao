@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use crate::ServerState;
+use rocode_types::{ControlInputKind, ControlInputPhase};
 
 /// Observable telemetry for the server event bus.
 ///
@@ -35,6 +36,11 @@ pub struct EventBusTelemetry {
     pub last_send_at_ms: AtomicU64,
     /// Timestamp (ms) of the most recent send error.
     pub last_send_error_at_ms: AtomicU64,
+    // ── P3-H: P3-specific observability counters ──────────────────────
+    /// LiveSnapshotCoalescer: number of deltas accumulated into snapshots.
+    pub coalesced_snapshot_count: AtomicU64,
+    /// Output blocks received without live_identity (legacy passthrough).
+    pub identity_missing_count: AtomicU64,
 }
 
 impl Default for EventBusTelemetry {
@@ -45,6 +51,8 @@ impl Default for EventBusTelemetry {
             max_receivers: AtomicU64::new(0),
             last_send_at_ms: AtomicU64::new(0),
             last_send_error_at_ms: AtomicU64::new(0),
+            coalesced_snapshot_count: AtomicU64::new(0),
+            identity_missing_count: AtomicU64::new(0),
         }
     }
 }
@@ -62,6 +70,16 @@ impl EventBusTelemetry {
         self.send_error_count.fetch_add(1, Ordering::Relaxed);
         let now = chrono::Utc::now().timestamp_millis() as u64;
         self.last_send_error_at_ms.store(now, Ordering::Relaxed);
+    }
+
+    // ── P3-H: Convenience incrementors ────────────────────────────────
+
+    pub fn record_coalesced_snapshot(&self) {
+        self.coalesced_snapshot_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_identity_missing(&self) {
+        self.identity_missing_count.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Snapshot suitable for telemetry export.
@@ -108,6 +126,9 @@ pub enum ServerEvent {
         block: serde_json::Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         id: Option<String>,
+        /// P3-A: live identity for routing without heuristic guessing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        live_identity: Option<rocode_types::LiveMessagePartIdentity>,
     },
     #[serde(rename = "usage")]
     Usage {
@@ -183,6 +204,14 @@ pub enum ServerEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         message: Option<String>,
     },
+    #[serde(rename = "control_input.transition")]
+    ControlInputTransition {
+        #[serde(rename = "sessionID")]
+        session_id: String,
+        kind: ControlInputKind,
+        phase: ControlInputPhase,
+        at: i64,
+    },
     #[serde(rename = "config.updated")]
     ConfigUpdated,
     #[serde(rename = "tool_call.lifecycle")]
@@ -232,11 +261,13 @@ impl ServerEvent {
         session_id: impl Into<String>,
         block: &OutputBlock,
         id: Option<&str>,
+        live_identity: Option<rocode_types::LiveMessagePartIdentity>,
     ) -> Self {
         Self::OutputBlock {
             session_id: session_id.into(),
             block: output_block_to_web(block),
             id: id.map(ToOwned::to_owned),
+            live_identity,
         }
     }
 
@@ -261,6 +292,7 @@ impl ServerEvent {
             | Self::QuestionResolved { session_id, .. }
             | Self::PermissionRequested { session_id, .. }
             | Self::PermissionResolved { session_id, .. }
+            | Self::ControlInputTransition { session_id, .. }
             | Self::ToolCallLifecycle { session_id, .. }
             | Self::TopologyChanged { session_id, .. }
             | Self::DiffUpdated { session_id, .. } => Some(session_id),
@@ -287,6 +319,7 @@ impl ServerEvent {
             Self::QuestionResolved { .. } => "question.resolved",
             Self::PermissionRequested { .. } => "permission.requested",
             Self::PermissionResolved { .. } => "permission.resolved",
+            Self::ControlInputTransition { .. } => "control_input.transition",
             Self::ConfigUpdated => "config.updated",
             Self::ToolCallLifecycle { .. } => "tool_call.lifecycle",
             Self::TopologyChanged { .. } => "execution.topology.changed",
@@ -439,7 +472,7 @@ impl ServerEvent {
 }
 
 pub(crate) fn server_output_block_event(event: &OutputBlockEvent) -> ServerEvent {
-    ServerEvent::output_block(event.session_id.clone(), &event.block, event.id.as_deref())
+    ServerEvent::output_block(event.session_id.clone(), &event.block, event.id.as_deref(), event.live_identity.clone())
 }
 
 pub(crate) async fn send_sse_server_event(
@@ -514,6 +547,10 @@ pub(crate) enum ReconcileReason {
     StatusChange,
     /// Scheduler / stage topology changed.
     Topology,
+    /// P3-F: Turn completed but the provider stream did not finish cleanly.
+    /// Frontends should refresh from stored messages rather than relying on
+    /// the incomplete live stream.
+    Backfill,
 }
 
 impl ReconcileReason {
@@ -525,6 +562,7 @@ impl ReconcileReason {
             Self::Steering => "steering",
             Self::StatusChange => "status.change",
             Self::Topology => "topology",
+            Self::Backfill => "backfill",
         }
     }
 }
@@ -569,6 +607,10 @@ mod tests {
     use crate::ServerState;
     use rocode_command::output_blocks::{OutputBlock, StatusBlock};
     use rocode_command::stage_protocol::{telemetry_event_names, StageEvent};
+    use rocode_types::{
+        ControlInputKind, ControlInputPhase, LiveMessagePartIdentity, LiveMessagePartKind,
+        LivePartPhase,
+    };
 
     #[test]
     fn server_event_serializes_output_block_wrapper() {
@@ -576,6 +618,13 @@ mod tests {
             "session-1",
             &OutputBlock::Status(StatusBlock::success("ok")),
             Some("block-1"),
+            Some(LiveMessagePartIdentity {
+                message_id: "msg-1".to_string(),
+                part_key: "text/main".to_string(),
+                part_kind: LiveMessagePartKind::AssistantText,
+                phase: LivePartPhase::Snapshot,
+                legacy_block_id: Some("block-1".to_string()),
+            }),
         );
 
         let value = event.to_json_value().expect("event json");
@@ -585,6 +634,11 @@ mod tests {
         assert_eq!(value["block"]["kind"], "status");
         assert_eq!(value["block"]["tone"], "success");
         assert_eq!(value["block"]["text"], "ok");
+        assert_eq!(value["live_identity"]["message_id"], "msg-1");
+        assert_eq!(value["live_identity"]["part_key"], "text/main");
+        assert_eq!(value["live_identity"]["part_kind"], "assistant_text");
+        assert_eq!(value["live_identity"]["phase"], "snapshot");
+        assert_eq!(value["live_identity"]["legacy_block_id"], "block-1");
     }
 
     #[test]
@@ -822,6 +876,24 @@ mod tests {
         assert_eq!(value["type"], "diff.updated");
         assert_eq!(value["sessionID"], "session-1");
         assert_eq!(value["diff"][0]["path"], "src/main.rs");
+    }
+
+    #[test]
+    fn control_input_transition_serializes_with_canonical_type() {
+        let value = ServerEvent::ControlInputTransition {
+            session_id: "session-1".to_string(),
+            kind: ControlInputKind::Steering,
+            phase: ControlInputPhase::Queued,
+            at: 123,
+        }
+        .to_json_value()
+        .expect("event json");
+
+        assert_eq!(value["type"], "control_input.transition");
+        assert_eq!(value["sessionID"], "session-1");
+        assert_eq!(value["kind"], "steering");
+        assert_eq!(value["phase"], "queued");
+        assert_eq!(value["at"], 123);
     }
 
     #[test]
@@ -1230,5 +1302,6 @@ mod lifecycle_tests {
         assert_eq!(ReconcileReason::Steering.as_str(), "steering");
         assert_eq!(ReconcileReason::StatusChange.as_str(), "status.change");
         assert_eq!(ReconcileReason::Topology.as_str(), "topology");
+        assert_eq!(ReconcileReason::Backfill.as_str(), "backfill");
     }
 }

@@ -31,16 +31,6 @@ pub fn render_message_text_part(
     render_message_text_part_with_width(message, text, theme, marker_color, None)
 }
 
-#[cfg(test)]
-pub fn render_reasoning_part(
-    text: &str,
-    theme: &Theme,
-    collapsed: bool,
-    preview_lines: usize,
-) -> ReasoningRender {
-    render_reasoning_part_with_width(text, theme, collapsed, preview_lines, None)
-}
-
 pub(super) fn render_message_text_part_with_width(
     message: &Message,
     text: &str,

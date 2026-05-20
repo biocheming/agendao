@@ -198,6 +198,7 @@ fn stage_loop_policy(
         tool_dedup: ToolDedupScope::PerStep,
         on_tool_error,
         checkpoint_governance: Default::default(),
+        stream_event_timeout_ms: Some(60_000),
     }
 }
 

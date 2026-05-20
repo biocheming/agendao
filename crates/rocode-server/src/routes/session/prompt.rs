@@ -59,6 +59,7 @@ use rocode_orchestrator::{
     ModelResolver, ObjectiveDefinition, Orchestrator, OrchestratorContext, ScopeDefinition,
     ToolExecutor as OrchestratorToolExecutor, ToolRunner,
 };
+use rocode_types::{ControlInputKind, ControlInputPhase};
 
 use super::super::tui::request_question_answers;
 use super::super::{
@@ -101,6 +102,23 @@ const LIVE_WEB_INGRESS_BATCH_WINDOW_MS: i64 = 250;
 pub(crate) const VERIFIED_EXTERNAL_ADAPTER_BINDING_METADATA_KEY: &str =
     "verified_external_adapter_binding";
 
+fn reconcile_reason_for_stream_termination(session: &rocode_session::Session) -> ReconcileReason {
+    let termination = session
+        .messages
+        .iter()
+        .rev()
+        .find(|message| matches!(message.role, rocode_session::MessageRole::Assistant))
+        .and_then(|message| message.metadata.get("stream_termination"))
+        .and_then(|value| {
+            serde_json::from_value::<rocode_provider::StreamTermination>(value.clone()).ok()
+        });
+
+    match termination {
+        None | Some(rocode_provider::StreamTermination::Completed) => ReconcileReason::TurnFinal,
+        Some(_) => ReconcileReason::Backfill,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct VerifiedSessionIngress {
     pub ingress: rocode_session::prompt::IngressTurnEnvelope,
@@ -127,6 +145,80 @@ enum LiveWebIngressBatchStage {
         reservation: CancellationToken,
     },
     Follower,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct QueuedFollowupPrompt {
+    request: SessionPromptRequest,
+    apply_plugin_config_hooks: bool,
+}
+
+fn internal_prompt_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-rocode-plugin-internal",
+        axum::http::HeaderValue::from_static("1"),
+    );
+    if let Ok(value) = axum::http::HeaderValue::from_str(crate::routes::internal_token()) {
+        headers.insert("x-rocode-internal-token", value);
+    }
+    headers
+}
+
+async fn enqueue_followup_prompt(
+    state: &Arc<ServerState>,
+    session_id: &str,
+    queued: QueuedFollowupPrompt,
+) -> Result<u64> {
+    let queued_count = {
+        let mut guard = state.queued_followups.lock().await;
+        guard.insert(
+            session_id.to_string(),
+            serde_json::to_value(&queued).map_err(|error| {
+                ApiError::BadRequest(format!("failed to queue follow-up prompt: {error}"))
+            })?,
+        );
+        1_u64
+    };
+    state
+        .runtime_telemetry
+        .emit_control_input_transition(
+            session_id,
+            ControlInputKind::Followup,
+            ControlInputPhase::Queued,
+            chrono::Utc::now().timestamp_millis(),
+        )
+        .await;
+    Ok(queued_count)
+}
+
+async fn take_followup_prompt(
+    state: &Arc<ServerState>,
+    session_id: &str,
+) -> Option<QueuedFollowupPrompt> {
+    let value = {
+        let mut guard = state.queued_followups.lock().await;
+        guard.remove(session_id)
+    }?;
+    match serde_json::from_value(value) {
+        Ok(queued) => Some(queued),
+        Err(error) => {
+            tracing::warn!(session_id, %error, "failed to decode queued follow-up prompt");
+            None
+        }
+    }
+}
+
+async fn clear_followup_pending(state: &Arc<ServerState>, session_id: &str) {
+    state
+        .runtime_telemetry
+        .emit_control_input_transition(
+            session_id,
+            ControlInputKind::Followup,
+            ControlInputPhase::Cleared,
+            chrono::Utc::now().timestamp_millis(),
+        )
+        .await;
 }
 
 fn set_autoresearch_override_metadata(
@@ -1105,7 +1197,7 @@ fn frontend_smoke_skip_execution_enabled() -> bool {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SessionPromptRequest {
     pub message: Option<String>,
     #[serde(default)]
@@ -1958,10 +2050,24 @@ async fn session_prompt_inner(
     if matches!(live_web_ingress_stage, LiveWebIngressBatchStage::Bypass)
         && state.prompt_runner.is_running(&session_id).await
     {
-        return Err(ApiError::BadRequest(format!(
-            "Session {} is busy",
-            session_id
-        )));
+        let queued_count = enqueue_followup_prompt(
+            &state,
+            &session_id,
+            QueuedFollowupPrompt {
+                request: req,
+                apply_plugin_config_hooks: should_apply_plugin_config_hooks(&headers),
+            },
+        )
+        .await?;
+        return Ok(Json(serde_json::json!({
+            "status": "queued",
+            "ok": true,
+            "session_id": id,
+            "queued_count": queued_count,
+            "model": format!("{}/{}", provider_id, model_id),
+            "variant": task_variant,
+            "command": resolved_prompt.command.as_ref().map(|command| command.name.clone()),
+        })));
     }
     let mut pending_command_cleared = false;
     let mut persisted_external_adapter_binding = false;
@@ -2522,6 +2628,7 @@ async fn session_prompt_inner(
                                 assistant_text,
                             )),
                             id: Some(assistant_message_id.clone()),
+                            live_identity: None,
                         },
                     )
                     .await;
@@ -2725,14 +2832,44 @@ async fn session_prompt_inner(
                 publish_bus_hook,
                 steering_boundary_hook: Some(Arc::new({
                     let store = state.steering_store.clone();
-                    let runtime_state = state.runtime_telemetry.runtime_state();
+                    let runtime_telemetry = state.runtime_telemetry.clone();
                     move |owner_id| {
                         let store = store.clone();
-                        let runtime_state = runtime_state.clone();
+                        let runtime_telemetry = runtime_telemetry.clone();
                         Box::pin(async move {
                             let mut queue = store.lock().await;
                             let drained = queue.drain(&owner_id);
-                            runtime_state.steering_cleared(&owner_id).await;
+                            if !drained.is_empty() {
+                                let now = chrono::Utc::now().timestamp_millis();
+                                runtime_telemetry
+                                    .emit_control_input_transition(
+                                        &owner_id,
+                                        ControlInputKind::Steering,
+                                        ControlInputPhase::Adopted,
+                                        now,
+                                    )
+                                    .await;
+                                runtime_telemetry
+                                    .emit_control_input_transition(
+                                        &owner_id,
+                                        ControlInputKind::Steering,
+                                        ControlInputPhase::Consumed,
+                                        now,
+                                    )
+                                    .await;
+                            }
+                            runtime_telemetry
+                                .runtime_state()
+                                .steering_cleared(&owner_id)
+                                .await;
+                            runtime_telemetry
+                                .emit_control_input_transition(
+                                    &owner_id,
+                                    ControlInputKind::Steering,
+                                    ControlInputPhase::Cleared,
+                                    chrono::Utc::now().timestamp_millis(),
+                                )
+                                .await;
                             drained
                                 .into_iter()
                                 .map(|m| rocode_session::prompt::SteeringMessage {
@@ -2834,10 +2971,55 @@ async fn session_prompt_inner(
             let mut sessions = task_state.sessions.lock().await;
             sessions.update(session.clone());
         }
-        broadcast_session_reconcile(task_state.as_ref(), session_id.clone(), ReconcileReason::TurnFinal);
+        let reconcile_reason = reconcile_reason_for_stream_termination(&session);
+        broadcast_session_reconcile(task_state.as_ref(), session_id.clone(), reconcile_reason);
         // Normal path reached — defuse the guard so we handle cleanup explicitly.
         _idle_guard.defuse();
         set_session_run_status(&task_state, &session_id, SessionRunStatus::Idle).await;
+        if let Some(queued) = take_followup_prompt(&task_state, &session_id).await {
+            task_state
+                .runtime_telemetry
+                .emit_control_input_transition(
+                    &session_id,
+                    ControlInputKind::Followup,
+                    ControlInputPhase::Adopted,
+                    chrono::Utc::now().timestamp_millis(),
+                )
+                .await;
+            clear_followup_pending(&task_state, &session_id).await;
+            let state = task_state.clone();
+            let session_id_for_followup = session_id.clone();
+            let handle = tokio::runtime::Handle::current();
+            tokio::task::spawn_blocking(move || {
+                handle.block_on(async move {
+                    state
+                        .runtime_telemetry
+                        .emit_control_input_transition(
+                            &session_id_for_followup,
+                            ControlInputKind::Followup,
+                            ControlInputPhase::Consumed,
+                            chrono::Utc::now().timestamp_millis(),
+                        )
+                        .await;
+                    let headers = if queued.apply_plugin_config_hooks {
+                        HeaderMap::new()
+                    } else {
+                        internal_prompt_headers()
+                    };
+                    if let Err(error) = session_prompt_inner(
+                        state.clone(),
+                        headers,
+                        session_id_for_followup.clone(),
+                        queued.request,
+                        None,
+                    )
+                    .await
+                    {
+                        tracing::error!(session_id = %session_id_for_followup, %error, "failed to adopt queued follow-up prompt");
+                    }
+                });
+            });
+        }
         // Only flush the current session — full sync is deferred to shutdown/startup.
         if let Err(err) = task_state.flush_session_to_storage(&session_id).await {
             tracing::error!(session_id = %session_id, %err, "failed to flush session to storage");
@@ -3029,6 +3211,54 @@ mod tests {
         assert_eq!(ingress.context_key.as_deref(), Some("session_prompt"));
         assert_eq!(ingress.idempotency_key.as_deref(), Some("idem_1"));
         assert!(ingress.external_adapter.is_none());
+    }
+
+    #[tokio::test]
+    async fn followup_queue_is_single_slot_and_tracks_runtime_count() {
+        let state = Arc::new(ServerState::new());
+        let session_id = {
+            let mut sessions = state.sessions.lock().await;
+            sessions.create("project", "/tmp/project").id.clone()
+        };
+
+        let queued_count = enqueue_followup_prompt(
+            &state,
+            &session_id,
+            QueuedFollowupPrompt {
+                request: prompt_request_message("first"),
+                apply_plugin_config_hooks: true,
+            },
+        )
+        .await
+        .expect("first follow-up should queue");
+        assert_eq!(queued_count, 1);
+        assert_eq!(
+            state
+                .runtime_telemetry
+                .runtime_state()
+                .get(&session_id)
+                .await
+                .expect("runtime state should exist")
+                .pending_followup_count,
+            1
+        );
+
+        let queued = take_followup_prompt(&state, &session_id)
+            .await
+            .expect("queued follow-up should be retrievable");
+        assert_eq!(queued.request.message.as_deref(), Some("first"));
+
+        clear_followup_pending(&state, &session_id).await;
+        assert_eq!(
+            state
+                .runtime_telemetry
+                .runtime_state()
+                .get(&session_id)
+                .await
+                .expect("runtime state should exist")
+                .pending_followup_count,
+            0
+        );
     }
 
     #[test]

@@ -638,10 +638,14 @@ async fn dispatch_remote_sse_event(
             semantic_state
                 .accumulator
                 .apply_output_block(block_id, &block);
+            let live_identity: Option<rocode_types::LiveMessagePartIdentity> = parsed
+                .get("live_identity")
+                .and_then(|v| serde_json::from_value(v.clone()).ok());
             let rendered = render_terminal_stream_block_semantic(
                 &mut semantic_state.semantic,
                 &semantic_state.accumulator,
                 &block,
+                live_identity.as_ref(),
                 &style,
                 show_thinking.load(Ordering::SeqCst),
             );
@@ -794,6 +798,7 @@ mod tests {
                 &mut semantic_state.semantic,
                 &semantic_state.accumulator,
                 &block,
+                None,
                 &style,
                 true,
             )
@@ -833,6 +838,7 @@ mod tests {
                 &mut semantic_state.semantic,
                 &semantic_state.accumulator,
                 &block,
+                None,
                 &style,
                 true,
             )
@@ -868,6 +874,7 @@ mod tests {
                 &mut semantic_state.semantic,
                 &semantic_state.accumulator,
                 &block,
+                None,
                 &style,
                 true,
             )

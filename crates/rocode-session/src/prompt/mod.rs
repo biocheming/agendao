@@ -228,7 +228,68 @@ pub type CompactionLifecycleHook =
 pub struct OutputBlockEvent {
     pub session_id: String,
     pub block: OutputBlock,
+    /// Legacy block ID. Prefer `live_identity` for new code.
     pub id: Option<String>,
+    /// Canonical live-stream identity. When populated, consumers route stream
+    /// fragments by identity instead of heuristic guessing.
+    /// Scheduler-stage summaries and legacy synthetic blocks may still omit it.
+    pub live_identity: Option<rocode_types::LiveMessagePartIdentity>,
+}
+
+pub fn assistant_text_live_identity(
+    message_id: &str,
+    legacy_block_id: Option<String>,
+    phase: rocode_types::LivePartPhase,
+) -> rocode_types::LiveMessagePartIdentity {
+    rocode_types::LiveMessagePartIdentity {
+        message_id: message_id.to_string(),
+        part_key: "text/main".to_string(),
+        part_kind: rocode_types::LiveMessagePartKind::AssistantText,
+        phase,
+        legacy_block_id,
+    }
+}
+
+pub fn assistant_reasoning_live_identity(
+    message_id: &str,
+    legacy_block_id: Option<String>,
+    phase: rocode_types::LivePartPhase,
+) -> rocode_types::LiveMessagePartIdentity {
+    rocode_types::LiveMessagePartIdentity {
+        message_id: message_id.to_string(),
+        part_key: "reasoning/main".to_string(),
+        part_kind: rocode_types::LiveMessagePartKind::AssistantReasoning,
+        phase,
+        legacy_block_id,
+    }
+}
+
+pub fn tool_call_live_identity(
+    message_id: &str,
+    tool_call_id: &str,
+    phase: rocode_types::LivePartPhase,
+) -> rocode_types::LiveMessagePartIdentity {
+    rocode_types::LiveMessagePartIdentity {
+        message_id: message_id.to_string(),
+        part_key: format!("tool_call/{tool_call_id}"),
+        part_kind: rocode_types::LiveMessagePartKind::ToolCall,
+        phase,
+        legacy_block_id: Some(tool_call_id.to_string()),
+    }
+}
+
+pub fn tool_result_live_identity(
+    message_id: &str,
+    tool_call_id: &str,
+    phase: rocode_types::LivePartPhase,
+) -> rocode_types::LiveMessagePartIdentity {
+    rocode_types::LiveMessagePartIdentity {
+        message_id: message_id.to_string(),
+        part_key: format!("tool_result/{tool_call_id}"),
+        part_kind: rocode_types::LiveMessagePartKind::ToolResult,
+        phase,
+        legacy_block_id: Some(tool_call_id.to_string()),
+    }
 }
 pub type OutputBlockHook = Arc<
     dyn Fn(OutputBlockEvent) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync + 'static,

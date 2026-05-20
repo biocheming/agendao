@@ -6,6 +6,7 @@
 
 use std::time::Duration;
 
+use rocode_types::LiveMessagePartIdentity;
 use tokio::sync::mpsc;
 
 use crate::util::server_url;
@@ -78,6 +79,7 @@ pub enum CliServerEvent {
     OutputBlock {
         session_id: String,
         id: Option<String>,
+        live_identity: Option<LiveMessagePartIdentity>,
         payload: serde_json::Value,
     },
     /// An error event from the server.
@@ -488,9 +490,13 @@ fn parse_event(
         "output_block" => {
             // Output blocks may or may not carry a session_id.
             let id = json.get("id").and_then(|v| v.as_str()).map(String::from);
+            let live_identity = json
+                .get("live_identity")
+                .and_then(|value| serde_json::from_value(value.clone()).ok());
             Some(CliServerEvent::OutputBlock {
                 session_id: event_session_id.to_string(),
                 id,
+                live_identity,
                 payload: json.clone(),
             })
         }
@@ -551,6 +557,13 @@ mod tests {
         let mine = serde_json::json!({
             "type": "output_block",
             "sessionID": "session-1",
+            "live_identity": {
+                "message_id": "assistant-1",
+                "part_key": "text/main",
+                "part_kind": "assistant_text",
+                "phase": "snapshot",
+                "legacy_block_id": "assistant-1:text/main"
+            },
             "block": {
                 "kind": "message",
                 "phase": "delta",
@@ -579,6 +592,38 @@ mod tests {
         assert!(matches!(
             other_event,
             Some(CliServerEvent::OutputBlock { session_id, .. }) if session_id == "session-2"
+        ));
+    }
+
+    #[test]
+    fn output_block_parses_live_identity() {
+        let payload = serde_json::json!({
+            "type": "output_block",
+            "sessionID": "session-1",
+            "live_identity": {
+                "message_id": "assistant-1",
+                "part_key": "text/main",
+                "part_kind": "assistant_text",
+                "phase": "snapshot",
+                "legacy_block_id": "assistant-1:text/main"
+            },
+            "block": {
+                "kind": "message",
+                "phase": "full",
+                "role": "assistant",
+                "text": "hello"
+            }
+        });
+
+        let event = parse_event("", &payload, "session-1");
+
+        assert!(matches!(
+            event,
+            Some(CliServerEvent::OutputBlock {
+                live_identity: Some(ref live_identity),
+                ..
+            }) if live_identity.message_id == "assistant-1"
+                && live_identity.part_key == "text/main"
         ));
     }
 

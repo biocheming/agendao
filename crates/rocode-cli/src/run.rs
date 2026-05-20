@@ -915,7 +915,10 @@ mod tests {
             .get("root-session")
             .expect("root session accumulator");
         let assistant = root
-            .last_assistant_message()
+            .messages()
+            .iter()
+            .rev()
+            .find(|message| matches!(message.role, TerminalMessageRole::Assistant))
             .expect("assistant message recorded");
         assert_eq!(assistant.id, "assistant-1");
     }
@@ -1056,6 +1059,7 @@ mod tests {
             CliServerEvent::OutputBlock {
                 session_id: "root-session".to_string(),
                 id: Some("assistant-final".to_string()),
+                live_identity: None,
                 payload: serde_json::json!({
                     "kind": "reasoning",
                     "phase": "start",
@@ -1065,6 +1069,7 @@ mod tests {
             CliServerEvent::OutputBlock {
                 session_id: "root-session".to_string(),
                 id: Some("assistant-final".to_string()),
+                live_identity: None,
                 payload: serde_json::json!({
                     "kind": "reasoning",
                     "phase": "delta",
@@ -1074,6 +1079,7 @@ mod tests {
             CliServerEvent::OutputBlock {
                 session_id: "root-session".to_string(),
                 id: Some("tool-1".to_string()),
+                live_identity: None,
                 payload: serde_json::json!({
                     "kind": "tool",
                     "phase": "start",
@@ -1084,6 +1090,7 @@ mod tests {
             CliServerEvent::OutputBlock {
                 session_id: "root-session".to_string(),
                 id: Some("tool-1".to_string()),
+                live_identity: None,
                 payload: serde_json::json!({
                     "kind": "tool",
                     "phase": "done",
@@ -1094,6 +1101,7 @@ mod tests {
             CliServerEvent::OutputBlock {
                 session_id: "root-session".to_string(),
                 id: Some("assistant-final".to_string()),
+                live_identity: None,
                 payload: serde_json::json!({
                     "kind": "message",
                     "phase": "full",
@@ -1104,6 +1112,7 @@ mod tests {
             CliServerEvent::OutputBlock {
                 session_id: "root-session".to_string(),
                 id: Some("assistant-final".to_string()),
+                live_identity: None,
                 payload: serde_json::json!({
                     "kind": "message",
                     "phase": "full",
@@ -1114,6 +1123,7 @@ mod tests {
             CliServerEvent::OutputBlock {
                 session_id: "root-session".to_string(),
                 id: Some("assistant-final".to_string()),
+                live_identity: None,
                 payload: serde_json::json!({
                     "kind": "message",
                     "phase": "full",
@@ -1124,6 +1134,7 @@ mod tests {
             CliServerEvent::OutputBlock {
                 session_id: "root-session".to_string(),
                 id: Some("assistant-final".to_string()),
+                live_identity: None,
                 payload: serde_json::json!({
                     "kind": "message",
                     "phase": "full",
@@ -1149,6 +1160,43 @@ mod tests {
         assert!(
             !rendered.contains("[message:assistant] 现在[message:assistant]"),
             "assistant output should not restart header inside the same message: {rendered}"
+        );
+    }
+
+    #[test]
+    fn interactive_live_identity_output_block_skips_legacy_accumulator_observer() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let style = CliStyle::plain();
+
+        handle_sse_event(
+            &runtime,
+            CliServerEvent::OutputBlock {
+                session_id: "root-session".to_string(),
+                id: Some("assistant-1".to_string()),
+                live_identity: Some(rocode_types::LiveMessagePartIdentity {
+                    message_id: "assistant-1".to_string(),
+                    part_key: "text/main".to_string(),
+                    part_kind: rocode_types::LiveMessagePartKind::AssistantText,
+                    phase: rocode_types::LivePartPhase::Snapshot,
+                    legacy_block_id: Some("assistant-1".to_string()),
+                }),
+                payload: serde_json::json!({
+                    "kind": "message",
+                    "phase": "full",
+                    "role": "assistant",
+                    "text": "hello"
+                }),
+            },
+            &style,
+        );
+
+        let accumulators = runtime
+            .stream_accumulators
+            .lock()
+            .expect("stream accumulators");
+        assert!(
+            accumulators.get("root-session").is_none(),
+            "live-identity events should not hydrate legacy accumulator"
         );
     }
 

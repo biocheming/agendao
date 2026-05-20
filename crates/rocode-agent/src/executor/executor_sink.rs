@@ -18,6 +18,13 @@ pub(super) fn map_runtime_loop_error(error: RuntimeLoopError) -> AgentError {
                 AgentError::ProviderError(failure.to_string())
             }
         }
+        RuntimeLoopError::ModelErrorWithTermination { failure, .. } => {
+            if failure.is_provider_not_found() {
+                AgentError::NoProvider
+            } else {
+                AgentError::ProviderError(failure.to_string())
+            }
+        }
         RuntimeLoopError::ToolDispatchError { error, .. } => AgentError::ToolError(error),
         RuntimeLoopError::Cancelled => AgentError::Cancelled,
         RuntimeLoopError::SinkError(message) => {

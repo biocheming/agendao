@@ -206,6 +206,7 @@ mod tests {
             tool_dedup: ToolDedupScope::Global,
             on_tool_error: ToolErrorStrategy::ReportAndContinue,
             checkpoint_governance: Default::default(),
+            stream_event_timeout_ms: None,
         }
     }
 
@@ -574,9 +575,20 @@ mod tests {
 
         // Loop should abort with ModelError, not return Ok(EndTurn).
         assert!(result.is_err());
-        assert!(
-            matches!(result.unwrap_err(), LoopError::ModelError(msg) if msg.message().contains("connection reset"))
-        );
+        match result.unwrap_err() {
+            LoopError::ModelError(msg) => {
+                assert!(msg.message().contains("connection reset"));
+            }
+            LoopError::ModelErrorWithTermination {
+                failure,
+                stream_termination:
+                    rocode_provider::StreamTermination::StreamCorrupt { .. }
+                    | rocode_provider::StreamTermination::TransportClosed,
+            } => {
+                assert!(failure.message().contains("connection reset"));
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
 
         // Error event was dispatched to sink before abort.
         let errors: Vec<_> = sink
@@ -661,7 +673,14 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(result, Err(LoopError::ModelError(_))));
+        assert!(matches!(
+            result,
+            Err(LoopError::ModelError(_))
+                | Err(LoopError::ModelErrorWithTermination {
+                    stream_termination: rocode_provider::StreamTermination::StreamCorrupt { .. },
+                    ..
+                })
+        ));
         assert_eq!(model.request_count(), 1);
     }
 

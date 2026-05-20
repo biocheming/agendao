@@ -23,6 +23,8 @@ use crate::tool_result_governance::{
 use crate::Session;
 
 use super::{
+    assistant_reasoning_live_identity, assistant_text_live_identity, tool_call_live_identity,
+    tool_result_live_identity,
     tool_progress_detail, tool_result_detail, AgentLookup, AskPermissionHook, AskQuestionHook,
     EventBroadcastHook, OutputBlockEvent, OutputBlockHook, PersistedSubsession, PublishBusHook,
     SessionPrompt, SessionStepShared, SessionUpdateHook, StreamToolResultEntry, StreamToolState,
@@ -250,6 +252,9 @@ pub(super) struct SessionStepRuntimeOutput {
     pub(super) cache_miss_tokens: u64,
     pub(super) cache_write_tokens: u64,
     pub(super) executed_local_tools_this_step: bool,
+    /// P3-F: Why the provider stream terminated. Used by the server to
+    /// decide whether a backfill reconcile is needed.
+    pub(super) stream_termination: Option<rocode_provider::StreamTermination>,
 }
 
 pub(super) struct SessionStepSink<'a> {
@@ -269,6 +274,7 @@ pub(super) struct SessionStepSink<'a> {
     pub(super) cache_miss_tokens: u64,
     pub(super) cache_write_tokens: u64,
     pub(super) executed_local_tools_this_step: bool,
+    pub(super) stream_termination: Option<rocode_provider::StreamTermination>,
     pub(super) step_complete: Arc<AtomicBool>,
     pub(super) assistant_output_started: bool,
     pub(super) reasoning_output_started: bool,
@@ -302,6 +308,7 @@ impl<'a> SessionStepSink<'a> {
             cache_miss_tokens: 0,
             cache_write_tokens: 0,
             executed_local_tools_this_step: false,
+            stream_termination: None,
             step_complete,
             assistant_output_started: false,
             reasoning_output_started: false,
@@ -320,6 +327,7 @@ impl<'a> SessionStepSink<'a> {
             cache_miss_tokens: self.cache_miss_tokens,
             cache_write_tokens: self.cache_write_tokens,
             executed_local_tools_this_step: self.executed_local_tools_this_step,
+            stream_termination: self.stream_termination,
         }
     }
 
@@ -330,12 +338,92 @@ impl<'a> SessionStepSink<'a> {
             .map(|message| message.id.clone())
     }
 
+    fn live_identity_for_block(
+        &self,
+        block: &OutputBlock,
+        id: Option<&str>,
+    ) -> Option<rocode_types::LiveMessagePartIdentity> {
+        match block {
+            OutputBlock::Message(message) if message.role == OutputMessageRole::Assistant => {
+                let message_id = id?;
+                let phase = match message.phase {
+                    rocode_content::output_blocks::MessagePhase::Start => {
+                        rocode_types::LivePartPhase::Start
+                    }
+                    rocode_content::output_blocks::MessagePhase::Delta => {
+                        rocode_types::LivePartPhase::Append
+                    }
+                    rocode_content::output_blocks::MessagePhase::Full => {
+                        rocode_types::LivePartPhase::Snapshot
+                    }
+                    rocode_content::output_blocks::MessagePhase::End => {
+                        rocode_types::LivePartPhase::End
+                    }
+                };
+                Some(assistant_text_live_identity(
+                    message_id,
+                    Some(message_id.to_string()),
+                    phase,
+                ))
+            }
+            OutputBlock::Reasoning(reasoning) => {
+                let message_id = id?;
+                let phase = match reasoning.phase {
+                    rocode_content::output_blocks::MessagePhase::Start => {
+                        rocode_types::LivePartPhase::Start
+                    }
+                    rocode_content::output_blocks::MessagePhase::Delta => {
+                        rocode_types::LivePartPhase::Append
+                    }
+                    rocode_content::output_blocks::MessagePhase::Full => {
+                        rocode_types::LivePartPhase::Snapshot
+                    }
+                    rocode_content::output_blocks::MessagePhase::End => {
+                        rocode_types::LivePartPhase::End
+                    }
+                };
+                Some(assistant_reasoning_live_identity(
+                    message_id,
+                    Some(message_id.to_string()),
+                    phase,
+                ))
+            }
+            OutputBlock::Tool(tool) => {
+                let tool_call_id = id?;
+                let message_id = self.assistant_message_id()?;
+                let phase = match tool.phase {
+                    rocode_content::output_blocks::ToolPhase::Start => {
+                        rocode_types::LivePartPhase::Start
+                    }
+                    rocode_content::output_blocks::ToolPhase::Running => {
+                        rocode_types::LivePartPhase::Append
+                    }
+                    rocode_content::output_blocks::ToolPhase::Done
+                    | rocode_content::output_blocks::ToolPhase::Error => {
+                        rocode_types::LivePartPhase::End
+                    }
+                };
+                let identity = match tool.phase {
+                    rocode_content::output_blocks::ToolPhase::Done
+                    | rocode_content::output_blocks::ToolPhase::Error => {
+                        tool_result_live_identity(&message_id, tool_call_id, phase)
+                    }
+                    _ => tool_call_live_identity(&message_id, tool_call_id, phase),
+                };
+                Some(identity)
+            }
+            _ => None,
+        }
+    }
+
     async fn emit_output_block(&self, block: OutputBlock, id: Option<String>) {
         if let Some(output_block_hook) = self.output_block_hook {
+            let live_identity = self.live_identity_for_block(&block, id.as_deref());
             output_block_hook(OutputBlockEvent {
                 session_id: self.session.id.clone(),
                 block,
                 id,
+                live_identity,
             })
             .await;
         }

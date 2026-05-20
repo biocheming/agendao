@@ -369,6 +369,28 @@ fn parse_server_event_value(value: serde_json::Value) -> Option<Event> {
                 },
             ))))
         }
+        Some("control_input.transition") => {
+            let Some(session_id) = session_id else {
+                return None;
+            };
+            let kind = value
+                .get("kind")
+                .cloned()
+                .and_then(|raw| serde_json::from_value(raw).ok())?;
+            let phase = value
+                .get("phase")
+                .cloned()
+                .and_then(|raw| serde_json::from_value(raw).ok())?;
+            let at = value.get("at").and_then(|item| item.as_i64()).unwrap_or_default();
+            Some(Event::Custom(Box::new(CustomEvent::StateChanged(
+                StateChange::ControlInputTransition {
+                    session_id: session_id.to_string(),
+                    kind,
+                    phase,
+                    at,
+                },
+            ))))
+        }
         Some("tool_call.lifecycle") => {
             let Some(session_id) = session_id else {
                 return None;
@@ -498,11 +520,15 @@ fn parse_server_event_value(value: serde_json::Value) -> Option<Event> {
                 .get("id")
                 .and_then(|item| item.as_str())
                 .map(str::to_string);
+            let live_identity = value
+                .get("live_identity")
+                .and_then(|v| serde_json::from_value(v.clone()).ok());
             Some(Event::Custom(Box::new(CustomEvent::StateChanged(
                 StateChange::OutputBlock {
                     session_id: session_id.to_string(),
                     id,
                     payload: block.clone(),
+                    live_identity,
                 },
             ))))
         }
@@ -553,6 +579,7 @@ mod tests {
             session_id,
             id,
             payload,
+            ..
         }) = *custom
         else {
             panic!("expected output block event");
@@ -600,6 +627,37 @@ mod tests {
         assert_eq!(session_id, "session-1");
         assert_eq!(permission.id, "permission-1");
         assert_eq!(permission.tool, "bash");
+    }
+
+    #[test]
+    fn control_input_transition_event_is_forwarded() {
+        let event = forward_server_event(&[serde_json::json!({
+            "type": "control_input.transition",
+            "sessionID": "session-1",
+            "kind": "steering",
+            "phase": "queued",
+            "at": 123
+        })
+        .to_string()])
+        .expect("control input transition event");
+
+        let Event::Custom(custom) = event else {
+            panic!("expected custom event");
+        };
+        let CustomEvent::StateChanged(StateChange::ControlInputTransition {
+            session_id,
+            kind,
+            phase,
+            at,
+        }) = *custom
+        else {
+            panic!("expected control input transition state change");
+        };
+
+        assert_eq!(session_id, "session-1");
+        assert_eq!(kind, rocode_types::ControlInputKind::Steering);
+        assert_eq!(phase, rocode_types::ControlInputPhase::Queued);
+        assert_eq!(at, 123);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::cli_style::CliStyle;
+use crate::live_semantic_consumer::{LiveSemanticConsumer, SemanticAction};
 use crate::output_blocks::{
     render_cli_block_rich, MessageBlock as OutputMessageBlock, MessagePhase,
     MessageRole as OutputMessageRole, OutputBlock, ReasoningBlock as OutputReasoningBlock,
@@ -9,6 +10,7 @@ use crate::output_blocks::{
 use crate::terminal_tool_cli_render::{
     render_cli_file_lines, render_cli_image_lines, render_cli_tool_lines,
 };
+use rocode_types::LiveMessagePartIdentity;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TerminalToolResultInfo {
@@ -120,13 +122,6 @@ impl TerminalStreamAccumulator {
         self.message_index
             .get(id)
             .and_then(|index| self.messages.get(*index))
-    }
-
-    pub fn last_assistant_message(&self) -> Option<&TerminalMessage> {
-        self.messages
-            .iter()
-            .rev()
-            .find(|message| matches!(message.role, TerminalMessageRole::Assistant))
     }
 
     pub fn into_messages(self) -> Vec<TerminalMessage> {
@@ -262,7 +257,7 @@ impl TerminalStreamAccumulator {
             .filter(|value| !value.is_empty())
             .map(str::to_string)
             .unwrap_or_else(|| self.generate_message_id("tool"));
-        let pos = self.ensure_message_for_block(None, TerminalMessageRole::Assistant);
+        let pos = self.ensure_message_for_block(block_id, TerminalMessageRole::Assistant);
         let Some(message) = self.messages.get_mut(pos) else {
             return;
         };
@@ -321,16 +316,6 @@ impl TerminalStreamAccumulator {
             return self.ensure_message_for_block(Some(message_id), TerminalMessageRole::Assistant);
         }
 
-        if let Some((index, _)) = self
-            .messages
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, message)| matches!(message.role, TerminalMessageRole::Assistant))
-        {
-            return index;
-        }
-
         let generated_id = self.generate_message_id("reasoning");
         self.ensure_message_for_block(Some(&generated_id), TerminalMessageRole::Assistant)
     }
@@ -355,17 +340,12 @@ impl TerminalStreamAccumulator {
             return index;
         }
 
-        if let Some((index, _)) = self
-            .messages
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, message)| message.role == role)
-        {
-            return index;
-        }
-
-        let generated_id = self.generate_message_id("streaming");
+        let generated_id = self.generate_message_id(match role {
+            TerminalMessageRole::Assistant => "assistant",
+            TerminalMessageRole::User => "user",
+            TerminalMessageRole::System => "system",
+            TerminalMessageRole::Tool => "tool",
+        });
         let index = self.messages.len();
         self.messages.push(TerminalMessage {
             id: generated_id.clone(),
@@ -395,6 +375,7 @@ pub struct TerminalSemanticStreamRenderState {
     boundary: TerminalStreamRenderState,
     current_message_id: Option<String>,
     part_states: HashMap<usize, TerminalSemanticPartState>,
+    live_consumer: LiveSemanticConsumer,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -619,6 +600,60 @@ fn render_semantic_assistant_text_rewrite(
     out
 }
 
+pub fn render_terminal_semantic_action(
+    state: &mut TerminalSemanticStreamRenderState,
+    action: &SemanticAction,
+    style: &CliStyle,
+) -> String {
+    match action {
+        SemanticAction::NoOp
+        | SemanticAction::LegacyPassThrough
+        | SemanticAction::ToolBoundary
+        | SemanticAction::ToolCallStarted { .. }
+        | SemanticAction::ToolCallCompleted { .. } => String::new(),
+        SemanticAction::OpenAssistant { text } => {
+            render_semantic_assistant_text_rewrite(&mut state.boundary, text, style)
+        }
+        SemanticAction::AppendTextDelta { text } => render_terminal_stream_block_with_state(
+            &mut state.boundary,
+            &OutputBlock::Message(OutputMessageBlock::delta(
+                OutputMessageRole::Assistant,
+                text.clone(),
+            )),
+            style,
+        ),
+        SemanticAction::ReplaceTextFull { text } => {
+            render_semantic_assistant_text_rewrite(&mut state.boundary, text, style)
+        }
+        SemanticAction::OpenReasoning { text } => {
+            let mut out = render_semantic_reasoning_start(state, style);
+            if !text.is_empty() {
+                out.push_str(&render_terminal_stream_block_with_state(
+                    &mut state.boundary,
+                    &OutputBlock::Reasoning(OutputReasoningBlock::delta(text.clone())),
+                    style,
+                ));
+            }
+            out
+        }
+        SemanticAction::AppendReasoningDelta { text } => render_terminal_stream_block_with_state(
+            &mut state.boundary,
+            &OutputBlock::Reasoning(OutputReasoningBlock::delta(text.clone())),
+            style,
+        ),
+        SemanticAction::ReplaceReasoningFull { text } => render_terminal_stream_block_with_state(
+            &mut state.boundary,
+            &OutputBlock::Reasoning(OutputReasoningBlock::full(text.clone())),
+            style,
+        ),
+        SemanticAction::CloseReasoning => render_terminal_stream_block_with_state(
+            &mut state.boundary,
+            &OutputBlock::Reasoning(OutputReasoningBlock::end()),
+            style,
+        ),
+    }
+}
+
 fn semantic_delta_suffix<'a>(emitted_text: &str, current_text: &'a str) -> Option<&'a str> {
     current_text.strip_prefix(emitted_text)
 }
@@ -627,9 +662,32 @@ pub fn render_terminal_stream_block_semantic(
     state: &mut TerminalSemanticStreamRenderState,
     accumulator: &TerminalStreamAccumulator,
     block: &OutputBlock,
+    live_identity: Option<&LiveMessagePartIdentity>,
     style: &CliStyle,
     show_thinking: bool,
 ) -> String {
+    if live_identity.is_some() {
+        let block_text = match block {
+            OutputBlock::Message(message) => Some(message.text.as_str()),
+            OutputBlock::Reasoning(reasoning) => Some(reasoning.text.as_str()),
+            _ => None,
+        };
+        let action = state.live_consumer.consume(block_text, live_identity);
+        if !matches!(action, SemanticAction::LegacyPassThrough) {
+            let mut out = render_terminal_semantic_action(state, &action, style);
+            // ToolBoundary is a state signal — still render the tool block.
+            if matches!(
+                action,
+                SemanticAction::ToolBoundary | SemanticAction::ToolCallCompleted { .. }
+            ) {
+                out.push_str(&render_terminal_stream_block_with_state(
+                    &mut state.boundary, block, style,
+                ));
+            }
+            return out;
+        }
+    }
+
     let is_semantic_block = match block {
         OutputBlock::Message(message) => message.role == OutputMessageRole::Assistant,
         OutputBlock::Reasoning(_) | OutputBlock::Tool(_) => true,
@@ -975,6 +1033,22 @@ fn assistant_segment_semantic_key(segment: &TerminalAssistantSegment) -> (u8, us
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rocode_types::{LiveMessagePartIdentity, LiveMessagePartKind, LivePartPhase};
+
+    fn live_identity(
+        message_id: &str,
+        part_key: &str,
+        part_kind: LiveMessagePartKind,
+        phase: LivePartPhase,
+    ) -> LiveMessagePartIdentity {
+        LiveMessagePartIdentity {
+            message_id: message_id.to_string(),
+            part_key: part_key.to_string(),
+            part_kind,
+            phase,
+            legacy_block_id: Some(format!("{message_id}:{part_key}")),
+        }
+    }
 
     fn message(
         id: &str,
@@ -1123,7 +1197,7 @@ mod tests {
     }
 
     #[test]
-    fn accumulator_routes_tool_calls_and_results_into_last_assistant_message() {
+    fn accumulator_creates_distinct_tool_message_when_tool_has_no_parent_message_id() {
         let mut accumulator = TerminalStreamAccumulator::new();
 
         assert!(accumulator.apply_output_block(
@@ -1151,25 +1225,35 @@ mod tests {
         assert!(message.parts.iter().any(|part| {
             matches!(
                 part,
-                TerminalMessagePart::ToolCall { id, name, .. }
-                    if id == "tool-1" && name == "websearch"
+                TerminalMessagePart::Text { text } if text == "answer"
             )
         }));
-        assert!(message.parts.iter().any(|part| {
-            matches!(
-                part,
-                TerminalMessagePart::ToolResult {
-                    id,
-                    result,
-                    is_error,
-                    ..
-                } if id == "tool-1" && result == "query finished" && !is_error
-            )
-        }));
+        assert!(
+            accumulator
+                .message("tool-1")
+                .is_some_and(|tool_message| tool_message.parts.iter().any(|part| matches!(
+                    part,
+                    TerminalMessagePart::ToolCall { id, name, .. }
+                        if id == "tool-1" && name == "websearch"
+                )))
+        );
+        assert!(
+            accumulator
+                .message("tool-1")
+                .is_some_and(|tool_message| tool_message.parts.iter().any(|part| matches!(
+                    part,
+                    TerminalMessagePart::ToolResult {
+                        id,
+                        result,
+                        is_error,
+                        ..
+                    } if id == "tool-1" && result == "query finished" && !is_error
+                )))
+        );
     }
 
     #[test]
-    fn accumulator_falls_back_to_last_assistant_for_reasoning_without_id() {
+    fn accumulator_creates_new_reasoning_message_without_id() {
         let mut accumulator = TerminalStreamAccumulator::new();
 
         assert!(accumulator.apply_output_block(
@@ -1190,13 +1274,24 @@ mod tests {
         assert!(message.parts.iter().any(|part| {
             matches!(
                 part,
-                TerminalMessagePart::Reasoning { text } if text == "thinking"
+                TerminalMessagePart::Text { text } if text == "answer"
             )
         }));
+        assert!(
+            accumulator
+                .messages()
+                .iter()
+                .any(|message| matches!(message.role, TerminalMessageRole::Assistant)
+                    && message.id != "assistant-1"
+                    && message.parts.iter().any(|part| matches!(
+                        part,
+                        TerminalMessagePart::Reasoning { text } if text == "thinking"
+                    )))
+        );
     }
 
     #[test]
-    fn accumulator_routes_new_assistant_delta_without_id_to_latest_open_assistant() {
+    fn accumulator_creates_new_assistant_delta_message_without_id() {
         let mut accumulator = TerminalStreamAccumulator::new();
 
         assert!(accumulator.apply_output_block(
@@ -1221,9 +1316,6 @@ mod tests {
         let previous = accumulator
             .message("assistant-1")
             .expect("previous assistant should exist");
-        let current = accumulator
-            .message("assistant-2")
-            .expect("current assistant should exist");
 
         let previous_text = previous
             .parts
@@ -1233,17 +1325,19 @@ mod tests {
                 _ => None,
             })
             .collect::<String>();
-        let current_text = current
-            .parts
-            .iter()
-            .filter_map(|part| match part {
-                TerminalMessagePart::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<String>();
-
         assert_eq!(previous_text, "previous answer");
-        assert_eq!(current_text, "new answer");
+        assert!(
+            accumulator
+                .messages()
+                .iter()
+                .any(|message| matches!(message.role, TerminalMessageRole::Assistant)
+                    && message.id != "assistant-1"
+                    && message.id != "assistant-2"
+                    && message.parts.iter().any(|part| matches!(
+                        part,
+                        TerminalMessagePart::Text { text } if text == "new answer"
+                    )))
+        );
     }
 
     #[test]
@@ -1426,6 +1520,7 @@ mod tests {
                 OutputMessageRole::Assistant,
                 "answer",
             )),
+            None,
             &style,
             true,
         );
@@ -1438,6 +1533,7 @@ mod tests {
             &mut state,
             &accumulator,
             &OutputBlock::Reasoning(OutputReasoningBlock::start()),
+            None,
             &style,
             true,
         );
@@ -1450,6 +1546,7 @@ mod tests {
             &mut state,
             &accumulator,
             &OutputBlock::Reasoning(OutputReasoningBlock::delta("thinking")),
+            None,
             &style,
             true,
         );
@@ -1468,6 +1565,7 @@ mod tests {
                 OutputMessageRole::Assistant,
                 " done",
             )),
+            None,
             &style,
             true,
         );
@@ -1492,6 +1590,7 @@ mod tests {
             &mut state,
             &accumulator,
             &OutputBlock::Reasoning(OutputReasoningBlock::start()),
+            None,
             &style,
             true,
         );
@@ -1504,6 +1603,7 @@ mod tests {
             &mut state,
             &accumulator,
             &OutputBlock::Reasoning(OutputReasoningBlock::delta("alpha")),
+            None,
             &style,
             true,
         );
@@ -1516,6 +1616,7 @@ mod tests {
             &mut state,
             &accumulator,
             &OutputBlock::Reasoning(OutputReasoningBlock::delta(" beta")),
+            None,
             &style,
             true,
         );
@@ -1545,6 +1646,7 @@ mod tests {
                 OutputMessageRole::Assistant,
                 "answer",
             )),
+            None,
             &style,
             true,
         );
@@ -1563,6 +1665,7 @@ mod tests {
                 "websearch",
                 r#"{"query":"青岛天气"}"#,
             )),
+            None,
             &style,
             true,
         );
@@ -1581,6 +1684,7 @@ mod tests {
                 "websearch",
                 Some("晴 18C".to_string()),
             )),
+            None,
             &style,
             true,
         );
@@ -1610,6 +1714,7 @@ mod tests {
                 "task",
                 r###"{"category":"visual-engineering","prompt":"## 1. TASK\nRedesign page\n- [ ] 修改 t2.html"}"###,
             )),
+            None,
             &style,
             true,
         );
@@ -1634,6 +1739,7 @@ mod tests {
                         .to_string(),
                 ),
             )),
+            None,
             &style,
             true,
         );
@@ -1689,6 +1795,7 @@ mod tests {
                 OutputMessageRole::Assistant,
                 "see attachments",
             )),
+            None,
             &style,
             true,
         );
@@ -1720,6 +1827,7 @@ mod tests {
                     emitted_text: "a".to_string(),
                 },
             )]),
+            live_consumer: LiveSemanticConsumer::default(),
         };
 
         let rendered = render_terminal_stream_block_semantic(
@@ -1729,6 +1837,7 @@ mod tests {
                 OutputMessageRole::Assistant,
                 "中国".to_string(),
             )),
+            None,
             &style,
             true,
         );
@@ -1769,6 +1878,7 @@ mod tests {
                     OutputMessageRole::Assistant,
                     delta,
                 )),
+                None,
                 &style,
                 true,
             ));
@@ -1792,6 +1902,7 @@ mod tests {
                 &mut state,
                 &accumulator,
                 &block,
+                None,
                 &style,
                 true,
             ));
@@ -1886,6 +1997,7 @@ mod tests {
                 OutputMessageRole::Assistant,
                 "快速".to_string(),
             )),
+            None,
             &style,
             true,
         ));
@@ -1906,6 +2018,7 @@ mod tests {
                 OutputMessageRole::Assistant,
                 "上升期".to_string(),
             )),
+            None,
             &style,
             true,
         ));
@@ -1924,17 +2037,179 @@ mod tests {
                 OutputMessageRole::Assistant,
                 "，".to_string(),
             )),
+            None,
             &style,
             true,
         ));
 
         assert_eq!(
             rendered.matches("[message:assistant]").count(),
-            2,
+            1,
             "{rendered}"
         );
         assert!(rendered.contains("[message:assistant] 快速"), "{rendered}");
-        assert!(rendered.contains("[message:assistant] 上升期"), "{rendered}");
+        assert!(rendered.contains("上升期"), "{rendered}");
         assert!(rendered.ends_with('，'), "{rendered}");
+    }
+
+    #[test]
+    fn semantic_stream_renderer_uses_identity_driven_path_for_assistant_snapshot_growth() {
+        let style = CliStyle::plain();
+        let mut accumulator = TerminalStreamAccumulator::new();
+        let mut state = TerminalSemanticStreamRenderState::default();
+        let identity = live_identity(
+            "assistant-1",
+            "text/main",
+            LiveMessagePartKind::AssistantText,
+            LivePartPhase::Snapshot,
+        );
+
+        let first = OutputBlock::Message(OutputMessageBlock::full(
+            OutputMessageRole::Assistant,
+            "快速".to_string(),
+        ));
+        accumulator.apply_output_block(Some("assistant-1"), &first);
+        let first_rendered = render_terminal_stream_block_semantic(
+            &mut state,
+            &accumulator,
+            &first,
+            Some(&identity),
+            &style,
+            true,
+        );
+
+        let second = OutputBlock::Message(OutputMessageBlock::full(
+            OutputMessageRole::Assistant,
+            "快速上升期".to_string(),
+        ));
+        accumulator.apply_output_block(Some("assistant-1"), &second);
+        let second_rendered = render_terminal_stream_block_semantic(
+            &mut state,
+            &accumulator,
+            &second,
+            Some(&identity),
+            &style,
+            true,
+        );
+
+        assert_eq!(first_rendered, "[message:assistant] 快速");
+        assert_eq!(second_rendered, "上升期");
+    }
+
+    #[test]
+    fn semantic_stream_renderer_uses_identity_driven_reasoning_open_append_and_close() {
+        let style = CliStyle::plain();
+        let mut accumulator = TerminalStreamAccumulator::new();
+        let mut state = TerminalSemanticStreamRenderState::default();
+        let identity = live_identity(
+            "assistant-1",
+            "reasoning/main",
+            LiveMessagePartKind::AssistantReasoning,
+            LivePartPhase::Snapshot,
+        );
+
+        let start = OutputBlock::Reasoning(OutputReasoningBlock::full("thinking".to_string()));
+        accumulator.apply_output_block(Some("assistant-1"), &start);
+        let start_rendered = render_terminal_stream_block_semantic(
+            &mut state,
+            &accumulator,
+            &start,
+            Some(&identity),
+            &style,
+            true,
+        );
+
+        let append = OutputBlock::Reasoning(OutputReasoningBlock::full(
+            "thinking more".to_string(),
+        ));
+        accumulator.apply_output_block(Some("assistant-1"), &append);
+        let append_rendered = render_terminal_stream_block_semantic(
+            &mut state,
+            &accumulator,
+            &append,
+            Some(&identity),
+            &style,
+            true,
+        );
+
+        let end_identity = live_identity(
+            "assistant-1",
+            "reasoning/main",
+            LiveMessagePartKind::AssistantReasoning,
+            LivePartPhase::End,
+        );
+        let end = OutputBlock::Reasoning(OutputReasoningBlock::end());
+        let end_rendered = render_terminal_stream_block_semantic(
+            &mut state,
+            &accumulator,
+            &end,
+            Some(&end_identity),
+            &style,
+            true,
+        );
+
+        assert_eq!(start_rendered, "\n[thinking]\n│ thinking");
+        assert_eq!(append_rendered, " more");
+        assert_eq!(end_rendered, "\n");
+    }
+
+    #[test]
+    fn semantic_stream_renderer_renders_tool_result_after_identity_completion_action() {
+        let style = CliStyle::plain();
+        let mut accumulator = TerminalStreamAccumulator::new();
+        let mut state = TerminalSemanticStreamRenderState::default();
+
+        let tool_start = OutputBlock::Tool(OutputToolBlock::running(
+            "websearch",
+            r#"{"query":"青岛天气"}"#,
+        ));
+        let tool_start_identity = live_identity(
+            "assistant-1",
+            "tool_call/tool-1",
+            LiveMessagePartKind::ToolCall,
+            LivePartPhase::Start,
+        );
+        accumulator.apply_output_block(Some("tool-1"), &tool_start);
+        let start_rendered = render_terminal_stream_block_semantic(
+            &mut state,
+            &accumulator,
+            &tool_start,
+            Some(&tool_start_identity),
+            &style,
+            true,
+        );
+
+        let tool_done = OutputBlock::Tool(OutputToolBlock::done(
+            "websearch",
+            Some("晴 18C".to_string()),
+        ));
+        let tool_done_identity = live_identity(
+            "assistant-1",
+            "tool_result/tool-1",
+            LiveMessagePartKind::ToolResult,
+            LivePartPhase::End,
+        );
+        accumulator.apply_output_block(Some("tool-1"), &tool_done);
+        let done_rendered = render_terminal_stream_block_semantic(
+            &mut state,
+            &accumulator,
+            &tool_done,
+            Some(&tool_done_identity),
+            &style,
+            true,
+        );
+
+        assert!(
+            start_rendered.contains("websearch"),
+            "tool start should still render through semantic path: {start_rendered}"
+        );
+        assert!(
+            done_rendered.contains("websearch"),
+            "tool completion should still render tool header: {done_rendered}"
+        );
+        assert!(
+            done_rendered.contains("晴 18C"),
+            "tool completion should not be swallowed by semantic completion action: {done_rendered}"
+        );
     }
 }
