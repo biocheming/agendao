@@ -50,6 +50,7 @@ fn cli_render_session_block(
     runtime: &CliExecutionRuntime,
     session_id: &str,
     block: &OutputBlock,
+    live_identity: Option<&rocode_types::LiveMessagePartIdentity>,
     style: &CliStyle,
 ) -> String {
     let key = cli_canonical_session_id(runtime, session_id);
@@ -66,7 +67,14 @@ fn cli_render_session_block(
         Err(_) => return render_cli_block_rich(block, style),
     };
     let state = render_states.entry(key).or_default();
-    render_terminal_stream_block_semantic(state, accumulator, block, style, show_thinking)
+    render_terminal_stream_block_semantic(
+        state,
+        accumulator,
+        block,
+        live_identity,
+        style,
+        show_thinking,
+    )
 }
 
 fn cli_canonical_session_id(runtime: &CliExecutionRuntime, session_id: &str) -> String {
@@ -161,7 +169,7 @@ fn cli_cache_root_session_block(
     block: &OutputBlock,
     style: &CliStyle,
 ) {
-    let rendered = cli_render_session_block(runtime, "", block, style);
+    let rendered = cli_render_session_block(runtime, "", block, None, style);
     cli_cache_root_session_rendered(runtime, &rendered);
 }
 

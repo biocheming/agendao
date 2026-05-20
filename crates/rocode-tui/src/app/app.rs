@@ -157,7 +157,6 @@ pub struct App {
     available_models: HashSet<String>,
     model_variants: HashMap<String, Vec<String>>,
     model_variant_selection: HashMap<String, Option<String>>,
-    prompt_runtime: PromptRuntimeState,
     permission_runtime: PermissionRuntimeState,
     question_runtime: QuestionRuntimeState,
     sync_runtime: SyncLifecycleState,
@@ -179,28 +178,10 @@ pub struct RunOutcome {
     pub exit_summary: Option<String>,
 }
 
-#[derive(Clone, Debug)]
-struct QueuedPrompt {
-    input: String,
-    display_text: String,
-    parts: Option<Vec<crate::api::PromptPart>>,
-    agent: Option<String>,
-    scheduler_profile: Option<String>,
-    display_mode: Option<String>,
-    model: Option<String>,
-    variant: Option<String>,
-    idempotency_key: Option<String>,
-}
-
 #[derive(Clone, Debug, Default)]
 struct PendingQuestionDraft {
     current_index: usize,
     answers: Vec<Vec<String>>,
-}
-
-#[derive(Clone, Debug, Default)]
-struct PromptRuntimeState {
-    pending_queue: HashMap<String, VecDeque<QueuedPrompt>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -418,7 +399,6 @@ impl App {
             available_models: HashSet::new(),
             model_variants: HashMap::new(),
             model_variant_selection: HashMap::new(),
-            prompt_runtime: PromptRuntimeState::default(),
             permission_runtime: PermissionRuntimeState::default(),
             question_runtime: QuestionRuntimeState::default(),
             sync_runtime: SyncLifecycleState::new(now, pending_initial_submit),
@@ -1389,26 +1369,32 @@ impl App {
                         }
                         self.ensure_session_view(&session.id);
 
-                        if let Some(err) = error {
-                            self.remove_optimistic_message(&session.id, optimistic_message_id);
-                            self.set_session_status(&session.id, SessionStatus::Idle);
-                            self.sync_prompt_spinner_state();
-                            self.alert_dialog
-                                .set_message(&format!("Failed to send prompt:\n{}", err));
-                            self.open_alert_dialog();
-                        } else {
-                            match response.as_ref().map(|response| response.status.as_str()) {
-                                Some("awaiting_user") => {
-                                    self.set_session_status(&session.id, SessionStatus::Idle);
-                                    self.prompt.set_spinner_active(false);
-                                    self.refresh_session_telemetry(&session.id);
-                                    self.sync_question_requests();
-                                }
-                                _ => {
-                                    self.set_session_status(&session.id, SessionStatus::Running);
-                                    self.prompt.set_spinner_task_kind(TaskKind::LlmRequest);
-                                    self.prompt.set_spinner_active(true);
-                                }
+                    if let Some(err) = error {
+                        self.remove_optimistic_message(&session.id, optimistic_message_id);
+                        self.set_session_status(&session.id, SessionStatus::Idle);
+                        self.sync_prompt_spinner_state();
+                        self.alert_dialog
+                            .set_message(&format!("Failed to send prompt:\n{}", err));
+                        self.open_alert_dialog();
+                    } else {
+                        match response.as_ref().map(|response| response.status.as_str()) {
+                            Some("awaiting_user") => {
+                                self.set_session_status(&session.id, SessionStatus::Idle);
+                                self.prompt.set_spinner_active(false);
+                                self.refresh_session_telemetry(&session.id);
+                                self.sync_question_requests();
+                            }
+                            Some("queued") => {
+                                self.set_session_status(&session.id, SessionStatus::Running);
+                                self.prompt.set_spinner_task_kind(TaskKind::LlmRequest);
+                                self.prompt.set_spinner_active(true);
+                                self.refresh_session_telemetry(&session.id);
+                            }
+                            _ => {
+                                self.set_session_status(&session.id, SessionStatus::Running);
+                                self.prompt.set_spinner_task_kind(TaskKind::LlmRequest);
+                                self.prompt.set_spinner_active(true);
+                            }
                             }
                         }
                     } else {
@@ -1437,7 +1423,6 @@ impl App {
                     if let Some(err) = error {
                         self.remove_optimistic_message(session_id, optimistic_message_id);
                         self.set_session_status(session_id, SessionStatus::Idle);
-                        let _ = self.dispatch_next_queued_prompt(session_id);
                         self.sync_prompt_spinner_state();
                         self.alert_dialog
                             .set_message(&format!("Failed to send prompt:\n{}", err));
@@ -1450,6 +1435,14 @@ impl App {
                         self.prompt.set_spinner_active(false);
                         self.refresh_session_telemetry(session_id);
                         self.sync_question_requests();
+                    } else if matches!(
+                        response.as_ref().map(|response| response.status.as_str()),
+                        Some("queued")
+                    ) {
+                        self.set_session_status(session_id, SessionStatus::Running);
+                        self.prompt.set_spinner_task_kind(TaskKind::LlmRequest);
+                        self.prompt.set_spinner_active(true);
+                        self.refresh_session_telemetry(session_id);
                     }
                     self.event_caused_change = true;
                 }
@@ -1515,7 +1508,6 @@ impl App {
                 CustomEvent::StateChanged(StateChange::SessionStatusIdle(session_id)) => {
                     self.set_session_status(session_id, SessionStatus::Idle);
                     self.refresh_session_telemetry(session_id);
-                    let _ = self.dispatch_next_queued_prompt(session_id);
                     self.sync_prompt_spinner_state();
                 }
                 CustomEvent::StateChanged(StateChange::SessionStatusRetrying {
@@ -1585,6 +1577,11 @@ impl App {
                         self.event_caused_change = true;
                     }
                 }
+                CustomEvent::StateChanged(StateChange::ControlInputTransition {
+                    session_id, ..
+                }) => {
+                    self.refresh_session_telemetry(session_id);
+                }
                 CustomEvent::StateChanged(StateChange::ToolCallStarted { session_id, .. }) => {
                     // Refresh runtime state to get updated active tools from server
                     self.refresh_session_telemetry(session_id);
@@ -1609,6 +1606,7 @@ impl App {
                     session_id,
                     id,
                     payload,
+                    live_identity,
                 }) => {
                     let current_session = self.current_session_id();
                     let is_active_session = current_session.as_deref() == Some(session_id.as_str());
@@ -1628,6 +1626,7 @@ impl App {
                             session_id,
                             id.as_deref(),
                             payload,
+                            live_identity.as_ref(),
                         );
                     }
                     if payload.get("kind").and_then(|value| value.as_str())

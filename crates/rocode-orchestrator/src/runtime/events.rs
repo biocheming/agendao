@@ -238,6 +238,9 @@ pub struct LoopOutcome {
     pub total_steps: u32,
     pub total_tool_calls: u32,
     pub finish_reason: FinishReason,
+    /// P3-F: Why the provider stream ended. `None` for legacy paths or
+    /// when the stream was never started (e.g. cancelled before model call).
+    pub stream_termination: Option<rocode_provider::StreamTermination>,
 }
 
 #[derive(Debug, Clone)]
@@ -284,6 +287,12 @@ impl fmt::Display for ModelFailure {
 pub enum LoopError {
     #[error("model call failed: {0}")]
     ModelError(ModelFailure),
+
+    #[error("model call failed: {failure}")]
+    ModelErrorWithTermination {
+        failure: ModelFailure,
+        stream_termination: rocode_provider::StreamTermination,
+    },
 
     #[error("sink rejected event: {0}")]
     SinkError(String),

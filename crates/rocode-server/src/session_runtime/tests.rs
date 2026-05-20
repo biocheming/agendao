@@ -1476,6 +1476,11 @@ async fn lifecycle_hook_routes_attached_session_content_to_attached_session() {
         .lock()
         .expect("output block lock should not poison")
         .clone();
+    let child_identities = emitted
+        .iter()
+        .filter(|event| event.session_id == attached_session_id)
+        .map(|event| event.live_identity.clone())
+        .collect::<Vec<_>>();
     let child_blocks = emitted
         .into_iter()
         .filter(|event| event.session_id == attached_session_id)
@@ -1501,6 +1506,20 @@ async fn lifecycle_hook_routes_attached_session_content_to_attached_session() {
             && reasoning_end == &ReasoningBlock::end()
             && message_end == &MessageBlock::end(OutputMessageRole::Assistant)
     ));
+    assert_eq!(
+        child_identities
+            .iter()
+            .map(|identity| identity.as_ref().map(|id| (&id.part_key, id.phase)))
+            .collect::<Vec<_>>(),
+        vec![
+            Some((&"text/main".to_string(), rocode_types::LivePartPhase::Start)),
+            Some((&"text/main".to_string(), rocode_types::LivePartPhase::Append)),
+            Some((&"reasoning/main".to_string(), rocode_types::LivePartPhase::Start)),
+            Some((&"reasoning/main".to_string(), rocode_types::LivePartPhase::Append)),
+            Some((&"reasoning/main".to_string(), rocode_types::LivePartPhase::End)),
+            Some((&"text/main".to_string(), rocode_types::LivePartPhase::End)),
+        ]
+    );
 }
 
 #[tokio::test]
@@ -1569,6 +1588,11 @@ async fn lifecycle_hook_emits_scheduler_stage_and_reasoning_blocks_for_non_attac
     .await;
 
     let emitted_blocks = emitted.lock().expect("emitted blocks").clone();
+    let emitted_identities = emitted_blocks
+        .iter()
+        .filter(|event| event.session_id == session_id)
+        .map(|event| event.live_identity.clone())
+        .collect::<Vec<_>>();
 
     let session_blocks = emitted_blocks
         .iter()
@@ -1614,6 +1638,18 @@ async fn lifecycle_hook_emits_scheduler_stage_and_reasoning_blocks_for_non_attac
                     OutputMessageRole::Assistant,
                     "main session streamed content",
                 )
+    )));
+    assert!(emitted_identities.iter().any(|identity| matches!(
+        identity,
+        Some(live_identity)
+            if live_identity.part_key == "text/main"
+                && live_identity.phase == rocode_types::LivePartPhase::Append
+    )));
+    assert!(emitted_identities.iter().any(|identity| matches!(
+        identity,
+        Some(live_identity)
+            if live_identity.part_key == "reasoning/main"
+                && live_identity.phase == rocode_types::LivePartPhase::Append
     )));
 }
 

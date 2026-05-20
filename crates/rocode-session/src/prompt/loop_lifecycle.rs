@@ -1083,6 +1083,7 @@ impl SessionPrompt {
             session_id: session_id.to_string(),
             block: OutputBlock::Status(block),
             id: None,
+            live_identity: None,
         })
         .await;
     }
@@ -1510,16 +1511,27 @@ impl SessionPrompt {
             &mut chat_messages,
         )
         .await;
-        let output = sink.into_output();
+        let mut output = sink.into_output();
 
         let persisted = subsessions.lock().await.clone();
         Self::save_persisted_subsessions(session, &persisted);
 
         match outcome {
-            Ok(_) => Ok(output),
+            Ok(outcome) => {
+                // P3-F: Propagate stream termination for backfill decisions.
+                output.stream_termination = outcome.stream_termination;
+                Ok(output)
+            }
             Err(RuntimeLoopError::ModelError(failure)) => Err(anyhow::Error::new(
                 super::PromptError::ProviderFailure(failure),
             )),
+            Err(RuntimeLoopError::ModelErrorWithTermination {
+                failure,
+                stream_termination,
+            }) => {
+                output.stream_termination = Some(stream_termination);
+                Err(anyhow::Error::new(super::PromptError::ProviderFailure(failure)))
+            }
             Err(RuntimeLoopError::ToolDispatchError { tool, error }) => {
                 let lower = error.to_ascii_lowercase();
                 if token.is_cancelled()
@@ -2475,6 +2487,13 @@ impl SessionPrompt {
                 "tokens_cache_write".to_string(),
                 serde_json::json!(step_output.cache_write_tokens),
             );
+            if let Some(stream_termination) = step_output.stream_termination.as_ref() {
+                if let Ok(value) = serde_json::to_value(stream_termination) {
+                    assistant_msg
+                        .metadata
+                        .insert("stream_termination".to_string(), value);
+                }
+            }
             assistant_msg.usage = Some(crate::message::MessageUsage {
                 input_tokens: step_output.prompt_tokens,
                 output_tokens: step_output.completion_tokens,

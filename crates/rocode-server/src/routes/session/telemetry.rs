@@ -67,6 +67,8 @@ pub struct SessionTelemetrySnapshot {
     #[serde(default)]
     pub pending_permission_count: u64,
     #[serde(default)]
+    pub pending_followup_count: u64,
+    #[serde(default)]
     pub granted_by_turn_count: u64,
     #[serde(default)]
     pub granted_by_session_count: u64,
@@ -416,6 +418,7 @@ pub(super) async fn build_session_telemetry_snapshot(
     let tool_trajectory_quality = rocode_session::build_session_tool_trajectory_quality(session);
     let tool_result_governance = build_session_tool_result_governance_summary(session);
     let pending_permission_count = u64::from(runtime.pending_permission.is_some());
+    let pending_followup_count = runtime.pending_followup_count;
     let granted_by_turn_count =
         session_metadata_u64(session, PERMISSION_GRANTED_BY_TURN_COUNT_METADATA_KEY);
     let granted_by_session_count =
@@ -542,6 +545,7 @@ pub(super) async fn build_session_telemetry_snapshot(
         tool_trajectory_quality,
         tool_result_governance,
         pending_permission_count,
+        pending_followup_count,
         granted_by_turn_count,
         granted_by_session_count,
         granted_by_matcher_kind,
@@ -1904,6 +1908,7 @@ mod tests {
             tool_trajectory_quality: None,
             tool_result_governance: None,
             pending_permission_count: 0,
+            pending_followup_count: 0,
             granted_by_turn_count: 0,
             granted_by_session_count: 0,
             granted_by_matcher_kind: BTreeMap::new(),
@@ -2446,6 +2451,7 @@ mod tests {
                     tool_trajectory_quality: None,
                     tool_result_governance: None,
                     pending_permission_count: 0,
+                    pending_followup_count: 0,
                     granted_by_turn_count: 0,
                     granted_by_session_count: 0,
                     granted_by_matcher_kind: BTreeMap::new(),

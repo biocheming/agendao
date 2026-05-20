@@ -654,6 +654,7 @@ fn handle_sse_event(
         CliServerEvent::OutputBlock {
             session_id,
             id,
+            live_identity,
             payload,
         } => {
             if !is_related_session(&session_id) {
@@ -664,7 +665,9 @@ fn handle_sse_event(
                 tracing::debug!(?id, payload = %block_payload, "failed to parse output_block");
                 return;
             };
-            cli_observe_terminal_stream_block(runtime, &session_id, id.as_deref(), &block);
+            if live_identity.is_none() {
+                cli_observe_terminal_stream_block(runtime, &session_id, id.as_deref(), &block);
+            }
             if matches!(block, OutputBlock::Reasoning(_))
                 && !runtime.show_thinking.load(Ordering::SeqCst)
             {
@@ -680,7 +683,13 @@ fn handle_sse_event(
             }
             cli_frontend_observe_block(&runtime.frontend_projection, &block);
             if !is_root_session(&session_id) {
-                let rendered = cli_render_session_block(runtime, &session_id, &block, style);
+                let rendered = cli_render_session_block(
+                    runtime,
+                    &session_id,
+                    &block,
+                    live_identity.as_ref(),
+                    style,
+                );
                 cli_cache_attached_session_rendered(runtime, &session_id, &rendered);
                 if focused_session_id.as_deref() == Some(session_id.as_str()) {
                     let _ = print_rendered(runtime.terminal_surface.as_deref(), &rendered);
@@ -708,14 +717,26 @@ fn handle_sse_event(
                         projection.active_collapsed = true;
                     }
                     cli_refresh_prompt(runtime);
-                    let rendered = cli_render_session_block(runtime, "", &block, style);
+                    let rendered = cli_render_session_block(
+                        runtime,
+                        "",
+                        &block,
+                        live_identity.as_ref(),
+                        style,
+                    );
                     cli_cache_root_session_rendered(runtime, &rendered);
                     if cli_is_root_focused(runtime) {
                         let _ = print_rendered(runtime.terminal_surface.as_deref(), &rendered);
                     }
                 }
                 _ => {
-                    let rendered = cli_render_session_block(runtime, "", &block, style);
+                    let rendered = cli_render_session_block(
+                        runtime,
+                        "",
+                        &block,
+                        live_identity.as_ref(),
+                        style,
+                    );
                     cli_cache_root_session_rendered(runtime, &rendered);
                     if cli_is_root_focused(runtime) {
                         let _ = print_rendered(runtime.terminal_surface.as_deref(), &rendered);

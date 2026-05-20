@@ -156,6 +156,7 @@ fn scheduler_stage_output_block_identity(event: &Event) -> Option<(&str, Option<
         session_id,
         id,
         payload,
+        ..
     }) = custom.as_ref()
     else {
         return None;
@@ -616,6 +617,7 @@ mod tests {
                     "kind": "scheduler_stage",
                     "text": text,
                 }),
+                live_identity: None,
             },
         )))
     }
@@ -630,6 +632,7 @@ mod tests {
                     "phase": "delta",
                     "text": text,
                 }),
+                live_identity: None,
             },
         )))
     }

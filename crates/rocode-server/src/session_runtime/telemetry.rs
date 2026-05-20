@@ -10,7 +10,7 @@ use crate::runtime_control::{
 use crate::session_runtime::events::{DiffEntry, EventBusTelemetry, QuestionResolutionKind, ServerEvent};
 use crate::session_runtime::stage_summary::StageSummaryStore;
 use crate::session_runtime::state::{
-    InterruptTarget, RuntimeStateStore, SessionRuntimeState,
+    InterruptTarget, RuntimeProtocolUpdate, RuntimeStateStore, SessionRuntimeState,
 };
 use crate::stage_event_log::{EventFilter, StageEventLog};
 use rocode_command::stage_protocol::{telemetry_event_names, EventScope, StageEvent, StageSummary};
@@ -19,6 +19,7 @@ use rocode_session::{
     SessionMessage, SessionTelemetrySnapshot, SessionTelemetrySnapshotVersion, SessionUsage,
 };
 use rocode_types::{SessionMemoryTelemetrySummary, SessionToolRepairTelemetrySummary};
+use rocode_types::{ControlInputKind, ControlInputPhase};
 
 pub(crate) struct RuntimeTelemetryAuthority {
     event_bus: broadcast::Sender<String>,
@@ -411,6 +412,13 @@ impl RuntimeTelemetryAuthority {
         self.runtime_state
             .permission_requested(session_id, permission_id, requested_at, tool)
             .await;
+        self.emit_control_input_transition(
+            session_id,
+            ControlInputKind::Permission,
+            ControlInputPhase::Queued,
+            requested_at,
+        )
+        .await;
         self.record_stage_event(
             session_id,
             StageEvent::new(
@@ -436,6 +444,21 @@ impl RuntimeTelemetryAuthority {
         message: Option<String>,
     ) {
         self.runtime_state.permission_resolved(session_id).await;
+        let now = chrono::Utc::now().timestamp_millis();
+        self.emit_control_input_transition(
+            session_id,
+            ControlInputKind::Permission,
+            ControlInputPhase::Consumed,
+            now,
+        )
+        .await;
+        self.emit_control_input_transition(
+            session_id,
+            ControlInputKind::Permission,
+            ControlInputPhase::Cleared,
+            now,
+        )
+        .await;
         self.record_stage_event(
             session_id,
             StageEvent::new(
@@ -456,6 +479,13 @@ impl RuntimeTelemetryAuthority {
 
     pub(crate) async fn clear_permission_pending(&self, session_id: &str) {
         self.runtime_state.permission_resolved(session_id).await;
+        self.emit_control_input_transition(
+            session_id,
+            ControlInputKind::Permission,
+            ControlInputPhase::Cleared,
+            chrono::Utc::now().timestamp_millis(),
+        )
+        .await;
     }
 
     pub(crate) async fn attached_session_registered(
@@ -547,6 +577,13 @@ impl RuntimeTelemetryAuthority {
         self.runtime_state
             .steering_enqueued(owner_session_id, summary)
             .await;
+        self.emit_control_input_transition(
+            owner_session_id,
+            ControlInputKind::Steering,
+            ControlInputPhase::Queued,
+            chrono::Utc::now().timestamp_millis(),
+        )
+        .await;
     }
 
     pub(crate) async fn interrupt_requested(
@@ -554,9 +591,17 @@ impl RuntimeTelemetryAuthority {
         session_id: &str,
         target: InterruptTarget,
     ) {
+        let now = chrono::Utc::now().timestamp_millis();
         self.runtime_state
-            .interrupt_requested(session_id, chrono::Utc::now().timestamp_millis(), target)
+            .interrupt_requested(session_id, now, target)
             .await;
+        self.emit_control_input_transition(
+            session_id,
+            ControlInputKind::Interrupt,
+            ControlInputPhase::Queued,
+            now,
+        )
+        .await;
     }
 
     pub(crate) async fn record_session_usage(
@@ -751,6 +796,7 @@ impl RuntimeTelemetryAuthority {
             tool_trajectory_quality: None,
             tool_result_governance: None,
             pending_permission_count: 0,
+            pending_followup_count: 0,
             granted_by_turn_count: 0,
             granted_by_session_count: 0,
             granted_by_matcher_kind: std::collections::BTreeMap::new(),
@@ -830,6 +876,32 @@ impl RuntimeTelemetryAuthority {
                 telemetry.record_send(receiver_count);
             }
         }
+    }
+
+    pub(crate) async fn emit_control_input_transition(
+        &self,
+        session_id: &str,
+        kind: ControlInputKind,
+        phase: ControlInputPhase,
+        at: i64,
+    ) {
+        self.runtime_state
+            .apply_protocol_update(
+                session_id,
+                RuntimeProtocolUpdate::ControlInputTransition { kind, phase, at },
+            )
+            .await;
+        let event = ServerEvent::ControlInputTransition {
+            session_id: session_id.to_string(),
+            kind,
+            phase,
+            at,
+        };
+        Self::broadcast_server_event_payload(
+            &self.event_bus,
+            self.event_bus_telemetry.as_deref(),
+            &event,
+        );
     }
 
     fn topology_changed_stage_event(ctx: &TopologyChangeContext) -> StageEvent {

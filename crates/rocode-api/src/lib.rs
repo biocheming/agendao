@@ -207,6 +207,8 @@ pub struct PromptResponse {
     #[serde(default)]
     pub session_id: Option<String>,
     #[serde(default)]
+    pub queued_count: Option<u64>,
+    #[serde(default)]
     pub pending_question_id: Option<String>,
     #[serde(default)]
     pub command: Option<String>,
@@ -304,6 +306,8 @@ pub struct SessionRuntimeState {
     pub pending_question: Option<PendingQuestionSummary>,
     #[serde(default)]
     pub pending_permission: Option<PendingPermissionSummary>,
+    #[serde(default)]
+    pub pending_followup_count: u64,
     #[serde(default)]
     pub attached_sessions: Vec<AttachedSessionSummary>,
 }
@@ -1121,6 +1125,13 @@ pub struct McpAuthStartInfo {
     pub client_id: Option<String>,
     pub status: String,
 }
+
+// ── P3-A: Live Identity Contract ─────────────────────────────────────────
+// Defined in rocode-types; re-exported here for frontend consumption.
+
+pub use rocode_types::{
+    LiveMessagePartIdentity, LiveMessagePartKind, LivePartPhase,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShareResponse {

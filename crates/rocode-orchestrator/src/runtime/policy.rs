@@ -24,6 +24,11 @@ pub struct LoopPolicy {
     /// runtime loop. Outer hooks may observe or override it, but they are not
     /// the primary decision owner.
     pub checkpoint_governance: CheckpointGovernancePolicy,
+
+    /// P3-F: Maximum time to wait for the next stream event before treating
+    /// the stream as hung. `None` disables the watchdog (legacy behavior).
+    /// Typical value: 30_000ms (30 seconds).
+    pub stream_event_timeout_ms: Option<u64>,
 }
 
 impl Default for LoopPolicy {
@@ -33,6 +38,7 @@ impl Default for LoopPolicy {
             tool_dedup: ToolDedupScope::Global,
             on_tool_error: ToolErrorStrategy::ReportAndContinue,
             checkpoint_governance: CheckpointGovernancePolicy::default(),
+            stream_event_timeout_ms: Some(60_000),
         }
     }
 }

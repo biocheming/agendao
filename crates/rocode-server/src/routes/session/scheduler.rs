@@ -2500,6 +2500,7 @@ pub async fn run_local_scheduler_prompt(
                                 assistant_text.clone(),
                             )),
                             id: Some(assistant_message_id),
+                            live_identity: None,
                         },
                     )
                     .await;
@@ -2799,6 +2800,7 @@ pub async fn run_local_scheduler_prompt(
                         assistant_text.clone(),
                     )),
                     id: Some(assistant_message_id.clone()),
+                    live_identity: None,
                 },
             )
             .await;

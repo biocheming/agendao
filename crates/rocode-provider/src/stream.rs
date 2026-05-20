@@ -139,6 +139,30 @@ pub struct StreamUsage {
     pub cache_write_tokens: u64,
 }
 
+/// Why a stream ended — the formal terminal vocabulary for stream recovery.
+///
+/// Every stream exit path must carry one of these so downstream consumers
+/// (recovery, backfill, reconcile) can decide what to do without re-guessing
+/// the cause from ad-hoc error strings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamTermination {
+    /// Normal completion — the stream produced a Finish/Done event.
+    Completed,
+    /// User cancelled the stream mid-flight.
+    Interrupted,
+    /// Provider returned an error (e.g. HTTP 500, rate limit).
+    ProviderError { message: String },
+    /// Stream was idle too long without producing any event.
+    TransportTimeout,
+    /// Transport connection was closed unexpectedly.
+    TransportClosed,
+    /// Stream body could not be decoded (e.g. invalid JSON, partial chunk).
+    StreamCorrupt { message: String },
+    /// Stream recovered after a retry attempt — the previous fault was transient.
+    RecoveredAfterRetry,
+}
+
 pub type StreamResult = Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send>>;
 
 /// Convert runtime pipeline output (driver `StreamingEvent`) into rocode `StreamResult`.

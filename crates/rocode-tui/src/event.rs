@@ -1,4 +1,5 @@
 use crossterm::event::{KeyEvent, MouseEvent};
+use rocode_types::{ControlInputKind, ControlInputPhase};
 
 #[derive(Clone, Debug)]
 pub enum PermissionReplyOutcome {
@@ -100,6 +101,12 @@ pub enum StateChange {
         session_id: String,
         permission_id: String,
     },
+    ControlInputTransition {
+        session_id: String,
+        kind: ControlInputKind,
+        phase: ControlInputPhase,
+        at: i64,
+    },
     ToolCallStarted {
         session_id: String,
         tool_call_id: String,
@@ -116,5 +123,6 @@ pub enum StateChange {
         session_id: String,
         id: Option<String>,
         payload: serde_json::Value,
+        live_identity: Option<rocode_types::LiveMessagePartIdentity>,
     },
 }

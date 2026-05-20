@@ -2017,6 +2017,8 @@ pub struct SessionTelemetrySnapshot {
     #[serde(default)]
     pub pending_permission_count: u64,
     #[serde(default)]
+    pub pending_followup_count: u64,
+    #[serde(default)]
     pub granted_by_turn_count: u64,
     #[serde(default)]
     pub granted_by_session_count: u64,

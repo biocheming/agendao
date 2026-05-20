@@ -176,8 +176,6 @@ impl App {
         if session_ctx.current_session_id.as_deref() == Some(session_id) {
             session_ctx.current_session_id = None;
         }
-        self.prompt_runtime.pending_queue.remove(session_id);
-        self.context.set_queued_prompts(session_id, 0);
     }
 
     pub(super) fn promote_optimistic_session(
@@ -221,20 +219,6 @@ impl App {
             session_ctx.revert.insert(real_session_id, revert);
         }
 
-        if let Some(queued) = self
-            .prompt_runtime
-            .pending_queue
-            .remove(optimistic_session_id)
-        {
-            let count = queued.len();
-            self.prompt_runtime
-                .pending_queue
-                .insert(session.id.clone(), queued);
-            self.context.set_queued_prompts(optimistic_session_id, 0);
-            self.context.set_queued_prompts(&session.id, count);
-        } else {
-            self.context.set_queued_prompts(optimistic_session_id, 0);
-        }
     }
 
     pub(super) fn append_optimistic_user_message(

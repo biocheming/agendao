@@ -80,6 +80,7 @@ async fn global_event_stream(
         state.event_bus.subscribe(),
         None,
         rocode_api::ResolvedFrontendSubscription::legacy_default(),
+        state.event_bus_telemetry.clone(),
     )
 }
 

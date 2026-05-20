@@ -1,5 +1,14 @@
 import type { PersistedMultimodalExplain } from "./multimodal";
 
+// P3-E: Shared live identity contract — matches rocode_types::LiveMessagePartIdentity wire format.
+export interface LiveMessagePartIdentity {
+  message_id: string;
+  part_key: string;
+  part_kind: "assistant_text" | "assistant_reasoning" | "tool_call" | "tool_result" | "scheduler_stage";
+  phase: "start" | "delta" | "snapshot" | "end";
+  legacy_block_id?: string | null;
+}
+
 export interface OutputField {
   label?: string;
   value?: string;
@@ -37,6 +46,8 @@ export interface OutputBlock {
   tone?: string;
   silent?: boolean;
   id?: string;
+  /** P3-E: Stable identity from server for routing without heuristics. */
+  live_identity?: LiveMessagePartIdentity | null;
   name?: string;
   stage_id?: string;
   tool_call_id?: string;
