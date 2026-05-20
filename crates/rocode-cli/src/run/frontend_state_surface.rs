@@ -52,7 +52,7 @@ impl CliTerminalSurface {
 
     pub(super) fn replace_transcript(
         &self,
-        transcript: super::frontend_state_types::CliRetainedTranscript,
+        transcript: super::frontend_state_types::CliVisibleTranscript,
     ) -> io::Result<()> {
         if let Ok(mut projection) = self.frontend_projection.lock() {
             projection.transcript = transcript.clone();
@@ -82,6 +82,38 @@ impl CliTerminalSurface {
         }
 
         self.refresh_prompt()
+    }
+
+    /// P3-I: Apply a live slot update and redraw the terminal.
+    /// For identity-bearing blocks — updates the slot content in-place, rebuilds
+    /// visible output, and triggers a full ANSI redraw.
+    pub(super) fn apply_live_slot(
+        &self,
+        slot_key: &str,
+        rendered_ansi: String,
+        rendered_plain: String,
+    ) -> io::Result<()> {
+        if let Ok(mut projection) = self.frontend_projection.lock() {
+            projection.transcript.upsert_live_slot(
+                slot_key,
+                rendered_ansi,
+                rendered_plain,
+            );
+            projection.scroll_offset = 0;
+            let snap = projection.transcript.clone();
+            drop(projection);
+            self.replace_transcript(snap)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// P3-I: Commit a live slot to committed (e.g. on message end).
+    pub(super) fn commit_live_slot(&self, slot_key: &str) -> io::Result<()> {
+        if let Ok(mut projection) = self.frontend_projection.lock() {
+            projection.transcript.commit_slot(slot_key);
+        }
+        Ok(())
     }
 
     fn append_rendered(&self, rendered: &str) -> io::Result<()> {
@@ -152,7 +184,7 @@ pub(super) fn cli_copy_target_transcript(runtime: &CliExecutionRuntime) -> Optio
             .and_then(|transcripts| {
                 transcripts
                     .get(&focused_session_id)
-                    .map(super::frontend_state_types::CliRetainedTranscript::rendered_text)
+                    .map(super::frontend_state_types::CliVisibleTranscript::rendered_text)
             });
     }
 

@@ -275,13 +275,13 @@ struct CliExecutionRuntime {
     server_session_id: Option<String>,
     /// Root session plus any explicitly attached sessions for the active execution tree.
     related_session_ids: Arc<Mutex<BTreeSet<String>>>,
-    /// Canonical retained transcript for the root session even when the operator
-    /// temporarily focuses an attached-session view.
-    root_session_transcript: Arc<Mutex<CliRetainedTranscript>>,
+    /// Canonical visible transcript snapshot for the root session even when the
+    /// operator temporarily focuses an attached-session view.
+    root_session_transcript: Arc<Mutex<CliVisibleTranscript>>,
     /// Background transcripts for non-root attached sessions. These are populated
     /// from the unified event surface but not rendered into the main transcript
     /// until the operator explicitly focuses one.
-    attached_session_transcripts: Arc<Mutex<HashMap<String, CliRetainedTranscript>>>,
+    attached_session_transcripts: Arc<Mutex<HashMap<String, CliVisibleTranscript>>>,
     stream_accumulators: Arc<Mutex<HashMap<String, TerminalStreamAccumulator>>>,
     render_states: Arc<Mutex<HashMap<String, TerminalSemanticStreamRenderState>>>,
     /// Local CLI-only focus target. `None` means the root session remains visible.
@@ -705,6 +705,7 @@ mod tests {
         cli_prompt_assist_view, cli_prompt_screen_lines, CliPromptCatalog, CliPromptSelectionState,
     };
     use super::frontend_state_types::CliLastTurnTokenStats;
+    use rocode_command::terminal_presentation::TerminalMessageRole;
     use super::{
         cli_cycle_attached_session, cli_focus_attached_session, cli_focus_root_session,
         cli_normalize_model_ref, cli_observe_terminal_stream_block, cli_prompt_agent_override,
@@ -713,7 +714,7 @@ mod tests {
         cli_session_update_requires_refresh, cli_set_root_server_session,
         cli_should_emit_scheduler_stage_block, CliExecutionRuntime, CliFrontendPhase,
         CliFrontendProjection, CliObservedExecutionTopology, CliRecentSessionInfo,
-        CliRetainedTranscript, CliSessionTokenStats, TerminalStreamAccumulator,
+        CliVisibleTranscript, CliSessionTokenStats, TerminalStreamAccumulator,
         CliServerEvent, handle_sse_event,
     };
     use crate::api_client::SessionListItem;
@@ -811,11 +812,14 @@ mod tests {
     }
 
     fn test_runtime_with_attached_focus_data() -> CliExecutionRuntime {
-        let mut root_transcript = CliRetainedTranscript::default();
+        let mut root_transcript = CliVisibleTranscript::default();
         root_transcript.append_rendered("● root line\n");
 
-        let mut attached_transcript = CliRetainedTranscript::default();
+        let mut attached_transcript = CliVisibleTranscript::default();
         attached_transcript.append_rendered("● attached line\n");
+
+        let mut visible_transcript = CliVisibleTranscript::default();
+        visible_transcript.append_rendered("● root line\n");
 
         CliExecutionRuntime {
             resolved_agent_name: "build".to_string(),
@@ -824,7 +828,7 @@ mod tests {
             working_dir: std::path::PathBuf::from("/tmp/project"),
             observed_topology: Arc::new(Mutex::new(CliObservedExecutionTopology::default())),
             frontend_projection: Arc::new(Mutex::new(CliFrontendProjection {
-                transcript: root_transcript.clone(),
+                transcript: visible_transcript,
                 ..Default::default()
             })),
             scheduler_stage_snapshots: Arc::new(Mutex::new(HashMap::new())),
@@ -868,7 +872,7 @@ mod tests {
             .lock()
             .expect("attached transcripts")
             .insert("attached-session-b".to_string(), {
-                let mut transcript = CliRetainedTranscript::default();
+                let mut transcript = CliVisibleTranscript::default();
                 transcript.append_rendered("● second attached line\n");
                 transcript
             });
@@ -1037,7 +1041,7 @@ mod tests {
 
     #[test]
     fn retained_transcript_merges_partial_lines() {
-        let mut transcript = CliRetainedTranscript::default();
+        let mut transcript = CliVisibleTranscript::default();
         transcript.append_rendered("● hello");
         transcript.append_rendered(" world\n");
         transcript.append_rendered("next line\n");
@@ -1437,7 +1441,7 @@ mod tests {
             stage_summaries: Vec::new(),
             telemetry_topology: None,
             events_browser: None,
-            transcript: CliRetainedTranscript::default(),
+            transcript: CliVisibleTranscript::default(),
             sidebar_collapsed: false,
             active_collapsed: false,
             session_title: Some("Test Session".to_string()),

@@ -323,6 +323,7 @@ mod tests {
                 tool_trajectory_quality: None,
                 tool_result_governance: None,
                 pending_permission_count: 0,
+                pending_followup_count: 0,
                 granted_by_turn_count: 0,
                 granted_by_session_count: 0,
                 granted_by_matcher_kind: std::collections::BTreeMap::new(),

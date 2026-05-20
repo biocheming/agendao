@@ -629,6 +629,7 @@ mod tests {
             active_tools: Vec::new(),
             pending_question: None,
             pending_permission: None,
+            pending_followup_count: 0,
             attached_sessions: Vec::new(),
         });
         projection.stage_summaries = vec![StageSummary {
@@ -682,6 +683,7 @@ mod tests {
                 active_tools: Vec::new(),
                 pending_question: None,
                 pending_permission: None,
+                pending_followup_count: 0,
                 attached_sessions: Vec::new(),
             },
             stages: Vec::new(),

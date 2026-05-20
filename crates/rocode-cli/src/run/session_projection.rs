@@ -206,7 +206,7 @@ fn cli_is_root_focused(runtime: &CliExecutionRuntime) -> bool {
 
 fn cli_replace_visible_transcript(
     runtime: &CliExecutionRuntime,
-    transcript: CliRetainedTranscript,
+    transcript: CliVisibleTranscript,
 ) -> io::Result<()> {
     if let Some(surface) = runtime.terminal_surface.as_ref() {
         surface.replace_transcript(transcript)
@@ -331,10 +331,10 @@ fn cli_list_attached_sessions(runtime: &CliExecutionRuntime) {
             ));
             if let Some(summary) = transcript
                 .and_then(|item| item.last_line())
-                .map(str::trim)
+                .map(|line| line.trim().to_string())
                 .filter(|line| !line.is_empty())
             {
-                lines.push(format!("    {}", truncate_text(summary, 88)));
+                lines.push(format!("    {}", truncate_text(&summary, 88)));
             }
         }
     }
@@ -2426,6 +2426,7 @@ mod session_projection_tests {
                 active_tools: Vec::new(),
                 pending_question: None,
                 pending_permission: None,
+                pending_followup_count: 0,
                 attached_sessions: Vec::new(),
             },
             stages: Vec::new(),
