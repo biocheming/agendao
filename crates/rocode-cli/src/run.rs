@@ -714,6 +714,7 @@ mod tests {
         cli_should_emit_scheduler_stage_block, CliExecutionRuntime, CliFrontendPhase,
         CliFrontendProjection, CliObservedExecutionTopology, CliRecentSessionInfo,
         CliRetainedTranscript, CliSessionTokenStats, TerminalStreamAccumulator,
+        CliServerEvent, handle_sse_event,
     };
     use crate::api_client::SessionListItem;
     use crate::api_client::{SessionListHints, SessionListTime};
@@ -1044,6 +1045,111 @@ mod tests {
         );
         assert!(transcript.open_line.is_empty());
         assert_eq!(transcript.rendered_text(), "● hello world\nnext line\n");
+    }
+
+    #[test]
+    fn interactive_live_assistant_stream_keeps_single_header_across_tool_cycles_and_full_chunks() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let style = CliStyle::plain();
+
+        for event in [
+            CliServerEvent::OutputBlock {
+                session_id: "root-session".to_string(),
+                id: Some("assistant-final".to_string()),
+                payload: serde_json::json!({
+                    "kind": "reasoning",
+                    "phase": "start",
+                    "text": ""
+                }),
+            },
+            CliServerEvent::OutputBlock {
+                session_id: "root-session".to_string(),
+                id: Some("assistant-final".to_string()),
+                payload: serde_json::json!({
+                    "kind": "reasoning",
+                    "phase": "delta",
+                    "text": "Now I have enough information."
+                }),
+            },
+            CliServerEvent::OutputBlock {
+                session_id: "root-session".to_string(),
+                id: Some("tool-1".to_string()),
+                payload: serde_json::json!({
+                    "kind": "tool",
+                    "phase": "start",
+                    "name": "websearch",
+                    "detail": ""
+                }),
+            },
+            CliServerEvent::OutputBlock {
+                session_id: "root-session".to_string(),
+                id: Some("tool-1".to_string()),
+                payload: serde_json::json!({
+                    "kind": "tool",
+                    "phase": "done",
+                    "name": "websearch",
+                    "detail": "query finished"
+                }),
+            },
+            CliServerEvent::OutputBlock {
+                session_id: "root-session".to_string(),
+                id: Some("assistant-final".to_string()),
+                payload: serde_json::json!({
+                    "kind": "message",
+                    "phase": "full",
+                    "role": "assistant",
+                    "text": "现在"
+                }),
+            },
+            CliServerEvent::OutputBlock {
+                session_id: "root-session".to_string(),
+                id: Some("assistant-final".to_string()),
+                payload: serde_json::json!({
+                    "kind": "message",
+                    "phase": "full",
+                    "role": "assistant",
+                    "text": "我已"
+                }),
+            },
+            CliServerEvent::OutputBlock {
+                session_id: "root-session".to_string(),
+                id: Some("assistant-final".to_string()),
+                payload: serde_json::json!({
+                    "kind": "message",
+                    "phase": "full",
+                    "role": "assistant",
+                    "text": "掌握"
+                }),
+            },
+            CliServerEvent::OutputBlock {
+                session_id: "root-session".to_string(),
+                id: Some("assistant-final".to_string()),
+                payload: serde_json::json!({
+                    "kind": "message",
+                    "phase": "full",
+                    "role": "assistant",
+                    "text": "现在我已掌握充分信息，以下是完整调研报告。"
+                }),
+            },
+        ] {
+            handle_sse_event(&runtime, event, &style);
+        }
+
+        let rendered = runtime
+            .root_session_transcript
+            .lock()
+            .expect("root transcript")
+            .rendered_text();
+
+        assert_eq!(rendered.matches("[message:assistant]").count(), 1, "{rendered}");
+        assert!(
+            rendered.contains("[message:assistant] 现在我已掌握充分信息，以下是完整调研报告。"),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains("[message:assistant] 现在[message:assistant]"),
+            "assistant output should not restart header inside the same message: {rendered}"
+        );
     }
 
     #[test]

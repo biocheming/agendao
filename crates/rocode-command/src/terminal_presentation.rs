@@ -185,12 +185,25 @@ impl TerminalStreamAccumulator {
             }
             MessagePhase::Full => {
                 message.role = role;
+                let prior_text = message.parts.iter().rev().find_map(|part| match part {
+                    TerminalMessagePart::Text { text } => Some(text.clone()),
+                    _ => None,
+                });
                 message
                     .parts
                     .retain(|part| !matches!(part, TerminalMessagePart::Text { .. }));
                 if !block.text.is_empty() {
+                    let text = match prior_text {
+                        Some(existing) if block.text.starts_with(&existing) => block.text.clone(),
+                        Some(existing) if !existing.is_empty() => {
+                            let mut merged = existing;
+                            merged.push_str(&block.text);
+                            merged
+                        }
+                        _ => block.text.clone(),
+                    };
                     message.parts.push(TerminalMessagePart::Text {
-                        text: block.text.clone(),
+                        text,
                     });
                 }
             }
@@ -1266,6 +1279,67 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(segments, vec!["reasoning", "tool", "text"]);
+    }
+
+    #[test]
+    fn accumulator_merges_same_message_full_chunks_until_cumulative_snapshot_arrives() {
+        let mut accumulator = TerminalStreamAccumulator::new();
+
+        assert!(accumulator.apply_output_block(
+            Some("assistant-1"),
+            &OutputBlock::Message(OutputMessageBlock::full(
+                OutputMessageRole::Assistant,
+                "现在".to_string()
+            ))
+        ));
+        assert!(accumulator.apply_output_block(
+            Some("assistant-1"),
+            &OutputBlock::Message(OutputMessageBlock::full(
+                OutputMessageRole::Assistant,
+                "我已".to_string()
+            ))
+        ));
+        assert!(accumulator.apply_output_block(
+            Some("assistant-1"),
+            &OutputBlock::Message(OutputMessageBlock::full(
+                OutputMessageRole::Assistant,
+                "掌握".to_string()
+            ))
+        ));
+
+        let intermediate = accumulator
+            .message("assistant-1")
+            .expect("assistant message should exist");
+        let intermediate_text = intermediate
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                TerminalMessagePart::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert_eq!(intermediate_text, "现在我已掌握");
+
+        assert!(accumulator.apply_output_block(
+            Some("assistant-1"),
+            &OutputBlock::Message(OutputMessageBlock::full(
+                OutputMessageRole::Assistant,
+                "现在我已掌握充分信息".to_string()
+            ))
+        ));
+
+        let final_message = accumulator
+            .message("assistant-1")
+            .expect("assistant message should exist");
+        let final_text = final_message
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                TerminalMessagePart::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert_eq!(final_text, "现在我已掌握充分信息");
     }
 
     #[test]
