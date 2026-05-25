@@ -42,6 +42,32 @@ pub use server_lifecycle::{FrontendRuntimeContext, ServerDiscoveryRequest};
 use session_cmd::{handle_session_command, handle_steer_command};
 use skill_cmd::handle_skill_command;
 
+fn run_options_from_args(
+    args: RunCommandArgs,
+    interactive_mode: Option<InteractiveCliMode>,
+) -> RunNonInteractiveOptions {
+    RunNonInteractiveOptions {
+        message: args.message,
+        command: args.command,
+        continue_last: args.continue_last,
+        session: args.session,
+        fork: args.fork,
+        share: args.share,
+        model: args.model,
+        requested_agent: args.agent,
+        requested_scheduler_profile: args.scheduler_profile,
+        files: args.file,
+        format: args.format,
+        title: args.title,
+        attach: args.attach,
+        dir: args.dir,
+        port: args.port,
+        variant: args.variant,
+        thinking: args.thinking,
+        interactive_mode: interactive_mode.unwrap_or(args.interactive_mode),
+    }
+}
+
 pub async fn run_frontend() -> anyhow::Result<()> {
     run_frontend_with_context(std::env::args_os(), FrontendRuntimeContext::uninitialized()).await
 }
@@ -57,47 +83,17 @@ where
     let cli = Cli::parse_from(args);
 
     match cli.command {
-        Commands::Run {
-            message,
-            command,
-            continue_last,
-            session,
-            fork,
-            share,
-            model,
-            agent,
-            scheduler_profile,
-            file,
-            format,
-            title,
-            attach,
-            dir,
-            port,
-            variant,
-            thinking,
-            interactive_mode,
-        } => {
+        Commands::Run { args } => {
+            run_non_interactive(run_options_from_args(args, None), &runtime_context).await?;
+        }
+        Commands::Cli { args } => {
+            if args.run.interactive_mode != InteractiveCliMode::Rich {
+                anyhow::bail!(
+                    "rocode cli always uses rich interactive mode; use `rocode run --interactive-mode ...` for other modes"
+                );
+            }
             run_non_interactive(
-                RunNonInteractiveOptions {
-                    message,
-                    command,
-                    continue_last,
-                    session,
-                    fork,
-                    share,
-                    model,
-                    requested_agent: agent,
-                    requested_scheduler_profile: scheduler_profile,
-                    files: file,
-                    format,
-                    title,
-                    attach,
-                    dir,
-                    port,
-                    variant,
-                    thinking,
-                    interactive_mode,
-                },
+                run_options_from_args(args.run, Some(InteractiveCliMode::Rich)),
                 &runtime_context,
             )
             .await?;

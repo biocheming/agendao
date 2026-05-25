@@ -13,42 +13,13 @@ pub(crate) struct Cli {
 pub(crate) enum Commands {
     #[command(about = "Run rocode with a message")]
     Run {
-        #[arg(value_name = "MESSAGE", trailing_var_arg = true)]
-        message: Vec<String>,
-        #[arg(long)]
-        command: Option<String>,
-        #[arg(short = 'c', long = "continue", default_value_t = false)]
-        continue_last: bool,
-        #[arg(short = 's', long)]
-        session: Option<String>,
-        #[arg(long, default_value_t = false)]
-        fork: bool,
-        #[arg(long)]
-        share: bool,
-        #[arg(short = 'm', long)]
-        model: Option<String>,
-        #[arg(long, conflicts_with = "scheduler_profile")]
-        agent: Option<String>,
-        #[arg(long, conflicts_with = "agent")]
-        scheduler_profile: Option<String>,
-        #[arg(short = 'f', long)]
-        file: Vec<PathBuf>,
-        #[arg(long, default_value = "default")]
-        format: RunOutputFormat,
-        #[arg(long)]
-        title: Option<String>,
-        #[arg(long)]
-        attach: Option<String>,
-        #[arg(long)]
-        dir: Option<PathBuf>,
-        #[arg(long)]
-        port: Option<u16>,
-        #[arg(long)]
-        variant: Option<String>,
-        #[arg(long, default_value_t = false)]
-        thinking: bool,
-        #[arg(long = "interactive-mode", default_value = "rich")]
-        interactive_mode: InteractiveCliMode,
+        #[command(flatten)]
+        args: RunCommandArgs,
+    },
+    #[command(about = "Launch the interactive rich CLI directly")]
+    Cli {
+        #[command(flatten)]
+        args: CliCommandArgs,
     },
     #[command(about = "List available models")]
     Models {
@@ -161,6 +132,52 @@ pub(crate) enum Commands {
 pub(crate) enum InteractiveCliMode {
     Rich,
     Compact,
+}
+
+#[derive(Args, Clone, Debug)]
+pub(crate) struct RunCommandArgs {
+    #[arg(value_name = "MESSAGE", trailing_var_arg = true)]
+    pub(crate) message: Vec<String>,
+    #[arg(long)]
+    pub(crate) command: Option<String>,
+    #[arg(short = 'c', long = "continue", default_value_t = false)]
+    pub(crate) continue_last: bool,
+    #[arg(short = 's', long)]
+    pub(crate) session: Option<String>,
+    #[arg(long, default_value_t = false)]
+    pub(crate) fork: bool,
+    #[arg(long)]
+    pub(crate) share: bool,
+    #[arg(short = 'm', long)]
+    pub(crate) model: Option<String>,
+    #[arg(long, conflicts_with = "scheduler_profile")]
+    pub(crate) agent: Option<String>,
+    #[arg(long, conflicts_with = "agent")]
+    pub(crate) scheduler_profile: Option<String>,
+    #[arg(short = 'f', long)]
+    pub(crate) file: Vec<PathBuf>,
+    #[arg(long, default_value = "default")]
+    pub(crate) format: RunOutputFormat,
+    #[arg(long)]
+    pub(crate) title: Option<String>,
+    #[arg(long)]
+    pub(crate) attach: Option<String>,
+    #[arg(long)]
+    pub(crate) dir: Option<PathBuf>,
+    #[arg(long)]
+    pub(crate) port: Option<u16>,
+    #[arg(long)]
+    pub(crate) variant: Option<String>,
+    #[arg(long, default_value_t = false)]
+    pub(crate) thinking: bool,
+    #[arg(long = "interactive-mode", default_value = "rich")]
+    pub(crate) interactive_mode: InteractiveCliMode,
+}
+
+#[derive(Args, Clone, Debug)]
+pub(crate) struct CliCommandArgs {
+    #[command(flatten)]
+    pub(crate) run: RunCommandArgs,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -1114,6 +1131,46 @@ mod tests {
                 );
             }
             _ => panic!("expected steer command"),
+        }
+    }
+
+    #[test]
+    fn cli_command_defaults_to_rich_interactive_mode() {
+        let cli = Cli::parse_from(["rocode", "cli"]);
+        match cli.command {
+            Commands::Cli { args } => {
+                assert_eq!(args.run.interactive_mode, InteractiveCliMode::Rich);
+            }
+            _ => panic!("expected cli command"),
+        }
+    }
+
+    #[test]
+    fn cli_command_accepts_run_style_arguments() {
+        let cli = Cli::parse_from([
+            "rocode",
+            "cli",
+            "-m",
+            "deepseek/deepseek-v4-flash",
+            "--agent",
+            "build",
+            "hello",
+            "world",
+        ]);
+        match cli.command {
+            Commands::Cli { args } => {
+                assert_eq!(
+                    args.run.model.as_deref(),
+                    Some("deepseek/deepseek-v4-flash")
+                );
+                assert_eq!(args.run.agent.as_deref(), Some("build"));
+                assert_eq!(
+                    args.run.message,
+                    vec!["hello".to_string(), "world".to_string()]
+                );
+                assert_eq!(args.run.interactive_mode, InteractiveCliMode::Rich);
+            }
+            _ => panic!("expected cli command"),
         }
     }
 }
