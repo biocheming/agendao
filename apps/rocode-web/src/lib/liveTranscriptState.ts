@@ -152,10 +152,16 @@ export function normalizeBlockText(block: OutputBlock): string {
 }
 
 function toFeedMessage(block: OutputBlock): FeedMessage {
+  // Web Phase 2: streaming text blocks anchor on slotKey() so selection,
+  // copy-link, and conversation jump resolve to the specific part rather
+  // than sharing message_id across all parts in the same message.
+  const anchorId = isStreamingTextBlock(block)
+    ? (slotKey(block) ?? block.id)
+    : block.id;
   return {
     ...block,
     feedId: nextFeedId(),
-    anchorId: block.id,
+    anchorId,
     text: normalizeBlockText(block),
   };
 }
@@ -403,11 +409,28 @@ function historyTextBlockId(messageId: string, kind: "message" | "reasoning"): s
   return `${messageId}:${kind}`;
 }
 
+// Web Phase 2: per-part-key slot identity for live cache dedup.
+// Visible feed uses message_id (history-compatible); live cache uses
+// message_id:part_key so multiple reasoning parts within the same
+// message do not collide.
+function slotKey(block: OutputBlock): string | undefined {
+  const messageId = block.live_identity?.message_id?.trim();
+  const partKey = block.live_identity?.part_key?.trim();
+  if (messageId && partKey && (block.kind === "message" || block.kind === "reasoning")) {
+    return `${messageId}:${partKey}`;
+  }
+  return undefined;
+}
+
 export function normalizeStreamingBlockId(block: OutputBlock): string | undefined {
   if (liveTranscriptRoute(block) === "non_transcript_live") {
     return undefined;
   }
 
+  // Web Phase 2: visible feed identity stays at message_id level for
+  // history rebuild compatibility (persisted history anchors use
+  // {messageId}:message / {messageId}:reasoning). Live cache dedup
+  // uses slotKey() for per-part-key isolation — see appendLiveBlock.
   const identityId = block.live_identity?.message_id?.trim();
   if (identityId && (block.kind === "message" || block.kind === "reasoning")) {
     return identityId;
@@ -470,9 +493,17 @@ function upsertFeedMessage(
     });
   }
 
-  const index = messages.findIndex(
-    (message) => message.kind === normalizedBlock.kind && message.id === normalizedBlock.id,
-  );
+  // Web Phase 2: streaming text blocks match by slotKey() so distinct
+  // part_keys (e.g. reasoning/main vs reasoning/branch-a) get separate
+  // visible feed entries instead of overwriting each other.
+  const matchBySlot = isStreamingTextBlock(normalizedBlock)
+    ? slotKey(normalizedBlock)
+    : undefined;
+  const index = messages.findIndex((message) => {
+    if (message.kind !== normalizedBlock.kind) return false;
+    if (matchBySlot) return slotKey(message) === matchBySlot;
+    return message.id === normalizedBlock.id;
+  });
   if (index < 0) {
     return insertFeedMessageByPresentation(messages, {
       ...toFeedMessage(normalizedBlock),
@@ -486,7 +517,13 @@ function upsertFeedMessage(
     ...normalizedBlock,
     ...overrides,
     feedId: next[index].feedId,
-    anchorId: next[index].anchorId ?? normalizedBlock.id,
+    // Web Phase 2: streaming text blocks use slotKey() for anchor so
+    // selection/copy-link/jump resolve to the specific part, not just
+    // the message. Multi-part reasoning within the same message gets
+    // distinct anchors instead of sharing message_id.
+    anchorId: isStreamingTextBlock(normalizedBlock)
+      ? (next[index].anchorId ?? slotKey(normalizedBlock) ?? normalizedBlock.id)
+      : (next[index].anchorId ?? normalizedBlock.id),
   };
   return next;
 }
@@ -554,13 +591,21 @@ export function applyOutputBlock(
     if (phase === "start") {
       return messages;
     }
+    // Web Phase 2: Deltas no longer rewrite the visible feed per-token.
+    // The coalescer ensures every streaming text sequence ends with a
+    // full or end block carrying complete accumulated text. Delta-only
+    // blocks silently update the live cache (via appendLiveBlock) but
+    // do not touch the visible message feed.
     if (phase === "delta") {
-      if (!hasVisibleTextPayload(normalizedBlock)) {
-        return messages;
-      }
-      return appendStreamingDelta(messages, normalizedBlock);
+      return messages;
     }
     if (phase === "end") {
+      // Web Phase 1: End finalizes the block. If the end payload carries
+      // accumulated text (coalescer path), upsert it. Otherwise the last
+      // full already placed the content and this is a no-op.
+      if (hasVisibleTextPayload(normalizedBlock)) {
+        return upsertFeedMessage(messages, normalizedBlock);
+      }
       return messages;
     }
     if (phase === "full") {
@@ -577,12 +622,12 @@ export function applyOutputBlock(
       return messages;
     }
     if (phase === "delta") {
-      if (!hasVisibleTextPayload(normalizedBlock)) {
-        return messages;
-      }
-      return appendStreamingDelta(messages, normalizedBlock);
+      return messages;
     }
     if (phase === "end") {
+      if (hasVisibleTextPayload(normalizedBlock)) {
+        return upsertFeedMessage(messages, normalizedBlock);
+      }
       return messages;
     }
     if (phase === "full") {
@@ -650,7 +695,9 @@ export function buildFeedFromHistory(history: MessageRecord[], showThinking: boo
           {
             id: blockId,
             kind: "reasoning",
-            phase: "delta",
+            // Phase 2: synthetic "full" so history rebuild produces visible
+            // blocks (delta is a silent no-op in the visible feed).
+            phase: "full",
             role: message.role,
             text: part.text,
           },
@@ -681,7 +728,7 @@ export function buildFeedFromHistory(history: MessageRecord[], showThinking: boo
           {
             id: blockId,
             kind: "message",
-            phase: "delta",
+            phase: "full",
             role: message.role,
             text: part.text,
           },
@@ -807,16 +854,40 @@ export function appendLiveBlock(blocks: OutputBlock[], block: OutputBlock): Outp
   }
 
   const next = blocks.slice();
-  const existingIndex = next.findIndex(
-    (candidate) => candidate.kind === normalizedBlock.kind && candidate.id === normalizedBlock.id,
-  );
+  // Web Phase 2: streaming text blocks (message/reasoning) dedup by
+  // slotKey() = message_id:part_key, so distinct part_keys within the
+  // same message do not collide. Non-streaming blocks continue to match
+  // by kind + id, which is compatible with history anchors.
+  const slotMatchKey = isStreamingTextBlock(normalizedBlock)
+    ? slotKey(normalizedBlock)
+    : undefined;
+  const existingIndex = next.findIndex((candidate) => {
+    if (candidate.kind !== normalizedBlock.kind) return false;
+    if (slotMatchKey) return slotKey(candidate) === slotMatchKey;
+    return candidate.id === normalizedBlock.id;
+  });
   if (isStreamingTextBlock(normalizedBlock) && normalizedBlock.phase === "start") {
     return next;
   }
   if (normalizedBlock.phase === "end") {
+    // Web Phase 1: End is finalize, not prune.
+    // Streaming text blocks (message/reasoning) carry their accumulated
+    // content from prior delta/full updates in the live cache. The End
+    // signal means "this part is complete" — keep the accumulated text
+    // and explicitly mark the retained block as settled so downstream
+    // consumers can distinguish live from finalized content.
     if (isStreamingTextBlock(normalizedBlock)) {
       if (existingIndex >= 0) {
-        next.splice(existingIndex, 1);
+        const finalized = hasVisibleTextPayload(normalizedBlock)
+          ? liveTextSnapshot(normalizedBlock, next[existingIndex])
+          : { ...next[existingIndex], phase: "end" as const };
+        next[existingIndex] = finalized;
+      } else if (hasVisibleTextPayload(normalizedBlock)) {
+        next.push({
+          ...normalizedBlock,
+          phase: "end",
+          text: normalizeBlockText(normalizedBlock),
+        });
       }
       return next;
     }
@@ -858,9 +929,17 @@ function mergeLiveTextBlock(messages: FeedMessage[], block: OutputBlock, showThi
   }
 
   const blockText = normalizedBlock.text ?? "";
-  const matchIndex = normalizedBlock.id
-    ? messages.findIndex((message) => message.kind === normalizedBlock.kind && message.id === normalizedBlock.id)
-    : -1;
+  // Web Phase 2: history rebuild matches streaming text by slotKey()
+  // so multi-part reasoning (e.g. reasoning/main, reasoning/branch-a)
+  // within the same message do not collide during merge.
+  const mergeSlotKey = isStreamingTextBlock(normalizedBlock)
+    ? slotKey(normalizedBlock)
+    : undefined;
+  const matchIndex = mergeSlotKey
+    ? messages.findIndex((message) => message.kind === normalizedBlock.kind && slotKey(message) === mergeSlotKey)
+    : normalizedBlock.id
+      ? messages.findIndex((message) => message.kind === normalizedBlock.kind && message.id === normalizedBlock.id)
+      : -1;
   if (matchIndex >= 0) {
     const next = [...messages];
     const candidate = next[matchIndex];
@@ -869,7 +948,9 @@ function mergeLiveTextBlock(messages: FeedMessage[], block: OutputBlock, showThi
       ...normalizedBlock,
       text: reconcileStreamingText(candidate.text ?? "", blockText),
       feedId: candidate.feedId,
-      anchorId: candidate.anchorId ?? normalizedBlock.id,
+      anchorId: isStreamingTextBlock(normalizedBlock)
+        ? (candidate.anchorId ?? slotKey(normalizedBlock) ?? normalizedBlock.id)
+        : (candidate.anchorId ?? normalizedBlock.id),
     };
     return next;
   }
@@ -903,11 +984,31 @@ export function pruneLiveBlocksCoveredByHistory(
   for (const message of history || []) {
     coveredIds.add(message.id);
     for (const part of orderedMessageParts(message.parts)) {
-      const block = part.output_block;
-      if (!block) continue;
-      const normalized = normalizeOutputBlock(block);
-      if (normalized.id) {
-        coveredIds.add(normalized.id);
+      // Web Phase 2: add slotKey from output_block for precise part-level
+      // prune. If output_block is not available, only infer the default
+      // main slot for persisted assistant text/reasoning. This preserves
+      // backward compatibility for the common single-slot case without
+      // over-pruning multi-part live branches.
+      if (part.output_block) {
+        const normalized = normalizeOutputBlock(part.output_block);
+        if (normalized.id) {
+          coveredIds.add(normalized.id);
+        }
+        const sk = slotKey(normalized);
+        if (sk) coveredIds.add(sk);
+      } else if (message.id && (part.type === "text" || part.type === "reasoning")) {
+        // Backward compat: history parts without output_block only absorb
+        // the canonical main slot for persisted assistant text/reasoning.
+        const defaultSk = slotKey({
+          kind: part.type === "text" ? "message" : "reasoning",
+          live_identity: {
+            message_id: message.id,
+            part_key: part.type === "text" ? "text/main" : "reasoning/main",
+            part_kind: part.type === "text" ? "assistant_text" : "assistant_reasoning",
+            phase: "snapshot",
+          },
+        } as OutputBlock);
+        if (defaultSk) coveredIds.add(defaultSk);
       }
     }
   }
@@ -918,17 +1019,16 @@ export function pruneLiveBlocksCoveredByHistory(
     if (route !== "transcript") {
       return true;
     }
+    // Web Phase 2: streaming text blocks are pruned at slotKey()
+    // granularity only — the generic blockId fallback (which would
+    // collapse all reasoning parts for the same message_id into one)
+    // is intentionally skipped for streaming text.
+    if (isStreamingTextBlock(normalized)) {
+      const sk = slotKey(normalized);
+      return !(sk && coveredIds.has(sk));
+    }
     const blockId = normalized.id?.trim();
     if (blockId && coveredIds.has(blockId)) {
-      return false;
-    }
-    const messageId = normalized.live_identity?.message_id?.trim();
-    if (
-      messageId
-      && normalized.kind !== "tool"
-      && normalized.kind !== "scheduler_stage"
-      && coveredIds.has(messageId)
-    ) {
       return false;
     }
     return true;

@@ -509,12 +509,13 @@ impl LiveSnapshotCoalescer {
             };
         };
 
-        // LTS-B2: only authoritative transcript-bearing assistant text and
-        // reasoning participate in full-so-far snapshot coalescing. Running
-        // tool detail is progress-state and must pass through unchanged.
+        // LTS-B2: assistant text / reasoning / tool detail all participate
+        // in full-so-far snapshot coalescing. Tool detail accumulates the
+        // running arguments/JSON so frontends never see prefix-level replay.
         let coalesce_field = match identity.part_kind {
             rocode_types::LiveMessagePartKind::AssistantText
             | rocode_types::LiveMessagePartKind::AssistantReasoning => "text",
+            rocode_types::LiveMessagePartKind::ToolCall => "detail",
             _ => {
                 return ServerEvent::OutputBlock {
                     session_id,
@@ -1778,7 +1779,10 @@ mod tests {
     }
 
     #[test]
-    fn coalescer_passes_through_tool_running_detail_without_snapshot_rewrite() {
+    // LTS-B2: tool running detail is now coalesced into full-so-far
+    // snapshots, same as assistant text/reasoning. Frontends receive
+    // the complete accumulated detail, not prefix-level fragments.
+    fn coalescer_accumulates_tool_detail_into_snapshot() {
         let mut c = LiveSnapshotCoalescer::new();
         let first = ServerEvent::OutputBlock {
             session_id: "sess-1".to_string(),
@@ -1835,23 +1839,68 @@ mod tests {
             panic!("expected OutputBlock")
         };
 
+        // First delta: accumulated into snapshot.
         assert_eq!(first_block["kind"], "tool");
-        assert_eq!(first_block["phase"], "running");
+        assert_eq!(first_block["phase"], "full");
         assert_eq!(first_block["detail"], "chunk-1");
         assert_eq!(
             first_identity.as_ref().map(|identity| identity.phase),
-            Some(rocode_types::LivePartPhase::Append)
+            Some(rocode_types::LivePartPhase::Snapshot)
         );
+        // Second delta: detail accumulated with previous.
         assert_eq!(second_block["kind"], "tool");
-        assert_eq!(second_block["phase"], "running");
-        assert_eq!(second_block["detail"], " chunk-2");
-        assert!(
-            second_identity.as_ref().map(|identity| identity.phase)
-                == Some(rocode_types::LivePartPhase::Append)
+        assert_eq!(second_block["phase"], "full");
+        assert_eq!(second_block["detail"], "chunk-1 chunk-2");
+        assert_eq!(
+            second_identity.as_ref().map(|identity| identity.phase),
+            Some(rocode_types::LivePartPhase::Snapshot)
         );
+        // Tool detail IS in the snapshot accumulator.
+        assert!(
+            c.accum.contains_key("sess-1:msg-1:tool_call/call-1"),
+            "tool detail must enter snapshot accumulator for coalescing"
+        );
+    }
+
+    #[test]
+    fn coalescer_clears_tool_detail_state_on_end_phase() {
+        let mut c = LiveSnapshotCoalescer::new();
+        let delta = ServerEvent::OutputBlock {
+            session_id: "sess-1".to_string(),
+            id: Some("tool-1".to_string()),
+            block: serde_json::json!({
+                "kind": "tool",
+                "phase": "running",
+                "name": "write_file",
+                "detail": "accumulated detail"
+            }),
+            live_identity: Some(rocode_types::LiveMessagePartIdentity {
+                message_id: "msg-1".to_string(),
+                part_key: "tool_call/call-1".to_string(),
+                part_kind: rocode_types::LiveMessagePartKind::ToolCall,
+                phase: rocode_types::LivePartPhase::Append,
+                legacy_block_id: Some("tool-1".to_string()),
+            }),
+        };
+        c.coalesce(delta);
+        assert!(c.accum.contains_key("sess-1:msg-1:tool_call/call-1"));
+
+        let end = ServerEvent::OutputBlock {
+            session_id: "sess-1".to_string(),
+            id: Some("tool-1".to_string()),
+            block: serde_json::json!({ "kind": "tool", "phase": "done", "name": "write_file" }),
+            live_identity: Some(rocode_types::LiveMessagePartIdentity {
+                message_id: "msg-1".to_string(),
+                part_key: "tool_call/call-1".to_string(),
+                part_kind: rocode_types::LiveMessagePartKind::ToolCall,
+                phase: rocode_types::LivePartPhase::End,
+                legacy_block_id: Some("tool-1".to_string()),
+            }),
+        };
+        c.coalesce(end);
         assert!(
             !c.accum.contains_key("sess-1:msg-1:tool_call/call-1"),
-            "progress-only tool detail must not enter transcript snapshot accumulator"
+            "tool detail End phase must clear accumulated state"
         );
     }
 

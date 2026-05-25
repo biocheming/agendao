@@ -1498,7 +1498,7 @@ impl SessionPrompt {
         None
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(super) fn should_compact(
         messages: &[SessionMessage],
         provider: &dyn Provider,
