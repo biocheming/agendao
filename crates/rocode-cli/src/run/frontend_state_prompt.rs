@@ -1,6 +1,6 @@
 use super::{
-    AgentRegistry, CliExecutionRuntime, CliFrontendProjection, CliStyle, Config, Path,
-    PromptCompletion, PromptFrame, ProviderRegistry, cli_available_presets, cli_mode_label,
+    cli_available_presets, cli_mode_label, AgentRegistry, CliExecutionRuntime,
+    CliFrontendProjection, CliStyle, Config, Path, PromptCompletion, PromptFrame, ProviderRegistry,
 };
 use crossterm::terminal;
 use std::sync::{Arc, Mutex};
@@ -602,12 +602,12 @@ fn cli_prompt_ranked_matches<'a>(
 #[cfg(test)]
 mod tests {
     use super::{
-        CLI_PROMPT_STABLE_LANE_ROWS, CliFrontendProjection, CliPromptChrome,
         cli_prompt_lane_screen_lines_from_projection, cli_prompt_lane_separator,
-        cli_prompt_screen_lines_with_budget,
+        cli_prompt_screen_lines_with_budget, CliFrontendProjection, CliPromptChrome,
+        CLI_PROMPT_STABLE_LANE_ROWS,
     };
-    use crate::run::CliStyle;
     use crate::run::frontend_state_types::CliRunTailState;
+    use crate::run::CliStyle;
     use rocode_util::util::color::strip_ansi;
     use std::sync::{Arc, Mutex};
 

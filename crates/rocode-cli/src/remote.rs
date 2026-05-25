@@ -1,16 +1,15 @@
+use crate::run::frontend_state_types::CliVisibleTranscript;
 use crate::run::{
     cli_apply_live_slot_update, cli_live_slot_commit_suffix, cli_live_slot_has_visible_content,
 };
-use crate::run::frontend_state_types::CliVisibleTranscript;
 use futures::StreamExt;
 use rocode_command::cli_style::CliStyle;
 use rocode_command::live_semantic_consumer::LiveSemanticConsumer;
 use rocode_command::output_blocks::{
-    render_cli_block_rich,
-    BlockTone, MessageBlock, MessagePhase, MessageRole, OutputBlock, QueueItemBlock,
-    ReasoningBlock, SchedulerDecisionBlock, SchedulerDecisionField, SchedulerDecisionRenderSpec,
-    SchedulerDecisionSection, SchedulerStageBlock, SessionEventBlock, SessionEventField,
-    StatusBlock, ToolBlock, ToolPhase,
+    render_cli_block_rich, BlockTone, MessageBlock, MessagePhase, MessageRole, OutputBlock,
+    QueueItemBlock, ReasoningBlock, SchedulerDecisionBlock, SchedulerDecisionField,
+    SchedulerDecisionRenderSpec, SchedulerDecisionSection, SchedulerStageBlock, SessionEventBlock,
+    SessionEventField, StatusBlock, ToolBlock, ToolPhase,
 };
 use rocode_command::terminal_presentation::{
     render_terminal_stream_block_semantic, TerminalSemanticStreamRenderState,

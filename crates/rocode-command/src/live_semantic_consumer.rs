@@ -161,7 +161,11 @@ impl LiveSemanticConsumer {
                     return SemanticAction::NoOp;
                 }
                 return SemanticAction::ReplaceTextFull {
-                    text: if text.is_empty() { final_text } else { text.to_string() },
+                    text: if text.is_empty() {
+                        final_text
+                    } else {
+                        text.to_string()
+                    },
                 };
             }
         }
@@ -190,7 +194,12 @@ impl LiveSemanticConsumer {
 
         if identity.phase == LivePartPhase::End {
             SemanticAction::ReplaceTextFull {
-                text: self.state.last_texts.get(&slot).cloned().unwrap_or_default(),
+                text: self
+                    .state
+                    .last_texts
+                    .get(&slot)
+                    .cloned()
+                    .unwrap_or_default(),
             }
         } else if text.is_empty() {
             SemanticAction::NoOp
@@ -221,7 +230,11 @@ impl LiveSemanticConsumer {
                 }
                 self.state.reasoning_key = None;
                 return SemanticAction::ReplaceReasoningFull {
-                    text: if text.is_empty() { final_text } else { text.to_string() },
+                    text: if text.is_empty() {
+                        final_text
+                    } else {
+                        text.to_string()
+                    },
                 };
             }
         }
@@ -247,7 +260,12 @@ impl LiveSemanticConsumer {
         if identity.phase == LivePartPhase::End {
             self.state.reasoning_key = None;
             SemanticAction::ReplaceReasoningFull {
-                text: self.state.last_texts.get(&slot).cloned().unwrap_or_default(),
+                text: self
+                    .state
+                    .last_texts
+                    .get(&slot)
+                    .cloned()
+                    .unwrap_or_default(),
             }
         } else if text.is_empty() {
             SemanticAction::NoOp

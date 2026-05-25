@@ -256,7 +256,11 @@ impl CliInteractiveRichState {
                         .and_then(|slot| match slot {
                             CliInteractiveRichLiveSlot::AssistantReasoning { parts } => {
                                 let m: String = parts.iter().map(|(_, t)| t.as_str()).collect();
-                                if m.trim().is_empty() { None } else { Some(m) }
+                                if m.trim().is_empty() {
+                                    None
+                                } else {
+                                    Some(m)
+                                }
                             }
                             _ => None,
                         })
@@ -1057,19 +1061,19 @@ async fn run_server_prompt_rich(
                     .server_session_id
                     .as_deref()
                     .is_some_and(|current| current == idle_session_id);
-                handle_sse_event_rich(
+                handle_async_sse_event_rich(
                     runtime,
                     state,
+                    &api_client,
                     CliServerEvent::SessionIdle {
                         session_id: idle_session_id.clone(),
                     },
                     style,
-                );
+                )
+                .await;
                 if !is_current_session {
                     continue;
                 }
-                // Block state is built incrementally from SSE events;
-                // no server-side reconciliation needed.
                 if let Ok(mut topology) = runtime.observed_topology.lock() {
                     topology.finish_run(Some("Completed".to_string()));
                 }
@@ -1157,6 +1161,29 @@ async fn handle_async_sse_event_rich(
             // Streaming blocks are handled incrementally via OutputBlock.
             // Full reconciliation only happens on SessionIdle.
         }
+        CliServerEvent::SessionIdle { session_id } => {
+            let is_current_session = runtime
+                .server_session_id
+                .as_deref()
+                .is_some_and(|current| current == session_id);
+            handle_sse_event_rich(
+                runtime,
+                state,
+                CliServerEvent::SessionIdle {
+                    session_id: session_id.clone(),
+                },
+                style,
+            );
+            if is_current_session {
+                super::super::cli_refresh_server_info(
+                    api_client,
+                    &runtime.frontend_projection,
+                    Some(&session_id),
+                )
+                .await;
+                refresh_rich_prompt(runtime);
+            }
+        }
         other => handle_sse_event_rich(runtime, state, other, style),
     }
 }
@@ -1202,11 +1229,15 @@ fn handle_sse_event_rich(
             if !is_root_session(&session_id) {
                 return;
             }
-            cli_frontend_set_phase(
-                &runtime.frontend_projection,
-                CliFrontendPhase::Busy,
-                Some(cli_summary_thinking_label()),
-            );
+            if let Ok(mut projection) = runtime.frontend_projection.lock() {
+                projection.last_turn_tokens =
+                    crate::run::frontend_state_types::CliLastTurnTokenStats::default();
+                projection.set_runtime_activity(
+                    CliFrontendPhase::Busy,
+                    Some(cli_summary_thinking_label()),
+                );
+                projection.run_tail = None;
+            }
             refresh_rich_prompt(runtime);
         }
         CliServerEvent::SessionIdle { session_id } => {
@@ -1214,7 +1245,7 @@ fn handle_sse_event_rich(
                 return;
             }
             cli_frontend_set_phase(&runtime.frontend_projection, CliFrontendPhase::Idle, None);
-            refresh_rich_prompt(runtime);
+            render_rich_state(runtime, state);
         }
         CliServerEvent::SessionRetrying { session_id } => {
             if !is_root_session(&session_id) {
@@ -1952,11 +1983,9 @@ mod tests {
         .expect("wait for rich input");
 
         assert_eq!(line.as_deref(), Some("next"));
-        assert!(
-            state
-                .rendered_text("root-session")
-                .contains("hello from rich")
-        );
+        assert!(state
+            .rendered_text("root-session")
+            .contains("hello from rich"));
         let rendered = runtime
             .root_session_transcript
             .lock()
@@ -2216,6 +2245,92 @@ mod tests {
             "reasoning block should appear: {rendered}"
         );
         assert!(rendered.contains("hello"), "{rendered}");
+    }
+
+    #[tokio::test]
+    async fn session_idle_flushes_pending_final_live_block_without_followup_block() {
+        let mut runtime = test_runtime().await;
+        let surface = Arc::new(crate::run::frontend_state_surface::CliTerminalSurface::new(
+            CliStyle::plain(),
+            runtime.frontend_projection.clone(),
+        ));
+        runtime.terminal_surface = Some(surface.clone());
+
+        let style = CliStyle::plain();
+        let mut state = CliInteractiveRichState::default();
+
+        handle_sse_event_rich(
+            &runtime,
+            &mut state,
+            CliServerEvent::OutputBlock {
+                session_id: "root-session".to_string(),
+                id: Some("assistant-1".to_string()),
+                live_identity: Some(LiveMessagePartIdentity {
+                    message_id: "assistant-1".to_string(),
+                    part_key: "text/main".to_string(),
+                    part_kind: LiveMessagePartKind::AssistantText,
+                    phase: LivePartPhase::Append,
+                    legacy_block_id: Some("assistant-1".to_string()),
+                }),
+                payload: serde_json::json!({
+                    "kind": "message",
+                    "phase": "delta",
+                    "role": "assistant",
+                    "text": "final answer"
+                }),
+            },
+            &style,
+        );
+        handle_sse_event_rich(
+            &runtime,
+            &mut state,
+            CliServerEvent::OutputBlock {
+                session_id: "root-session".to_string(),
+                id: Some("assistant-1".to_string()),
+                live_identity: Some(LiveMessagePartIdentity {
+                    message_id: "assistant-1".to_string(),
+                    part_key: "text/main".to_string(),
+                    part_kind: LiveMessagePartKind::AssistantText,
+                    phase: LivePartPhase::End,
+                    legacy_block_id: Some("assistant-1".to_string()),
+                }),
+                payload: serde_json::json!({
+                    "kind": "message",
+                    "phase": "end",
+                    "role": "assistant",
+                    "text": ""
+                }),
+            },
+            &style,
+        );
+
+        assert_eq!(
+            surface.emitted_render_count(),
+            0,
+            "final assistant block stays buffered until turn boundary"
+        );
+
+        handle_sse_event_rich(
+            &runtime,
+            &mut state,
+            CliServerEvent::SessionIdle {
+                session_id: "root-session".to_string(),
+            },
+            &style,
+        );
+
+        let visible = runtime
+            .frontend_projection
+            .lock()
+            .expect("projection")
+            .transcript
+            .rendered_text();
+        assert!(visible.contains("final answer"), "{visible}");
+        assert_eq!(
+            surface.emitted_render_count(),
+            1,
+            "idle boundary should flush the buffered final assistant block"
+        );
     }
 
     #[tokio::test]
@@ -2518,11 +2633,9 @@ mod tests {
         ));
         let blocks = state.blocks.get("root").unwrap();
         assert_eq!(blocks.len(), 2, "upsert must replace, not push");
-        assert!(
-            blocks[1]
-                .rendered
-                .contains("好的，我来检索。找到了相关论文。")
-        );
+        assert!(blocks[1]
+            .rendered
+            .contains("好的，我来检索。找到了相关论文。"));
     }
 
     #[tokio::test]

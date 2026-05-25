@@ -146,7 +146,10 @@ mod tests {
                 assert!(runtime.scheduler_profile_name.is_none());
             }
             CliPromptModeEntry::Preset(profile) => {
-                assert_eq!(runtime.scheduler_profile_name.as_deref(), Some(profile.as_str()));
+                assert_eq!(
+                    runtime.scheduler_profile_name.as_deref(),
+                    Some(profile.as_str())
+                );
             }
         }
     }

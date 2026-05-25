@@ -666,11 +666,15 @@ fn handle_sse_event(
             if !is_root_session(&session_id) {
                 return;
             }
-            cli_frontend_set_phase(
-                &runtime.frontend_projection,
-                CliFrontendPhase::Busy,
-                Some(cli_summary_thinking_label()),
-            );
+            if let Ok(mut projection) = runtime.frontend_projection.lock() {
+                projection.last_turn_tokens =
+                    crate::run::frontend_state_types::CliLastTurnTokenStats::default();
+                projection.set_runtime_activity(
+                    CliFrontendPhase::Busy,
+                    Some(cli_summary_thinking_label()),
+                );
+                projection.run_tail = None;
+            }
             cli_refresh_prompt(runtime);
         }
         CliServerEvent::SessionIdle { session_id } => {
@@ -1480,9 +1484,7 @@ async fn cli_refresh_server_info(
                     {
                         projection.run_tail = None;
                     }
-                    projection
-                        .token_stats
-                        .sync_from_snapshot(&telemetry.usage, Some(&telemetry.usage_books));
+                    projection.sync_usage_from_snapshot(&telemetry.usage, Some(&telemetry.usage_books));
                     projection.cache_diagnostic =
                         cli_context_closure_cache_diagnostic_label(
                             telemetry.context_closure_contract.as_ref(),

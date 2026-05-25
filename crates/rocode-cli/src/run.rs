@@ -1417,7 +1417,10 @@ mod tests {
             .lock()
             .expect("root transcript")
             .rendered_text();
-        assert!(root_rendered.contains("Thinking visible"), "{root_rendered}");
+        assert!(
+            root_rendered.contains("Thinking visible"),
+            "{root_rendered}"
+        );
         assert!(
             runtime
                 .render_states
@@ -1474,7 +1477,10 @@ mod tests {
             .lock()
             .expect("root transcript")
             .rendered_text();
-        assert!(root_rendered.contains("Thinking visible"), "{root_rendered}");
+        assert!(
+            root_rendered.contains("Thinking visible"),
+            "{root_rendered}"
+        );
         assert_eq!(
             surface.emitted_render_count(),
             0,
@@ -1525,7 +1531,10 @@ mod tests {
             .lock()
             .expect("root transcript")
             .rendered_text();
-        assert!(root_rendered.contains("Assistant visible"), "{root_rendered}");
+        assert!(
+            root_rendered.contains("Assistant visible"),
+            "{root_rendered}"
+        );
         assert_eq!(
             surface.emitted_render_count(),
             0,
@@ -1590,10 +1599,7 @@ mod tests {
         assert!(latest_slot.contains("categories"), "{latest_slot}");
 
         let projection = runtime.frontend_projection.lock().expect("projection");
-        assert_eq!(
-            projection.active_label.as_deref(),
-            Some("Thinking")
-        );
+        assert_eq!(projection.active_label.as_deref(), Some("Thinking"));
         assert!(
             runtime
                 .render_states
@@ -1726,8 +1732,14 @@ mod tests {
             1,
             "{projection_rendered}"
         );
-        assert!(projection_rendered.contains("categories"), "{projection_rendered}");
-        assert!(projection_rendered.contains("SkillsCategories"), "{projection_rendered}");
+        assert!(
+            projection_rendered.contains("categories"),
+            "{projection_rendered}"
+        );
+        assert!(
+            projection_rendered.contains("SkillsCategories"),
+            "{projection_rendered}"
+        );
     }
 
     #[test]
@@ -1794,7 +1806,10 @@ mod tests {
             .rendered_text();
 
         assert_eq!(projection_rendered, root_rendered, "{projection_rendered}");
-        assert_eq!(projection_rendered, "● root line\n", "{projection_rendered}");
+        assert_eq!(
+            projection_rendered, "● root line\n",
+            "{projection_rendered}"
+        );
     }
 
     #[test]
@@ -2565,8 +2580,14 @@ mod tests {
         );
 
         let snapshot_rendered = strip_ansi(&transcript.rendered_text());
-        assert!(snapshot_rendered.contains("THINKING"), "{snapshot_rendered}");
-        assert!(snapshot_rendered.contains("Thinking academic"), "{snapshot_rendered}");
+        assert!(
+            snapshot_rendered.contains("THINKING"),
+            "{snapshot_rendered}"
+        );
+        assert!(
+            snapshot_rendered.contains("Thinking academic"),
+            "{snapshot_rendered}"
+        );
         assert!(
             !snapshot_rendered.contains(&"─".repeat(28)),
             "live snapshot must stay open without finalized divider: {snapshot_rendered}"
@@ -2584,7 +2605,11 @@ mod tests {
             committed_rendered.contains(&"─".repeat(28)),
             "end phase must append the finalized divider exactly once: {committed_rendered}"
         );
-        assert_eq!(committed_rendered.matches("THINKING").count(), 1, "{committed_rendered}");
+        assert_eq!(
+            committed_rendered.matches("THINKING").count(),
+            1,
+            "{committed_rendered}"
+        );
     }
 
     #[test]
@@ -2867,8 +2892,14 @@ mod tests {
             plain_lines.iter().any(|line| line.contains("Thinking")),
             "{plain_lines:?}"
         );
-        assert!(!plain_lines.iter().any(|line| line == "line-0"), "{plain_lines:?}");
-        assert!(plain_lines.iter().any(|line| line == "line-23"), "{plain_lines:?}");
+        assert!(
+            !plain_lines.iter().any(|line| line == "line-0"),
+            "{plain_lines:?}"
+        );
+        assert!(
+            plain_lines.iter().any(|line| line == "line-23"),
+            "{plain_lines:?}"
+        );
     }
 
     #[test]
