@@ -741,8 +741,7 @@ fn merge_output_block_delta(current: &mut ServerEvent, next: &ServerEvent) -> bo
                 return false;
             };
 
-            current_block["text"] =
-                serde_json::Value::String(format!("{current_text}{next_text}"));
+            current_block["text"] = serde_json::Value::String(format!("{current_text}{next_text}"));
             true
         }
         MergeableLiveTextMode::ReplaceSnapshot => {

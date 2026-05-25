@@ -2316,9 +2316,7 @@ mod tests {
             LiveMessagePartKind::AssistantReasoning,
             LivePartPhase::Snapshot,
         );
-        let rewrite = OutputBlock::Reasoning(OutputReasoningBlock::full(
-            "categories".to_string(),
-        ));
+        let rewrite = OutputBlock::Reasoning(OutputReasoningBlock::full("categories".to_string()));
         let rewrite_rendered = render_terminal_stream_block_semantic(
             &mut state,
             &accumulator,
@@ -2328,7 +2326,11 @@ mod tests {
             true,
         );
 
-        assert_eq!(first_rendered.matches("[thinking]").count(), 1, "{first_rendered}");
+        assert_eq!(
+            first_rendered.matches("[thinking]").count(),
+            1,
+            "{first_rendered}"
+        );
         assert_eq!(rewrite_rendered, "", "{rewrite_rendered}");
     }
 

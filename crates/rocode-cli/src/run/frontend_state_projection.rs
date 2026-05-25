@@ -188,6 +188,17 @@ impl CliFrontendProjection {
                 format_token_count(self.token_stats.cache_write_tokens)
             )));
         }
+        if self.last_turn_tokens.cache_read_tokens > 0
+            || self.last_turn_tokens.cache_miss_tokens > 0
+            || self.last_turn_tokens.cache_write_tokens > 0
+        {
+            parts.push(cli_footer_cache_part(&format!(
+                "turn cache H/M/W {}/{}/{}",
+                format_token_count(self.last_turn_tokens.cache_read_tokens),
+                format_token_count(self.last_turn_tokens.cache_miss_tokens),
+                format_token_count(self.last_turn_tokens.cache_write_tokens)
+            )));
+        }
         if let Some(cache_diagnostic) = self.cache_diagnostic.as_deref() {
             parts.push(cli_footer_cache_part(&format!(
                 "cache {}",
@@ -390,5 +401,17 @@ mod tests {
 
         let idle = CliFrontendProjection::default();
         assert!(!idle.footer_should_animate());
+    }
+
+    #[test]
+    fn footer_text_surfaces_last_turn_cache_summary() {
+        let mut projection = CliFrontendProjection::default();
+        projection.last_turn_tokens.cache_read_tokens = 30_000;
+        projection.last_turn_tokens.cache_miss_tokens = 6_000;
+        projection.last_turn_tokens.cache_write_tokens = 2_000;
+
+        let footer = projection.footer_text();
+
+        assert!(footer.contains("turn cache H/M/W 30K/6K/2K"), "{footer}");
     }
 }

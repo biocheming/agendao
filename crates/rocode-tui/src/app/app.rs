@@ -2301,15 +2301,15 @@ mod tests {
         app.handle_event(&event)
             .expect("prompt dispatch completion should be handled");
 
-        assert_eq!(
-            app.current_session_id().as_deref(),
-            Some("session-real")
-        );
+        assert_eq!(app.current_session_id().as_deref(), Some("session-real"));
         assert_eq!(
             app.sync_runtime.pending_session_telemetry_sync.as_deref(),
             Some("session-real")
         );
-        assert!(app.sync_runtime.pending_session_telemetry_sync_due_at.is_some());
+        assert!(app
+            .sync_runtime
+            .pending_session_telemetry_sync_due_at
+            .is_some());
         assert!(!app.sync_runtime.session_telemetry_sync_inflight);
     }
 
@@ -2373,7 +2373,9 @@ mod tests {
 
         let event = Event::Custom(Box::new(CustomEvent::SessionTelemetryRefreshFinished {
             session_id: session_id.to_string(),
-            telemetry: Some(Box::new(test_session_telemetry_snapshot(session_id, "stage-1"))),
+            telemetry: Some(Box::new(test_session_telemetry_snapshot(
+                session_id, "stage-1",
+            ))),
         }));
 
         app.handle_event(&event)

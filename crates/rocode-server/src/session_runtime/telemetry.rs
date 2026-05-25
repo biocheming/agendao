@@ -1107,9 +1107,11 @@ mod tests {
         authority
             .set_session_run_status("ses_status_dedupe", SessionRunStatus::Busy)
             .await;
-        assert!(recv_session_status_payload(&mut rx, Duration::from_millis(100))
-            .await
-            .is_none());
+        assert!(
+            recv_session_status_payload(&mut rx, Duration::from_millis(100))
+                .await
+                .is_none()
+        );
 
         authority
             .set_session_run_status("ses_status_dedupe", SessionRunStatus::Idle)

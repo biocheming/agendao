@@ -163,7 +163,9 @@ fn prompt_prefix(line: &str, cursor_pos: usize) -> String {
 }
 
 fn tab_mode_cycle_allowed(line: &str, cursor_pos: usize) -> bool {
-    !prompt_prefix(line, cursor_pos).trim_start().starts_with('/')
+    !prompt_prefix(line, cursor_pos)
+        .trim_start()
+        .starts_with('/')
 }
 
 impl PromptFrame {
@@ -2340,10 +2342,7 @@ mod tests {
 
     #[test]
     fn render_frame_tracks_physical_rows_for_wrapped_screen_lines() {
-        let long_line = format!(
-            "USER ● {}",
-            "这是一条很长很长很长的历史消息 ".repeat(20)
-        );
+        let long_line = format!("USER ● {}", "这是一条很长很长很长的历史消息 ".repeat(20));
         let frame = PromptFrame {
             plain_prompt: "> ".to_string(),
             chrome_before_input: vec!["HDR".to_string()],
@@ -2357,8 +2356,8 @@ mod tests {
         };
         let mut output = Vec::new();
 
-        let state = render_prompt_frame(&mut output, &frame, "abc", 3, None)
-            .expect("render succeeds");
+        let state =
+            render_prompt_frame(&mut output, &frame, "abc", 3, None).expect("render succeeds");
 
         assert_eq!(state.frame_height, 4);
         assert!(state.frame_physical_rows > state.frame_height);
@@ -2367,12 +2366,18 @@ mod tests {
 
     #[test]
     fn tab_mode_cycle_allowed_for_plain_prompt_text() {
-        assert!(tab_mode_cycle_allowed("research task", "research task".chars().count()));
+        assert!(tab_mode_cycle_allowed(
+            "research task",
+            "research task".chars().count()
+        ));
     }
 
     #[test]
     fn tab_mode_cycle_blocked_for_slash_command_prefix() {
-        assert!(!tab_mode_cycle_allowed("/preset at", "/preset at".chars().count()));
+        assert!(!tab_mode_cycle_allowed(
+            "/preset at",
+            "/preset at".chars().count()
+        ));
         assert!(!tab_mode_cycle_allowed(
             "  /agent build",
             "  /agent build".chars().count()

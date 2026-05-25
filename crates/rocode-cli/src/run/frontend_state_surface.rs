@@ -1,9 +1,9 @@
 use super::{
-    CliExecutionRuntime, CliFrontendProjection, CliPromptChrome, CliStyle, cli_focused_session_id,
-    cli_prompt_aux_line,
+    cli_focused_session_id, cli_prompt_aux_line, CliExecutionRuntime, CliFrontendProjection,
+    CliPromptChrome, CliStyle,
 };
 use rocode_command::cli_prompt::PromptSession;
-use rocode_command::output_blocks::{OutputBlock, render_cli_block_rich};
+use rocode_command::output_blocks::{render_cli_block_rich, OutputBlock};
 use std::io::{self, Write};
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;

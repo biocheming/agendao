@@ -34,11 +34,11 @@ pub(crate) enum TranscriptEntry {
 
 /// Ordered timeline transcript with identity-keyed live slots.
 ///
-    /// Identity-keyed visible transcript for CLI live rendering.
-    ///
-    /// When a full snapshot arrives for the same `{message_id, part_key}`, the old
-    /// rendered text is replaced in place and the visible output is rebuilt from
-    /// the timeline — no duplicate headers, no snapshot replay.
+/// Identity-keyed visible transcript for CLI live rendering.
+///
+/// When a full snapshot arrives for the same `{message_id, part_key}`, the old
+/// rendered text is replaced in place and the visible output is rebuilt from
+/// the timeline — no duplicate headers, no snapshot replay.
 #[derive(Debug, Clone)]
 pub(crate) struct CliVisibleTranscript {
     entries: Vec<TranscriptEntry>,
@@ -313,6 +313,10 @@ impl CliSessionTokenStats {
 pub(super) struct CliLastTurnTokenStats {
     pub(super) input_tokens: u64,
     pub(super) output_tokens: u64,
+    pub(super) reasoning_tokens: u64,
+    pub(super) cache_read_tokens: u64,
+    pub(super) cache_miss_tokens: u64,
+    pub(super) cache_write_tokens: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -535,6 +539,40 @@ impl Default for CliFrontendProjection {
 }
 
 impl CliFrontendProjection {
+    pub(super) fn sync_usage_from_snapshot(
+        &mut self,
+        usage: &rocode_session::SessionUsage,
+        usage_books: Option<&rocode_types::SessionUsageBooks>,
+    ) {
+        let previous_reasoning_tokens = self.token_stats.reasoning_tokens;
+        let previous_cache_read_tokens = self.token_stats.cache_read_tokens;
+        let previous_cache_miss_tokens = self.token_stats.cache_miss_tokens;
+        let previous_cache_write_tokens = self.token_stats.cache_write_tokens;
+        let should_finalize_last_turn =
+            self.last_turn_tokens.input_tokens > 0 || self.last_turn_tokens.output_tokens > 0;
+
+        self.token_stats.sync_from_snapshot(usage, usage_books);
+
+        if should_finalize_last_turn {
+            self.last_turn_tokens.reasoning_tokens = self
+                .token_stats
+                .reasoning_tokens
+                .saturating_sub(previous_reasoning_tokens);
+            self.last_turn_tokens.cache_read_tokens = self
+                .token_stats
+                .cache_read_tokens
+                .saturating_sub(previous_cache_read_tokens);
+            self.last_turn_tokens.cache_miss_tokens = self
+                .token_stats
+                .cache_miss_tokens
+                .saturating_sub(previous_cache_miss_tokens);
+            self.last_turn_tokens.cache_write_tokens = self
+                .token_stats
+                .cache_write_tokens
+                .saturating_sub(previous_cache_write_tokens);
+        }
+    }
+
     pub(super) fn set_runtime_activity(
         &mut self,
         phase: CliFrontendPhase,
@@ -681,6 +719,17 @@ impl CliFrontendProjection {
             parts.push(format!(
                 "reason {}",
                 format_token_count(self.token_stats.reasoning_tokens)
+            ));
+        }
+        if self.token_stats.cache_read_tokens > 0
+            || self.token_stats.cache_miss_tokens > 0
+            || self.token_stats.cache_write_tokens > 0
+        {
+            parts.push(format!(
+                "cache H/M/W {}/{}/{}",
+                format_token_count(self.token_stats.cache_read_tokens),
+                format_token_count(self.token_stats.cache_miss_tokens),
+                format_token_count(self.token_stats.cache_write_tokens)
             ));
         }
 
@@ -1103,6 +1152,9 @@ mod tests {
         projection.token_stats.input_tokens = 12_000;
         projection.token_stats.output_tokens = 4_000;
         projection.token_stats.reasoning_tokens = 1_500;
+        projection.token_stats.cache_read_tokens = 40_000;
+        projection.token_stats.cache_miss_tokens = 6_000;
+        projection.token_stats.cache_write_tokens = 2_000;
 
         let lines = projection.prompt_usage_lines();
         let plain_lines = lines
@@ -1113,10 +1165,55 @@ mod tests {
         assert_eq!(
             plain_lines,
             vec![
-                "Usage: ctx 52.8K/200K [███░░░░░░░] 26% · in 12K · out 4K · reason 1.5K"
-                    .to_string()
+                "Usage: ctx 52.8K/200K [███░░░░░░░] 26% · in 12K · out 4K · reason 1.5K · cache H/M/W 40K/6K/2K".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn sync_usage_from_snapshot_computes_last_turn_reasoning_and_cache_delta() {
+        let mut projection = CliFrontendProjection::default();
+        projection.token_stats.input_tokens = 120_000;
+        projection.token_stats.output_tokens = 18_000;
+        projection.token_stats.reasoning_tokens = 5_000;
+        projection.token_stats.cache_read_tokens = 34_000;
+        projection.token_stats.cache_miss_tokens = 7_000;
+        projection.token_stats.cache_write_tokens = 2_000;
+        projection.last_turn_tokens.input_tokens = 12_000;
+        projection.last_turn_tokens.output_tokens = 4_000;
+
+        let usage = SessionUsage {
+            input_tokens: 90_000,
+            output_tokens: 10_000,
+            reasoning_tokens: 6_500,
+            cache_write_tokens: 2_700,
+            cache_read_tokens: 42_000,
+            cache_miss_tokens: 8_500,
+            context_tokens: 82_000,
+            total_cost: 1.25,
+        };
+        let usage_books = SessionUsageBooks {
+            request_context_tokens: Some(88_000),
+            live_context_tokens: Some(82_000),
+            workflow_cumulative: WorkflowUsageSummary {
+                input_tokens: 132_000,
+                output_tokens: 22_000,
+                reasoning_tokens: 6_500,
+                cache_write_tokens: 2_700,
+                cache_read_tokens: 42_000,
+                cache_miss_tokens: 8_500,
+                total_cost: 1.60,
+            },
+        };
+
+        projection.sync_usage_from_snapshot(&usage, Some(&usage_books));
+
+        assert_eq!(projection.last_turn_tokens.input_tokens, 12_000);
+        assert_eq!(projection.last_turn_tokens.output_tokens, 4_000);
+        assert_eq!(projection.last_turn_tokens.reasoning_tokens, 1_500);
+        assert_eq!(projection.last_turn_tokens.cache_read_tokens, 8_000);
+        assert_eq!(projection.last_turn_tokens.cache_miss_tokens, 1_500);
+        assert_eq!(projection.last_turn_tokens.cache_write_tokens, 700);
     }
 
     #[test]
