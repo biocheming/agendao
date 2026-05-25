@@ -161,8 +161,14 @@ fn large_tool_result_is_governed_into_preview_and_artifact() {
     let mut metadata = std::collections::HashMap::new();
     let large = "A".repeat(SINGLE_TOOL_RESULT_MAX_CHARS + 2048);
 
-    let governed =
-        govern_tool_result_output("session-1", "call-1", large, &mut metadata, &artifacts_root, ToolResultBudget::legacy());
+    let governed = govern_tool_result_output(
+        "session-1",
+        "call-1",
+        large,
+        &mut metadata,
+        &artifacts_root,
+        ToolResultBudget::legacy(),
+    );
 
     assert!(governed.degraded);
     assert!(governed
@@ -2957,15 +2963,17 @@ fn steering_preview_is_hidden_from_model_consumed_is_visible() {
     session.add_user_message("run the deploy");
 
     // Simulate enqueue-time preview: both notice and text with runtime_hint=steering_preview.
-    let mut notice = SessionMessage::user(sid.as_str(), "Steering: will be applied at next tool boundary");
+    let mut notice = SessionMessage::user(
+        sid.as_str(),
+        "Steering: will be applied at next tool boundary",
+    );
     notice.metadata.insert(
         "runtime_hint".to_string(),
         serde_json::json!("steering_preview"),
     );
-    notice.metadata.insert(
-        "steering_status".to_string(),
-        serde_json::json!("pending"),
-    );
+    notice
+        .metadata
+        .insert("steering_status".to_string(), serde_json::json!("pending"));
     session.push_message(notice);
 
     let mut preview = SessionMessage::user(sid.as_str(), "switch to mode: cautious");
@@ -2973,10 +2981,9 @@ fn steering_preview_is_hidden_from_model_consumed_is_visible() {
         "runtime_hint".to_string(),
         serde_json::json!("steering_preview"),
     );
-    preview.metadata.insert(
-        "steering_status".to_string(),
-        serde_json::json!("pending"),
-    );
+    preview
+        .metadata
+        .insert("steering_status".to_string(), serde_json::json!("pending"));
     session.push_message(preview);
 
     // Normal assistant reply.
@@ -2986,10 +2993,9 @@ fn steering_preview_is_hidden_from_model_consumed_is_visible() {
 
     // Simulate tool-boundary consumed record: same text, model-visible (no runtime_hint).
     let mut consumed = SessionMessage::user(sid.as_str(), "switch to mode: cautious");
-    consumed.metadata.insert(
-        "steering_status".to_string(),
-        serde_json::json!("consumed"),
-    );
+    consumed
+        .metadata
+        .insert("steering_status".to_string(), serde_json::json!("consumed"));
     consumed.metadata.insert(
         "steering_injected_at".to_string(),
         serde_json::json!(chrono::Utc::now().timestamp_millis()),

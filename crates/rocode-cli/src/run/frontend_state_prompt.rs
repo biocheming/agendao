@@ -1,10 +1,15 @@
 use super::{
-    cli_available_presets, cli_mode_label, AgentRegistry, CliExecutionRuntime,
-    CliFrontendProjection, CliStyle, Config, Path, PromptCompletion, PromptFrame, ProviderRegistry,
+    AgentRegistry, CliExecutionRuntime, CliFrontendProjection, CliStyle, Config, Path,
+    PromptCompletion, PromptFrame, ProviderRegistry, cli_available_presets, cli_mode_label,
 };
+use crossterm::terminal;
 use std::sync::{Arc, Mutex};
 
 const CLI_PROMPT_SUGGESTION_LIMIT: usize = 6;
+const CLI_PROMPT_STABLE_LANE_ROWS: usize = 4;
+const CLI_PROMPT_SCREEN_ROWS_MIN: usize = 4;
+const CLI_PROMPT_SCREEN_ROWS_MAX: usize = 8;
+const CLI_PROMPT_SCREEN_ROWS_FALLBACK: usize = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CliPromptValueKind {
@@ -160,6 +165,7 @@ pub(super) struct CliPromptChrome {
     selection: Mutex<CliPromptSelectionState>,
     catalog: Mutex<CliPromptCatalog>,
     frontend_projection: Arc<Mutex<CliFrontendProjection>>,
+    show_transcript_tail: bool,
     style: CliStyle,
 }
 
@@ -186,6 +192,7 @@ impl CliPromptChrome {
                 presets: cli_available_presets(config),
             }),
             frontend_projection: runtime.frontend_projection.clone(),
+            show_transcript_tail: true,
             style: style.clone(),
         }
     }
@@ -208,6 +215,42 @@ impl CliPromptChrome {
         if let Ok(mut catalog) = self.catalog.lock() {
             catalog.models = models;
         }
+    }
+
+    pub(super) fn snapshot_labels(&self) -> (String, String) {
+        let mode = self
+            .mode_label
+            .lock()
+            .map(|value| value.clone())
+            .unwrap_or_else(|_| "Agent build".to_string());
+        let model = self
+            .model_label
+            .lock()
+            .map(|value| value.clone())
+            .unwrap_or_else(|_| "Model auto".to_string());
+        (mode, model)
+    }
+
+    #[cfg(test)]
+    pub(super) fn from_labels(
+        mode_label: &str,
+        model_label: &str,
+        frontend_projection: Arc<Mutex<CliFrontendProjection>>,
+        style: &CliStyle,
+    ) -> Self {
+        Self {
+            mode_label: Mutex::new(mode_label.to_string()),
+            model_label: Mutex::new(model_label.to_string()),
+            selection: Mutex::new(CliPromptSelectionState::default()),
+            catalog: Mutex::new(CliPromptCatalog::default()),
+            frontend_projection,
+            show_transcript_tail: true,
+            style: style.clone(),
+        }
+    }
+
+    pub(super) fn set_show_transcript_tail(&mut self, show_transcript_tail: bool) {
+        self.show_transcript_tail = show_transcript_tail;
     }
 
     pub(super) fn assist(&self, line: &str, cursor_pos: usize) -> CliPromptAssistView {
@@ -240,13 +283,32 @@ impl CliPromptChrome {
             .lock()
             .map(|projection| projection.footer_text())
             .unwrap_or_else(|_| {
-                " Ready  •  Alt+Enter/Ctrl+J newline  •  /help  •  Ctrl+D exit ".to_string()
+                " Session idle  •  Alt+Enter/Ctrl+J newline  •  /help  •  Ctrl+D exit ".to_string()
             });
-        let assist = self.assist(line, cursor_pos);
-        let mut screen_lines = cli_prompt_screen_lines();
-        screen_lines.extend(assist.screen_lines);
         PromptFrame::boxed_with_footer(&mode, &model, &footer, &self.style)
-            .with_screen_lines(screen_lines)
+            .with_screen_lines(self.screen_lines(line, cursor_pos))
+    }
+
+    fn screen_lines(&self, line: &str, cursor_pos: usize) -> Vec<String> {
+        let assist = self.assist(line, cursor_pos);
+        let mut screen_lines = self
+            .frontend_projection
+            .lock()
+            .map(|projection| {
+                if self.show_transcript_tail {
+                    cli_prompt_lane_screen_lines_from_projection(&projection)
+                } else {
+                    projection.prompt_lane_lines_stable(CLI_PROMPT_STABLE_LANE_ROWS)
+                }
+            })
+            .unwrap_or_default();
+        screen_lines.extend(assist.screen_lines);
+        screen_lines
+    }
+
+    #[cfg(test)]
+    pub(super) fn screen_lines_for_test(&self, line: &str, cursor_pos: usize) -> Vec<String> {
+        self.screen_lines(line, cursor_pos)
     }
 }
 
@@ -265,6 +327,53 @@ fn cli_prompt_models(provider_registry: &ProviderRegistry) -> Vec<String> {
     models.sort();
     models.dedup();
     models
+}
+
+pub(super) fn cli_prompt_lane_screen_lines_from_projection(
+    projection: &CliFrontendProjection,
+) -> Vec<String> {
+    let content_width = usize::from(CliStyle::detect().width.saturating_sub(5)).max(20);
+    cli_prompt_screen_lines_with_budget(projection, content_width, cli_prompt_screen_line_budget())
+}
+
+pub(super) fn cli_prompt_screen_lines_with_budget(
+    projection: &CliFrontendProjection,
+    content_width: usize,
+    max_rows: usize,
+) -> Vec<String> {
+    if max_rows == 0 {
+        return Vec::new();
+    }
+
+    let lane_lines = projection.prompt_lane_lines_stable(CLI_PROMPT_STABLE_LANE_ROWS);
+    let transcript_budget = max_rows.saturating_sub(lane_lines.len());
+    let transcript_lines = if projection.transcript.rendered_text().trim().is_empty() {
+        Vec::new()
+    } else {
+        projection
+            .transcript
+            .viewport_lines(content_width, transcript_budget.saturating_sub(1), 0)
+    };
+
+    let mut lines = Vec::new();
+    lines.extend(transcript_lines.iter().cloned());
+    if !transcript_lines.is_empty() && !lane_lines.is_empty() {
+        lines.push(cli_prompt_lane_separator(content_width));
+    }
+    lines.extend(lane_lines);
+    lines
+}
+
+fn cli_prompt_screen_line_budget() -> usize {
+    match terminal::size() {
+        Ok((_, rows)) => usize::from(rows.saturating_sub(14))
+            .clamp(CLI_PROMPT_SCREEN_ROWS_MIN, CLI_PROMPT_SCREEN_ROWS_MAX),
+        Err(_) => CLI_PROMPT_SCREEN_ROWS_FALLBACK,
+    }
+}
+
+fn cli_prompt_lane_separator(width: usize) -> String {
+    CliStyle::detect().dim(&"─".repeat(width.min(72).max(16)))
 }
 
 fn cli_prompt_agents(agent_registry: &AgentRegistry) -> Vec<String> {
@@ -490,6 +599,117 @@ fn cli_prompt_ranked_matches<'a>(
     prefix_matches
 }
 
-pub(super) fn cli_prompt_screen_lines() -> Vec<String> {
-    Vec::new()
+#[cfg(test)]
+mod tests {
+    use super::{
+        CLI_PROMPT_STABLE_LANE_ROWS, CliFrontendProjection, CliPromptChrome,
+        cli_prompt_lane_screen_lines_from_projection, cli_prompt_lane_separator,
+        cli_prompt_screen_lines_with_budget,
+    };
+    use crate::run::CliStyle;
+    use crate::run::frontend_state_types::CliRunTailState;
+    use rocode_util::util::color::strip_ansi;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn active_prompt_screen_lines_show_lane_when_transcript_is_empty() {
+        let projection = CliFrontendProjection {
+            active_label: Some("Skill SkillsList".to_string()),
+            run_tail: Some(CliRunTailState {
+                status: "running".to_string(),
+                detail: Some("Current stage: Research".to_string()),
+            }),
+            ..CliFrontendProjection::default()
+        };
+
+        let lane_lines = projection.prompt_lane_lines_stable(CLI_PROMPT_STABLE_LANE_ROWS);
+        let screen_lines = cli_prompt_screen_lines_with_budget(&projection, 72, 8);
+
+        assert_eq!(screen_lines, lane_lines);
+    }
+
+    #[test]
+    fn transcript_tail_and_active_lane_share_prompt_screen_budget() {
+        let mut projection = CliFrontendProjection {
+            active_label: Some("Tool SkillsList".to_string()),
+            run_tail: Some(CliRunTailState {
+                status: "running".to_string(),
+                detail: Some("Current stage: Research".to_string()),
+            }),
+            ..CliFrontendProjection::default()
+        };
+        projection
+            .transcript
+            .append_committed("alpha\nbeta\ngamma\ndelta\n");
+
+        let lane_lines = projection.prompt_lane_lines_stable(CLI_PROMPT_STABLE_LANE_ROWS);
+        let screen_lines = cli_prompt_screen_lines_with_budget(&projection, 72, 4);
+        let plain_lines = screen_lines
+            .iter()
+            .map(|line| strip_ansi(line))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            plain_lines,
+            vec![
+                "delta".to_string(),
+                strip_ansi(&cli_prompt_lane_separator(72)),
+                strip_ansi(&lane_lines[0]),
+                strip_ansi(&lane_lines[1]),
+            ]
+        );
+        assert!(!plain_lines.iter().any(|line| line == "alpha"));
+        assert!(!plain_lines.iter().any(|line| line == "beta"));
+        assert!(!plain_lines.iter().any(|line| line == "gamma"));
+    }
+
+    #[test]
+    fn default_prompt_screen_lines_stay_empty_without_transcript_or_lane() {
+        let projection = CliFrontendProjection::default();
+
+        assert!(cli_prompt_lane_screen_lines_from_projection(&projection).is_empty());
+    }
+
+    #[test]
+    fn rich_prompt_frame_can_hide_transcript_tail() {
+        let projection = Arc::new(Mutex::new(CliFrontendProjection {
+            active_label: Some("Tool SkillView".to_string()),
+            run_tail: Some(CliRunTailState {
+                status: "running".to_string(),
+                detail: Some("Using Skill SkillView".to_string()),
+            }),
+            ..CliFrontendProjection::default()
+        }));
+        projection
+            .lock()
+            .expect("projection")
+            .transcript
+            .append_committed("alpha\nbeta\ngamma\ndelta\n");
+
+        let style = CliStyle::plain();
+        let mut chrome =
+            CliPromptChrome::from_labels("Agent build", "Model x", projection.clone(), &style);
+        chrome.set_show_transcript_tail(false);
+
+        let plain_lines = chrome
+            .screen_lines_for_test("", 0)
+            .iter()
+            .map(|line| strip_ansi(line))
+            .collect::<Vec<_>>();
+
+        assert!(
+            !plain_lines.iter().any(|line| line == "alpha"),
+            "{plain_lines:?}"
+        );
+        assert!(
+            !plain_lines.iter().any(|line| line == "delta"),
+            "{plain_lines:?}"
+        );
+        assert!(
+            plain_lines
+                .iter()
+                .any(|line| line.contains("Tool SkillView") || line.contains("running")),
+            "{plain_lines:?}"
+        );
+    }
 }

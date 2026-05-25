@@ -266,7 +266,6 @@ impl App {
         });
     }
 
-
     pub(super) fn submit_shell_command(&mut self, command: String) -> anyhow::Result<()> {
         let command = command.trim().to_string();
         if command.is_empty() {

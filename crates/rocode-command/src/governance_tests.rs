@@ -10,7 +10,8 @@
 #[cfg(test)]
 mod tests {
     use crate::governance_fixtures::{
-        multi_agent_replay_fixture, ExecutionRecordFixture, MultiAgentReplayFixture,
+        live_transcript_state_fixture, multi_agent_replay_fixture, ExecutionRecordFixture,
+        MultiAgentReplayFixture,
     };
     use crate::output_blocks::SchedulerStageBlock;
     use crate::stage_protocol::*;
@@ -37,6 +38,38 @@ mod tests {
 
         let total_events: usize = fixture.stages.iter().map(|s| s.events.len()).sum();
         assert_eq!(total_events, fixture.expected.total_events);
+    }
+
+    #[test]
+    fn live_transcript_state_fixture_loads_and_matches_expected_shape() {
+        let fixture = live_transcript_state_fixture();
+        assert_eq!(
+            fixture.shared_turn_cycles.entries.len(),
+            fixture.shared_turn_cycles.expected.assistant_message_count
+        );
+        assert_eq!(
+            fixture
+                .shared_turn_cycles
+                .entries
+                .iter()
+                .filter(|entry| entry.tool.is_some())
+                .count(),
+            fixture.shared_turn_cycles.expected.tool_result_count
+        );
+        assert!(!fixture
+            .tool_progress_exclusion
+            .message
+            .message_id
+            .is_empty());
+        assert!(!fixture.scheduler_stage_exclusion.stage_id.is_empty());
+        assert_eq!(fixture.run_tail_contract.completed_status, "complete");
+        assert_eq!(fixture.run_tail_contract.error_status, "error");
+        assert_eq!(
+            fixture.run_tail_contract.awaiting_user_status,
+            "awaiting_user"
+        );
+        assert!(fixture.run_tail_contract.completed_usage.input_tokens > 0);
+        assert!(!fixture.run_tail_contract.error_message.is_empty());
     }
 
     #[test]

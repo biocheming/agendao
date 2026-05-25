@@ -485,7 +485,13 @@ fn build_session_render_model_memo_key(
 ) -> u64 {
     let mut hasher = DefaultHasher::new();
     format!("{:?}", snapshot.theme).hash(&mut hasher);
-    format!("{:?}", snapshot.messages).hash(&mut hasher);
+    // Keep L1 layout-sensitive: any rendered text change must invalidate
+    // chunks/line positions. Hash message content structurally to avoid
+    // allocating a giant Debug string for the whole snapshot.
+    snapshot.messages.len().hash(&mut hasher);
+    for msg in &snapshot.messages {
+        hash_message_render_content(msg, &mut hasher);
+    }
     format!("{:?}", snapshot.revert_info).hash(&mut hasher);
     content_width.hash(&mut hasher);
     snapshot.show_timestamps.hash(&mut hasher);
@@ -495,6 +501,97 @@ fn build_session_render_model_memo_key(
     format!("{:?}", snapshot.fallback_model).hash(&mut hasher);
     format!("{:?}", expanded_reasoning).hash(&mut hasher);
     hasher.finish()
+}
+
+fn hash_message_render_content(msg: &Message, hasher: &mut DefaultHasher) {
+    msg.id.hash(hasher);
+    hash_message_role(&msg.role, hasher);
+    msg.content.hash(hasher);
+    msg.created_at.timestamp_millis().hash(hasher);
+    msg.agent.hash(hasher);
+    msg.model.hash(hasher);
+    msg.mode.hash(hasher);
+    msg.finish.hash(hasher);
+    msg.error.hash(hasher);
+    msg.completed_at.map(|ts| ts.timestamp_millis()).hash(hasher);
+    hash_message_render_metadata(msg, hasher);
+    format!("{:?}", msg.multimodal).hash(hasher);
+    msg.parts.len().hash(hasher);
+    for part in &msg.parts {
+        hash_message_part_render_content(part, hasher);
+    }
+}
+
+fn hash_message_role(role: &MessageRole, hasher: &mut DefaultHasher) {
+    match role {
+        MessageRole::User => 0_u8.hash(hasher),
+        MessageRole::Assistant => 1_u8.hash(hasher),
+        MessageRole::System => 2_u8.hash(hasher),
+        MessageRole::Tool => 3_u8.hash(hasher),
+    }
+}
+
+fn hash_message_render_metadata(msg: &Message, hasher: &mut DefaultHasher) {
+    hash_message_metadata_field(msg, "resolved_system_prompt_preview", hasher);
+    hash_message_metadata_field(msg, "resolved_system_prompt", hasher);
+    hash_message_metadata_field(msg, "resolved_agent", hasher);
+    hash_message_metadata_field(msg, "scheduler_profile", hasher);
+    hash_message_metadata_field(msg, "scheduler_stage_attached_session_id", hasher);
+}
+
+fn hash_message_metadata_field(msg: &Message, key: &str, hasher: &mut DefaultHasher) {
+    key.hash(hasher);
+    msg.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get(key))
+        .and_then(serde_json::Value::as_str)
+        .hash(hasher);
+}
+
+fn hash_message_part_render_content(part: &MessagePart, hasher: &mut DefaultHasher) {
+    match part {
+        MessagePart::Text { text } => {
+            0_u8.hash(hasher);
+            text.hash(hasher);
+        }
+        MessagePart::Reasoning { text } => {
+            1_u8.hash(hasher);
+            text.hash(hasher);
+        }
+        MessagePart::File { path, mime } => {
+            2_u8.hash(hasher);
+            path.hash(hasher);
+            mime.hash(hasher);
+        }
+        MessagePart::Image { url } => {
+            3_u8.hash(hasher);
+            url.hash(hasher);
+        }
+        MessagePart::ToolCall {
+            id,
+            name,
+            arguments,
+        } => {
+            4_u8.hash(hasher);
+            id.hash(hasher);
+            name.hash(hasher);
+            arguments.hash(hasher);
+        }
+        MessagePart::ToolResult {
+            id,
+            result,
+            is_error,
+            title,
+            metadata,
+        } => {
+            5_u8.hash(hasher);
+            id.hash(hasher);
+            result.hash(hasher);
+            is_error.hash(hasher);
+            title.hash(hasher);
+            format!("{:?}", metadata).hash(hasher);
+        }
+    }
 }
 
 fn build_session_viewport_content_memo_key(
@@ -575,7 +672,7 @@ fn build_plain_message_render_props(
 
 fn build_user_message_memo_key(props: &UserMessageRenderProps) -> u64 {
     let mut hasher = DefaultHasher::new();
-    format!("{:?}", props.msg).hash(&mut hasher);
+    hash_message_render_content(&props.msg, &mut hasher);
     props.show_system_prompt.hash(&mut hasher);
     format!("{:?}", props.context.theme).hash(&mut hasher);
     props.context.content_width.hash(&mut hasher);
@@ -586,7 +683,7 @@ fn build_user_message_memo_key(props: &UserMessageRenderProps) -> u64 {
 
 fn build_plain_message_memo_key(props: &PlainMessageRenderProps) -> u64 {
     let mut hasher = DefaultHasher::new();
-    format!("{:?}", props.msg).hash(&mut hasher);
+    hash_message_render_content(&props.msg, &mut hasher);
     format!("{:?}", props.context.theme).hash(&mut hasher);
     props.context.content_width.hash(&mut hasher);
     hasher.finish()
@@ -594,7 +691,7 @@ fn build_plain_message_memo_key(props: &PlainMessageRenderProps) -> u64 {
 
 fn build_assistant_message_memo_key(props: &AssistantMessageRenderProps) -> u64 {
     let mut hasher = DefaultHasher::new();
-    format!("{:?}", props.msg).hash(&mut hasher);
+    hash_message_render_content(&props.msg, &mut hasher);
     format!("{:?}", props.context.theme).hash(&mut hasher);
     props.context.content_width.hash(&mut hasher);
     props.context.show_timestamps.hash(&mut hasher);
@@ -605,7 +702,6 @@ fn build_assistant_message_memo_key(props: &AssistantMessageRenderProps) -> u64 
     format!("{:?}", props.context.thinking_bg).hash(&mut hasher);
     format!("{:?}", props.context.assistant_border).hash(&mut hasher);
     format!("{:?}", props.context.thinking_border).hash(&mut hasher);
-    format!("{:?}", props.terminal_message).hash(&mut hasher);
     format!("{:?}", props.tool_results).hash(&mut hasher);
     format!("{:?}", props.running_tool_call).hash(&mut hasher);
     props.show_thinking.hash(&mut hasher);
@@ -811,7 +907,7 @@ fn build_assistant_block_memo_key(
     item: &AssistantMessageItem,
 ) -> u64 {
     let mut hasher = DefaultHasher::new();
-    format!("{:?}", msg).hash(&mut hasher);
+    hash_message_render_content(msg, &mut hasher);
     format!("{:?}", context.theme).hash(&mut hasher);
     context.content_width.hash(&mut hasher);
     context.show_timestamps.hash(&mut hasher);

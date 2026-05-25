@@ -236,9 +236,8 @@ async fn event_stream(
 ) -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
     // P2-1: resolve subscription capabilities via the single wire-format
     // entry point in rocode-api. No other module parses tier strings.
-    let subscription = rocode_api::ResolvedFrontendSubscription::from_wire_tier(
-        query.tier.as_deref(),
-    );
+    let subscription =
+        rocode_api::ResolvedFrontendSubscription::from_wire_tier(query.tier.as_deref());
     tracing::debug!(
         tier = query.tier.as_deref().unwrap_or("default"),
         is_legacy = subscription.is_legacy_compat,
@@ -247,7 +246,12 @@ async fn event_stream(
     // P2-2: pass subscription into stream_server_events for capability-based filtering.
     // P3-H: pass telemetry for observability counters.
     let telemetry = state.event_bus_telemetry.clone();
-    stream_server_events(state.event_bus.subscribe(), query.session, subscription, telemetry)
+    stream_server_events(
+        state.event_bus.subscribe(),
+        query.session,
+        subscription,
+        telemetry,
+    )
 }
 
 const EVENT_OUTPUT_BLOCK_BATCH_MS: u64 = 16;
@@ -460,16 +464,27 @@ struct LiveSnapshotCoalescer {
 }
 
 fn key_for(session_id: &str, identity: &rocode_types::LiveMessagePartIdentity) -> String {
-    format!("{}:{}:{}", session_id, identity.message_id, identity.part_key)
+    format!(
+        "{}:{}:{}",
+        session_id, identity.message_id, identity.part_key
+    )
 }
 
 impl LiveSnapshotCoalescer {
     fn new() -> Self {
-        Self { accum: std::collections::HashMap::new(), telemetry: None }
+        Self {
+            accum: std::collections::HashMap::new(),
+            telemetry: None,
+        }
     }
 
-    fn with_telemetry(telemetry: std::sync::Arc<crate::session_runtime::events::EventBusTelemetry>) -> Self {
-        Self { accum: std::collections::HashMap::new(), telemetry: Some(telemetry) }
+    fn with_telemetry(
+        telemetry: std::sync::Arc<crate::session_runtime::events::EventBusTelemetry>,
+    ) -> Self {
+        Self {
+            accum: std::collections::HashMap::new(),
+            telemetry: Some(telemetry),
+        }
     }
 
     fn coalesce(&mut self, event: ServerEvent) -> ServerEvent {
@@ -478,39 +493,68 @@ impl LiveSnapshotCoalescer {
             mut block,
             id,
             live_identity,
-        } = event else {
+        } = event
+        else {
             return event;
         };
         let Some(ref identity) = live_identity else {
-            if let Some(ref t) = self.telemetry { t.record_identity_missing(); }
-            return ServerEvent::OutputBlock { session_id, block, id, live_identity };
+            if let Some(ref t) = self.telemetry {
+                t.record_identity_missing();
+            }
+            return ServerEvent::OutputBlock {
+                session_id,
+                block,
+                id,
+                live_identity,
+            };
         };
 
-        // P3-B1 scope: only assistant text / reasoning participate in
-        // full-so-far snapshot coalescing. Other live identities are introduced
-        // in later patches and must pass through untouched for now.
-        if !matches!(
-            identity.part_kind,
+        // LTS-B2: only authoritative transcript-bearing assistant text and
+        // reasoning participate in full-so-far snapshot coalescing. Running
+        // tool detail is progress-state and must pass through unchanged.
+        let coalesce_field = match identity.part_kind {
             rocode_types::LiveMessagePartKind::AssistantText
-                | rocode_types::LiveMessagePartKind::AssistantReasoning
-        ) {
-            return ServerEvent::OutputBlock { session_id, block, id, live_identity };
-        }
+            | rocode_types::LiveMessagePartKind::AssistantReasoning => "text",
+            _ => {
+                return ServerEvent::OutputBlock {
+                    session_id,
+                    block,
+                    id,
+                    live_identity,
+                };
+            }
+        };
 
         // End phase: clear accumulated state so the key doesn't grow unbounded.
         if identity.phase == rocode_types::LivePartPhase::End {
             let key = key_for(&session_id, identity);
             self.accum.remove(&key);
-            return ServerEvent::OutputBlock { session_id, block, id, live_identity };
+            return ServerEvent::OutputBlock {
+                session_id,
+                block,
+                id,
+                live_identity,
+            };
         }
 
         // Only coalesce Append (delta) and Snapshot phases.
-        if !matches!(identity.phase, rocode_types::LivePartPhase::Append | rocode_types::LivePartPhase::Snapshot) {
-            return ServerEvent::OutputBlock { session_id, block, id, live_identity };
+        if !matches!(
+            identity.phase,
+            rocode_types::LivePartPhase::Append | rocode_types::LivePartPhase::Snapshot
+        ) {
+            return ServerEvent::OutputBlock {
+                session_id,
+                block,
+                id,
+                live_identity,
+            };
         }
 
         let key = key_for(&session_id, identity);
-        let text = block.get("text").and_then(|v| v.as_str()).unwrap_or("");
+        let text = block
+            .get(coalesce_field)
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
 
         let accumulated = if identity.phase == rocode_types::LivePartPhase::Append {
             self.accum.entry(key.clone()).or_default().push_str(text);
@@ -522,7 +566,7 @@ impl LiveSnapshotCoalescer {
         };
 
         if let Some(obj) = block.as_object_mut() {
-            obj.insert("text".to_string(), serde_json::json!(accumulated));
+            obj.insert(coalesce_field.to_string(), serde_json::json!(accumulated));
             // Set block phase to "full" so merge_output_block_delta() does NOT
             // re-merge this snapshot with a previous delta block.
             obj.insert("phase".to_string(), serde_json::json!("full"));
@@ -553,8 +597,11 @@ fn event_passes_subscription_caps(
     event: &ServerEvent,
     caps: &rocode_api::FrontendSubscriptionCapabilities,
 ) -> bool {
-    if !caps.final_only && caps.reasoning_delta && caps.message_text_delta
-        && caps.tool_progress && caps.runtime_live_view
+    if !caps.final_only
+        && caps.reasoning_delta
+        && caps.message_text_delta
+        && caps.tool_progress
+        && caps.runtime_live_view
     {
         return true; // full capabilities — no filtering needed
     }
@@ -564,7 +611,11 @@ fn event_passes_subscription_caps(
             match kind {
                 "reasoning" => !caps.final_only && caps.reasoning_delta,
                 "message" => !caps.final_only && caps.message_text_delta,
-                "scheduler_stage" | "tool" => !caps.final_only && caps.tool_progress,
+                "scheduler_stage" => !caps.final_only && caps.tool_progress,
+                "tool" => {
+                    let phase = block.get("phase").and_then(|v| v.as_str()).unwrap_or("");
+                    matches!(phase, "done" | "error") || (!caps.final_only && caps.tool_progress)
+                }
                 _ => !caps.final_only,
             }
         }
@@ -587,34 +638,74 @@ fn event_passes_subscription_caps(
     }
 }
 
-fn is_mergeable_output_delta(event: &ServerEvent) -> bool {
-    let ServerEvent::OutputBlock { id, block, .. } = event else {
-        return false;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MergeableLiveTextMode {
+    AppendDelta,
+    ReplaceSnapshot,
+}
+
+fn mergeable_live_text_mode(event: &ServerEvent) -> Option<MergeableLiveTextMode> {
+    let ServerEvent::OutputBlock {
+        id,
+        block,
+        live_identity,
+        ..
+    } = event
+    else {
+        return None;
     };
     if id.as_deref().is_none_or(str::is_empty) {
-        return false;
+        return None;
     }
-    matches!(
-        (
-            block.get("kind").and_then(|value| value.as_str()),
-            block.get("phase").and_then(|value| value.as_str()),
-        ),
-        (Some("message"), Some("delta")) | (Some("reasoning"), Some("delta"))
-    )
+    let kind = block.get("kind").and_then(|value| value.as_str())?;
+    if !matches!(kind, "message" | "reasoning") {
+        return None;
+    }
+    match block.get("phase").and_then(|value| value.as_str()) {
+        Some("delta") => Some(MergeableLiveTextMode::AppendDelta),
+        Some("full")
+            if live_identity.as_ref().is_some_and(|identity| {
+                matches!(
+                    identity.part_kind,
+                    rocode_types::LiveMessagePartKind::AssistantText
+                        | rocode_types::LiveMessagePartKind::AssistantReasoning
+                ) && identity.phase == rocode_types::LivePartPhase::Snapshot
+            }) =>
+        {
+            Some(MergeableLiveTextMode::ReplaceSnapshot)
+        }
+        _ => None,
+    }
+}
+
+fn is_mergeable_output_delta(event: &ServerEvent) -> bool {
+    mergeable_live_text_mode(event).is_some()
 }
 
 fn merge_output_block_delta(current: &mut ServerEvent, next: &ServerEvent) -> bool {
+    let Some(current_mode) = mergeable_live_text_mode(current) else {
+        return false;
+    };
+    let Some(next_mode) = mergeable_live_text_mode(next) else {
+        return false;
+    };
+    if current_mode != next_mode {
+        return false;
+    }
+
     let (
         ServerEvent::OutputBlock {
             session_id: current_session,
             id: current_id,
             block: current_block,
+            live_identity: current_identity,
             ..
         },
         ServerEvent::OutputBlock {
             session_id: next_session,
             id: next_id,
             block: next_block,
+            live_identity: next_identity,
             ..
         },
     ) = (current, next)
@@ -628,9 +719,7 @@ fn merge_output_block_delta(current: &mut ServerEvent, next: &ServerEvent) -> bo
 
     let current_kind = current_block.get("kind").and_then(|value| value.as_str());
     let next_kind = next_block.get("kind").and_then(|value| value.as_str());
-    let current_phase = current_block.get("phase").and_then(|value| value.as_str());
-    let next_phase = next_block.get("phase").and_then(|value| value.as_str());
-    if current_kind != next_kind || current_phase != Some("delta") || next_phase != Some("delta") {
+    if current_kind != next_kind {
         return false;
     }
     if current_kind == Some("message")
@@ -640,18 +729,39 @@ fn merge_output_block_delta(current: &mut ServerEvent, next: &ServerEvent) -> bo
         return false;
     }
 
-    let Some(next_text) = next_block.get("text").and_then(|value| value.as_str()) else {
-        return false;
-    };
-    let Some(current_text) = current_block
-        .get_mut("text")
-        .and_then(|value| value.as_str())
-    else {
-        return false;
-    };
+    match current_mode {
+        MergeableLiveTextMode::AppendDelta => {
+            let Some(next_text) = next_block.get("text").and_then(|value| value.as_str()) else {
+                return false;
+            };
+            let Some(current_text) = current_block
+                .get_mut("text")
+                .and_then(|value| value.as_str())
+            else {
+                return false;
+            };
 
-    current_block["text"] = serde_json::Value::String(format!("{current_text}{next_text}"));
-    true
+            current_block["text"] =
+                serde_json::Value::String(format!("{current_text}{next_text}"));
+            true
+        }
+        MergeableLiveTextMode::ReplaceSnapshot => {
+            let (Some(current_identity_ref), Some(next_identity_ref)) =
+                (current_identity.as_ref(), next_identity.as_ref())
+            else {
+                return false;
+            };
+            if current_identity_ref.message_id != next_identity_ref.message_id
+                || current_identity_ref.part_key != next_identity_ref.part_key
+                || current_identity_ref.part_kind != next_identity_ref.part_kind
+            {
+                return false;
+            }
+            *current_block = next_block.clone();
+            *current_identity = Some(next_identity_ref.clone());
+            true
+        }
+    }
 }
 
 async fn send_raw_server_event(
@@ -1363,6 +1473,47 @@ mod tests {
         assert!(!merge_output_block_delta(&mut current, &usage));
     }
 
+    #[test]
+    fn merge_output_block_delta_replaces_snapshot_for_same_live_identity() {
+        let identity = rocode_types::LiveMessagePartIdentity {
+            message_id: "msg-1".to_string(),
+            part_key: "reasoning/main".to_string(),
+            part_kind: rocode_types::LiveMessagePartKind::AssistantReasoning,
+            phase: rocode_types::LivePartPhase::Snapshot,
+            legacy_block_id: Some("reasoning-1".to_string()),
+        };
+        let mut current = ServerEvent::OutputBlock {
+            session_id: "session-a".to_string(),
+            id: Some("reasoning-1".to_string()),
+            block: json!({ "kind": "reasoning", "phase": "full", "text": "think" }),
+            live_identity: Some(identity.clone()),
+        };
+        let next = ServerEvent::OutputBlock {
+            session_id: "session-a".to_string(),
+            id: Some("reasoning-1".to_string()),
+            block: json!({ "kind": "reasoning", "phase": "full", "text": "thinking longer" }),
+            live_identity: Some(identity),
+        };
+
+        assert!(merge_output_block_delta(&mut current, &next));
+        let ServerEvent::OutputBlock {
+            block,
+            live_identity,
+            ..
+        } = current
+        else {
+            panic!("expected output block");
+        };
+        assert_eq!(
+            block.get("text").and_then(|value| value.as_str()),
+            Some("thinking longer")
+        );
+        assert_eq!(
+            live_identity.map(|identity| identity.phase),
+            Some(rocode_types::LivePartPhase::Snapshot)
+        );
+    }
+
     // ── P2-2 subscription filter tests ──────────────────────────────────
 
     fn reasoning_block() -> ServerEvent {
@@ -1379,6 +1530,34 @@ mod tests {
             session_id: "sess-1".to_string(),
             id: Some("block-1".to_string()),
             block: serde_json::json!({"kind": "message", "phase": "delta", "text": "hello"}),
+            live_identity: None,
+        }
+    }
+
+    fn tool_running_block() -> ServerEvent {
+        ServerEvent::OutputBlock {
+            session_id: "sess-1".to_string(),
+            id: Some("tool-1".to_string()),
+            block: serde_json::json!({
+                "kind": "tool",
+                "phase": "running",
+                "name": "webfetch",
+                "detail": "fetching"
+            }),
+            live_identity: None,
+        }
+    }
+
+    fn tool_done_block() -> ServerEvent {
+        ServerEvent::OutputBlock {
+            session_id: "sess-1".to_string(),
+            id: Some("tool-1".to_string()),
+            block: serde_json::json!({
+                "kind": "tool",
+                "phase": "done",
+                "name": "webfetch",
+                "detail": "{\"status\":200}"
+            }),
             live_identity: None,
         }
     }
@@ -1402,6 +1581,8 @@ mod tests {
         let c = caps(false);
         assert!(!event_passes_subscription_caps(&reasoning_block(), &c));
         assert!(!event_passes_subscription_caps(&message_block(), &c));
+        assert!(!event_passes_subscription_caps(&tool_running_block(), &c));
+        assert!(event_passes_subscription_caps(&tool_done_block(), &c));
         // Non-droppable events always pass.
         let perm = ServerEvent::PermissionResolved {
             session_id: "sess-1".to_string(),
@@ -1435,12 +1616,22 @@ mod tests {
     }
 
     fn snapshot_block_text(event: &ServerEvent) -> Option<String> {
-        let ServerEvent::OutputBlock { ref block, .. } = event else { return None };
-        block.get("text").and_then(|v| v.as_str()).map(|s| s.to_string())
+        let ServerEvent::OutputBlock { ref block, .. } = event else {
+            return None;
+        };
+        block
+            .get("text")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
     }
 
     fn snapshot_phase(event: &ServerEvent) -> Option<rocode_types::LivePartPhase> {
-        let ServerEvent::OutputBlock { ref live_identity, .. } = event else { return None };
+        let ServerEvent::OutputBlock {
+            ref live_identity, ..
+        } = event
+        else {
+            return None;
+        };
         live_identity.as_ref().map(|id| id.phase)
     }
 
@@ -1453,29 +1644,10 @@ mod tests {
 
         let s2 = c.coalesce(coalesce_delta(" world", "msg-1", "text/main"));
         assert_eq!(snapshot_block_text(&s2), Some("hello world".to_string()));
-        assert_eq!(snapshot_phase(&s2), Some(rocode_types::LivePartPhase::Snapshot));
-    }
-
-    #[test]
-    fn coalescer_isolates_different_messages() {
-        let mut c = LiveSnapshotCoalescer::new();
-
-        let s1 = c.coalesce(coalesce_delta("msg1", "msg-1", "text/main"));
-        assert_eq!(snapshot_block_text(&s1), Some("msg1".to_string()));
-
-        let s2 = c.coalesce(coalesce_delta("msg2", "msg-2", "text/main"));
-        assert_eq!(snapshot_block_text(&s2), Some("msg2".to_string()));
-    }
-
-    #[test]
-    fn coalescer_isolates_different_part_keys() {
-        let mut c = LiveSnapshotCoalescer::new();
-
-        let s1 = c.coalesce(coalesce_delta("thinking", "msg-1", "reasoning/main"));
-        assert_eq!(snapshot_block_text(&s1), Some("thinking".to_string()));
-
-        let s2 = c.coalesce(coalesce_delta("output", "msg-1", "text/main"));
-        assert_eq!(snapshot_block_text(&s2), Some("output".to_string()));
+        assert_eq!(
+            snapshot_phase(&s2),
+            Some(rocode_types::LivePartPhase::Snapshot)
+        );
     }
 
     #[test]
@@ -1516,14 +1688,29 @@ mod tests {
     }
 
     #[test]
-    fn coalescer_isolates_different_sessions() {
+    fn coalescer_keys_state_by_session_message_and_part_key() {
         let mut c = LiveSnapshotCoalescer::new();
 
-        // Same msg_id + part_key, different sessions — must not cross-contaminate.
-        let s1 = c.coalesce(coalesce_delta("session-a", "msg-1", "text/main"));
-        assert_eq!(snapshot_block_text(&s1), Some("session-a".to_string()));
+        let first_message = c.coalesce(coalesce_delta("msg1", "msg-1", "text/main"));
+        assert_eq!(
+            snapshot_block_text(&first_message),
+            Some("msg1".to_string())
+        );
 
-        let s2_block = ServerEvent::OutputBlock {
+        let second_message = c.coalesce(coalesce_delta("msg2", "msg-2", "text/main"));
+        assert_eq!(
+            snapshot_block_text(&second_message),
+            Some("msg2".to_string())
+        );
+
+        let reasoning_part = c.coalesce(coalesce_delta("thinking", "msg-1", "reasoning/main"));
+        assert_eq!(
+            snapshot_block_text(&reasoning_part),
+            Some("thinking".to_string())
+        );
+
+        // Same msg_id + part_key, different sessions — must not cross-contaminate.
+        let session_scoped = ServerEvent::OutputBlock {
             session_id: "sess-2".to_string(),
             id: Some("block-2".to_string()),
             block: serde_json::json!({ "kind": "message", "phase": "delta", "text": "session-b" }),
@@ -1535,7 +1722,7 @@ mod tests {
                 legacy_block_id: Some("block-2".to_string()),
             }),
         };
-        let s2 = c.coalesce(s2_block);
+        let s2 = c.coalesce(session_scoped);
         assert_eq!(
             snapshot_block_text(&s2),
             Some("session-b".to_string()),
@@ -1547,12 +1734,31 @@ mod tests {
     fn coalescer_snapshot_has_full_phase_not_delta() {
         let mut c = LiveSnapshotCoalescer::new();
         let result = c.coalesce(coalesce_delta("test", "msg-1", "text/main"));
-        let ServerEvent::OutputBlock { ref block, .. } = result else { panic!("expected OutputBlock") };
+        let ServerEvent::OutputBlock { ref block, .. } = result else {
+            panic!("expected OutputBlock")
+        };
         assert_eq!(
             block.get("phase").and_then(|v| v.as_str()),
             Some("full"),
-            "snapshot must set block phase to 'full' so merge_output_block_delta skips it"
+            "snapshot must set block phase to 'full' so pending merge replaces snapshots instead of appending raw deltas"
         );
+    }
+
+    #[test]
+    fn coalesced_snapshots_stay_mergeable_for_pending_debounce() {
+        let mut c = LiveSnapshotCoalescer::new();
+        let mut first = c.coalesce(coalesce_delta("hel", "msg-1", "text/main"));
+        let second = c.coalesce(coalesce_delta("lo", "msg-1", "text/main"));
+
+        assert!(
+            is_mergeable_output_delta(&first),
+            "coalesced snapshot must still enter the pending debounce lane"
+        );
+        assert!(
+            merge_output_block_delta(&mut first, &second),
+            "later snapshots for the same live identity must replace earlier pending snapshots"
+        );
+        assert_eq!(snapshot_block_text(&first), Some("hello".to_string()));
     }
 
     #[test]
@@ -1573,9 +1779,9 @@ mod tests {
     }
 
     #[test]
-    fn coalescer_passes_through_non_text_live_identity_unchanged() {
+    fn coalescer_passes_through_tool_running_detail_without_snapshot_rewrite() {
         let mut c = LiveSnapshotCoalescer::new();
-        let block = ServerEvent::OutputBlock {
+        let first = ServerEvent::OutputBlock {
             session_id: "sess-1".to_string(),
             id: Some("tool-1".to_string()),
             block: serde_json::json!({
@@ -1592,19 +1798,61 @@ mod tests {
                 legacy_block_id: Some("tool-1".to_string()),
             }),
         };
-        let result = c.coalesce(block);
-        let ServerEvent::OutputBlock { block, live_identity, .. } = result else {
+        let second = ServerEvent::OutputBlock {
+            session_id: "sess-1".to_string(),
+            id: Some("tool-1".to_string()),
+            block: serde_json::json!({
+                "kind": "tool",
+                "phase": "running",
+                "name": "write_file",
+                "detail": " chunk-2"
+            }),
+            live_identity: Some(rocode_types::LiveMessagePartIdentity {
+                message_id: "msg-1".to_string(),
+                part_key: "tool_call/call-1".to_string(),
+                part_kind: rocode_types::LiveMessagePartKind::ToolCall,
+                phase: rocode_types::LivePartPhase::Append,
+                legacy_block_id: Some("tool-1".to_string()),
+            }),
+        };
+
+        let first = c.coalesce(first);
+        let second = c.coalesce(second);
+
+        let ServerEvent::OutputBlock {
+            block: first_block,
+            live_identity: first_identity,
+            ..
+        } = first
+        else {
             panic!("expected OutputBlock")
         };
-        assert_eq!(block["kind"], "tool");
-        assert_eq!(block["phase"], "running");
+        let ServerEvent::OutputBlock {
+            block: second_block,
+            live_identity: second_identity,
+            ..
+        } = second
+        else {
+            panic!("expected OutputBlock")
+        };
+
+        assert_eq!(first_block["kind"], "tool");
+        assert_eq!(first_block["phase"], "running");
+        assert_eq!(first_block["detail"], "chunk-1");
         assert_eq!(
-            live_identity.as_ref().map(|identity| identity.phase),
+            first_identity.as_ref().map(|identity| identity.phase),
             Some(rocode_types::LivePartPhase::Append)
         );
+        assert_eq!(second_block["kind"], "tool");
+        assert_eq!(second_block["phase"], "running");
+        assert_eq!(second_block["detail"], " chunk-2");
         assert!(
-            c.accum.is_empty(),
-            "non-text identities must not allocate snapshot cache entries"
+            second_identity.as_ref().map(|identity| identity.phase)
+                == Some(rocode_types::LivePartPhase::Append)
+        );
+        assert!(
+            !c.accum.contains_key("sess-1:msg-1:tool_call/call-1"),
+            "progress-only tool detail must not enter transcript snapshot accumulator"
         );
     }
 
@@ -1682,7 +1930,9 @@ mod tests {
 
         use axum::response::IntoResponse;
         let body = sse.into_response().into_body();
-        let collected = axum::body::to_bytes(body, 4096).await.expect("collect body");
+        let collected = axum::body::to_bytes(body, 4096)
+            .await
+            .expect("collect body");
         let text = std::str::from_utf8(&collected).expect("utf-8");
 
         assert!(
@@ -1696,6 +1946,77 @@ mod tests {
         assert!(
             text.contains("session.updated"),
             "CLI tier must deliver session.updated; got:\n{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn full_tier_stream_debounces_coalesced_snapshots_in_pending_path() {
+        use tokio::sync::broadcast;
+        let (tx, _) = broadcast::channel::<String>(16);
+        let rx = tx.subscribe();
+
+        let full_sub = rocode_api::ResolvedFrontendSubscription::from_tier(
+            rocode_api::FrontendSubscriptionTier::TuiHighFrequency,
+        );
+        let sse = super::stream_server_events(rx, None, full_sub, None);
+
+        tx.send(
+            serde_json::json!({
+                "type": "output_block",
+                "sessionID": "sess-1",
+                "id": "block-1",
+                "block": { "kind": "message", "phase": "delta", "role": "assistant", "text": "hel" },
+                "live_identity": {
+                    "message_id": "msg-1",
+                    "part_key": "text/main",
+                    "part_kind": "assistant_text",
+                    "phase": "append",
+                    "legacy_block_id": "block-1"
+                }
+            })
+            .to_string(),
+        )
+        .expect("send first delta");
+
+        tx.send(
+            serde_json::json!({
+                "type": "output_block",
+                "sessionID": "sess-1",
+                "id": "block-1",
+                "block": { "kind": "message", "phase": "delta", "role": "assistant", "text": "lo" },
+                "live_identity": {
+                    "message_id": "msg-1",
+                    "part_key": "text/main",
+                    "part_kind": "assistant_text",
+                    "phase": "append",
+                    "legacy_block_id": "block-1"
+                }
+            })
+            .to_string(),
+        )
+        .expect("send second delta");
+
+        drop(tx);
+
+        use axum::response::IntoResponse;
+        let body = sse.into_response().into_body();
+        let collected = axum::body::to_bytes(body, 4096)
+            .await
+            .expect("collect body");
+        let text = std::str::from_utf8(&collected).expect("utf-8");
+
+        assert_eq!(
+            text.matches("output_block").count(),
+            1,
+            "coalesced snapshots should stay in the pending debounce lane and flush once; got:\n{text}"
+        );
+        assert!(
+            text.contains("\"text\":\"hello\""),
+            "final flushed snapshot should contain the accumulated text; got:\n{text}"
+        );
+        assert!(
+            !text.contains("\"text\":\"hel\""),
+            "intermediate snapshot must not be flushed separately; got:\n{text}"
         );
     }
 }

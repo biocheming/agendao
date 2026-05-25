@@ -289,6 +289,39 @@ pub fn render_tool_segment_lines(
                 format_preview_line(summary, 96),
                 TerminalSegmentTone::Muted,
             ));
+            if let Some(metadata) = info.metadata.as_ref() {
+                if let Some(fields) = metadata.get("display.fields").and_then(|v| v.as_array()) {
+                    if let Some(field) = fields.first() {
+                        let label = field
+                            .get("label")
+                            .or_else(|| field.get("key"))
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("?");
+                        let value = field
+                            .get("value")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("");
+                        let rendered = format!("{}: {}", label, format_preview_line(value, 80));
+                        lines.push(TerminalSegmentDisplayLine::new(
+                            rendered,
+                            TerminalSegmentTone::Primary,
+                        ));
+                    }
+                } else if let Some(preview) = metadata
+                    .get("display.preview")
+                    .and_then(|value| value.as_object())
+                    .and_then(|preview| preview.get("text"))
+                    .and_then(|value| value.as_str())
+                {
+                    let first_line = preview.lines().next().unwrap_or(preview).trim();
+                    if !first_line.is_empty() {
+                        lines.push(TerminalSegmentDisplayLine::new(
+                            format_preview_line(first_line, 96),
+                            TerminalSegmentTone::Muted,
+                        ));
+                    }
+                }
+            }
             return lines;
         }
 
@@ -548,8 +581,10 @@ pub fn extract_jsonish_path_from_raw(raw: &str) -> Option<String> {
 mod tests {
     use super::{
         format_preview_line, render_file_segment_line, render_image_segment_line,
-        tool_argument_preview,
+        render_tool_segment_lines, tool_argument_preview,
     };
+    use crate::terminal_presentation::{TerminalToolResultInfo, TerminalToolState};
+    use std::collections::HashMap;
 
     #[test]
     fn list_tool_preview_shows_path() {
@@ -616,5 +651,37 @@ mod tests {
             render_image_segment_line("https://example.com/a.png").text,
             "[image] https://example.com/a.png"
         );
+    }
+
+    #[test]
+    fn tool_segment_lines_include_display_field_after_summary() {
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "display.summary".to_string(),
+            serde_json::json!("11 skills · literature-research/skills"),
+        );
+        metadata.insert(
+            "display.fields".to_string(),
+            serde_json::json!([{ "label": "Scope", "value": "literature-research/skills" }]),
+        );
+        let result = TerminalToolResultInfo {
+            output: String::new(),
+            is_error: false,
+            title: Some("SkillsList".to_string()),
+            metadata: Some(metadata),
+        };
+
+        let lines = render_tool_segment_lines(
+            "SkillsList",
+            "{}",
+            TerminalToolState::Completed,
+            Some(&result),
+            true,
+        );
+
+        assert!(lines.iter().any(|line| line.text.contains("11 skills")));
+        assert!(lines
+            .iter()
+            .any(|line| line.text.contains("Scope: literature-research/skills")));
     }
 }

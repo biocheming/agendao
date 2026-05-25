@@ -1129,9 +1129,7 @@ pub struct McpAuthStartInfo {
 // ── P3-A: Live Identity Contract ─────────────────────────────────────────
 // Defined in rocode-types; re-exported here for frontend consumption.
 
-pub use rocode_types::{
-    LiveMessagePartIdentity, LiveMessagePartKind, LivePartPhase,
-};
+pub use rocode_types::{LiveMessagePartIdentity, LiveMessagePartKind, LivePartPhase};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShareResponse {
@@ -1391,7 +1389,8 @@ mod subscription_tests {
 
     #[test]
     fn resolved_from_tier_cli_is_final_only() {
-        let sub = ResolvedFrontendSubscription::from_tier(FrontendSubscriptionTier::CliLowFrequency);
+        let sub =
+            ResolvedFrontendSubscription::from_tier(FrontendSubscriptionTier::CliLowFrequency);
         assert!(!sub.is_legacy_compat);
         assert!(sub.capabilities.final_only);
     }
@@ -1435,7 +1434,8 @@ mod subscription_tests {
 
     #[test]
     fn resolved_subscription_roundtrip_via_json() {
-        let sub = ResolvedFrontendSubscription::from_tier(FrontendSubscriptionTier::TuiHighFrequency);
+        let sub =
+            ResolvedFrontendSubscription::from_tier(FrontendSubscriptionTier::TuiHighFrequency);
         let json = serde_json::to_value(&sub).expect("serialize");
         let parsed: ResolvedFrontendSubscription =
             serde_json::from_value(json).expect("deserialize");

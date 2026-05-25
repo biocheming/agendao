@@ -14,7 +14,10 @@ pub(super) fn get_global_config_paths() -> Vec<PathBuf> {
     };
 
     let rocode_dir = config_dir.join("rocode");
-    vec![rocode_dir.join("rocode.jsonc"), rocode_dir.join("rocode.json")]
+    vec![
+        rocode_dir.join("rocode.jsonc"),
+        rocode_dir.join("rocode.json"),
+    ]
 }
 
 /// Migrate legacy global TOML config (`~/.config/rocode/config`) into

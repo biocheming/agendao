@@ -1,3 +1,5 @@
+use rocode_command::run_status_labels::canonical_run_status_badge;
+
 const SIDEBAR_WIDTH: u16 = 42;
 const HEADER_NARROW_THRESHOLD: u16 = 80;
 const THINKING_PREVIEW_LINES: usize = 2;
@@ -291,18 +293,59 @@ impl SessionRenderSnapshot {
                 )
             });
 
-            let (status_label, status_running, status_retrying) = match status {
-                crate::context::SessionStatus::Running => {
-                    (Some("RUNNING".to_string()), true, false)
-                }
-                crate::context::SessionStatus::Compacting => {
-                    (Some("COMPACTING".to_string()), true, false)
-                }
-                crate::context::SessionStatus::Retrying { attempt, .. } => {
-                    (Some(format!("RETRY {}", attempt)), true, true)
-                }
-                crate::context::SessionStatus::Idle => (None, false, false),
-            };
+            let (status_label, status_running, status_retrying) =
+                if permission_count > 0 || context.get_pending_permission().is_some() {
+                    (
+                        Some(canonical_run_status_badge("awaiting_permission").to_string()),
+                        false,
+                        false,
+                    )
+                } else if context.has_pending_question() {
+                    (
+                        Some(canonical_run_status_badge("awaiting_user").to_string()),
+                        false,
+                        false,
+                    )
+                } else {
+                    match status {
+                        crate::context::SessionStatus::Running => (
+                            Some(canonical_run_status_badge("running").to_string()),
+                            true,
+                            false,
+                        ),
+                        crate::context::SessionStatus::Compacting => (
+                            Some(canonical_run_status_badge("compacting").to_string()),
+                            true,
+                            false,
+                        ),
+                        crate::context::SessionStatus::Reconnecting => (
+                            Some(canonical_run_status_badge("reconnecting").to_string()),
+                            true,
+                            false,
+                        ),
+                        crate::context::SessionStatus::Retrying { attempt, .. } => (
+                            Some(format!(
+                                "{} {}",
+                                canonical_run_status_badge("retrying"),
+                                attempt
+                            )),
+                            true,
+                            true,
+                        ),
+                        crate::context::SessionStatus::Idle => (
+                            Some(
+                                context
+                                    .session_terminal_tail_status(session_id)
+                                    .map(|status| canonical_run_status_badge(&status).to_string())
+                                    .unwrap_or_else(|| {
+                                        canonical_run_status_badge("idle").to_string()
+                                    }),
+                            ),
+                            false,
+                            false,
+                        ),
+                    }
+                };
 
             (
                 parent_title,

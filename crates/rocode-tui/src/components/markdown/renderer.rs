@@ -63,12 +63,7 @@ impl TableBuilder {
         });
     }
 
-    fn render(
-        mut self,
-        lines: &mut Vec<Line<'static>>,
-        theme: &Theme,
-        available_width: u16,
-    ) {
+    fn render(mut self, lines: &mut Vec<Line<'static>>, theme: &Theme, available_width: u16) {
         self.finish_row();
         if self.rows.is_empty() {
             return;
@@ -94,7 +89,8 @@ impl TableBuilder {
         }
 
         // Table width = sum(content_width + 2 padding) + (col_count + 1) borders.
-        let table_total: usize = content_widths.iter().map(|w| w + 2).sum::<usize>() + col_count + 1;
+        let table_total: usize =
+            content_widths.iter().map(|w| w + 2).sum::<usize>() + col_count + 1;
         let avail = available_width.max(1) as usize;
 
         if table_total <= avail {
@@ -105,10 +101,13 @@ impl TableBuilder {
             // Compress each column proportionally.
             let border_overhead = 2 * col_count + col_count + 1; // padding + borders
             let content_budget = avail.saturating_sub(border_overhead).max(col_count);
-            let compressed: Vec<usize> = content_widths.iter().map(|&w| {
-                let share = (w as f64 / table_total.max(1) as f64) * content_budget as f64;
-                share.max(3.0).min(w as f64) as usize
-            }).collect();
+            let compressed: Vec<usize> = content_widths
+                .iter()
+                .map(|&w| {
+                    let share = (w as f64 / table_total.max(1) as f64) * content_budget as f64;
+                    share.max(3.0).min(w as f64) as usize
+                })
+                .collect();
 
             if compressed.iter().sum::<usize>() + border_overhead <= avail {
                 Self::emit_box_table(lines, &self.rows, &compressed, &self.alignments, theme);
@@ -126,16 +125,34 @@ impl TableBuilder {
         alignments: &[Alignment],
         theme: &Theme,
     ) {
-        lines.push(table_border_line('┌', '┬', '┐', widths, theme.markdown_horizontal_rule));
+        lines.push(table_border_line(
+            '┌',
+            '┬',
+            '┐',
+            widths,
+            theme.markdown_horizontal_rule,
+        ));
         for (idx, row) in rows.iter().enumerate() {
             lines.push(table_row_line(row, widths, alignments, theme));
             let is_header_break =
                 row.is_header && rows.get(idx + 1).is_some_and(|next| !next.is_header);
             if is_header_break {
-                lines.push(table_border_line('├', '┼', '┤', widths, theme.markdown_horizontal_rule));
+                lines.push(table_border_line(
+                    '├',
+                    '┼',
+                    '┤',
+                    widths,
+                    theme.markdown_horizontal_rule,
+                ));
             }
         }
-        lines.push(table_border_line('└', '┴', '┘', widths, theme.markdown_horizontal_rule));
+        lines.push(table_border_line(
+            '└',
+            '┴',
+            '┘',
+            widths,
+            theme.markdown_horizontal_rule,
+        ));
     }
 
     /// Narrow-width degradation: render each row as `Header: Value` pairs.
@@ -154,7 +171,17 @@ impl TableBuilder {
         let header_labels: Vec<String> = rows
             .iter()
             .find(|r| r.is_header)
-            .map(|r| r.cells.iter().map(|c| c.iter().map(|s| s.content.as_ref().to_string()).collect::<Vec<_>>().join(" ")).collect())
+            .map(|r| {
+                r.cells
+                    .iter()
+                    .map(|c| {
+                        c.iter()
+                            .map(|s| s.content.as_ref().to_string())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
 
         for row in rows {
@@ -167,13 +194,13 @@ impl TableBuilder {
             )));
             for (idx, cell) in row.cells.iter().enumerate() {
                 let label = header_labels.get(idx).map(|s| s.as_str()).unwrap_or("?");
-                let mut spans: Vec<Span<'static>> = vec![
-                    Span::styled(format!("{label}: "), header_style),
-                ];
-                spans.extend(cell.iter().cloned().map(|s| Span::styled(
-                    s.content.to_string(),
-                    body_style,
-                )));
+                let mut spans: Vec<Span<'static>> =
+                    vec![Span::styled(format!("{label}: "), header_style)];
+                spans.extend(
+                    cell.iter()
+                        .cloned()
+                        .map(|s| Span::styled(s.content.to_string(), body_style)),
+                );
                 lines.push(Line::from(spans));
             }
         }
@@ -635,7 +662,9 @@ fn table_row_line(
                 for span in cell {
                     spans.push(Span::styled(
                         span.content.to_string(),
-                        span.style.fg(theme.markdown_heading).add_modifier(Modifier::BOLD),
+                        span.style
+                            .fg(theme.markdown_heading)
+                            .add_modifier(Modifier::BOLD),
                     ));
                 }
             } else {
@@ -660,7 +689,9 @@ fn table_row_line(
                     if row.is_header {
                         spans.push(Span::styled(
                             span.content.to_string(),
-                            span.style.fg(theme.markdown_heading).add_modifier(Modifier::BOLD),
+                            span.style
+                                .fg(theme.markdown_heading)
+                                .add_modifier(Modifier::BOLD),
                         ));
                     } else {
                         spans.push(span.clone());
@@ -682,7 +713,9 @@ fn table_row_line(
                         if row.is_header {
                             spans.push(Span::styled(
                                 prefix,
-                                span.style.fg(theme.markdown_heading).add_modifier(Modifier::BOLD),
+                                span.style
+                                    .fg(theme.markdown_heading)
+                                    .add_modifier(Modifier::BOLD),
                             ));
                         } else {
                             spans.push(Span::styled(prefix, span.style));

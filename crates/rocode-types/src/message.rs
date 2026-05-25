@@ -616,7 +616,10 @@ mod tests {
     fn live_message_part_kind_serde_round_trip() {
         let variants = [
             (LiveMessagePartKind::AssistantText, "assistant_text"),
-            (LiveMessagePartKind::AssistantReasoning, "assistant_reasoning"),
+            (
+                LiveMessagePartKind::AssistantReasoning,
+                "assistant_reasoning",
+            ),
             (LiveMessagePartKind::ToolCall, "tool_call"),
             (LiveMessagePartKind::ToolResult, "tool_result"),
             (LiveMessagePartKind::SchedulerStage, "scheduler_stage"),

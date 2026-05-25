@@ -21,7 +21,14 @@ enum CliActiveAbortHandle {
 
 enum CliDispatchInput {
     Line(String),
+    ModeCycle { reverse: bool },
     Eof,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CliPromptModeEntry {
+    Agent(String),
+    Preset(String),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -234,10 +241,12 @@ async fn build_cli_execution_runtime(
         api_client: None,
         server_session_id: None,
         related_session_ids: Arc::new(Mutex::new(BTreeSet::new())),
+        root_history_transcript: Arc::new(Mutex::new(CliVisibleTranscript::default())),
         root_session_transcript: Arc::new(Mutex::new(CliVisibleTranscript::default())),
         attached_session_transcripts: Arc::new(Mutex::new(HashMap::new())),
         stream_accumulators: Arc::new(Mutex::new(HashMap::new())),
         render_states: Arc::new(Mutex::new(HashMap::new())),
+        active_tool_labels: Arc::new(Mutex::new(HashMap::new())),
         focused_session_id: Arc::new(Mutex::new(None)),
         show_thinking: Arc::new(AtomicBool::new(selection.show_thinking)),
     })
@@ -291,6 +300,61 @@ fn cli_mode_label(runtime: &CliExecutionRuntime) -> String {
         Some(profile) => format!("Preset {}", profile),
         None => format!("Agent {}", runtime.resolved_agent_name),
     }
+}
+
+fn cli_prompt_modes(config: &Config, agent_registry: &AgentRegistry) -> Vec<CliPromptModeEntry> {
+    let mut modes = agent_registry
+        .list()
+        .into_iter()
+        .map(|agent| CliPromptModeEntry::Agent(agent.name.clone()))
+        .collect::<Vec<_>>();
+    modes.extend(
+        cli_available_presets(config)
+            .into_iter()
+            .map(CliPromptModeEntry::Preset),
+    );
+    modes
+}
+
+fn cli_cycle_prompt_mode(
+    runtime: &mut CliExecutionRuntime,
+    config: &Config,
+    agent_registry: &AgentRegistry,
+    reverse: bool,
+) {
+    let modes = cli_prompt_modes(config, agent_registry);
+    if modes.is_empty() {
+        return;
+    }
+
+    let current = runtime
+        .scheduler_profile_name
+        .as_ref()
+        .map(|profile| CliPromptModeEntry::Preset(profile.clone()))
+        .unwrap_or_else(|| CliPromptModeEntry::Agent(runtime.resolved_agent_name.clone()));
+
+    let current_index = modes.iter().position(|mode| mode == &current).unwrap_or(0);
+    let next_index = if reverse {
+        current_index.checked_sub(1).unwrap_or(modes.len() - 1)
+    } else {
+        (current_index + 1) % modes.len()
+    };
+
+    match &modes[next_index] {
+        CliPromptModeEntry::Agent(agent) => {
+            runtime.resolved_agent_name = agent.clone();
+            runtime.scheduler_profile_name = None;
+        }
+        CliPromptModeEntry::Preset(profile) => {
+            runtime.scheduler_profile_name = Some(profile.clone());
+        }
+    }
+
+    let prompt_chrome = runtime.prompt_chrome.clone();
+    if let Some(prompt_chrome) = prompt_chrome.as_ref() {
+        prompt_chrome.update_from_runtime(runtime);
+    }
+    cli_refresh_prompt(runtime);
 }
 
 fn cli_session_hint_string(
@@ -390,8 +454,13 @@ fn cli_render_startup_banner(style: &CliStyle, recent: Option<&CliRecentSessionI
 
 #[cfg(test)]
 mod frontend_state_tests {
-    use super::resolve_scheduler_runtime;
+    use super::{
+        build_cli_execution_runtime, cli_cycle_prompt_mode, cli_prompt_modes,
+        resolve_scheduler_runtime, CliPromptModeEntry, CliRunSelection, CliRuntimeBuildInput,
+    };
+    use rocode_agent::AgentRegistry;
     use rocode_config::Config;
+    use std::sync::Arc;
 
     #[test]
     fn explicit_unknown_scheduler_profile_fails_instead_of_silent_fallback() {
@@ -422,5 +491,65 @@ mod frontend_state_tests {
 
         assert_eq!(defaults.profile_name.as_deref(), Some("auto"));
         assert!(defaults.root_agent_name.is_none());
+    }
+
+    #[tokio::test]
+    async fn prompt_mode_cycle_advances_and_reverses_across_agent_and_preset_entries() {
+        let config = Config::default();
+        let agent_registry = Arc::new(AgentRegistry::from_config(&config));
+        let modes = cli_prompt_modes(&config, agent_registry.as_ref());
+        assert!(modes.len() >= 2, "expected at least two execution modes");
+
+        let initial_agent = modes
+            .iter()
+            .find_map(|mode| match mode {
+                CliPromptModeEntry::Agent(agent) => Some(agent.clone()),
+                CliPromptModeEntry::Preset(_) => None,
+            })
+            .expect("expected at least one agent mode");
+
+        let mut runtime = build_cli_execution_runtime(CliRuntimeBuildInput {
+            config: &config,
+            agent_registry: agent_registry.clone(),
+            selection: &CliRunSelection {
+                requested_agent: Some(initial_agent),
+                ..CliRunSelection::default()
+            },
+            working_dir: std::env::current_dir().expect("cwd"),
+        })
+        .await
+        .expect("build runtime");
+
+        match &modes[0] {
+            CliPromptModeEntry::Agent(agent) => {
+                runtime.resolved_agent_name = agent.clone();
+                runtime.scheduler_profile_name = None;
+            }
+            CliPromptModeEntry::Preset(profile) => {
+                runtime.scheduler_profile_name = Some(profile.clone());
+            }
+        }
+
+        cli_cycle_prompt_mode(&mut runtime, &config, agent_registry.as_ref(), false);
+        match &modes[1] {
+            CliPromptModeEntry::Agent(agent) => {
+                assert_eq!(runtime.resolved_agent_name, *agent);
+                assert!(runtime.scheduler_profile_name.is_none());
+            }
+            CliPromptModeEntry::Preset(profile) => {
+                assert_eq!(runtime.scheduler_profile_name.as_deref(), Some(profile.as_str()));
+            }
+        }
+
+        cli_cycle_prompt_mode(&mut runtime, &config, agent_registry.as_ref(), true);
+        match &modes[0] {
+            CliPromptModeEntry::Agent(agent) => {
+                assert_eq!(runtime.resolved_agent_name, *agent);
+                assert!(runtime.scheduler_profile_name.is_none());
+            }
+            CliPromptModeEntry::Preset(profile) => {
+                assert_eq!(runtime.scheduler_profile_name.as_deref(), Some(profile.as_str()));
+            }
+        }
     }
 }

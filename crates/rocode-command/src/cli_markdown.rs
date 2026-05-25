@@ -398,14 +398,17 @@ impl<'a> MarkdownRenderer<'a> {
             }
             TagEnd::TableRow => {
                 if !self.table_current_cell.is_empty() {
-                    self.table_current_row.push(std::mem::take(&mut self.table_current_cell));
+                    self.table_current_row
+                        .push(std::mem::take(&mut self.table_current_cell));
                 }
                 if !self.table_current_row.is_empty() {
-                    self.table_rows.push(std::mem::take(&mut self.table_current_row));
+                    self.table_rows
+                        .push(std::mem::take(&mut self.table_current_row));
                 }
             }
             TagEnd::TableCell => {
-                self.table_current_row.push(std::mem::take(&mut self.table_current_cell));
+                self.table_current_row
+                    .push(std::mem::take(&mut self.table_current_cell));
             }
             _ => {}
         }
@@ -507,7 +510,12 @@ impl<'a> MarkdownRenderer<'a> {
         if self.table_rows.is_empty() {
             return;
         }
-        let col_count = self.table_rows.iter().map(|r| r.len()).max().unwrap_or(0)
+        let col_count = self
+            .table_rows
+            .iter()
+            .map(|r| r.len())
+            .max()
+            .unwrap_or(0)
             .max(self.table_alignments.len());
         if col_count == 0 {
             return;
@@ -539,7 +547,9 @@ impl<'a> MarkdownRenderer<'a> {
             s.push(left);
             for (i, w) in widths.iter().enumerate() {
                 s.push_str(&"─".repeat(*w));
-                if i + 1 < widths.len() { s.push(mid); }
+                if i + 1 < widths.len() {
+                    s.push(mid);
+                }
             }
             s.push(right);
             s.push('\n');
@@ -567,7 +577,9 @@ impl<'a> MarkdownRenderer<'a> {
                     let mut visible_w = 0usize;
                     for ch in cell.chars() {
                         let ch_w = unicode_width::UnicodeWidthStr::width(ch.to_string().as_str());
-                        if visible_w + ch_w > budget { break; }
+                        if visible_w + ch_w > budget {
+                            break;
+                        }
                         visible.push(ch);
                         visible_w += ch_w;
                     }
@@ -586,10 +598,12 @@ impl<'a> MarkdownRenderer<'a> {
         for (i, row) in self.table_rows.iter().enumerate() {
             self.output.push_str(&style.dim(&row_line(row)));
             if i == 0 {
-                self.output.push_str(&style.dim(&border_line('├', '┼', '┤')));
+                self.output
+                    .push_str(&style.dim(&border_line('├', '┼', '┤')));
             }
         }
-        self.output.push_str(&style.dim(&border_line('└', '┴', '┘')));
+        self.output
+            .push_str(&style.dim(&border_line('└', '┴', '┘')));
         self.output.push('\n');
         self.last_was_blank = true;
     }
@@ -849,7 +863,10 @@ mod tests {
 
     #[test]
     fn renders_markdown_table_with_box_borders() {
-        let style = CliStyle { color: true, width: 80 };
+        let style = CliStyle {
+            color: true,
+            width: 80,
+        };
         let out = render_markdown("| A | B |\n| --- | --- |\n| 1 | 2 |\n", &style);
         assert!(out.contains('┌'), "table missing top-left corner");
         assert!(out.contains('┐'), "table missing top-right corner");
@@ -860,40 +877,55 @@ mod tests {
 
     #[test]
     fn table_inline_code_preserved_in_cell() {
-        let style = CliStyle { color: true, width: 80 };
+        let style = CliStyle {
+            color: true,
+            width: 80,
+        };
         let out = render_markdown("| cmd |\n| --- |\n| `ls -la` |\n", &style);
         assert!(out.contains("ls -la"), "inline code must appear in cell");
     }
 
     #[test]
     fn table_sparse_row_pads_empty_cells() {
-        let style = CliStyle { color: true, width: 80 };
+        let style = CliStyle {
+            color: true,
+            width: 80,
+        };
         // Row with fewer cells than the header — must still render with aligned borders.
         let out = render_markdown("| A | B |\n| --- | --- |\n| only_one |\n", &style);
         // The closing ┘ should be at the correct position, not shifted left.
-        assert!(out.contains('┘'), "table must close properly with sparse row");
+        assert!(
+            out.contains('┘'),
+            "table must close properly with sparse row"
+        );
     }
 
     #[test]
     fn table_narrow_width_compresses_columns() {
-        let narrow = CliStyle { color: true, width: 25 };
+        let narrow = CliStyle {
+            color: true,
+            width: 25,
+        };
         // 3 columns with very long content in narrow terminal — must truncate.
         let out = render_markdown(
             "| AAAAAA | BBBBBB | CCCCCC |\n| --- | --- | --- |\n| xxxxxx | yyyyyy | zzzzzz |\n",
             &narrow,
         );
         // In 25 cols with 3 wide columns, borders still close correctly.
-        assert!(out.contains('┘'), "table must close properly in narrow terminal");
+        assert!(
+            out.contains('┘'),
+            "table must close properly in narrow terminal"
+        );
         assert!(!out.is_empty(), "table must produce output");
     }
 
     #[test]
     fn table_cjk_width_accounted() {
-        let style = CliStyle { color: true, width: 80 };
-        let out = render_markdown(
-            "| 名称 | 值 |\n| --- | --- |\n| 你好 | 世界 |\n",
-            &style,
-        );
+        let style = CliStyle {
+            color: true,
+            width: 80,
+        };
+        let out = render_markdown("| 名称 | 值 |\n| --- | --- |\n| 你好 | 世界 |\n", &style);
         // The CJK chars should appear, not break the border.
         assert!(out.contains("你好"), "CJK cell content must appear");
         assert!(out.contains('┘'), "table borders must not break with CJK");

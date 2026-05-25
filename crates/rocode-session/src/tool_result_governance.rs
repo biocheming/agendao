@@ -290,8 +290,14 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut metadata = HashMap::new();
         let large = "x".repeat(SINGLE_TOOL_RESULT_MAX_CHARS + 1024);
-        let governed =
-            govern_tool_result_output("session-1", "call-1", large, &mut metadata, dir.path(), ToolResultBudget::legacy());
+        let governed = govern_tool_result_output(
+            "session-1",
+            "call-1",
+            large,
+            &mut metadata,
+            dir.path(),
+            ToolResultBudget::legacy(),
+        );
         assert!(governed.degraded);
         assert!(governed
             .output
@@ -342,7 +348,8 @@ mod tests {
             ),
         ];
 
-        let governed = govern_tool_result_batch("session-1", batch, dir.path(), ToolResultBudget::legacy());
+        let governed =
+            govern_tool_result_batch("session-1", batch, dir.path(), ToolResultBudget::legacy());
         assert_eq!(governed.len(), 3);
         assert_eq!(governed[0].0, "call-1");
         assert_eq!(governed[1].0, "call-2");

@@ -7,7 +7,9 @@ use crate::runtime_control::{
     build_session_execution_topology, ExecutionKind, ExecutionRecord, QuestionInfo, QuestionReply,
     RuntimeControlRegistry, SessionExecutionTopology, SessionRunStatus, TopologyChangeContext,
 };
-use crate::session_runtime::events::{DiffEntry, EventBusTelemetry, QuestionResolutionKind, ServerEvent};
+use crate::session_runtime::events::{
+    DiffEntry, EventBusTelemetry, QuestionResolutionKind, ServerEvent,
+};
 use crate::session_runtime::stage_summary::StageSummaryStore;
 use crate::session_runtime::state::{
     InterruptTarget, RuntimeProtocolUpdate, RuntimeStateStore, SessionRuntimeState,
@@ -18,8 +20,8 @@ use rocode_plugin::{HookContext, HookEvent};
 use rocode_session::{
     SessionMessage, SessionTelemetrySnapshot, SessionTelemetrySnapshotVersion, SessionUsage,
 };
-use rocode_types::{SessionMemoryTelemetrySummary, SessionToolRepairTelemetrySummary};
 use rocode_types::{ControlInputKind, ControlInputPhase};
+use rocode_types::{SessionMemoryTelemetrySummary, SessionToolRepairTelemetrySummary};
 
 pub(crate) struct RuntimeTelemetryAuthority {
     event_bus: broadcast::Sender<String>,
@@ -50,7 +52,11 @@ impl RuntimeTelemetryAuthority {
                 let event = Self::topology_changed_stage_event(ctx);
                 tokio::spawn(async move {
                     Self::record_transportable_stage_event(
-                        log, &event_bus, telemetry.as_deref(), &session_id, event,
+                        log,
+                        &event_bus,
+                        telemetry.as_deref(),
+                        &session_id,
+                        event,
                     )
                     .await;
                 });
@@ -76,6 +82,11 @@ impl RuntimeTelemetryAuthority {
     }
 
     pub(crate) async fn set_session_run_status(&self, session_id: &str, status: SessionRunStatus) {
+        let previous = self.runtime_control.session_run_status(session_id).await;
+        if previous == status {
+            return;
+        }
+
         self.runtime_control
             .set_session_run_status(session_id, status.clone())
             .await;
@@ -586,11 +597,7 @@ impl RuntimeTelemetryAuthority {
         .await;
     }
 
-    pub(crate) async fn interrupt_requested(
-        &self,
-        session_id: &str,
-        target: InterruptTarget,
-    ) {
+    pub(crate) async fn interrupt_requested(&self, session_id: &str, target: InterruptTarget) {
         let now = chrono::Utc::now().timestamp_millis();
         self.runtime_state
             .interrupt_requested(session_id, now, target)
@@ -948,7 +955,7 @@ mod tests {
     use rocode_plugin::{global, Hook, HookContext};
     use std::collections::HashMap;
     use std::sync::Arc;
-    use tokio::sync::mpsc;
+    use tokio::sync::{broadcast, mpsc};
     use tokio::time::{timeout, Duration};
 
     async fn recv_stage_summary_hook_for_session(
@@ -967,6 +974,28 @@ mod tests {
                 Ok(Some(ctx)) if ctx.session_id.as_deref() == Some(session_id) => return Some(ctx),
                 Ok(Some(_)) => continue,
                 Ok(None) | Err(_) => return None,
+            }
+        }
+    }
+
+    async fn recv_session_status_payload(
+        rx: &mut broadcast::Receiver<String>,
+        wait: Duration,
+    ) -> Option<String> {
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return None;
+            }
+            let remaining = deadline.saturating_duration_since(now);
+            match timeout(remaining, rx.recv()).await {
+                Ok(Ok(payload)) if payload.contains("\"type\":\"session.status\"") => {
+                    return Some(payload);
+                }
+                Ok(Ok(_)) => continue,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) | Err(_) => return None,
             }
         }
     }
@@ -1060,5 +1089,35 @@ mod tests {
         let _ = global()
             .remove(&HookEvent::StageSummaryUpdated, &hook_name)
             .await;
+    }
+
+    #[tokio::test]
+    async fn duplicate_session_status_is_not_rebroadcast() {
+        let (tx, mut rx) = broadcast::channel(8);
+        let authority = RuntimeTelemetryAuthority::new(tx, None);
+
+        authority
+            .set_session_run_status("ses_status_dedupe", SessionRunStatus::Busy)
+            .await;
+        let first = recv_session_status_payload(&mut rx, Duration::from_millis(200))
+            .await
+            .expect("first status event should arrive");
+        assert!(first.contains("\"type\":\"session.status\""));
+
+        authority
+            .set_session_run_status("ses_status_dedupe", SessionRunStatus::Busy)
+            .await;
+        assert!(recv_session_status_payload(&mut rx, Duration::from_millis(100))
+            .await
+            .is_none());
+
+        authority
+            .set_session_run_status("ses_status_dedupe", SessionRunStatus::Idle)
+            .await;
+        let second = recv_session_status_payload(&mut rx, Duration::from_millis(200))
+            .await
+            .expect("idle transition should arrive");
+        assert!(second.contains("\"type\":\"session.status\""));
+        assert!(second.contains("\"type\":\"idle\""));
     }
 }

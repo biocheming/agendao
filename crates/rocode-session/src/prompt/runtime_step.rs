@@ -24,11 +24,10 @@ use crate::Session;
 
 use super::{
     assistant_reasoning_live_identity, assistant_text_live_identity, tool_call_live_identity,
-    tool_result_live_identity,
-    tool_progress_detail, tool_result_detail, AgentLookup, AskPermissionHook, AskQuestionHook,
-    EventBroadcastHook, OutputBlockEvent, OutputBlockHook, PersistedSubsession, PublishBusHook,
-    SessionPrompt, SessionStepShared, SessionUpdateHook, StreamToolResultEntry, StreamToolState,
-    STREAM_UPDATE_INTERVAL_MS,
+    tool_progress_detail, tool_result_detail, tool_result_live_identity, AgentLookup,
+    AskPermissionHook, AskQuestionHook, EventBroadcastHook, OutputBlockEvent, OutputBlockHook,
+    PersistedSubsession, PublishBusHook, SessionPrompt, SessionStepShared, SessionUpdateHook,
+    StreamToolResultEntry, StreamToolState, STREAM_UPDATE_INTERVAL_MS,
 };
 
 pub(super) struct SessionToolExecutor {
@@ -391,24 +390,19 @@ impl<'a> SessionStepSink<'a> {
             OutputBlock::Tool(tool) => {
                 let tool_call_id = id?;
                 let message_id = self.assistant_message_id()?;
-                let phase = match tool.phase {
-                    rocode_content::output_blocks::ToolPhase::Start => {
-                        rocode_types::LivePartPhase::Start
-                    }
-                    rocode_content::output_blocks::ToolPhase::Running => {
-                        rocode_types::LivePartPhase::Append
-                    }
-                    rocode_content::output_blocks::ToolPhase::Done
-                    | rocode_content::output_blocks::ToolPhase::Error => {
-                        rocode_types::LivePartPhase::End
-                    }
-                };
                 let identity = match tool.phase {
+                    rocode_content::output_blocks::ToolPhase::Running => {
+                        return None;
+                    }
                     rocode_content::output_blocks::ToolPhase::Done
                     | rocode_content::output_blocks::ToolPhase::Error => {
+                        let phase = rocode_types::LivePartPhase::End;
                         tool_result_live_identity(&message_id, tool_call_id, phase)
                     }
-                    _ => tool_call_live_identity(&message_id, tool_call_id, phase),
+                    rocode_content::output_blocks::ToolPhase::Start => {
+                        let phase = rocode_types::LivePartPhase::Start;
+                        tool_call_live_identity(&message_id, tool_call_id, phase)
+                    }
                 };
                 Some(identity)
             }

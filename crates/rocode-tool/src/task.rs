@@ -13,9 +13,8 @@ use rocode_core::agent_task_registry::{global_task_registry, AgentTaskStatus};
 use crate::skill_support::{load_skills_prompt_context, LoadedSkillsPromptContext};
 use crate::{
     append_subsession_handoff_recent_tail_from_extra, append_tool_repair_event_map,
-    merge_tool_repair_telemetry, structured_dangerous_exec_lifetimes, tool_repair_event,
-    Metadata, PermissionRequest, TaskAgentInfo, TaskAgentModel, Tool, ToolContext, ToolError,
-    ToolResult,
+    merge_tool_repair_telemetry, structured_dangerous_exec_lifetimes, tool_repair_event, Metadata,
+    PermissionRequest, TaskAgentInfo, TaskAgentModel, Tool, ToolContext, ToolError, ToolResult,
 };
 
 pub struct TaskTool;
@@ -954,7 +953,10 @@ mod tests {
             task_request.matcher_kind,
             Some(rocode_permission::PermissionMatcherKind::ScopeOnly)
         );
-        assert_eq!(task_request.matcher_key.as_deref(), Some("task:agent:build"));
+        assert_eq!(
+            task_request.matcher_key.as_deref(),
+            Some("task:agent:build")
+        );
         assert_eq!(
             task_request.supported_lifetimes,
             structured_dangerous_exec_lifetimes()

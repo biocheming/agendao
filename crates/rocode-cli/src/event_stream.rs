@@ -11,9 +11,8 @@ use tokio::sync::mpsc;
 
 use crate::util::server_url;
 
-/// Interactive CLI renders assistant/tool output incrementally, so it must
-/// subscribe to a high-frequency tier instead of the low-frequency `cli`
-/// tier, which is final-only and strips `output_block` events server-side.
+/// Interactive CLI subscribes to the high-frequency `tui` tier so assistant
+/// text, reasoning, and tool progress appear live in the terminal.
 const INTERACTIVE_CLI_SSE_TIER: &str = "tui";
 
 // ── Event types ──────────────────────────────────────────────────────
@@ -21,6 +20,10 @@ const INTERACTIVE_CLI_SSE_TIER: &str = "tui";
 /// Events the CLI cares about, parsed from the SSE stream.
 #[derive(Debug, Clone)]
 pub enum CliServerEvent {
+    /// SSE transport is reconnecting after a disconnect.
+    StreamReconnecting { delay_ms: u64 },
+    /// SSE transport successfully connected again.
+    StreamConnected,
     /// Global config changed — refetch `/config` for updated preferences.
     ConfigUpdated,
     /// Session state changed — fetch latest session to diff messages.
@@ -134,6 +137,9 @@ pub fn spawn_sse_subscriber(
                     if cancel.is_cancelled() {
                         break;
                     }
+                    let _ = tx.send(CliServerEvent::StreamReconnecting {
+                        delay_ms: backoff.as_millis() as u64,
+                    });
                     tracing::warn!("SSE connection lost: {}. Reconnecting in {:?}…", e, backoff);
                     tokio::select! {
                         _ = tokio::time::sleep(backoff) => {}
@@ -170,6 +176,10 @@ async fn connect_and_consume(
 
     if !resp.status().is_success() {
         anyhow::bail!("SSE connect failed: {}", resp.status());
+    }
+
+    if tx.send(CliServerEvent::StreamConnected).is_err() {
+        return Ok(());
     }
 
     let mut stream = resp.bytes_stream();
@@ -630,7 +640,10 @@ mod tests {
     #[test]
     fn interactive_cli_subscribes_to_high_frequency_sse_tier() {
         let url = interactive_cli_sse_url("http://127.0.0.1:8757", "session-1");
-        assert_eq!(url, "http://127.0.0.1:8757/event?session=session-1&tier=tui");
+        assert_eq!(
+            url,
+            "http://127.0.0.1:8757/event?session=session-1&tier=tui"
+        );
     }
 
     #[test]

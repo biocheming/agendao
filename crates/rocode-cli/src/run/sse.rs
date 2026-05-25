@@ -43,6 +43,94 @@ fn permission_timestamp_now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
+fn cli_summary_thinking_label() -> String {
+    "Thinking".to_string()
+}
+
+fn cli_summary_tool_label(tool_name: &str) -> String {
+    let label =
+        rocode_command::output_blocks::tool_cli_activity_label(&rocode_command::output_blocks::ToolBlock::start(tool_name));
+    format!("Using {label}")
+}
+
+fn cli_summary_permission_label(tool_name: Option<&str>) -> String {
+    match tool_name.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(tool_name) => format!("Awaiting permission · {}", cli_summary_tool_label(tool_name)),
+        None => "Awaiting permission".to_string(),
+    }
+}
+
+fn cli_summary_waiting_label() -> String {
+    "Awaiting user input".to_string()
+}
+
+fn cli_session_update_finishes_turn(source: Option<&str>) -> bool {
+    matches!(
+        source,
+        Some(
+            "turn.final"
+                | "prompt.final"
+                | "stream.final"
+                | "prompt.completed"
+                | "prompt.done"
+        )
+    )
+}
+
+fn cli_restore_compact_summary(projection: &mut CliFrontendProjection) {
+    projection.prompt_lanes.clear_non_error();
+    projection.active_label =
+        if projection.pending_permission_count > 0 || projection.submitting_permission_count > 0 {
+            Some("Awaiting permission".to_string())
+        } else {
+            match projection.phase {
+                CliFrontendPhase::Busy => Some(cli_summary_thinking_label()),
+                CliFrontendPhase::Waiting => Some(cli_summary_waiting_label()),
+                _ => None,
+            }
+        };
+}
+
+fn cli_push_runtime_aux_block(
+    runtime: &CliExecutionRuntime,
+    block: OutputBlock,
+) {
+    if let Some(line) = cli_prompt_aux_line(&block) {
+        if let Ok(mut projection) = runtime.frontend_projection.lock() {
+            projection.prompt_lanes.push_aux_line(line.lane, &line.text);
+        }
+    }
+}
+
+fn cli_output_block_updates_transcript_authority(
+    block: &OutputBlock,
+    live_identity: Option<&rocode_types::LiveMessagePartIdentity>,
+) -> bool {
+    if let Some(identity) = live_identity {
+        return LiveSemanticConsumer::is_transcript_bearing_kind(&identity.part_kind);
+    }
+
+    match block {
+        OutputBlock::Message(_) | OutputBlock::Reasoning(_) => true,
+        OutputBlock::Tool(tool) => matches!(tool.phase, ToolPhase::Done | ToolPhase::Error),
+        _ => false,
+    }
+}
+
+fn cli_store_active_tool_label(runtime: &CliExecutionRuntime, tool_call_id: &str, tool_name: &str) {
+    if let Ok(mut labels) = runtime.active_tool_labels.lock() {
+        labels.insert(tool_call_id.to_string(), tool_name.to_string());
+    }
+}
+
+fn cli_take_active_tool_label(runtime: &CliExecutionRuntime, tool_call_id: &str) -> Option<String> {
+    runtime
+        .active_tool_labels
+        .lock()
+        .ok()
+        .and_then(|mut labels| labels.remove(tool_call_id))
+}
+
 fn ingress_stabilization_label(value: Option<&serde_json::Value>) -> Option<String> {
     let value = value?.as_object()?;
     let source = value
@@ -324,14 +412,11 @@ async fn run_server_prompt_with_parts(
     cli_frontend_set_phase(
         &runtime.frontend_projection,
         CliFrontendPhase::Busy,
-        Some(
-            runtime
-                .scheduler_profile_name
-                .as_deref()
-                .map(|profile| format!("preset {}", profile))
-                .unwrap_or_else(|| "assistant response".to_string()),
-        ),
+        Some(cli_summary_thinking_label()),
     );
+    if let Ok(mut active_tool_labels) = runtime.active_tool_labels.lock() {
+        active_tool_labels.clear();
+    }
     print_block(
         Some(runtime),
         OutputBlock::Message(MessageBlock::full(
@@ -340,6 +425,8 @@ async fn run_server_prompt_with_parts(
         )),
         style,
     )?;
+    cli_capture_visible_root_history_transcript(runtime);
+    cli_capture_visible_root_transcript(runtime);
 
     let Some(session_id) = runtime.server_session_id.clone() else {
         anyhow::bail!("CLI server session is not initialized");
@@ -411,8 +498,13 @@ async fn run_server_prompt_with_parts(
                     continue;
                 }
                 if cli_tracks_related_session(runtime, &session_id) {
-                    handle_question_from_sse(runtime, api_client, &request_id, &questions_json)
-                        .await;
+                    handle_question_from_sse(
+                        runtime,
+                        api_client,
+                        &request_id,
+                        &questions_json,
+                    )
+                    .await;
                 }
             }
             Some(CliServerEvent::QuestionResolved { request_id })
@@ -426,8 +518,13 @@ async fn run_server_prompt_with_parts(
                 info_json,
             }) => {
                 if cli_tracks_related_session(runtime, &session_id) {
-                    handle_permission_from_sse(runtime, api_client, &permission_id, &info_json)
-                        .await;
+                    handle_permission_from_sse(
+                        runtime,
+                        api_client,
+                        &permission_id,
+                        &info_json,
+                    )
+                    .await;
                 }
             }
             Some(CliServerEvent::ConfigUpdated) => {
@@ -532,6 +629,30 @@ fn handle_sse_event(
         |event_session_id: &str| cli_tracks_related_session(runtime, event_session_id);
 
     match event {
+        CliServerEvent::StreamReconnecting { delay_ms } => {
+            if let Ok(mut projection) = runtime.frontend_projection.lock() {
+                projection.run_tail = Some(crate::run::frontend_state_types::CliRunTailState {
+                    status: "reconnecting".to_string(),
+                    detail: Some(format!(
+                        "retrying in {}s",
+                        ((delay_ms + 999) / 1000).max(1)
+                    )),
+                });
+            }
+            cli_refresh_prompt(runtime);
+        }
+        CliServerEvent::StreamConnected => {
+            if let Ok(mut projection) = runtime.frontend_projection.lock() {
+                if projection
+                    .run_tail
+                    .as_ref()
+                    .is_some_and(|tail| tail.status == "reconnecting")
+                {
+                    projection.run_tail = None;
+                }
+            }
+            cli_refresh_prompt(runtime);
+        }
         CliServerEvent::ConfigUpdated => {
             tracing::debug!("config.updated reached sync handler");
         }
@@ -548,7 +669,7 @@ fn handle_sse_event(
             cli_frontend_set_phase(
                 &runtime.frontend_projection,
                 CliFrontendPhase::Busy,
-                Some("server processing".to_string()),
+                Some(cli_summary_thinking_label()),
             );
             cli_refresh_prompt(runtime);
         }
@@ -563,11 +684,18 @@ fn handle_sse_event(
             if !is_root_session(&session_id) {
                 return;
             }
-            let _ = print_block(
-                Some(runtime),
-                OutputBlock::Status(StatusBlock::warning("Retrying…")),
-                style,
+            if let Ok(mut projection) = runtime.frontend_projection.lock() {
+                projection.run_tail =
+                    Some(crate::run::frontend_state_types::CliRunTailState {
+                        status: "retrying".to_string(),
+                        detail: Some("Waiting for automatic retry.".to_string()),
+                    });
+            }
+            cli_push_runtime_aux_block(
+                runtime,
+                OutputBlock::Status(StatusBlock::warning("Retry scheduled.")),
             );
+            cli_refresh_prompt(runtime);
         }
         CliServerEvent::QuestionCreated {
             request_id,
@@ -607,6 +735,7 @@ fn handle_sse_event(
                 projection.submitting_permission_count = 0;
                 projection.last_permission_submit_error = None;
                 projection.permission_submit_completed_at = Some(permission_timestamp_now());
+                cli_restore_compact_summary(&mut projection);
             }
             cli_refresh_prompt(runtime);
         }
@@ -622,9 +751,21 @@ fn handle_sse_event(
                 topology.active = true;
             }
             tracing::debug!(tool_call_id, tool_name, "tool call started");
+            cli_store_active_tool_label(runtime, &tool_call_id, &tool_name);
             if !is_root_session(&session_id) {
                 return;
             }
+            if let Ok(mut projection) = runtime.frontend_projection.lock() {
+                projection.set_runtime_activity(
+                    CliFrontendPhase::Busy,
+                    Some(cli_summary_tool_label(&tool_name)),
+                );
+            }
+            cli_push_runtime_aux_block(
+                runtime,
+                OutputBlock::Status(StatusBlock::title(cli_summary_tool_label(&tool_name))),
+            );
+            cli_refresh_prompt(runtime);
         }
         CliServerEvent::ToolCallCompleted {
             session_id,
@@ -634,6 +775,14 @@ fn handle_sse_event(
                 return;
             }
             tracing::debug!(tool_call_id, "tool call completed");
+            let _ = cli_take_active_tool_label(runtime, &tool_call_id);
+            if !is_root_session(&session_id) {
+                return;
+            }
+            if let Ok(mut projection) = runtime.frontend_projection.lock() {
+                cli_restore_compact_summary(&mut projection);
+            }
+            cli_refresh_prompt(runtime);
         }
         CliServerEvent::AttachedSessionAttached {
             parent_id,
@@ -682,17 +831,102 @@ fn handle_sse_event(
                 }
             }
             cli_frontend_observe_block(&runtime.frontend_projection, &block);
+            let transcript_bearing_identity = live_identity.as_ref().filter(|identity| {
+                LiveSemanticConsumer::is_transcript_bearing_kind(&identity.part_kind)
+            });
+            let buffered_transcript_identity = transcript_bearing_identity.filter(|identity| {
+                matches!(
+                    identity.part_kind,
+                    rocode_types::LiveMessagePartKind::AssistantText
+                        | rocode_types::LiveMessagePartKind::AssistantReasoning
+                )
+            });
+            let block_updates_authority =
+                cli_output_block_updates_transcript_authority(&block, live_identity.as_ref());
+            let prompt_owned_live_transcript = transcript_bearing_identity.is_some()
+                && (runtime.terminal_surface.is_some() || runtime.prompt_session.is_some());
+            let skip_secondary_live_render =
+                buffered_transcript_identity.is_some() && prompt_owned_live_transcript;
+            let sync_live_transcript = transcript_bearing_identity.is_some()
+                && (buffered_transcript_identity.is_none()
+                    || matches!(
+                        live_identity.as_ref().map(|identity| identity.phase),
+                        Some(rocode_types::LivePartPhase::End)
+                    ));
+            let finalize_live_transcript = buffered_transcript_identity.is_some()
+                && matches!(
+                    live_identity.as_ref().map(|identity| identity.phase),
+                    Some(rocode_types::LivePartPhase::End)
+                );
+            let mut prompt_owned_transcript_refreshed = false;
+            if let Some(identity) = transcript_bearing_identity {
+                if is_root_session(&session_id) {
+                    if let Ok(mut root) = runtime.root_session_transcript.lock() {
+                        cli_apply_live_slot_update(&mut root, &block, identity, style);
+                        if sync_live_transcript && cli_is_root_focused(runtime) {
+                            cli_sync_projection_transcript(runtime, root.clone());
+                            if prompt_owned_live_transcript {
+                                cli_refresh_prompt(runtime);
+                                prompt_owned_transcript_refreshed = true;
+                            }
+                        }
+                    }
+                } else if let Ok(mut transcripts) = runtime.attached_session_transcripts.lock() {
+                    let transcript = transcripts.entry(session_id.clone()).or_default();
+                    cli_apply_live_slot_update(transcript, &block, identity, style);
+                    if sync_live_transcript
+                        && focused_session_id.as_deref() == Some(session_id.as_str())
+                    {
+                        cli_sync_projection_transcript(runtime, transcript.clone());
+                        if prompt_owned_live_transcript {
+                            cli_refresh_prompt(runtime);
+                            prompt_owned_transcript_refreshed = true;
+                        }
+                    }
+                }
+            }
             if !is_root_session(&session_id) {
+                if skip_secondary_live_render {
+                    if finalize_live_transcript
+                        && focused_session_id.as_deref() == Some(session_id.as_str())
+                        && !prompt_owned_transcript_refreshed
+                    {
+                        cli_refresh_prompt(runtime);
+                    }
+                    return;
+                }
                 let rendered = cli_render_session_block(
                     runtime,
                     &session_id,
+                    id.as_deref(),
                     &block,
                     live_identity.as_ref(),
                     style,
                 );
-                cli_cache_attached_session_rendered(runtime, &session_id, &rendered);
+                if block_updates_authority && transcript_bearing_identity.is_none() {
+                    cli_append_session_rendered_transcript(runtime, &session_id, &rendered);
+                }
                 if focused_session_id.as_deref() == Some(session_id.as_str()) {
-                    let _ = print_rendered(runtime.terminal_surface.as_deref(), &rendered);
+                    if let Some(surface) = runtime.terminal_surface.as_ref() {
+                        if prompt_owned_live_transcript {
+                            if !prompt_owned_transcript_refreshed {
+                                cli_refresh_prompt(runtime);
+                            }
+                        } else if !block_updates_authority {
+                            let _ = surface.print_rendered_passthrough(&rendered);
+                        } else {
+                            let _ = surface.print_rendered_stream(&rendered);
+                        }
+                    } else if !rendered.is_empty() {
+                        if block_updates_authority && transcript_bearing_identity.is_none() {
+                            if let Ok(mut projection) = runtime.frontend_projection.lock() {
+                                projection.transcript.append_rendered(&rendered);
+                                projection.scroll_offset = 0;
+                            }
+                        }
+                        print!("{}", rendered);
+                        let _ = io::stdout().flush();
+                    }
                 }
                 return;
             }
@@ -717,53 +951,49 @@ fn handle_sse_event(
                         projection.active_collapsed = true;
                     }
                     cli_refresh_prompt(runtime);
-                    let rendered = cli_render_session_block(
-                        runtime,
-                        "",
-                        &block,
-                        live_identity.as_ref(),
-                        style,
-                    );
-                    cli_cache_root_session_rendered(runtime, &rendered);
-                    if cli_is_root_focused(runtime) {
-                        let _ = print_rendered(runtime.terminal_surface.as_deref(), &rendered);
-                    }
                 }
                 _ => {
-                    let rendered = cli_render_session_block(
-                        runtime,
-                        "",
-                        &block,
-                        live_identity.as_ref(),
-                        style,
-                    );
-                    // P3-I: Identity-bearing blocks with surface use live slots
-                    // (replace model). Other paths keep append-only.
-                    let use_live_slot = live_identity.is_some()
-                        && runtime.terminal_surface.is_some();
-                    if use_live_slot {
-                        let identity = live_identity.as_ref().unwrap();
-                        let slot_key =
-                            format!("{}:{}", identity.message_id, identity.part_key);
-                        let plain =
-                            rocode_util::util::color::strip_ansi(&rendered);
-                        let surface = runtime.terminal_surface.as_ref().unwrap();
-                        if identity.phase == rocode_types::LivePartPhase::End {
-                            let _ = surface.commit_live_slot(&slot_key);
-                        } else {
-                            let _ = surface.apply_live_slot(
-                                &slot_key,
-                                rendered.clone(),
-                                plain,
-                            );
+                    if skip_secondary_live_render {
+                        if finalize_live_transcript
+                            && cli_is_root_focused(runtime)
+                            && !prompt_owned_transcript_refreshed
+                        {
+                            cli_refresh_prompt(runtime);
                         }
-                    } else {
-                        cli_cache_root_session_rendered(runtime, &rendered);
-                        if cli_is_root_focused(runtime) {
-                            let _ = print_rendered(
-                                runtime.terminal_surface.as_deref(),
-                                &rendered,
-                            );
+                        return;
+                    }
+                    let rendered =
+                        cli_render_session_block(
+                            runtime,
+                            "",
+                            id.as_deref(),
+                            &block,
+                            live_identity.as_ref(),
+                            style,
+                        );
+                    if block_updates_authority && transcript_bearing_identity.is_none() {
+                        cli_append_session_rendered_transcript(runtime, "", &rendered);
+                    }
+                    if cli_is_root_focused(runtime) {
+                        if let Some(surface) = runtime.terminal_surface.as_ref() {
+                            if prompt_owned_live_transcript {
+                                if !prompt_owned_transcript_refreshed {
+                                    cli_refresh_prompt(runtime);
+                                }
+                            } else if !block_updates_authority {
+                                let _ = surface.print_rendered_passthrough(&rendered);
+                            } else {
+                                let _ = surface.print_rendered_stream(&rendered);
+                            }
+                        } else if !rendered.is_empty() {
+                            if block_updates_authority && transcript_bearing_identity.is_none() {
+                                if let Ok(mut projection) = runtime.frontend_projection.lock() {
+                                    projection.transcript.append_rendered(&rendered);
+                                    projection.scroll_offset = 0;
+                                }
+                            }
+                            print!("{}", rendered);
+                            let _ = io::stdout().flush();
                         }
                     }
                 }
@@ -783,12 +1013,15 @@ fn handle_sse_event(
                 return;
             }
             tracing::error!(error, ?message_id, ?done, "server error");
-            let status = OutputBlock::Status(StatusBlock::error(error));
-            if cli_is_root_focused(runtime) {
-                let _ = print_block(Some(runtime), status, style);
-            } else {
-                cli_cache_root_session_block(runtime, &status, style);
+            if let Ok(mut projection) = runtime.frontend_projection.lock() {
+                projection.set_runtime_activity(CliFrontendPhase::Failed, None);
+                projection.run_tail =
+                    Some(crate::run::frontend_state_types::CliRunTailState {
+                    status: "error".to_string(),
+                    detail: Some(error),
+                    });
             }
+            cli_refresh_prompt(runtime);
         }
         CliServerEvent::Usage {
             session_id,
@@ -816,15 +1049,17 @@ fn handle_sse_event(
                 return;
             }
             if prompt_tokens > 0 || completion_tokens > 0 {
-                let status = OutputBlock::Status(StatusBlock::success(format!(
-                    "tokens: prompt={} completion={}",
-                    prompt_tokens, completion_tokens
-                )));
-                if cli_is_root_focused(runtime) {
-                    let _ = print_block(Some(runtime), status, style);
-                } else {
-                    cli_cache_root_session_block(runtime, &status, style);
+                if let Ok(mut projection) = runtime.frontend_projection.lock() {
+                    projection.run_tail =
+                        Some(crate::run::frontend_state_types::CliRunTailState {
+                        status: "complete".to_string(),
+                        detail: Some(format!(
+                            "input {} · output {}",
+                            prompt_tokens, completion_tokens
+                        )),
+                        });
                 }
+                cli_refresh_prompt(runtime);
             }
         }
         CliServerEvent::Unknown { event, data } => {
@@ -839,6 +1074,18 @@ async fn handle_question_from_sse(
     request_id: &str,
     questions_json: &serde_json::Value,
 ) {
+    if let Ok(mut projection) = runtime.frontend_projection.lock() {
+        projection.set_runtime_activity(
+            CliFrontendPhase::Waiting,
+            Some(cli_summary_waiting_label()),
+        );
+    }
+    cli_push_runtime_aux_block(
+        runtime,
+        OutputBlock::Status(StatusBlock::warning(cli_summary_waiting_label())),
+    );
+    cli_refresh_prompt(runtime);
+
     let questions: Vec<rocode_tool::QuestionDef> =
         match serde_json::from_value(questions_json.clone()) {
             Ok(questions) => questions,
@@ -902,11 +1149,21 @@ async fn handle_permission_from_sse(
     permission_id: &str,
     info_json: &serde_json::Value,
 ) {
+    let permission_label =
+        serde_json::from_value::<crate::api_client::PermissionRequestInfo>(info_json.clone())
+            .ok()
+            .map(|info| cli_summary_permission_label(Some(info.tool.as_str())))
+            .unwrap_or_else(|| cli_summary_permission_label(None));
     if let Ok(mut projection) = runtime.frontend_projection.lock() {
+        projection.set_runtime_activity(CliFrontendPhase::Waiting, Some(permission_label.clone()));
         projection.pending_permission_count = 1;
         projection.submitting_permission_count = 0;
         projection.last_permission_submit_error = None;
     }
+    cli_push_runtime_aux_block(
+        runtime,
+        OutputBlock::Status(StatusBlock::warning(permission_label)),
+    );
     cli_refresh_prompt(runtime);
 
     let info: crate::api_client::PermissionRequestInfo =
@@ -985,13 +1242,34 @@ async fn handle_permission_from_sse(
     } else {
         lifetimes
     };
-
     let guard = runtime
         .spinner_guard
         .lock()
         .map(|spinner| spinner.clone())
         .unwrap_or_else(|_| SpinnerGuard::noop());
     guard.pause();
+    let prompt_session = runtime
+        .prompt_session_slot
+        .lock()
+        .ok()
+        .and_then(|slot| slot.as_ref().cloned());
+    let suspended_by_surface = match runtime.terminal_surface.as_ref() {
+        Some(surface) => surface.suspend_modal_prompt().unwrap_or(false),
+        None => false,
+    };
+    let suspended_directly = !suspended_by_surface && prompt_session.is_some();
+    if suspended_directly {
+        if let Some(prompt_session) = prompt_session.as_ref() {
+            let _ = prompt_session.suspend();
+        }
+    }
+
+    {
+        let _ = crossterm::terminal::disable_raw_mode();
+        let mut stdout = io::stdout();
+        let _ = crossterm::execute!(stdout, crossterm::cursor::Show);
+        let _ = stdout.flush();
+    }
 
     let decision = {
         let permission = permission.clone();
@@ -1035,6 +1313,13 @@ async fn handle_permission_from_sse(
                 projection.last_permission_submit_error = Some(error.to_string());
                 projection.permission_submit_completed_at = Some(permission_timestamp_now());
             }
+            if let Some(surface) = runtime.terminal_surface.as_ref() {
+                let _ = surface.resume_modal_prompt(suspended_by_surface);
+            } else if suspended_directly {
+                if let Some(prompt_session) = prompt_session.as_ref() {
+                    let _ = prompt_session.resume();
+                }
+            }
             cli_refresh_prompt(runtime);
             let _ = api_client
                 .reply_permission(
@@ -1053,6 +1338,13 @@ async fn handle_permission_from_sse(
                 projection.last_permission_submit_error = Some(error.to_string());
                 projection.permission_submit_completed_at = Some(permission_timestamp_now());
             }
+            if let Some(surface) = runtime.terminal_surface.as_ref() {
+                let _ = surface.resume_modal_prompt(suspended_by_surface);
+            } else if suspended_directly {
+                if let Some(prompt_session) = prompt_session.as_ref() {
+                    let _ = prompt_session.resume();
+                }
+            }
             cli_refresh_prompt(runtime);
             let _ = api_client
                 .reply_permission(
@@ -1064,6 +1356,14 @@ async fn handle_permission_from_sse(
             return;
         }
     };
+
+    if let Some(surface) = runtime.terminal_surface.as_ref() {
+        let _ = surface.resume_modal_prompt(suspended_by_surface);
+    } else if suspended_directly {
+        if let Some(prompt_session) = prompt_session.as_ref() {
+            let _ = prompt_session.resume();
+        }
+    }
 
     let (reply, message) = match decision {
         PermissionDecision::Allow => ("once", Some("approved".to_string())),
@@ -1115,11 +1415,13 @@ async fn cli_refresh_server_info(
                 for model in provider.models {
                     model_catalog.insert(
                         format!("{}/{}", provider.id, model.id),
-                        CliModelCatalogEntry {
-                            context_window: model.context_window,
-                            cost_per_million_input: model.cost_per_million_input,
-                            cost_per_million_output: model.cost_per_million_output,
-                        },
+                        CliModelCatalogEntry::from_provider_model(
+                            model.context_window,
+                            #[cfg(test)]
+                            model.cost_per_million_input,
+                            #[cfg(test)]
+                            model.cost_per_million_output,
+                        ),
                     );
                 }
             }
@@ -1162,6 +1464,22 @@ async fn cli_refresh_server_info(
                     projection.session_runtime = Some(telemetry.runtime.clone());
                     projection.stage_summaries = telemetry.stages.clone();
                     projection.telemetry_topology = Some(telemetry.topology.clone());
+                    if matches!(
+                        telemetry.runtime.run_status,
+                        crate::api_client::SessionRunStatusKind::Compacting
+                    ) {
+                        projection.run_tail =
+                            Some(crate::run::frontend_state_types::CliRunTailState {
+                                status: "compacting".to_string(),
+                                detail: Some("Preparing a smaller context window.".to_string()),
+                            });
+                    } else if projection
+                        .run_tail
+                        .as_ref()
+                        .is_some_and(|tail| tail.status == "compacting")
+                    {
+                        projection.run_tail = None;
+                    }
                     projection
                         .token_stats
                         .sync_from_snapshot(&telemetry.usage, Some(&telemetry.usage_books));
@@ -1196,12 +1514,156 @@ async fn cli_refresh_server_info(
     }
 }
 
+fn cli_history_message_role(role: &str) -> Option<OutputMessageRole> {
+    match role {
+        "user" => Some(OutputMessageRole::User),
+        "assistant" => Some(OutputMessageRole::Assistant),
+        _ => None,
+    }
+}
+
+fn cli_append_history_text_block(
+    transcript: &mut CliVisibleTranscript,
+    role: Option<OutputMessageRole>,
+    text: &mut String,
+    style: &CliStyle,
+) {
+    let Some(role) = role else {
+        text.clear();
+        return;
+    };
+    if text.trim().is_empty() {
+        text.clear();
+        return;
+    }
+    let rendered = render_cli_block_rich(
+        &OutputBlock::Message(MessageBlock::full(role, std::mem::take(text))),
+        style,
+    );
+    transcript.append_committed(&rendered);
+}
+
+fn cli_append_history_tool_result_block(
+    transcript: &mut CliVisibleTranscript,
+    tool_result: &crate::api_client::ToolResult,
+    style: &CliStyle,
+) {
+    let tool_name = tool_result
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&tool_result.tool_call_id)
+        .to_string();
+    let detail = tool_result
+        .content
+        .trim()
+        .is_empty()
+        .then_some(String::new())
+        .and_then(|_| None)
+        .or_else(|| Some(tool_result.content.clone()));
+    let block = if tool_result.is_error {
+        OutputBlock::Tool(rocode_command::output_blocks::ToolBlock::error(
+            tool_name,
+            detail.unwrap_or_else(|| "tool failed".to_string()),
+        ))
+    } else {
+        OutputBlock::Tool(rocode_command::output_blocks::ToolBlock::done(tool_name, detail))
+    };
+    transcript.append_committed(&render_cli_block_rich(&block, style));
+}
+
+fn cli_append_history_reasoning_block(
+    transcript: &mut CliVisibleTranscript,
+    text: &mut String,
+    style: &CliStyle,
+) {
+    if text.trim().is_empty() {
+        text.clear();
+        return;
+    }
+    let rendered = render_cli_block_rich(
+        &OutputBlock::Reasoning(ReasoningBlock::full(std::mem::take(text))),
+        style,
+    );
+    transcript.append_committed(&rendered);
+}
+
+fn cli_transcript_from_history(
+    messages: &[crate::api_client::MessageInfo],
+    style: &CliStyle,
+) -> CliVisibleTranscript {
+    let mut transcript = CliVisibleTranscript::default();
+
+    for message in messages {
+        let role = cli_history_message_role(&message.role);
+        let mut pending_text = String::new();
+        let mut pending_reasoning = String::new();
+
+        for part in &message.parts {
+            if part.ignored == Some(true) {
+                continue;
+            }
+
+            if part.part_type == "text" {
+                cli_append_history_reasoning_block(&mut transcript, &mut pending_reasoning, style);
+                if let Some(text) = part.text.as_deref() {
+                    pending_text.push_str(text);
+                }
+                continue;
+            }
+
+            if part.part_type == "reasoning" {
+                cli_append_history_text_block(&mut transcript, role, &mut pending_text, style);
+                if let Some(text) = part.text.as_deref() {
+                    pending_reasoning.push_str(text);
+                }
+                continue;
+            }
+
+            if let Some(tool_result) = part.tool_result.as_ref() {
+                cli_append_history_text_block(&mut transcript, role, &mut pending_text, style);
+                cli_append_history_reasoning_block(&mut transcript, &mut pending_reasoning, style);
+                cli_append_history_tool_result_block(&mut transcript, tool_result, style);
+            }
+        }
+
+        cli_append_history_reasoning_block(&mut transcript, &mut pending_reasoning, style);
+        cli_append_history_text_block(&mut transcript, role, &mut pending_text, style);
+    }
+
+    transcript
+}
+
+async fn cli_refresh_session_transcript_from_history(
+    runtime: &CliExecutionRuntime,
+    api_client: &Arc<CliApiClient>,
+    session_id: &str,
+    style: &CliStyle,
+) -> Option<CliVisibleTranscript> {
+    match api_client.get_messages(session_id).await {
+        Ok(messages) => {
+            let transcript = cli_transcript_from_history(&messages, style);
+            cli_replace_root_history_transcript(runtime, transcript);
+            runtime
+                .root_history_transcript
+                .lock()
+                .ok()
+                .map(|history| history.clone())
+        }
+        Err(error) => {
+            tracing::debug!("Failed to rebuild CLI transcript from history: {}", error);
+            None
+        }
+    }
+}
+
 async fn handle_session_updated_from_sse(
     runtime: &CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
     session_id: &str,
     source: Option<&str>,
-    _style: &CliStyle,
+    style: &CliStyle,
 ) {
     let server_session_id = match runtime.server_session_id.as_deref() {
         Some(server_session_id) if server_session_id == session_id => server_session_id,
@@ -1210,6 +1672,11 @@ async fn handle_session_updated_from_sse(
     if !cli_session_update_requires_refresh(source) {
         return;
     }
+    let previous_visible_transcript = runtime
+        .root_session_transcript
+        .lock()
+        .ok()
+        .map(|transcript| transcript.clone());
     match api_client.get_session(server_session_id).await {
         Ok(session) => {
             if let Ok(mut projection) = runtime.frontend_projection.lock() {
@@ -1229,4 +1696,143 @@ async fn handle_session_updated_from_sse(
         Some(server_session_id),
     )
     .await;
+    let refreshed_history =
+        cli_refresh_session_transcript_from_history(runtime, api_client, server_session_id, style)
+            .await;
+    if let Some(transcript) = refreshed_history.clone() {
+        cli_replace_root_session_transcript(runtime, transcript.clone());
+        if cli_is_root_focused(runtime) {
+            if cli_session_update_finishes_turn(source) {
+                if let Some(previous_visible_transcript) = previous_visible_transcript.as_ref() {
+                    if let Some(suffix) =
+                        cli_history_transcript_suffix(previous_visible_transcript, &transcript)
+                    {
+                        if let Some(surface) = runtime.terminal_surface.as_ref() {
+                            let _ = surface.print_rendered_stream(&suffix);
+                        } else if !suffix.is_empty() {
+                            print!("{suffix}");
+                            let _ = io::stdout().flush();
+                        }
+                    }
+                }
+            }
+            cli_sync_projection_transcript(runtime, transcript);
+        }
+    }
+    if cli_session_update_finishes_turn(source) {
+        if let Ok(mut active_tool_labels) = runtime.active_tool_labels.lock() {
+            active_tool_labels.clear();
+        }
+    }
+}
+
+#[cfg(test)]
+mod cli_history_transcript_tests {
+    use super::cli_transcript_from_history;
+    use crate::api_client::{MessageInfo, MessagePart, MessageTokensInfo, ToolResult};
+    use rocode_command::cli_style::CliStyle;
+
+    fn text_part(id: &str, text: &str) -> MessagePart {
+        MessagePart {
+            id: id.to_string(),
+            part_type: "text".to_string(),
+            text: Some(text.to_string()),
+            file: None,
+            tool_call: None,
+            tool_result: None,
+            synthetic: None,
+            ignored: None,
+        }
+    }
+
+    fn tool_result_part(id: &str, title: &str, content: &str) -> MessagePart {
+        MessagePart {
+            id: id.to_string(),
+            part_type: "tool_result".to_string(),
+            text: None,
+            file: None,
+            tool_call: None,
+            tool_result: Some(ToolResult {
+                tool_call_id: "tool-call-1".to_string(),
+                content: content.to_string(),
+                is_error: false,
+                title: Some(title.to_string()),
+                metadata: None,
+                attachments: None,
+            }),
+            synthetic: None,
+            ignored: None,
+        }
+    }
+
+    fn reasoning_part(id: &str, text: &str) -> MessagePart {
+        MessagePart {
+            id: id.to_string(),
+            part_type: "reasoning".to_string(),
+            text: Some(text.to_string()),
+            file: None,
+            tool_call: None,
+            tool_result: None,
+            synthetic: None,
+            ignored: None,
+        }
+    }
+
+    fn ignored_text_part(id: &str, text: &str) -> MessagePart {
+        MessagePart {
+            ignored: Some(true),
+            ..text_part(id, text)
+        }
+    }
+
+    fn message(id: &str, role: &str, parts: Vec<MessagePart>) -> MessageInfo {
+        MessageInfo {
+            id: id.to_string(),
+            session_id: "session-1".to_string(),
+            role: role.to_string(),
+            created_at: 0,
+            completed_at: Some(1),
+            agent: None,
+            model: None,
+            mode: None,
+            finish: None,
+            error: None,
+            cost: 0.0,
+            tokens: MessageTokensInfo::default(),
+            parts,
+            metadata: None,
+            multimodal: None,
+        }
+    }
+
+    #[test]
+    fn history_transcript_rebuilds_final_user_assistant_and_tool_result_blocks() {
+        let style = CliStyle::plain();
+        let transcript = cli_transcript_from_history(
+            &[
+                message("msg-user", "user", vec![text_part("u1", "research x")]),
+                message(
+                    "msg-assistant",
+                    "assistant",
+                    vec![
+                        reasoning_part("r1", "Thinking about the result.\n"),
+                        text_part("a1", "Found two papers.\n"),
+                        tool_result_part("tr1", "SkillsList", "Available skills: <available_skills>"),
+                        ignored_text_part("a2", "internal-only"),
+                        text_part("a3", "Next I will summarize them."),
+                    ],
+                ),
+            ],
+            &style,
+        );
+
+        let rendered = rocode_util::util::color::strip_ansi(&transcript.rendered_text());
+        assert!(rendered.contains("research x"));
+        assert!(rendered.contains("Found two papers."));
+        assert!(rendered.contains("Thinking about the result."));
+        assert!(rendered.contains("SkillsList"));
+        assert!(rendered.contains("Available skills: <available_skills>"));
+        assert!(rendered.contains("Next I will summarize them."));
+        assert!(!rendered.contains("internal-only"));
+    }
 }

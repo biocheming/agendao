@@ -334,8 +334,8 @@ mod tests {
                 consumed_steering_count: 0,
                 last_steering_injected_at: None,
                 last_steering_source_session_id: None,
-            last_steering_latency_ms: None,
-            last_permission_pending_ms: None,
+                last_steering_latency_ms: None,
+                last_permission_pending_ms: None,
                 last_run_status: "completed".to_string(),
                 updated_at: 123,
             })

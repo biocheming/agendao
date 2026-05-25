@@ -266,11 +266,7 @@ impl RuntimeStateStore {
                 s.interrupt.requested_at = Some(requested_at);
                 s.interrupt.target = Some(target);
             }
-            RuntimeProtocolUpdate::ControlInputTransition {
-                kind,
-                phase,
-                at,
-            } => {
+            RuntimeProtocolUpdate::ControlInputTransition { kind, phase, at } => {
                 let _ = at;
                 match (kind, phase) {
                     (ControlInputKind::Followup, ControlInputPhase::Queued) => {
@@ -675,9 +671,7 @@ mod tests {
         store
             .question_created("ses_1", "q_1", serde_json::json!("q"))
             .await;
-        store
-            .permission_requested("ses_1", "p_1", 456, None)
-            .await;
+        store.permission_requested("ses_1", "p_1", 456, None).await;
         let state = store.get("ses_1").await.unwrap();
         assert_eq!(state.run_status, RunStatus::WaitingOnUser);
 
@@ -748,7 +742,10 @@ mod tests {
         store
             .interrupt_requested("ses_1", 789, InterruptTarget::Run)
             .await;
-        let state = store.get("ses_1").await.expect("runtime state should exist");
+        let state = store
+            .get("ses_1")
+            .await
+            .expect("runtime state should exist");
         assert_eq!(state.run_status, RunStatus::Cancelling);
         assert_eq!(state.interrupt.phase, InterruptPhase::Requested);
         assert_eq!(state.interrupt.requested_at, Some(789));
@@ -797,9 +794,19 @@ mod tests {
             .get("ses_idle")
             .await
             .expect("runtime state should exist after idle");
-        assert!(state.pending_permission.is_none(), "permission should be cleared by mark_idle");
-        assert_eq!(state.interrupt.phase, InterruptPhase::Idle, "interrupt should reset");
-        assert!(!state.pending_steering.is_empty(), "steering survives idle (consumed at tool boundary)");
+        assert!(
+            state.pending_permission.is_none(),
+            "permission should be cleared by mark_idle"
+        );
+        assert_eq!(
+            state.interrupt.phase,
+            InterruptPhase::Idle,
+            "interrupt should reset"
+        );
+        assert!(
+            !state.pending_steering.is_empty(),
+            "steering survives idle (consumed at tool boundary)"
+        );
     }
 
     /// P3-4: after interrupt → idle → run, the next turn's runtime state

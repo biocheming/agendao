@@ -7,8 +7,8 @@ use rocode_types::SessionMessage;
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::session_runtime::steering::PendingSteeringMessage;
 use crate::session_runtime::events::{broadcast_session_reconcile, ReconcileReason};
+use crate::session_runtime::steering::PendingSteeringMessage;
 use crate::{ApiError, Result, ServerState};
 
 #[derive(Debug, Deserialize)]
@@ -104,10 +104,9 @@ pub async fn submit_session_steering(
                 "steering_mode".to_string(),
                 serde_json::json!("next_tool_boundary"),
             );
-            notice.metadata.insert(
-                "steering_status".to_string(),
-                serde_json::json!("pending"),
-            );
+            notice
+                .metadata
+                .insert("steering_status".to_string(), serde_json::json!("pending"));
             notice.metadata.insert(
                 "steering_enqueued_at".to_string(),
                 serde_json::json!(now_ms),
@@ -136,10 +135,9 @@ pub async fn submit_session_steering(
                 "steering_mode".to_string(),
                 serde_json::json!("next_tool_boundary"),
             );
-            preview.metadata.insert(
-                "steering_status".to_string(),
-                serde_json::json!("pending"),
-            );
+            preview
+                .metadata
+                .insert("steering_status".to_string(), serde_json::json!("pending"));
             preview.metadata.insert(
                 "steering_enqueued_at".to_string(),
                 serde_json::json!(now_ms),

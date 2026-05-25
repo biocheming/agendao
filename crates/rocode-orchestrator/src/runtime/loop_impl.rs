@@ -40,7 +40,8 @@ fn stream_termination_from_provider_error(
     error: &rocode_provider::ProviderError,
 ) -> rocode_provider::StreamTermination {
     match error {
-        rocode_provider::ProviderError::NetworkError(_) | rocode_provider::ProviderError::Timeout => {
+        rocode_provider::ProviderError::NetworkError(_)
+        | rocode_provider::ProviderError::Timeout => {
             rocode_provider::StreamTermination::TransportClosed
         }
         rocode_provider::ProviderError::StreamError(message) => {
@@ -626,7 +627,8 @@ pub async fn run_loop<S: LoopSink>(
                                     "stream transport timeout after {}s",
                                     timeout_ms / 1000
                                 )),
-                                stream_termination: rocode_provider::StreamTermination::TransportTimeout,
+                                stream_termination:
+                                    rocode_provider::StreamTermination::TransportTimeout,
                             });
                         }
                     }
@@ -732,7 +734,9 @@ pub async fn run_loop<S: LoopSink>(
                         .map_err(|e| LoopError::SinkError(e.to_string()))?;
                         return Err(LoopError::ModelErrorWithTermination {
                             failure,
-                            stream_termination: stream_termination_from_provider_error(&provider_err),
+                            stream_termination: stream_termination_from_provider_error(
+                                &provider_err,
+                            ),
                         });
                     }
                 }

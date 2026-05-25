@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { OutputBlock } from "../lib/history";
+import {
+  canonicalLiveExecutionStatus,
+  type LiveExecutionEntry,
+} from "../lib/liveExecutionState";
 import type {
   ActivityEventRecord,
   ExecutionNodeRecord,
@@ -8,6 +12,9 @@ import type {
   StageSummaryRecord,
 } from "../lib/sessionActivity";
 import { isLiveStageStatus } from "../lib/contextPressure";
+import { buildRunTailSummary, type RunTailSummary } from "../lib/runTailSummary";
+import { isSkillToolName, toolActivityLabel } from "../lib/toolLabels";
+import type { OutputField, OutputPreview } from "../lib/history";
 
 export interface ActivityFilters {
   stageId: string;
@@ -22,6 +29,10 @@ interface UseExecutionActivityOptions {
   apiJson: <T>(path: string, options?: RequestInit) => Promise<T>;
   onError: (message: string) => void;
   onInfo: (message: string) => void;
+  statusLine?: string;
+  latestRuntimeError?: string | null;
+  awaitingUser?: boolean;
+  pendingPermission?: boolean;
 }
 
 const DEFAULT_FILTERS: ActivityFilters = {
@@ -29,6 +40,8 @@ const DEFAULT_FILTERS: ActivityFilters = {
   executionId: "",
   eventType: "",
 };
+
+const LIVE_EXECUTION_LIMIT = 8;
 
 function formatError(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -76,6 +89,85 @@ function sameActivityFilters(left: ActivityFilters, right: ActivityFilters) {
   );
 }
 
+function metadataString(metadata: Record<string, unknown> | null | undefined, key: string) {
+  const value = metadata?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function stableToolCallIdFromBlock(block: OutputBlock): string | null {
+  if (typeof block.tool_call_id === "string" && block.tool_call_id.trim()) {
+    return block.tool_call_id.trim();
+  }
+  const wireLegacyBlockId = block.live_identity?.legacy_block_id?.trim();
+  if (wireLegacyBlockId) return wireLegacyBlockId;
+  const partKey = block.live_identity?.part_key?.trim();
+  if (!partKey) return null;
+  if (!(partKey.startsWith("tool_call/") || partKey.startsWith("tool_result/"))) {
+    return null;
+  }
+  const slash = partKey.indexOf("/");
+  if (slash < 0 || slash === partKey.length - 1) return null;
+  const candidate = partKey.slice(slash + 1).trim();
+  return candidate || null;
+}
+
+function liveExecutionKind(block: OutputBlock): LiveExecutionEntry["kind"] {
+  return isSkillToolName(block.name ?? block.title ?? "") ? "skill" : "tool";
+}
+
+function liveExecutionSummary(block: OutputBlock): string | null {
+  // Execution activity prefers the shared display contract. Raw detail/text is
+  // only a compatibility fallback for older tool payloads.
+  const hasDisplayContract = Boolean(
+    block.display?.summary?.trim() ||
+    block.display?.fields?.length ||
+    block.display?.preview?.text?.trim(),
+  );
+  const candidate = [
+    block.display?.summary,
+    block.summary,
+    metadataString(block.metadata, "skill_name"),
+    !hasDisplayContract ? block.detail : null,
+    !hasDisplayContract ? block.text : null,
+  ].find((value) => typeof value === "string" && value.trim().length > 0);
+  return typeof candidate === "string" ? candidate.trim() : null;
+}
+
+function liveExecutionFields(block: OutputBlock): OutputField[] {
+  return Array.isArray(block.display?.fields) ? block.display.fields : [];
+}
+
+function liveExecutionPreview(block: OutputBlock): OutputPreview | null {
+  const displayPreview = block.display?.preview;
+  const hasDisplayContract = Boolean(
+    block.display?.summary?.trim() ||
+    block.display?.fields?.length ||
+    displayPreview?.text?.trim(),
+  );
+  if (displayPreview?.text?.trim()) {
+    return {
+      kind: displayPreview.kind?.trim() || "text",
+      text: displayPreview.text.trim(),
+      truncated: Boolean(displayPreview.truncated),
+    };
+  }
+  if (!hasDisplayContract && block.preview?.trim()) {
+    return {
+      kind: "text",
+      text: block.preview.trim(),
+      truncated: false,
+    };
+  }
+  return null;
+}
+
+function liveExecutionStageId(block: OutputBlock): string | null {
+  if (typeof block.stage_id === "string" && block.stage_id.trim()) {
+    return block.stage_id.trim();
+  }
+  return metadataString(block.metadata, "stage_id");
+}
+
 function stageSummaryFromOutputBlock(block: OutputBlock): StageSummaryRecord | null {
   if (block.kind !== "scheduler_stage" || !block.stage_id || !block.stage) {
     return null;
@@ -118,6 +210,10 @@ export function useExecutionActivity({
   apiJson,
   onError,
   onInfo,
+  statusLine = "ready",
+  latestRuntimeError = null,
+  awaitingUser = false,
+  pendingPermission = false,
 }: UseExecutionActivityOptions) {
   const [telemetry, setTelemetry] = useState<SessionTelemetrySnapshotRecord | null>(null);
   const [insights, setInsights] = useState<SessionInsightsRecord | null>(null);
@@ -129,6 +225,7 @@ export function useExecutionActivity({
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [knownEventTypes, setKnownEventTypes] = useState<string[]>([]);
   const [executionCancellingId, setExecutionCancellingId] = useState<string | null>(null);
+  const [liveExecutions, setLiveExecutions] = useState<LiveExecutionEntry[]>([]);
   const sessionRef = useRef<string | null>(selectedSessionId);
   const previousSessionRef = useRef<string | null>(selectedSessionId);
   const filtersRef = useRef<ActivityFilters>(DEFAULT_FILTERS);
@@ -149,6 +246,7 @@ export function useExecutionActivity({
     setSelectedExecutionId(null);
     setSelectedEventId(null);
     setKnownEventTypes([]);
+    setLiveExecutions([]);
   }, [selectedSessionId]);
 
   useEffect(() => {
@@ -170,6 +268,7 @@ export function useExecutionActivity({
     setSelectedEventId(null);
     setKnownEventTypes([]);
     setExecutionCancellingId(null);
+    setLiveExecutions([]);
   }, []);
 
   const refreshExecutionActivity = useCallback(
@@ -238,6 +337,34 @@ export function useExecutionActivity({
     });
   }, []);
 
+  const applyLiveExecutionOutputBlock = useCallback((block: OutputBlock, sessionId = sessionRef.current) => {
+    if (!sessionId || block.kind !== "tool") return;
+
+    const label = toolActivityLabel(block.name ?? block.title ?? "tool");
+    const toolCallId = stableToolCallIdFromBlock(block);
+    const stageId = liveExecutionStageId(block);
+    const id = toolCallId ?? `${label}:${stageId ?? "root"}`;
+    const next: LiveExecutionEntry = {
+      id,
+      label,
+      status: canonicalLiveExecutionStatus(block.phase),
+      kind: liveExecutionKind(block),
+      summary: liveExecutionSummary(block),
+      fields: liveExecutionFields(block),
+      preview: liveExecutionPreview(block),
+      toolCallId,
+      stageId,
+      updatedAt: Date.now(),
+    };
+
+    setLiveExecutions((current) => {
+      const filtered = current.filter((entry) => entry.id !== id);
+      return [next, ...filtered]
+        .sort((left, right) => right.updatedAt - left.updatedAt)
+        .slice(0, LIVE_EXECUTION_LIMIT);
+    });
+  }, []);
+
   useEffect(() => {
     if (!selectedSessionId) {
       resetExecutionActivity();
@@ -277,6 +404,26 @@ export function useExecutionActivity({
     }
     return telemetryStages.find((stage) => isLiveStageStatus(stage.status)) ?? null;
   }, [telemetry, telemetryStages]);
+
+  const runTailSummary = useMemo<RunTailSummary>(() => {
+    return buildRunTailSummary({
+      statusLine,
+      runtimeStatus: telemetry?.runtime?.run_status,
+      latestRuntimeError,
+      awaitingUser,
+      pendingPermission,
+      usage: telemetry?.usage,
+      activeStageName: activeStageSummary?.stage_name,
+    });
+  }, [
+    activeStageSummary?.stage_name,
+    awaitingUser,
+    latestRuntimeError,
+    pendingPermission,
+    telemetry?.runtime?.run_status,
+    statusLine,
+    telemetry?.usage,
+  ]);
 
   const stageOptions = useMemo(
     () =>
@@ -400,5 +547,8 @@ export function useExecutionActivity({
     cancelExecution,
     refreshExecutionActivity,
     applySchedulerStageOutputBlock,
+    applyLiveExecutionOutputBlock,
+    liveExecutions,
+    runTailSummary,
   };
 }

@@ -102,26 +102,53 @@ async fn fixture_event_log_all_filter_combinations() {
     }
 
     // Filter by event type with exact counts from the fixture.
-    let stage_started = log.query(session, &EventFilter {
-        event_type: Some("stage_started".into()), ..Default::default()
-    }).await;
+    let stage_started = log
+        .query(
+            session,
+            &EventFilter {
+                event_type: Some("stage_started".into()),
+                ..Default::default()
+            },
+        )
+        .await;
     assert_eq!(stage_started.len(), 3, "fixture has 3 stage_started events");
-    let agent_started = log.query(session, &EventFilter {
-        event_type: Some("agent_started".into()), ..Default::default()
-    }).await;
+    let agent_started = log
+        .query(
+            session,
+            &EventFilter {
+                event_type: Some("agent_started".into()),
+                ..Default::default()
+            },
+        )
+        .await;
     assert_eq!(agent_started.len(), 4, "fixture has 4 agent_started events");
-    let question_asked = log.query(session, &EventFilter {
-        event_type: Some("question_asked".into()), ..Default::default()
-    }).await;
-    assert_eq!(question_asked.len(), 2, "fixture has 2 question_asked events");
+    let question_asked = log
+        .query(
+            session,
+            &EventFilter {
+                event_type: Some("question_asked".into()),
+                ..Default::default()
+            },
+        )
+        .await;
+    assert_eq!(
+        question_asked.len(),
+        2,
+        "fixture has 2 question_asked events"
+    );
 
     // Combined stage + type: implementation stage has exactly 1 tool_started
     // with tool=write_file. Verify both count AND content.
-    let impl_tools = log.query(session, &EventFilter {
-        stage_id: Some("stage_impl_002".into()),
-        event_type: Some("tool_started".into()),
-        ..Default::default()
-    }).await;
+    let impl_tools = log
+        .query(
+            session,
+            &EventFilter {
+                stage_id: Some("stage_impl_002".into()),
+                event_type: Some("tool_started".into()),
+                ..Default::default()
+            },
+        )
+        .await;
     assert_eq!(impl_tools.len(), 1);
     assert_eq!(
         impl_tools[0].payload.get("tool").and_then(|v| v.as_str()),
@@ -131,10 +158,13 @@ async fn fixture_event_log_all_filter_combinations() {
 
     // Since filter.
     let since = log
-        .query(session, &EventFilter {
-            since: Some(1710000020000),
-            ..Default::default()
-        })
+        .query(
+            session,
+            &EventFilter {
+                since: Some(1710000020000),
+                ..Default::default()
+            },
+        )
         .await;
     assert_eq!(since.len(), 3);
 
@@ -143,13 +173,18 @@ async fn fixture_event_log_all_filter_combinations() {
     let mut offset = 0;
     loop {
         let page = log
-            .query(session, &EventFilter {
-                limit: Some(3),
-                offset: Some(offset),
-                ..Default::default()
-            })
+            .query(
+                session,
+                &EventFilter {
+                    limit: Some(3),
+                    offset: Some(offset),
+                    ..Default::default()
+                },
+            )
             .await;
-        if page.is_empty() { break; }
+        if page.is_empty() {
+            break;
+        }
         collected.extend(page);
         offset += 3;
     }
@@ -161,9 +196,15 @@ async fn fixture_event_log_all_filter_combinations() {
 #[tokio::test]
 async fn stage_event_builder_produces_unique_ids_under_concurrency() {
     let events: Vec<StageEvent> = (0..100)
-        .map(|_| StageEvent::new(
-            EventScope::Stage, Some("s1".into()), None, "test", serde_json::json!({}),
-        ))
+        .map(|_| {
+            StageEvent::new(
+                EventScope::Stage,
+                Some("s1".into()),
+                None,
+                "test",
+                serde_json::json!({}),
+            )
+        })
         .collect();
     let ids: HashSet<&str> = events.iter().map(|e| e.event_id.as_str()).collect();
     assert_eq!(ids.len(), 100, "all 100 event IDs should be unique");

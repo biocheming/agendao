@@ -7,9 +7,9 @@ use rocode_core::agent_task_registry::{global_task_registry, AgentTask, AgentTas
 use crate::task::TaskTool;
 use crate::todo::TodoWriteTool;
 use crate::{
-    append_tool_repair_event_map, merge_tool_repair_telemetry, tool_repair_event, Metadata,
-    structured_dangerous_exec_lifetimes, PermissionRequest, TodoItemData, Tool, ToolContext,
-    ToolError, ToolResult,
+    append_tool_repair_event_map, merge_tool_repair_telemetry, structured_dangerous_exec_lifetimes,
+    tool_repair_event, Metadata, PermissionRequest, TodoItemData, Tool, ToolContext, ToolError,
+    ToolResult,
 };
 
 const DEFAULT_LIMIT: usize = 20;

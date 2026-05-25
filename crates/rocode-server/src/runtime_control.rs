@@ -168,7 +168,7 @@ pub(crate) enum FieldUpdate<T> {
     Clear,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 #[derive(Default)]
 pub enum SessionRunStatus {
@@ -369,6 +369,13 @@ impl RuntimeControlRegistry {
                 (record.session_id.clone(), status)
             })
             .collect()
+    }
+
+    pub(crate) async fn session_run_status(&self, session_id: &str) -> SessionRunStatus {
+        self.session_run_statuses()
+            .await
+            .remove(session_id)
+            .unwrap_or_default()
     }
 
     pub(crate) async fn has_prompt_run(&self, session_id: &str) -> bool {

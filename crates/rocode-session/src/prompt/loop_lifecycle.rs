@@ -1048,13 +1048,16 @@ impl SessionPrompt {
 
         let artifacts_root = default_tool_result_artifacts_root(&session.record().directory);
         let config = config_store.map(|store| store.config());
-        let stream_tool_results =
-            govern_tool_result_batch(
-                session_id,
-                stream_tool_results,
-                &artifacts_root,
-                tool_result_budget(config.as_deref().and_then(|cfg| cfg.runtime_budget.as_ref())),
-            );
+        let stream_tool_results = govern_tool_result_batch(
+            session_id,
+            stream_tool_results,
+            &artifacts_root,
+            tool_result_budget(
+                config
+                    .as_deref()
+                    .and_then(|cfg| cfg.runtime_budget.as_ref()),
+            ),
+        );
 
         let mut tool_msg = SessionMessage::tool(session_id.to_string());
         for (tool_call_id, content, is_error, title, metadata, attachments) in stream_tool_results {
@@ -1488,7 +1491,8 @@ impl SessionPrompt {
             input.step_ctx.hooks.output_block_hook.as_ref(),
             step_complete,
             tool_result_budget(
-                input.step_ctx
+                input
+                    .step_ctx
                     .config_store
                     .as_ref()
                     .map(|store| store.config())
@@ -1530,7 +1534,9 @@ impl SessionPrompt {
                 stream_termination,
             }) => {
                 output.stream_termination = Some(stream_termination);
-                Err(anyhow::Error::new(super::PromptError::ProviderFailure(failure)))
+                Err(anyhow::Error::new(super::PromptError::ProviderFailure(
+                    failure,
+                )))
             }
             Err(RuntimeLoopError::ToolDispatchError { tool, error }) => {
                 let lower = error.to_ascii_lowercase();
@@ -2662,13 +2668,9 @@ impl SessionPrompt {
                     .rev()
                     .find_map(|sm| sm.source_session_id.clone());
                 let now = chrono::Utc::now().timestamp_millis();
-                let last_latency_ms = steering_msgs
-                    .iter()
-                    .rev()
-                    .find_map(|sm| {
-                        (sm.created_at > 0)
-                            .then_some(now.saturating_sub(sm.created_at) as u64)
-                    });
+                let last_latency_ms = steering_msgs.iter().rev().find_map(|sm| {
+                    (sm.created_at > 0).then_some(now.saturating_sub(sm.created_at) as u64)
+                });
                 for (i, sm) in steering_msgs.into_iter().enumerate() {
                     // Write the stable, model-visible transcript record.
                     // Unlike the enqueue-time preview (runtime_hint=steering_preview),
@@ -2680,17 +2682,15 @@ impl SessionPrompt {
                         "steering_mode".to_string(),
                         serde_json::json!("next_tool_boundary"),
                     );
-                    record.metadata.insert(
-                        "steering_status".to_string(),
-                        serde_json::json!("consumed"),
-                    );
+                    record
+                        .metadata
+                        .insert("steering_status".to_string(), serde_json::json!("consumed"));
                     record
                         .metadata
                         .insert("steering_index".to_string(), serde_json::json!(i));
-                    record.metadata.insert(
-                        "steering_injected_at".to_string(),
-                        serde_json::json!(now),
-                    );
+                    record
+                        .metadata
+                        .insert("steering_injected_at".to_string(), serde_json::json!(now));
                     record.metadata.insert(
                         "steering_owner_session_id".to_string(),
                         serde_json::json!(owner_id.clone()),

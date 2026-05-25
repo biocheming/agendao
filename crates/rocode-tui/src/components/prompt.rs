@@ -4,6 +4,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Padding, Paragraph, Wrap},
 };
+use rocode_command::run_status_labels::canonical_run_status_title;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -694,7 +695,10 @@ impl Prompt {
         matches!(
             self.current_session_status(),
             Some(
-                SessionStatus::Running | SessionStatus::Compacting | SessionStatus::Retrying { .. }
+                SessionStatus::Running
+                    | SessionStatus::Compacting
+                    | SessionStatus::Reconnecting
+                    | SessionStatus::Retrying { .. }
             )
         )
     }
@@ -1138,6 +1142,37 @@ impl Prompt {
                 Span::styled(" exit shell mode", Style::default().fg(theme.text_muted)),
             ]);
         }
+        if self.context.get_pending_permission().is_some()
+            || *self.context.pending_permissions.read() > 0
+        {
+            return Line::from(vec![Span::styled(
+                canonical_run_status_title("awaiting_permission"),
+                Style::default().fg(theme.warning),
+            )]);
+        }
+        if self.context.has_pending_question() {
+            return Line::from(vec![Span::styled(
+                canonical_run_status_title("awaiting_user"),
+                Style::default().fg(theme.warning),
+            )]);
+        }
+        if matches!(status, SessionStatus::Idle) {
+            if let Some(tail_status) = self.context.current_session_terminal_tail_status() {
+                let tone = if tail_status == "error" {
+                    theme.error
+                } else {
+                    theme.text_muted
+                };
+                return Line::from(vec![Span::styled(
+                    canonical_run_status_title(&tail_status),
+                    Style::default().fg(tone),
+                )]);
+            }
+            return Line::from(vec![Span::styled(
+                canonical_run_status_title("idle"),
+                Style::default().fg(theme.text_muted),
+            )]);
+        }
         let interrupt = self.context.keybind.read().print("session_interrupt");
         match status {
             SessionStatus::Retrying {
@@ -1150,7 +1185,12 @@ impl Prompt {
                 let truncated = truncate_for_status(&message, 72);
                 Line::from(vec![
                     Span::styled(
-                        format!("retrying in {}s (#{}) ", secs, attempt),
+                        format!(
+                            "{} in {}s (#{}) ",
+                            canonical_run_status_title("retrying"),
+                            secs,
+                            attempt
+                        ),
                         Style::default().fg(theme.warning),
                     ),
                     Span::styled(truncated, Style::default().fg(theme.text_muted)),
@@ -1161,7 +1201,10 @@ impl Prompt {
             }
             SessionStatus::Running => {
                 let mut spans = vec![
-                    Span::styled("thinking", Style::default().fg(theme.text_muted)),
+                    Span::styled(
+                        canonical_run_status_title("running"),
+                        Style::default().fg(theme.text_muted),
+                    ),
                     Span::raw("  "),
                 ];
                 let queued = self.current_session_queue_count();
@@ -1189,7 +1232,10 @@ impl Prompt {
             }
             SessionStatus::Compacting => {
                 let mut spans = vec![
-                    Span::styled("compacting context", Style::default().fg(theme.warning)),
+                    Span::styled(
+                        canonical_run_status_title("compacting"),
+                        Style::default().fg(theme.warning),
+                    ),
                     Span::raw("  "),
                 ];
                 if self.interrupt_confirmation_active() {
@@ -1207,6 +1253,10 @@ impl Prompt {
                 }
                 Line::from(spans)
             }
+            SessionStatus::Reconnecting => Line::from(vec![Span::styled(
+                canonical_run_status_title("reconnecting"),
+                Style::default().fg(theme.warning),
+            )]),
             SessionStatus::Idle => self.hint_line(theme),
         }
     }
@@ -1722,6 +1772,8 @@ fn extract_line_range(input: &str) -> (&str, Option<(usize, Option<usize>)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::{Message, MessageRole, TokenUsage};
+    use chrono::Utc;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use once_cell::sync::Lazy;
     use std::sync::Mutex;
@@ -1747,6 +1799,13 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(state_dir);
         result
+    }
+
+    fn line_text(line: Line<'static>) -> String {
+        line.spans
+            .into_iter()
+            .map(|span| span.content.into_owned())
+            .collect::<String>()
     }
 
     #[test]
@@ -1806,6 +1865,111 @@ mod tests {
 
             prompt.history_next_entry();
             assert_eq!(prompt.get_input(), "draft");
+        });
+    }
+
+    #[test]
+    fn running_status_line_uses_canonical_tail_title() {
+        with_isolated_prompt(|prompt| {
+            let theme = prompt.context.theme.read().clone();
+            let rendered =
+                line_text(prompt.status_line_for_session(SessionStatus::Running, &theme));
+            assert!(rendered.contains("Running"), "{rendered}");
+            assert!(!rendered.contains("thinking"), "{rendered}");
+        });
+    }
+
+    #[test]
+    fn pending_permission_overrides_running_status_line() {
+        with_isolated_prompt(|prompt| {
+            prompt.context.set_pending_permissions(1);
+            let theme = prompt.context.theme.read().clone();
+            let rendered =
+                line_text(prompt.status_line_for_session(SessionStatus::Running, &theme));
+            assert_eq!(rendered, "Waiting for permission");
+        });
+    }
+
+    #[test]
+    fn reconnecting_status_line_uses_canonical_tail_title() {
+        with_isolated_prompt(|prompt| {
+            let theme = prompt.context.theme.read().clone();
+            let rendered =
+                line_text(prompt.status_line_for_session(SessionStatus::Reconnecting, &theme));
+            assert_eq!(rendered, "Reconnecting stream");
+        });
+    }
+
+    #[test]
+    fn idle_status_line_surfaces_run_complete() {
+        with_isolated_prompt(|prompt| {
+            let session_id = {
+                let mut session = prompt.context.session.write();
+                let session_id = session.data.create_session(Some("Test".to_string()));
+                session.data.add_message(
+                    &session_id,
+                    Message {
+                        id: "assistant-complete".to_string(),
+                        role: MessageRole::Assistant,
+                        content: "done".to_string(),
+                        created_at: Utc::now(),
+                        agent: None,
+                        model: None,
+                        mode: None,
+                        finish: Some("stop".to_string()),
+                        error: None,
+                        completed_at: Some(Utc::now()),
+                        cost: 0.0,
+                        tokens: TokenUsage {
+                            output: 1,
+                            ..TokenUsage::default()
+                        },
+                        metadata: None,
+                        multimodal: None,
+                        parts: Vec::new(),
+                    },
+                );
+                session_id
+            };
+            prompt.context.navigate_session(session_id);
+            let theme = prompt.context.theme.read().clone();
+            let rendered = line_text(prompt.status_line_for_session(SessionStatus::Idle, &theme));
+            assert_eq!(rendered, "Run complete");
+        });
+    }
+
+    #[test]
+    fn idle_status_line_surfaces_run_failed() {
+        with_isolated_prompt(|prompt| {
+            let session_id = {
+                let mut session = prompt.context.session.write();
+                let session_id = session.data.create_session(Some("Test".to_string()));
+                session.data.add_message(
+                    &session_id,
+                    Message {
+                        id: "assistant-error".to_string(),
+                        role: MessageRole::Assistant,
+                        content: "boom".to_string(),
+                        created_at: Utc::now(),
+                        agent: None,
+                        model: None,
+                        mode: None,
+                        finish: Some("error".to_string()),
+                        error: Some("boom".to_string()),
+                        completed_at: Some(Utc::now()),
+                        cost: 0.0,
+                        tokens: TokenUsage::default(),
+                        metadata: None,
+                        multimodal: None,
+                        parts: Vec::new(),
+                    },
+                );
+                session_id
+            };
+            prompt.context.navigate_session(session_id);
+            let theme = prompt.context.theme.read().clone();
+            let rendered = line_text(prompt.status_line_for_session(SessionStatus::Idle, &theme));
+            assert_eq!(rendered, "Run failed");
         });
     }
 

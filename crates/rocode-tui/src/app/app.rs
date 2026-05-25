@@ -91,6 +91,7 @@ use self::support::{
 };
 
 const SESSION_SYNC_DEBOUNCE_MS: u64 = 180;
+const SESSION_TELEMETRY_SYNC_DEBOUNCE_MS: u64 = 120;
 const SESSION_FULL_SYNC_INTERVAL_SECS: u64 = 10;
 const QUESTION_SYNC_FALLBACK_SECS: u64 = 5;
 const PERMISSION_SYNC_FALLBACK_SECS: u64 = 5;
@@ -213,6 +214,9 @@ struct SyncLifecycleState {
     pending_initial_submit: bool,
     pending_session_sync: Option<String>,
     pending_session_sync_due_at: Option<Instant>,
+    pending_session_telemetry_sync: Option<String>,
+    pending_session_telemetry_sync_due_at: Option<Instant>,
+    session_telemetry_sync_inflight: bool,
     last_tick_at: Instant,
     last_session_sync: Instant,
     last_full_session_sync: Instant,
@@ -230,6 +234,9 @@ impl SyncLifecycleState {
             pending_initial_submit,
             pending_session_sync: None,
             pending_session_sync_due_at: None,
+            pending_session_telemetry_sync: None,
+            pending_session_telemetry_sync_due_at: None,
+            session_telemetry_sync_inflight: false,
             last_tick_at: now,
             last_session_sync: now,
             last_full_session_sync: now,
@@ -1369,32 +1376,32 @@ impl App {
                         }
                         self.ensure_session_view(&session.id);
 
-                    if let Some(err) = error {
-                        self.remove_optimistic_message(&session.id, optimistic_message_id);
-                        self.set_session_status(&session.id, SessionStatus::Idle);
-                        self.sync_prompt_spinner_state();
-                        self.alert_dialog
-                            .set_message(&format!("Failed to send prompt:\n{}", err));
-                        self.open_alert_dialog();
-                    } else {
-                        match response.as_ref().map(|response| response.status.as_str()) {
-                            Some("awaiting_user") => {
-                                self.set_session_status(&session.id, SessionStatus::Idle);
-                                self.prompt.set_spinner_active(false);
-                                self.refresh_session_telemetry(&session.id);
-                                self.sync_question_requests();
-                            }
-                            Some("queued") => {
-                                self.set_session_status(&session.id, SessionStatus::Running);
-                                self.prompt.set_spinner_task_kind(TaskKind::LlmRequest);
-                                self.prompt.set_spinner_active(true);
-                                self.refresh_session_telemetry(&session.id);
-                            }
-                            _ => {
-                                self.set_session_status(&session.id, SessionStatus::Running);
-                                self.prompt.set_spinner_task_kind(TaskKind::LlmRequest);
-                                self.prompt.set_spinner_active(true);
-                            }
+                        if let Some(err) = error {
+                            self.remove_optimistic_message(&session.id, optimistic_message_id);
+                            self.set_session_status(&session.id, SessionStatus::Idle);
+                            self.sync_prompt_spinner_state();
+                            self.alert_dialog
+                                .set_message(&format!("Failed to send prompt:\n{}", err));
+                            self.open_alert_dialog();
+                        } else {
+                            match response.as_ref().map(|response| response.status.as_str()) {
+                                Some("awaiting_user") => {
+                                    self.set_session_status(&session.id, SessionStatus::Idle);
+                                    self.prompt.set_spinner_active(false);
+                                    self.queue_session_telemetry_refresh(&session.id);
+                                    self.sync_question_requests();
+                                }
+                                Some("queued") => {
+                                    self.set_session_status(&session.id, SessionStatus::Running);
+                                    self.prompt.set_spinner_task_kind(TaskKind::LlmRequest);
+                                    self.prompt.set_spinner_active(true);
+                                    self.queue_session_telemetry_refresh(&session.id);
+                                }
+                                _ => {
+                                    self.set_session_status(&session.id, SessionStatus::Running);
+                                    self.prompt.set_spinner_task_kind(TaskKind::LlmRequest);
+                                    self.prompt.set_spinner_active(true);
+                                }
                             }
                         }
                     } else {
@@ -1433,7 +1440,7 @@ impl App {
                     ) {
                         self.set_session_status(session_id, SessionStatus::Idle);
                         self.prompt.set_spinner_active(false);
-                        self.refresh_session_telemetry(session_id);
+                        self.queue_session_telemetry_refresh(session_id);
                         self.sync_question_requests();
                     } else if matches!(
                         response.as_ref().map(|response| response.status.as_str()),
@@ -1442,7 +1449,7 @@ impl App {
                         self.set_session_status(session_id, SessionStatus::Running);
                         self.prompt.set_spinner_task_kind(TaskKind::LlmRequest);
                         self.prompt.set_spinner_active(true);
-                        self.refresh_session_telemetry(session_id);
+                        self.queue_session_telemetry_refresh(session_id);
                     }
                     self.event_caused_change = true;
                 }
@@ -1474,6 +1481,24 @@ impl App {
                     }
                     self.event_caused_change = true;
                 }
+                CustomEvent::SessionTelemetryRefreshFinished {
+                    session_id,
+                    telemetry,
+                } => {
+                    self.sync_runtime.session_telemetry_sync_inflight = false;
+
+                    if self.current_session_id().as_deref() == Some(session_id.as_str()) {
+                        if let Some(telemetry) = telemetry.as_deref() {
+                            self.context
+                                .apply_session_telemetry_snapshot(telemetry.clone());
+                            self.refresh_attached_sessions();
+                            if self.status_dialog.is_open() {
+                                self.refresh_active_status_dialog();
+                            }
+                            self.event_caused_change = true;
+                        }
+                    }
+                }
                 CustomEvent::StateChanged(StateChange::SessionUpdated { session_id, source }) => {
                     self.diagnostics.perf.session_updated_events = self
                         .diagnostics
@@ -1497,17 +1522,21 @@ impl App {
                 }
                 CustomEvent::StateChanged(StateChange::SessionStatusBusy(session_id)) => {
                     self.set_session_status(session_id, SessionStatus::Running);
-                    self.refresh_session_telemetry(session_id);
+                    self.queue_session_telemetry_refresh(session_id);
                     self.sync_prompt_spinner_state();
                 }
                 CustomEvent::StateChanged(StateChange::SessionStatusCompacting(session_id)) => {
                     self.set_session_status(session_id, SessionStatus::Compacting);
-                    self.refresh_session_telemetry(session_id);
+                    self.queue_session_telemetry_refresh(session_id);
+                    self.sync_prompt_spinner_state();
+                }
+                CustomEvent::StateChanged(StateChange::SessionStatusReconnecting(session_id)) => {
+                    self.set_session_status(session_id, SessionStatus::Reconnecting);
                     self.sync_prompt_spinner_state();
                 }
                 CustomEvent::StateChanged(StateChange::SessionStatusIdle(session_id)) => {
                     self.set_session_status(session_id, SessionStatus::Idle);
-                    self.refresh_session_telemetry(session_id);
+                    self.queue_session_telemetry_refresh(session_id);
                     self.sync_prompt_spinner_state();
                 }
                 CustomEvent::StateChanged(StateChange::SessionStatusRetrying {
@@ -1524,7 +1553,7 @@ impl App {
                             next: *next,
                         },
                     );
-                    self.refresh_session_telemetry(session_id);
+                    self.queue_session_telemetry_refresh(session_id);
                     self.sync_prompt_spinner_state();
                 }
                 CustomEvent::StateChanged(StateChange::ConfigUpdated) => {
@@ -1578,19 +1607,18 @@ impl App {
                     }
                 }
                 CustomEvent::StateChanged(StateChange::ControlInputTransition {
-                    session_id, ..
+                    session_id,
+                    ..
                 }) => {
-                    self.refresh_session_telemetry(session_id);
+                    self.queue_session_telemetry_refresh(session_id);
                 }
                 CustomEvent::StateChanged(StateChange::ToolCallStarted { session_id, .. }) => {
-                    // Refresh runtime state to get updated active tools from server
-                    self.refresh_session_telemetry(session_id);
+                    self.queue_session_telemetry_refresh(session_id);
                 }
                 CustomEvent::StateChanged(StateChange::ToolCallCompleted {
                     session_id, ..
                 }) => {
-                    // Refresh runtime state to get updated active tools from server
-                    self.refresh_session_telemetry(session_id);
+                    self.queue_session_telemetry_refresh(session_id);
                 }
                 CustomEvent::StateChanged(StateChange::TopologyChanged { session_id }) => {
                     self.handle_topology_changed(session_id);
@@ -1682,6 +1710,8 @@ impl App {
                     self.submit_prompt()?;
                     tick_changed = true;
                 }
+
+                self.spawn_queued_session_telemetry_refresh();
 
                 let route = self.context.current_route();
                 if let Route::Session { session_id } = &route {
@@ -1928,8 +1958,13 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::{MessageTokensInfo, SessionTimeInfo};
+    use crate::api::{
+        MessageTokensInfo, SessionExecutionTopology, SessionRunStatusKind,
+        SessionTelemetrySnapshot, SessionTimeInfo,
+    };
     use chrono::Utc;
+    use rocode_session::SessionUsage;
+    use rocode_types::SessionUsageBooks;
 
     #[test]
     fn session_update_requires_sync_for_prompt_final_sources() {
@@ -2201,6 +2236,365 @@ mod tests {
         assert!(consumed);
         assert!(app.model_select.is_open());
         assert!(!app.event_caused_change);
+    }
+
+    #[test]
+    fn ensure_session_view_skips_telemetry_fetch_for_optimistic_local_session() {
+        let mut app = App::new().expect("app should initialize");
+        let local_session_id = "local_session_123";
+
+        app.context.navigate_session(local_session_id);
+        app.ensure_session_view(local_session_id);
+
+        assert_eq!(
+            app.sync_runtime.pending_session_telemetry_sync.as_deref(),
+            None
+        );
+        assert_eq!(app.sync_runtime.pending_session_telemetry_sync_due_at, None);
+    }
+
+    #[test]
+    fn prompt_dispatch_home_finished_queues_telemetry_refresh_for_real_session() {
+        let mut app = App::new().expect("app should initialize");
+        let optimistic_session_id = "local_session_123".to_string();
+        let optimistic_message_id = "msg_123".to_string();
+        let now = Utc::now().timestamp_millis();
+        app.context.navigate_session(&optimistic_session_id);
+
+        let event = Event::Custom(Box::new(CustomEvent::PromptDispatchHomeFinished {
+            optimistic_session_id: optimistic_session_id.clone(),
+            optimistic_message_id,
+            created_session: Some(Box::new(SessionInfo {
+                id: "session-real".to_string(),
+                slug: "session-real".to_string(),
+                project_id: "project".to_string(),
+                directory: ".".to_string(),
+                parent_id: None,
+                title: "Real session".to_string(),
+                version: "1".to_string(),
+                time: SessionTimeInfo {
+                    created: now,
+                    updated: now,
+                    compacting: None,
+                    archived: None,
+                },
+                summary: None,
+                share: None,
+                permission: None,
+                revert: None,
+                fork: None,
+                telemetry: None,
+                metadata: None,
+            })),
+            response: Some(crate::api::PromptResponse {
+                status: "queued".to_string(),
+                ok: Some(true),
+                session_id: Some("session-real".to_string()),
+                queued_count: Some(1),
+                pending_question_id: None,
+                command: None,
+                missing_fields: Vec::new(),
+            }),
+            error: None,
+        }));
+
+        app.handle_event(&event)
+            .expect("prompt dispatch completion should be handled");
+
+        assert_eq!(
+            app.current_session_id().as_deref(),
+            Some("session-real")
+        );
+        assert_eq!(
+            app.sync_runtime.pending_session_telemetry_sync.as_deref(),
+            Some("session-real")
+        );
+        assert!(app.sync_runtime.pending_session_telemetry_sync_due_at.is_some());
+        assert!(!app.sync_runtime.session_telemetry_sync_inflight);
+    }
+
+    #[test]
+    fn ensure_session_view_does_not_requeue_telemetry_for_same_active_view() {
+        let mut app = App::new().expect("app should initialize");
+        let session_id = "session-ensure-idempotent";
+        let now = Utc::now();
+        {
+            let mut session_ctx = app.context.session.write();
+            session_ctx.upsert_session(Session {
+                id: session_id.to_string(),
+                title: "Ensure session view".to_string(),
+                created_at: now,
+                updated_at: now,
+                parent_id: None,
+                share: None,
+                metadata: None,
+            });
+            session_ctx.set_current_session_id(session_id.to_string());
+        }
+        app.context.navigate_session(session_id);
+
+        app.ensure_session_view(session_id);
+        app.sync_runtime.pending_session_telemetry_sync = Some(session_id.to_string());
+        let sentinel_due = Instant::now() + Duration::from_secs(42);
+        app.sync_runtime.pending_session_telemetry_sync_due_at = Some(sentinel_due);
+
+        app.ensure_session_view(session_id);
+
+        assert_eq!(
+            app.sync_runtime.pending_session_telemetry_sync.as_deref(),
+            Some(session_id)
+        );
+        assert_eq!(
+            app.sync_runtime.pending_session_telemetry_sync_due_at,
+            Some(sentinel_due)
+        );
+    }
+
+    #[test]
+    fn session_telemetry_refresh_finished_applies_snapshot_for_active_session() {
+        let mut app = App::new().expect("app should initialize");
+        let session_id = "session-telemetry-active";
+        let now = Utc::now();
+        {
+            let mut session_ctx = app.context.session.write();
+            session_ctx.upsert_session(Session {
+                id: session_id.to_string(),
+                title: "Telemetry".to_string(),
+                created_at: now,
+                updated_at: now,
+                parent_id: None,
+                share: None,
+                metadata: None,
+            });
+            session_ctx.set_current_session_id(session_id.to_string());
+        }
+        app.context.navigate_session(session_id);
+        app.sync_runtime.session_telemetry_sync_inflight = true;
+
+        let event = Event::Custom(Box::new(CustomEvent::SessionTelemetryRefreshFinished {
+            session_id: session_id.to_string(),
+            telemetry: Some(Box::new(test_session_telemetry_snapshot(session_id, "stage-1"))),
+        }));
+
+        app.handle_event(&event)
+            .expect("telemetry refresh event should be handled");
+
+        assert!(!app.sync_runtime.session_telemetry_sync_inflight);
+        assert_eq!(
+            app.context
+                .session_runtime()
+                .as_ref()
+                .and_then(|runtime| runtime.active_stage_id.as_deref()),
+            Some("stage-1")
+        );
+        assert!(app.event_caused_change);
+    }
+
+    #[test]
+    fn session_telemetry_refresh_finished_ignores_inactive_session_snapshot() {
+        let mut app = App::new().expect("app should initialize");
+        let active_session_id = "session-active";
+        let inactive_session_id = "session-inactive";
+        let now = Utc::now();
+        {
+            let mut session_ctx = app.context.session.write();
+            for session_id in [active_session_id, inactive_session_id] {
+                session_ctx.upsert_session(Session {
+                    id: session_id.to_string(),
+                    title: session_id.to_string(),
+                    created_at: now,
+                    updated_at: now,
+                    parent_id: None,
+                    share: None,
+                    metadata: None,
+                });
+            }
+            session_ctx.set_current_session_id(active_session_id.to_string());
+        }
+        app.context.navigate_session(active_session_id);
+        app.context
+            .apply_session_telemetry_snapshot(test_session_telemetry_snapshot(
+                active_session_id,
+                "existing-stage",
+            ));
+        app.sync_runtime.session_telemetry_sync_inflight = true;
+
+        let event = Event::Custom(Box::new(CustomEvent::SessionTelemetryRefreshFinished {
+            session_id: inactive_session_id.to_string(),
+            telemetry: Some(Box::new(test_session_telemetry_snapshot(
+                inactive_session_id,
+                "wrong-stage",
+            ))),
+        }));
+
+        app.handle_event(&event)
+            .expect("inactive telemetry refresh event should be handled");
+
+        assert!(!app.sync_runtime.session_telemetry_sync_inflight);
+        assert_eq!(
+            app.context
+                .session_runtime()
+                .as_ref()
+                .and_then(|runtime| runtime.active_stage_id.as_deref()),
+            Some("existing-stage")
+        );
+    }
+
+    #[test]
+    fn tick_spawns_due_session_telemetry_refresh_without_blocking() {
+        let mut app = App::new().expect("app should initialize");
+        let session_id = "session-tick-refresh";
+        let now = Utc::now();
+        {
+            let mut session_ctx = app.context.session.write();
+            session_ctx.upsert_session(Session {
+                id: session_id.to_string(),
+                title: "Tick refresh".to_string(),
+                created_at: now,
+                updated_at: now,
+                parent_id: None,
+                share: None,
+                metadata: None,
+            });
+            session_ctx.set_current_session_id(session_id.to_string());
+        }
+        app.context.navigate_session(session_id);
+        app.sync_runtime.pending_session_telemetry_sync = Some(session_id.to_string());
+        app.sync_runtime.pending_session_telemetry_sync_due_at = Some(Instant::now());
+        app.sync_runtime.session_telemetry_sync_inflight = false;
+
+        app.handle_event(&Event::Tick)
+            .expect("tick should process queued telemetry refresh");
+
+        assert!(app.sync_runtime.session_telemetry_sync_inflight);
+        assert_eq!(app.sync_runtime.pending_session_telemetry_sync, None);
+        assert_eq!(app.sync_runtime.pending_session_telemetry_sync_due_at, None);
+    }
+
+    #[test]
+    fn permission_requested_event_surfaces_prompt_without_http_sync() {
+        let mut app = App::new().expect("app should initialize");
+        let session_id = "session-permission";
+        let now = Utc::now();
+        {
+            let mut session_ctx = app.context.session.write();
+            session_ctx.upsert_session(Session {
+                id: session_id.to_string(),
+                title: "Permission session".to_string(),
+                created_at: now,
+                updated_at: now,
+                parent_id: None,
+                share: None,
+                metadata: None,
+            });
+            session_ctx.set_current_session_id(session_id.to_string());
+        }
+        app.context.navigate_session(session_id);
+
+        let permission = crate::api::PermissionRequestInfo {
+            id: "perm-1".to_string(),
+            session_id: session_id.to_string(),
+            tool: "bash".to_string(),
+            permission_class: Some("dangerous_exec".to_string()),
+            scope_key: Some("python3".to_string()),
+            scope_label: Some("Shell commands: python3".to_string()),
+            origin_tool: None,
+            supported_lifetimes: vec!["once".to_string()],
+            matcher_kind: None,
+            matcher_key: None,
+            matcher_label: None,
+            grant_target_summary: None,
+            risk_tags: vec!["dangerous_exec".to_string()],
+            input: serde_json::json!({
+                "permission": "bash",
+                "metadata": { "command": "python3 demo.py" }
+            }),
+            message: "Execute python3 demo.py".to_string(),
+        };
+
+        let event = Event::Custom(Box::new(CustomEvent::StateChanged(
+            StateChange::PermissionRequested {
+                session_id: session_id.to_string(),
+                permission: permission.clone(),
+            },
+        )));
+
+        app.handle_event(&event)
+            .expect("permission requested event should be handled");
+
+        assert!(app.event_caused_change);
+        assert!(app.permission_runtime.pending_ids.contains("perm-1"));
+        assert!(app.permission_prompt.is_open);
+        assert_eq!(
+            app.permission_runtime
+                .pending_requests
+                .get("perm-1")
+                .map(|request| request.tool.as_str()),
+            Some("bash")
+        );
+    }
+
+    fn test_session_telemetry_snapshot(
+        session_id: &str,
+        active_stage_id: &str,
+    ) -> SessionTelemetrySnapshot {
+        SessionTelemetrySnapshot {
+            runtime: crate::api::SessionRuntimeState {
+                session_id: session_id.to_string(),
+                run_status: SessionRunStatusKind::Running,
+                current_message_id: None,
+                usage: None,
+                active_stage_id: Some(active_stage_id.to_string()),
+                active_stage_count: 1,
+                active_tools: Vec::new(),
+                pending_question: None,
+                pending_permission: None,
+                pending_followup_count: 0,
+                attached_sessions: Vec::new(),
+            },
+            stages: Vec::new(),
+            topology: SessionExecutionTopology {
+                session_id: session_id.to_string(),
+                active_count: 1,
+                done_count: 0,
+                running_count: 1,
+                waiting_count: 0,
+                cancelling_count: 0,
+                retry_count: 0,
+                updated_at: None,
+                roots: Vec::new(),
+            },
+            usage: SessionUsage::default(),
+            usage_books: SessionUsageBooks::default(),
+            tool_repair_summary: None,
+            model_tool_repair_summary: None,
+            repair_query_snapshot: None,
+            tool_trajectory_quality: None,
+            tool_result_governance: None,
+            pending_permission_count: 0,
+            granted_by_turn_count: 0,
+            granted_by_session_count: 0,
+            granted_by_matcher_kind: Default::default(),
+            last_permission_matcher_kind: None,
+            last_permission_grant_target: None,
+            last_permission_miss_count: 0,
+            memory: None,
+            cache_evidence: None,
+            context_explain: None,
+            ownership: None,
+            context_compaction_summary: None,
+            compaction_continuity: None,
+            context_compaction_lifecycle_summary: None,
+            context_pressure_governance_summary: None,
+            cache_semantics: None,
+            context_closure_contract: None,
+            prompt_surface_evidence: None,
+            ingress_stabilization: None,
+            execution_preflight_summary: None,
+            provider_diagnostic_summary: None,
+            runtime_protocol: None,
+            event_bus_telemetry: None,
+        }
     }
 
     #[test]

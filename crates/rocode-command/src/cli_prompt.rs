@@ -16,7 +16,7 @@
 //! - Ctrl+W to delete word backward
 
 use crate::cli_panel::{
-    char_display_width, display_width_between, pad_right_display,
+    char_display_width, display_width, display_width_between, pad_right_display,
     row_char_index_for_display_column, truncate_display,
 };
 use crate::cli_style::CliStyle;
@@ -53,6 +53,7 @@ pub enum PromptSessionEvent {
     Line(String),
     Eof,
     Interrupt,
+    ModeCycle { reverse: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,13 +107,14 @@ impl PromptHistory {
 #[derive(Debug, Clone)]
 pub struct PromptFrame {
     plain_prompt: String,
-    header_line: String,
-    footer_line: String,
+    chrome_before_input: Vec<String>,
+    chrome_after_input: Vec<String>,
+    prompt_prefix: String,
+    continuation_prefix: String,
     screen_lines: Vec<String>,
     input_prefix_width: u16,
     inner_width: usize,
     max_visible_rows: usize,
-    color: bool,
 }
 
 pub struct PromptSession {
@@ -124,6 +126,8 @@ enum PromptSessionCommand {
     Refresh(SyncSender<()>),
     Suspend(SyncSender<()>),
     Resume(SyncSender<()>),
+    PauseModal(SyncSender<()>),
+    ResumeModal(SyncSender<()>),
     Shutdown(SyncSender<()>),
 }
 
@@ -131,7 +135,13 @@ enum PromptSessionCommand {
 struct PromptRenderState {
     cursor_row_in_view: usize,
     screen_rows: usize,
+    pre_input_rows: usize,
     frame_height: usize,
+    frame_physical_rows: usize,
+    cursor_row_in_frame: usize,
+    cursor_physical_row_in_frame: usize,
+    cursor_col_in_frame_row: usize,
+    rendered_plain_rows: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -146,6 +156,14 @@ struct WrappedViewport {
     visible_rows: Vec<String>,
     cursor_row: usize,
     cursor_col: usize,
+}
+
+fn prompt_prefix(line: &str, cursor_pos: usize) -> String {
+    line.chars().take(cursor_pos).collect()
+}
+
+fn tab_mode_cycle_allowed(line: &str, cursor_pos: usize) -> bool {
+    !prompt_prefix(line, cursor_pos).trim_start().starts_with('/')
 }
 
 impl PromptFrame {
@@ -164,11 +182,12 @@ impl PromptFrame {
         footer_text: &str,
         style: &CliStyle,
     ) -> Self {
+        let style = style.with_live_width();
         let header_text = truncate_visible(
             &format!(
                 " {}{}{} ",
                 mode_label.trim(),
-                bullet_separator(style),
+                bullet_separator(&style),
                 model_label.trim()
             ),
             160,
@@ -177,49 +196,26 @@ impl PromptFrame {
         let inner_width = usize::from(style.width.saturating_sub(5)).max(20);
         let chrome_width = inner_width + 2;
         let max_visible_rows = prompt_max_visible_rows();
-
-        let header_content = pad_right(
-            &truncate_visible(&header_text, chrome_width),
+        let chrome_before_input = vec![render_prompt_separator_line(
+            Some(&header_text),
             chrome_width,
-            '─',
-        );
-        let footer_content = pad_right(
-            &truncate_visible(&footer_text, chrome_width),
-            chrome_width,
-            '─',
-        );
-
-        let header_line = if style.color {
-            format!(
-                "{}{}{}",
-                style.cyan("╭"),
-                style.bold_cyan(&header_content),
-                style.cyan("╮")
-            )
-        } else {
-            format!("╭{}╮", header_content)
-        };
-
-        let footer_line = if style.color {
-            format!(
-                "{}{}{}",
-                style.cyan("╰"),
-                style.dim(&footer_content),
-                style.cyan("╯")
-            )
-        } else {
-            format!("╰{}╯", footer_content)
-        };
+            &style,
+        )];
+        let chrome_after_input = vec![
+            render_prompt_separator_line(None, chrome_width, &style),
+            render_prompt_footer_line(&footer_text, chrome_width, &style),
+        ];
 
         Self {
             plain_prompt: "> ".to_string(),
-            header_line,
-            footer_line,
+            chrome_before_input,
+            chrome_after_input,
+            prompt_prefix: render_prompt_prefix(&style),
+            continuation_prefix: render_prompt_continuation_prefix(&style),
             screen_lines: Vec::new(),
             input_prefix_width: 2,
             inner_width,
             max_visible_rows,
-            color: style.color,
         }
     }
 
@@ -269,6 +265,14 @@ impl PromptSession {
         self.request(PromptSessionCommand::Resume)
     }
 
+    pub fn pause_modal(&self) -> io::Result<()> {
+        self.request(PromptSessionCommand::PauseModal)
+    }
+
+    pub fn resume_modal(&self) -> io::Result<()> {
+        self.request(PromptSessionCommand::ResumeModal)
+    }
+
     pub fn shutdown(&self) -> io::Result<()> {
         self.request(PromptSessionCommand::Shutdown)
     }
@@ -311,6 +315,7 @@ fn run_prompt_session(
     let mut stdout = io::stdout();
     let mut suspend_depth = 0usize;
     let mut frame = frame_factory(&line, cursor_pos);
+    let mut modal_parked = false;
 
     terminal::enable_raw_mode()?;
     let mut render_state = Some(render_prompt_frame(
@@ -374,9 +379,67 @@ fn run_prompt_session(
                     }
                     let _ = ack.send(());
                 }
+                PromptSessionCommand::PauseModal(ack) => {
+                    suspend_depth = suspend_depth.saturating_add(1);
+                    if suspend_depth == 1 {
+                        if let Some(state) = render_state.as_ref() {
+                            park_prompt_for_modal(&mut stdout, state)?;
+                            modal_parked = true;
+                        }
+                        terminal::disable_raw_mode()?;
+                    }
+                    let _ = ack.send(());
+                }
+                PromptSessionCommand::ResumeModal(ack) => {
+                    frame = frame_factory(&line, cursor_pos);
+                    suspend_depth = suspend_depth.saturating_sub(1);
+                    if suspend_depth == 0 {
+                        terminal::enable_raw_mode()?;
+                        if modal_parked {
+                            render_state = match render_state.as_ref() {
+                                Some(state) => Some(render_prompt_frame_from_parked(
+                                    &mut stdout,
+                                    &frame,
+                                    &line,
+                                    cursor_pos,
+                                    state,
+                                )?),
+                                None => Some(render_prompt_frame(
+                                    &mut stdout,
+                                    &frame,
+                                    &line,
+                                    cursor_pos,
+                                    None,
+                                )?),
+                            };
+                            modal_parked = false;
+                        } else if render_state.is_none() {
+                            render_state = Some(render_prompt_frame(
+                                &mut stdout,
+                                &frame,
+                                &line,
+                                cursor_pos,
+                                None,
+                            )?);
+                        } else {
+                            render_state = Some(render_prompt_frame(
+                                &mut stdout,
+                                &frame,
+                                &line,
+                                cursor_pos,
+                                render_state.as_ref(),
+                            )?);
+                        }
+                    }
+                    let _ = ack.send(());
+                }
                 PromptSessionCommand::Shutdown(ack) => {
                     if let Some(state) = render_state.take() {
-                        dismiss_prompt(&mut stdout, &state)?;
+                        if modal_parked {
+                            dismiss_prompt_from_parked(&mut stdout, &state)?;
+                        } else {
+                            dismiss_prompt(&mut stdout, &state)?;
+                        }
                     }
                     let _ = ack.send(());
                     terminal::disable_raw_mode()?;
@@ -448,7 +511,11 @@ fn run_prompt_session(
             {
                 if line.is_empty() {
                     if let Some(state) = render_state.take() {
-                        dismiss_prompt(&mut stdout, &state)?;
+                        if modal_parked {
+                            dismiss_prompt_from_parked(&mut stdout, &state)?;
+                        } else {
+                            dismiss_prompt(&mut stdout, &state)?;
+                        }
                     }
                     let _ = event_tx.send(PromptSessionEvent::Eof);
                     terminal::disable_raw_mode()?;
@@ -538,6 +605,20 @@ fn run_prompt_session(
                 cursor_pos = move_cursor_end(&line, cursor_pos, frame.inner_width);
                 preferred_column = None;
             }
+            Event::Key(key) if is_primary_key_event(&key) && key.code == KeyCode::BackTab => {
+                if let Some(factory) = completion_factory.as_ref() {
+                    if let Some(completion) = factory(&line, cursor_pos) {
+                        line = completion.line;
+                        cursor_pos = completion.cursor_pos.min(line.chars().count());
+                        preferred_column = None;
+                        history_index = None;
+                        continue;
+                    }
+                }
+                if tab_mode_cycle_allowed(&line, cursor_pos) {
+                    let _ = event_tx.send(PromptSessionEvent::ModeCycle { reverse: true });
+                }
+            }
             Event::Key(key) if is_primary_key_event(&key) && key.code == KeyCode::Tab => {
                 if let Some(factory) = completion_factory.as_ref() {
                     if let Some(completion) = factory(&line, cursor_pos) {
@@ -545,7 +626,12 @@ fn run_prompt_session(
                         cursor_pos = completion.cursor_pos.min(line.chars().count());
                         preferred_column = None;
                         history_index = None;
+                        continue;
                     }
+                }
+                if tab_mode_cycle_allowed(&line, cursor_pos) {
+                    let reverse = key.modifiers.contains(KeyModifiers::SHIFT);
+                    let _ = event_tx.send(PromptSessionEvent::ModeCycle { reverse });
                 }
             }
             Event::Key(key) if is_vertical_cursor_prev_key(&key) => {
@@ -587,18 +673,41 @@ fn run_prompt_session(
             _ => {}
         }
 
+        let resize_event = matches!(ev, Event::Resize(_, _));
+
         // Determine if we need a full redraw or just cursor update
         let needs_redraw = !matches!(ev, Event::Key(key) if is_cursor_only_key(&key));
 
         if needs_redraw {
             frame = frame_factory(&line, cursor_pos);
-            render_state = Some(render_prompt_frame(
-                &mut stdout,
-                &frame,
-                &line,
-                cursor_pos,
-                render_state.as_ref(),
-            )?);
+            render_state = Some(if resize_event {
+                match render_prompt_frame_after_resize(
+                    &mut stdout,
+                    &frame,
+                    &line,
+                    cursor_pos,
+                    render_state
+                        .as_ref()
+                        .expect("render state exists during resize"),
+                ) {
+                    Ok(state) => state,
+                    Err(_) => render_prompt_frame(
+                        &mut stdout,
+                        &frame,
+                        &line,
+                        cursor_pos,
+                        render_state.as_ref(),
+                    )?,
+                }
+            } else {
+                render_prompt_frame(
+                    &mut stdout,
+                    &frame,
+                    &line,
+                    cursor_pos,
+                    render_state.as_ref(),
+                )?
+            });
         } else if let Some(state) = render_state.as_mut() {
             let viewport =
                 wrapped_viewport(&line, cursor_pos, frame.inner_width, frame.max_visible_rows);
@@ -642,6 +751,7 @@ pub fn read_inline_prompt_line(
     history: &PromptHistory,
     style: &CliStyle,
 ) -> io::Result<PromptResult> {
+    let style = style.with_live_width();
     if !style.color {
         return read_plain_line(prompt_str);
     }
@@ -858,8 +968,22 @@ fn read_raw_line(frame: &PromptFrame, history: &PromptHistory) -> io::Result<Pro
             _ => {}
         }
 
-        render_state =
-            render_prompt_frame(&mut stdout, frame, &line, cursor_pos, Some(&render_state))?;
+        render_state = if matches!(ev, Event::Resize(_, _)) {
+            match render_prompt_frame_after_resize(
+                &mut stdout,
+                frame,
+                &line,
+                cursor_pos,
+                &render_state,
+            ) {
+                Ok(state) => state,
+                Err(_) => {
+                    render_prompt_frame(&mut stdout, frame, &line, cursor_pos, Some(&render_state))?
+                }
+            }
+        } else {
+            render_prompt_frame(&mut stdout, frame, &line, cursor_pos, Some(&render_state))?
+        };
     };
 
     terminal::disable_raw_mode()?;
@@ -1063,7 +1187,13 @@ fn render_inline_prompt<W: Write>(
     Ok(PromptRenderState {
         cursor_row_in_view: 0,
         screen_rows: 0,
+        pre_input_rows: 0,
         frame_height: 1,
+        frame_physical_rows: 1,
+        cursor_row_in_frame: 0,
+        cursor_physical_row_in_frame: 0,
+        cursor_col_in_frame_row: prompt_width + cursor_col,
+        rendered_plain_rows: vec![format!("{prompt_str}{row}")],
     })
 }
 
@@ -1083,34 +1213,66 @@ fn render_prompt_frame<W: Write>(
 ) -> io::Result<PromptRenderState> {
     let viewport = wrapped_viewport(line, cursor_pos, frame.inner_width, frame.max_visible_rows);
     let screen_rows = frame.screen_lines.len();
-    // Total lines the frame will occupy: screen + prompt header + visible_rows + footer.
-    let new_frame_height = screen_rows + viewport.visible_rows.len() + 2;
+    let pre_input_rows = frame.chrome_before_input.len();
+    let post_input_rows = frame.chrome_after_input.len();
+    let new_frame_height =
+        screen_rows + pre_input_rows + viewport.visible_rows.len() + post_input_rows;
+    let terminal_width = usize::from(terminal::size()?.0).max(1);
+    let previous_frame_physical_rows = previous_state
+        .map(|state| state.frame_physical_rows)
+        .unwrap_or(0);
 
     if let Some(state) = previous_state {
-        // Move cursor from the active input row back to the top of the full frame.
-        let lines_up = (state.cursor_row_in_view + state.screen_rows + 1) as u16;
-        execute!(
-            stdout,
-            cursor::MoveToColumn(0),
-            cursor::MoveUp(lines_up),
-            terminal::Clear(ClearType::FromCursorDown)
-        )?;
-        // If the new frame is taller than the old one, the additional \r\n's will
-        // push the header off-screen (terminal scrolls).  Reserve extra rows below
-        // the current cursor to prevent that.
-        if new_frame_height > state.frame_height {
-            let extra = (new_frame_height - state.frame_height) as u16;
-            for _ in 0..extra {
-                writeln!(stdout)?;
-            }
-            execute!(stdout, cursor::MoveUp(extra))?;
-        }
+        move_to_prompt_frame_top(stdout, state)?;
+        reserve_frame_growth(stdout, state.frame_physical_rows, 0)?;
     } else {
         // First render: reserve vertical space so the terminal won't need to scroll
         // when we draw. Print (new_frame_height - 1) newlines to push content up,
         // then move back to where the header should go.
         execute!(stdout, cursor::MoveToColumn(0))?;
-        let reserve = new_frame_height.saturating_sub(1) as u16;
+    }
+
+    let mut rendered_rows = Vec::with_capacity(
+        frame.screen_lines.len()
+            + frame.chrome_before_input.len()
+            + viewport.visible_rows.len()
+            + frame.chrome_after_input.len(),
+    );
+    rendered_rows.extend(frame.screen_lines.iter().cloned());
+    rendered_rows.extend(frame.chrome_before_input.iter().cloned());
+    rendered_rows.extend(
+        viewport
+            .visible_rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| compose_input_row(frame, row, index == 0)),
+    );
+    rendered_rows.extend(frame.chrome_after_input.iter().cloned());
+    let rendered_plain_rows = rendered_rows
+        .iter()
+        .map(|row| strip_ansi_text(row))
+        .collect::<Vec<_>>();
+    let new_frame_physical_rows = rendered_plain_rows
+        .iter()
+        .map(|row| wrapped_terminal_row_count(row, terminal_width))
+        .sum::<usize>()
+        .max(1);
+    let cursor_col_in_frame_row = usize::from(frame.input_prefix_width) + viewport.cursor_col;
+    let cursor_physical_row_in_frame = prompt_cursor_physical_row_in_frame(
+        &rendered_plain_rows,
+        target_row_index(screen_rows, pre_input_rows, viewport.cursor_row),
+        cursor_col_in_frame_row,
+        terminal_width,
+    );
+
+    if previous_state.is_some() {
+        reserve_frame_growth(
+            stdout,
+            previous_frame_physical_rows,
+            new_frame_physical_rows,
+        )?;
+    } else {
+        let reserve = new_frame_physical_rows.saturating_sub(1) as u16;
         if reserve > 0 {
             for _ in 0..reserve {
                 writeln!(stdout)?;
@@ -1119,7 +1281,7 @@ fn render_prompt_frame<W: Write>(
         }
     }
 
-    for (index, row) in frame.screen_lines.iter().enumerate() {
+    for (index, row) in rendered_rows.iter().enumerate() {
         if index > 0 {
             write!(stdout, "\r\n")?;
         }
@@ -1130,34 +1292,19 @@ fn render_prompt_frame<W: Write>(
             terminal::Clear(ClearType::UntilNewLine)
         )?;
     }
-    write!(
-        stdout,
-        "{}\r{}{}",
-        if frame.screen_lines.is_empty() {
-            ""
-        } else {
-            "\r\n"
-        },
-        frame.header_line,
-        terminal::Clear(ClearType::UntilNewLine),
-    )?;
-    for row in &viewport.visible_rows {
-        write!(
-            stdout,
-            "\r\n\r{}{}",
-            compose_input_row(frame, row),
-            terminal::Clear(ClearType::UntilNewLine),
-        )?;
+
+    let trailing_rows = previous_frame_physical_rows.saturating_sub(new_frame_physical_rows);
+    for _ in 0..trailing_rows {
+        write!(stdout, "\r\n\r{}", terminal::Clear(ClearType::UntilNewLine),)?;
     }
-    write!(
-        stdout,
-        "\r\n\r{}{}",
-        frame.footer_line,
-        terminal::Clear(ClearType::UntilNewLine),
-    )?;
+
+    let total_rows = new_frame_physical_rows.max(previous_frame_physical_rows);
+    let rows_up = total_rows
+        .saturating_sub(1)
+        .saturating_sub(cursor_physical_row_in_frame) as u16;
     execute!(
         stdout,
-        cursor::MoveUp((viewport.visible_rows.len() - viewport.cursor_row) as u16),
+        cursor::MoveUp(rows_up),
         cursor::MoveToColumn(frame.input_prefix_width + viewport.cursor_col as u16)
     )?;
     stdout.flush()?;
@@ -1165,20 +1312,287 @@ fn render_prompt_frame<W: Write>(
     Ok(PromptRenderState {
         cursor_row_in_view: viewport.cursor_row,
         screen_rows,
+        pre_input_rows,
         frame_height: new_frame_height,
+        frame_physical_rows: new_frame_physical_rows,
+        cursor_row_in_frame: target_row_index(screen_rows, pre_input_rows, viewport.cursor_row),
+        cursor_physical_row_in_frame,
+        cursor_col_in_frame_row,
+        rendered_plain_rows,
+    })
+}
+
+fn render_prompt_frame_after_resize<W: Write>(
+    stdout: &mut W,
+    frame: &PromptFrame,
+    line: &str,
+    cursor_pos: usize,
+    previous_state: &PromptRenderState,
+) -> io::Result<PromptRenderState> {
+    let (_, current_row) = cursor::position()?;
+    let frame_top_row =
+        prompt_frame_top_row_after_resize(current_row, previous_state, terminal::size()?.0);
+    execute!(stdout, cursor::MoveTo(0, frame_top_row))?;
+    clear_prompt_from_top(stdout)?;
+    render_prompt_frame(stdout, frame, line, cursor_pos, None)
+}
+
+fn prompt_frame_top_row_after_resize(
+    current_row: u16,
+    previous_state: &PromptRenderState,
+    terminal_width: u16,
+) -> u16 {
+    current_row
+        .saturating_sub(
+            prompt_cursor_physical_row_after_reflow(previous_state, terminal_width) as u16,
+        )
+}
+
+fn prompt_cursor_physical_row_after_reflow(
+    previous_state: &PromptRenderState,
+    terminal_width: u16,
+) -> usize {
+    let width = usize::from(terminal_width).max(1);
+    let rows_before_cursor = previous_state
+        .rendered_plain_rows
+        .iter()
+        .take(previous_state.cursor_row_in_frame)
+        .map(|row| wrapped_terminal_row_count(row, width))
+        .sum::<usize>();
+    let cursor_rows_within_current =
+        previous_state.cursor_col_in_frame_row.saturating_sub(1) / width;
+    rows_before_cursor + cursor_rows_within_current
+}
+
+fn wrapped_terminal_row_count(row: &str, terminal_width: usize) -> usize {
+    let visible_width = display_width(row);
+    if visible_width == 0 {
+        1
+    } else {
+        visible_width.div_ceil(terminal_width.max(1))
+    }
+}
+
+fn strip_ansi_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                while let Some(next) = chars.next() {
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
+                }
+                continue;
+            }
+            continue;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn render_prompt_frame_from_parked<W: Write>(
+    stdout: &mut W,
+    frame: &PromptFrame,
+    line: &str,
+    cursor_pos: usize,
+    previous_state: &PromptRenderState,
+) -> io::Result<PromptRenderState> {
+    let viewport = wrapped_viewport(line, cursor_pos, frame.inner_width, frame.max_visible_rows);
+    let screen_rows = frame.screen_lines.len();
+    let pre_input_rows = frame.chrome_before_input.len();
+    let post_input_rows = frame.chrome_after_input.len();
+    let new_frame_height =
+        screen_rows + pre_input_rows + viewport.visible_rows.len() + post_input_rows;
+    let terminal_width = usize::from(terminal::size()?.0).max(1);
+
+    move_to_parked_prompt_frame_top(stdout, previous_state)?;
+
+    let mut rendered_rows = Vec::with_capacity(
+        frame.screen_lines.len()
+            + frame.chrome_before_input.len()
+            + viewport.visible_rows.len()
+            + frame.chrome_after_input.len(),
+    );
+    rendered_rows.extend(frame.screen_lines.iter().cloned());
+    rendered_rows.extend(frame.chrome_before_input.iter().cloned());
+    rendered_rows.extend(
+        viewport
+            .visible_rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| compose_input_row(frame, row, index == 0)),
+    );
+    rendered_rows.extend(frame.chrome_after_input.iter().cloned());
+    let rendered_plain_rows = rendered_rows
+        .iter()
+        .map(|row| strip_ansi_text(row))
+        .collect::<Vec<_>>();
+    let new_frame_physical_rows = rendered_plain_rows
+        .iter()
+        .map(|row| wrapped_terminal_row_count(row, terminal_width))
+        .sum::<usize>()
+        .max(1);
+    let cursor_col_in_frame_row = usize::from(frame.input_prefix_width) + viewport.cursor_col;
+    let cursor_physical_row_in_frame = prompt_cursor_physical_row_in_frame(
+        &rendered_plain_rows,
+        target_row_index(screen_rows, pre_input_rows, viewport.cursor_row),
+        cursor_col_in_frame_row,
+        terminal_width,
+    );
+
+    reserve_frame_growth(
+        stdout,
+        previous_state.frame_physical_rows,
+        new_frame_physical_rows,
+    )?;
+
+    for (index, row) in rendered_rows.iter().enumerate() {
+        if index > 0 {
+            write!(stdout, "\r\n")?;
+        }
+        write!(
+            stdout,
+            "\r{}{}",
+            row,
+            terminal::Clear(ClearType::UntilNewLine)
+        )?;
+    }
+
+    let trailing_rows = previous_state
+        .frame_physical_rows
+        .saturating_sub(new_frame_physical_rows);
+    for _ in 0..trailing_rows {
+        write!(stdout, "\r\n\r{}", terminal::Clear(ClearType::UntilNewLine),)?;
+    }
+
+    let total_rows = new_frame_physical_rows.max(previous_state.frame_physical_rows);
+    let rows_up = total_rows
+        .saturating_sub(1)
+        .saturating_sub(cursor_physical_row_in_frame) as u16;
+    execute!(
+        stdout,
+        cursor::MoveUp(rows_up),
+        cursor::MoveToColumn(frame.input_prefix_width + viewport.cursor_col as u16)
+    )?;
+    stdout.flush()?;
+
+    Ok(PromptRenderState {
+        cursor_row_in_view: viewport.cursor_row,
+        screen_rows,
+        pre_input_rows,
+        frame_height: new_frame_height,
+        frame_physical_rows: new_frame_physical_rows,
+        cursor_row_in_frame: target_row_index(screen_rows, pre_input_rows, viewport.cursor_row),
+        cursor_physical_row_in_frame,
+        cursor_col_in_frame_row,
+        rendered_plain_rows,
     })
 }
 
 fn dismiss_prompt<W: Write>(stdout: &mut W, state: &PromptRenderState) -> io::Result<()> {
+    move_to_prompt_frame_top(stdout, state)?;
+    clear_prompt_from_top(stdout)
+}
+
+fn dismiss_prompt_from_parked<W: Write>(
+    stdout: &mut W,
+    state: &PromptRenderState,
+) -> io::Result<()> {
+    move_to_parked_prompt_frame_top(stdout, state)?;
+    clear_prompt_from_top(stdout)
+}
+
+fn move_to_prompt_frame_top<W: Write>(stdout: &mut W, state: &PromptRenderState) -> io::Result<()> {
+    debug_assert_eq!(
+        state.cursor_row_in_frame,
+        state.screen_rows + state.pre_input_rows + state.cursor_row_in_view
+    );
+    debug_assert!(state.frame_height >= state.cursor_row_in_frame + 1);
     execute!(
         stdout,
         cursor::MoveToColumn(0),
-        cursor::MoveUp((state.cursor_row_in_view + state.screen_rows + 1) as u16),
+        cursor::MoveUp(state.cursor_physical_row_in_frame as u16),
+    )
+}
+
+fn move_to_parked_prompt_frame_top<W: Write>(
+    stdout: &mut W,
+    state: &PromptRenderState,
+) -> io::Result<()> {
+    debug_assert_eq!(
+        state.cursor_row_in_frame,
+        state.screen_rows + state.pre_input_rows + state.cursor_row_in_view
+    );
+    debug_assert!(state.frame_height >= state.cursor_row_in_frame + 1);
+    execute!(
+        stdout,
+        cursor::MoveToColumn(0),
+        cursor::MoveUp(state.frame_physical_rows as u16),
+    )
+}
+
+fn clear_prompt_from_top<W: Write>(stdout: &mut W) -> io::Result<()> {
+    execute!(
+        stdout,
         terminal::Clear(ClearType::FromCursorDown),
         cursor::MoveToColumn(0)
     )?;
     stdout.flush()?;
     Ok(())
+}
+
+fn reserve_frame_growth<W: Write>(
+    stdout: &mut W,
+    previous_frame_rows: usize,
+    new_frame_rows: usize,
+) -> io::Result<()> {
+    if new_frame_rows > previous_frame_rows {
+        let extra = (new_frame_rows - previous_frame_rows) as u16;
+        for _ in 0..extra {
+            writeln!(stdout)?;
+        }
+        execute!(stdout, cursor::MoveUp(extra))?;
+    }
+    Ok(())
+}
+
+fn park_prompt_for_modal<W: Write>(stdout: &mut W, state: &PromptRenderState) -> io::Result<()> {
+    debug_assert_eq!(
+        state.cursor_row_in_frame,
+        state.screen_rows + state.pre_input_rows + state.cursor_row_in_view
+    );
+    debug_assert!(state.frame_height >= state.cursor_row_in_frame + 1);
+    let rows_down = state
+        .frame_physical_rows
+        .saturating_sub(1)
+        .saturating_sub(state.cursor_physical_row_in_frame) as u16;
+    execute!(stdout, cursor::MoveToColumn(0), cursor::MoveDown(rows_down))?;
+    write!(stdout, "\r\n")?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn target_row_index(screen_rows: usize, pre_input_rows: usize, cursor_row_in_view: usize) -> usize {
+    screen_rows + pre_input_rows + cursor_row_in_view
+}
+
+fn prompt_cursor_physical_row_in_frame(
+    rendered_plain_rows: &[String],
+    cursor_row_in_frame: usize,
+    cursor_col_in_frame_row: usize,
+    terminal_width: usize,
+) -> usize {
+    let rows_before_cursor = rendered_plain_rows
+        .iter()
+        .take(cursor_row_in_frame)
+        .map(|row| wrapped_terminal_row_count(row, terminal_width))
+        .sum::<usize>();
+    let cursor_rows_within_current = cursor_col_in_frame_row.saturating_sub(1) / terminal_width;
+    rows_before_cursor + cursor_rows_within_current
 }
 
 fn is_primary_key_event(key: &KeyEvent) -> bool {
@@ -1220,13 +1634,14 @@ fn is_cursor_only_key(key: &KeyEvent) -> bool {
     }
 }
 
-fn compose_input_row(frame: &PromptFrame, visible_line: &str) -> String {
+fn compose_input_row(frame: &PromptFrame, visible_line: &str, first_visible_row: bool) -> String {
     let content = pad_right(visible_line, frame.inner_width, ' ');
-    if frame.color {
-        format!("{} {} {}", "\x1b[36m│\x1b[0m", content, "\x1b[36m│\x1b[0m")
+    let prefix = if first_visible_row {
+        frame.prompt_prefix.as_str()
     } else {
-        format!("│ {} │", content)
-    }
+        frame.continuation_prefix.as_str()
+    };
+    format!("{prefix}{content}")
 }
 
 fn wrapped_rows(text: &str, width: usize) -> Vec<WrappedRow> {
@@ -1437,6 +1852,46 @@ fn bullet_separator(style: &CliStyle) -> String {
     }
 }
 
+fn render_prompt_separator_line(label: Option<&str>, width: usize, style: &CliStyle) -> String {
+    let base = match label {
+        Some(label) if !label.trim().is_empty() => {
+            let seed = format!(
+                "─ {} ",
+                truncate_visible(label.trim(), width.saturating_sub(4))
+            );
+            pad_right(&seed, width, '─')
+        }
+        _ => "─".repeat(width.max(8)),
+    };
+    if style.color {
+        style.bold_cyan(&base)
+    } else {
+        base
+    }
+}
+
+fn render_prompt_footer_line(footer_text: &str, width: usize, style: &CliStyle) -> String {
+    let text = truncate_visible(footer_text.trim(), width);
+    let _ = style;
+    text
+}
+
+fn render_prompt_prefix(style: &CliStyle) -> String {
+    if style.color {
+        format!("{} ", style.bold_cyan(">"))
+    } else {
+        "> ".to_string()
+    }
+}
+
+fn render_prompt_continuation_prefix(style: &CliStyle) -> String {
+    if style.color {
+        format!("{} ", style.dim("·"))
+    } else {
+        "  ".to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1498,8 +1953,8 @@ mod tests {
         let style = CliStyle::plain();
         let frame = PromptFrame::boxed("Preset prometheus", "Model auto", &style);
         assert_eq!(frame.content_width(), 75);
-        assert!(frame.header_line.contains("Preset prometheus"));
-        assert!(frame.footer_line.contains("Alt+Enter/Ctrl+J newline"));
+        assert!(frame.chrome_before_input[0].contains("Preset prometheus"));
+        assert!(frame.chrome_after_input[1].contains("Alt+Enter/Ctrl+J newline"));
     }
 
     #[test]
@@ -1594,6 +2049,57 @@ mod tests {
     }
 
     #[test]
+    fn modal_park_and_resume_keep_frame_renderable() {
+        let style = CliStyle::plain();
+        let frame = PromptFrame::boxed("Agent build", "Model auto", &style)
+            .with_screen_lines(vec!["● prior transcript".to_string()]);
+        let mut buf = Vec::new();
+        let state = render_prompt_frame(&mut buf, &frame, "draft", 5, None).unwrap();
+        let first_height = state.frame_height;
+
+        park_prompt_for_modal(&mut buf, &state).unwrap();
+        let resumed = render_prompt_frame_from_parked(
+            &mut buf,
+            &frame,
+            "draft resumed",
+            "draft resumed".chars().count(),
+            &state,
+        )
+        .unwrap();
+
+        assert_eq!(resumed.screen_rows, 1);
+        assert!(resumed.frame_height >= first_height);
+
+        dismiss_prompt_from_parked(&mut buf, &resumed).unwrap();
+    }
+
+    #[test]
+    fn parked_prompt_dismiss_clears_from_frame_top() {
+        let state = PromptRenderState {
+            cursor_row_in_view: 0,
+            screen_rows: 2,
+            pre_input_rows: 1,
+            frame_height: 5,
+            frame_physical_rows: 5,
+            cursor_row_in_frame: 3,
+            cursor_physical_row_in_frame: 3,
+            cursor_col_in_frame_row: 2,
+            rendered_plain_rows: vec![
+                "header one".to_string(),
+                "header two".to_string(),
+                "prompt".to_string(),
+                "body".to_string(),
+                "footer".to_string(),
+            ],
+        };
+        let mut buf = Vec::new();
+        dismiss_prompt_from_parked(&mut buf, &state).unwrap();
+        let rendered = String::from_utf8_lossy(&buf);
+        assert!(rendered.contains("\u{1b}[5A"));
+        assert!(rendered.contains("\u{1b}[J"));
+    }
+
+    #[test]
     fn primary_key_event_only_accepts_press() {
         let press = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
         let release = KeyEvent::new_with_kind(
@@ -1648,13 +2154,14 @@ mod tests {
     fn render_state_tracks_full_frame_height() {
         let frame = PromptFrame {
             plain_prompt: "> ".to_string(),
-            header_line: "header".to_string(),
-            footer_line: "footer".to_string(),
+            chrome_before_input: vec!["header".to_string()],
+            chrome_after_input: vec!["footer".to_string()],
+            prompt_prefix: "> ".to_string(),
+            continuation_prefix: "  ".to_string(),
             screen_lines: Vec::new(),
             input_prefix_width: 2,
             inner_width: 5,
             max_visible_rows: 12,
-            color: false,
         };
         let mut output = Vec::new();
 
@@ -1662,7 +2169,9 @@ mod tests {
             .expect("prompt frame renders");
 
         assert_eq!(state.cursor_row_in_view, 2);
+        assert_eq!(state.pre_input_rows, 1);
         assert_eq!(state.frame_height, 5);
+        assert_eq!(state.frame_physical_rows, 5);
     }
 
     #[test]
@@ -1670,13 +2179,23 @@ mod tests {
         let state = PromptRenderState {
             cursor_row_in_view: 0,
             screen_rows: 0,
+            pre_input_rows: 1,
             frame_height: 3,
+            frame_physical_rows: 3,
+            cursor_row_in_frame: 1,
+            cursor_physical_row_in_frame: 1,
+            cursor_col_in_frame_row: 2,
+            rendered_plain_rows: vec![
+                "header".to_string(),
+                "body".to_string(),
+                "footer".to_string(),
+            ],
         };
 
-        assert_eq!(state.cursor_row_in_view + 1, 1);
+        assert_eq!(state.cursor_row_in_view + state.pre_input_rows, 1);
         assert_ne!(
             state.frame_height.saturating_sub(1),
-            state.cursor_row_in_view + 1
+            state.cursor_row_in_view + state.pre_input_rows
         );
     }
 
@@ -1686,13 +2205,14 @@ mod tests {
         // vertical space, preventing terminal scroll from hiding the header.
         let frame = PromptFrame {
             plain_prompt: "> ".to_string(),
-            header_line: "HDR".to_string(),
-            footer_line: "FTR".to_string(),
+            chrome_before_input: vec!["HDR".to_string()],
+            chrome_after_input: vec!["FTR".to_string()],
+            prompt_prefix: "> ".to_string(),
+            continuation_prefix: "  ".to_string(),
             screen_lines: Vec::new(),
             input_prefix_width: 2,
             inner_width: 5,
             max_visible_rows: 12,
-            color: false,
         };
         let mut output = Vec::new();
         let state =
@@ -1700,6 +2220,7 @@ mod tests {
 
         // frame_height = 1 header + 1 content row + 1 footer = 3
         assert_eq!(state.frame_height, 3);
+        assert_eq!(state.frame_physical_rows, 3);
 
         let text = String::from_utf8_lossy(&output);
         // The first render should contain the header and footer
@@ -1714,20 +2235,31 @@ mod tests {
         // header duplication.
         let frame = PromptFrame {
             plain_prompt: "> ".to_string(),
-            header_line: "HDR".to_string(),
-            footer_line: "FTR".to_string(),
+            chrome_before_input: vec!["HDR".to_string()],
+            chrome_after_input: vec!["FTR".to_string()],
+            prompt_prefix: "> ".to_string(),
+            continuation_prefix: "  ".to_string(),
             screen_lines: Vec::new(),
             input_prefix_width: 2,
             inner_width: 5,
             max_visible_rows: 12,
-            color: false,
         };
 
         // Simulate previous state: 1 content row → frame_height = 3
         let prev = PromptRenderState {
             cursor_row_in_view: 0,
             screen_rows: 0,
+            pre_input_rows: 1,
             frame_height: 3,
+            frame_physical_rows: 3,
+            cursor_row_in_frame: 1,
+            cursor_physical_row_in_frame: 1,
+            cursor_col_in_frame_row: 2,
+            rendered_plain_rows: vec![
+                "header".to_string(),
+                "body".to_string(),
+                "footer".to_string(),
+            ],
         };
         let mut output = Vec::new();
         // Now the text wraps to 3 rows → frame_height = 5 (growth of 2)
@@ -1735,6 +2267,7 @@ mod tests {
             .expect("render succeeds");
 
         assert_eq!(state.frame_height, 5);
+        assert_eq!(state.frame_physical_rows, 5);
         assert_eq!(state.cursor_row_in_view, 2);
     }
 
@@ -1750,18 +2283,29 @@ mod tests {
     fn render_frame_handles_fullwidth_wrap_growth() {
         let frame = PromptFrame {
             plain_prompt: "> ".to_string(),
-            header_line: "HDR".to_string(),
-            footer_line: "FTR".to_string(),
+            chrome_before_input: vec!["HDR".to_string()],
+            chrome_after_input: vec!["FTR".to_string()],
+            prompt_prefix: "> ".to_string(),
+            continuation_prefix: "  ".to_string(),
             screen_lines: Vec::new(),
             input_prefix_width: 2,
             inner_width: 4,
             max_visible_rows: 12,
-            color: false,
         };
         let previous = PromptRenderState {
             cursor_row_in_view: 0,
             screen_rows: 0,
+            pre_input_rows: 1,
             frame_height: 3,
+            frame_physical_rows: 3,
+            cursor_row_in_frame: 1,
+            cursor_physical_row_in_frame: 1,
+            cursor_col_in_frame_row: 2,
+            rendered_plain_rows: vec![
+                "header".to_string(),
+                "body".to_string(),
+                "footer".to_string(),
+            ],
         };
         let mut output = Vec::new();
 
@@ -1769,7 +2313,70 @@ mod tests {
             .expect("render succeeds");
 
         assert_eq!(state.frame_height, 4);
+        assert_eq!(state.frame_physical_rows, 4);
         assert_eq!(state.cursor_row_in_view, 1);
+    }
+
+    #[test]
+    fn resize_redraw_reanchors_from_current_cursor_row() {
+        let state = PromptRenderState {
+            cursor_row_in_view: 0,
+            screen_rows: 1,
+            pre_input_rows: 1,
+            frame_height: 4,
+            frame_physical_rows: 5,
+            cursor_row_in_frame: 2,
+            cursor_physical_row_in_frame: 3,
+            cursor_col_in_frame_row: 2,
+            rendered_plain_rows: vec![
+                "very long header that will wrap".to_string(),
+                "lane".to_string(),
+                "prompt".to_string(),
+                "footer".to_string(),
+            ],
+        };
+        assert_eq!(prompt_frame_top_row_after_resize(11, &state, 12,), 7);
+    }
+
+    #[test]
+    fn render_frame_tracks_physical_rows_for_wrapped_screen_lines() {
+        let long_line = format!(
+            "USER ● {}",
+            "这是一条很长很长很长的历史消息 ".repeat(20)
+        );
+        let frame = PromptFrame {
+            plain_prompt: "> ".to_string(),
+            chrome_before_input: vec!["HDR".to_string()],
+            chrome_after_input: vec!["FTR".to_string()],
+            prompt_prefix: "> ".to_string(),
+            continuation_prefix: "  ".to_string(),
+            screen_lines: vec![long_line],
+            input_prefix_width: 2,
+            inner_width: 12,
+            max_visible_rows: 12,
+        };
+        let mut output = Vec::new();
+
+        let state = render_prompt_frame(&mut output, &frame, "abc", 3, None)
+            .expect("render succeeds");
+
+        assert_eq!(state.frame_height, 4);
+        assert!(state.frame_physical_rows > state.frame_height);
+        assert!(state.cursor_physical_row_in_frame >= state.cursor_row_in_frame);
+    }
+
+    #[test]
+    fn tab_mode_cycle_allowed_for_plain_prompt_text() {
+        assert!(tab_mode_cycle_allowed("research task", "research task".chars().count()));
+    }
+
+    #[test]
+    fn tab_mode_cycle_blocked_for_slash_command_prefix() {
+        assert!(!tab_mode_cycle_allowed("/preset at", "/preset at".chars().count()));
+        assert!(!tab_mode_cycle_allowed(
+            "  /agent build",
+            "  /agent build".chars().count()
+        ));
     }
 
     #[test]

@@ -8,6 +8,7 @@
     "generate:context-pressure": "node scripts/generate-context-pressure.mjs",
     "generate:context-closure": "node scripts/generate-context-closure.mjs",
     "check:generated": "node scripts/generate-context-pressure.mjs --check && node scripts/generate-context-closure.mjs --check",
+    "test:live-transcript-state": "node scripts/test-live-transcript-state.mjs",
     "test:permission-interaction": "node scripts/test-permission-interaction.mjs",
     "test:session-insights-governance": "node scripts/test-session-insights-governance.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",

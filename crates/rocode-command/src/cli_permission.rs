@@ -7,12 +7,12 @@
 //! Turn/session grants remember the permission type + pattern so subsequent
 //! identical requests are auto-approved within the same scope.
 
-use crate::cli_select::{interactive_select, SelectOption, SelectResult};
+use crate::cli_select::{interactive_select_with_prelude, SelectOption, SelectResult};
 use crate::cli_spinner::SpinnerGuard;
 use crate::cli_style::CliStyle;
 use rocode_permission::{PermissionClass, PermissionLifetime};
 use std::collections::HashSet;
-use std::io::{self, Write};
+use std::io;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -128,6 +128,61 @@ fn display_scope<'a>(scope_key: Option<&'a str>, scope_label: Option<&'a str>) -
     scope_label.or(scope_key)
 }
 
+fn truncate_permission_preview(value: &str, max_chars: usize) -> String {
+    let trimmed = value.trim();
+    let mut chars = trimmed.chars();
+    let preview: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{preview}…")
+    } else {
+        preview
+    }
+}
+
+fn push_permission_pattern_lines(
+    lines: &mut Vec<String>,
+    permission: &str,
+    patterns: &[String],
+    style: &CliStyle,
+) {
+    if patterns.is_empty() {
+        return;
+    }
+
+    let preview_limit = if permission == "bash" { 1 } else { 2 };
+    let preview_len = if permission == "bash" { 96 } else { 112 };
+    let label = if permission == "bash" {
+        "commands:"
+    } else {
+        "targets:"
+    };
+    lines.push(format!(
+        "    {} {}",
+        style.dim(label),
+        if patterns.len() == 1 {
+            "1 request".to_string()
+        } else {
+            format!("{} requests", patterns.len())
+        }
+    ));
+
+    for pattern in patterns.iter().take(preview_limit) {
+        lines.push(format!(
+            "    {} {}",
+            style.dim("→"),
+            truncate_permission_preview(pattern, preview_len)
+        ));
+    }
+
+    if patterns.len() > preview_limit {
+        lines.push(format!(
+            "    {} +{} more",
+            style.dim("…"),
+            patterns.len() - preview_limit
+        ));
+    }
+}
+
 /// Format a permission request into a human-readable summary block for the terminal.
 fn format_permission_summary(
     permission: &str,
@@ -195,21 +250,12 @@ fn format_permission_summary(
         ));
     }
 
-    // Show patterns (file paths, commands, etc.)
-    if !patterns.is_empty() {
-        for pattern in patterns {
-            lines.push(format!("    {} {}", style.dim("→"), pattern));
-        }
-    }
+    push_permission_pattern_lines(&mut lines, permission, patterns, style);
 
     // Show relevant metadata
     if let Some(command) = metadata.get("command").and_then(|v| v.as_str()) {
-        let display = if command.len() > 120 {
-            format!("{}…", &command[..117])
-        } else {
-            command.to_string()
-        };
-        lines.push(format!("    {} {}", style.dim("$"), display));
+        let display = truncate_permission_preview(command, 108);
+        lines.push(format!("    {} {}", style.dim("cmd:"), display));
     }
 
     if let Some(filepath) = metadata.get("filepath").and_then(|v| v.as_str()) {
@@ -250,10 +296,7 @@ fn format_permission_summary(
     lines.join("\n")
 }
 
-/// Present a permission approval prompt to the user.
-///
-/// Returns the user's decision.
-pub fn prompt_permission(
+fn permission_summary_prelude_lines(
     permission: &str,
     permission_class: Option<&str>,
     scope_key: Option<&str>,
@@ -264,9 +307,9 @@ pub fn prompt_permission(
     metadata: &std::collections::HashMap<String, serde_json::Value>,
     lifetimes: &[PermissionLifetime],
     risk_tags: &[String],
-    style: &CliStyle,
-) -> io::Result<PermissionDecision> {
-    let summary = format_permission_summary(
+) -> Vec<String> {
+    let summary_style = CliStyle::plain();
+    format_permission_summary(
         permission,
         permission_class,
         scope_key,
@@ -277,14 +320,14 @@ pub fn prompt_permission(
         metadata,
         lifetimes,
         risk_tags,
-        style,
-    );
+        &summary_style,
+    )
+    .lines()
+    .map(str::to_string)
+    .collect()
+}
 
-    // Print the summary block to stderr
-    let mut stderr = io::stderr();
-    write!(stderr, "{}\n", summary)?;
-    stderr.flush()?;
-
+fn permission_select_options(lifetimes: &[PermissionLifetime]) -> Vec<SelectOption> {
     let mut options = vec![SelectOption {
         label: "Allow Once".to_string(),
         description: Some("Allow this action once".to_string()),
@@ -305,8 +348,46 @@ pub fn prompt_permission(
         label: "Deny".to_string(),
         description: Some("Block this action".to_string()),
     });
+    options
+}
 
-    let result = interactive_select("Permission required", None, &options, style)?;
+/// Present a permission approval prompt to the user.
+///
+/// Returns the user's decision.
+pub fn prompt_permission(
+    permission: &str,
+    permission_class: Option<&str>,
+    scope_key: Option<&str>,
+    scope_label: Option<&str>,
+    matcher_label: Option<&str>,
+    grant_target_summary: Option<&str>,
+    patterns: &[String],
+    metadata: &std::collections::HashMap<String, serde_json::Value>,
+    lifetimes: &[PermissionLifetime],
+    risk_tags: &[String],
+    style: &CliStyle,
+) -> io::Result<PermissionDecision> {
+    let summary_lines = permission_summary_prelude_lines(
+        permission,
+        permission_class,
+        scope_key,
+        scope_label,
+        matcher_label,
+        grant_target_summary,
+        patterns,
+        metadata,
+        lifetimes,
+        risk_tags,
+    );
+    let options = permission_select_options(lifetimes);
+
+    let result = interactive_select_with_prelude(
+        "Permission required",
+        Some("Permission"),
+        &summary_lines,
+        &options,
+        style,
+    )?;
 
     match result {
         SelectResult::Selected(choices) => {
@@ -493,6 +574,35 @@ mod tests {
     }
 
     #[test]
+    fn format_summary_bash_compresses_multiple_long_patterns() {
+        let style = CliStyle::plain();
+        let summary = format_permission_summary(
+            "bash",
+            Some("Dangerous execution"),
+            None,
+            None,
+            None,
+            None,
+            &[
+                "python3 /tmp/pubmed_xu.py".to_string(),
+                "cat << 'PYEOF' > /tmp/pubmed_xu.py".to_string(),
+            ],
+            &std::collections::HashMap::new(),
+            &[PermissionLifetime::Once],
+            &["dangerous_exec".to_string()],
+            &style,
+        );
+
+        assert!(summary.contains("commands: 2 requests"), "{summary}");
+        assert!(summary.contains("python3 /tmp/pubmed_xu.py"), "{summary}");
+        assert!(summary.contains("+1 more"), "{summary}");
+        assert!(
+            !summary.contains("cat << 'PYEOF' > /tmp/pubmed_xu.py"),
+            "{summary}"
+        );
+    }
+
+    #[test]
     fn format_summary_edit_with_diff() {
         let style = CliStyle::plain();
         let mut metadata = std::collections::HashMap::new();
@@ -519,5 +629,26 @@ mod tests {
         assert!(summary.contains("Edit File"));
         assert!(summary.contains("-old line"));
         assert!(summary.contains("+new line"));
+    }
+
+    #[test]
+    fn permission_summary_prelude_lines_are_plain_text_for_selector_panel() {
+        let lines = permission_summary_prelude_lines(
+            "websearch",
+            Some("External access"),
+            Some("web"),
+            Some("Web search"),
+            None,
+            None,
+            &["example research query".to_string()],
+            &std::collections::HashMap::new(),
+            &[PermissionLifetime::Once, PermissionLifetime::Session],
+            &[],
+        );
+
+        assert!(!lines.is_empty());
+        assert!(lines.iter().all(|line| !line.contains('\u{1b}')));
+        assert!(lines.join("\n").contains("Web Search"));
+        assert!(lines.join("\n").contains("Web search"));
     }
 }

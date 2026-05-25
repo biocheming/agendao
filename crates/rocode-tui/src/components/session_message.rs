@@ -51,7 +51,9 @@ pub fn render_user_message(
                 ]));
             }
             if !prompt_preview.trim().is_empty() {
-                for prompt_line in MarkdownRenderer::new(theme.clone()).to_lines(&prompt_preview, None) {
+                for prompt_line in
+                    MarkdownRenderer::new(theme.clone()).to_lines(&prompt_preview, None)
+                {
                     let mut spans = vec![Span::styled(border_char, border_style)];
                     spans.push(Span::styled("↳ ", Style::default().fg(theme.text_muted)));
                     spans.extend(prompt_line.spans);
