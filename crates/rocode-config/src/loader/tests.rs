@@ -1,11 +1,11 @@
 use super::file_ops::{
     migrate_legacy_toml_config, parse_jsonc, resolve_file_references, substitute_env_vars,
 };
-use super::workspace::{ConfigAuthority, WorkspaceMode};
 use super::markdown_parser::{
     fallback_sanitize_yaml, parse_markdown_agent, parse_markdown_command,
     serde_yaml_frontmatter_to_json, split_frontmatter,
 };
+use super::workspace::{ConfigAuthority, WorkspaceMode};
 use super::*;
 use crate::{ShareMode, UiPreferencesConfig};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -213,10 +213,7 @@ fn test_resolve_uses_current_directory_dot_rocode_for_isolated_workspace() {
         Some(child.join(".rocode"))
     );
     assert_eq!(cfg.default_agent.as_deref(), Some("reviewer"));
-    assert_eq!(
-        cfg.instructions,
-        vec!["child.md".to_string()]
-    );
+    assert_eq!(cfg.instructions, vec!["child.md".to_string()]);
 }
 
 #[test]

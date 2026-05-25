@@ -12,7 +12,8 @@ use crate::api::{ApiClient, SessionExecutionTopology, SessionTelemetrySnapshot};
 use crate::bridge::{UiBridge, UiBridgeSnapshot};
 use crate::components::SessionView;
 use crate::context::{
-    AttachedSessionInfo, KeybindRegistry, MessageRole, SessionContext, TokenUsage,
+    collect_attached_sessions_from_stage_summaries, AttachedSessionInfo, KeybindRegistry,
+    MessageRole, SessionContext, TokenUsage,
 };
 use crate::event::{CustomEvent, Event};
 use crate::router::Router;
@@ -386,6 +387,10 @@ impl AppContext {
         let mut session = self.session.write();
         session.execution_topology = Some(telemetry.topology);
         session.stage_summaries = telemetry.stages;
+        session.attached_sessions = collect_attached_sessions_from_stage_summaries(
+            &session.stage_summaries,
+            &session.sessions,
+        );
         session.session_usage = Some(telemetry.usage);
         session.session_usage_books = Some(telemetry.usage_books);
         session.session_cache_semantics = telemetry.cache_semantics;
@@ -420,6 +425,10 @@ impl AppContext {
                     .then_with(|| left.stage_id.cmp(&right.stage_id))
             });
         }
+        session.attached_sessions = collect_attached_sessions_from_stage_summaries(
+            &session.stage_summaries,
+            &session.sessions,
+        );
     }
 
     pub fn navigate(&self, route: crate::router::Route) {
@@ -516,6 +525,34 @@ impl AppContext {
 
     pub fn current_context_tokens(&self) -> Option<u64> {
         current_context_tokens_from_state(&self.session.read())
+    }
+
+    pub fn session_terminal_tail_status(&self, session_id: &str) -> Option<String> {
+        let session = self.session.read();
+        let messages = session.data.messages.get(session_id)?;
+        let last_assistant = messages
+            .iter()
+            .rev()
+            .find(|message| matches!(message.role, MessageRole::Assistant))?;
+
+        if last_assistant
+            .error
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            return Some("error".to_string());
+        }
+
+        if last_assistant.completed_at.is_some() {
+            return Some("complete".to_string());
+        }
+
+        None
+    }
+
+    pub fn current_session_terminal_tail_status(&self) -> Option<String> {
+        let session_id = self.current_route_session_id()?;
+        self.session_terminal_tail_status(&session_id)
     }
 
     pub fn last_assistant_turn_tokens(&self) -> Option<TokenUsage> {
@@ -935,7 +972,8 @@ impl AppContext {
 
     pub fn apply_config(&self, config: &AppConfig) {
         let runtime_budget = RuntimeBudgetConfig::from_config(Some(config));
-        self.ui_bridge.set_capacity(runtime_budget.max_ui_bridge_queue);
+        self.ui_bridge
+            .set_capacity(runtime_budget.max_ui_bridge_queue);
         *self.runtime_budget.write() = runtime_budget;
         let ui = config.ui_preferences.as_ref();
         let theme_name = ui
@@ -1258,6 +1296,8 @@ fn split_theme_variant(name: &str) -> Option<(&str, &str)> {
 mod tests {
     use super::{current_context_tokens_from_state, AppContext, SessionState};
     use crate::api::SessionRuntimeState;
+    use crate::context::{Message, MessageRole, TokenUsage};
+    use chrono::Utc;
     use rocode_command::output_blocks::SchedulerStageBlock;
     use rocode_command::stage_protocol::{StageStatus, StageSummary};
     use rocode_session::SessionUsage;
@@ -1467,6 +1507,73 @@ mod tests {
         assert_eq!(summaries[0].step, Some(2));
         assert_eq!(summaries[0].waiting_on.as_deref(), Some("tool"));
         assert_eq!(summaries[0].activity.as_deref(), Some("Reading Cargo.toml"));
+    }
+
+    #[test]
+    fn current_session_terminal_tail_status_detects_complete_and_error() {
+        let context = AppContext::new();
+        let session_id = {
+            let mut session = context.session.write();
+            let session_id = session.data.create_session(Some("Test".to_string()));
+            session.data.add_message(
+                &session_id,
+                Message {
+                    id: "assistant-complete".to_string(),
+                    role: MessageRole::Assistant,
+                    content: "done".to_string(),
+                    created_at: Utc::now(),
+                    agent: None,
+                    model: None,
+                    mode: None,
+                    finish: Some("stop".to_string()),
+                    error: None,
+                    completed_at: Some(Utc::now()),
+                    cost: 0.0,
+                    tokens: TokenUsage {
+                        output: 12,
+                        ..TokenUsage::default()
+                    },
+                    metadata: None,
+                    multimodal: None,
+                    parts: Vec::new(),
+                },
+            );
+            session_id
+        };
+        context.navigate_session(session_id.clone());
+        assert_eq!(
+            context.current_session_terminal_tail_status().as_deref(),
+            Some("complete")
+        );
+
+        {
+            let mut session = context.session.write();
+            session.data.add_message(
+                &session_id,
+                Message {
+                    id: "assistant-error".to_string(),
+                    role: MessageRole::Assistant,
+                    content: "boom".to_string(),
+                    created_at: Utc::now(),
+                    agent: None,
+                    model: None,
+                    mode: None,
+                    finish: Some("error".to_string()),
+                    error: Some("boom".to_string()),
+                    completed_at: Some(Utc::now()),
+                    cost: 0.0,
+                    tokens: TokenUsage::default(),
+                    metadata: None,
+                    multimodal: None,
+                    parts: Vec::new(),
+                },
+            );
+        }
+
+        assert_eq!(
+            context.current_session_terminal_tail_status().as_deref(),
+            Some("error")
+        );
     }
 
     fn stage_summary(stage_id: &str, estimated_context_tokens: Option<u64>) -> StageSummary {

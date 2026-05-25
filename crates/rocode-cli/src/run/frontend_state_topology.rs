@@ -1,4 +1,5 @@
 use super::{print_cli_list_on_surface, CliExecutionRuntime, CliStyle, OutputBlock};
+use rocode_command::output_blocks::tool_cli_activity_label;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -144,12 +145,13 @@ impl CliObservedExecutionTopology {
             .entry(tool_id.clone())
             .or_insert(CliObservedExecutionNode {
                 kind: "tool".to_string(),
-                label: tool.name.clone(),
+                label: tool_cli_activity_label(tool),
                 status: status.clone(),
                 waiting_on: Some("tool".to_string()),
                 recent_event: tool.detail.clone(),
                 children: Vec::new(),
             });
+        node.label = tool_cli_activity_label(tool);
         node.status = status.clone();
         node.waiting_on = if matches!(tool.phase, rocode_command::output_blocks::ToolPhase::Done) {
             None

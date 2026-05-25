@@ -8,109 +8,34 @@ pub(super) async fn run_chat_session(
     requested_scheduler_profile: Option<String>,
     thinking_requested: bool,
     interactive_mode: InteractiveCliMode,
+    port_override: Option<u16>,
     working_dir: PathBuf,
     runtime_context: &FrontendRuntimeContext,
 ) -> anyhow::Result<()> {
-    let working_dir = working_dir.canonicalize().unwrap_or(working_dir);
-    let config = load_config(&working_dir)?;
-    let command_registry = CommandRegistry::new();
-    let provider_registry = Arc::new(setup_providers_for_dir(&config, &working_dir).await?);
-
-    if provider_registry.list().is_empty() {
-        eprintln!("Error: No API keys configured.");
-        println!("Set one of the following environment variables:");
-        eprintln!("  - ANTHROPIC_API_KEY");
-        eprintln!("  - OPENAI_API_KEY");
-        eprintln!("  - OPENROUTER_API_KEY");
-        eprintln!("  - GOOGLE_API_KEY");
-        eprintln!("  - MISTRAL_API_KEY");
-        eprintln!("  - GROQ_API_KEY");
-        eprintln!("  - XAI_API_KEY");
-        eprintln!("  - DEEPSEEK_API_KEY");
-        eprintln!("  - COHERE_API_KEY");
-        eprintln!("  - TOGETHER_API_KEY");
-        eprintln!("  - PERPLEXITY_API_KEY");
-        eprintln!("  - CEREBRAS_API_KEY");
-        eprintln!("  - DEEPINFRA_API_KEY");
-        eprintln!("  - VERCEL_API_KEY");
-        eprintln!("  - GITLAB_TOKEN");
-        eprintln!("  - GITHUB_COPILOT_TOKEN");
-        eprintln!("  - GOOGLE_VERTEX_API_KEY + GOOGLE_VERTEX_PROJECT_ID + GOOGLE_VERTEX_LOCATION");
-        std::process::exit(1);
-    }
-
-    let agent_registry_arc = Arc::new(AgentRegistry::from_config(&config));
-    let server_url = runtime_context
-        .discover_or_start_server_with_request(crate::ServerDiscoveryRequest {
-            port_override: None,
-            cwd: Some(working_dir.clone()),
-        })
-        .await?;
-    let api_client = Arc::new(CliApiClient::new(server_url.clone()));
-    let server_context = api_client.get_workspace_context().await.ok();
-    let recent_session_info = cli_load_recent_session_info(&api_client, &working_dir).await;
-    let explicit_model_requested = model.is_some();
-    let (recent_model, recent_provider) = if explicit_model_requested {
-        (None, None)
-    } else {
-        server_context
-            .as_ref()
-            .and_then(|context| context.recent_models.first())
-            .map(|entry| (Some(entry.model.clone()), Some(entry.provider.clone())))
-            .unwrap_or((None, None))
-    };
-
-    let (carry_model, carry_provider) = recent_session_info
-        .as_ref()
-        .and_then(|info| info.model_label.clone())
-        .map(|label| {
-            let (p, m) = parse_model_and_provider(Some(label));
-            (m, p)
-        })
-        .unwrap_or((None, None));
-
-    let carry_preset = recent_session_info
-        .as_ref()
-        .and_then(|info| info.preset_label.as_deref())
-        .and_then(|label| {
-            if label.starts_with("agent:") {
-                None
-            } else {
-                Some(label.to_string())
-            }
-        });
-
-    let selection = CliRunSelection {
-        model: model.or(recent_model).or(carry_model),
-        provider: provider.or(recent_provider).or(carry_provider),
+    let super::bootstrap_shared::InteractiveSessionBootstrap {
+        working_dir,
+        config,
+        command_registry,
+        provider_registry,
+        agent_registry: agent_registry_arc,
+        api_client,
+        recent_session_info,
+        selection: _selection,
+        mut runtime,
+        repl_style,
+        server_url,
+        server_session_id,
+    } = super::bootstrap_shared::bootstrap_interactive_session(
+        model,
+        provider,
         requested_agent,
-        requested_scheduler_profile: requested_scheduler_profile.or(carry_preset),
-        show_thinking: cli_resolve_show_thinking(
-            thinking_requested,
-            server_context.as_ref().map(|context| &context.config),
-            false,
-        ),
-    };
-
-    let mut runtime = build_cli_execution_runtime(CliRuntimeBuildInput {
-        config: &config,
-        agent_registry: agent_registry_arc.clone(),
-        selection: &selection,
-        working_dir: working_dir.clone(),
-    })
+        requested_scheduler_profile,
+        thinking_requested,
+        port_override,
+        working_dir,
+        runtime_context,
+    )
     .await?;
-    cli_save_recent_model_ref(&api_client, &runtime.resolved_model_label).await;
-    let repl_style = CliStyle::detect();
-
-    let session_info = api_client
-        .create_session(
-            selection.requested_scheduler_profile.clone(),
-            Some(cli_session_directory(&working_dir)),
-        )
-        .await?;
-    let server_session_id = session_info.id.clone();
-    runtime.api_client = Some(api_client.clone());
-    cli_set_root_server_session(&mut runtime, server_session_id.clone());
 
     tracing::info!(
         server_url = %server_url,
@@ -121,22 +46,7 @@ pub(super) async fn run_chat_session(
 
     let mut dispatch_rx = match interactive_mode {
         InteractiveCliMode::Rich => {
-            let server_models = api_client.get_all_providers().await.ok().map(|response| {
-                let mut models: Vec<String> = response
-                    .all
-                    .into_iter()
-                    .flat_map(|provider| {
-                        let provider_id = provider.id;
-                        provider
-                            .models
-                            .into_iter()
-                            .map(move |model| format!("{}/{}", provider_id, model.id))
-                    })
-                    .collect();
-                models.sort();
-                models.dedup();
-                models
-            });
+            let server_models = super::prompt_shared::fetch_server_model_list(&api_client).await;
             Some(attach_rich_prompt(
                 &mut runtime,
                 &repl_style,
@@ -161,19 +71,14 @@ pub(super) async fn run_chat_session(
         }
     };
 
-    let (sse_tx, mut sse_rx) = mpsc::unbounded_channel::<CliServerEvent>();
-    let sse_cancel = CancellationToken::new();
-    let _sse_handle = event_stream::spawn_sse_subscriber(
-        server_url.clone(),
-        server_session_id.clone(),
-        sse_tx,
-        sse_cancel.clone(),
-    );
-
-    cli_refresh_server_info(
+    let super::stream_shared::InteractiveSessionStream {
+        mut sse_rx,
+        sse_cancel,
+    } = super::stream_shared::bootstrap_interactive_stream(
+        &server_url,
+        &server_session_id,
         &api_client,
-        &runtime.frontend_projection,
-        Some(&server_session_id),
+        &runtime,
     )
     .await;
 
@@ -197,8 +102,10 @@ pub(super) async fn run_chat_session(
                     let Some(dispatch_rx) = dispatch_rx.as_mut() else {
                         anyhow::bail!("interactive prompt receiver missing");
                     };
-                    match wait_for_rich_input(
-                        &runtime,
+                    match super::compact_legacy_sse::wait_for_rich_input(
+                        &mut runtime,
+                        &config,
+                        agent_registry_arc.as_ref(),
                         &api_client,
                         dispatch_rx,
                         &mut sse_rx,
@@ -214,8 +121,13 @@ pub(super) async fn run_chat_session(
                     }
                 }
                 InteractiveCliMode::Compact => {
-                    drain_available_sse_events(&runtime, &api_client, &mut sse_rx, &repl_style)
-                        .await;
+                    super::compact_legacy_sse::drain_available_sse_events(
+                        &runtime,
+                        &api_client,
+                        &mut sse_rx,
+                        &repl_style,
+                    )
+                    .await;
                     match read_compact_input(&runtime, &mut compact_history, &repl_style)? {
                         Some(line) => line,
                         None => {
@@ -631,7 +543,13 @@ pub(super) async fn run_chat_session(
         )
         .await?;
 
-        drain_available_sse_events(&runtime, &api_client, &mut sse_rx, &repl_style).await;
+        super::compact_legacy_sse::drain_available_sse_events(
+            &runtime,
+            &api_client,
+            &mut sse_rx,
+            &repl_style,
+        )
+        .await;
 
         runtime.busy_flag.store(false, Ordering::SeqCst);
         if let Some(surface) = runtime.terminal_surface.as_ref() {
@@ -646,205 +564,6 @@ pub(super) async fn run_chat_session(
 
     sse_cancel.cancel();
     Ok(())
-}
-
-fn attach_rich_prompt(
-    runtime: &mut CliExecutionRuntime,
-    repl_style: &CliStyle,
-    current_dir: &Path,
-    config: &Config,
-    provider_registry: &ProviderRegistry,
-    agent_registry: &AgentRegistry,
-    recent_session_info: Option<&CliRecentSessionInfo>,
-    server_model_list: Option<Vec<String>>,
-) -> anyhow::Result<mpsc::UnboundedReceiver<CliDispatchInput>> {
-    let shared_frontend_projection = runtime.frontend_projection.clone();
-    let queued_inputs = runtime.queued_inputs.clone();
-    let busy_flag = runtime.busy_flag.clone();
-    let exit_requested = runtime.exit_requested.clone();
-    let active_abort = runtime.active_abort.clone();
-    let terminal_surface = Arc::new(CliTerminalSurface::new(
-        repl_style.clone(),
-        runtime.frontend_projection.clone(),
-        busy_flag.clone(),
-    ));
-    let prompt_chrome = Arc::new(CliPromptChrome::new(
-        runtime,
-        repl_style,
-        current_dir,
-        config,
-        provider_registry,
-        agent_registry,
-    ));
-    if let Some(models) = server_model_list {
-        prompt_chrome.update_model_catalog(models);
-    }
-    let (prompt_event_tx, mut prompt_event_rx) = mpsc::unbounded_channel();
-    let prompt_session = Arc::new(PromptSession::spawn(
-        Arc::new({
-            let prompt_chrome = prompt_chrome.clone();
-            move |line, cursor_pos| prompt_chrome.frame(line, cursor_pos)
-        }),
-        Some(Arc::new({
-            let prompt_chrome = prompt_chrome.clone();
-            move |line, cursor_pos| prompt_chrome.assist(line, cursor_pos).completion
-        })),
-        prompt_event_tx,
-    )?);
-    terminal_surface.set_prompt_session(prompt_session.clone());
-    terminal_surface.print_text(&cli_render_startup_banner(repl_style, recent_session_info))?;
-    cli_attach_interactive_handles(
-        runtime,
-        CliInteractiveHandles {
-            terminal_surface: terminal_surface.clone(),
-            prompt_chrome,
-            prompt_session: prompt_session.clone(),
-            queued_inputs: queued_inputs.clone(),
-            busy_flag: busy_flag.clone(),
-            exit_requested: exit_requested.clone(),
-            active_abort: active_abort.clone(),
-        },
-    );
-
-    let (dispatch_tx, dispatch_rx) = mpsc::unbounded_channel::<CliDispatchInput>();
-    tokio::spawn({
-        let queued_inputs = queued_inputs.clone();
-        let busy_flag = busy_flag.clone();
-        let exit_requested = exit_requested.clone();
-        let active_abort = active_abort.clone();
-        let frontend_projection = shared_frontend_projection.clone();
-        let prompt_session = prompt_session.clone();
-        let terminal_surface = terminal_surface.clone();
-        async move {
-            while let Some(event) = prompt_event_rx.recv().await {
-                match event {
-                    PromptSessionEvent::Line(line) => {
-                        let trimmed = line.trim().to_string();
-                        if trimmed.is_empty() {
-                            continue;
-                        }
-                        if busy_flag.load(Ordering::SeqCst) {
-                            if matches!(
-                                parse_interactive_command(&trimmed),
-                                Some(InteractiveCommand::Abort)
-                            ) {
-                                let handle = { active_abort.lock().await.clone() };
-                                let aborted = match handle {
-                                    Some(handle) => cli_trigger_abort(handle).await,
-                                    None => false,
-                                };
-                                let _ =
-                                    terminal_surface.print_block(OutputBlock::Status(if aborted {
-                                        StatusBlock::warning("Abort requested for active run.")
-                                    } else {
-                                        StatusBlock::warning("No active run to abort.")
-                                    }));
-                                continue;
-                            }
-                            let queue_len = {
-                                let mut queue = queued_inputs.lock().await;
-                                queue.push_back(trimmed.clone());
-                                queue.len()
-                            };
-                            if let Ok(mut projection) = frontend_projection.lock() {
-                                projection.queue_len = queue_len;
-                            }
-                            let _ = prompt_session.refresh();
-                            let _ = terminal_surface.print_block(OutputBlock::QueueItem(
-                                QueueItemBlock {
-                                    position: queue_len,
-                                    text: truncate_text(&trimmed, 72),
-                                },
-                            ));
-                        } else if dispatch_tx.send(CliDispatchInput::Line(trimmed)).is_err() {
-                            break;
-                        }
-                    }
-                    PromptSessionEvent::Eof => {
-                        if busy_flag.load(Ordering::SeqCst) {
-                            exit_requested.store(true, Ordering::SeqCst);
-                            let _ = terminal_surface.print_block(OutputBlock::Status(
-                                StatusBlock::muted("Exit requested after current run."),
-                            ));
-                        } else {
-                            let _ = dispatch_tx.send(CliDispatchInput::Eof);
-                            break;
-                        }
-                    }
-                    PromptSessionEvent::Interrupt => {}
-                }
-            }
-        }
-    });
-
-    Ok(dispatch_rx)
-}
-
-async fn wait_for_rich_input(
-    runtime: &CliExecutionRuntime,
-    api_client: &Arc<CliApiClient>,
-    dispatch_rx: &mut mpsc::UnboundedReceiver<CliDispatchInput>,
-    sse_rx: &mut mpsc::UnboundedReceiver<CliServerEvent>,
-    repl_style: &CliStyle,
-) -> anyhow::Result<Option<String>> {
-    loop {
-        tokio::select! {
-            dispatch = dispatch_rx.recv() => {
-                return Ok(match dispatch {
-                    Some(CliDispatchInput::Line(line)) => Some(line),
-                    Some(CliDispatchInput::Eof) | None => None,
-                });
-            }
-            sse_event = sse_rx.recv() => {
-                if let Some(event) = sse_event {
-                    handle_interactive_sse_event(runtime, api_client, event, repl_style).await;
-                }
-            }
-        }
-    }
-}
-
-async fn drain_available_sse_events(
-    runtime: &CliExecutionRuntime,
-    api_client: &Arc<CliApiClient>,
-    sse_rx: &mut mpsc::UnboundedReceiver<CliServerEvent>,
-    repl_style: &CliStyle,
-) {
-    while let Ok(event) = sse_rx.try_recv() {
-        handle_interactive_sse_event(runtime, api_client, event, repl_style).await;
-    }
-}
-
-async fn handle_interactive_sse_event(
-    runtime: &CliExecutionRuntime,
-    api_client: &Arc<CliApiClient>,
-    event: CliServerEvent,
-    repl_style: &CliStyle,
-) {
-    match event {
-        CliServerEvent::ConfigUpdated => {
-            cli_handle_config_updated_from_sse(runtime, api_client).await;
-        }
-        CliServerEvent::QuestionCreated {
-            request_id,
-            session_id: _,
-            questions_json,
-        } => {
-            handle_question_from_sse(runtime, api_client, &request_id, &questions_json).await;
-        }
-        CliServerEvent::PermissionRequested {
-            session_id,
-            permission_id,
-            info_json,
-        } => {
-            if cli_tracks_related_session(runtime, &session_id) {
-                handle_permission_from_sse(runtime, api_client, &permission_id, &info_json).await;
-            }
-        }
-        other => {
-            handle_sse_event(runtime, other, repl_style);
-        }
-    }
 }
 
 fn read_compact_input(

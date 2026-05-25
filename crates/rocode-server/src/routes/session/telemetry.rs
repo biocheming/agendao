@@ -42,10 +42,8 @@ pub(crate) const PERMISSION_GRANTED_BY_SESSION_COUNT_METADATA_KEY: &str =
     "permission_granted_by_session_count";
 pub(crate) const PERMISSION_GRANTED_BY_MATCHER_KIND_METADATA_KEY: &str =
     "permission_granted_by_matcher_kind";
-pub(crate) const LAST_PERMISSION_MATCHER_KIND_METADATA_KEY: &str =
-    "last_permission_matcher_kind";
-pub(crate) const LAST_PERMISSION_GRANT_TARGET_METADATA_KEY: &str =
-    "last_permission_grant_target";
+pub(crate) const LAST_PERMISSION_MATCHER_KIND_METADATA_KEY: &str = "last_permission_matcher_kind";
+pub(crate) const LAST_PERMISSION_GRANT_TARGET_METADATA_KEY: &str = "last_permission_grant_target";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionTelemetrySnapshot {
@@ -199,10 +197,7 @@ pub struct SessionExecutionPreflightSummary {
     pub attachment_count: usize,
 }
 
-fn session_metadata_u64(
-    session: &Session,
-    key: &str,
-) -> u64 {
+fn session_metadata_u64(session: &Session, key: &str) -> u64 {
     session
         .record()
         .metadata
@@ -211,10 +206,7 @@ fn session_metadata_u64(
         .unwrap_or(0)
 }
 
-fn session_metadata_string(
-    session: &Session,
-    key: &str,
-) -> Option<String> {
+fn session_metadata_string(session: &Session, key: &str) -> Option<String> {
     session
         .record()
         .metadata
@@ -223,10 +215,7 @@ fn session_metadata_string(
         .map(ToOwned::to_owned)
 }
 
-fn session_metadata_string_count_map(
-    session: &Session,
-    key: &str,
-) -> BTreeMap<String, u64> {
+fn session_metadata_string_count_map(session: &Session, key: &str) -> BTreeMap<String, u64> {
     session
         .record()
         .metadata
@@ -269,11 +258,17 @@ fn build_runtime_protocol_summary(
             .pending_permission
             .as_ref()
             .and_then(|pending| pending.tool.clone()),
-        last_pending_duration_ms: session_metadata_optional_u64(session, "last_permission_pending_ms"),
+        last_pending_duration_ms: session_metadata_optional_u64(
+            session,
+            "last_permission_pending_ms",
+        ),
     };
     let steering = SteeringRuntimeSummary {
         pending_count: runtime.pending_steering.len() as u64,
-        last_enqueued_at_ms: runtime.pending_steering.last().map(|pending| pending.created_at),
+        last_enqueued_at_ms: runtime
+            .pending_steering
+            .last()
+            .map(|pending| pending.created_at),
         last_consumed_at_ms: session
             .record()
             .metadata
@@ -299,19 +294,21 @@ fn build_runtime_protocol_summary(
         requested_at_ms: runtime.interrupt.requested_at,
         target: runtime.interrupt.target,
     };
-    let prompt_ingress = if interrupt.phase
-        == crate::session_runtime::state::InterruptPhase::Requested
-    {
-        PromptIngressDisposition::AwaitingInterrupt
-    } else if permission.pending {
-        PromptIngressDisposition::BlockedOnPermission
-    } else if runtime.pending_question.is_some() {
-        PromptIngressDisposition::BlockedOnQuestion
-    } else if matches!(runtime.run_status, crate::session_runtime::state::RunStatus::Idle) {
-        PromptIngressDisposition::AcceptNow
-    } else {
-        PromptIngressDisposition::QueueAsSteering
-    };
+    let prompt_ingress =
+        if interrupt.phase == crate::session_runtime::state::InterruptPhase::Requested {
+            PromptIngressDisposition::AwaitingInterrupt
+        } else if permission.pending {
+            PromptIngressDisposition::BlockedOnPermission
+        } else if runtime.pending_question.is_some() {
+            PromptIngressDisposition::BlockedOnQuestion
+        } else if matches!(
+            runtime.run_status,
+            crate::session_runtime::state::RunStatus::Idle
+        ) {
+            PromptIngressDisposition::AcceptNow
+        } else {
+            PromptIngressDisposition::QueueAsSteering
+        };
 
     SessionRuntimeProtocolSummary {
         prompt_ingress,
@@ -426,12 +423,12 @@ pub(super) async fn build_session_telemetry_snapshot(
     let granted_by_matcher_kind =
         session_metadata_string_count_map(session, PERMISSION_GRANTED_BY_MATCHER_KIND_METADATA_KEY);
     let last_permission_matcher_kind =
-        session_metadata_string(session, "last_permission_hit_matcher_kind")
-            .or_else(|| session_metadata_string(session, LAST_PERMISSION_MATCHER_KIND_METADATA_KEY));
+        session_metadata_string(session, "last_permission_hit_matcher_kind").or_else(|| {
+            session_metadata_string(session, LAST_PERMISSION_MATCHER_KIND_METADATA_KEY)
+        });
     let last_permission_grant_target =
         session_metadata_string(session, LAST_PERMISSION_GRANT_TARGET_METADATA_KEY);
-    let last_permission_miss_count =
-        session_metadata_u64(session, "last_permission_miss_count");
+    let last_permission_miss_count = session_metadata_u64(session, "last_permission_miss_count");
     // Steering telemetry: runtime view reads live session metadata, not persisted snapshot,
     // because steering can be consumed mid-turn before the next persist cycle.
     let record = session.record();
@@ -531,7 +528,10 @@ pub(super) async fn build_session_telemetry_snapshot(
         .and_then(SessionDiagnosticsSidecar::latest_provider_diagnostic_value)
         .and_then(|value| serde_json::from_value(value).ok());
     let runtime_protocol = Some(build_runtime_protocol_summary(&runtime, session));
-    let event_bus_telemetry = state.event_bus_telemetry.as_ref().map(|telemetry| telemetry.snapshot());
+    let event_bus_telemetry = state
+        .event_bus_telemetry
+        .as_ref()
+        .map(|telemetry| telemetry.snapshot());
 
     Ok(SessionTelemetrySnapshot {
         runtime,
@@ -1032,8 +1032,9 @@ pub(super) async fn persist_session_telemetry_metadata(
     snapshot.granted_by_matcher_kind =
         session_metadata_string_count_map(session, PERMISSION_GRANTED_BY_MATCHER_KIND_METADATA_KEY);
     snapshot.last_permission_matcher_kind =
-        session_metadata_string(session, "last_permission_hit_matcher_kind")
-            .or_else(|| session_metadata_string(session, LAST_PERMISSION_MATCHER_KIND_METADATA_KEY));
+        session_metadata_string(session, "last_permission_hit_matcher_kind").or_else(|| {
+            session_metadata_string(session, LAST_PERMISSION_MATCHER_KIND_METADATA_KEY)
+        });
     snapshot.last_permission_grant_target =
         session_metadata_string(session, LAST_PERMISSION_GRANT_TARGET_METADATA_KEY);
     snapshot.last_permission_miss_count =
@@ -1182,13 +1183,34 @@ mod tests {
             sessions.create("project", "/tmp/project")
         };
         let sid = session.id.clone();
-        session.insert_metadata(PERMISSION_GRANTED_BY_TURN_COUNT_METADATA_KEY.to_string(), serde_json::json!(2));
-        session.insert_metadata(PERMISSION_GRANTED_BY_SESSION_COUNT_METADATA_KEY.to_string(), serde_json::json!(3));
-        session.insert_metadata(PERMISSION_GRANTED_BY_MATCHER_KIND_METADATA_KEY.to_string(), serde_json::json!({"scope_only":4,"structured_family":1}));
-        session.insert_metadata(LAST_PERMISSION_MATCHER_KIND_METADATA_KEY.to_string(), serde_json::json!("scope_only"));
-        session.insert_metadata(LAST_PERMISSION_GRANT_TARGET_METADATA_KEY.to_string(), serde_json::json!("Task flow: create task"));
-        session.insert_metadata("last_permission_miss_count".to_string(), serde_json::json!(5));
-        state.runtime_telemetry.permission_requested(&sid, "perm_1", serde_json::json!({"tool":"task_flow"})).await;
+        session.insert_metadata(
+            PERMISSION_GRANTED_BY_TURN_COUNT_METADATA_KEY.to_string(),
+            serde_json::json!(2),
+        );
+        session.insert_metadata(
+            PERMISSION_GRANTED_BY_SESSION_COUNT_METADATA_KEY.to_string(),
+            serde_json::json!(3),
+        );
+        session.insert_metadata(
+            PERMISSION_GRANTED_BY_MATCHER_KIND_METADATA_KEY.to_string(),
+            serde_json::json!({"scope_only":4,"structured_family":1}),
+        );
+        session.insert_metadata(
+            LAST_PERMISSION_MATCHER_KIND_METADATA_KEY.to_string(),
+            serde_json::json!("scope_only"),
+        );
+        session.insert_metadata(
+            LAST_PERMISSION_GRANT_TARGET_METADATA_KEY.to_string(),
+            serde_json::json!("Task flow: create task"),
+        );
+        session.insert_metadata(
+            "last_permission_miss_count".to_string(),
+            serde_json::json!(5),
+        );
+        state
+            .runtime_telemetry
+            .permission_requested(&sid, "perm_1", serde_json::json!({"tool":"task_flow"}))
+            .await;
         (sid, session)
     }
 

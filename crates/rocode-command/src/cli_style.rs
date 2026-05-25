@@ -37,6 +37,19 @@ impl CliStyle {
         }
     }
 
+    /// Preserve semantic styling while refreshing the current terminal width.
+    pub fn with_live_width(&self) -> Self {
+        let width = if self.color {
+            terminal_width().unwrap_or(self.width.max(1))
+        } else {
+            self.width.max(1)
+        };
+        Self {
+            color: self.color,
+            width,
+        }
+    }
+
     // ── ANSI helpers ────────────────────────────────────────────
 
     pub fn bold(&self, text: &str) -> String {

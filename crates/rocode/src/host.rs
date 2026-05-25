@@ -1,6 +1,7 @@
 use std::io::ErrorKind;
 use std::path::Path;
 use std::process::{Command as ProcessCommand, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rocode_launcher as launcher;
@@ -59,9 +60,55 @@ const DEFAULT_SERVER_PORT: u16 = 3000;
 const SERVER_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn frontend_runtime_context() -> rocode_cli::FrontendRuntimeContext {
-    rocode_cli::FrontendRuntimeContext::new(|request| {
-        Box::pin(async move { discover_or_start_local_server(request).await })
+    let auto_started_server = Arc::new(AutoStartedServerOwner::default());
+    rocode_cli::FrontendRuntimeContext::new(move |request| {
+        let auto_started_server = auto_started_server.clone();
+        Box::pin(async move { discover_or_start_local_server(request, auto_started_server).await })
     })
+}
+
+#[derive(Default)]
+struct AutoStartedServerOwner {
+    child: Mutex<Option<tokio::process::Child>>,
+    base_url: Mutex<Option<String>>,
+}
+
+impl AutoStartedServerOwner {
+    fn take_if_matches(&self, base_url: &str) -> Option<tokio::process::Child> {
+        let matches = self
+            .base_url
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().cloned())
+            .is_some_and(|existing| existing == base_url);
+        if !matches {
+            return None;
+        }
+        if let Ok(mut base_url_guard) = self.base_url.lock() {
+            *base_url_guard = None;
+        }
+        self.child.lock().ok().and_then(|mut guard| guard.take())
+    }
+
+    fn replace(&self, base_url: String, child: tokio::process::Child) {
+        if let Ok(mut guard) = self.child.lock() {
+            *guard = Some(child);
+        }
+        if let Ok(mut guard) = self.base_url.lock() {
+            *guard = Some(base_url);
+        }
+    }
+}
+
+impl Drop for AutoStartedServerOwner {
+    fn drop(&mut self) {
+        let Some(mut child) = self.child.lock().ok().and_then(|mut guard| guard.take()) else {
+            return;
+        };
+        if let Err(error) = child.start_kill() {
+            tracing::debug!(%error, "failed to kill auto-started local server on frontend exit");
+        }
+    }
 }
 
 pub async fn run_server_command(request: ServerCommandRequest) -> anyhow::Result<()> {
@@ -369,7 +416,11 @@ fn build_acp_network_args(
 
 #[cfg(test)]
 mod tests {
-    use super::{append_server_password_query, redact_server_password_query};
+    use super::{
+        append_server_password_query, redact_server_password_query, AutoStartedServerOwner,
+    };
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn append_server_password_query_adds_password_without_overwriting_existing_value() {
@@ -392,6 +443,54 @@ mod tests {
             redact_server_password_query("http://localhost:3000/?server_password=secret&x=1"),
             "http://localhost:3000/?server_password=%3Credacted%3E&x=1"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn auto_started_server_owner_drop_kills_owned_child() {
+        use std::os::raw::c_int;
+
+        unsafe extern "C" {
+            fn waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
+        }
+
+        const WNOHANG: c_int = 1;
+
+        let owner = AutoStartedServerOwner::default();
+        let child = tokio::process::Command::new("sh")
+            .kill_on_drop(true)
+            .arg("-c")
+            .arg("sleep 30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn sleep child");
+        let pid = child.id().expect("child pid") as c_int;
+        owner.replace("http://127.0.0.1:3000".to_string(), child);
+
+        drop(owner);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let mut status = 0;
+            let result = unsafe { waitpid(pid, &mut status, WNOHANG) };
+            if result == pid {
+                return;
+            }
+            if result == -1 {
+                let errno = std::io::Error::last_os_error().raw_os_error();
+                if errno == Some(10) {
+                    return;
+                }
+                panic!("waitpid failed for auto-started child {pid}: errno={errno:?}");
+            }
+            assert!(
+                Instant::now() < deadline,
+                "auto-started child {pid} was not killed when owner dropped"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 }
 
@@ -430,8 +529,9 @@ fn run_acp_bridge_candidate(
     Ok(true)
 }
 
-pub async fn discover_or_start_local_server(
+async fn discover_or_start_local_server(
     request: rocode_cli::ServerDiscoveryRequest,
+    auto_started_server: Arc<AutoStartedServerOwner>,
 ) -> anyhow::Result<String> {
     let base_url = resolve_server_url(request.port_override);
 
@@ -447,6 +547,7 @@ pub async fn discover_or_start_local_server(
     );
     let current_exe = std::env::current_exe()?;
     let mut child = tokio::process::Command::new(current_exe)
+        .kill_on_drop(true)
         .arg("serve")
         .arg("--port")
         .arg(port.to_string())
@@ -465,12 +566,12 @@ pub async fn discover_or_start_local_server(
         .spawn()?;
 
     launcher::wait_for_server_ready(&base_url, SERVER_STARTUP_TIMEOUT, Some(&mut child)).await?;
-    tokio::spawn(async move {
-        match child.wait().await {
-            Ok(status) => tracing::warn!("Background rocode host exited with status {}", status),
-            Err(error) => tracing::warn!("Background rocode host wait failed: {}", error),
+    if let Some(mut previous_child) = auto_started_server.take_if_matches(&base_url) {
+        if let Err(error) = previous_child.start_kill() {
+            tracing::debug!(%error, "failed to replace stale auto-started local server");
         }
-    });
+    }
+    auto_started_server.replace(base_url.clone(), child);
 
     tracing::info!("Local server ready at {}", base_url);
     Ok(base_url)

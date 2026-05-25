@@ -1024,7 +1024,7 @@ mod tests {
             granted_by_matcher_kind: std::collections::BTreeMap::new(),
             last_permission_matcher_kind: None,
             last_permission_grant_target: None,
-                last_permission_miss_count: 0,
+            last_permission_miss_count: 0,
             pending_steering_count: 0,
             consumed_steering_count: 0,
             last_steering_injected_at: None,

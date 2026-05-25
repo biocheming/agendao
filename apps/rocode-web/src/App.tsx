@@ -68,16 +68,21 @@ import {
   resolveWorkspacePath,
   toWorkspaceReferencePath,
 } from "./lib/composerContext";
-import {
-  buildMultimodalHistoryBlocks,
-} from "./lib/multimodal";
 import type {
   FeedMessage,
-  MessagePartRecord,
   MessageRecord,
   OutputBlock,
-  OutputField,
 } from "./lib/history";
+import {
+  appendLiveBlock,
+  applyOutputBlock,
+  buildFeedFromHistory,
+  createOptimisticUserFeedMessage,
+  estimateContextTokensFromHistory,
+  mergeHistoryWithLiveBlocks,
+  pruneLiveBlocksCoveredByHistory,
+  shouldQueueLiveTranscriptBlock,
+} from "./lib/liveTranscriptState";
 import {
   type PermissionInteractionRecord,
   type PromptResponseRecord,
@@ -243,13 +248,6 @@ const SettingsDrawer = lazy(async () => {
   return { default: module.SettingsDrawer };
 });
 
-let feedSequence = 0;
-
-function nextFeedId() {
-  feedSequence += 1;
-  return `feed-${feedSequence}`;
-}
-
 function shellQuoteCommandValue(value: string): string {
   if (!value) return '""';
   if (/^[A-Za-z0-9/_.*:-]+$/.test(value)) return value;
@@ -321,338 +319,12 @@ function promptPreviewText(content: string, parts: PromptPart[]): string {
   return attachmentCount === 1 ? "[1 attachment]" : `[${attachmentCount} attachments]`;
 }
 
-function normalizeBlockText(block: OutputBlock): string {
-  if (block.text?.trim()) return block.text;
-  if (block.display?.summary?.trim()) return block.display.summary;
-  if (block.detail?.trim()) return block.detail;
-  if (block.summary?.trim()) return block.summary;
-  if (block.preview?.trim()) return block.preview;
-  if (block.body?.trim()) return block.body;
-  if (block.display?.preview?.text?.trim()) return block.display.preview.text;
-  if (block.display?.fields?.length) {
-    return block.display.fields
-      .map((field) => `${field.label ?? "Field"}: ${String(field.value ?? "")}`)
-      .join("\n");
-  }
-  if (block.fields?.length) {
-    return block.fields
-      .map((field) => `${field.label ?? "Field"}: ${String(field.value ?? "")}`)
-      .join("\n");
-  }
-  return "";
-}
-
-function toFeedMessage(block: OutputBlock): FeedMessage {
-  return {
-    ...block,
-    feedId: nextFeedId(),
-    anchorId: block.id,
-    text: normalizeBlockText(block),
-  };
-}
-
-function presentationRank(block: OutputBlock): number {
-  return typeof block.presentation?.rank === "number"
-    ? block.presentation.rank
-    : outputBlockSemanticRank(block);
-}
-
-function presentationSequence(block: OutputBlock): number {
-  return typeof block.presentation?.sequence === "number" ? block.presentation.sequence : 0;
-}
-
-function outputBlockSemanticRank(block: OutputBlock): number {
-  switch (block.kind) {
-    case "queue_item":
-      return 0;
-    case "status":
-      return 5;
-    case "reasoning":
-      return 10;
-    case "tool":
-      return 20;
-    case "session_event":
-      return 25;
-    case "scheduler_stage":
-      return 30;
-    case "inspect":
-      return 40;
-    case "message":
-      return block.role === "assistant" ? 90 : 0;
-    default:
-      return 50;
-  }
-}
-
-function messagePartSemanticRank(part: MessagePartRecord): number {
-  if (part.output_block) {
-    return outputBlockSemanticRank(part.output_block);
-  }
-  switch (part.type) {
-    case "reasoning":
-      return 1;
-    case "tool_call":
-    case "tool_result":
-      return 2;
-    case "text":
-      return 4;
-    default:
-      return 3;
-  }
-}
-
 function metadataString(
   metadata: Record<string, unknown> | null | undefined,
   key: string,
 ): string | undefined {
   const value = metadata?.[key];
   return typeof value === "string" && value.trim() ? value : undefined;
-}
-
-function metadataNumber(
-  metadata: Record<string, unknown> | null | undefined,
-  key: string,
-): number | undefined {
-  const value = metadata?.[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function metadataBoolean(
-  metadata: Record<string, unknown> | null | undefined,
-  key: string,
-): boolean | undefined {
-  const value = metadata?.[key];
-  return typeof value === "boolean" ? value : undefined;
-}
-
-function metadataStringArray(
-  metadata: Record<string, unknown> | null | undefined,
-  key: string,
-): string[] {
-  const value = metadata?.[key];
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
-}
-
-function schedulerStageTitleFromText(text: string): { title: string; body: string } {
-  const trimmed = text.trim();
-  const heading = trimmed.match(/^##\s+([^\n]+)(?:\n([\s\S]*))?$/);
-  if (!heading) return { title: "", body: text };
-  return {
-    title: heading[1]?.trim() ?? "",
-    body: heading[2]?.trimStart() ?? "",
-  };
-}
-
-function prettifySchedulerToken(value: string): string {
-  return value
-    .split(/[-_]/)
-    .filter(Boolean)
-    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
-    .join(" ");
-}
-
-function schedulerDecisionFromMetadata(
-  metadata: Record<string, unknown> | null | undefined,
-): OutputBlock["decision"] | null {
-  const kind = metadataString(metadata, "scheduler_decision_kind");
-  if (!kind) return null;
-
-  const rawFields = metadata?.scheduler_decision_fields;
-  const rawSections = metadata?.scheduler_decision_sections;
-  const fields = Array.isArray(rawFields)
-    ? rawFields.flatMap((field) => {
-        if (!field || typeof field !== "object") return [];
-        const item = field as Record<string, unknown>;
-        const label = typeof item.label === "string" ? item.label : undefined;
-        const value = typeof item.value === "string" ? item.value : undefined;
-        if (!label || value === undefined) return [];
-        return [{
-          label,
-          value,
-          tone: typeof item.tone === "string" ? item.tone : undefined,
-        }];
-      })
-    : [];
-  const sections = Array.isArray(rawSections)
-    ? rawSections.flatMap((section) => {
-        if (!section || typeof section !== "object") return [];
-        const item = section as Record<string, unknown>;
-        const title = typeof item.title === "string" ? item.title : undefined;
-        const body = typeof item.body === "string" ? item.body : undefined;
-        if (!title || body === undefined) return [];
-        return [{ title, body }];
-      })
-    : [];
-
-  return {
-    title: metadataString(metadata, "scheduler_decision_title") ?? "Decision",
-    fields,
-    sections,
-  };
-}
-
-function schedulerStageBlockFromHistoryMessage(message: MessageRecord): OutputBlock | null {
-  const metadata = message.metadata;
-  const stage = metadataString(metadata, "scheduler_stage");
-  if (!stage) return null;
-
-  const text = (message.parts ?? [])
-    .filter((part) => part.type === "text" && !part.ignored)
-    .map((part) => part.text ?? "")
-    .join("");
-  const { title, body } = schedulerStageTitleFromText(text);
-  const profile = metadataString(metadata, "scheduler_profile");
-  const fallbackTitle = profile
-    ? `${profile} · ${prettifySchedulerToken(stage)}`
-    : prettifySchedulerToken(stage);
-
-  return {
-    id: message.id,
-    kind: "scheduler_stage",
-    role: "assistant",
-    stage_id: metadataString(metadata, "scheduler_stage_id"),
-    profile,
-    stage,
-    title: title || fallbackTitle,
-    text: body,
-    stage_index: metadataNumber(metadata, "scheduler_stage_index"),
-    stage_total: metadataNumber(metadata, "scheduler_stage_total"),
-    step: metadataNumber(metadata, "scheduler_stage_step"),
-    status: metadataString(metadata, "scheduler_stage_status"),
-    focus: metadataString(metadata, "scheduler_stage_focus"),
-    last_event: metadataString(metadata, "scheduler_stage_last_event"),
-    waiting_on: metadataString(metadata, "scheduler_stage_waiting_on"),
-    activity: metadataString(metadata, "scheduler_stage_activity"),
-    attached_session_id: metadataString(metadata, "scheduler_stage_attached_session_id"),
-    active_skills: metadataStringArray(metadata, "scheduler_stage_active_skills"),
-    active_agents: metadataStringArray(metadata, "scheduler_stage_active_agents"),
-    active_categories: metadataStringArray(metadata, "scheduler_stage_active_categories"),
-    prompt_tokens: metadataNumber(metadata, "scheduler_stage_prompt_tokens"),
-    completion_tokens: metadataNumber(metadata, "scheduler_stage_completion_tokens"),
-    reasoning_tokens: metadataNumber(metadata, "scheduler_stage_reasoning_tokens"),
-    cache_read_tokens: metadataNumber(metadata, "scheduler_stage_cache_read_tokens"),
-    cache_miss_tokens: metadataNumber(metadata, "scheduler_stage_cache_miss_tokens"),
-    cache_write_tokens: metadataNumber(metadata, "scheduler_stage_cache_write_tokens"),
-    decision: schedulerDecisionFromMetadata(metadata),
-    presentation: {
-      group: "scheduler",
-      slot: metadataString(metadata, "scheduler_stage_id") ?? stage,
-      rank: 30,
-      sequence: metadataNumber(metadata, "scheduler_stage_index"),
-    },
-    structured: {
-      loop_budget: metadataString(metadata, "scheduler_stage_loop_budget"),
-      available_skill_count: metadataNumber(metadata, "scheduler_stage_available_skill_count"),
-      available_agent_count: metadataNumber(metadata, "scheduler_stage_available_agent_count"),
-      available_category_count: metadataNumber(metadata, "scheduler_stage_available_category_count"),
-      done_agent_count: metadataNumber(metadata, "scheduler_stage_done_agent_count"),
-      total_agent_count: metadataNumber(metadata, "scheduler_stage_total_agent_count"),
-      estimated_context_tokens: metadataNumber(metadata, "scheduler_stage_estimated_context_tokens"),
-      skill_tree_budget: metadataNumber(metadata, "scheduler_stage_skill_tree_budget"),
-      skill_tree_truncated: metadataBoolean(metadata, "scheduler_stage_skill_tree_truncated"),
-      skill_tree_truncation_strategy: metadataString(metadata, "scheduler_stage_skill_tree_truncation_strategy"),
-      retry_attempt: metadataNumber(metadata, "scheduler_stage_retry_attempt"),
-    },
-  };
-}
-
-function lastTurnStartIndex(messages: FeedMessage[]): number {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message.kind === "message" && message.role === "user") {
-      return index;
-    }
-  }
-  return 0;
-}
-
-function insertFeedMessageByPresentation(
-  messages: FeedMessage[],
-  incoming: FeedMessage,
-): FeedMessage[] {
-  if (incoming.kind === "message" && incoming.role === "user") {
-    return [...messages, incoming];
-  }
-
-  const rank = presentationRank(incoming);
-  const sequence = presentationSequence(incoming);
-  const start = lastTurnStartIndex(messages);
-  let insertIndex = messages.length;
-
-  for (let index = messages.length - 1; index >= start; index -= 1) {
-    const candidate = messages[index];
-    const candidateRank = presentationRank(candidate);
-    const candidateSequence = presentationSequence(candidate);
-    if (
-      candidateRank > rank
-      || (candidateRank === rank && candidateSequence > sequence)
-    ) {
-      insertIndex = index;
-      continue;
-    }
-    break;
-  }
-
-  if (insertIndex >= messages.length) {
-    return [...messages, incoming];
-  }
-
-  const next = [...messages];
-  next.splice(insertIndex, 0, incoming);
-  return next;
-}
-
-function orderedMessageParts(parts: MessagePartRecord[] = []): MessagePartRecord[] {
-  return parts
-    .map((part, index) => ({ part, index }))
-    .sort((left, right) => {
-      const rankDelta = messagePartSemanticRank(left.part) - messagePartSemanticRank(right.part);
-      return rankDelta || left.index - right.index;
-    })
-    .map(({ part }) => part);
-}
-
-function shouldRenderHistoryPart(message: MessageRecord, part: MessagePartRecord): boolean {
-  if (part.ignored) {
-    return false;
-  }
-
-  if (part.type === "reasoning") {
-    return true;
-  }
-
-  const keepSyntheticText = message.mode === "compaction";
-  if (part.type === "text" && part.synthetic && !keepSyntheticText) {
-    return false;
-  }
-
-  return true;
-}
-
-function orderRelatedFeedMessages(messages: FeedMessage[]): FeedMessage[] {
-  return messages
-    .map((message, index) => ({ message, index }))
-    .sort((left, right) => {
-      if (!left.message.id || left.message.id !== right.message.id) {
-        return left.index - right.index;
-      }
-      const rankDelta = presentationRank(left.message) - presentationRank(right.message);
-      return rankDelta || left.index - right.index;
-    })
-    .map(({ message }) => message);
-}
-
-function createOptimisticUserFeedMessage(text: string): FeedMessage {
-  const feedId = nextFeedId();
-  return {
-    kind: "message",
-    phase: "full",
-    role: "user",
-    text,
-    feedId,
-    anchorId: feedId,
-  };
 }
 
 function ingressStabilizationLabel(value: Record<string, unknown> | null | undefined) {
@@ -699,433 +371,6 @@ function mergeOptimisticMessages(
     messages: remaining.length > 0 ? [...messages, ...remaining] : messages,
     remaining,
   };
-}
-
-function historyTextBlockId(messageId: string, kind: "message" | "reasoning"): string {
-  return `${messageId}:${kind}`;
-}
-
-function normalizeStreamingBlockId(block: OutputBlock): string | undefined {
-  // P3-E: live_identity.message_id is the authoritative routing key for
-  // message/reasoning blocks (one per message). Tool blocks within the same
-  // message must retain their per-tool-call identity — routing them all to
-  // the parent message_id would collapse distinct tool calls into one feed
-  // item and break tool boundary semantics.
-  const identityId = block.live_identity?.message_id?.trim();
-  if (identityId && (block.kind === "message" || block.kind === "reasoning")) {
-    return identityId;
-  }
-
-  const raw = typeof block.id === "string" ? block.id.trim() : "";
-  if (!raw) return undefined;
-  if (block.kind === "message" || block.kind === "reasoning") {
-    return undefined;
-  }
-  if (block.kind !== "message" && block.kind !== "reasoning") {
-    return raw;
-  }
-  return undefined;
-}
-
-function normalizeOutputBlock(block: OutputBlock): OutputBlock {
-  const id = normalizeStreamingBlockId(block);
-  if (id === block.id) {
-    return block;
-  }
-  return { ...block, id };
-}
-
-function reconcileStreamingText(authoritativeText: string, liveText: string): string {
-  if (!liveText) return authoritativeText;
-  if (!authoritativeText) return liveText;
-  if (liveText === authoritativeText) return authoritativeText;
-  if (liveText.startsWith(authoritativeText)) return liveText;
-  if (authoritativeText.startsWith(liveText)) return authoritativeText;
-  return authoritativeText.length >= liveText.length ? authoritativeText : liveText;
-}
-
-function upsertFeedMessage(
-  messages: FeedMessage[],
-  block: OutputBlock,
-  overrides: Partial<FeedMessage> = {},
-): FeedMessage[] {
-  const normalizedBlock = normalizeOutputBlock(block);
-  if (!normalizedBlock.id) {
-    return insertFeedMessageByPresentation(messages, {
-      ...toFeedMessage(normalizedBlock),
-      ...overrides,
-    });
-  }
-
-  const index = messages.findIndex(
-    (message) => message.kind === normalizedBlock.kind && message.id === normalizedBlock.id,
-  );
-  if (index < 0) {
-    return insertFeedMessageByPresentation(messages, {
-      ...toFeedMessage(normalizedBlock),
-      ...overrides,
-    });
-  }
-
-  const next = [...messages];
-  next[index] = {
-    ...next[index],
-    ...normalizedBlock,
-    ...overrides,
-    feedId: next[index].feedId,
-    anchorId: next[index].anchorId ?? normalizedBlock.id,
-  };
-  return next;
-}
-
-function appendStreamingDelta(
-  messages: FeedMessage[],
-  block: OutputBlock,
-): FeedMessage[] {
-  const normalizedBlock = normalizeOutputBlock(block);
-  const incomingText = normalizedBlock.text ?? "";
-  if (normalizedBlock.id) {
-    const index = messages.findIndex(
-      (message) => message.kind === normalizedBlock.kind && message.id === normalizedBlock.id,
-    );
-    if (index >= 0) {
-      const next = [...messages];
-      const candidate = next[index];
-      next[index] = {
-        ...candidate,
-        ...normalizedBlock,
-        text: `${candidate.text}${incomingText}`,
-        feedId: candidate.feedId,
-        anchorId: candidate.anchorId ?? normalizedBlock.id,
-      };
-      return next;
-    }
-
-    return insertFeedMessageByPresentation(messages, {
-      ...toFeedMessage({ ...normalizedBlock, text: incomingText }),
-      text: incomingText,
-    });
-  }
-
-  return messages;
-}
-
-function applyOutputBlock(
-  messages: FeedMessage[],
-  block: OutputBlock,
-  showThinking: boolean,
-): FeedMessage[] {
-  const normalizedBlock = normalizeOutputBlock(block);
-  const phase = normalizedBlock.phase === "snapshot" ? "full" : normalizedBlock.phase;
-  if (normalizedBlock.kind === "reasoning" && !showThinking) {
-    return messages;
-  }
-  if (normalizedBlock.kind === "status" && normalizedBlock.silent) {
-    return messages;
-  }
-
-  if (normalizedBlock.kind === "message") {
-    if (phase === "start") {
-      return upsertFeedMessage(messages, normalizedBlock, { text: "" });
-    }
-    if (phase === "delta") {
-      return appendStreamingDelta(messages, normalizedBlock);
-    }
-    if (phase === "end") {
-      return messages;
-    }
-    // P3-I: "full"/"snapshot" phase (coalesced snapshot from server) must upsert by
-    // identity, not blind-insert. Without this, every full snapshot creates
-    // a new feed entry and the visible feed replays instead of replacing.
-    if (phase === "full") {
-      return upsertFeedMessage(messages, normalizedBlock);
-    }
-    return insertFeedMessageByPresentation(messages, toFeedMessage(normalizedBlock));
-  }
-
-  if (normalizedBlock.kind === "reasoning") {
-    if (phase === "start") {
-      return upsertFeedMessage(messages, normalizedBlock, { text: "" });
-    }
-    if (phase === "delta") {
-      return appendStreamingDelta(messages, normalizedBlock);
-    }
-    if (phase === "end") {
-      return messages;
-    }
-    if (phase === "full") {
-      return upsertFeedMessage(messages, normalizedBlock);
-    }
-    return insertFeedMessageByPresentation(messages, toFeedMessage(normalizedBlock));
-  }
-
-  if (normalizedBlock.id) {
-    return upsertFeedMessage(messages, normalizedBlock, {
-      text: normalizeBlockText(normalizedBlock),
-    });
-  }
-
-  return insertFeedMessageByPresentation(messages, toFeedMessage(normalizedBlock));
-}
-
-function buildFeedFromHistory(history: MessageRecord[], showThinking: boolean): FeedMessage[] {
-  feedSequence = 0;
-  let messages: FeedMessage[] = [];
-
-  for (const message of history || []) {
-    const schedulerStageBlock = schedulerStageBlockFromHistoryMessage(message);
-    if (schedulerStageBlock) {
-      messages = applyOutputBlock(messages, schedulerStageBlock, showThinking);
-      continue;
-    }
-
-    let startedReasoning = false;
-    let startedText = false;
-
-    for (const part of orderedMessageParts(message.parts)) {
-      if (!shouldRenderHistoryPart(message, part)) {
-        continue;
-      }
-      if (part.output_block) {
-        messages = applyOutputBlock(messages, part.output_block, showThinking);
-        continue;
-      }
-
-      if (part.type === "reasoning" && part.text) {
-        const blockId = historyTextBlockId(message.id, "reasoning");
-        if (!startedReasoning) {
-          messages = applyOutputBlock(
-            messages,
-            {
-              id: blockId,
-              kind: "reasoning",
-              phase: "start",
-              role: message.role,
-              metadata: message.metadata,
-              text: "",
-            },
-            showThinking,
-          );
-          startedReasoning = true;
-        }
-        messages = applyOutputBlock(
-          messages,
-          {
-            id: blockId,
-            kind: "reasoning",
-            phase: "delta",
-            role: message.role,
-            text: part.text,
-          },
-          showThinking,
-        );
-        continue;
-      }
-
-      if (part.type === "text" && part.text) {
-        const blockId = historyTextBlockId(message.id, "message");
-        if (!startedText) {
-          messages = applyOutputBlock(
-            messages,
-            {
-              id: blockId,
-              kind: "message",
-              phase: "start",
-              role: message.role,
-              metadata: message.metadata,
-              text: "",
-            },
-            showThinking,
-          );
-          startedText = true;
-        }
-        messages = applyOutputBlock(
-          messages,
-          {
-            id: blockId,
-            kind: "message",
-            phase: "delta",
-            role: message.role,
-            text: part.text,
-          },
-          showThinking,
-        );
-      }
-    }
-
-    for (const block of buildMultimodalHistoryBlocks(message)) {
-      if (block.kind === "message" && startedText) {
-        continue;
-      }
-      messages = applyOutputBlock(messages, block, showThinking);
-      if (block.kind === "message") {
-        startedText = true;
-      }
-    }
-
-    if (startedReasoning) {
-      messages = applyOutputBlock(
-        messages,
-        {
-          id: historyTextBlockId(message.id, "reasoning"),
-          kind: "reasoning",
-          phase: "end",
-          role: message.role,
-          text: "",
-        },
-        showThinking,
-      );
-    }
-
-    if (startedText) {
-      messages = applyOutputBlock(
-        messages,
-        {
-          id: historyTextBlockId(message.id, "message"),
-          kind: "message",
-          phase: "end",
-          role: message.role,
-          text: "",
-        },
-        showThinking,
-      );
-    }
-  }
-
-  return messages;
-}
-
-function estimateContextTokensFromHistory(history: MessageRecord[]): number | null {
-  const tailStart = Math.max(
-    0,
-    history.findLastIndex((message) =>
-      (message.parts ?? []).some(
-        (part) => part.type === "compaction" || (part.type === "text" && part.text?.startsWith("Compacted ")),
-      ),
-    ),
-  );
-  const tail = history.slice(tailStart);
-
-  for (let index = tail.length - 1; index >= 0; index -= 1) {
-    const message = tail[index];
-    if (message?.role !== "assistant") continue;
-    const contextTokens = message.tokens?.context;
-    if (typeof contextTokens === "number" && Number.isFinite(contextTokens) && contextTokens > 0) {
-      return contextTokens;
-    }
-  }
-
-  let totalChars = 0;
-  for (const message of tail) {
-    for (const part of message.parts ?? []) {
-      if (part.type === "text" || part.type === "reasoning") {
-        totalChars += part.text?.length ?? 0;
-      } else if (part.type === "file") {
-        totalChars += (part.file?.url?.length ?? 0) + (part.file?.filename?.length ?? 0) + (part.file?.mime?.length ?? 0);
-      } else if (part.output_block) {
-        totalChars += normalizeBlockText(part.output_block).length;
-      }
-    }
-  }
-
-  return totalChars > 0 ? Math.max(1, Math.floor(totalChars / 4)) : null;
-}
-
-function isStreamingTextBlock(block: OutputBlock): boolean {
-  return block.kind === "message" || block.kind === "reasoning";
-}
-
-function shouldRetainLiveBlock(block: OutputBlock): boolean {
-  return Boolean(normalizeStreamingBlockId(block));
-}
-
-function liveTextSnapshot(block: OutputBlock, previous?: OutputBlock): OutputBlock {
-  if (block.phase === "start") {
-    return { ...previous, ...block, text: "" };
-  }
-  if (block.phase === "delta") {
-    return {
-      ...previous,
-      ...block,
-      text: `${previous?.text ?? ""}${block.text ?? ""}`,
-    };
-  }
-  return {
-    ...previous,
-    ...block,
-    text: normalizeBlockText(block),
-  };
-}
-
-function appendLiveBlock(blocks: OutputBlock[], block: OutputBlock): OutputBlock[] {
-  const normalizedBlock = normalizeOutputBlock(block);
-  if (!shouldRetainLiveBlock(normalizedBlock)) {
-    return blocks;
-  }
-
-  const next = blocks.slice();
-  const existingIndex = next.findIndex(
-    (candidate) => candidate.kind === normalizedBlock.kind && candidate.id === normalizedBlock.id,
-  );
-  if (normalizedBlock.phase === "end") {
-    if (existingIndex >= 0) {
-      next.splice(existingIndex, 1);
-    }
-    return next;
-  }
-
-  const previous = existingIndex >= 0 ? next[existingIndex] : undefined;
-  const retained = isStreamingTextBlock(normalizedBlock)
-    ? liveTextSnapshot(normalizedBlock, previous)
-    : normalizedBlock;
-  if (existingIndex >= 0) {
-    next[existingIndex] = retained;
-    return next;
-  }
-  next.push(retained);
-  return next;
-}
-
-function mergeLiveTextBlock(messages: FeedMessage[], block: OutputBlock, showThinking: boolean): FeedMessage[] {
-  const normalizedBlock = normalizeOutputBlock(block);
-  if (normalizedBlock.kind === "reasoning" && !showThinking) {
-    return messages;
-  }
-
-  const blockText = normalizedBlock.text ?? "";
-  const matchIndex = normalizedBlock.id
-    ? messages.findIndex((message) => message.kind === normalizedBlock.kind && message.id === normalizedBlock.id)
-    : -1;
-  if (matchIndex >= 0) {
-    const next = [...messages];
-    const candidate = next[matchIndex];
-    next[matchIndex] = {
-      ...candidate,
-      ...normalizedBlock,
-      text: reconcileStreamingText(candidate.text ?? "", blockText),
-      feedId: candidate.feedId,
-      anchorId: candidate.anchorId ?? normalizedBlock.id,
-    };
-    return next;
-  }
-
-  return insertFeedMessageByPresentation(messages, {
-    ...toFeedMessage(normalizedBlock),
-    text: blockText,
-  });
-}
-
-function mergeHistoryWithLiveBlocks(
-  history: MessageRecord[],
-  liveBlocks: OutputBlock[],
-  showThinking: boolean,
-): FeedMessage[] {
-  return orderRelatedFeedMessages(liveBlocks.reduce((current, block) => {
-    if (isStreamingTextBlock(block)) {
-      return mergeLiveTextBlock(current, block, showThinking);
-    }
-    return applyOutputBlock(current, block, showThinking);
-  }, buildFeedFromHistory(history, showThinking)));
 }
 
 function modeKey(mode: ExecutionMode): string {
@@ -1230,6 +475,7 @@ export default function App() {
   const [streaming, setStreaming] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [statusLine, setStatusLine] = useState("ready");
+  const [latestRuntimeError, setLatestRuntimeError] = useState<string | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
   const [deletingSessions, setDeletingSessions] = useState(false);
   const [question, setQuestion] = useState<QuestionInteractionRecord | null>(null);
@@ -1452,6 +698,10 @@ export default function App() {
     apiJson,
     onError: setBanner,
     onInfo: setBanner,
+    statusLine,
+    latestRuntimeError,
+    awaitingUser: Boolean(question),
+    pendingPermission: Boolean(permission),
   });
   const routeHighlightIds = useMemo(() => {
     const route = readWebSessionRoute();
@@ -1538,6 +788,7 @@ export default function App() {
   }, [executionActivity.telemetry?.provider_diagnostic_summary, messageHistory]);
   const refreshExecutionActivity = executionActivity.refreshExecutionActivity;
   const applySchedulerStageOutputBlock = executionActivity.applySchedulerStageOutputBlock;
+  const applyLiveExecutionOutputBlock = executionActivity.applyLiveExecutionOutputBlock;
   const conversationJump = useConversationJump({
     messages,
     feedRef,
@@ -1771,7 +1022,9 @@ export default function App() {
     liveBlocksRef.current = nextLiveBlocks;
 
     const selectedSessionId = selectedSessionRef.current;
-    const visibleQueue = selectedSessionId ? queuedBySession[selectedSessionId] ?? [] : [];
+    const visibleQueue = selectedSessionId
+      ? (queuedBySession[selectedSessionId] ?? []).filter((block) => shouldQueueLiveTranscriptBlock(block))
+      : [];
     if (visibleQueue.length === 0) {
       return;
     }
@@ -2074,9 +1327,17 @@ export default function App() {
         const history = await apiJson<MessageRecord[]>(`/session/${selectedSessionId}/message`);
         if (cancelled) return;
         setMessageHistory(history);
-        const mergedHistory = mergeHistoryWithLiveBlocks(
+        const prunedLiveBlocks = pruneLiveBlocksCoveredByHistory(
           history,
           liveBlocksRef.current[selectedSessionId] ?? [],
+        );
+        liveBlocksRef.current = {
+          ...liveBlocksRef.current,
+          [selectedSessionId]: prunedLiveBlocks,
+        };
+        const mergedHistory = mergeHistoryWithLiveBlocks(
+          history,
+          prunedLiveBlocks,
           showThinking,
         );
         const merged = mergeOptimisticMessages(
@@ -2295,17 +1556,23 @@ export default function App() {
         if (block.kind === "scheduler_stage") {
           applySchedulerStageOutputBlock(block, eventSessionId);
         }
-        const queue = pendingOutputBlocksRef.current[eventSessionId] ?? [];
-        queue.push(block);
-        // P2-3: enforce one-deep-ish cap. Drop oldest if over budget.
-        while (queue.length > maxPendingOutputBlocks) queue.shift();
-        pendingOutputBlocksRef.current[eventSessionId] = queue;
-        schedulePendingOutputBlockFlush();
+        if (block.kind === "tool") {
+          applyLiveExecutionOutputBlock(block, eventSessionId);
+        }
+        if (shouldQueueLiveTranscriptBlock(block)) {
+          const queue = pendingOutputBlocksRef.current[eventSessionId] ?? [];
+          queue.push(block);
+          // P2-3: enforce one-deep-ish cap. Drop oldest if over budget.
+          while (queue.length > maxPendingOutputBlocks) queue.shift();
+          pendingOutputBlocksRef.current[eventSessionId] = queue;
+          schedulePendingOutputBlockFlush();
+        }
         return;
       }
 
       if (type === "error" && eventSessionId === selectedSessionRef.current) {
         flushPendingOutputBlocks();
+        setLatestRuntimeError(String(event.error ?? "Unknown error"));
         setMessages((current) =>
           applyOutputBlock(
             current,
@@ -2318,7 +1585,7 @@ export default function App() {
           ),
         );
         setStreaming(false);
-        setStatusLine("idle");
+        setStatusLine("error");
         return;
       }
 
@@ -2349,15 +1616,23 @@ export default function App() {
       if (type === "session.status" && eventSessionId === selectedSessionRef.current) {
         flushPendingOutputBlocks();
         const rawStatus = event.status;
-        const status =
+        const statusCandidate =
           typeof rawStatus === "string"
             ? rawStatus
             : rawStatus && typeof rawStatus === "object" && "type" in rawStatus
               ? String((rawStatus as { type?: unknown }).type ?? "")
               : String(rawStatus ?? "");
+        const status = statusCandidate === "retry" ? "retrying" : statusCandidate;
         if (status === "idle" || status === "complete" || status === "error") {
           setStreaming(false);
           setStatusLine(status || "idle");
+          if (status !== "error") {
+            setLatestRuntimeError(null);
+          }
+        } else if (status === "compacting" || status === "retrying") {
+          setStreaming(true);
+          setStatusLine(status);
+          setLatestRuntimeError(null);
         }
         return;
       }
@@ -2368,6 +1643,7 @@ export default function App() {
         setQuestionAnswers({});
         setStreaming(false);
         setStatusLine("awaiting_user");
+        setLatestRuntimeError(null);
         return;
       }
 
@@ -2375,6 +1651,9 @@ export default function App() {
         setQuestion(null);
         setQuestionAnswers({});
         setQuestionSubmitting(false);
+        setLatestRuntimeError(null);
+        setStreaming(true);
+        setStatusLine("running");
         return;
       }
 
@@ -2389,6 +1668,9 @@ export default function App() {
         setPermissionSubmitError(null);
         setPermissionSubmitStartedAt(null);
         setPermissionSubmitCompletedAt(null);
+        setLatestRuntimeError(null);
+        setStreaming(false);
+        setStatusLine("awaiting_user");
         return;
       }
 
@@ -2407,6 +1689,9 @@ export default function App() {
           setPermissionSubmitting(false);
           setPermissionSubmitError(null);
           setPermissionSubmitCompletedAt(new Date().toISOString());
+          setLatestRuntimeError(null);
+          setStreaming(true);
+          setStatusLine("running");
         }
       }
     };
@@ -2636,6 +1921,7 @@ export default function App() {
     setAttachments([]);
     setStreaming(true);
     setStatusLine("running");
+    setLatestRuntimeError(null);
 
     try {
       const payload: Record<string, unknown> = {
@@ -2673,7 +1959,8 @@ export default function App() {
       );
       setBanner(`Prompt failed: ${formatError(error)}`);
       setStreaming(false);
-      setStatusLine("idle");
+      setStatusLine("error");
+      setLatestRuntimeError(formatError(error));
     }
 
     try {
@@ -2775,6 +2062,7 @@ export default function App() {
           } else {
             setStreaming(true);
             setStatusLine("running");
+            setLatestRuntimeError(null);
           }
         }
       }

@@ -296,12 +296,12 @@ impl App {
                 self.set_session_status(&session_id, SessionStatus::Running);
                 self.prompt.set_spinner_task_kind(TaskKind::LlmRequest);
                 self.prompt.set_spinner_active(true);
-                self.refresh_session_telemetry(&session_id);
+                self.queue_session_telemetry_refresh(&session_id);
             }
             "awaiting_user" => {
                 self.set_session_status(&session_id, SessionStatus::Idle);
                 self.prompt.set_spinner_active(false);
-                self.refresh_session_telemetry(&session_id);
+                self.queue_session_telemetry_refresh(&session_id);
                 self.sync_question_requests();
             }
             _ => {

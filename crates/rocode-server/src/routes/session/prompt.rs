@@ -1888,17 +1888,9 @@ async fn session_prompt_inner(
             }
         }
         if pending_command_cleared {
-            broadcast_session_reconcile(
-                state.as_ref(),
-                id.clone(),
-                ReconcileReason::StatusChange,
-            );
+            broadcast_session_reconcile(state.as_ref(), id.clone(), ReconcileReason::StatusChange);
         }
-        broadcast_session_reconcile(
-            state.as_ref(),
-            id.clone(),
-            ReconcileReason::StatusChange,
-        );
+        broadcast_session_reconcile(state.as_ref(), id.clone(), ReconcileReason::StatusChange);
         persist_sessions_if_enabled(&state).await;
         return Ok(Json(serde_json::json!({
             "status": "accepted",
@@ -2089,11 +2081,7 @@ async fn session_prompt_inner(
         }
     }
     if pending_command_cleared {
-        broadcast_session_reconcile(
-            state.as_ref(),
-            id.clone(),
-            ReconcileReason::StatusChange,
-        );
+        broadcast_session_reconcile(state.as_ref(), id.clone(), ReconcileReason::StatusChange);
         persist_sessions_if_enabled(&state).await;
     }
     if persisted_external_adapter_binding {

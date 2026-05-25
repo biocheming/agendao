@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::cli_style::CliStyle;
-use crate::live_semantic_consumer::{LiveSemanticConsumer, SemanticAction};
+use crate::live_semantic_consumer::{LiveContentMode, LiveSemanticConsumer, SemanticAction};
 use crate::output_blocks::{
     render_cli_block_rich, MessageBlock as OutputMessageBlock, MessagePhase,
     MessageRole as OutputMessageRole, OutputBlock, ReasoningBlock as OutputReasoningBlock,
@@ -10,7 +10,7 @@ use crate::output_blocks::{
 use crate::terminal_tool_cli_render::{
     render_cli_file_lines, render_cli_image_lines, render_cli_tool_lines,
 };
-use rocode_types::LiveMessagePartIdentity;
+use rocode_types::{LiveMessagePartIdentity, LivePartPhase};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TerminalToolResultInfo {
@@ -197,9 +197,7 @@ impl TerminalStreamAccumulator {
                         }
                         _ => block.text.clone(),
                     };
-                    message.parts.push(TerminalMessagePart::Text {
-                        text,
-                    });
+                    message.parts.push(TerminalMessagePart::Text { text });
                 }
             }
             MessagePhase::End => {}
@@ -373,9 +371,14 @@ pub struct TerminalStreamRenderState {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TerminalSemanticStreamRenderState {
     boundary: TerminalStreamRenderState,
+    live_consumer: LiveSemanticConsumer,
+    legacy: LegacySemanticRenderState,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct LegacySemanticRenderState {
     current_message_id: Option<String>,
     part_states: HashMap<usize, TerminalSemanticPartState>,
-    live_consumer: LiveSemanticConsumer,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -560,6 +563,32 @@ fn render_semantic_reasoning_start(
     out
 }
 
+fn render_semantic_reasoning_rewrite(
+    state: &mut TerminalSemanticStreamRenderState,
+    text: &str,
+    style: &CliStyle,
+) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+
+    if state.boundary.reasoning_open {
+        // Scrollback is append-only, so replaying a rewritten full reasoning
+        // snapshot would duplicate headers/dividers. Preserve the updated
+        // snapshot in the live slot state, but do not append another block
+        // into visible terminal history.
+        return String::new();
+    }
+
+    let mut out = render_semantic_reasoning_start(state, style);
+    out.push_str(&render_terminal_stream_block_with_state(
+        &mut state.boundary,
+        &OutputBlock::Reasoning(OutputReasoningBlock::delta(text.to_string())),
+        style,
+    ));
+    out
+}
+
 fn render_semantic_text_lines(
     boundary: &mut TerminalStreamRenderState,
     lines: &[String],
@@ -607,10 +636,13 @@ pub fn render_terminal_semantic_action(
 ) -> String {
     match action {
         SemanticAction::NoOp
-        | SemanticAction::LegacyPassThrough
+        | SemanticAction::NonTranscriptPassThrough
         | SemanticAction::ToolBoundary
         | SemanticAction::ToolCallStarted { .. }
         | SemanticAction::ToolCallCompleted { .. } => String::new(),
+        SemanticAction::MissingIdentity => {
+            unreachable!("identity semantic renderer must not receive MissingIdentity")
+        }
         SemanticAction::OpenAssistant { text } => {
             render_semantic_assistant_text_rewrite(&mut state.boundary, text, style)
         }
@@ -641,11 +673,9 @@ pub fn render_terminal_semantic_action(
             &OutputBlock::Reasoning(OutputReasoningBlock::delta(text.clone())),
             style,
         ),
-        SemanticAction::ReplaceReasoningFull { text } => render_terminal_stream_block_with_state(
-            &mut state.boundary,
-            &OutputBlock::Reasoning(OutputReasoningBlock::full(text.clone())),
-            style,
-        ),
+        SemanticAction::ReplaceReasoningFull { text } => {
+            render_semantic_reasoning_rewrite(state, text, style)
+        }
         SemanticAction::CloseReasoning => render_terminal_stream_block_with_state(
             &mut state.boundary,
             &OutputBlock::Reasoning(OutputReasoningBlock::end()),
@@ -654,40 +684,58 @@ pub fn render_terminal_semantic_action(
     }
 }
 
-fn semantic_delta_suffix<'a>(emitted_text: &str, current_text: &'a str) -> Option<&'a str> {
-    current_text.strip_prefix(emitted_text)
+fn render_terminal_stream_block_identity_semantic(
+    state: &mut TerminalSemanticStreamRenderState,
+    block: &OutputBlock,
+    live_identity: &LiveMessagePartIdentity,
+    style: &CliStyle,
+) -> String {
+    let mode = match live_identity.phase {
+        LivePartPhase::Append => LiveContentMode::Delta,
+        LivePartPhase::Start | LivePartPhase::Snapshot | LivePartPhase::End => {
+            LiveContentMode::Snapshot
+        }
+    };
+    let block_text = match block {
+        OutputBlock::Message(message) => Some(message.text.as_str()),
+        OutputBlock::Reasoning(reasoning) => Some(reasoning.text.as_str()),
+        _ => None,
+    };
+    let action = state
+        .live_consumer
+        .consume(block_text, Some(live_identity), mode);
+    match action {
+        SemanticAction::NonTranscriptPassThrough => {
+            return render_terminal_stream_block_with_state(&mut state.boundary, block, style);
+        }
+        SemanticAction::MissingIdentity => {
+            unreachable!("identity semantic path must not fall back to missing-identity action")
+        }
+        _ => {}
+    }
+
+    let mut out = render_terminal_semantic_action(state, &action, style);
+    // ToolBoundary is a state signal — still render the tool block.
+    if matches!(
+        action,
+        SemanticAction::ToolBoundary | SemanticAction::ToolCallCompleted { .. }
+    ) {
+        out.push_str(&render_terminal_stream_block_with_state(
+            &mut state.boundary,
+            block,
+            style,
+        ));
+    }
+    out
 }
 
-pub fn render_terminal_stream_block_semantic(
+fn render_terminal_stream_block_legacy_semantic(
     state: &mut TerminalSemanticStreamRenderState,
     accumulator: &TerminalStreamAccumulator,
     block: &OutputBlock,
-    live_identity: Option<&LiveMessagePartIdentity>,
     style: &CliStyle,
     show_thinking: bool,
 ) -> String {
-    if live_identity.is_some() {
-        let block_text = match block {
-            OutputBlock::Message(message) => Some(message.text.as_str()),
-            OutputBlock::Reasoning(reasoning) => Some(reasoning.text.as_str()),
-            _ => None,
-        };
-        let action = state.live_consumer.consume(block_text, live_identity);
-        if !matches!(action, SemanticAction::LegacyPassThrough) {
-            let mut out = render_terminal_semantic_action(state, &action, style);
-            // ToolBoundary is a state signal — still render the tool block.
-            if matches!(
-                action,
-                SemanticAction::ToolBoundary | SemanticAction::ToolCallCompleted { .. }
-            ) {
-                out.push_str(&render_terminal_stream_block_with_state(
-                    &mut state.boundary, block, style,
-                ));
-            }
-            return out;
-        }
-    }
-
     let is_semantic_block = match block {
         OutputBlock::Message(message) => message.role == OutputMessageRole::Assistant,
         OutputBlock::Reasoning(_) | OutputBlock::Tool(_) => true,
@@ -707,9 +755,9 @@ pub fn render_terminal_stream_block_semantic(
         return render_terminal_stream_block_with_state(&mut state.boundary, block, style);
     };
 
-    if state.current_message_id.as_deref() != Some(message.id.as_str()) {
-        state.current_message_id = Some(message.id.clone());
-        state.part_states.clear();
+    if state.legacy.current_message_id.as_deref() != Some(message.id.as_str()) {
+        state.legacy.current_message_id = Some(message.id.clone());
+        state.legacy.part_states.clear();
     }
 
     let tool_results = collect_assistant_tool_results(accumulator.messages(), assistant_idx);
@@ -728,6 +776,7 @@ pub fn render_terminal_stream_block_semantic(
             TerminalAssistantSegment::Spacer => {}
             TerminalAssistantSegment::Text { part_index, text } => {
                 let entry = state
+                    .legacy
                     .part_states
                     .entry(part_index)
                     .or_insert_with(|| TerminalSemanticPartState::Text {
@@ -736,7 +785,7 @@ pub fn render_terminal_stream_block_semantic(
                 let TerminalSemanticPartState::Text { emitted_text } = entry else {
                     continue;
                 };
-                if let Some(delta) = semantic_delta_suffix(emitted_text, &text) {
+                if let Some(delta) = text.strip_prefix(emitted_text.as_str()) {
                     if delta.is_empty() {
                         continue;
                     }
@@ -760,7 +809,7 @@ pub fn render_terminal_stream_block_semantic(
             }
             TerminalAssistantSegment::Reasoning { part_index, text } => {
                 let mut emit_start = false;
-                let entry = state.part_states.entry(part_index).or_insert(
+                let entry = state.legacy.part_states.entry(part_index).or_insert(
                     TerminalSemanticPartState::Reasoning {
                         started: false,
                         emitted_text: String::new(),
@@ -780,7 +829,7 @@ pub fn render_terminal_stream_block_semantic(
                 if emit_start {
                     out.push_str(&render_semantic_reasoning_start(state, style));
                 }
-                let entry = state.part_states.entry(part_index).or_insert(
+                let entry = state.legacy.part_states.entry(part_index).or_insert(
                     TerminalSemanticPartState::Reasoning {
                         started: false,
                         emitted_text: String::new(),
@@ -796,7 +845,7 @@ pub fn render_terminal_stream_block_semantic(
                 if emit_start {
                     *started = true;
                 }
-                if let Some(delta) = semantic_delta_suffix(&prior_text, &text) {
+                if let Some(delta) = text.strip_prefix(&prior_text) {
                     if delta.is_empty() {
                         continue;
                     }
@@ -823,7 +872,7 @@ pub fn render_terminal_stream_block_semantic(
                 result,
                 ..
             } => {
-                let entry = state.part_states.entry(part_index).or_insert(
+                let entry = state.legacy.part_states.entry(part_index).or_insert(
                     TerminalSemanticPartState::ToolCall {
                         started: false,
                         completed: false,
@@ -864,7 +913,7 @@ pub fn render_terminal_stream_block_semantic(
                 mime,
             } => {
                 if matches!(
-                    state.part_states.get(&part_index),
+                    state.legacy.part_states.get(&part_index),
                     Some(TerminalSemanticPartState::File)
                 ) {
                     continue;
@@ -872,12 +921,13 @@ pub fn render_terminal_stream_block_semantic(
                 let lines = render_cli_file_lines(&path, &mime, style);
                 out.push_str(&render_semantic_text_lines(&mut state.boundary, &lines));
                 state
+                    .legacy
                     .part_states
                     .insert(part_index, TerminalSemanticPartState::File);
             }
             TerminalAssistantSegment::Image { part_index, url } => {
                 if matches!(
-                    state.part_states.get(&part_index),
+                    state.legacy.part_states.get(&part_index),
                     Some(TerminalSemanticPartState::Image)
                 ) {
                     continue;
@@ -885,6 +935,7 @@ pub fn render_terminal_stream_block_semantic(
                 let lines = render_cli_image_lines(&url, style);
                 out.push_str(&render_semantic_text_lines(&mut state.boundary, &lines));
                 state
+                    .legacy
                     .part_states
                     .insert(part_index, TerminalSemanticPartState::Image);
             }
@@ -892,6 +943,24 @@ pub fn render_terminal_stream_block_semantic(
     }
 
     out
+}
+
+pub fn render_terminal_stream_block_semantic(
+    state: &mut TerminalSemanticStreamRenderState,
+    accumulator: &TerminalStreamAccumulator,
+    block: &OutputBlock,
+    live_identity: Option<&LiveMessagePartIdentity>,
+    style: &CliStyle,
+    show_thinking: bool,
+) -> String {
+    // Identity-bearing live content is handled by the shared semantic consumer.
+    // The legacy reducer is retained only for blocks that arrived without
+    // `live_identity`.
+    if let Some(live_identity) = live_identity {
+        return render_terminal_stream_block_identity_semantic(state, block, live_identity, style);
+    }
+
+    render_terminal_stream_block_legacy_semantic(state, accumulator, block, style, show_thinking)
 }
 
 pub fn is_tool_result_carrier(message: &TerminalMessage) -> bool {
@@ -1033,6 +1102,7 @@ fn assistant_segment_semantic_key(segment: &TerminalAssistantSegment) -> (u8, us
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::governance_fixtures::live_transcript_state_fixture;
     use rocode_types::{LiveMessagePartIdentity, LiveMessagePartKind, LivePartPhase};
 
     fn live_identity(
@@ -1060,6 +1130,10 @@ mod tests {
             role,
             parts,
         }
+    }
+
+    fn tool_done(name: &str, detail: &str) -> OutputBlock {
+        OutputBlock::Tool(OutputToolBlock::done(name, Some(detail.to_string())))
     }
 
     #[test]
@@ -1228,19 +1302,19 @@ mod tests {
                 TerminalMessagePart::Text { text } if text == "answer"
             )
         }));
-        assert!(
-            accumulator
-                .message("tool-1")
-                .is_some_and(|tool_message| tool_message.parts.iter().any(|part| matches!(
+        assert!(accumulator
+            .message("tool-1")
+            .is_some_and(
+                |tool_message| tool_message.parts.iter().any(|part| matches!(
                     part,
                     TerminalMessagePart::ToolCall { id, name, .. }
                         if id == "tool-1" && name == "websearch"
-                )))
-        );
-        assert!(
-            accumulator
-                .message("tool-1")
-                .is_some_and(|tool_message| tool_message.parts.iter().any(|part| matches!(
+                ))
+            ));
+        assert!(accumulator
+            .message("tool-1")
+            .is_some_and(
+                |tool_message| tool_message.parts.iter().any(|part| matches!(
                     part,
                     TerminalMessagePart::ToolResult {
                         id,
@@ -1248,8 +1322,8 @@ mod tests {
                         is_error,
                         ..
                     } if id == "tool-1" && result == "query finished" && !is_error
-                )))
-        );
+                ))
+            ));
     }
 
     #[test]
@@ -1277,17 +1351,14 @@ mod tests {
                 TerminalMessagePart::Text { text } if text == "answer"
             )
         }));
-        assert!(
-            accumulator
-                .messages()
-                .iter()
-                .any(|message| matches!(message.role, TerminalMessageRole::Assistant)
-                    && message.id != "assistant-1"
-                    && message.parts.iter().any(|part| matches!(
-                        part,
-                        TerminalMessagePart::Reasoning { text } if text == "thinking"
-                    )))
-        );
+        assert!(accumulator.messages().iter().any(|message| matches!(
+            message.role,
+            TerminalMessageRole::Assistant
+        ) && message.id != "assistant-1"
+            && message.parts.iter().any(|part| matches!(
+                part,
+                TerminalMessagePart::Reasoning { text } if text == "thinking"
+            ))));
     }
 
     #[test]
@@ -1326,18 +1397,15 @@ mod tests {
             })
             .collect::<String>();
         assert_eq!(previous_text, "previous answer");
-        assert!(
-            accumulator
-                .messages()
-                .iter()
-                .any(|message| matches!(message.role, TerminalMessageRole::Assistant)
-                    && message.id != "assistant-1"
-                    && message.id != "assistant-2"
-                    && message.parts.iter().any(|part| matches!(
-                        part,
-                        TerminalMessagePart::Text { text } if text == "new answer"
-                    )))
-        );
+        assert!(accumulator.messages().iter().any(|message| matches!(
+            message.role,
+            TerminalMessageRole::Assistant
+        ) && message.id != "assistant-1"
+            && message.id != "assistant-2"
+            && message.parts.iter().any(|part| matches!(
+                part,
+                TerminalMessagePart::Text { text } if text == "new answer"
+            ))));
     }
 
     #[test]
@@ -1807,7 +1875,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_stream_renderer_handles_unicode_after_stale_ascii_prefix_state() {
+    fn semantic_stream_renderer_legacy_path_handles_unicode_after_stale_ascii_prefix_state() {
         let style = CliStyle::plain();
         let mut accumulator = TerminalStreamAccumulator::new();
         accumulator.apply_output_block(
@@ -1820,14 +1888,16 @@ mod tests {
 
         let mut state = TerminalSemanticStreamRenderState {
             boundary: TerminalStreamRenderState::default(),
-            current_message_id: Some("assistant-1".to_string()),
-            part_states: HashMap::from([(
-                0,
-                TerminalSemanticPartState::Text {
-                    emitted_text: "a".to_string(),
-                },
-            )]),
             live_consumer: LiveSemanticConsumer::default(),
+            legacy: LegacySemanticRenderState {
+                current_message_id: Some("assistant-1".to_string()),
+                part_states: HashMap::from([(
+                    0,
+                    TerminalSemanticPartState::Text {
+                        emitted_text: "a".to_string(),
+                    },
+                )]),
+            },
         };
 
         let rendered = render_terminal_stream_block_semantic(
@@ -1892,6 +1962,7 @@ mod tests {
     #[test]
     fn semantic_stream_renderer_handles_five_assistant_messages_separated_by_four_tool_cycles() {
         let style = CliStyle::plain();
+        let fixture = live_transcript_state_fixture();
         let mut accumulator = TerminalStreamAccumulator::new();
         let mut state = TerminalSemanticStreamRenderState::default();
         let mut rendered = String::new();
@@ -1908,62 +1979,49 @@ mod tests {
             ));
         };
 
-        for step in 1..=4 {
-            let assistant_id = format!("assistant-{step}");
-            let tool_id = format!("tool-{step}");
-
+        for (step, entry) in fixture.shared_turn_cycles.entries.iter().enumerate() {
             push(
-                &assistant_id,
+                &entry.message_id,
                 OutputBlock::Reasoning(OutputReasoningBlock::start()),
             );
             push(
-                &assistant_id,
+                &entry.message_id,
                 OutputBlock::Reasoning(OutputReasoningBlock::delta(format!(
-                    "thinking {step}"
+                    "thinking {}",
+                    step + 1
                 ))),
             );
-            push(
-                &assistant_id,
-                OutputBlock::Tool(OutputToolBlock::start("websearch")),
-            );
-            push(
-                &tool_id,
-                OutputBlock::Tool(OutputToolBlock::done(
-                    "websearch",
-                    Some(format!("result {step}")),
-                )),
-            );
-            push(
-                &assistant_id,
-                OutputBlock::Reasoning(OutputReasoningBlock::end()),
-            );
-            push(
-                &assistant_id,
-                OutputBlock::Message(OutputMessageBlock::end(OutputMessageRole::Assistant)),
-            );
-        }
-
-        let final_id = "assistant-5";
-        for delta in [
-            "快速",
-            "上升",
-            "期",
-            "，",
-            "从副研究员晋升为正高级工程师",
-            "，",
-            "作为通讯作者发表了包括 ",
-            "*Nucleic Acids Research*",
-            "、",
-            "*J. Med. Chem.*",
-            " 等在内的约 20 篇论文",
-        ] {
-            push(
-                final_id,
-                OutputBlock::Message(OutputMessageBlock::delta(
-                    OutputMessageRole::Assistant,
-                    delta,
-                )),
-            );
+            if let Some(tool) = &entry.tool {
+                push(
+                    &entry.message_id,
+                    OutputBlock::Tool(OutputToolBlock::start(&tool.tool_name)),
+                );
+                push(
+                    &tool.tool_id,
+                    OutputBlock::Tool(OutputToolBlock::done(
+                        &tool.tool_name,
+                        Some(tool.tool_detail.clone()),
+                    )),
+                );
+                push(
+                    &entry.message_id,
+                    OutputBlock::Reasoning(OutputReasoningBlock::end()),
+                );
+                push(
+                    &entry.message_id,
+                    OutputBlock::Message(OutputMessageBlock::end(OutputMessageRole::Assistant)),
+                );
+            } else {
+                for delta in entry.message_text.chars().map(|ch| ch.to_string()) {
+                    push(
+                        &entry.message_id,
+                        OutputBlock::Message(OutputMessageBlock::delta(
+                            OutputMessageRole::Assistant,
+                            delta,
+                        )),
+                    );
+                }
+            }
         }
 
         assert_eq!(
@@ -1971,9 +2029,19 @@ mod tests {
             1,
             "{rendered}"
         );
-        assert!(rendered.contains("快速上升期"), "{rendered}");
-        assert!(rendered.contains("*Nucleic Acids Research*"), "{rendered}");
-        assert!(rendered.contains("*J. Med. Chem.*"), "{rendered}");
+        assert!(
+            rendered.contains(
+                fixture
+                    .shared_turn_cycles
+                    .entries
+                    .last()
+                    .expect("final assistant entry")
+                    .message_text
+                    .as_str()
+            ),
+            "{rendered}"
+        );
+        assert_eq!(rendered.matches("⚙ skill").count(), 4, "{rendered}");
     }
 
     #[test]
@@ -2097,37 +2165,97 @@ mod tests {
     }
 
     #[test]
+    fn semantic_stream_renderer_uses_identity_driven_path_for_assistant_append_deltas() {
+        let style = CliStyle::plain();
+        let mut accumulator = TerminalStreamAccumulator::new();
+        let mut state = TerminalSemanticStreamRenderState::default();
+        let start_identity = live_identity(
+            "assistant-1",
+            "text/main",
+            LiveMessagePartKind::AssistantText,
+            LivePartPhase::Start,
+        );
+        let append_identity = live_identity(
+            "assistant-1",
+            "text/main",
+            LiveMessagePartKind::AssistantText,
+            LivePartPhase::Append,
+        );
+
+        let first = OutputBlock::Message(OutputMessageBlock::delta(
+            OutputMessageRole::Assistant,
+            "University".to_string(),
+        ));
+        accumulator.apply_output_block(Some("assistant-1"), &first);
+        let first_rendered = render_terminal_stream_block_semantic(
+            &mut state,
+            &accumulator,
+            &first,
+            Some(&start_identity),
+            &style,
+            true,
+        );
+
+        let second = OutputBlock::Message(OutputMessageBlock::delta(
+            OutputMessageRole::Assistant,
+            " of China".to_string(),
+        ));
+        accumulator.apply_output_block(Some("assistant-1"), &second);
+        let second_rendered = render_terminal_stream_block_semantic(
+            &mut state,
+            &accumulator,
+            &second,
+            Some(&append_identity),
+            &style,
+            true,
+        );
+
+        assert_eq!(first_rendered, "[message:assistant] University");
+        assert_eq!(second_rendered, " of China");
+        assert_eq!(
+            format!("{first_rendered}{second_rendered}")
+                .matches("[message:assistant]")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn semantic_stream_renderer_uses_identity_driven_reasoning_open_append_and_close() {
         let style = CliStyle::plain();
         let mut accumulator = TerminalStreamAccumulator::new();
         let mut state = TerminalSemanticStreamRenderState::default();
-        let identity = live_identity(
+        let start_identity = live_identity(
             "assistant-1",
             "reasoning/main",
             LiveMessagePartKind::AssistantReasoning,
-            LivePartPhase::Snapshot,
+            LivePartPhase::Start,
+        );
+        let append_identity = live_identity(
+            "assistant-1",
+            "reasoning/main",
+            LiveMessagePartKind::AssistantReasoning,
+            LivePartPhase::Append,
         );
 
-        let start = OutputBlock::Reasoning(OutputReasoningBlock::full("thinking".to_string()));
+        let start = OutputBlock::Reasoning(OutputReasoningBlock::delta("thinking".to_string()));
         accumulator.apply_output_block(Some("assistant-1"), &start);
         let start_rendered = render_terminal_stream_block_semantic(
             &mut state,
             &accumulator,
             &start,
-            Some(&identity),
+            Some(&start_identity),
             &style,
             true,
         );
 
-        let append = OutputBlock::Reasoning(OutputReasoningBlock::full(
-            "thinking more".to_string(),
-        ));
+        let append = OutputBlock::Reasoning(OutputReasoningBlock::delta(" more".to_string()));
         accumulator.apply_output_block(Some("assistant-1"), &append);
         let append_rendered = render_terminal_stream_block_semantic(
             &mut state,
             &accumulator,
             &append,
-            Some(&identity),
+            Some(&append_identity),
             &style,
             true,
         );
@@ -2150,7 +2278,58 @@ mod tests {
 
         assert_eq!(start_rendered, "\n[thinking]\n│ thinking");
         assert_eq!(append_rendered, " more");
+        assert_eq!(
+            format!("{start_rendered}{append_rendered}")
+                .matches("[thinking]")
+                .count(),
+            1
+        );
         assert_eq!(end_rendered, "\n");
+    }
+
+    #[test]
+    fn semantic_stream_renderer_suppresses_non_prefix_reasoning_snapshot_replay() {
+        let style = CliStyle::plain();
+        let mut accumulator = TerminalStreamAccumulator::new();
+        let mut state = TerminalSemanticStreamRenderState::default();
+
+        let first_identity = live_identity(
+            "assistant-1",
+            "reasoning/main",
+            LiveMessagePartKind::AssistantReasoning,
+            LivePartPhase::Snapshot,
+        );
+        let first = OutputBlock::Reasoning(OutputReasoningBlock::full(".".to_string()));
+        let first_rendered = render_terminal_stream_block_semantic(
+            &mut state,
+            &accumulator,
+            &first,
+            Some(&first_identity),
+            &style,
+            true,
+        );
+        accumulator.apply_output_block(Some("assistant-1"), &first);
+
+        let rewrite_identity = live_identity(
+            "assistant-1",
+            "reasoning/main",
+            LiveMessagePartKind::AssistantReasoning,
+            LivePartPhase::Snapshot,
+        );
+        let rewrite = OutputBlock::Reasoning(OutputReasoningBlock::full(
+            "categories".to_string(),
+        ));
+        let rewrite_rendered = render_terminal_stream_block_semantic(
+            &mut state,
+            &accumulator,
+            &rewrite,
+            Some(&rewrite_identity),
+            &style,
+            true,
+        );
+
+        assert_eq!(first_rendered.matches("[thinking]").count(), 1, "{first_rendered}");
+        assert_eq!(rewrite_rendered, "", "{rewrite_rendered}");
     }
 
     #[test]
@@ -2179,10 +2358,7 @@ mod tests {
             true,
         );
 
-        let tool_done = OutputBlock::Tool(OutputToolBlock::done(
-            "websearch",
-            Some("晴 18C".to_string()),
-        ));
+        let tool_done = tool_done("websearch", "晴 18C");
         let tool_done_identity = live_identity(
             "assistant-1",
             "tool_result/tool-1",

@@ -257,7 +257,11 @@ pub fn build_session_tool_result_governance_summary(
                 transcript_fallback_count += 1;
             }
             // Artifact fallback: result was offloaded to disk (not transcript fallback).
-            if metadata.get("tool_result_artifact_path").and_then(|v| v.as_str()).is_some() {
+            if metadata
+                .get("tool_result_artifact_path")
+                .and_then(|v| v.as_str())
+                .is_some()
+            {
                 artifact_fallback_count += 1;
             }
             // Original vs displayed char counts from production metadata.
@@ -772,6 +776,7 @@ mod tests {
             tool_trajectory_quality: None,
             tool_result_governance: None,
             pending_permission_count: 0,
+            pending_followup_count: 0,
             granted_by_turn_count: 0,
             granted_by_session_count: 0,
             granted_by_matcher_kind: std::collections::BTreeMap::new(),
@@ -1429,10 +1434,7 @@ mod tests {
         assert_eq!(loaded.pending_permission_count, 1);
         assert_eq!(loaded.granted_by_turn_count, 2);
         assert_eq!(loaded.granted_by_session_count, 3);
-        assert_eq!(
-            loaded.granted_by_matcher_kind.get("scope_only"),
-            Some(&4)
-        );
+        assert_eq!(loaded.granted_by_matcher_kind.get("scope_only"), Some(&4));
         assert_eq!(
             loaded.last_permission_matcher_kind.as_deref(),
             Some("scope_only")

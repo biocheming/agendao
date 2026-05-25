@@ -310,7 +310,10 @@ fn apply_history_tool_result_display_override(
                         .iter()
                         .filter_map(|field| {
                             Some(json!({
-                                "label": field.get("key")?.as_str()?,
+                                "label": field
+                                    .get("label")
+                                    .or_else(|| field.get("key"))?
+                                    .as_str()?,
                                 "value": field.get("value")?.as_str().unwrap_or(""),
                             }))
                         })
@@ -1215,7 +1218,7 @@ mod tests {
         metadata.insert("display.summary".to_string(), json!("1 question answered"));
         metadata.insert(
             "display.fields".to_string(),
-            json!([{ "key": "Scope", "value": "Proceed" }]),
+            json!([{ "label": "Scope", "value": "Proceed" }]),
         );
 
         let web = history_tool_result_to_web(

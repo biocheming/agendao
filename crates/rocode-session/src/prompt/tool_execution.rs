@@ -2302,12 +2302,12 @@ mod tests {
             })
             .expect("tool result should exist");
 
-        assert!(tool_result.0.contains("[tool result governed: output too large]"));
+        assert!(tool_result
+            .0
+            .contains("[tool result governed: output too large]"));
         assert!(tool_result.0.contains("preview_chars: 32"));
         assert_eq!(
-            tool_result
-                .1
-                .and_then(|m| m.get("tool_result_governed")),
+            tool_result.1.and_then(|m| m.get("tool_result_governed")),
             Some(&serde_json::json!(true))
         );
     }

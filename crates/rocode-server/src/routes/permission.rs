@@ -59,8 +59,7 @@ static PERMISSION_WAITERS: Lazy<Mutex<HashMap<String, oneshot::Sender<Permission
 const PERMISSION_GRANTED_BY_TURN_COUNT_METADATA_KEY: &str = "permission_granted_by_turn_count";
 const PERMISSION_GRANTED_BY_SESSION_COUNT_METADATA_KEY: &str =
     "permission_granted_by_session_count";
-const PERMISSION_GRANTED_BY_MATCHER_KIND_METADATA_KEY: &str =
-    "permission_granted_by_matcher_kind";
+const PERMISSION_GRANTED_BY_MATCHER_KIND_METADATA_KEY: &str = "permission_granted_by_matcher_kind";
 const LAST_PERMISSION_MATCHER_KIND_METADATA_KEY: &str = "last_permission_matcher_kind";
 const LAST_PERMISSION_GRANT_TARGET_METADATA_KEY: &str = "last_permission_grant_target";
 
@@ -208,10 +207,7 @@ fn permission_matcher_kind_key(info: &PermissionInfo) -> String {
         .unwrap_or_else(|| "legacy".to_string())
 }
 
-fn increment_session_metadata_counter(
-    session: &mut rocode_session::Session,
-    key: &str,
-) {
+fn increment_session_metadata_counter(session: &mut rocode_session::Session, key: &str) {
     let next = session
         .record()
         .metadata
@@ -243,10 +239,7 @@ fn increment_session_metadata_map_counter(
     session.insert_metadata(key.to_string(), serde_json::Value::Object(object));
 }
 
-fn record_permission_pending_duration(
-    session: &mut rocode_session::Session,
-    requested_at_ms: u64,
-) {
+fn record_permission_pending_duration(session: &mut rocode_session::Session, requested_at_ms: u64) {
     let now = chrono::Utc::now().timestamp_millis().max(0) as u64;
     session.insert_metadata(
         "last_permission_pending_ms".to_string(),
@@ -281,9 +274,10 @@ fn record_permission_grant_telemetry(
         );
     }
     match response {
-        Response::Turn => {
-            increment_session_metadata_counter(session, PERMISSION_GRANTED_BY_TURN_COUNT_METADATA_KEY)
-        }
+        Response::Turn => increment_session_metadata_counter(
+            session,
+            PERMISSION_GRANTED_BY_TURN_COUNT_METADATA_KEY,
+        ),
         Response::Always => increment_session_metadata_counter(
             session,
             PERMISSION_GRANTED_BY_SESSION_COUNT_METADATA_KEY,
@@ -623,7 +617,8 @@ mod tests {
         let mut saw_pending_updated = false;
         for _ in 0..4 {
             let raw = rx.recv().await.expect("pending lifecycle event");
-            let json: serde_json::Value = serde_json::from_str(&raw).expect("pending lifecycle json");
+            let json: serde_json::Value =
+                serde_json::from_str(&raw).expect("pending lifecycle json");
             match json["type"].as_str() {
                 Some("permission.requested") => {
                     assert_eq!(json["permissionID"], permission_id);
@@ -644,8 +639,14 @@ mod tests {
             }
         }
         assert!(saw_requested, "missing permission.requested event");
-        assert!(saw_control_queued, "missing permission queued control event");
-        assert!(saw_pending_updated, "missing pending session.updated reconcile");
+        assert!(
+            saw_control_queued,
+            "missing permission queued control event"
+        );
+        assert!(
+            saw_pending_updated,
+            "missing pending session.updated reconcile"
+        );
 
         let reply = ReplyPermissionRequest {
             reply: "once".to_string(),
@@ -903,9 +904,7 @@ mod tests {
                 SESSION_ID.to_string(),
                 rocode_tool::PermissionRequest::new("task_flow")
                     .with_scope_key("task_flow:create")
-                    .with_supported_lifetimes(
-                        rocode_tool::structured_dangerous_exec_lifetimes(),
-                    )
+                    .with_supported_lifetimes(rocode_tool::structured_dangerous_exec_lifetimes())
                     .with_risk_tag("dangerous_exec")
                     .with_metadata("operation", serde_json::json!("create")),
             )
@@ -967,9 +966,7 @@ mod tests {
                 session_id_for_scope_only,
                 rocode_tool::PermissionRequest::new("task_flow")
                     .with_scope_key("task_flow:create")
-                    .with_supported_lifetimes(
-                        rocode_tool::structured_dangerous_exec_lifetimes(),
-                    )
+                    .with_supported_lifetimes(rocode_tool::structured_dangerous_exec_lifetimes())
                     .with_risk_tag("dangerous_exec")
                     .with_metadata("operation", serde_json::json!("create")),
             )
@@ -1056,7 +1053,10 @@ mod tests {
         };
 
         assert_eq!(
-            session.record().metadata.get(PERMISSION_GRANTED_BY_TURN_COUNT_METADATA_KEY),
+            session
+                .record()
+                .metadata
+                .get(PERMISSION_GRANTED_BY_TURN_COUNT_METADATA_KEY),
             Some(&serde_json::json!(1))
         );
         assert_eq!(
@@ -1156,7 +1156,10 @@ mod tests {
             .get("last_permission_miss_count")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
-        assert_eq!(miss_count, 1, "miss_count should increment on AskOutcome::Pending");
+        assert_eq!(
+            miss_count, 1,
+            "miss_count should increment on AskOutcome::Pending"
+        );
 
         PERMISSION_ENGINE.lock().await.clear_session(&session_id);
     }

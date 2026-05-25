@@ -14,10 +14,14 @@ async fn cli_ask_question(
         .lock()
         .ok()
         .and_then(|slot| slot.as_ref().cloned());
-    let already_suspended = terminal_surface
-        .as_ref()
-        .is_some_and(|surface| surface.prompt_suspended.load(Ordering::Relaxed));
-    if !already_suspended {
+    let suspended_by_surface = match terminal_surface.as_ref() {
+        Some(surface) => surface
+            .suspend_modal_prompt()
+            .map_err(|error| rocode_tool::ToolError::ExecutionError(error.to_string()))?,
+        None => false,
+    };
+    let suspended_directly = !suspended_by_surface && prompt_session.is_some();
+    if suspended_directly {
         if let Some(prompt_session) = prompt_session.as_ref() {
             let _ = prompt_session.suspend();
         }
@@ -114,11 +118,12 @@ async fn cli_ask_question(
                     CliFrontendPhase::Failed,
                     Some("question cancelled".to_string()),
                 );
-                if let Some(prompt_session) = prompt_session.as_ref() {
-                    let _ = prompt_session.resume();
-                }
                 if let Some(surface) = terminal_surface.as_ref() {
-                    surface.prompt_suspended.store(false, Ordering::Relaxed);
+                    let _ = surface.resume_modal_prompt(suspended_by_surface);
+                } else if suspended_directly {
+                    if let Some(prompt_session) = prompt_session.as_ref() {
+                        let _ = prompt_session.resume();
+                    }
                 }
                 spinner_guard.resume();
                 return Err(rocode_tool::ToolError::ExecutionError(
@@ -134,17 +139,17 @@ async fn cli_ask_question(
                     CliFrontendPhase::Failed,
                     Some("question failed".to_string()),
                 );
-                if let Some(prompt_session) = prompt_session.as_ref() {
-                    let _ = prompt_session.resume();
-                }
                 if let Some(surface) = terminal_surface.as_ref() {
-                    surface.prompt_suspended.store(false, Ordering::Relaxed);
+                    let _ = surface.resume_modal_prompt(suspended_by_surface);
+                } else if suspended_directly {
+                    if let Some(prompt_session) = prompt_session.as_ref() {
+                        let _ = prompt_session.resume();
+                    }
                 }
                 spinner_guard.resume();
-                return Err(rocode_tool::ToolError::ExecutionError(format!(
-                    "Interactive prompt error: {}",
-                    error
-                )));
+                return Err(rocode_tool::ToolError::ExecutionError(
+                    format!("Interactive prompt error: {}", error),
+                ));
             }
         }
     }
@@ -157,11 +162,12 @@ async fn cli_ask_question(
         CliFrontendPhase::Busy,
         Some("assistant response".to_string()),
     );
-    if let Some(prompt_session) = prompt_session.as_ref() {
-        let _ = prompt_session.resume();
-    }
     if let Some(surface) = terminal_surface.as_ref() {
-        surface.prompt_suspended.store(false, Ordering::Relaxed);
+        let _ = surface.resume_modal_prompt(suspended_by_surface);
+    } else if suspended_directly {
+        if let Some(prompt_session) = prompt_session.as_ref() {
+            let _ = prompt_session.resume();
+        }
     }
     spinner_guard.resume();
     Ok(all_answers)
@@ -172,17 +178,47 @@ fn prompt_free_text(
     header: Option<&str>,
     style: &CliStyle,
 ) -> io::Result<SelectResult> {
-    println!();
+    let mut rendered_plain_rows = Vec::new();
     if let Some(header) = header {
         println!("  {} {}", style.bold_cyan(style.bullet()), style.bold(header));
+        rendered_plain_rows.push(format!("  {} {}", style.bullet(), header));
     }
     println!("  {}", question);
+    rendered_plain_rows.push(format!("  {}", question));
     print!("  {} ", style.bold_cyan("›"));
     io::stdout().flush()?;
 
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
     let answer = input.trim().to_string();
+    rendered_plain_rows.push(format!(
+        "  › {}",
+        input.trim_end_matches(['\n', '\r'])
+    ));
+    let mut stdout = io::stdout();
+    let width = crossterm::terminal::size()
+        .map(|(width, _)| usize::from(width).max(1))
+        .unwrap_or(80);
+    let rows_to_clear = rendered_plain_rows
+        .iter()
+        .map(|row| {
+            let visible_width = rocode_command::cli_panel::display_width(row);
+            if visible_width == 0 {
+                1
+            } else {
+                visible_width.div_ceil(width)
+            }
+        })
+        .sum::<usize>();
+    for _ in 0..rows_to_clear {
+        let _ = crossterm::execute!(
+            stdout,
+            crossterm::cursor::MoveUp(1),
+            crossterm::cursor::MoveToColumn(0),
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine)
+        );
+    }
+    let _ = stdout.flush();
 
     if answer.is_empty() {
         Ok(SelectResult::Cancelled)

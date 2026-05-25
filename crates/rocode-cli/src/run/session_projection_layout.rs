@@ -1,8 +1,7 @@
 #[cfg(test)]
 use super::{
     cli_active_stage_context_lines, CliFrontendPhase, CliFrontendProjection,
-    CliObservedExecutionTopology, CliStyle, CliVisibleTranscript,
-    SchedulerStageBlock,
+    CliObservedExecutionTopology, CliStyle, CliVisibleTranscript, SchedulerStageBlock,
 };
 #[cfg(test)]
 use crate::run::session_projection_usage::format_token_count;
@@ -260,6 +259,7 @@ pub(super) fn cli_sidebar_lines(
                 truncate_text(provider_diagnostic, 96)
             ));
         }
+        #[cfg(test)]
         if let Some(model) = model_info {
             if let (Some(input_price), Some(output_price)) =
                 (model.cost_per_million_input, model.cost_per_million_output)

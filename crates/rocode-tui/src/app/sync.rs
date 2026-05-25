@@ -1,6 +1,11 @@
 use super::*;
+use crate::context::collect_attached_sessions_from_stage_summaries;
 
 impl App {
+    fn is_optimistic_local_session_id(session_id: &str) -> bool {
+        session_id.starts_with("local_session_")
+    }
+
     pub(super) fn sync_config_from_server(&mut self) -> anyhow::Result<()> {
         self.context.sync_ui_preferences_from_server()?;
         self.refresh_theme_list_dialog();
@@ -12,16 +17,31 @@ impl App {
     }
 
     pub(crate) fn ensure_session_view(&mut self, session_id: &str) {
+        let had_active_view = self
+            .context
+            .session_view_handle()
+            .as_ref()
+            .is_some_and(|view| view.session_id() == session_id);
+
         self.context.ensure_session_view_handle(session_id);
 
         // Update the SSE session filter so the listener reconnects
         // with server-side filtering for this session.
+        let mut filter_changed = false;
         if let Ok(mut filter) = self.sse_session_filter.lock() {
-            *filter = Some(session_id.to_string());
+            filter_changed = filter.as_deref() != Some(session_id);
+            if filter_changed {
+                *filter = Some(session_id.to_string());
+            }
         }
 
-        // Fetch the initial telemetry snapshot for the new session.
-        self.refresh_session_telemetry(session_id);
+        // Reactive session renders call ensure_session_view() every frame.
+        // Only arm telemetry when entering a session or when the SSE filter
+        // actually changes, otherwise rendering a session view self-schedules
+        // endless telemetry refreshes.
+        if !had_active_view || filter_changed {
+            self.queue_session_telemetry_refresh(session_id);
+        }
     }
 
     /// Refresh the cached telemetry snapshot when the server notifies us of a topology change.
@@ -30,37 +50,66 @@ impl App {
         if current.as_deref() != Some(session_id) {
             return;
         }
-        self.refresh_session_telemetry(session_id);
+        self.queue_session_telemetry_refresh(session_id);
     }
 
-    /// Refresh the aggregated session telemetry snapshot from the server.
-    ///
-    /// Called on first load and runtime-related SSE events so the TUI keeps
-    /// one authority-backed snapshot instead of separately fetching runtime
-    /// and topology.
-    pub(super) fn refresh_session_telemetry(&mut self, session_id: &str) {
+    pub(super) fn queue_session_telemetry_refresh(&mut self, session_id: &str) {
         let current = self.current_session_id();
         if current.as_deref() != Some(session_id) {
             return;
         }
-        let client = self.context.api_client.read();
-        let Some(client) = client.as_ref() else {
+        if Self::is_optimistic_local_session_id(session_id) {
+            return;
+        }
+        self.sync_runtime.pending_session_telemetry_sync = Some(session_id.to_string());
+        self.sync_runtime.pending_session_telemetry_sync_due_at =
+            Some(Instant::now() + Duration::from_millis(SESSION_TELEMETRY_SYNC_DEBOUNCE_MS));
+    }
+
+    pub(super) fn spawn_queued_session_telemetry_refresh(&mut self) {
+        if self.sync_runtime.session_telemetry_sync_inflight {
+            return;
+        }
+        let Some(session_id) = self.sync_runtime.pending_session_telemetry_sync.clone() else {
             return;
         };
-        match client.get_session_telemetry(session_id) {
-            Ok(telemetry) => {
-                self.context.apply_session_telemetry_snapshot(telemetry);
-            }
-            Err(err) => {
-                tracing::debug!(%err, session_id, "failed to fetch session telemetry");
-            }
+        let due = self
+            .sync_runtime
+            .pending_session_telemetry_sync_due_at
+            .unwrap_or_else(Instant::now);
+        if Instant::now() < due {
+            return;
         }
+        let Some(client) = self.context.get_api_client() else {
+            self.sync_runtime.pending_session_telemetry_sync = None;
+            self.sync_runtime.pending_session_telemetry_sync_due_at = None;
+            return;
+        };
+
+        self.sync_runtime.session_telemetry_sync_inflight = true;
+        self.sync_runtime.pending_session_telemetry_sync = None;
+        self.sync_runtime.pending_session_telemetry_sync_due_at = None;
+
+        let context = self.context.clone();
+        std::thread::spawn(move || {
+            let telemetry = match client.get_session_telemetry(&session_id) {
+                Ok(telemetry) => Some(Box::new(telemetry)),
+                Err(error) => {
+                    tracing::debug!(%error, session_id, "failed to fetch session telemetry");
+                    None
+                }
+            };
+            let _ = context.emit_custom_event(CustomEvent::SessionTelemetryRefreshFinished {
+                session_id,
+                telemetry,
+            });
+        });
     }
 
     /// Navigate to the attached session of the currently active scheduler stage.
     ///
-    /// Scans the current session's messages (most recent first) for one that
-    /// carries `scheduler_stage_attached_session_id` metadata and navigates to it.
+    /// Uses runtime/stage summary state as the primary authority, falling back
+    /// to legacy message metadata only when that state is unavailable.
     pub(super) fn navigate_to_attached_session(&mut self) {
         let session_id = match self.current_session_id() {
             Some(id) => id,
@@ -68,15 +117,29 @@ impl App {
         };
         let attached_id = {
             let session_ctx = self.context.session.read();
-            session_ctx.messages.get(&session_id).and_then(|msgs| {
-                msgs.iter().rev().find_map(|msg| {
-                    msg.metadata
-                        .as_ref()
-                        .and_then(|m| m.get("scheduler_stage_attached_session_id"))
-                        .and_then(serde_json::Value::as_str)
-                        .map(String::from)
+            let active_stage_id = session_ctx
+                .session_runtime
+                .as_ref()
+                .and_then(|runtime| runtime.active_stage_id.as_deref());
+            active_stage_id
+                .and_then(|active_stage_id| {
+                    session_ctx
+                        .stage_summaries
+                        .iter()
+                        .find(|stage| stage.stage_id == active_stage_id)
+                        .and_then(|stage| stage.primary_attached_session_id.clone())
                 })
-            })
+                .or_else(|| {
+                    session_ctx.messages.get(&session_id).and_then(|msgs| {
+                        msgs.iter().rev().find_map(|msg| {
+                            msg.metadata
+                                .as_ref()
+                                .and_then(|m| m.get("scheduler_stage_attached_session_id"))
+                                .and_then(serde_json::Value::as_str)
+                                .map(String::from)
+                        })
+                    })
+                })
         };
         if let Some(attached_id) = attached_id {
             self.context.navigate_session(attached_id.clone());
@@ -131,9 +194,16 @@ impl App {
             .get(&session_id)
             .and_then(|session| session.parent_id.clone())
             .unwrap_or(session_id);
-        let children = match session_ctx.messages.get(&graph_root_id) {
-            Some(msgs) => collect_attached_sessions(msgs),
-            None => return,
+        let children = if !session_ctx.stage_summaries.is_empty() {
+            collect_attached_sessions_from_stage_summaries(
+                &session_ctx.stage_summaries,
+                &session_ctx.sessions,
+            )
+        } else {
+            match session_ctx.messages.get(&graph_root_id) {
+                Some(msgs) => collect_attached_sessions(msgs),
+                None => return,
+            }
         };
         drop(session_ctx);
         self.context.set_attached_sessions(children);
@@ -218,7 +288,6 @@ impl App {
         if let Some(revert) = optimistic_revert {
             session_ctx.revert.insert(real_session_id, revert);
         }
-
     }
 
     pub(super) fn append_optimistic_user_message(

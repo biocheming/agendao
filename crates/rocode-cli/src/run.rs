@@ -19,7 +19,7 @@ use rocode_command::cli_spinner::SpinnerGuard;
 use rocode_command::cli_style::CliStyle;
 use rocode_command::interactive::{parse_interactive_command, InteractiveCommand};
 use rocode_command::output_blocks::{
-    render_cli_block_rich, MessageBlock, MessagePhase, MessageRole as OutputMessageRole,
+    render_cli_block_rich, BlockTone, MessageBlock, MessagePhase, MessageRole as OutputMessageRole,
     OutputBlock, QueueItemBlock, SchedulerStageBlock, StatusBlock,
 };
 use rocode_command::terminal_presentation::{
@@ -55,6 +55,57 @@ use crate::util::{
 use rocode_command::branding::logo_lines;
 
 mod interactive_session;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CliPromptAuxLane {
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct CliPromptAuxLine {
+    pub(super) lane: CliPromptAuxLane,
+    pub(super) text: String,
+}
+
+pub(super) fn cli_prompt_aux_line(block: &OutputBlock) -> Option<CliPromptAuxLine> {
+    match block {
+        OutputBlock::QueueItem(item) => Some(CliPromptAuxLine {
+            lane: CliPromptAuxLane::Info,
+            text: format!("Queued #{}: {}", item.position, item.text),
+        }),
+        OutputBlock::Status(status) => {
+            let (lane, prefix) = match status.tone {
+                BlockTone::Title => (CliPromptAuxLane::Info, "Info"),
+                BlockTone::Normal => (CliPromptAuxLane::Info, "Status"),
+                BlockTone::Muted => (CliPromptAuxLane::Info, "Status"),
+                BlockTone::Success => (CliPromptAuxLane::Info, "Done"),
+                BlockTone::Warning => (CliPromptAuxLane::Warning, "Warning"),
+                BlockTone::Error => (CliPromptAuxLane::Error, "Error"),
+            };
+            Some(CliPromptAuxLine {
+                lane,
+                text: cli_prompt_aux_text(prefix, &status.text),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn cli_prompt_aux_text(prefix: &str, text: &str) -> String {
+    let trimmed = text.trim();
+    let Some(head) = trimmed.get(..prefix.len()) else {
+        return format!("{prefix}: {trimmed}");
+    };
+    if head.eq_ignore_ascii_case(prefix) {
+        let rest = trimmed[prefix.len()..].trim_start();
+        if rest.is_empty() || rest.starts_with(':') || rest.starts_with('.') {
+            return trimmed.to_string();
+        }
+    }
+    format!("{prefix}: {trimmed}")
+}
 
 fn resolve_requested_agent_name(
     config: &Config,
@@ -166,6 +217,7 @@ pub(crate) async fn run_non_interactive(
             requested_scheduler_profile,
             thinking,
             interactive_mode,
+            port,
             working_dir,
             runtime_context,
         )
@@ -275,6 +327,8 @@ struct CliExecutionRuntime {
     server_session_id: Option<String>,
     /// Root session plus any explicitly attached sessions for the active execution tree.
     related_session_ids: Arc<Mutex<BTreeSet<String>>>,
+    /// Persisted root-session transcript rebuilt from session history / final state.
+    root_history_transcript: Arc<Mutex<CliVisibleTranscript>>,
     /// Canonical visible transcript snapshot for the root session even when the
     /// operator temporarily focuses an attached-session view.
     root_session_transcript: Arc<Mutex<CliVisibleTranscript>>,
@@ -284,6 +338,7 @@ struct CliExecutionRuntime {
     attached_session_transcripts: Arc<Mutex<HashMap<String, CliVisibleTranscript>>>,
     stream_accumulators: Arc<Mutex<HashMap<String, TerminalStreamAccumulator>>>,
     render_states: Arc<Mutex<HashMap<String, TerminalSemanticStreamRenderState>>>,
+    active_tool_labels: Arc<Mutex<HashMap<String, String>>>,
     /// Local CLI-only focus target. `None` means the root session remains visible.
     focused_session_id: Arc<Mutex<Option<String>>>,
     show_thinking: Arc<AtomicBool>,
@@ -330,7 +385,7 @@ mod frontend_state_surface;
 #[path = "run/frontend_state_topology.rs"]
 mod frontend_state_topology;
 #[path = "run/frontend_state_types.rs"]
-mod frontend_state_types;
+pub(crate) mod frontend_state_types;
 use frontend_state_projection::CliFrontendPhase;
 use frontend_state_prompt::CliPromptChrome;
 use frontend_state_surface::{
@@ -472,19 +527,6 @@ fn print_block(
         block,
         style,
     )
-}
-
-fn print_rendered(surface: Option<&CliTerminalSurface>, rendered: &str) -> anyhow::Result<()> {
-    if rendered.is_empty() {
-        return Ok(());
-    }
-    if let Some(surface) = surface {
-        surface.print_text(&rendered)?;
-    } else {
-        print!("{rendered}");
-        io::stdout().flush()?;
-    }
-    Ok(())
 }
 
 fn print_block_on_surface(
@@ -702,28 +744,35 @@ fn format_session_time(timestamp: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::frontend_state_prompt::{
-        cli_prompt_assist_view, cli_prompt_screen_lines, CliPromptCatalog, CliPromptSelectionState,
+        cli_prompt_assist_view, cli_prompt_lane_screen_lines_from_projection,
+        cli_prompt_screen_lines_with_budget, CliPromptCatalog, CliPromptSelectionState,
     };
     use super::frontend_state_types::CliLastTurnTokenStats;
-    use rocode_command::terminal_presentation::TerminalMessageRole;
     use super::{
         cli_cycle_attached_session, cli_focus_attached_session, cli_focus_root_session,
         cli_normalize_model_ref, cli_observe_terminal_stream_block, cli_prompt_agent_override,
-        cli_recent_session_info_for_directory, cli_render_retained_layout,
-        cli_render_startup_banner, cli_resolve_registry_ui_action, cli_resolve_show_thinking,
+        cli_prompt_aux_line, cli_push_runtime_aux_block, cli_recent_session_info_for_directory,
+        cli_render_live_slot_snapshot, cli_render_retained_layout, cli_render_session_block,
+        cli_render_startup_banner, cli_replace_root_history_transcript,
+        cli_resolve_registry_ui_action, cli_resolve_show_thinking, cli_restore_compact_summary,
         cli_session_update_requires_refresh, cli_set_root_server_session,
-        cli_should_emit_scheduler_stage_block, CliExecutionRuntime, CliFrontendPhase,
-        CliFrontendProjection, CliObservedExecutionTopology, CliRecentSessionInfo,
-        CliVisibleTranscript, CliSessionTokenStats, TerminalStreamAccumulator,
-        CliServerEvent, handle_sse_event,
+        cli_should_emit_scheduler_stage_block, cli_sync_root_history_to_visible, handle_sse_event,
+        CliExecutionRuntime, CliFrontendPhase, CliFrontendProjection, CliObservedExecutionTopology,
+        CliPromptAuxLane, CliRecentSessionInfo, CliServerEvent, CliSessionTokenStats,
+        CliVisibleTranscript, TerminalStreamAccumulator,
     };
     use crate::api_client::SessionListItem;
     use crate::api_client::{SessionListHints, SessionListTime};
     use chrono::Utc;
     use rocode_command::cli_style::CliStyle;
-    use rocode_command::output_blocks::{MessageBlock, OutputBlock, SchedulerStageBlock};
+    use rocode_command::governance_fixtures::live_transcript_state_fixture;
+    use rocode_command::output_blocks::{
+        MessageBlock, OutputBlock, SchedulerStageBlock, StatusBlock,
+    };
+    use rocode_command::terminal_presentation::TerminalMessageRole;
     use rocode_command::{CommandRegistry, ResolvedUiCommand, UiActionId, UiCommandArgumentKind};
     use rocode_config::{Config, UiPreferencesConfig};
+    use rocode_util::util::color::strip_ansi;
     use std::collections::{BTreeSet, HashMap, VecDeque};
     use std::path::Path;
     use std::sync::atomic::AtomicBool;
@@ -732,6 +781,7 @@ mod tests {
 
     use rocode_command::cli_spinner::SpinnerGuard;
     use rocode_command::output_blocks::MessageRole as OutputMessageRole;
+    use rocode_types::{LiveMessagePartIdentity, LiveMessagePartKind, LivePartPhase};
 
     #[test]
     fn cli_prompt_omits_agent_when_scheduler_profile_is_active() {
@@ -848,6 +898,11 @@ mod tests {
                 "root-session".to_string(),
                 "attached-session-a".to_string(),
             ]))),
+            root_history_transcript: Arc::new(Mutex::new({
+                let mut transcript = CliVisibleTranscript::default();
+                transcript.append_rendered("● root line\n");
+                transcript
+            })),
             root_session_transcript: Arc::new(Mutex::new(root_transcript)),
             attached_session_transcripts: Arc::new(Mutex::new(HashMap::from([(
                 "attached-session-a".to_string(),
@@ -855,6 +910,7 @@ mod tests {
             )]))),
             stream_accumulators: Arc::new(Mutex::new(HashMap::new())),
             render_states: Arc::new(Mutex::new(HashMap::new())),
+            active_tool_labels: Arc::new(Mutex::new(HashMap::new())),
             focused_session_id: Arc::new(Mutex::new(None)),
             show_thinking: Arc::new(AtomicBool::new(true)),
         }
@@ -877,6 +933,35 @@ mod tests {
                 transcript
             });
         runtime
+    }
+
+    fn live_identity(
+        message_id: &str,
+        part_key: &str,
+        part_kind: LiveMessagePartKind,
+        phase: LivePartPhase,
+        wire_legacy_block_id: Option<&str>,
+    ) -> LiveMessagePartIdentity {
+        LiveMessagePartIdentity {
+            message_id: message_id.to_string(),
+            part_key: part_key.to_string(),
+            part_kind,
+            phase,
+            legacy_block_id: wire_legacy_block_id.map(str::to_string),
+        }
+    }
+
+    fn output_block_event(
+        id: Option<&str>,
+        live_identity: Option<LiveMessagePartIdentity>,
+        payload: serde_json::Value,
+    ) -> CliServerEvent {
+        CliServerEvent::OutputBlock {
+            session_id: "root-session".to_string(),
+            id: id.map(str::to_string),
+            live_identity,
+            payload,
+        }
     }
 
     #[test]
@@ -1046,11 +1131,6 @@ mod tests {
         transcript.append_rendered(" world\n");
         transcript.append_rendered("next line\n");
 
-        assert_eq!(
-            transcript.committed_lines,
-            vec!["● hello world", "next line"]
-        );
-        assert!(transcript.open_line.is_empty());
         assert_eq!(transcript.rendered_text(), "● hello world\nnext line\n");
     }
 
@@ -1058,94 +1138,138 @@ mod tests {
     fn interactive_live_assistant_stream_keeps_single_header_across_tool_cycles_and_full_chunks() {
         let runtime = test_runtime_with_attached_focus_data();
         let style = CliStyle::plain();
+        let reasoning_identity = live_identity(
+            "assistant-final",
+            "reasoning/main",
+            LiveMessagePartKind::AssistantReasoning,
+            LivePartPhase::Snapshot,
+            Some("assistant-final"),
+        );
+        let tool_start_identity = live_identity(
+            "assistant-final",
+            "tool_call/tool-1",
+            LiveMessagePartKind::ToolCall,
+            LivePartPhase::Start,
+            Some("tool-1"),
+        );
+        let tool_done_identity = live_identity(
+            "assistant-final",
+            "tool_result/tool-1",
+            LiveMessagePartKind::ToolResult,
+            LivePartPhase::End,
+            Some("tool-1"),
+        );
 
         for event in [
-            CliServerEvent::OutputBlock {
-                session_id: "root-session".to_string(),
-                id: Some("assistant-final".to_string()),
-                live_identity: None,
-                payload: serde_json::json!({
+            output_block_event(
+                Some("assistant-final"),
+                Some(reasoning_identity.clone()),
+                serde_json::json!({
                     "kind": "reasoning",
-                    "phase": "start",
-                    "text": ""
-                }),
-            },
-            CliServerEvent::OutputBlock {
-                session_id: "root-session".to_string(),
-                id: Some("assistant-final".to_string()),
-                live_identity: None,
-                payload: serde_json::json!({
-                    "kind": "reasoning",
-                    "phase": "delta",
+                    "phase": "full",
                     "text": "Now I have enough information."
                 }),
-            },
-            CliServerEvent::OutputBlock {
-                session_id: "root-session".to_string(),
-                id: Some("tool-1".to_string()),
-                live_identity: None,
-                payload: serde_json::json!({
+            ),
+            output_block_event(
+                Some("tool-1"),
+                Some(tool_start_identity),
+                serde_json::json!({
                     "kind": "tool",
                     "phase": "start",
                     "name": "websearch",
                     "detail": ""
                 }),
-            },
-            CliServerEvent::OutputBlock {
-                session_id: "root-session".to_string(),
-                id: Some("tool-1".to_string()),
-                live_identity: None,
-                payload: serde_json::json!({
+            ),
+            output_block_event(
+                Some("tool-1"),
+                Some(tool_done_identity),
+                serde_json::json!({
                     "kind": "tool",
                     "phase": "done",
                     "name": "websearch",
                     "detail": "query finished"
                 }),
-            },
-            CliServerEvent::OutputBlock {
-                session_id: "root-session".to_string(),
-                id: Some("assistant-final".to_string()),
-                live_identity: None,
-                payload: serde_json::json!({
+            ),
+            output_block_event(
+                Some("assistant-final"),
+                Some(live_identity(
+                    "assistant-final",
+                    "text/main",
+                    LiveMessagePartKind::AssistantText,
+                    LivePartPhase::Snapshot,
+                    Some("assistant-final"),
+                )),
+                serde_json::json!({
                     "kind": "message",
                     "phase": "full",
                     "role": "assistant",
                     "text": "现在"
                 }),
-            },
-            CliServerEvent::OutputBlock {
-                session_id: "root-session".to_string(),
-                id: Some("assistant-final".to_string()),
-                live_identity: None,
-                payload: serde_json::json!({
+            ),
+            output_block_event(
+                Some("assistant-final"),
+                Some(live_identity(
+                    "assistant-final",
+                    "text/main",
+                    LiveMessagePartKind::AssistantText,
+                    LivePartPhase::Snapshot,
+                    Some("assistant-final"),
+                )),
+                serde_json::json!({
                     "kind": "message",
                     "phase": "full",
                     "role": "assistant",
                     "text": "我已"
                 }),
-            },
-            CliServerEvent::OutputBlock {
-                session_id: "root-session".to_string(),
-                id: Some("assistant-final".to_string()),
-                live_identity: None,
-                payload: serde_json::json!({
+            ),
+            output_block_event(
+                Some("assistant-final"),
+                Some(live_identity(
+                    "assistant-final",
+                    "text/main",
+                    LiveMessagePartKind::AssistantText,
+                    LivePartPhase::Snapshot,
+                    Some("assistant-final"),
+                )),
+                serde_json::json!({
                     "kind": "message",
                     "phase": "full",
                     "role": "assistant",
                     "text": "掌握"
                 }),
-            },
-            CliServerEvent::OutputBlock {
-                session_id: "root-session".to_string(),
-                id: Some("assistant-final".to_string()),
-                live_identity: None,
-                payload: serde_json::json!({
+            ),
+            output_block_event(
+                Some("assistant-final"),
+                Some(live_identity(
+                    "assistant-final",
+                    "text/main",
+                    LiveMessagePartKind::AssistantText,
+                    LivePartPhase::Snapshot,
+                    Some("assistant-final"),
+                )),
+                serde_json::json!({
                     "kind": "message",
                     "phase": "full",
                     "role": "assistant",
                     "text": "现在我已掌握充分信息，以下是完整调研报告。"
                 }),
-            },
+            ),
+            output_block_event(
+                Some("assistant-final"),
+                Some(live_identity(
+                    "assistant-final",
+                    "text/main",
+                    LiveMessagePartKind::AssistantText,
+                    LivePartPhase::End,
+                    Some("assistant-final"),
+                )),
+                serde_json::json!({
+                    "kind": "message",
+                    "phase": "end",
+                    "role": "assistant",
+                    "text": ""
+                }),
+            ),
         ] {
             handle_sse_event(&runtime, event, &style);
         }
@@ -1156,7 +1280,11 @@ mod tests {
             .expect("root transcript")
             .rendered_text();
 
-        assert_eq!(rendered.matches("[message:assistant]").count(), 1, "{rendered}");
+        assert_eq!(
+            rendered.matches("[message:assistant]").count(),
+            1,
+            "{rendered}"
+        );
         assert!(
             rendered.contains("[message:assistant] 现在我已掌握充分信息，以下是完整调研报告。"),
             "{rendered}"
@@ -1168,29 +1296,28 @@ mod tests {
     }
 
     #[test]
-    fn interactive_live_identity_output_block_skips_legacy_accumulator_observer() {
+    fn interactive_live_identity_output_block_skips_compat_accumulator_observer() {
         let runtime = test_runtime_with_attached_focus_data();
         let style = CliStyle::plain();
 
         handle_sse_event(
             &runtime,
-            CliServerEvent::OutputBlock {
-                session_id: "root-session".to_string(),
-                id: Some("assistant-1".to_string()),
-                live_identity: Some(rocode_types::LiveMessagePartIdentity {
-                    message_id: "assistant-1".to_string(),
-                    part_key: "text/main".to_string(),
-                    part_kind: rocode_types::LiveMessagePartKind::AssistantText,
-                    phase: rocode_types::LivePartPhase::Snapshot,
-                    legacy_block_id: Some("assistant-1".to_string()),
-                }),
-                payload: serde_json::json!({
+            output_block_event(
+                Some("assistant-1"),
+                Some(live_identity(
+                    "assistant-1",
+                    "text/main",
+                    LiveMessagePartKind::AssistantText,
+                    LivePartPhase::Snapshot,
+                    Some("assistant-1"),
+                )),
+                serde_json::json!({
                     "kind": "message",
                     "phase": "full",
                     "role": "assistant",
                     "text": "hello"
                 }),
-            },
+            ),
             &style,
         );
 
@@ -1200,8 +1327,1349 @@ mod tests {
             .expect("stream accumulators");
         assert!(
             accumulators.get("root-session").is_none(),
-            "live-identity events should not hydrate legacy accumulator"
+            "live-identity events should not hydrate compatibility accumulator"
         );
+    }
+
+    #[test]
+    fn interactive_reasoning_snapshots_replace_same_slot_without_replaying_header() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let style = CliStyle::plain();
+
+        for text in ["Thinking first", "Thinking first second"] {
+            handle_sse_event(
+                &runtime,
+                output_block_event(
+                    Some("assistant-1"),
+                    Some(live_identity(
+                        "assistant-1",
+                        "reasoning/main",
+                        LiveMessagePartKind::AssistantReasoning,
+                        LivePartPhase::Snapshot,
+                        Some("assistant-1"),
+                    )),
+                    serde_json::json!({
+                        "kind": "reasoning",
+                        "phase": "full",
+                        "text": text
+                    }),
+                ),
+                &style,
+            );
+        }
+
+        let rendered = runtime
+            .root_session_transcript
+            .lock()
+            .expect("root transcript")
+            .rendered_text();
+        assert_eq!(rendered.matches("[thinking]").count(), 1, "{rendered}");
+        assert!(rendered.contains("Thinking first second"), "{rendered}");
+        assert!(
+            !rendered.contains("Thinking first\n[thinking]"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn prompt_owned_live_reasoning_events_still_surface_visible_output() {
+        let mut runtime = test_runtime_with_attached_focus_data();
+        runtime.terminal_surface = Some(Arc::new(
+            crate::run::frontend_state_surface::CliTerminalSurface::new(
+                CliStyle::plain(),
+                runtime.frontend_projection.clone(),
+            ),
+        ));
+        let style = CliStyle::plain();
+
+        handle_sse_event(
+            &runtime,
+            output_block_event(
+                Some("assistant-1"),
+                Some(live_identity(
+                    "assistant-1",
+                    "reasoning/main",
+                    LiveMessagePartKind::AssistantReasoning,
+                    LivePartPhase::Snapshot,
+                    Some("assistant-1"),
+                )),
+                serde_json::json!({
+                    "kind": "reasoning",
+                    "phase": "full",
+                    "text": "Thinking visible"
+                }),
+            ),
+            &style,
+        );
+
+        let rendered = runtime
+            .frontend_projection
+            .lock()
+            .expect("projection")
+            .transcript
+            .rendered_text();
+        assert!(
+            !rendered.contains("Thinking visible"),
+            "snapshot reasoning should stay out of the visible prompt transcript: {rendered}"
+        );
+        let root_rendered = runtime
+            .root_session_transcript
+            .lock()
+            .expect("root transcript")
+            .rendered_text();
+        assert!(root_rendered.contains("Thinking visible"), "{root_rendered}");
+        assert!(
+            runtime
+                .render_states
+                .lock()
+                .expect("render states")
+                .is_empty(),
+            "prompt-owned tool-result snapshots should bypass secondary semantic render"
+        );
+    }
+
+    #[test]
+    fn prompt_owned_live_reasoning_refreshes_prompt_surface_without_raw_stream_passthrough() {
+        let mut runtime = test_runtime_with_attached_focus_data();
+        let surface = Arc::new(crate::run::frontend_state_surface::CliTerminalSurface::new(
+            CliStyle::plain(),
+            runtime.frontend_projection.clone(),
+        ));
+        runtime.terminal_surface = Some(surface.clone());
+        let style = CliStyle::plain();
+
+        handle_sse_event(
+            &runtime,
+            output_block_event(
+                Some("assistant-1"),
+                Some(live_identity(
+                    "assistant-1",
+                    "reasoning/main",
+                    LiveMessagePartKind::AssistantReasoning,
+                    LivePartPhase::Snapshot,
+                    Some("assistant-1"),
+                )),
+                serde_json::json!({
+                    "kind": "reasoning",
+                    "phase": "full",
+                    "text": "Thinking visible"
+                }),
+            ),
+            &style,
+        );
+
+        let rendered = runtime
+            .frontend_projection
+            .lock()
+            .expect("projection")
+            .transcript
+            .rendered_text();
+        assert!(!rendered.contains("Thinking visible"), "{rendered}");
+        assert!(
+            !surface.has_prompt_snapshot(),
+            "snapshot-only reasoning should not refresh the prompt transcript"
+        );
+        let root_rendered = runtime
+            .root_session_transcript
+            .lock()
+            .expect("root transcript")
+            .rendered_text();
+        assert!(root_rendered.contains("Thinking visible"), "{root_rendered}");
+        assert_eq!(
+            surface.emitted_render_count(),
+            0,
+            "prompt-owned transcript-bearing reasoning should not write raw stream history"
+        );
+    }
+
+    #[test]
+    fn prompt_owned_live_assistant_refreshes_prompt_surface_without_raw_stream_passthrough() {
+        let mut runtime = test_runtime_with_attached_focus_data();
+        let surface = Arc::new(crate::run::frontend_state_surface::CliTerminalSurface::new(
+            CliStyle::plain(),
+            runtime.frontend_projection.clone(),
+        ));
+        runtime.terminal_surface = Some(surface.clone());
+        let style = CliStyle::plain();
+
+        handle_sse_event(
+            &runtime,
+            output_block_event(
+                Some("assistant-1"),
+                Some(live_identity(
+                    "assistant-1",
+                    "text/main",
+                    LiveMessagePartKind::AssistantText,
+                    LivePartPhase::Snapshot,
+                    Some("assistant-1"),
+                )),
+                serde_json::json!({
+                    "kind": "message",
+                    "phase": "full",
+                    "role": "assistant",
+                    "text": "Assistant visible"
+                }),
+            ),
+            &style,
+        );
+
+        let rendered = runtime
+            .frontend_projection
+            .lock()
+            .expect("projection")
+            .transcript
+            .rendered_text();
+        assert!(!rendered.contains("Assistant visible"), "{rendered}");
+        let root_rendered = runtime
+            .root_session_transcript
+            .lock()
+            .expect("root transcript")
+            .rendered_text();
+        assert!(root_rendered.contains("Assistant visible"), "{root_rendered}");
+        assert_eq!(
+            surface.emitted_render_count(),
+            0,
+            "prompt-owned transcript-bearing assistant text should not write raw stream history"
+        );
+        assert!(
+            runtime
+                .render_states
+                .lock()
+                .expect("render states")
+                .is_empty(),
+            "prompt-owned transcript-bearing assistant text should bypass secondary semantic render"
+        );
+    }
+
+    #[test]
+    fn prompt_owned_reasoning_rewrite_keeps_latest_slot_without_replaying_history() {
+        let mut runtime = test_runtime_with_attached_focus_data();
+        runtime.terminal_surface = Some(Arc::new(
+            crate::run::frontend_state_surface::CliTerminalSurface::new(
+                CliStyle::plain(),
+                runtime.frontend_projection.clone(),
+            ),
+        ));
+        let style = CliStyle::plain();
+
+        for text in [".", "categories"] {
+            handle_sse_event(
+                &runtime,
+                output_block_event(
+                    Some("assistant-1"),
+                    Some(live_identity(
+                        "assistant-1",
+                        "reasoning/main",
+                        LiveMessagePartKind::AssistantReasoning,
+                        LivePartPhase::Snapshot,
+                        Some("assistant-1"),
+                    )),
+                    serde_json::json!({
+                        "kind": "reasoning",
+                        "phase": "full",
+                        "text": text
+                    }),
+                ),
+                &style,
+            );
+        }
+
+        let visible_rendered = runtime
+            .frontend_projection
+            .lock()
+            .expect("projection")
+            .transcript
+            .rendered_text();
+        assert_eq!(visible_rendered, "● root line\n", "{visible_rendered}");
+
+        let latest_slot = runtime
+            .root_session_transcript
+            .lock()
+            .expect("root transcript")
+            .rendered_text();
+        assert!(latest_slot.contains("categories"), "{latest_slot}");
+
+        let projection = runtime.frontend_projection.lock().expect("projection");
+        assert_eq!(
+            projection.active_label.as_deref(),
+            Some("Thinking")
+        );
+        assert!(
+            runtime
+                .render_states
+                .lock()
+                .expect("render states")
+                .is_empty(),
+            "prompt-owned reasoning snapshots should bypass secondary semantic render"
+        );
+    }
+
+    #[test]
+    fn prompt_owned_live_tool_results_still_surface_visible_output() {
+        let mut runtime = test_runtime_with_attached_focus_data();
+        runtime.terminal_surface = Some(Arc::new(
+            crate::run::frontend_state_surface::CliTerminalSurface::new(
+                CliStyle::plain(),
+                runtime.frontend_projection.clone(),
+            ),
+        ));
+        let style = CliStyle::plain();
+
+        handle_sse_event(
+            &runtime,
+            output_block_event(
+                Some("tool-1"),
+                Some(live_identity(
+                    "assistant-1",
+                    "tool_result/tool-1",
+                    LiveMessagePartKind::ToolResult,
+                    LivePartPhase::Snapshot,
+                    Some("tool-1"),
+                )),
+                serde_json::json!({
+                    "kind": "tool",
+                    "phase": "done",
+                    "name": "SkillsList",
+                    "detail": "11 skills · literature-research/skills"
+                }),
+            ),
+            &style,
+        );
+
+        let rendered = runtime
+            .frontend_projection
+            .lock()
+            .expect("projection")
+            .transcript
+            .rendered_text();
+        assert!(
+            rendered.contains("SkillsList") || rendered.contains("11 skills"),
+            "prompt-owned live tool results should still emit visible output: {rendered}"
+        );
+        let root_rendered = runtime
+            .root_session_transcript
+            .lock()
+            .expect("root transcript")
+            .rendered_text();
+        assert_eq!(rendered, root_rendered, "{rendered}");
+    }
+
+    #[test]
+    fn prompt_owned_reasoning_updates_do_not_append_stream_copies_before_tool_output() {
+        let mut runtime = test_runtime_with_attached_focus_data();
+        runtime.terminal_surface = Some(Arc::new(
+            crate::run::frontend_state_surface::CliTerminalSurface::new(
+                CliStyle::plain(),
+                runtime.frontend_projection.clone(),
+            ),
+        ));
+        let style = CliStyle::plain();
+
+        for text in [".", "categories"] {
+            handle_sse_event(
+                &runtime,
+                output_block_event(
+                    Some("assistant-1"),
+                    Some(live_identity(
+                        "assistant-1",
+                        "reasoning/main",
+                        LiveMessagePartKind::AssistantReasoning,
+                        LivePartPhase::Snapshot,
+                        Some("assistant-1"),
+                    )),
+                    serde_json::json!({
+                        "kind": "reasoning",
+                        "phase": "full",
+                        "text": text
+                    }),
+                ),
+                &style,
+            );
+        }
+
+        handle_sse_event(
+            &runtime,
+            output_block_event(
+                Some("tool-1"),
+                Some(live_identity(
+                    "assistant-1",
+                    "tool_result/tool-1",
+                    LiveMessagePartKind::ToolResult,
+                    LivePartPhase::Snapshot,
+                    Some("tool-1"),
+                )),
+                serde_json::json!({
+                    "kind": "tool",
+                    "phase": "done",
+                    "name": "SkillsCategories",
+                    "detail": "4 categories"
+                }),
+            ),
+            &style,
+        );
+
+        let projection_rendered = runtime
+            .frontend_projection
+            .lock()
+            .expect("projection")
+            .transcript
+            .rendered_text();
+        let root_rendered = runtime
+            .root_session_transcript
+            .lock()
+            .expect("root transcript")
+            .rendered_text();
+
+        assert_eq!(projection_rendered, root_rendered, "{projection_rendered}");
+        assert_eq!(
+            projection_rendered.matches("[thinking]").count(),
+            1,
+            "{projection_rendered}"
+        );
+        assert!(projection_rendered.contains("categories"), "{projection_rendered}");
+        assert!(projection_rendered.contains("SkillsCategories"), "{projection_rendered}");
+    }
+
+    #[test]
+    fn prompt_owned_empty_reasoning_lifecycle_does_not_materialize_blank_history() {
+        let mut runtime = test_runtime_with_attached_focus_data();
+        runtime.terminal_surface = Some(Arc::new(
+            crate::run::frontend_state_surface::CliTerminalSurface::new(
+                CliStyle::plain(),
+                runtime.frontend_projection.clone(),
+            ),
+        ));
+        let style = CliStyle::plain();
+
+        handle_sse_event(
+            &runtime,
+            output_block_event(
+                Some("assistant-1"),
+                Some(live_identity(
+                    "assistant-1",
+                    "reasoning/main",
+                    LiveMessagePartKind::AssistantReasoning,
+                    LivePartPhase::Start,
+                    Some("assistant-1"),
+                )),
+                serde_json::json!({
+                    "kind": "reasoning",
+                    "phase": "start",
+                    "text": ""
+                }),
+            ),
+            &style,
+        );
+
+        handle_sse_event(
+            &runtime,
+            output_block_event(
+                Some("assistant-1"),
+                Some(live_identity(
+                    "assistant-1",
+                    "reasoning/main",
+                    LiveMessagePartKind::AssistantReasoning,
+                    LivePartPhase::End,
+                    Some("assistant-1"),
+                )),
+                serde_json::json!({
+                    "kind": "reasoning",
+                    "phase": "end",
+                    "text": ""
+                }),
+            ),
+            &style,
+        );
+
+        let projection_rendered = runtime
+            .frontend_projection
+            .lock()
+            .expect("projection")
+            .transcript
+            .rendered_text();
+        let root_rendered = runtime
+            .root_session_transcript
+            .lock()
+            .expect("root transcript")
+            .rendered_text();
+
+        assert_eq!(projection_rendered, root_rendered, "{projection_rendered}");
+        assert_eq!(projection_rendered, "● root line\n", "{projection_rendered}");
+    }
+
+    #[test]
+    fn interactive_scheduler_stage_identity_does_not_enter_live_slot_transcript() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let style = CliStyle::plain();
+
+        handle_sse_event(
+            &runtime,
+            output_block_event(
+                Some("stage-1"),
+                Some(live_identity(
+                    "assistant-1",
+                    "scheduler/stage-1",
+                    LiveMessagePartKind::SchedulerStage,
+                    LivePartPhase::Snapshot,
+                    None,
+                )),
+                serde_json::json!({
+                    "kind": "scheduler_stage",
+                    "stage": "research",
+                    "title": "Research",
+                    "text": "planning",
+                    "status": "running"
+                }),
+            ),
+            &style,
+        );
+
+        let rendered = runtime
+            .root_session_transcript
+            .lock()
+            .expect("root transcript")
+            .rendered_text();
+        assert_eq!(rendered, "● root line\n", "{rendered}");
+    }
+
+    #[test]
+    fn interactive_tool_call_identity_does_not_enter_root_transcript() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let style = CliStyle::plain();
+
+        handle_sse_event(
+            &runtime,
+            output_block_event(
+                Some("tool-call-1"),
+                Some(live_identity(
+                    "assistant-1",
+                    "tool_call/tool-call-1",
+                    LiveMessagePartKind::ToolCall,
+                    LivePartPhase::Snapshot,
+                    Some("tool-call-1"),
+                )),
+                serde_json::json!({
+                    "kind": "tool",
+                    "phase": "running",
+                    "name": "SkillsList",
+                    "detail": ""
+                }),
+            ),
+            &style,
+        );
+
+        let rendered = runtime
+            .root_session_transcript
+            .lock()
+            .expect("root transcript")
+            .rendered_text();
+        assert_eq!(rendered, "● root line\n", "{rendered}");
+    }
+
+    #[test]
+    fn interactive_missing_identity_tool_running_does_not_enter_root_transcript() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let style = CliStyle::plain();
+
+        handle_sse_event(
+            &runtime,
+            output_block_event(
+                Some("tool-call-1"),
+                None,
+                serde_json::json!({
+                    "kind": "tool",
+                    "phase": "running",
+                    "name": "SkillsList",
+                    "detail": "{\"category\":\"literature-research/skills\"}"
+                }),
+            ),
+            &style,
+        );
+
+        let rendered = runtime
+            .root_session_transcript
+            .lock()
+            .expect("root transcript")
+            .rendered_text();
+        assert_eq!(rendered, "● root line\n", "{rendered}");
+    }
+
+    #[test]
+    fn interactive_missing_identity_scheduler_stage_running_does_not_enter_root_transcript() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let style = CliStyle::plain();
+
+        handle_sse_event(
+            &runtime,
+            output_block_event(
+                Some("stage-1"),
+                None,
+                serde_json::json!({
+                    "kind": "scheduler_stage",
+                    "stage": "research",
+                    "title": "Research",
+                    "text": "planning",
+                    "status": "running"
+                }),
+            ),
+            &style,
+        );
+
+        let rendered = runtime
+            .root_session_transcript
+            .lock()
+            .expect("root transcript")
+            .rendered_text();
+        assert_eq!(rendered, "● root line\n", "{rendered}");
+    }
+
+    #[test]
+    fn interactive_missing_identity_scheduler_stage_done_does_not_enter_root_transcript() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let style = CliStyle::plain();
+
+        handle_sse_event(
+            &runtime,
+            output_block_event(
+                Some("stage-1"),
+                None,
+                serde_json::json!({
+                    "kind": "scheduler_stage",
+                    "stage": "research",
+                    "title": "Research",
+                    "text": "planning complete",
+                    "status": "done"
+                }),
+            ),
+            &style,
+        );
+
+        let rendered = runtime
+            .root_session_transcript
+            .lock()
+            .expect("root transcript")
+            .rendered_text();
+        assert_eq!(rendered, "● root line\n", "{rendered}");
+    }
+
+    #[test]
+    fn non_focused_root_error_stays_out_of_root_transcript() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let style = CliStyle::plain();
+
+        handle_sse_event(
+            &runtime,
+            CliServerEvent::Error {
+                session_id: "root-session".to_string(),
+                error: "boom".to_string(),
+                message_id: Some("message-1".to_string()),
+                done: Some(true),
+            },
+            &style,
+        );
+
+        let rendered = runtime
+            .root_session_transcript
+            .lock()
+            .expect("root transcript")
+            .rendered_text();
+        assert_eq!(rendered, "● root line\n", "{rendered}");
+        let run_tail = runtime
+            .frontend_projection
+            .lock()
+            .expect("projection")
+            .run_tail
+            .clone();
+        assert_eq!(
+            run_tail.as_ref().map(|tail| tail.status.as_str()),
+            Some("error")
+        );
+        assert_eq!(
+            run_tail.as_ref().and_then(|tail| tail.detail.as_deref()),
+            Some("boom")
+        );
+    }
+
+    #[test]
+    fn non_focused_root_usage_stays_out_of_root_transcript() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let style = CliStyle::plain();
+
+        handle_sse_event(
+            &runtime,
+            CliServerEvent::Usage {
+                session_id: "root-session".to_string(),
+                prompt_tokens: 12,
+                completion_tokens: 34,
+                message_id: Some("message-1".to_string()),
+            },
+            &style,
+        );
+
+        let rendered = runtime
+            .root_session_transcript
+            .lock()
+            .expect("root transcript")
+            .rendered_text();
+        assert_eq!(rendered, "● root line\n", "{rendered}");
+        let run_tail = runtime
+            .frontend_projection
+            .lock()
+            .expect("projection")
+            .run_tail
+            .clone();
+        assert_eq!(
+            run_tail.as_ref().map(|tail| tail.status.as_str()),
+            Some("complete")
+        );
+        assert_eq!(
+            run_tail.as_ref().and_then(|tail| tail.detail.as_deref()),
+            Some("input 12 · output 34")
+        );
+    }
+
+    #[test]
+    fn session_busy_surfaces_compact_thinking_summary() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let style = CliStyle::plain();
+
+        handle_sse_event(
+            &runtime,
+            CliServerEvent::SessionBusy {
+                session_id: "root-session".to_string(),
+            },
+            &style,
+        );
+
+        let projection = runtime.frontend_projection.lock().expect("projection");
+        assert_eq!(projection.active_label.as_deref(), Some("Thinking"));
+    }
+
+    #[test]
+    fn tool_call_lifecycle_swaps_compact_summary_between_tool_and_thinking() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let style = CliStyle::plain();
+
+        handle_sse_event(
+            &runtime,
+            CliServerEvent::SessionBusy {
+                session_id: "root-session".to_string(),
+            },
+            &style,
+        );
+        handle_sse_event(
+            &runtime,
+            CliServerEvent::ToolCallStarted {
+                session_id: "root-session".to_string(),
+                tool_call_id: "tool-call-1".to_string(),
+                tool_name: "SkillsList".to_string(),
+            },
+            &style,
+        );
+        {
+            let projection = runtime.frontend_projection.lock().expect("projection");
+            assert_eq!(
+                projection.active_label.as_deref(),
+                Some("Using Skill SkillsList")
+            );
+        }
+
+        handle_sse_event(
+            &runtime,
+            CliServerEvent::ToolCallCompleted {
+                session_id: "root-session".to_string(),
+                tool_call_id: "tool-call-1".to_string(),
+            },
+            &style,
+        );
+
+        let projection = runtime.frontend_projection.lock().expect("projection");
+        assert_eq!(projection.active_label.as_deref(), Some("Thinking"));
+    }
+
+    #[test]
+    fn tool_call_start_updates_prompt_aux_lane_without_touching_root_transcript() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let style = CliStyle::plain();
+
+        handle_sse_event(
+            &runtime,
+            CliServerEvent::ToolCallStarted {
+                session_id: "root-session".to_string(),
+                tool_call_id: "tool-call-1".to_string(),
+                tool_name: "SkillsList".to_string(),
+            },
+            &style,
+        );
+
+        let transcript_rendered = runtime
+            .root_session_transcript
+            .lock()
+            .expect("root transcript")
+            .rendered_text();
+        assert_eq!(
+            transcript_rendered, "● root line\n",
+            "{transcript_rendered}"
+        );
+        let prompt_info = runtime
+            .frontend_projection
+            .lock()
+            .expect("projection")
+            .prompt_lanes
+            .info_lines
+            .clone();
+        assert!(prompt_info
+            .iter()
+            .any(|line| line.contains("Using Skill SkillsList")));
+    }
+
+    #[test]
+    fn interactive_tool_result_identity_enters_root_transcript_with_detail() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let style = CliStyle::plain();
+
+        handle_sse_event(
+            &runtime,
+            output_block_event(
+                Some("tool-call-1"),
+                Some(live_identity(
+                    "assistant-1",
+                    "tool_result/tool-call-1",
+                    LiveMessagePartKind::ToolResult,
+                    LivePartPhase::End,
+                    Some("tool-call-1"),
+                )),
+                serde_json::json!({
+                    "kind": "tool",
+                    "phase": "done",
+                    "name": "SkillsList",
+                    "detail": "{\"category\":\"literature-research/skills\"}"
+                }),
+            ),
+            &style,
+        );
+
+        let rendered = runtime
+            .root_session_transcript
+            .lock()
+            .expect("root transcript")
+            .rendered_text();
+        assert!(rendered.contains("Skill SkillsList"), "{rendered}");
+        assert!(
+            rendered.contains("literature-research/skills"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn runtime_aux_blocks_stay_in_prompt_lanes_when_history_regains_authority() {
+        let runtime = test_runtime_with_attached_focus_data();
+
+        cli_push_runtime_aux_block(
+            &runtime,
+            OutputBlock::Status(StatusBlock::title("Using Skill SkillsList")),
+        );
+        let prompt_info = runtime
+            .frontend_projection
+            .lock()
+            .expect("projection")
+            .prompt_lanes
+            .info_lines
+            .clone();
+        assert!(prompt_info
+            .iter()
+            .any(|line| line.contains("Using Skill SkillsList")));
+
+        let mut finalized = CliVisibleTranscript::default();
+        finalized.append_rendered("● root line\n");
+        finalized.append_rendered("● final answer\n");
+        cli_replace_root_history_transcript(&runtime, finalized);
+        let rebuilt = cli_sync_root_history_to_visible(&runtime);
+
+        assert!(!rebuilt.rendered_text().contains("Using Skill SkillsList"));
+        assert!(rebuilt.rendered_text().contains("final answer"));
+    }
+
+    #[test]
+    fn session_retrying_stays_out_of_root_transcript_and_updates_run_tail() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let style = CliStyle::plain();
+
+        handle_sse_event(
+            &runtime,
+            CliServerEvent::SessionRetrying {
+                session_id: "root-session".to_string(),
+            },
+            &style,
+        );
+
+        let rendered = runtime
+            .root_session_transcript
+            .lock()
+            .expect("root transcript")
+            .rendered_text();
+        assert_eq!(rendered, "● root line\n", "{rendered}");
+        let run_tail = runtime
+            .frontend_projection
+            .lock()
+            .expect("projection")
+            .run_tail
+            .clone();
+        assert_eq!(
+            run_tail.as_ref().map(|tail| tail.status.as_str()),
+            Some("retrying")
+        );
+        assert_eq!(
+            run_tail.as_ref().and_then(|tail| tail.detail.as_deref()),
+            Some("Waiting for automatic retry.")
+        );
+    }
+
+    #[test]
+    fn stream_reconnecting_surfaces_run_tail_and_stream_connected_clears_it() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let style = CliStyle::plain();
+
+        handle_sse_event(
+            &runtime,
+            CliServerEvent::StreamReconnecting { delay_ms: 1_500 },
+            &style,
+        );
+
+        let reconnecting = runtime
+            .frontend_projection
+            .lock()
+            .expect("projection")
+            .run_tail
+            .clone();
+        assert_eq!(
+            reconnecting.as_ref().map(|tail| tail.status.as_str()),
+            Some("reconnecting")
+        );
+        assert_eq!(
+            reconnecting
+                .as_ref()
+                .and_then(|tail| tail.detail.as_deref()),
+            Some("retrying in 2s")
+        );
+
+        handle_sse_event(&runtime, CliServerEvent::StreamConnected, &style);
+
+        let run_tail = runtime
+            .frontend_projection
+            .lock()
+            .expect("projection")
+            .run_tail
+            .clone();
+        assert!(run_tail.is_none());
+    }
+
+    #[test]
+    fn interactive_empty_assistant_boundaries_do_not_emit_blank_bullets() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let style = CliStyle::plain();
+
+        handle_sse_event(
+            &runtime,
+            output_block_event(
+                Some("assistant-1"),
+                Some(live_identity(
+                    "assistant-1",
+                    "text/main",
+                    LiveMessagePartKind::AssistantText,
+                    LivePartPhase::Start,
+                    Some("assistant-1"),
+                )),
+                serde_json::json!({
+                    "kind": "message",
+                    "phase": "start",
+                    "role": "assistant",
+                    "text": ""
+                }),
+            ),
+            &style,
+        );
+        handle_sse_event(
+            &runtime,
+            output_block_event(
+                Some("assistant-1"),
+                Some(live_identity(
+                    "assistant-1",
+                    "text/main",
+                    LiveMessagePartKind::AssistantText,
+                    LivePartPhase::End,
+                    Some("assistant-1"),
+                )),
+                serde_json::json!({
+                    "kind": "message",
+                    "phase": "end",
+                    "role": "assistant",
+                    "text": ""
+                }),
+            ),
+            &style,
+        );
+
+        let rendered = runtime
+            .root_session_transcript
+            .lock()
+            .expect("root transcript")
+            .rendered_text();
+        assert_eq!(rendered, "● root line\n", "{rendered}");
+    }
+
+    #[test]
+    fn live_identity_render_does_not_fallback_to_raw_block_without_accumulator() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let style = CliStyle::plain();
+
+        let rendered = cli_render_session_block(
+            &runtime,
+            "root-session",
+            None,
+            &OutputBlock::Reasoning(rocode_command::output_blocks::ReasoningBlock::full(
+                "Thinking user".to_string(),
+            )),
+            Some(&live_identity(
+                "assistant-1",
+                "reasoning/main",
+                LiveMessagePartKind::AssistantReasoning,
+                LivePartPhase::Snapshot,
+                Some("assistant-1"),
+            )),
+            &style,
+        );
+
+        assert!(rendered.is_empty(), "{rendered}");
+    }
+
+    #[test]
+    fn live_reasoning_snapshots_reuse_visible_stream_header() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let style = CliStyle::plain();
+        let snapshot_identity = live_identity(
+            "assistant-1",
+            "reasoning/main",
+            LiveMessagePartKind::AssistantReasoning,
+            LivePartPhase::Snapshot,
+            Some("assistant-1"),
+        );
+        let end_identity = live_identity(
+            "assistant-1",
+            "reasoning/main",
+            LiveMessagePartKind::AssistantReasoning,
+            LivePartPhase::End,
+            Some("assistant-1"),
+        );
+
+        cli_observe_terminal_stream_block(
+            &runtime,
+            "root-session",
+            Some("assistant-1"),
+            &OutputBlock::Reasoning(rocode_command::output_blocks::ReasoningBlock::full(
+                "Thinking first".to_string(),
+            )),
+        );
+        assert_eq!(
+            cli_render_session_block(
+                &runtime,
+                "root-session",
+                Some("assistant-1"),
+                &OutputBlock::Reasoning(rocode_command::output_blocks::ReasoningBlock::full(
+                    "Thinking first".to_string(),
+                )),
+                Some(&snapshot_identity),
+                &style,
+            ),
+            ""
+        );
+
+        cli_observe_terminal_stream_block(
+            &runtime,
+            "root-session",
+            Some("assistant-1"),
+            &OutputBlock::Reasoning(rocode_command::output_blocks::ReasoningBlock::full(
+                "Thinking first second".to_string(),
+            )),
+        );
+        let combined = cli_render_session_block(
+            &runtime,
+            "root-session",
+            Some("assistant-1"),
+            &OutputBlock::Reasoning(rocode_command::output_blocks::ReasoningBlock::end()),
+            Some(&end_identity),
+            &style,
+        );
+        assert_eq!(combined.matches("[thinking]").count(), 1, "{combined}");
+        assert!(combined.contains("Thinking first second"), "{combined}");
+    }
+
+    #[test]
+    fn non_transcript_live_identity_renders_raw_block_without_semantic_fallback() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let style = CliStyle::plain();
+
+        let rendered = cli_render_session_block(
+            &runtime,
+            "root-session",
+            None,
+            &OutputBlock::SchedulerStage(Box::new(stage_with_status("running"))),
+            Some(&live_identity(
+                "assistant-1",
+                "scheduler/stage-1",
+                LiveMessagePartKind::SchedulerStage,
+                LivePartPhase::Snapshot,
+                None,
+            )),
+            &style,
+        );
+
+        assert!(
+            rendered.contains("Scheduler Stage") || rendered.contains("running"),
+            "non-transcript live identity should render directly as raw block: {rendered}"
+        );
+        assert!(
+            !rendered.contains("[message:assistant]"),
+            "scheduler stage must not be reinterpreted as assistant transcript text: {rendered}"
+        );
+    }
+
+    #[test]
+    fn legacy_assistant_stream_renders_only_on_end() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let style = CliStyle::plain();
+        let start = OutputBlock::Message(MessageBlock::start(OutputMessageRole::Assistant));
+        let delta = OutputBlock::Message(MessageBlock::delta(
+            OutputMessageRole::Assistant,
+            "Hello from buffered stream",
+        ));
+        let end = OutputBlock::Message(MessageBlock::end(OutputMessageRole::Assistant));
+
+        cli_observe_terminal_stream_block(&runtime, "root-session", Some("assistant-1"), &start);
+        let rendered_start = cli_render_session_block(
+            &runtime,
+            "root-session",
+            Some("assistant-1"),
+            &start,
+            None,
+            &style,
+        );
+        assert!(rendered_start.is_empty(), "{rendered_start}");
+
+        cli_observe_terminal_stream_block(&runtime, "root-session", Some("assistant-1"), &delta);
+        let rendered_delta = cli_render_session_block(
+            &runtime,
+            "root-session",
+            Some("assistant-1"),
+            &delta,
+            None,
+            &style,
+        );
+        assert!(rendered_delta.is_empty(), "{rendered_delta}");
+
+        cli_observe_terminal_stream_block(&runtime, "root-session", Some("assistant-1"), &end);
+        let rendered_end = cli_render_session_block(
+            &runtime,
+            "root-session",
+            Some("assistant-1"),
+            &end,
+            None,
+            &style,
+        );
+        assert!(
+            rendered_end.contains("Hello from buffered stream"),
+            "{rendered_end}"
+        );
+        assert!(
+            rendered_end.matches("[message:assistant]").count() == 1,
+            "expected exactly one assistant block header: {rendered_end}"
+        );
+    }
+
+    #[test]
+    fn live_tool_snapshot_replaces_same_slot_without_prefix_replay() {
+        let style = CliStyle::plain();
+        let identity = live_identity(
+            "assistant-1",
+            "tool_result/tool-1",
+            LiveMessagePartKind::ToolResult,
+            LivePartPhase::Snapshot,
+            Some("assistant-1"),
+        );
+        let first = cli_render_live_slot_snapshot(
+            &OutputBlock::Tool(rocode_command::output_blocks::ToolBlock::done(
+                "skill",
+                Some("{\"category\":\"literature-research/skills\"}".to_string()),
+            )),
+            &identity,
+            &style,
+        );
+        let second = cli_render_live_slot_snapshot(
+            &OutputBlock::Tool(rocode_command::output_blocks::ToolBlock::done(
+                "skill",
+                Some("{\"category\":\"scientific-skills\"}".to_string()),
+            )),
+            &identity,
+            &style,
+        );
+
+        let mut transcript = CliVisibleTranscript::default();
+        transcript.upsert_live_slot("assistant-1:tool_result/tool-1", first.clone(), first);
+        transcript.upsert_live_slot("assistant-1:tool_result/tool-1", second.clone(), second);
+
+        let rendered = transcript.rendered_text();
+        assert!(
+            rendered.contains("[tool:done] Skill :: {\"category\":\"scientific-skills\"}"),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains("literature-research/skills\"}{\"category\":\"scientific-skills"),
+            "{rendered}"
+        );
+        assert_eq!(
+            rendered.matches("[tool:done] Skill ::").count(),
+            1,
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn live_reasoning_snapshot_in_rich_mode_stays_open_until_end() {
+        let style = CliStyle {
+            color: true,
+            width: 80,
+        };
+        let snapshot_identity = live_identity(
+            "assistant-1",
+            "reasoning/main",
+            LiveMessagePartKind::AssistantReasoning,
+            LivePartPhase::Snapshot,
+            Some("assistant-1"),
+        );
+        let end_identity = live_identity(
+            "assistant-1",
+            "reasoning/main",
+            LiveMessagePartKind::AssistantReasoning,
+            LivePartPhase::End,
+            Some("assistant-1"),
+        );
+
+        let mut transcript = CliVisibleTranscript::new(true);
+        super::cli_apply_live_slot_update(
+            &mut transcript,
+            &OutputBlock::Reasoning(rocode_command::output_blocks::ReasoningBlock::full(
+                "Thinking academic".to_string(),
+            )),
+            &snapshot_identity,
+            &style,
+        );
+
+        let snapshot_rendered = strip_ansi(&transcript.rendered_text());
+        assert!(snapshot_rendered.contains("THINKING"), "{snapshot_rendered}");
+        assert!(snapshot_rendered.contains("Thinking academic"), "{snapshot_rendered}");
+        assert!(
+            !snapshot_rendered.contains(&"─".repeat(28)),
+            "live snapshot must stay open without finalized divider: {snapshot_rendered}"
+        );
+
+        super::cli_apply_live_slot_update(
+            &mut transcript,
+            &OutputBlock::Reasoning(rocode_command::output_blocks::ReasoningBlock::end()),
+            &end_identity,
+            &style,
+        );
+
+        let committed_rendered = strip_ansi(&transcript.rendered_text());
+        assert!(
+            committed_rendered.contains(&"─".repeat(28)),
+            "end phase must append the finalized divider exactly once: {committed_rendered}"
+        );
+        assert_eq!(committed_rendered.matches("THINKING").count(), 1, "{committed_rendered}");
+    }
+
+    #[test]
+    fn shared_sample_preserves_five_assistant_messages_and_four_tool_cycles() {
+        let mut transcript = CliVisibleTranscript::default();
+        let fixture = live_transcript_state_fixture();
+
+        for entry in &fixture.shared_turn_cycles.entries {
+            transcript.append_rendered(&format!("[message:assistant] {}\n", entry.message_text));
+            if let Some(tool) = &entry.tool {
+                let tool_label = rocode_command::output_blocks::tool_cli_activity_label(
+                    &rocode_command::output_blocks::ToolBlock::done(
+                        tool.tool_name.clone(),
+                        Some(tool.tool_detail.clone()),
+                    ),
+                );
+                transcript.append_rendered(&format!(
+                    "[tool:done] {} :: {}\n",
+                    tool_label, tool.tool_detail
+                ));
+            }
+        }
+
+        let rendered = transcript.rendered_text();
+        assert_eq!(
+            rendered.matches("[message:assistant]").count(),
+            fixture.shared_turn_cycles.expected.assistant_message_count,
+            "{rendered}"
+        );
+        assert_eq!(
+            rendered.matches("[tool:done] Skill").count(),
+            fixture.shared_turn_cycles.expected.tool_result_count,
+            "{rendered}"
+        );
+        for entry in &fixture.shared_turn_cycles.entries {
+            assert!(
+                rendered.contains(&format!("[message:assistant] {}", entry.message_text)),
+                "{rendered}"
+            );
+        }
+        for entry in fixture
+            .shared_turn_cycles
+            .entries
+            .iter()
+            .filter_map(|entry| entry.tool.as_ref())
+        {
+            let tool_label = rocode_command::output_blocks::tool_cli_activity_label(
+                &rocode_command::output_blocks::ToolBlock::done(
+                    entry.tool_name.clone(),
+                    Some(entry.tool_detail.clone()),
+                ),
+            );
+            assert!(
+                rendered.contains(&format!(
+                    "[tool:done] {} :: {}",
+                    tool_label, entry.tool_detail
+                )),
+                "{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn shared_sample_run_tail_contract_matches_cli_status_surface_expectations() {
+        let fixture = live_transcript_state_fixture();
+        let run_tail = &fixture.run_tail_contract;
+
+        assert_eq!(run_tail.completed_status, "complete");
+        assert_eq!(run_tail.error_status, "error");
+        assert_eq!(run_tail.awaiting_user_status, "awaiting_user");
+        assert!(run_tail.completed_usage.input_tokens > 0);
+        assert!(run_tail.completed_usage.output_tokens > 0);
+        assert!(run_tail.completed_usage.reasoning_tokens > 0);
+        assert!(run_tail.completed_usage.total_cost > 0.0);
+
+        let usage_line = format!(
+            "input {} · output {}",
+            run_tail.completed_usage.input_tokens, run_tail.completed_usage.output_tokens
+        );
+        assert!(usage_line.contains("input"), "{usage_line}");
+        assert!(usage_line.contains("output"), "{usage_line}");
+
+        let error_line = format!("Run failed: {}", run_tail.error_message);
+        assert!(error_line.contains("Run failed"), "{error_line}");
+        assert!(error_line.contains(&run_tail.error_message), "{error_line}");
     }
 
     #[test]
@@ -1287,8 +2755,120 @@ mod tests {
     }
 
     #[test]
+    fn focused_attached_session_appends_live_snapshots_into_terminal_history_model() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let style = CliStyle::plain();
+
+        cli_focus_attached_session(&runtime, "attached-session-a").expect("focus attached");
+
+        handle_sse_event(
+            &runtime,
+            CliServerEvent::OutputBlock {
+                session_id: "attached-session-a".to_string(),
+                id: Some("assistant-attached".to_string()),
+                live_identity: Some(live_identity(
+                    "assistant-attached",
+                    "text/main",
+                    LiveMessagePartKind::AssistantText,
+                    LivePartPhase::Snapshot,
+                    Some("assistant-attached"),
+                )),
+                payload: serde_json::json!({
+                    "kind": "message",
+                    "phase": "full",
+                    "role": "assistant",
+                    "text": "附属"
+                }),
+            },
+            &style,
+        );
+        handle_sse_event(
+            &runtime,
+            CliServerEvent::OutputBlock {
+                session_id: "attached-session-a".to_string(),
+                id: Some("assistant-attached".to_string()),
+                live_identity: Some(live_identity(
+                    "assistant-attached",
+                    "text/main",
+                    LiveMessagePartKind::AssistantText,
+                    LivePartPhase::Snapshot,
+                    Some("assistant-attached"),
+                )),
+                payload: serde_json::json!({
+                    "kind": "message",
+                    "phase": "full",
+                    "role": "assistant",
+                    "text": "附属会话输出"
+                }),
+            },
+            &style,
+        );
+
+        let attached_rendered = runtime
+            .attached_session_transcripts
+            .lock()
+            .expect("attached transcripts")
+            .get("attached-session-a")
+            .expect("attached transcript")
+            .rendered_text();
+        assert_eq!(
+            attached_rendered.matches("[message:assistant]").count(),
+            1,
+            "{attached_rendered}"
+        );
+        assert!(
+            attached_rendered.contains("[message:assistant] 附属会话输出"),
+            "{attached_rendered}"
+        );
+
+        let visible_rendered = runtime
+            .frontend_projection
+            .lock()
+            .expect("projection")
+            .transcript
+            .rendered_text();
+        assert!(
+            visible_rendered.contains("● attached line"),
+            "{visible_rendered}"
+        );
+        assert!(
+            !visible_rendered.contains("[message:assistant] 附属会话输出"),
+            "{visible_rendered}"
+        );
+        assert!(
+            !visible_rendered.contains("● root line"),
+            "{visible_rendered}"
+        );
+    }
+
+    #[test]
     fn cli_prompt_screen_lines_are_empty_for_transcript_first_mode() {
-        assert!(cli_prompt_screen_lines().is_empty());
+        let projection = CliFrontendProjection::default();
+        assert!(cli_prompt_lane_screen_lines_from_projection(&projection).is_empty());
+    }
+
+    #[test]
+    fn prompt_projection_screen_lines_use_tail_viewport_instead_of_full_transcript() {
+        let mut projection = CliFrontendProjection::default();
+        let mut transcript = CliVisibleTranscript::new(false);
+        for index in 0..24 {
+            transcript.append_rendered(&format!("line-{index}\n"));
+        }
+        projection.transcript = transcript;
+        projection.active_label = Some("Thinking".to_string());
+
+        let lines = cli_prompt_screen_lines_with_budget(&projection, 72, 5);
+        let plain_lines = lines
+            .iter()
+            .map(|line| strip_ansi(line))
+            .collect::<Vec<_>>();
+
+        assert!(
+            plain_lines.iter().any(|line| line.contains("Thinking")),
+            "{plain_lines:?}"
+        );
+        assert!(!plain_lines.iter().any(|line| line == "line-0"), "{plain_lines:?}");
+        assert!(plain_lines.iter().any(|line| line == "line-23"), "{plain_lines:?}");
     }
 
     #[test]
@@ -1434,8 +3014,11 @@ mod tests {
         let mut projection = CliFrontendProjection {
             phase: CliFrontendPhase::Busy,
             active_label: Some("assistant response".to_string()),
+            activity_started_at: None,
             view_label: Some("view attached attached-abc".to_string()),
             queue_len: 2,
+            prompt_lanes: Default::default(),
+            run_tail: None,
             active_stage: Some(stage_with_status("running")),
             session_runtime: None,
             stage_summaries: Vec::new(),
@@ -1526,9 +3109,10 @@ mod tests {
 
         let footer = projection.footer_text();
 
-        assert!(footer.contains("Busy"));
+        assert!(!footer.contains("Running"), "{footer}");
         assert!(footer.contains("view attached abcd1234"));
         assert!(footer.contains("/attached"));
+        assert!(footer.contains("/abort"));
     }
 
     #[test]
@@ -1637,5 +3221,35 @@ mod tests {
         )));
         assert!(!cli_session_update_requires_refresh(Some("prompt.stream")));
         assert!(!cli_session_update_requires_refresh(None));
+    }
+
+    #[test]
+    fn compact_summary_clears_stale_non_error_aux_lines() {
+        let mut projection = CliFrontendProjection::default();
+        projection.phase = CliFrontendPhase::Busy;
+        projection
+            .prompt_lanes
+            .push_aux_line(CliPromptAuxLane::Info, "Info: Using Skill SkillsList");
+        projection.prompt_lanes.push_aux_line(
+            CliPromptAuxLane::Warning,
+            "Warning: Awaiting permission · Using Bash",
+        );
+
+        cli_restore_compact_summary(&mut projection);
+
+        assert!(projection.prompt_lanes.info_lines.is_empty());
+        assert!(projection.prompt_lanes.warning_lines.is_empty());
+        assert_eq!(projection.active_label.as_deref(), Some("Thinking"));
+    }
+
+    #[test]
+    fn prompt_aux_line_keeps_success_text_when_it_already_carries_the_label() {
+        let line = cli_prompt_aux_line(&OutputBlock::Status(StatusBlock::success(
+            "Done. tokens: prompt=1 completion=2",
+        )))
+        .expect("success status should map to prompt aux");
+
+        assert_eq!(line.lane, CliPromptAuxLane::Info);
+        assert_eq!(line.text, "Done. tokens: prompt=1 completion=2");
     }
 }

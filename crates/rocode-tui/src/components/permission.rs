@@ -451,7 +451,10 @@ impl PermissionPrompt {
         if !request.risk_tags.is_empty() {
             content.push(Line::from(vec![
                 Span::styled("Risk: ", Style::default().fg(theme.text_muted)),
-                Span::styled(request.risk_tags.join(", "), Style::default().fg(theme.text)),
+                Span::styled(
+                    request.risk_tags.join(", "),
+                    Style::default().fg(theme.text),
+                ),
             ]));
         }
         content.extend([

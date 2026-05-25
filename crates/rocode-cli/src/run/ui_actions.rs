@@ -211,11 +211,14 @@ async fn cli_prompt_action_select(
         .lock()
         .ok()
         .and_then(|slot| slot.as_ref().cloned());
-    let already_suspended = runtime
+    let suspended_by_surface = runtime
         .terminal_surface
         .as_ref()
-        .map_or(false, |s| s.prompt_suspended.load(Ordering::Relaxed));
-    if !already_suspended {
+        .map(|surface| surface.suspend_modal_prompt())
+        .transpose()?
+        .unwrap_or(false);
+    let suspended_directly = !suspended_by_surface && prompt_session.is_some();
+    if suspended_directly {
         if let Some(prompt_session) = prompt_session.as_ref() {
             let _ = prompt_session.suspend();
         }
@@ -224,11 +227,7 @@ async fn cli_prompt_action_select(
     {
         let _ = crossterm::terminal::disable_raw_mode();
         let mut stdout = io::stdout();
-        let _ = crossterm::execute!(
-            stdout,
-            crossterm::cursor::Show,
-            crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown)
-        );
+        let _ = crossterm::execute!(stdout, crossterm::cursor::Show);
         let _ = stdout.flush();
     }
 
@@ -241,11 +240,12 @@ async fn cli_prompt_action_select(
     .await
     .map_err(|error| anyhow::anyhow!("select task failed: {}", error))?;
 
-    if let Some(prompt_session) = prompt_session.as_ref() {
-        let _ = prompt_session.resume();
-    }
     if let Some(surface) = runtime.terminal_surface.as_ref() {
-        surface.prompt_suspended.store(false, Ordering::Relaxed);
+        let _ = surface.resume_modal_prompt(suspended_by_surface);
+    } else if suspended_directly {
+        if let Some(prompt_session) = prompt_session.as_ref() {
+            let _ = prompt_session.resume();
+        }
     }
 
     match result {
@@ -266,11 +266,14 @@ async fn cli_prompt_action_text(
         .lock()
         .ok()
         .and_then(|slot| slot.as_ref().cloned());
-    let already_suspended = runtime
+    let suspended_by_surface = runtime
         .terminal_surface
         .as_ref()
-        .map_or(false, |s| s.prompt_suspended.load(Ordering::Relaxed));
-    if !already_suspended {
+        .map(|surface| surface.suspend_modal_prompt())
+        .transpose()?
+        .unwrap_or(false);
+    let suspended_directly = !suspended_by_surface && prompt_session.is_some();
+    if suspended_directly {
         if let Some(prompt_session) = prompt_session.as_ref() {
             let _ = prompt_session.suspend();
         }
@@ -279,11 +282,7 @@ async fn cli_prompt_action_text(
     {
         let _ = crossterm::terminal::disable_raw_mode();
         let mut stdout = io::stdout();
-        let _ = crossterm::execute!(
-            stdout,
-            crossterm::cursor::Show,
-            crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown)
-        );
+        let _ = crossterm::execute!(stdout, crossterm::cursor::Show);
         let _ = stdout.flush();
     }
 
@@ -295,11 +294,12 @@ async fn cli_prompt_action_text(
             .await
             .map_err(|error| anyhow::anyhow!("prompt task failed: {}", error))?;
 
-    if let Some(prompt_session) = prompt_session.as_ref() {
-        let _ = prompt_session.resume();
-    }
     if let Some(surface) = runtime.terminal_surface.as_ref() {
-        surface.prompt_suspended.store(false, Ordering::Relaxed);
+        let _ = surface.resume_modal_prompt(suspended_by_surface);
+    } else if suspended_directly {
+        if let Some(prompt_session) = prompt_session.as_ref() {
+            let _ = prompt_session.resume();
+        }
     }
 
     match result {
@@ -340,11 +340,14 @@ async fn cli_capture_voice_prompt(
         .lock()
         .ok()
         .and_then(|slot| slot.as_ref().cloned());
-    let already_suspended = runtime
+    let suspended_by_surface = runtime
         .terminal_surface
         .as_ref()
-        .map_or(false, |s| s.prompt_suspended.load(Ordering::Relaxed));
-    if !already_suspended {
+        .map(|surface| surface.suspend_modal_prompt())
+        .transpose()?
+        .unwrap_or(false);
+    let suspended_directly = !suspended_by_surface && prompt_session.is_some();
+    if suspended_directly {
         if let Some(prompt_session) = prompt_session.as_ref() {
             let _ = prompt_session.suspend();
         }
@@ -353,11 +356,7 @@ async fn cli_capture_voice_prompt(
     {
         let _ = crossterm::terminal::disable_raw_mode();
         let mut stdout = io::stdout();
-        let _ = crossterm::execute!(
-            stdout,
-            crossterm::cursor::Show,
-            crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown)
-        );
+        let _ = crossterm::execute!(stdout, crossterm::cursor::Show);
         let _ = stdout.flush();
     }
 
@@ -381,11 +380,12 @@ async fn cli_capture_voice_prompt(
     let capture = match capture {
         Ok(capture) => capture,
         Err(error) => {
-            if let Some(prompt_session) = prompt_session.as_ref() {
-                let _ = prompt_session.resume();
-            }
             if let Some(surface) = runtime.terminal_surface.as_ref() {
-                surface.prompt_suspended.store(false, Ordering::Relaxed);
+                let _ = surface.resume_modal_prompt(suspended_by_surface);
+            } else if suspended_directly {
+                if let Some(prompt_session) = prompt_session.as_ref() {
+                    let _ = prompt_session.resume();
+                }
             }
             let _ = print_block(
                 Some(runtime),
@@ -432,12 +432,13 @@ async fn cli_capture_voice_prompt(
                     );
                 }
                 if preflight.result.hard_block {
-                    if let Some(prompt_session) = prompt_session.as_ref() {
-                        let _ = prompt_session.resume();
-                    }
-                    if let Some(surface) = runtime.terminal_surface.as_ref() {
-                        surface.prompt_suspended.store(false, Ordering::Relaxed);
-                    }
+                        if let Some(surface) = runtime.terminal_surface.as_ref() {
+                            let _ = surface.resume_modal_prompt(suspended_by_surface);
+                        } else if suspended_directly {
+                            if let Some(prompt_session) = prompt_session.as_ref() {
+                                let _ = prompt_session.resume();
+                            }
+                        }
                     return Ok(());
                 }
             }
@@ -480,11 +481,12 @@ async fn cli_capture_voice_prompt(
     )
     .await;
 
-    if let Some(prompt_session) = prompt_session.as_ref() {
-        let _ = prompt_session.resume();
-    }
     if let Some(surface) = runtime.terminal_surface.as_ref() {
-        surface.prompt_suspended.store(false, Ordering::Relaxed);
+        let _ = surface.resume_modal_prompt(suspended_by_surface);
+    } else if suspended_directly {
+        if let Some(prompt_session) = prompt_session.as_ref() {
+            let _ = prompt_session.resume();
+        }
     }
 
     result
@@ -539,7 +541,7 @@ async fn cli_execute_ui_action(
             let style = CliStyle::detect();
             let rendered = render_help(&style);
             if let Some(surface) = runtime.terminal_surface.as_ref() {
-                let _ = surface.print_text(&rendered);
+                let _ = surface.print_ephemeral_text(&rendered);
             } else {
                 print!("{}", rendered);
                 let _ = io::stdout().flush();

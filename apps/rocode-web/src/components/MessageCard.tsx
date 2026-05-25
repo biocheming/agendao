@@ -22,6 +22,7 @@ import { useCallback, useState } from "react";
 import { MessageResponse } from "./ai-elements/message";
 import type { FeedMessage, OutputBlock, OutputField } from "../lib/history";
 import { SchedulerStageCard } from "./SchedulerStageCard";
+import { isSkillToolName, toolActivityLabel, toolKindLabel } from "../lib/toolLabels";
 import {
   Tooltip,
   TooltipContent,
@@ -410,22 +411,29 @@ function InfoBlock({ message }: { message: OutputBlock }) {
 
 function ToolBlock({ message, active }: { message: OutputBlock; active: boolean }) {
   const displaySummary = message.display?.summary?.trim() || null;
+  const displayFields = message.display?.fields?.length ? message.display.fields : undefined;
+  const displayPreviewText = message.display?.preview?.text?.trim() || null;
+  // Shared display contract wins. Raw detail/text only survives as a
+  // compatibility fallback when older payloads lack structured display hints.
+  const hasDisplayContract = Boolean(displaySummary || displayFields?.length || displayPreviewText);
   const summary =
     displaySummary ||
     message.summary?.trim() ||
-    message.detail?.trim() ||
-    message.text?.trim() ||
+    (!hasDisplayContract ? message.detail?.trim() || message.text?.trim() || null : null) ||
     null;
-  const toolTitle =
-    message.display?.header?.trim() ||
-    message.title?.trim() ||
-    message.name?.trim() ||
-    message.kind;
-  const displayFields = message.display?.fields?.length ? message.display.fields : undefined;
+  const rawHeader = message.display?.header?.trim() || null;
+  const rawTitle = message.title?.trim() || null;
+  const rawName = message.name?.trim() || null;
+  const skillLike = isSkillToolName(rawName ?? rawTitle ?? rawHeader ?? "");
+  const toolTitle = rawHeader && !/^[A-Za-z0-9._:-]+$/.test(rawHeader)
+    ? rawHeader
+    : toolActivityLabel(rawHeader ?? rawTitle ?? rawName ?? message.kind);
   const fields = displayFields ?? message.fields;
-  const previewText = message.display?.preview?.text?.trim() || message.preview?.trim() || null;
+  const previewText = displayPreviewText || (!hasDisplayContract ? message.preview?.trim() || null : null);
   const previewKind = message.display?.preview?.kind?.trim() || null;
   const previewTruncated = Boolean(message.display?.preview?.truncated);
+  const compatDetailFallback =
+    !hasDisplayContract && !fields?.length ? message.detail?.trim() || null : null;
   const hasStructuredObject =
     message.structured !== null &&
     message.structured !== undefined &&
@@ -434,7 +442,7 @@ function ToolBlock({ message, active }: { message: OutputBlock; active: boolean 
   return (
     <DisclosureCard
       icon={<WrenchIcon className="size-4" />}
-      label="Tool"
+      label={toolKindLabel(skillLike ? "skill" : "tool")}
       title={toolTitle}
       summary={summary}
       defaultExpanded={active}
@@ -447,8 +455,8 @@ function ToolBlock({ message, active }: { message: OutputBlock; active: boolean 
           </div>
         ) : null}
         {fields?.length ? <FieldList fields={fields} /> : null}
-        {!fields?.length && message.detail?.trim() ? (
-          <StructuredText value={message.detail} className="text-muted-foreground" />
+        {compatDetailFallback ? (
+          <StructuredText value={compatDetailFallback} className="text-muted-foreground" />
         ) : null}
         {previewText ? (
           <div className="grid gap-1.5">

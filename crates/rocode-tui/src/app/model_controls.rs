@@ -441,7 +441,10 @@ impl App {
         session_id: &str,
         status: &SessionStatus,
     ) -> TaskKind {
-        if matches!(status, SessionStatus::Retrying { .. }) {
+        if matches!(
+            status,
+            SessionStatus::Retrying { .. } | SessionStatus::Reconnecting
+        ) {
             return TaskKind::LlmResponse;
         }
 

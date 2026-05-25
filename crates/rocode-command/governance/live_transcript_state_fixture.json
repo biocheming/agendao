@@ -1,0 +1,89 @@
+{
+  "description": "Canonical live transcript state fixture shared by CLI/TUI/Web regression tests.",
+  "shared_turn_cycles": {
+    "entries": [
+      {
+        "message_id": "assistant-1",
+        "message_text": "answer 1",
+        "tool": {
+          "tool_id": "tool-1",
+          "tool_name": "skill",
+          "tool_detail": "{\"cycle\":1}"
+        }
+      },
+      {
+        "message_id": "assistant-2",
+        "message_text": "answer 2",
+        "tool": {
+          "tool_id": "tool-2",
+          "tool_name": "skill",
+          "tool_detail": "{\"cycle\":2}"
+        }
+      },
+      {
+        "message_id": "assistant-3",
+        "message_text": "answer 3",
+        "tool": {
+          "tool_id": "tool-3",
+          "tool_name": "skill",
+          "tool_detail": "{\"cycle\":3}"
+        }
+      },
+      {
+        "message_id": "assistant-4",
+        "message_text": "answer 4",
+        "tool": {
+          "tool_id": "tool-4",
+          "tool_name": "skill",
+          "tool_detail": "{\"cycle\":4}"
+        }
+      },
+      {
+        "message_id": "assistant-5",
+        "message_text": "answer 5",
+        "tool": null
+      }
+    ],
+    "expected": {
+      "assistant_message_count": 5,
+      "tool_result_count": 4
+    }
+  },
+  "tool_progress_exclusion": {
+    "message": {
+      "message_id": "assistant-progress-1",
+      "text": "working"
+    },
+    "tool_running": {
+      "tool_id": "tool-progress-1",
+      "tool_name": "read_file",
+      "tool_detail": "{\"path\":\"a.txt\"}"
+    },
+    "tool_result": {
+      "tool_id": "tool-progress-1",
+      "tool_name": "read_file",
+      "tool_detail": "{\"path\":\"a.txt\"}"
+    }
+  },
+  "scheduler_stage_exclusion": {
+    "message_id": "assistant-stage-1",
+    "stage_id": "stage-1",
+    "stage": "plan",
+    "title": "Plan",
+    "text": "Planning next step",
+    "status": "running"
+  },
+  "run_tail_contract": {
+    "completed_status": "complete",
+    "completed_usage": {
+      "input_tokens": 1200,
+      "output_tokens": 340,
+      "reasoning_tokens": 88,
+      "total_cost": 0.0123
+    },
+    "error_status": "error",
+    "error_message": "provider stream closed unexpectedly",
+    "awaiting_user_status": "awaiting_user",
+    "awaiting_user_detail": "Question response is required before execution continues."
+  }
+}

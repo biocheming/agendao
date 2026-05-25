@@ -82,7 +82,8 @@ impl EventBusTelemetry {
     // ── P3-H: Convenience incrementors ────────────────────────────────
 
     pub fn record_coalesced_snapshot(&self) {
-        self.coalesced_snapshot_count.fetch_add(1, Ordering::Relaxed);
+        self.coalesced_snapshot_count
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn record_identity_missing(&self) {
@@ -90,7 +91,8 @@ impl EventBusTelemetry {
     }
 
     pub fn record_full_snapshot_emitted(&self) {
-        self.full_snapshot_emitted_count.fetch_add(1, Ordering::Relaxed);
+        self.full_snapshot_emitted_count
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Snapshot suitable for telemetry export.
@@ -483,7 +485,12 @@ impl ServerEvent {
 }
 
 pub(crate) fn server_output_block_event(event: &OutputBlockEvent) -> ServerEvent {
-    ServerEvent::output_block(event.session_id.clone(), &event.block, event.id.as_deref(), event.live_identity.clone())
+    ServerEvent::output_block(
+        event.session_id.clone(),
+        &event.block,
+        event.id.as_deref(),
+        event.live_identity.clone(),
+    )
 }
 
 pub(crate) async fn send_sse_server_event(
@@ -599,9 +606,7 @@ pub(crate) fn broadcast_session_reconcile(
     );
     let telemetry = state.runtime_telemetry.clone();
     tokio::spawn(async move {
-        telemetry
-            .record_session_updated(&session_id, &source)
-            .await;
+        telemetry.record_session_updated(&session_id, &source).await;
     });
 }
 
@@ -910,18 +915,27 @@ mod tests {
     #[test]
     fn legacy_wire_aliases_deserialize_to_canonical_variants() {
         let cases: &[(&str, serde_json::Value)] = &[
-            ("question.replied", serde_json::json!({
-                "type": "question.replied", "sessionID": "s-1", "requestID": "q-1",
-                "answers": [["Yes"]],
-            })),
-            ("permission.replied", serde_json::json!({
-                "type": "permission.replied", "sessionID": "s-1", "requestID": "p-1",
-                "reply": "once",
-            })),
-            ("session.diff", serde_json::json!({
-                "type": "session.diff", "sessionID": "s-1",
-                "diff": [{"path": "src/main.rs", "additions": 1, "deletions": 0}],
-            })),
+            (
+                "question.replied",
+                serde_json::json!({
+                    "type": "question.replied", "sessionID": "s-1", "requestID": "q-1",
+                    "answers": [["Yes"]],
+                }),
+            ),
+            (
+                "permission.replied",
+                serde_json::json!({
+                    "type": "permission.replied", "sessionID": "s-1", "requestID": "p-1",
+                    "reply": "once",
+                }),
+            ),
+            (
+                "session.diff",
+                serde_json::json!({
+                    "type": "session.diff", "sessionID": "s-1",
+                    "diff": [{"path": "src/main.rs", "additions": 1, "deletions": 0}],
+                }),
+            ),
         ];
         for (alias, json) in cases {
             let event: ServerEvent =
@@ -1160,8 +1174,11 @@ mod canonical_event_tests {
                 *expect_must_deliver,
                 "{kind:?}.is_must_deliver()"
             );
-            assert_eq!(kind.is_must_deliver(), !kind.is_droppable(),
-                "{kind:?}: must_deliver != !droppable");
+            assert_eq!(
+                kind.is_must_deliver(),
+                !kind.is_droppable(),
+                "{kind:?}: must_deliver != !droppable"
+            );
         }
     }
 
@@ -1177,7 +1194,10 @@ mod canonical_event_tests {
             }
         }
         for &kind in &kinds {
-            assert!(!kind.is_droppable(), "{kind:?} in cli_low_frequency must be non-droppable");
+            assert!(
+                !kind.is_droppable(),
+                "{kind:?} in cli_low_frequency must be non-droppable"
+            );
         }
     }
 }
@@ -1275,7 +1295,10 @@ mod lifecycle_tests {
             .expect("tool_call.completed should map to a ServerEvent");
         assert!(matches!(
             transport,
-            ServerEvent::ToolCallLifecycle { phase: ToolCallPhase::Complete, .. }
+            ServerEvent::ToolCallLifecycle {
+                phase: ToolCallPhase::Complete,
+                ..
+            }
         ));
     }
 

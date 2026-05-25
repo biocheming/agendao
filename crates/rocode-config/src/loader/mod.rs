@@ -11,9 +11,9 @@ mod tests;
 use crate::schema::PluginConfig;
 use crate::Config;
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 use std::env;
 use std::fs;
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 pub(crate) use discovery::resolve_configured_path;
@@ -44,10 +44,7 @@ pub struct ConfigLoader {
     config_paths: Vec<PathBuf>,
 }
 
-const PROJECT_CONFIG_TARGETS: &[&str] = &[
-    "rocode.jsonc",
-    "rocode.json",
-];
+const PROJECT_CONFIG_TARGETS: &[&str] = &["rocode.jsonc", "rocode.json"];
 
 const DIRECTORY_CONFIG_FILES: &[&str] = &["rocode.jsonc", "rocode.json"];
 

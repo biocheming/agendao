@@ -274,18 +274,10 @@ impl SessionSchedulerLifecycleHook {
             OutputBlock::Message(message) if message.role == OutputMessageRole::Assistant => {
                 let message_id = id?;
                 let phase = match message.phase {
-                    MessagePhase::Start => {
-                        rocode_types::LivePartPhase::Start
-                    }
-                    MessagePhase::Delta => {
-                        rocode_types::LivePartPhase::Append
-                    }
-                    MessagePhase::Full => {
-                        rocode_types::LivePartPhase::Snapshot
-                    }
-                    MessagePhase::End => {
-                        rocode_types::LivePartPhase::End
-                    }
+                    MessagePhase::Start => rocode_types::LivePartPhase::Start,
+                    MessagePhase::Delta => rocode_types::LivePartPhase::Append,
+                    MessagePhase::Full => rocode_types::LivePartPhase::Snapshot,
+                    MessagePhase::End => rocode_types::LivePartPhase::End,
                 };
                 Some(assistant_text_live_identity(
                     message_id,
@@ -296,18 +288,10 @@ impl SessionSchedulerLifecycleHook {
             OutputBlock::Reasoning(reasoning) => {
                 let message_id = id?;
                 let phase = match reasoning.phase {
-                    MessagePhase::Start => {
-                        rocode_types::LivePartPhase::Start
-                    }
-                    MessagePhase::Delta => {
-                        rocode_types::LivePartPhase::Append
-                    }
-                    MessagePhase::Full => {
-                        rocode_types::LivePartPhase::Snapshot
-                    }
-                    MessagePhase::End => {
-                        rocode_types::LivePartPhase::End
-                    }
+                    MessagePhase::Start => rocode_types::LivePartPhase::Start,
+                    MessagePhase::Delta => rocode_types::LivePartPhase::Append,
+                    MessagePhase::Full => rocode_types::LivePartPhase::Snapshot,
+                    MessagePhase::End => rocode_types::LivePartPhase::End,
                 };
                 Some(assistant_reasoning_live_identity(
                     message_id,
@@ -322,22 +306,18 @@ impl SessionSchedulerLifecycleHook {
                     .try_lock()
                     .ok()
                     .and_then(|guard| guard.last().map(|active| active.message_id.clone()))?;
-                let phase = match tool.phase {
-                    ToolPhase::Start => {
-                        rocode_types::LivePartPhase::Start
-                    }
-                    ToolPhase::Running => {
-                        rocode_types::LivePartPhase::Append
-                    }
-                    ToolPhase::Done | ToolPhase::Error => {
-                        rocode_types::LivePartPhase::End
-                    }
-                };
                 let identity = match tool.phase {
+                    // LTS-B2: running tool detail is progress-only and must not
+                    // participate in transcript-bearing live identity routing.
+                    ToolPhase::Running => return None,
+                    ToolPhase::Start => {
+                        let phase = rocode_types::LivePartPhase::Start;
+                        tool_call_live_identity(&message_id, tool_call_id, phase)
+                    }
                     ToolPhase::Done | ToolPhase::Error => {
+                        let phase = rocode_types::LivePartPhase::End;
                         tool_result_live_identity(&message_id, tool_call_id, phase)
                     }
-                    _ => tool_call_live_identity(&message_id, tool_call_id, phase),
                 };
                 Some(identity)
             }

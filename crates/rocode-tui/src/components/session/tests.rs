@@ -367,6 +367,32 @@ fn session_render_model_memo_key_tracks_width_and_reasoning_state() {
 }
 
 #[test]
+fn session_render_model_memo_key_tracks_same_length_text_changes() {
+    let (_context, _session_id, mut snapshot) = perf_snapshot_with_messages();
+    let base = build_session_render_model_memo_key(&snapshot, 72, &HashSet::new());
+
+    let message = snapshot
+        .messages
+        .iter_mut()
+        .find(|msg| msg.id == "assistant-2")
+        .expect("assistant-2 message");
+    let replacement = "Z".repeat(message.content.len());
+    message.content = replacement;
+    if let Some(MessagePart::Text { text }) = message
+        .parts
+        .iter_mut()
+        .find(|part| matches!(part, MessagePart::Text { .. }))
+    {
+        *text = "Y".repeat(text.len());
+    } else {
+        panic!("assistant-2 should have a text part");
+    }
+
+    let changed = build_session_render_model_memo_key(&snapshot, 72, &HashSet::new());
+    assert_ne!(base, changed);
+}
+
+#[test]
 fn session_render_model_cache_reuses_model_on_identical_inputs() {
     let context = Arc::new(AppContext::new());
     let snapshot = SessionMessagesSnapshot::capture(&context, "session-1");
@@ -391,6 +417,60 @@ fn session_render_model_cache_reuses_model_on_identical_inputs() {
     );
 
     assert!(Arc::ptr_eq(&model, &reused_model));
+}
+
+#[test]
+fn session_render_model_cache_rebuilds_on_same_length_text_change() {
+    let (_context, _session_id, snapshot) = perf_snapshot_with_messages();
+    let area = Rect::new(0, 0, 72, 10);
+    let first = render_perf_session_messages(
+        area,
+        &snapshot,
+        &SessionMessageViewportState::default(),
+        &SessionReasoningState::default(),
+        &SessionMessageOutputCache::default(),
+        &SessionRenderModelCache::default(),
+    );
+
+    let mut changed_snapshot = snapshot.clone();
+    let message = changed_snapshot
+        .messages
+        .iter_mut()
+        .find(|msg| msg.id == "assistant-2")
+        .expect("assistant-2 message");
+    let replacement = "Q".repeat(message.content.len());
+    message.content = replacement;
+    if let Some(MessagePart::Text { text }) = message
+        .parts
+        .iter_mut()
+        .find(|part| matches!(part, MessagePart::Text { .. }))
+    {
+        *text = "R".repeat(text.len());
+    } else {
+        panic!("assistant-2 should have a text part");
+    }
+
+    reset_session_render_perf_counters();
+    let second = render_perf_session_messages(
+        area,
+        &changed_snapshot,
+        &first.viewport,
+        &first.reasoning,
+        &first.message_cache,
+        &first.render_model_cache,
+    );
+    let counters = snapshot_session_render_perf_counters();
+
+    assert_ne!(
+        first.render_model_cache.memo_key,
+        second.render_model_cache.memo_key
+    );
+    assert_ne!(
+        first.viewport.render_model_memo_key,
+        second.viewport.render_model_memo_key
+    );
+    assert_eq!(counters.render_model_cache_hits, 0);
+    assert_eq!(counters.render_model_rebuilds, 1);
 }
 
 #[test]

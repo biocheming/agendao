@@ -107,6 +107,7 @@ pub(super) fn spawn_server_event_listener_task(
         };
 
         let base_event_url = format!("{}/event", base_url.trim_end_matches('/'));
+        let mut recovery_sync_pending = false;
         loop {
             let connected_filter = read_session_filter(&session_filter);
             let event_url = build_event_url(&base_event_url, connected_filter.as_deref());
@@ -118,6 +119,8 @@ pub(super) fn spawn_server_event_listener_task(
                         url = %event_url,
                         "failed to initialize server event source"
                     );
+                    emit_reconnecting_state(&ui_bridge, connected_filter.as_deref());
+                    recovery_sync_pending = true;
                     tokio::time::sleep(Duration::from_millis(400)).await;
                     continue;
                 }
@@ -128,13 +131,17 @@ pub(super) fn spawn_server_event_listener_task(
                 &ui_bridge,
                 &session_filter,
                 &connected_filter,
+                &mut recovery_sync_pending,
             )
             .await;
             if reconnect_due_to_filter_change {
+                recovery_sync_pending = false;
                 continue;
             }
 
             if read_session_filter(&session_filter) == connected_filter {
+                emit_reconnecting_state(&ui_bridge, connected_filter.as_deref());
+                recovery_sync_pending = true;
                 tokio::time::sleep(Duration::from_millis(400)).await;
             }
         }
@@ -146,11 +153,16 @@ async fn consume_server_event_stream(
     ui_bridge: &UiBridge,
     session_filter: &SessionFilter,
     connected_filter: &Option<String>,
+    recovery_sync_pending: &mut bool,
 ) -> bool {
     while let Some(event) = source.next().await {
         match event {
             Ok(SseEvent::Open) => {
                 tracing::debug!(filter = ?connected_filter, "server event stream connected");
+                if *recovery_sync_pending {
+                    emit_reconnected_sync(ui_bridge, connected_filter.as_deref());
+                    *recovery_sync_pending = false;
+                }
             }
             Ok(SseEvent::Message(message)) => {
                 forward_server_event_payload(&message.data, ui_bridge);
@@ -206,6 +218,27 @@ fn forward_server_event_payload(payload: &str, ui_bridge: &UiBridge) {
     if let Some(event) = parse_server_event_payload(payload) {
         let _ = ui_bridge.emit(event);
     }
+}
+
+fn emit_reconnecting_state(ui_bridge: &UiBridge, session_id: Option<&str>) {
+    let Some(session_id) = session_id.filter(|value| !value.is_empty()) else {
+        return;
+    };
+    let _ = ui_bridge.emit(Event::Custom(Box::new(CustomEvent::StateChanged(
+        StateChange::SessionStatusReconnecting(session_id.to_string()),
+    ))));
+}
+
+fn emit_reconnected_sync(ui_bridge: &UiBridge, session_id: Option<&str>) {
+    let Some(session_id) = session_id.filter(|value| !value.is_empty()) else {
+        return;
+    };
+    let _ = ui_bridge.emit(Event::Custom(Box::new(CustomEvent::StateChanged(
+        StateChange::SessionUpdated {
+            session_id: session_id.to_string(),
+            source: Some("stream.reconnected".to_string()),
+        },
+    ))));
 }
 
 fn parse_server_event_payload(payload: &str) -> Option<Event> {
@@ -381,7 +414,10 @@ fn parse_server_event_value(value: serde_json::Value) -> Option<Event> {
                 .get("phase")
                 .cloned()
                 .and_then(|raw| serde_json::from_value(raw).ok())?;
-            let at = value.get("at").and_then(|item| item.as_i64()).unwrap_or_default();
+            let at = value
+                .get("at")
+                .and_then(|item| item.as_i64())
+                .unwrap_or_default();
             Some(Event::Custom(Box::new(CustomEvent::StateChanged(
                 StateChange::ControlInputTransition {
                     session_id: session_id.to_string(),
@@ -538,7 +574,8 @@ fn parse_server_event_value(value: serde_json::Value) -> Option<Event> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_event_url, forward_server_event};
+    use super::{build_event_url, emit_reconnected_sync, forward_server_event};
+    use crate::bridge::UiBridge;
     use crate::event::{CustomEvent, StateChange};
     use crate::Event;
 
@@ -681,5 +718,28 @@ mod tests {
         };
 
         assert_eq!(session_id, "session-1");
+    }
+
+    #[test]
+    fn reconnected_sync_event_targets_current_session() {
+        let ui_bridge = UiBridge::new();
+
+        emit_reconnected_sync(&ui_bridge, Some("session-1"));
+
+        let event = ui_bridge
+            .drain(1)
+            .into_iter()
+            .next()
+            .expect("reconnected sync event");
+        let Event::Custom(custom) = event else {
+            panic!("expected custom event");
+        };
+        let CustomEvent::StateChanged(StateChange::SessionUpdated { session_id, source }) = *custom
+        else {
+            panic!("expected session updated state change");
+        };
+
+        assert_eq!(session_id, "session-1");
+        assert_eq!(source.as_deref(), Some("stream.reconnected"));
     }
 }

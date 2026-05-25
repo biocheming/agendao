@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use rocode_command::output_blocks::SchedulerStageBlock;
+use rocode_command::stage_protocol::{StageStatus, StageSummary};
 use rocode_command::terminal_tool_block_display::{
     build_file_items, build_image_items, summarize_block_items_inline,
 };
@@ -95,6 +96,7 @@ pub struct SessionContext {
     pub sessions: HashMap<String, Session>,
     pub messages: HashMap<String, Vec<Message>>,
     pub message_index: HashMap<String, HashMap<String, usize>>,
+    pub legacy_streaming_ids: HashMap<String, HashMap<String, String>>,
     pub current_session_id: Option<String>,
     pub session_status: HashMap<String, SessionStatus>,
     pub session_diff: HashMap<String, Vec<DiffEntry>>,
@@ -108,6 +110,7 @@ pub enum SessionStatus {
     Idle,
     Running,
     Compacting,
+    Reconnecting,
     Retrying {
         message: String,
         attempt: u32,
@@ -153,6 +156,38 @@ pub struct AttachedSessionInfo {
     pub stage_index: Option<u64>,
     pub stage_total: Option<u64>,
     pub status: String,
+}
+
+pub fn collect_attached_sessions_from_stage_summaries(
+    stage_summaries: &[StageSummary],
+    sessions: &HashMap<String, Session>,
+) -> Vec<AttachedSessionInfo> {
+    let mut result = stage_summaries
+        .iter()
+        .filter_map(|stage| {
+            let attached_id = stage.primary_attached_session_id.as_ref()?;
+            let session = sessions.get(attached_id);
+            Some(AttachedSessionInfo {
+                session_id: attached_id.clone(),
+                stage_name: stage.stage_name.clone(),
+                stage_title: session
+                    .map(|session| session.title.clone())
+                    .filter(|title| !title.trim().is_empty())
+                    .unwrap_or_else(|| stage.stage_name.clone()),
+                stage_id: Some(stage.stage_id.clone()),
+                stage_index: stage.index,
+                stage_total: stage.total,
+                status: scheduler_stage_status_label(stage.status),
+            })
+        })
+        .collect::<Vec<_>>();
+    result.sort_by(|a, b| {
+        a.stage_index
+            .unwrap_or(u64::MAX)
+            .cmp(&b.stage_index.unwrap_or(u64::MAX))
+            .then_with(|| a.stage_id.cmp(&b.stage_id))
+    });
+    result
 }
 
 pub fn collect_attached_sessions(messages: &[Message]) -> Vec<AttachedSessionInfo> {
@@ -210,6 +245,19 @@ pub fn collect_attached_sessions(messages: &[Message]) -> Vec<AttachedSessionInf
             .cmp(&b.stage_index.unwrap_or(u64::MAX))
     });
     result
+}
+
+fn scheduler_stage_status_label(status: StageStatus) -> String {
+    match status {
+        StageStatus::Running => "running",
+        StageStatus::Waiting => "waiting",
+        StageStatus::Done => "done",
+        StageStatus::Cancelled => "cancelled",
+        StageStatus::Cancelling => "cancelling",
+        StageStatus::Blocked => "blocked",
+        StageStatus::Retrying => "retrying",
+    }
+    .to_string()
 }
 
 impl SessionContext {
@@ -390,10 +438,7 @@ impl SessionContext {
                 || Self::message_part_reasoning_content(&existing.parts).is_some())
     }
 
-    fn should_preserve_streaming_text(
-        existing: Option<&str>,
-        incoming: Option<&str>,
-    ) -> bool {
+    fn should_preserve_streaming_text(existing: Option<&str>, incoming: Option<&str>) -> bool {
         let Some(existing) = existing.filter(|value| !value.is_empty()) else {
             return false;
         };
@@ -596,7 +641,9 @@ impl SessionContext {
             "message" => self.apply_message_block(session_id, block_id, payload, live_identity),
             "reasoning" => self.apply_reasoning_block(session_id, block_id, payload, live_identity),
             "tool" => self.apply_tool_block(session_id, block_id, payload, live_identity),
-            "scheduler_stage" => self.apply_scheduler_stage_block(session_id, block_id, payload),
+            "scheduler_stage" => {
+                self.apply_scheduler_stage_block(session_id, block_id, payload, live_identity)
+            }
             _ => return,
         }
 
@@ -704,7 +751,7 @@ impl SessionContext {
                     .filter(|value| !value.is_empty())
                     .map(str::to_string)
             })
-            .unwrap_or_else(|| self.generated_streaming_id(session_id, "reasoning"));
+            .unwrap_or_else(|| self.legacy_streaming_id(session_id, "reasoning"));
         let phase = payload
             .get("phase")
             .and_then(|value| value.as_str())
@@ -726,7 +773,7 @@ impl SessionContext {
         let tool_call_id = block_id
             .filter(|value| !value.is_empty())
             .map(str::to_string)
-            .unwrap_or_else(|| self.generated_streaming_id(session_id, "tool"));
+            .unwrap_or_else(|| self.legacy_streaming_id(session_id, "tool"));
         let tool_name = payload
             .get("name")
             .and_then(|value| value.as_str())
@@ -741,51 +788,35 @@ impl SessionContext {
             .unwrap_or_default()
             .to_string();
 
-        // P3-E: Route tool blocks by live_identity.message_id (parent assistant
-        // message). The tool_call_id distinguishes individual tools within that
-        // message. When identity is missing, use explicit block_id or a fresh
-        // placeholder instead of guessing "last assistant".
-        let routing_id = live_identity
-            .map(|id| id.message_id.to_string())
-            .or_else(|| {
-                block_id
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_string)
-            })
-            .unwrap_or_else(|| self.generated_streaming_id(session_id, "assistant"));
-        let pos = self.ensure_message_for_block(session_id, Some(&routing_id), MessageRole::Assistant);
-        let Some(message) = self
-            .messages
-            .get_mut(session_id)
-            .and_then(|messages| messages.get_mut(pos))
-        else {
-            return;
-        };
-
         match phase {
             "start" | "running" => {
-                let arguments = detail;
-                if let Some(MessagePart::ToolCall {
-                    name,
-                    arguments: existing,
-                    ..
-                }) = message.parts.iter_mut().find(|part| {
-                    matches!(
-                        part,
-                        MessagePart::ToolCall { id, .. } if *id == tool_call_id
-                    )
-                }) {
-                    *name = tool_name.to_string();
-                    *existing = arguments;
-                } else {
-                    message.parts.push(MessagePart::ToolCall {
-                        id: tool_call_id.to_string(),
-                        name: tool_name.to_string(),
-                        arguments,
-                    });
-                }
+                // LTS-B2: tool start/running detail is progress-state, not
+                // authoritative transcript content. Tool lifecycle remains
+                // observable via dedicated tool_call events/progress surfaces.
             }
             "done" | "error" | "result" => {
+                // Tool completion remains transcript-bearing: final result is
+                // attached to the parent assistant message when identity exists.
+                let routing_id = live_identity
+                    .map(|id| id.message_id.to_string())
+                    .or_else(|| {
+                        block_id
+                            .filter(|value| !value.is_empty())
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_else(|| self.legacy_streaming_id(session_id, "assistant"));
+                let pos = self.ensure_message_for_block(
+                    session_id,
+                    Some(&routing_id),
+                    MessageRole::Assistant,
+                );
+                let Some(message) = self
+                    .messages
+                    .get_mut(session_id)
+                    .and_then(|messages| messages.get_mut(pos))
+                else {
+                    return;
+                };
                 let is_error = matches!(phase, "error");
                 if let Some(part) = message.parts.iter_mut().find(|part| {
                     matches!(
@@ -813,42 +844,26 @@ impl SessionContext {
                         metadata: None,
                     });
                 }
+                Self::refresh_message_content(message);
             }
             _ => {}
         }
-
-        Self::refresh_message_content(message);
     }
 
     fn apply_scheduler_stage_block(
         &mut self,
         session_id: &str,
-        block_id: Option<&str>,
+        _block_id: Option<&str>,
         payload: &serde_json::Value,
+        _live_identity: Option<&rocode_types::LiveMessagePartIdentity>,
     ) {
         let Ok(block) = serde_json::from_value::<SchedulerStageBlock>(payload.clone()) else {
             return;
         };
 
-        let pos = self.ensure_message_for_block(session_id, block_id, MessageRole::Assistant);
-        let Some(message) = self
-            .messages
-            .get_mut(session_id)
-            .and_then(|messages| messages.get_mut(pos))
-        else {
-            return;
-        };
-
-        message.role = MessageRole::Assistant;
-        message
-            .parts
-            .retain(|part| !matches!(part, MessagePart::Text { .. }));
-        message.parts.push(MessagePart::Text {
-            text: block.text.clone(),
-        });
-        message.metadata = Some(Self::scheduler_stage_metadata_from_block(&block));
-        Self::refresh_message_content(message);
-
+        // LTS-B3: scheduler stage is progress/topology state, not transcript.
+        // The TUI keeps stage summaries and attached-session topology elsewhere;
+        // do not materialize a synthetic assistant message for live stage blocks.
         if let Some(attached_session_id) = block.attached_session_id.as_deref() {
             let child_title = format!("Stage: {}", block.title);
             self.ensure_streaming_session(
@@ -882,15 +897,6 @@ impl SessionContext {
             return pos;
         }
 
-        if let Some((pos, _)) = messages
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, message)| message.role == role)
-        {
-            return pos;
-        }
-
         let generated_id = format!("streaming_{}", Utc::now().timestamp_millis());
         let pos = messages.len();
         messages.push(Self::streaming_placeholder_message(&generated_id, role));
@@ -899,8 +905,29 @@ impl SessionContext {
     }
 
     fn generated_streaming_id(&self, session_id: &str, prefix: &str) -> String {
-        let sequence = self.messages.get(session_id).map(|messages| messages.len()).unwrap_or(0);
+        let sequence = self
+            .messages
+            .get(session_id)
+            .map(|messages| messages.len())
+            .unwrap_or(0);
         format!("{prefix}_{session_id}_{sequence}")
+    }
+
+    fn legacy_streaming_id(&mut self, session_id: &str, prefix: &str) -> String {
+        if let Some(existing) = self
+            .legacy_streaming_ids
+            .get(session_id)
+            .and_then(|ids| ids.get(prefix))
+        {
+            return existing.clone();
+        }
+
+        let generated = self.generated_streaming_id(session_id, prefix);
+        self.legacy_streaming_ids
+            .entry(session_id.to_string())
+            .or_default()
+            .insert(prefix.to_string(), generated.clone());
+        generated
     }
 
     fn order_current_turn_for_presentation(&mut self, session_id: &str) {
@@ -1054,178 +1081,42 @@ impl SessionContext {
             .collect::<Vec<_>>()
             .join("\n");
     }
-
-    fn scheduler_stage_metadata_from_block(
-        block: &SchedulerStageBlock,
-    ) -> HashMap<String, serde_json::Value> {
-        let mut metadata = HashMap::new();
-        metadata.insert(
-            "scheduler_profile".to_string(),
-            serde_json::json!(block.profile.clone()),
-        );
-        metadata.insert(
-            "scheduler_stage".to_string(),
-            serde_json::json!(block.stage.clone()),
-        );
-        metadata.insert(
-            "scheduler_stage_title".to_string(),
-            serde_json::json!(block.title.clone()),
-        );
-        metadata.insert(
-            "scheduler_stage_emitted".to_string(),
-            serde_json::json!(true),
-        );
-        if let Some(value) = block.stage_id.clone() {
-            metadata.insert("scheduler_stage_id".to_string(), serde_json::json!(value));
-        }
-        if let Some(value) = block.stage_index {
-            metadata.insert(
-                "scheduler_stage_index".to_string(),
-                serde_json::json!(value),
-            );
-        }
-        if let Some(value) = block.stage_total {
-            metadata.insert(
-                "scheduler_stage_total".to_string(),
-                serde_json::json!(value),
-            );
-        }
-        if let Some(value) = block.step {
-            metadata.insert("scheduler_stage_step".to_string(), serde_json::json!(value));
-        }
-        if let Some(value) = block.status.clone() {
-            metadata.insert(
-                "scheduler_stage_status".to_string(),
-                serde_json::json!(value),
-            );
-        }
-        if let Some(value) = block.focus.clone() {
-            metadata.insert(
-                "scheduler_stage_focus".to_string(),
-                serde_json::json!(value),
-            );
-        }
-        if let Some(value) = block.last_event.clone() {
-            metadata.insert(
-                "scheduler_stage_last_event".to_string(),
-                serde_json::json!(value),
-            );
-        }
-        if let Some(value) = block.waiting_on.clone() {
-            metadata.insert(
-                "scheduler_stage_waiting_on".to_string(),
-                serde_json::json!(value),
-            );
-        }
-        if let Some(value) = block.activity.clone() {
-            metadata.insert(
-                "scheduler_stage_activity".to_string(),
-                serde_json::json!(value),
-            );
-        }
-        if let Some(value) = block.loop_budget.clone() {
-            metadata.insert(
-                "scheduler_stage_loop_budget".to_string(),
-                serde_json::json!(value),
-            );
-        }
-        if let Some(value) = block.available_skill_count {
-            metadata.insert(
-                "scheduler_stage_available_skill_count".to_string(),
-                serde_json::json!(value),
-            );
-        }
-        if let Some(value) = block.available_agent_count {
-            metadata.insert(
-                "scheduler_stage_available_agent_count".to_string(),
-                serde_json::json!(value),
-            );
-        }
-        if let Some(value) = block.available_category_count {
-            metadata.insert(
-                "scheduler_stage_available_category_count".to_string(),
-                serde_json::json!(value),
-            );
-        }
-        metadata.insert(
-            "scheduler_stage_active_skills".to_string(),
-            serde_json::json!(block.active_skills.clone()),
-        );
-        metadata.insert(
-            "scheduler_stage_active_agents".to_string(),
-            serde_json::json!(block.active_agents.clone()),
-        );
-        metadata.insert(
-            "scheduler_stage_active_categories".to_string(),
-            serde_json::json!(block.active_categories.clone()),
-        );
-        metadata.insert(
-            "scheduler_stage_done_agent_count".to_string(),
-            serde_json::json!(block.done_agent_count),
-        );
-        metadata.insert(
-            "scheduler_stage_total_agent_count".to_string(),
-            serde_json::json!(block.total_agent_count),
-        );
-        if let Some(value) = block.prompt_tokens {
-            metadata.insert(
-                "scheduler_stage_prompt_tokens".to_string(),
-                serde_json::json!(value),
-            );
-        }
-        if let Some(value) = block.completion_tokens {
-            metadata.insert(
-                "scheduler_stage_completion_tokens".to_string(),
-                serde_json::json!(value),
-            );
-        }
-        if let Some(value) = block.reasoning_tokens {
-            metadata.insert(
-                "scheduler_stage_reasoning_tokens".to_string(),
-                serde_json::json!(value),
-            );
-        }
-        if let Some(value) = block.cache_read_tokens {
-            metadata.insert(
-                "scheduler_stage_cache_read_tokens".to_string(),
-                serde_json::json!(value),
-            );
-        }
-        if let Some(value) = block.cache_miss_tokens {
-            metadata.insert(
-                "scheduler_stage_cache_miss_tokens".to_string(),
-                serde_json::json!(value),
-            );
-        }
-        if let Some(value) = block.cache_write_tokens {
-            metadata.insert(
-                "scheduler_stage_cache_write_tokens".to_string(),
-                serde_json::json!(value),
-            );
-        }
-        if let Some(value) = block.attached_session_id.clone() {
-            metadata.insert(
-                "scheduler_stage_attached_session_id".to_string(),
-                serde_json::json!(value),
-            );
-        }
-        if let Some(value) = block.decision.as_ref() {
-            metadata.insert(
-                "scheduler_stage_decision".to_string(),
-                serde_json::to_value(value).unwrap_or(serde_json::Value::Null),
-            );
-        }
-        metadata
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rocode_command::governance_fixtures::live_transcript_state_fixture;
     use serde_json::json;
 
+    fn live_identity(
+        message_id: &str,
+        part_key: &str,
+        part_kind: rocode_types::LiveMessagePartKind,
+        phase: rocode_types::LivePartPhase,
+        legacy_block_id: Option<&str>,
+    ) -> rocode_types::LiveMessagePartIdentity {
+        rocode_types::LiveMessagePartIdentity {
+            message_id: message_id.to_string(),
+            part_key: part_key.to_string(),
+            part_kind,
+            phase,
+            legacy_block_id: legacy_block_id.map(str::to_string),
+        }
+    }
+
+    fn apply_live_block(
+        ctx: &mut SessionContext,
+        session_id: &str,
+        block_id: Option<&str>,
+        payload: serde_json::Value,
+        live_identity: Option<&rocode_types::LiveMessagePartIdentity>,
+    ) {
+        ctx.apply_output_block_incremental(session_id, block_id, &payload, live_identity);
+    }
+
     #[test]
-    fn scheduler_stage_output_block_updates_parent_metadata_and_attached_session() {
+    fn scheduler_stage_output_block_stays_out_of_transcript_and_tracks_attached_session() {
         let mut ctx = SessionContext::new();
         ctx.upsert_session(Session {
             id: "parent".to_string(),
@@ -1260,17 +1151,11 @@ mod tests {
             None,
         );
 
-        let parent_messages = ctx.messages.get("parent").expect("parent messages");
-        let stage_message = parent_messages
-            .iter()
-            .find(|message| message.id == "stage-message-1")
-            .expect("stage message");
-        let metadata = stage_message.metadata.as_ref().expect("stage metadata");
-        assert_eq!(
-            metadata
-                .get("scheduler_stage_attached_session_id")
-                .and_then(|value| value.as_str()),
-            Some("child-1")
+        assert!(
+            ctx.messages
+                .get("parent")
+                .is_none_or(|messages| messages.is_empty()),
+            "scheduler stage is progress-state and must not materialize a transcript message"
         );
 
         let child = ctx
@@ -1282,8 +1167,9 @@ mod tests {
     }
 
     #[test]
-    fn live_scheduler_stage_stays_before_final_answer_message() {
+    fn live_scheduler_stage_does_not_insert_message_before_final_answer() {
         let mut ctx = SessionContext::new();
+        let fixture = live_transcript_state_fixture();
         ctx.upsert_session(Session {
             id: "session-1".to_string(),
             title: "Session".to_string(),
@@ -1330,22 +1216,7 @@ mod tests {
         ctx.apply_output_block_incremental(
             "session-1",
             Some("stage-message"),
-            &json!({
-                "kind": "scheduler_stage",
-                "stage_id": "stage-1",
-                "profile": "atlas",
-                "stage": "review",
-                "title": "Review",
-                "text": "stage",
-                "stage_index": 1,
-                "stage_total": 1,
-                "status": "done",
-                "active_agents": [],
-                "active_skills": [],
-                "active_categories": [],
-                "done_agent_count": 0,
-                "total_agent_count": 0
-            }),
+            &fixture.scheduler_stage_exclusion.payload(),
             None,
         );
 
@@ -1356,7 +1227,49 @@ mod tests {
             .iter()
             .map(|message| message.id.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(ids, vec!["user-1", "stage-message", "final-answer"]);
+        assert_eq!(ids, vec!["user-1", "final-answer"]);
+    }
+
+    #[test]
+    fn live_identity_scheduler_stage_does_not_rewrite_assistant_message() {
+        let mut ctx = SessionContext::new();
+        let fixture = live_transcript_state_fixture();
+        ctx.upsert_session(Session {
+            id: "session-1".to_string(),
+            title: "Session".to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+        ctx.apply_output_block_incremental(
+            "session-1",
+            Some("assistant-final"),
+            &json!({
+                "kind": "message",
+                "phase": "full",
+                "role": "assistant",
+                "text": "final"
+            }),
+            None,
+        );
+
+        ctx.apply_output_block_incremental(
+            "session-1",
+            Some("stage-block-1"),
+            &fixture.scheduler_stage_exclusion.payload(),
+            Some(&fixture.scheduler_stage_exclusion.scheduler_identity()),
+        );
+
+        let messages = ctx.messages.get("session-1").expect("messages");
+        assert_eq!(
+            messages.len(),
+            1,
+            "scheduler stage with identity must not create or rewrite transcript messages"
+        );
+        assert_eq!(messages[0].id, "assistant-final");
+        assert_eq!(messages[0].content, "final");
     }
 
     #[test]
@@ -1437,5 +1350,392 @@ mod tests {
                 MessagePart::Reasoning { text } if text == "thinking..."
             )
         }));
+    }
+
+    #[test]
+    fn tool_running_detail_stays_out_of_transcript_until_final_result() {
+        let mut ctx = SessionContext::new();
+        let fixture = live_transcript_state_fixture();
+
+        let identity = fixture.tool_progress_exclusion.message_identity();
+        ctx.apply_output_block_incremental(
+            "session-1",
+            Some(&fixture.tool_progress_exclusion.message.message_id),
+            &json!({
+                "kind": "message",
+                "phase": "full",
+                "role": "assistant",
+                "text": fixture.tool_progress_exclusion.message.text
+            }),
+            Some(&identity),
+        );
+
+        ctx.apply_output_block_incremental(
+            "session-1",
+            Some(&fixture.tool_progress_exclusion.tool_running.tool_id),
+            &json!({
+                "kind": "tool",
+                "phase": "running",
+                "name": fixture.tool_progress_exclusion.tool_running.tool_name,
+                "detail": fixture.tool_progress_exclusion.tool_running.tool_detail
+            }),
+            Some(&fixture.tool_progress_exclusion.tool_running_identity()),
+        );
+        ctx.apply_output_block_incremental(
+            "session-1",
+            Some(&fixture.tool_progress_exclusion.tool_result.tool_id),
+            &json!({
+                "kind": "tool",
+                "phase": "done",
+                "name": fixture.tool_progress_exclusion.tool_result.tool_name,
+                "detail": fixture.tool_progress_exclusion.tool_result.tool_detail
+            }),
+            Some(&fixture.tool_progress_exclusion.tool_result_identity()),
+        );
+
+        let message = ctx
+            .messages
+            .get("session-1")
+            .and_then(|messages| {
+                messages.iter().find(|message| {
+                    message.id == fixture.tool_progress_exclusion.message.message_id
+                })
+            })
+            .expect("assistant message");
+
+        let tool_calls = message
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                MessagePart::ToolCall { .. } => Some("tool_call"),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(tool_calls.is_empty(), "{tool_calls:?}");
+
+        let tool_results = message
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                MessagePart::ToolResult { id, result, .. } => Some((id.as_str(), result.as_str())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            tool_results,
+            vec![(
+                fixture.tool_progress_exclusion.tool_result.tool_id.as_str(),
+                fixture
+                    .tool_progress_exclusion
+                    .tool_result
+                    .tool_detail
+                    .as_str()
+            )],
+            "{tool_results:?}"
+        );
+    }
+
+    #[test]
+    fn legacy_reasoning_without_identity_creates_fresh_placeholder_instead_of_reusing_last_assistant(
+    ) {
+        let mut ctx = SessionContext::new();
+
+        ctx.apply_output_block_incremental(
+            "session-1",
+            Some("assistant-final"),
+            &json!({
+                "kind": "message",
+                "phase": "full",
+                "role": "assistant",
+                "text": "final answer"
+            }),
+            None,
+        );
+        ctx.apply_output_block_incremental(
+            "session-1",
+            None,
+            &json!({
+                "kind": "reasoning",
+                "phase": "start",
+                "text": ""
+            }),
+            None,
+        );
+        ctx.apply_output_block_incremental(
+            "session-1",
+            None,
+            &json!({
+                "kind": "reasoning",
+                "phase": "delta",
+                "text": "late hidden reasoning"
+            }),
+            None,
+        );
+
+        let messages = ctx.messages.get("session-1").expect("messages");
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        let final_message = messages
+            .iter()
+            .find(|message| message.id == "assistant-final")
+            .expect("final message");
+        assert!(
+            final_message
+                .parts
+                .iter()
+                .all(|part| !matches!(part, MessagePart::Reasoning { .. })),
+            "legacy reasoning must not backfill into last assistant"
+        );
+        let legacy_message = messages
+            .iter()
+            .find(|message| message.id != "assistant-final")
+            .expect("legacy placeholder");
+        assert!(
+            legacy_message
+                .parts
+                .iter()
+                .any(|part| matches!(part, MessagePart::Reasoning { text } if text == "late hidden reasoning")),
+            "{:?}",
+            legacy_message.parts
+        );
+    }
+
+    #[test]
+    fn reasoning_end_then_trailing_assistant_text_stays_in_same_identity_message() {
+        let mut ctx = SessionContext::new();
+
+        let reasoning_identity = live_identity(
+            "assistant-1",
+            "reasoning/main",
+            rocode_types::LiveMessagePartKind::AssistantReasoning,
+            rocode_types::LivePartPhase::Snapshot,
+            Some("assistant-1"),
+        );
+        apply_live_block(
+            &mut ctx,
+            "session-1",
+            Some("assistant-1"),
+            json!({
+                "kind": "reasoning",
+                "phase": "start",
+                "text": ""
+            }),
+            Some(&reasoning_identity),
+        );
+        apply_live_block(
+            &mut ctx,
+            "session-1",
+            Some("assistant-1"),
+            json!({
+                "kind": "reasoning",
+                "phase": "delta",
+                "text": "thinking"
+            }),
+            Some(&reasoning_identity),
+        );
+        apply_live_block(
+            &mut ctx,
+            "session-1",
+            Some("assistant-1"),
+            json!({
+                "kind": "reasoning",
+                "phase": "end",
+                "text": ""
+            }),
+            Some(&live_identity(
+                "assistant-1",
+                "reasoning/main",
+                rocode_types::LiveMessagePartKind::AssistantReasoning,
+                rocode_types::LivePartPhase::End,
+                Some("assistant-1"),
+            )),
+        );
+        apply_live_block(
+            &mut ctx,
+            "session-1",
+            Some("assistant-1"),
+            json!({
+                "kind": "message",
+                "phase": "delta",
+                "role": "assistant",
+                "text": "final answer"
+            }),
+            Some(&live_identity(
+                "assistant-1",
+                "text/main",
+                rocode_types::LiveMessagePartKind::AssistantText,
+                rocode_types::LivePartPhase::Snapshot,
+                Some("assistant-1"),
+            )),
+        );
+
+        let messages = ctx.messages.get("session-1").expect("messages");
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        let message = &messages[0];
+        assert_eq!(message.id, "assistant-1");
+        assert!(
+            message
+                .parts
+                .iter()
+                .any(|part| matches!(part, MessagePart::Reasoning { text } if text == "thinking")),
+            "{:?}",
+            message.parts
+        );
+        assert!(
+            message
+                .parts
+                .iter()
+                .any(|part| matches!(part, MessagePart::Text { text } if text == "final answer")),
+            "{:?}",
+            message.parts
+        );
+    }
+
+    #[test]
+    fn assistant_full_snapshot_replaces_non_prefix_partial_in_same_identity_message() {
+        let mut ctx = SessionContext::new();
+        let text_identity = live_identity(
+            "assistant-1",
+            "text/main",
+            rocode_types::LiveMessagePartKind::AssistantText,
+            rocode_types::LivePartPhase::Snapshot,
+            Some("assistant-1"),
+        );
+
+        apply_live_block(
+            &mut ctx,
+            "session-1",
+            Some("assistant-1"),
+            json!({
+                "kind": "message",
+                "phase": "full",
+                "role": "assistant",
+                "text": "现在我已掌握"
+            }),
+            Some(&text_identity),
+        );
+        apply_live_block(
+            &mut ctx,
+            "session-1",
+            Some("assistant-1"),
+            json!({
+                "kind": "message",
+                "phase": "full",
+                "role": "assistant",
+                "text": "现在我已掌握充分信息，以下是完整调研报告。"
+            }),
+            Some(&text_identity),
+        );
+
+        let messages = ctx.messages.get("session-1").expect("messages");
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        let message = &messages[0];
+        assert_eq!(message.id, "assistant-1");
+        assert_eq!(
+            message.content,
+            "现在我已掌握充分信息，以下是完整调研报告。"
+        );
+        let text_parts = message
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                MessagePart::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            text_parts,
+            vec!["现在我已掌握充分信息，以下是完整调研报告。"]
+        );
+    }
+
+    #[test]
+    fn shared_sample_preserves_five_assistant_messages_and_four_tool_cycles() {
+        let mut ctx = SessionContext::new();
+        let fixture = live_transcript_state_fixture();
+
+        for entry in &fixture.shared_turn_cycles.entries {
+            let identity = entry.assistant_identity();
+            ctx.apply_output_block_incremental(
+                "session-1",
+                Some(&entry.message_id),
+                &json!({
+                    "kind": "message",
+                    "phase": "full",
+                    "role": "assistant",
+                    "text": entry.message_text
+                }),
+                Some(&identity),
+            );
+
+            if let Some(tool) = &entry.tool {
+                ctx.apply_output_block_incremental(
+                    "session-1",
+                    Some(&tool.tool_id),
+                    &json!({
+                        "kind": "tool",
+                        "phase": "done",
+                        "name": tool.tool_name,
+                        "detail": tool.tool_detail
+                    }),
+                    Some(&tool.tool_result_identity(&entry.message_id)),
+                );
+            }
+        }
+
+        let messages = ctx.messages.get("session-1").expect("messages");
+        assert_eq!(
+            messages.len(),
+            fixture.shared_turn_cycles.expected.assistant_message_count,
+            "{messages:?}"
+        );
+
+        for entry in &fixture.shared_turn_cycles.entries {
+            let message = messages
+                .iter()
+                .find(|message| message.id == entry.message_id)
+                .expect("assistant message");
+            assert!(
+                message.parts.iter().any(
+                    |part| matches!(part, MessagePart::Text { text } if text == &entry.message_text)
+                ),
+                "{:?}",
+                message.parts
+            );
+
+            let tool_results = message
+                .parts
+                .iter()
+                .filter_map(|part| match part {
+                    MessagePart::ToolResult { id, result, .. } => {
+                        Some((id.as_str(), result.as_str()))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+
+            if let Some(tool) = &entry.tool {
+                assert_eq!(tool_results.len(), 1, "{tool_results:?}");
+                assert_eq!(tool_results[0].0, tool.tool_id);
+                assert_eq!(tool_results[0].1, tool.tool_detail);
+            } else {
+                assert!(tool_results.is_empty(), "{tool_results:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn shared_sample_run_tail_contract_matches_tui_status_surface_expectations() {
+        let fixture = live_transcript_state_fixture();
+        let run_tail = &fixture.run_tail_contract;
+
+        assert_eq!(run_tail.completed_status, "complete");
+        assert_eq!(run_tail.error_status, "error");
+        assert_eq!(run_tail.awaiting_user_status, "awaiting_user");
+        assert!(run_tail.completed_usage.input_tokens > 0);
+        assert!(run_tail.completed_usage.output_tokens > 0);
+        assert!(run_tail.completed_usage.reasoning_tokens > 0);
+        assert!(run_tail.completed_usage.total_cost > 0.0);
+        assert!(!run_tail.awaiting_user_detail.is_empty());
+        assert!(!run_tail.error_message.is_empty());
     }
 }

@@ -1,10 +1,16 @@
+use crate::run::{
+    cli_apply_live_slot_update, cli_live_slot_commit_suffix, cli_live_slot_has_visible_content,
+};
+use crate::run::frontend_state_types::CliVisibleTranscript;
 use futures::StreamExt;
 use rocode_command::cli_style::CliStyle;
+use rocode_command::live_semantic_consumer::LiveSemanticConsumer;
 use rocode_command::output_blocks::{
+    render_cli_block_rich,
     BlockTone, MessageBlock, MessagePhase, MessageRole, OutputBlock, QueueItemBlock,
-    ReasoningBlock, SchedulerDecisionBlock, SchedulerDecisionField,
-    SchedulerDecisionRenderSpec, SchedulerDecisionSection, SchedulerStageBlock, SessionEventBlock,
-    SessionEventField, StatusBlock, ToolBlock, ToolPhase,
+    ReasoningBlock, SchedulerDecisionBlock, SchedulerDecisionField, SchedulerDecisionRenderSpec,
+    SchedulerDecisionSection, SchedulerStageBlock, SessionEventBlock, SessionEventField,
+    StatusBlock, ToolBlock, ToolPhase,
 };
 use rocode_command::terminal_presentation::{
     render_terminal_stream_block_semantic, TerminalSemanticStreamRenderState,
@@ -13,6 +19,7 @@ use rocode_command::terminal_presentation::{
 use rocode_config::schema::ShareMode;
 use rocode_runtime_context::ResolvedWorkspaceContext;
 use serde::Deserialize;
+use std::io::IsTerminal;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -20,10 +27,100 @@ use std::sync::Arc;
 use crate::cli::RunOutputFormat;
 use crate::util::{parse_bool_env, parse_http_json, server_url};
 
-#[derive(Default)]
 struct RemoteSemanticRenderState {
     accumulator: TerminalStreamAccumulator,
     semantic: TerminalSemanticStreamRenderState,
+    transcript: CliVisibleTranscript,
+    is_terminal: bool,
+}
+
+impl RemoteSemanticRenderState {
+    fn new() -> Self {
+        let is_terminal = std::io::stdout().is_terminal();
+        Self {
+            accumulator: TerminalStreamAccumulator::default(),
+            semantic: TerminalSemanticStreamRenderState::default(),
+            transcript: CliVisibleTranscript::new(is_terminal),
+            is_terminal,
+        }
+    }
+}
+
+impl Default for RemoteSemanticRenderState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn remote_apply_output_block(
+    semantic_state: &mut RemoteSemanticRenderState,
+    block: &OutputBlock,
+    live_identity: Option<&rocode_types::LiveMessagePartIdentity>,
+    style: &CliStyle,
+    show_thinking: bool,
+) {
+    if let Some(identity) = live_identity {
+        if !semantic_state.is_terminal {
+            remote_apply_non_terminal_live_slot_update(
+                &mut semantic_state.transcript,
+                block,
+                identity,
+                style,
+            );
+            return;
+        }
+        cli_apply_live_slot_update(&mut semantic_state.transcript, block, identity, style);
+        return;
+    }
+
+    if matches!(block, OutputBlock::Status(_) | OutputBlock::QueueItem(_)) {
+        return;
+    }
+
+    let rendered = render_terminal_stream_block_semantic(
+        &mut semantic_state.semantic,
+        &semantic_state.accumulator,
+        block,
+        None,
+        style,
+        show_thinking,
+    );
+    semantic_state.transcript.append_committed(&rendered);
+}
+
+fn remote_apply_non_terminal_live_slot_update(
+    transcript: &mut CliVisibleTranscript,
+    block: &OutputBlock,
+    live_identity: &rocode_types::LiveMessagePartIdentity,
+    style: &CliStyle,
+) {
+    if !LiveSemanticConsumer::is_transcript_bearing_kind(&live_identity.part_kind) {
+        return;
+    }
+
+    let slot_key = format!("{}:{}", live_identity.message_id, live_identity.part_key);
+    if cli_live_slot_has_visible_content(block) {
+        let rendered = render_cli_block_rich(block, style);
+        let plain = rocode_util::util::color::strip_ansi(&rendered);
+        transcript.upsert_live_slot(&slot_key, rendered, plain);
+    }
+
+    if live_identity.phase == rocode_types::LivePartPhase::End {
+        let suffix_ansi = cli_live_slot_commit_suffix(live_identity, style);
+        let suffix_plain = rocode_util::util::color::strip_ansi(&suffix_ansi);
+        transcript.finalize_live_slot(&slot_key, suffix_ansi, suffix_plain);
+    }
+}
+
+fn remote_emit_transcript(semantic_state: &mut RemoteSemanticRenderState) -> io::Result<()> {
+    if !semantic_state.is_terminal {
+        return Ok(());
+    }
+    print!(
+        "\x1B[2J\x1B[1;1H{}",
+        semantic_state.transcript.rendered_text()
+    );
+    io::stdout().flush()
 }
 
 #[derive(Debug, Deserialize)]
@@ -510,7 +607,7 @@ pub(crate) async fn consume_remote_sse(
     let mut buffer = String::new();
     let mut current_event: Option<String> = None;
     let mut current_data: Vec<String> = Vec::new();
-    let mut semantic_state = RemoteSemanticRenderState::default();
+    let mut semantic_state = RemoteSemanticRenderState::new();
 
     loop {
         let Some(chunk) = StreamExt::next(&mut stream).await else {
@@ -561,6 +658,11 @@ pub(crate) async fn consume_remote_sse(
             current_data.join("\n"),
         )
         .await?;
+    }
+
+    if !matches!(format, RunOutputFormat::Json) && !semantic_state.is_terminal {
+        print!("{}", semantic_state.transcript.rendered_text());
+        io::stdout().flush()?;
     }
 
     Ok(())
@@ -641,16 +743,17 @@ async fn dispatch_remote_sse_event(
             let live_identity: Option<rocode_types::LiveMessagePartIdentity> = parsed
                 .get("live_identity")
                 .and_then(|v| serde_json::from_value(v.clone()).ok());
-            let rendered = render_terminal_stream_block_semantic(
-                &mut semantic_state.semantic,
-                &semantic_state.accumulator,
+            let transcript_identity = live_identity.as_ref().filter(|identity| {
+                LiveSemanticConsumer::is_transcript_bearing_kind(&identity.part_kind)
+            });
+            remote_apply_output_block(
+                semantic_state,
                 &block,
-                live_identity.as_ref(),
+                transcript_identity.or(live_identity.as_ref()),
                 &style,
                 show_thinking.load(Ordering::SeqCst),
             );
-            print!("{rendered}");
-            io::stdout().flush()?;
+            remote_emit_transcript(semantic_state)?;
         }
         return Ok(());
     }
@@ -741,10 +844,15 @@ pub(crate) async fn run_non_interactive_attach(options: RemoteAttachOptions) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_output_block, RemoteSemanticRenderState};
-    use rocode_command::governance_fixtures::canonical_scheduler_stage_fixture;
+    use super::{parse_output_block, remote_apply_output_block, RemoteSemanticRenderState};
+    use crate::run::cli_apply_live_slot_update;
+    use crate::run::frontend_state_types::CliVisibleTranscript;
     use rocode_command::cli_style::CliStyle;
-    use rocode_command::output_blocks::{MessageBlock, MessagePhase, MessageRole, OutputBlock};
+    use rocode_command::governance_fixtures::canonical_scheduler_stage_fixture;
+    use rocode_command::output_blocks::{
+        MessageBlock, MessagePhase, MessageRole, OutputBlock, QueueItemBlock, SchedulerStageBlock,
+        StatusBlock,
+    };
     use rocode_command::terminal_presentation::render_terminal_stream_block_semantic;
 
     #[test]
@@ -767,46 +875,6 @@ mod tests {
             OutputBlock::Reasoning(reasoning)
                 if reasoning.phase == MessagePhase::Delta && reasoning.text == "thinking"
         ));
-    }
-
-    #[test]
-    fn remote_semantic_render_keeps_single_assistant_header_across_full_messages() {
-        let style = CliStyle::plain();
-        let mut semantic_state = RemoteSemanticRenderState::default();
-        let rendered = [
-            OutputBlock::Message(MessageBlock::full(
-                MessageRole::Assistant,
-                "五".to_string(),
-            )),
-            OutputBlock::Message(MessageBlock::full(
-                MessageRole::Assistant,
-                "、".to_string(),
-            )),
-            OutputBlock::Message(MessageBlock::full(
-                MessageRole::Assistant,
-                "授权".to_string(),
-            )),
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(index, block)| {
-            let id = format!("assistant-{}", index + 1);
-            semantic_state
-                .accumulator
-                .apply_output_block(Some(id.as_str()), &block);
-            render_terminal_stream_block_semantic(
-                &mut semantic_state.semantic,
-                &semantic_state.accumulator,
-                &block,
-                None,
-                &style,
-                true,
-            )
-        })
-        .collect::<String>();
-
-        assert_eq!(rendered.matches("[message:assistant]").count(), 1, "{rendered}");
-        assert_eq!(rendered, "[message:assistant] 五、授权");
     }
 
     #[test]
@@ -845,7 +913,11 @@ mod tests {
         })
         .collect::<String>();
 
-        assert_eq!(rendered.matches("[message:assistant]").count(), 1, "{rendered}");
+        assert_eq!(
+            rendered.matches("[message:assistant]").count(),
+            1,
+            "{rendered}"
+        );
         assert_eq!(rendered, "[message:assistant] 快速上升期");
     }
 
@@ -881,7 +953,276 @@ mod tests {
         })
         .collect::<String>();
 
-        assert_eq!(rendered.matches("[message:assistant]").count(), 1, "{rendered}");
+        assert_eq!(
+            rendered.matches("[message:assistant]").count(),
+            1,
+            "{rendered}"
+        );
         assert_eq!(rendered, "[message:assistant] 快速上升期");
+    }
+
+    #[test]
+    fn remote_identity_bearing_full_snapshot_replaces_same_slot_without_header_replay() {
+        let style = CliStyle::plain();
+        let mut transcript = CliVisibleTranscript::new(false);
+        let identity = rocode_types::LiveMessagePartIdentity {
+            message_id: "assistant-1".to_string(),
+            part_key: "text/main".to_string(),
+            part_kind: rocode_types::LiveMessagePartKind::AssistantText,
+            phase: rocode_types::LivePartPhase::Snapshot,
+            legacy_block_id: Some("assistant-1".to_string()),
+        };
+
+        cli_apply_live_slot_update(
+            &mut transcript,
+            &OutputBlock::Message(MessageBlock::full(
+                MessageRole::Assistant,
+                "第一版".to_string(),
+            )),
+            &identity,
+            &style,
+        );
+        cli_apply_live_slot_update(
+            &mut transcript,
+            &OutputBlock::Message(MessageBlock::full(
+                MessageRole::Assistant,
+                "第二版".to_string(),
+            )),
+            &identity,
+            &style,
+        );
+
+        let rendered = transcript.rendered_text();
+        assert_eq!(
+            rendered.matches("[message:assistant]").count(),
+            1,
+            "{rendered}"
+        );
+        assert!(rendered.contains("第二版"), "{rendered}");
+        assert!(
+            !rendered.contains("第一版[message:assistant]"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("第一版第二版"), "{rendered}");
+    }
+
+    #[test]
+    fn remote_scheduler_stage_identity_does_not_enter_transcript() {
+        let style = CliStyle::plain();
+        let mut transcript = CliVisibleTranscript::new(false);
+        let identity = rocode_types::LiveMessagePartIdentity {
+            message_id: "assistant-1".to_string(),
+            part_key: "scheduler/stage-1".to_string(),
+            part_kind: rocode_types::LiveMessagePartKind::SchedulerStage,
+            phase: rocode_types::LivePartPhase::Snapshot,
+            legacy_block_id: None,
+        };
+
+        cli_apply_live_slot_update(
+            &mut transcript,
+            &OutputBlock::SchedulerStage(Box::new(SchedulerStageBlock {
+                stage_id: Some("stage-1".to_string()),
+                profile: Some("default".to_string()),
+                stage: "research".to_string(),
+                title: "Research".to_string(),
+                text: "planning".to_string(),
+                stage_index: Some(1),
+                stage_total: Some(3),
+                step: Some(1),
+                status: Some("running".to_string()),
+                focus: None,
+                last_event: None,
+                waiting_on: None,
+                estimated_context_tokens: None,
+                skill_tree_budget: None,
+                skill_tree_truncation_strategy: None,
+                skill_tree_truncated: None,
+                retry_attempt: None,
+                activity: None,
+                loop_budget: None,
+                available_skill_count: None,
+                available_agent_count: None,
+                available_category_count: None,
+                active_skills: Vec::new(),
+                active_agents: Vec::new(),
+                active_categories: Vec::new(),
+                done_agent_count: 0,
+                total_agent_count: 0,
+                prompt_tokens: None,
+                context_tokens: None,
+                completion_tokens: None,
+                reasoning_tokens: None,
+                cache_read_tokens: None,
+                cache_miss_tokens: None,
+                cache_write_tokens: None,
+                attached_session_id: None,
+                decision: None,
+            })),
+            &identity,
+            &style,
+        );
+
+        let rendered = transcript.rendered_text();
+        assert!(rendered.is_empty(), "{rendered}");
+    }
+
+    #[test]
+    fn remote_non_terminal_state_rebuilds_from_transcript_authority() {
+        let style = CliStyle::plain();
+        let mut semantic_state = RemoteSemanticRenderState {
+            is_terminal: false,
+            ..RemoteSemanticRenderState::default()
+        };
+
+        let first = OutputBlock::Message(MessageBlock::delta(
+            MessageRole::Assistant,
+            "第一版".to_string(),
+        ));
+        semantic_state
+            .accumulator
+            .apply_output_block(Some("assistant-1"), &first);
+        remote_apply_output_block(&mut semantic_state, &first, None, &style, true);
+
+        let second = OutputBlock::Message(MessageBlock::delta(
+            MessageRole::Assistant,
+            " 第二段".to_string(),
+        ));
+        semantic_state
+            .accumulator
+            .apply_output_block(Some("assistant-1"), &second);
+        remote_apply_output_block(&mut semantic_state, &second, None, &style, true);
+
+        assert_eq!(
+            semantic_state.transcript.rendered_text(),
+            "[message:assistant] 第一版 第二段"
+        );
+    }
+
+    #[test]
+    fn remote_status_blocks_do_not_enter_transcript_authority() {
+        let style = CliStyle::plain();
+        let mut semantic_state = RemoteSemanticRenderState {
+            is_terminal: false,
+            ..RemoteSemanticRenderState::default()
+        };
+
+        remote_apply_output_block(
+            &mut semantic_state,
+            &OutputBlock::Status(StatusBlock::warning("retry scheduled")),
+            None,
+            &style,
+            true,
+        );
+
+        assert_eq!(semantic_state.transcript.rendered_text(), "");
+    }
+
+    #[test]
+    fn remote_queue_items_do_not_enter_transcript_authority() {
+        let style = CliStyle::plain();
+        let mut semantic_state = RemoteSemanticRenderState {
+            is_terminal: false,
+            ..RemoteSemanticRenderState::default()
+        };
+
+        remote_apply_output_block(
+            &mut semantic_state,
+            &OutputBlock::QueueItem(QueueItemBlock {
+                position: 2,
+                text: "queued".to_string(),
+            }),
+            None,
+            &style,
+            true,
+        );
+
+        assert_eq!(semantic_state.transcript.rendered_text(), "");
+    }
+
+    #[test]
+    fn remote_identity_rewrite_updates_transcript_authority_without_append_replay() {
+        let style = CliStyle::plain();
+        let mut semantic_state = RemoteSemanticRenderState {
+            is_terminal: false,
+            ..RemoteSemanticRenderState::default()
+        };
+        let identity = rocode_types::LiveMessagePartIdentity {
+            message_id: "assistant-1".to_string(),
+            part_key: "text/main".to_string(),
+            part_kind: rocode_types::LiveMessagePartKind::AssistantText,
+            phase: rocode_types::LivePartPhase::Snapshot,
+            legacy_block_id: Some("assistant-1".to_string()),
+        };
+
+        remote_apply_output_block(
+            &mut semantic_state,
+            &OutputBlock::Message(MessageBlock::full(
+                MessageRole::Assistant,
+                "第一版".to_string(),
+            )),
+            Some(&identity),
+            &style,
+            true,
+        );
+
+        remote_apply_output_block(
+            &mut semantic_state,
+            &OutputBlock::Message(MessageBlock::full(
+                MessageRole::Assistant,
+                "第二版".to_string(),
+            )),
+            Some(&identity),
+            &style,
+            true,
+        );
+
+        let rendered = semantic_state.transcript.rendered_text();
+        assert_eq!(
+            rendered.matches("[message:assistant]").count(),
+            1,
+            "{rendered}"
+        );
+        assert!(rendered.contains("第二版"), "{rendered}");
+        assert!(!rendered.contains("第一版第二版"), "{rendered}");
+    }
+
+    #[test]
+    fn remote_non_terminal_rewrite_keeps_only_final_consolidated_transcript() {
+        let style = CliStyle::plain();
+        let mut semantic_state = RemoteSemanticRenderState {
+            is_terminal: false,
+            ..RemoteSemanticRenderState::default()
+        };
+        let identity = rocode_types::LiveMessagePartIdentity {
+            message_id: "assistant-1".to_string(),
+            part_key: "text/main".to_string(),
+            part_kind: rocode_types::LiveMessagePartKind::AssistantText,
+            phase: rocode_types::LivePartPhase::Snapshot,
+            legacy_block_id: Some("assistant-1".to_string()),
+        };
+
+        remote_apply_output_block(
+            &mut semantic_state,
+            &OutputBlock::Message(MessageBlock::full(
+                MessageRole::Assistant,
+                "初稿".to_string(),
+            )),
+            Some(&identity),
+            &style,
+            true,
+        );
+        remote_apply_output_block(
+            &mut semantic_state,
+            &OutputBlock::Message(MessageBlock::full(
+                MessageRole::Assistant,
+                "定稿".to_string(),
+            )),
+            Some(&identity),
+            &style,
+            true,
+        );
+
+        let rendered = semantic_state.transcript.rendered_text();
+        assert_eq!(rendered, "[message:assistant] 定稿\n");
     }
 }

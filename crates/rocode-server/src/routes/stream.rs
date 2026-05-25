@@ -11,8 +11,8 @@ use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::session_runtime::events::{
-    broadcast_session_reconcile, send_sse_server_event, sse_output_block_hook,
-    ReconcileReason, ServerEvent,
+    broadcast_session_reconcile, send_sse_server_event, sse_output_block_hook, ReconcileReason,
+    ServerEvent,
 };
 use crate::{ApiError, ServerState};
 use rocode_agent::{AgentInfo, AgentRegistry};

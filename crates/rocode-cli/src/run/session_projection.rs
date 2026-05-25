@@ -1,3 +1,5 @@
+use rocode_command::live_semantic_consumer::LiveSemanticConsumer;
+use rocode_command::output_blocks::{tool_cli_activity_label, ReasoningBlock, ToolPhase};
 use session_projection_usage::{cli_usage_snapshot_lines, format_token_count};
 use session_projection_insights::cli_session_insights_lines;
 #[cfg(test)]
@@ -19,6 +21,9 @@ fn cli_set_root_server_session(runtime: &mut CliExecutionRuntime, session_id: St
         related.clear();
         related.insert(session_id);
     }
+    if let Ok(mut history) = runtime.root_history_transcript.lock() {
+        history.clear();
+    }
     if let Ok(mut root) = runtime.root_session_transcript.lock() {
         root.clear();
     }
@@ -30,6 +35,9 @@ fn cli_set_root_server_session(runtime: &mut CliExecutionRuntime, session_id: St
     }
     if let Ok(mut render_states) = runtime.render_states.lock() {
         render_states.clear();
+    }
+    if let Ok(mut active_tool_labels) = runtime.active_tool_labels.lock() {
+        active_tool_labels.clear();
     }
     if let Ok(mut focused) = runtime.focused_session_id.lock() {
         *focused = None;
@@ -49,19 +57,61 @@ fn cli_set_root_server_session(runtime: &mut CliExecutionRuntime, session_id: St
 fn cli_render_session_block(
     runtime: &CliExecutionRuntime,
     session_id: &str,
+    block_id: Option<&str>,
     block: &OutputBlock,
     live_identity: Option<&rocode_types::LiveMessagePartIdentity>,
     style: &CliStyle,
 ) -> String {
     let key = cli_canonical_session_id(runtime, session_id);
     let show_thinking = runtime.show_thinking.load(Ordering::SeqCst);
-    let accumulators = match runtime.stream_accumulators.lock() {
-        Ok(accumulators) => accumulators,
+    let transcript_identity = live_identity.filter(|identity| {
+        LiveSemanticConsumer::is_transcript_bearing_kind(&identity.part_kind)
+    });
+    let default_accumulator = TerminalStreamAccumulator::new();
+    let accumulator = match runtime.stream_accumulators.lock() {
+        Ok(accumulators) => {
+            if let Some(accumulator) = accumulators.get(&key) {
+                accumulator.clone()
+            } else if transcript_identity.is_some() {
+                default_accumulator
+            } else {
+                return render_cli_block_rich(block, style);
+            }
+        }
+        Err(_) if transcript_identity.is_some() => default_accumulator,
         Err(_) => return render_cli_block_rich(block, style),
     };
-    let Some(accumulator) = accumulators.get(&key) else {
-        return render_cli_block_rich(block, style);
-    };
+    if let Some(live_identity) = live_identity {
+        if matches!(
+            live_identity.part_kind,
+            rocode_types::LiveMessagePartKind::AssistantText
+                | rocode_types::LiveMessagePartKind::AssistantReasoning
+        ) {
+            if live_identity.phase != rocode_types::LivePartPhase::End {
+                return String::new();
+            }
+            return cli_render_legacy_streaming_block(&accumulator, block_id, block, style)
+                .unwrap_or_default();
+        }
+    } else {
+        if let Some(rendered) =
+            cli_render_legacy_streaming_block(&accumulator, block_id, block, style)
+        {
+            return rendered;
+        }
+        if matches!(
+            block,
+            OutputBlock::Message(message)
+                if message.role == OutputMessageRole::Assistant
+                    && matches!(message.phase, MessagePhase::Start | MessagePhase::Delta)
+        ) || matches!(
+            block,
+            OutputBlock::Reasoning(reasoning)
+                if matches!(reasoning.phase, MessagePhase::Start | MessagePhase::Delta)
+        ) {
+            return String::new();
+        }
+    }
     let mut render_states = match runtime.render_states.lock() {
         Ok(states) => states,
         Err(_) => return render_cli_block_rich(block, style),
@@ -69,12 +119,234 @@ fn cli_render_session_block(
     let state = render_states.entry(key).or_default();
     render_terminal_stream_block_semantic(
         state,
-        accumulator,
+        &accumulator,
         block,
-        live_identity,
+        transcript_identity,
         style,
         show_thinking,
     )
+}
+
+fn cli_render_legacy_streaming_block(
+    accumulator: &TerminalStreamAccumulator,
+    block_id: Option<&str>,
+    block: &OutputBlock,
+    style: &CliStyle,
+) -> Option<String> {
+    let block_id = block_id.filter(|value| !value.is_empty())?;
+
+    match block {
+        OutputBlock::Message(message)
+            if message.role == OutputMessageRole::Assistant
+                && matches!(message.phase, MessagePhase::End | MessagePhase::Full) =>
+        {
+            let rendered_text = if matches!(message.phase, MessagePhase::Full) {
+                message.text.clone()
+            } else {
+                cli_accumulator_part_text(
+                    accumulator.message(block_id)?,
+                    |part| matches!(part, rocode_command::terminal_presentation::TerminalMessagePart::Text { .. }),
+                )
+            };
+            (!rendered_text.trim().is_empty()).then(|| {
+                render_cli_block_rich(
+                    &OutputBlock::Message(MessageBlock::full(
+                        OutputMessageRole::Assistant,
+                        rendered_text,
+                    )),
+                    style,
+                )
+            })
+        }
+        OutputBlock::Reasoning(reasoning)
+            if matches!(reasoning.phase, MessagePhase::End | MessagePhase::Full) =>
+        {
+            let rendered_text = if matches!(reasoning.phase, MessagePhase::Full) {
+                reasoning.text.clone()
+            } else {
+                cli_accumulator_part_text(
+                    accumulator.message(block_id)?,
+                    |part| {
+                        matches!(
+                            part,
+                            rocode_command::terminal_presentation::TerminalMessagePart::Reasoning { .. }
+                        )
+                    },
+                )
+            };
+            (!rendered_text.trim().is_empty()).then(|| {
+                render_cli_block_rich(
+                    &OutputBlock::Reasoning(ReasoningBlock::full(rendered_text)),
+                    style,
+                )
+            })
+        }
+        _ => None,
+    }
+}
+
+fn cli_accumulator_part_text(
+    message: &rocode_command::terminal_presentation::TerminalMessage,
+    matches_part: impl Fn(&rocode_command::terminal_presentation::TerminalMessagePart) -> bool,
+) -> String {
+    let mut text = String::new();
+    for part in &message.parts {
+        match part {
+            rocode_command::terminal_presentation::TerminalMessagePart::Text { text: part_text }
+                if matches_part(part) =>
+            {
+                text.push_str(part_text);
+            }
+            rocode_command::terminal_presentation::TerminalMessagePart::Reasoning { text: part_text }
+                if matches_part(part) =>
+            {
+                text.push_str(part_text);
+            }
+            _ => {}
+        }
+    }
+    text
+}
+
+pub(crate) fn cli_render_live_slot_snapshot(
+    block: &OutputBlock,
+    live_identity: &rocode_types::LiveMessagePartIdentity,
+    style: &CliStyle,
+) -> String {
+    if LiveSemanticConsumer::is_transcript_bearing_kind(&live_identity.part_kind) {
+        // Snapshot-bearing assistant/reasoning blocks should stay "open" until
+        // the corresponding End phase arrives. Render the styled body now and
+        // let `finalize_live_slot()` append the closing divider exactly once.
+        match live_identity.part_kind {
+            rocode_types::LiveMessagePartKind::AssistantText
+                if matches!(block, OutputBlock::Message(_)) =>
+            {
+                let full_rendered = render_cli_block_rich(block, style);
+                let end_suffix = render_cli_block_rich(
+                    &OutputBlock::Message(MessageBlock::end(
+                        rocode_command::output_blocks::MessageRole::Assistant,
+                    )),
+                    style,
+                );
+                return full_rendered
+                    .strip_suffix(&end_suffix)
+                    .unwrap_or(full_rendered.as_str())
+                    .to_string();
+            }
+            rocode_types::LiveMessagePartKind::AssistantReasoning
+                if matches!(block, OutputBlock::Reasoning(_)) =>
+            {
+                let full_rendered = render_cli_block_rich(block, style);
+                let end_suffix =
+                    render_cli_block_rich(&OutputBlock::Reasoning(ReasoningBlock::end()), style);
+                return full_rendered
+                    .strip_suffix(&end_suffix)
+                    .unwrap_or(full_rendered.as_str())
+                    .to_string();
+            }
+            _ => return render_cli_block_rich(block, style),
+        }
+    }
+
+    render_cli_block_rich(block, style)
+}
+
+pub(crate) fn cli_live_slot_commit_suffix(
+    live_identity: &rocode_types::LiveMessagePartIdentity,
+    style: &CliStyle,
+) -> String {
+    match live_identity.part_kind {
+        rocode_types::LiveMessagePartKind::AssistantText => render_cli_block_rich(
+            &OutputBlock::Message(MessageBlock::end(
+                rocode_command::output_blocks::MessageRole::Assistant,
+            )),
+            style,
+        ),
+        rocode_types::LiveMessagePartKind::AssistantReasoning => {
+            render_cli_block_rich(&OutputBlock::Reasoning(ReasoningBlock::end()), style)
+        }
+        _ => String::new(),
+    }
+}
+
+pub(crate) fn cli_live_slot_has_visible_content(block: &OutputBlock) -> bool {
+    match block {
+        OutputBlock::Message(message) => match message.phase {
+            MessagePhase::Start | MessagePhase::End => false,
+            MessagePhase::Delta | MessagePhase::Full => !message.text.is_empty(),
+        },
+        OutputBlock::Reasoning(reasoning) => match reasoning.phase {
+            MessagePhase::Start | MessagePhase::End => false,
+            MessagePhase::Delta | MessagePhase::Full => {
+                !reasoning.text.trim().is_empty()
+            }
+        },
+        OutputBlock::Tool(tool) => match tool.phase {
+            ToolPhase::Start => true,
+            ToolPhase::Running => tool
+                .detail
+                .as_deref()
+                .is_some_and(|detail| !detail.trim().is_empty()),
+            ToolPhase::Done => true,
+            ToolPhase::Error => true,
+        },
+        _ => true,
+    }
+}
+
+pub(crate) fn cli_apply_live_slot_update(
+    transcript: &mut CliVisibleTranscript,
+    block: &OutputBlock,
+    live_identity: &rocode_types::LiveMessagePartIdentity,
+    style: &CliStyle,
+) {
+    if !LiveSemanticConsumer::is_transcript_bearing_kind(&live_identity.part_kind) {
+        return;
+    }
+    let slot_key = format!("{}:{}", live_identity.message_id, live_identity.part_key);
+    if live_identity.phase == rocode_types::LivePartPhase::End {
+        if cli_live_slot_has_visible_content(block) {
+            let snapshot_rendered = cli_render_live_slot_snapshot(block, live_identity, style);
+            let snapshot_plain = rocode_util::util::color::strip_ansi(&snapshot_rendered);
+            transcript.upsert_live_slot(&slot_key, snapshot_rendered, snapshot_plain);
+        }
+        let suffix_ansi = cli_live_slot_commit_suffix(live_identity, style);
+        let suffix_plain = rocode_util::util::color::strip_ansi(&suffix_ansi);
+        transcript.finalize_live_slot(&slot_key, suffix_ansi, suffix_plain);
+        return;
+    }
+    if cli_live_slot_has_visible_content(block) {
+        let snapshot_rendered = cli_render_live_slot_snapshot(block, live_identity, style);
+        let snapshot_plain = rocode_util::util::color::strip_ansi(&snapshot_rendered);
+        transcript.upsert_live_slot(&slot_key, snapshot_rendered, snapshot_plain);
+    }
+}
+
+fn cli_append_session_rendered_transcript(
+    runtime: &CliExecutionRuntime,
+    session_id: &str,
+    rendered: &str,
+) {
+    if rendered.is_empty() {
+        return;
+    }
+
+    if session_id.is_empty() {
+        if let Ok(mut root) = runtime.root_session_transcript.lock() {
+            root.append_committed(rendered);
+        }
+        if let Ok(mut history) = runtime.root_history_transcript.lock() {
+            history.append_committed(rendered);
+        }
+        return;
+    }
+
+    if let Ok(mut transcripts) = runtime.attached_session_transcripts.lock() {
+        transcripts
+            .entry(session_id.to_string())
+            .or_default()
+            .append_committed(rendered);
+    }
 }
 
 fn cli_canonical_session_id(runtime: &CliExecutionRuntime, session_id: &str) -> String {
@@ -151,31 +423,61 @@ fn cli_untrack_attached_session(
         .unwrap_or(false)
 }
 
-fn cli_cache_attached_session_rendered(
+fn cli_replace_root_session_transcript(
     runtime: &CliExecutionRuntime,
-    session_id: &str,
-    rendered: &str,
+    transcript: CliVisibleTranscript,
 ) {
-    if let Ok(mut transcripts) = runtime.attached_session_transcripts.lock() {
-        transcripts
-            .entry(session_id.to_string())
-            .or_default()
-            .append_rendered(rendered);
+    if let Ok(mut root) = runtime.root_session_transcript.lock() {
+        *root = transcript;
     }
 }
 
-fn cli_cache_root_session_block(
+fn cli_replace_root_history_transcript(
     runtime: &CliExecutionRuntime,
-    block: &OutputBlock,
-    style: &CliStyle,
+    transcript: CliVisibleTranscript,
 ) {
-    let rendered = cli_render_session_block(runtime, "", block, None, style);
-    cli_cache_root_session_rendered(runtime, &rendered);
+    if let Ok(mut history) = runtime.root_history_transcript.lock() {
+        *history = transcript;
+    }
 }
 
-fn cli_cache_root_session_rendered(runtime: &CliExecutionRuntime, rendered: &str) {
-    if let Ok(mut transcript) = runtime.root_session_transcript.lock() {
-        transcript.append_rendered(rendered);
+#[cfg(test)]
+fn cli_sync_root_history_to_visible(runtime: &CliExecutionRuntime) -> CliVisibleTranscript {
+    let transcript = runtime
+        .root_history_transcript
+        .lock()
+        .map(|history| history.clone())
+        .unwrap_or_default();
+    cli_replace_root_session_transcript(runtime, transcript.clone());
+    transcript
+}
+
+pub(crate) fn cli_history_transcript_suffix(
+    previous: &CliVisibleTranscript,
+    next: &CliVisibleTranscript,
+) -> Option<String> {
+    let previous_text = previous.rendered_text();
+    let next_text = next.rendered_text();
+    if next_text.is_empty() || next_text == previous_text {
+        return None;
+    }
+    if previous_text.is_empty() {
+        return Some(next_text);
+    }
+    next_text
+        .strip_prefix(&previous_text)
+        .map(str::to_string)
+        .filter(|suffix| !suffix.is_empty())
+}
+
+fn cli_capture_visible_root_history_transcript(runtime: &CliExecutionRuntime) {
+    let snapshot = runtime
+        .frontend_projection
+        .lock()
+        .ok()
+        .map(|projection| projection.transcript.clone());
+    if let Some(snapshot) = snapshot {
+        cli_replace_root_history_transcript(runtime, snapshot);
     }
 }
 
@@ -186,9 +488,7 @@ fn cli_capture_visible_root_transcript(runtime: &CliExecutionRuntime) {
         .ok()
         .map(|projection| projection.transcript.clone());
     if let Some(snapshot) = snapshot {
-        if let Ok(mut root) = runtime.root_session_transcript.lock() {
-            *root = snapshot;
-        }
+        cli_replace_root_session_transcript(runtime, snapshot);
     }
 }
 
@@ -204,19 +504,15 @@ fn cli_is_root_focused(runtime: &CliExecutionRuntime) -> bool {
     cli_focused_session_id(runtime).is_none()
 }
 
-fn cli_replace_visible_transcript(
+fn cli_sync_projection_transcript(
     runtime: &CliExecutionRuntime,
     transcript: CliVisibleTranscript,
-) -> io::Result<()> {
-    if let Some(surface) = runtime.terminal_surface.as_ref() {
-        surface.replace_transcript(transcript)
-    } else {
-        if let Ok(mut projection) = runtime.frontend_projection.lock() {
-            projection.transcript = transcript;
-            projection.scroll_offset = 0;
-        }
-        Ok(())
+) {
+    if let Ok(mut projection) = runtime.frontend_projection.lock() {
+        projection.transcript = transcript;
+        projection.scroll_offset = 0;
     }
+    cli_refresh_prompt(runtime);
 }
 
 fn cli_short_session_id(session_id: &str) -> &str {
@@ -1833,7 +2129,6 @@ fn cli_focus_attached_session(
     let Some(transcript) = transcripts.get(&target_id).cloned() else {
         return Ok(false);
     };
-
     if cli_is_root_focused(runtime) {
         cli_capture_visible_root_transcript(runtime);
     }
@@ -1847,7 +2142,16 @@ fn cli_focus_attached_session(
             cli_short_session_id(&target_id)
         )),
     );
-    cli_replace_visible_transcript(runtime, transcript)?;
+    cli_sync_projection_transcript(runtime, transcript.clone());
+    if let Some(surface) = runtime.terminal_surface.as_ref() {
+        let mut rendered = String::new();
+        rendered.push_str(&format!(
+            "\n[attached:{}]\n",
+            cli_short_session_id(&target_id)
+        ));
+        rendered.push_str(&transcript.rendered_text());
+        surface.print_ephemeral_text(&rendered)?;
+    }
     Ok(true)
 }
 
@@ -1890,7 +2194,7 @@ fn cli_focus_root_session(runtime: &CliExecutionRuntime) -> io::Result<bool> {
         *focused = None;
     }
     cli_set_view_label(runtime, None);
-    cli_replace_visible_transcript(runtime, transcript)?;
+    cli_sync_projection_transcript(runtime, transcript);
     Ok(true)
 }
 
@@ -1907,7 +2211,6 @@ fn cli_session_update_requires_refresh(source: Option<&str>) -> bool {
                 | "permission"
                 | "steering"
                 | "status.change"
-                | "legacy.compat"
         ) | Some(
             // Legacy sources still emitted by unmigrated paths:
             "prompt.final"
@@ -1961,7 +2264,6 @@ mod session_update_refresh_tests {
         assert!(cli_session_update_requires_refresh(Some("permission")));
         assert!(cli_session_update_requires_refresh(Some("steering")));
         assert!(cli_session_update_requires_refresh(Some("status.change")));
-        assert!(cli_session_update_requires_refresh(Some("legacy.compat")));
     }
 
     #[test]
@@ -2231,18 +2533,19 @@ fn cli_frontend_set_phase(
     active_label: Option<String>,
 ) {
     if let Ok(mut projection) = frontend_projection.lock() {
-        projection.phase = phase;
-        if active_label.is_some() {
-            projection.active_label = active_label;
+        projection.set_runtime_activity(phase, active_label);
+        if matches!(phase, CliFrontendPhase::Busy) {
+            projection.run_tail = None;
         }
     }
 }
 
 fn cli_frontend_clear(runtime: &CliExecutionRuntime) {
     if let Ok(mut projection) = runtime.frontend_projection.lock() {
-        projection.phase = CliFrontendPhase::Idle;
-        projection.active_label = None;
+        projection.clear_runtime_activity();
         projection.active_stage = None;
+        projection.run_tail = None;
+        projection.prompt_lanes.clear();
     }
 }
 
@@ -2255,31 +2558,49 @@ fn cli_frontend_observe_block(
     };
     match block {
         OutputBlock::SchedulerStage(stage) => {
-            projection.phase = match stage.status.as_deref() {
+            let phase = match stage.status.as_deref() {
                 Some("waiting") | Some("blocked") => CliFrontendPhase::Waiting,
                 Some("cancelling") => CliFrontendPhase::Cancelling,
                 Some("cancelled") | Some("done") => projection.phase,
                 _ => CliFrontendPhase::Busy,
             };
-            projection.active_label = Some(cli_stage_activity_label(stage));
+            projection.set_runtime_activity(phase, Some(cli_stage_activity_label(stage)));
         }
         OutputBlock::Tool(tool) => {
-            projection.phase = CliFrontendPhase::Busy;
-            projection.active_label = Some(format!("tool {}", tool.name));
+            projection.set_runtime_activity(
+                CliFrontendPhase::Busy,
+                Some(tool_cli_activity_label(tool)),
+            );
+        }
+        OutputBlock::Reasoning(reasoning) => {
+            projection.set_runtime_activity(
+                CliFrontendPhase::Busy,
+                Some(cli_reasoning_activity_label(reasoning)),
+            );
         }
         OutputBlock::SessionEvent(event) if event.event == "question" => {
-            projection.phase = CliFrontendPhase::Waiting;
-            projection.active_label = Some("question".to_string());
+            projection.set_runtime_activity(
+                CliFrontendPhase::Waiting,
+                Some("question".to_string()),
+            );
         }
         OutputBlock::Message(message)
             if message.role == OutputMessageRole::Assistant
                 && matches!(message.phase, MessagePhase::Start | MessagePhase::Delta) =>
         {
-            projection.phase = CliFrontendPhase::Busy;
-            projection.active_label = Some("assistant response".to_string());
+            projection.set_runtime_activity(
+                CliFrontendPhase::Busy,
+                Some("assistant response".to_string()),
+            );
         }
         _ => {}
     }
+}
+
+fn cli_reasoning_activity_label(_reasoning: &ReasoningBlock) -> String {
+    // The spinner is a status indicator, not a content area.
+    // Thinking text is already shown in the block region below.
+    "Thinking".to_string()
 }
 
 fn cli_stage_activity_label(stage: &SchedulerStageBlock) -> String {
@@ -2345,7 +2666,7 @@ fn cli_should_emit_scheduler_stage_block(
 mod session_projection_tests {
     use super::{
         cli_cache_evidence_status_label, cli_context_closure_cache_diagnostic_label,
-        cli_runtime_snapshot_lines,
+        cli_history_transcript_suffix, cli_runtime_snapshot_lines, CliVisibleTranscript,
     };
 
     #[test]
@@ -2477,6 +2798,21 @@ mod session_projection_tests {
         let rendered = lines.join("\n");
         assert!(rendered.contains("Permission Authority:"));
         assert!(rendered.contains("Misses: 2"));
+    }
+
+    #[test]
+    fn history_transcript_suffix_returns_newly_added_tail_only() {
+        let mut previous = CliVisibleTranscript::default();
+        previous.append_rendered("● Tool result\n");
+
+        let mut rebuilt = CliVisibleTranscript::default();
+        rebuilt.append_rendered("● Tool result\n");
+        rebuilt.append_rendered("● Final answer\n");
+
+        assert_eq!(
+            cli_history_transcript_suffix(&previous, &rebuilt).as_deref(),
+            Some("● Final answer\n")
+        );
     }
 
 }

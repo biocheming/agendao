@@ -36,8 +36,9 @@ pub fn build_display_hint_items(
     let metadata = info.metadata.as_ref()?;
     let has_fields = metadata.contains_key("display.fields");
     let has_summary = metadata.contains_key("display.summary");
+    let has_preview = metadata.contains_key("display.preview");
 
-    if !has_fields && !has_summary {
+    if !has_fields && !has_summary && !has_preview {
         return None;
     }
 
@@ -53,7 +54,11 @@ pub fn build_display_hint_items(
 
     if let Some(fields) = metadata.get("display.fields").and_then(|v| v.as_array()) {
         for field in fields {
-            let key = field.get("key").and_then(|v| v.as_str()).unwrap_or("?");
+            let key = field
+                .get("label")
+                .or_else(|| field.get("key"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             let value = field.get("value").and_then(|v| v.as_str()).unwrap_or("");
             items.push(TerminalToolBlockItem::Line(
                 TerminalSegmentDisplayLine::new(
@@ -61,6 +66,55 @@ pub fn build_display_hint_items(
                     TerminalSegmentTone::Primary,
                 ),
             ));
+        }
+    }
+
+    if let Some(preview) = metadata
+        .get("display.preview")
+        .and_then(|value| value.as_object())
+    {
+        let preview_kind = preview
+            .get("kind")
+            .and_then(|value| value.as_str())
+            .unwrap_or("text");
+        let preview_text = preview
+            .get("text")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim();
+        if !preview_text.is_empty() {
+            match preview_kind {
+                "diff" => items.push(TerminalToolBlockItem::Diff {
+                    label: None,
+                    content: preview_text.to_string(),
+                }),
+                _ => {
+                    for line in preview_text.lines().take(4) {
+                        let trimmed = line.trim();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        items.push(TerminalToolBlockItem::Line(
+                            TerminalSegmentDisplayLine::new(
+                                format_preview_line(trimmed, 96),
+                                TerminalSegmentTone::Muted,
+                            ),
+                        ));
+                    }
+                    let truncated = preview
+                        .get("truncated")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false);
+                    if truncated {
+                        items.push(TerminalToolBlockItem::Line(
+                            TerminalSegmentDisplayLine::new(
+                                "Preview truncated.",
+                                TerminalSegmentTone::Muted,
+                            ),
+                        ));
+                    }
+                }
+            }
         }
     }
 
@@ -1559,10 +1613,10 @@ fn format_bytes(bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_edit_result_items, build_file_items, build_image_items, build_patch_result_items,
-        build_task_result_items, build_task_running_items, build_todowrite_result_items,
-        build_tool_body_items, build_write_result_items, parse_write_summary,
-        summarize_block_items_inline, TerminalToolBlockItem,
+        build_display_hint_items, build_edit_result_items, build_file_items, build_image_items,
+        build_patch_result_items, build_task_result_items, build_task_running_items,
+        build_todowrite_result_items, build_tool_body_items, build_write_result_items,
+        parse_write_summary, summarize_block_items_inline, TerminalToolBlockItem,
     };
     use crate::terminal_presentation::{TerminalToolResultInfo, TerminalToolState};
     use std::collections::HashMap;
@@ -1731,7 +1785,7 @@ mod tests {
         );
         metadata.insert(
             "display.fields".to_string(),
-            serde_json::json!([{ "key": "Scope", "value": "Proceed" }]),
+            serde_json::json!([{ "label": "Scope", "value": "Proceed" }]),
         );
         let result = TerminalToolResultInfo {
             output: r#"{"answers":["Proceed"]}"#.to_string(),
@@ -1756,6 +1810,45 @@ mod tests {
         assert!(items.iter().any(|item| matches!(
             item,
             TerminalToolBlockItem::Line(line) if line.text.contains("A: Proceed")
+        )));
+    }
+
+    #[test]
+    fn build_display_hint_items_include_preview_contract() {
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "display.summary".to_string(),
+            serde_json::json!("api.semanticscholar.org · application/json"),
+        );
+        metadata.insert(
+            "display.preview".to_string(),
+            serde_json::json!({
+                "kind": "text",
+                "text": "{\"total\":2,\"data\":[{\"title\":\"Paper A\"}]}",
+                "truncated": true
+            }),
+        );
+        let info = TerminalToolResultInfo {
+            output: String::new(),
+            is_error: false,
+            title: Some("WebFetch".to_string()),
+            metadata: Some(metadata),
+        };
+
+        let items = build_display_hint_items(&info).expect("display hints");
+        assert!(items.iter().any(|item| matches!(
+            item,
+            TerminalToolBlockItem::Line(line)
+                if line.text.contains("api.semanticscholar.org")
+        )));
+        assert!(items.iter().any(|item| matches!(
+            item,
+            TerminalToolBlockItem::Line(line)
+                if line.text.contains("{\"total\":2")
+        )));
+        assert!(items.iter().any(|item| matches!(
+            item,
+            TerminalToolBlockItem::Line(line) if line.text == "Preview truncated."
         )));
     }
 

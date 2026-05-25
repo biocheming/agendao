@@ -2786,7 +2786,11 @@ pub async fn run_local_scheduler_prompt(
         let mut sessions = state.sessions.lock().await;
         sessions.update(session.clone());
     }
-    broadcast_session_reconcile(state.as_ref(), session_id.clone(), ReconcileReason::TurnFinal);
+    broadcast_session_reconcile(
+        state.as_ref(),
+        session_id.clone(),
+        ReconcileReason::TurnFinal,
+    );
     set_session_run_status(&state, &session_id, SessionRunStatus::Idle).await;
 
     if let Some(output_hook) = output_hook {

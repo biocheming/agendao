@@ -11,6 +11,7 @@ pub use app_context::{
 };
 pub use keybind::{Keybind, KeybindRegistry};
 pub use session_context::{
-    collect_attached_sessions, AttachedSessionInfo, DiffEntry, Message, MessagePart, MessageRole,
-    RevertInfo, Session, SessionContext, SessionStatus, TodoItem, TodoStatus, TokenUsage,
+    collect_attached_sessions, collect_attached_sessions_from_stage_summaries, AttachedSessionInfo,
+    DiffEntry, Message, MessagePart, MessageRole, RevertInfo, Session, SessionContext,
+    SessionStatus, TodoItem, TodoStatus, TokenUsage,
 };

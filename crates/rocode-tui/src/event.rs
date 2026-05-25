@@ -50,6 +50,10 @@ pub enum CustomEvent {
         permission_id: String,
         outcome: PermissionReplyOutcome,
     },
+    SessionTelemetryRefreshFinished {
+        session_id: String,
+        telemetry: Option<Box<crate::api::SessionTelemetrySnapshot>>,
+    },
     StateChanged(StateChange),
 }
 
@@ -63,6 +67,7 @@ pub enum StateChange {
     SessionStatusBusy(String),
     SessionStatusCompacting(String),
     SessionStatusIdle(String),
+    SessionStatusReconnecting(String),
     SessionStatusRetrying {
         session_id: String,
         attempt: u32,

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ConversationJumpTarget } from "../hooks/useConversationJump";
 import type { useExecutionActivity } from "../hooks/useExecutionActivity";
+import { partitionLiveExecutions } from "../lib/liveExecutionState";
 import type {
   ModelToolRepairTelemetrySummaryRecord,
   SessionToolRepairTelemetrySummaryRecord,
@@ -9,6 +10,7 @@ import {
   currentContextTokensFromSources,
   isLiveStageStatus,
 } from "../lib/contextPressure";
+import { toolKindLabel } from "../lib/toolLabels";
 import { promptSurfaceEvidenceFromTelemetry } from "../lib/cacheDiagnostics";
 import {
   compactionContinuityFromTelemetry,
@@ -27,6 +29,7 @@ import { memoryRecordIdValue } from "../lib/memory";
 import { CompactionContinuityCard } from "./CompactionContinuityCard";
 import { ReadOnlyDiagnosticCard } from "./ReadOnlyDiagnosticCard";
 import { StructuredDataView } from "./StructuredDataView";
+import type { OutputField } from "../lib/history";
 
 type ExecutionActivityState = ReturnType<typeof useExecutionActivity>;
 
@@ -111,6 +114,60 @@ function formatTrajectoryBand(band?: string | null) {
   return band.replaceAll("_", " ");
 }
 
+function liveExecutionTone(status: string) {
+  switch (status) {
+    case "done":
+    case "result":
+      return "bg-green-500/10 text-green-700 dark:text-green-300";
+    case "error":
+      return "bg-rose-500/10 text-rose-700 dark:text-rose-300";
+    case "start":
+    case "running":
+      return "bg-blue-500/10 text-blue-700 dark:text-blue-300";
+    default:
+      return "bg-amber-500/10 text-amber-700 dark:text-amber-300";
+  }
+}
+
+function liveExecutionFieldSummary(fields: OutputField[]) {
+  return fields
+    .slice(0, 2)
+    .map((field) => {
+      const label = field.label?.trim();
+      const value = field.value?.trim();
+      if (label && value) return `${label}: ${value}`;
+      return value || label || "";
+    })
+    .filter((value) => value.length > 0)
+    .join(" · ");
+}
+
+function liveExecutionPreviewLabel(kind?: string | null) {
+  switch (kind) {
+    case "diff":
+      return "Preview";
+    case "code":
+      return "Output";
+    default:
+      return "Detail";
+  }
+}
+
+function runTailToneClass(tone: ExecutionActivityState["runTailSummary"]["tone"]) {
+  switch (tone) {
+    case "success":
+      return "bg-green-500/10 text-green-700 dark:text-green-300";
+    case "danger":
+      return "bg-rose-500/10 text-rose-700 dark:text-rose-300";
+    case "warning":
+      return "bg-amber-500/10 text-amber-700 dark:text-amber-300";
+    case "info":
+      return "bg-blue-500/10 text-blue-700 dark:text-blue-300";
+    default:
+      return "bg-muted text-muted-foreground";
+  }
+}
+
 function eventWindowLabel(page: number, count: number, pageSize: number) {
   if (count === 0) return `page ${page} · items 0`;
   const start = (page - 1) * pageSize + 1;
@@ -170,6 +227,20 @@ function stageSummaryMeta(stage: ExecutionActivityState["stageSummaries"][number
     parts.push(`ctx ${formatCompactTokenCount(stage.estimated_context_tokens)}`);
   }
   return parts;
+}
+
+function terminalStageSummaries(
+  stages: ExecutionActivityState["stageSummaries"],
+): ExecutionActivityState["stageSummaries"] {
+  return stages
+    .filter((stage) => !isLiveStageStatus(stage.status))
+    .sort((left, right) => {
+      const leftIndex = left.index ?? Number.MAX_SAFE_INTEGER;
+      const rightIndex = right.index ?? Number.MAX_SAFE_INTEGER;
+      if (leftIndex !== rightIndex) return rightIndex - leftIndex;
+      return (right.stage_id ?? "").localeCompare(left.stage_id ?? "");
+    })
+    .slice(0, 4);
 }
 
 function metadataValue(record: Record<string, unknown> | null | undefined, key: string) {
@@ -330,6 +401,15 @@ export function ExecutionActivityPanel({
     insightRecentSessionRecords.filter(
       (item) => item.linked_skill_name || item.derived_skill_name,
     );
+  const liveExecutions = activity.liveExecutions ?? [];
+  const partitionedLiveExecutions = partitionLiveExecutions(liveExecutions, {
+    currentLimit: 4,
+    recentLimit: 6,
+  });
+  const currentLiveExecutions = partitionedLiveExecutions.current;
+  const recentLiveExecutionOutcomes = partitionedLiveExecutions.recent;
+  const recentTerminalStages = terminalStageSummaries(activity.stageSummaries);
+  const runTail = activity.runTailSummary;
   const contextClosure = contextClosureContractFromTelemetry(activity.telemetry);
   const compactionContinuity = compactionContinuityFromTelemetry(activity.telemetry);
   const promptSurfaceEvidence = promptSurfaceEvidenceFromTelemetry(activity.telemetry);
@@ -337,6 +417,78 @@ export function ExecutionActivityPanel({
   const modelToolRepairSummary: ModelToolRepairTelemetrySummaryRecord | null =
     activity.telemetry?.model_tool_repair_summary ?? null;
   const trajectoryQuality = activity.telemetry?.tool_trajectory_quality ?? null;
+
+  const renderLiveExecutionCard = (entry: typeof liveExecutions[number], key: string) => {
+    const fieldSummary = liveExecutionFieldSummary(entry.fields);
+    const previewText = entry.preview?.text?.trim() || null;
+    const previewLabel = liveExecutionPreviewLabel(entry.preview?.kind);
+    return (
+      <div key={key} className="roc-rail-item grid gap-1 bg-card/45">
+        <div className="roc-rail-meta-list items-center">
+          <span className="roc-badge px-3 py-1 text-xs">{toolKindLabel(entry.kind)}</span>
+          <strong>{entry.label}</strong>
+          <span className={cn("roc-badge px-3 py-1 text-xs", liveExecutionTone(entry.status))}>
+            {entry.status}
+          </span>
+          {entry.stageId ? (
+            <button
+              type="button"
+              className="roc-badge px-3 py-1 text-xs"
+              onClick={() => onNavigateStage(entry.stageId!)}
+            >
+              stage {entry.stageId}
+            </button>
+          ) : null}
+          {entry.toolCallId ? (
+            <button
+              type="button"
+              className="roc-badge px-3 py-1 text-xs"
+              onClick={() =>
+                onNavigateToolCall(entry.toolCallId!, {
+                  stageId: entry.stageId,
+                  executionId: null,
+                })
+              }
+            >
+              tool {entry.toolCallId}
+            </button>
+          ) : null}
+        </div>
+        {entry.summary ? (
+          <p className="text-sm text-muted-foreground leading-relaxed">{entry.summary}</p>
+        ) : null}
+        {!entry.summary && fieldSummary ? (
+          <p className="text-sm text-muted-foreground leading-relaxed">{fieldSummary}</p>
+        ) : null}
+        {entry.fields.length ? (
+          <dl className="grid gap-1 text-xs text-muted-foreground">
+            {entry.fields.map((field, index) => (
+              <div key={`${entry.id}-field-${index}`} className="grid gap-0.5">
+                {field.label ? <dt className="font-medium text-foreground/80">{field.label}</dt> : null}
+                {field.value ? <dd className="m-0 whitespace-pre-wrap break-words">{field.value}</dd> : null}
+              </div>
+            ))}
+          </dl>
+        ) : null}
+        {previewText ? (
+          <div className="grid gap-1">
+            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground/80">
+              {previewLabel}
+            </p>
+            <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-muted/50 p-2 text-xs leading-relaxed text-muted-foreground">
+              {previewText}
+            </pre>
+            {entry.preview?.truncated ? (
+              <p className="text-[11px] text-muted-foreground">Preview truncated.</p>
+            ) : null}
+          </div>
+        ) : null}
+        <p className="text-xs text-muted-foreground">
+          Updated {formatTs(entry.updatedAt)}
+        </p>
+      </div>
+    );
+  };
 
   return (
     <div className="roc-panel roc-rail-panel p-5">
@@ -364,6 +516,20 @@ export function ExecutionActivityPanel({
 
       {activity.executionTopology ? (
         <>
+          <div className={sideSectionClass}>
+            <p className="roc-section-label">Run Tail</p>
+            <div className="roc-rail-item grid gap-2 bg-card/45">
+              <div className="roc-rail-meta-list items-center">
+                <strong>{runTail.title}</strong>
+                <span className={cn("roc-badge px-3 py-1 text-xs", runTailToneClass(runTail.tone))}>
+                  {runTail.status}
+                </span>
+              </div>
+              {runTail.detail ? (
+                <p className="text-sm text-muted-foreground leading-relaxed">{runTail.detail}</p>
+              ) : null}
+            </div>
+          </div>
           <div className="roc-rail-meta-list">
             <span className="roc-badge px-3 py-1.5 text-xs">active {activity.executionTopology.active_count}</span>
             <span className="roc-badge px-3 py-1.5 text-xs">running {activity.executionTopology.running_count}</span>
@@ -443,6 +609,61 @@ export function ExecutionActivityPanel({
                 ) : (
                   <p className="text-sm text-muted-foreground leading-relaxed">No active stage summary in telemetry.</p>
                 )}
+              </div>
+            </div>
+          ) : null}
+          {currentLiveExecutions.length ? (
+            <div className={sideSectionClass}>
+              <p className="roc-section-label">Current Tools + Skills</p>
+              <div className="grid gap-2">
+                {currentLiveExecutions.map((entry) => renderLiveExecutionCard(entry, entry.id))}
+              </div>
+            </div>
+          ) : null}
+          {recentLiveExecutionOutcomes.length ? (
+            <div className={sideSectionClass}>
+              <p className="roc-section-label">Recent Tool Outcomes</p>
+              <div className="grid gap-2">
+                {recentLiveExecutionOutcomes.map((entry) =>
+                  renderLiveExecutionCard(entry, `recent-${entry.id}`),
+                )}
+              </div>
+            </div>
+          ) : null}
+          {recentTerminalStages.length ? (
+            <div className={sideSectionClass}>
+              <p className="roc-section-label">Recent Stage Outcomes</p>
+              <div className="grid gap-2">
+                {recentTerminalStages.map((stage) => {
+                  const meta = stageSummaryMeta(stage);
+                  return (
+                    <div key={`terminal-${stage.stage_id}`} className="roc-rail-item grid gap-1 bg-card/45">
+                      <div className="roc-rail-meta-list items-center">
+                        <strong>{stage.stage_name}</strong>
+                        <span className={cn("roc-badge px-3 py-1 text-xs", stageStatusTone(stage.status))}>
+                          {stage.status}
+                        </span>
+                        <button
+                          type="button"
+                          className="roc-badge px-3 py-1 text-xs"
+                          onClick={() => onNavigateStage(stage.stage_id)}
+                        >
+                          stage {stage.stage_id}
+                        </button>
+                      </div>
+                      {meta.length ? (
+                        <p className="text-sm text-muted-foreground leading-relaxed">
+                          {meta.join(" · ")}
+                        </p>
+                      ) : null}
+                      {stage.last_event ? (
+                        <p className="text-sm text-muted-foreground leading-relaxed">
+                          {humanizeStageEvent(stage.last_event) || stage.last_event}
+                        </p>
+                      ) : null}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           ) : null}

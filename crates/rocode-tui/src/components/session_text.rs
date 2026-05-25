@@ -41,7 +41,8 @@ pub(super) fn render_message_text_part_with_width(
     let metadata = message.metadata.as_ref();
 
     if let Some(stage) = scheduler_stage(metadata) {
-        if let Some(lines) = render_decision_stage_part(text, stage, metadata, theme, marker_color, max_width)
+        if let Some(lines) =
+            render_decision_stage_part(text, stage, metadata, theme, marker_color, max_width)
         {
             return MessageTextRender {
                 lines,
@@ -50,7 +51,8 @@ pub(super) fn render_message_text_part_with_width(
             };
         }
 
-        let lines = render_scheduler_stage_part(text, stage, metadata, theme, marker_color, max_width);
+        let lines =
+            render_scheduler_stage_part(text, stage, metadata, theme, marker_color, max_width);
         return MessageTextRender {
             lines,
             allow_semantic_highlighting: false,

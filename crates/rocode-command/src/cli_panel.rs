@@ -11,6 +11,7 @@ pub struct CliPanelFrame {
 
 impl CliPanelFrame {
     pub fn boxed(title: &str, footer: Option<&str>, style: &CliStyle) -> Self {
+        let style = style.with_live_width();
         let inner_width = usize::from(style.width.saturating_sub(5)).clamp(24, 160);
         let chrome_width = inner_width + 2;
         let header_content = pad_right_display(

@@ -2301,7 +2301,10 @@ fn tui_usage_status_lines(
             lines.push(StatusLine::muted(format!("  Last grant: {kind}")));
         }
         if !matcher_breakdown.is_empty() {
-            lines.push(StatusLine::muted(format!("  Matchers: {}", matcher_summary)));
+            lines.push(StatusLine::muted(format!(
+                "  Matchers: {}",
+                matcher_summary
+            )));
         }
     }
 

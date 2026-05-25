@@ -1513,10 +1513,22 @@ async fn lifecycle_hook_routes_attached_session_content_to_attached_session() {
             .collect::<Vec<_>>(),
         vec![
             Some((&"text/main".to_string(), rocode_types::LivePartPhase::Start)),
-            Some((&"text/main".to_string(), rocode_types::LivePartPhase::Append)),
-            Some((&"reasoning/main".to_string(), rocode_types::LivePartPhase::Start)),
-            Some((&"reasoning/main".to_string(), rocode_types::LivePartPhase::Append)),
-            Some((&"reasoning/main".to_string(), rocode_types::LivePartPhase::End)),
+            Some((
+                &"text/main".to_string(),
+                rocode_types::LivePartPhase::Append
+            )),
+            Some((
+                &"reasoning/main".to_string(),
+                rocode_types::LivePartPhase::Start
+            )),
+            Some((
+                &"reasoning/main".to_string(),
+                rocode_types::LivePartPhase::Append
+            )),
+            Some((
+                &"reasoning/main".to_string(),
+                rocode_types::LivePartPhase::End
+            )),
             Some((&"text/main".to_string(), rocode_types::LivePartPhase::End)),
         ]
     );
