@@ -87,6 +87,13 @@ impl CliFrontendProjection {
                 self.phase,
                 CliFrontendPhase::Busy | CliFrontendPhase::Waiting | CliFrontendPhase::Cancelling
             );
+        let prompt_owns_session_usage = self.current_context_tokens().is_some()
+            || self.token_stats.input_tokens > 0
+            || self.token_stats.output_tokens > 0
+            || self.token_stats.reasoning_tokens > 0
+            || self.token_stats.cache_read_tokens > 0
+            || self.token_stats.cache_miss_tokens > 0
+            || self.token_stats.cache_write_tokens > 0;
         let state = if self.pending_permission_count > 0 || self.submitting_permission_count > 0 {
             cli_footer_state_label("awaiting_permission")
         } else if matches!(self.phase, CliFrontendPhase::Waiting) {
@@ -144,49 +151,51 @@ impl CliFrontendProjection {
         if let Some(error) = self.last_permission_submit_error.as_deref() {
             parts.push(cli_footer_error_part(&format!("perm-error {}", error)));
         }
-        if let Some(current_tokens) = self.current_context_tokens() {
-            let context_window = self
-                .current_model_label
-                .as_deref()
-                .and_then(|label| self.model_catalog.get(label))
-                .and_then(|entry| entry.context_window)
-                .filter(|value| *value > 0);
-            if let Some(limit) = context_window {
-                let percent =
-                    (((current_tokens as f64 / limit as f64) * 100.0).round() as u64).max(1);
-                let mut label = format!(
-                    "ctx {}/{} {}%",
-                    format_token_count(current_tokens),
-                    format_token_count(limit),
-                    percent
-                );
-                if let Some(note) = rocode_types::context_pressure_label(Some(percent)) {
-                    label.push(' ');
-                    label.push_str(note);
+        if !prompt_owns_session_usage {
+            if let Some(current_tokens) = self.current_context_tokens() {
+                let context_window = self
+                    .current_model_label
+                    .as_deref()
+                    .and_then(|label| self.model_catalog.get(label))
+                    .and_then(|entry| entry.context_window)
+                    .filter(|value| *value > 0);
+                if let Some(limit) = context_window {
+                    let percent =
+                        (((current_tokens as f64 / limit as f64) * 100.0).round() as u64).max(1);
+                    let mut label = format!(
+                        "ctx {}/{} {}%",
+                        format_token_count(current_tokens),
+                        format_token_count(limit),
+                        percent
+                    );
+                    if let Some(note) = rocode_types::context_pressure_label(Some(percent)) {
+                        label.push(' ');
+                        label.push_str(note);
+                    }
+                    parts.push(cli_footer_usage_part(&label));
+                } else {
+                    parts.push(cli_footer_usage_part(&format!(
+                        "ctx {}",
+                        format_token_count(current_tokens)
+                    )));
                 }
-                parts.push(cli_footer_usage_part(&label));
-            } else {
+            } else if self.token_stats.total_tokens > 0 {
                 parts.push(cli_footer_usage_part(&format!(
-                    "ctx {}",
-                    format_token_count(current_tokens)
+                    "workflow {}",
+                    format_token_count(self.token_stats.total_tokens)
                 )));
             }
-        } else if self.token_stats.total_tokens > 0 {
-            parts.push(cli_footer_usage_part(&format!(
-                "workflow {}",
-                format_token_count(self.token_stats.total_tokens)
-            )));
-        }
-        if self.token_stats.cache_read_tokens > 0
-            || self.token_stats.cache_miss_tokens > 0
-            || self.token_stats.cache_write_tokens > 0
-        {
-            parts.push(cli_footer_cache_part(&format!(
-                "cache H/M/W {}/{}/{}",
-                format_token_count(self.token_stats.cache_read_tokens),
-                format_token_count(self.token_stats.cache_miss_tokens),
-                format_token_count(self.token_stats.cache_write_tokens)
-            )));
+            if self.token_stats.cache_read_tokens > 0
+                || self.token_stats.cache_miss_tokens > 0
+                || self.token_stats.cache_write_tokens > 0
+            {
+                parts.push(cli_footer_cache_part(&format!(
+                    "cache H/M/W {}/{}/{}",
+                    format_token_count(self.token_stats.cache_read_tokens),
+                    format_token_count(self.token_stats.cache_miss_tokens),
+                    format_token_count(self.token_stats.cache_write_tokens)
+                )));
+            }
         }
         if self.last_turn_tokens.cache_read_tokens > 0
             || self.last_turn_tokens.cache_miss_tokens > 0
@@ -197,6 +206,13 @@ impl CliFrontendProjection {
                 format_token_count(self.last_turn_tokens.cache_read_tokens),
                 format_token_count(self.last_turn_tokens.cache_miss_tokens),
                 format_token_count(self.last_turn_tokens.cache_write_tokens)
+            )));
+        }
+        if self.last_turn_tokens.input_tokens > 0 || self.last_turn_tokens.output_tokens > 0 {
+            parts.push(cli_footer_usage_part(&format!(
+                "turn in/out {}/{}",
+                format_token_count(self.last_turn_tokens.input_tokens),
+                format_token_count(self.last_turn_tokens.output_tokens)
             )));
         }
         if let Some(cache_diagnostic) = self.cache_diagnostic.as_deref() {
@@ -406,6 +422,8 @@ mod tests {
     #[test]
     fn footer_text_surfaces_last_turn_cache_summary() {
         let mut projection = CliFrontendProjection::default();
+        projection.last_turn_tokens.input_tokens = 227_600;
+        projection.last_turn_tokens.output_tokens = 2_600;
         projection.last_turn_tokens.cache_read_tokens = 30_000;
         projection.last_turn_tokens.cache_miss_tokens = 6_000;
         projection.last_turn_tokens.cache_write_tokens = 2_000;
@@ -413,5 +431,36 @@ mod tests {
         let footer = projection.footer_text();
 
         assert!(footer.contains("turn cache H/M/W 30K/6K/2K"), "{footer}");
+        assert!(footer.contains("turn in/out 227.6K/2.6K"), "{footer}");
+    }
+
+    #[test]
+    fn footer_text_omits_duplicate_session_usage_when_prompt_lane_already_owns_it() {
+        let mut projection = CliFrontendProjection::default();
+        projection.current_model_label = Some("deepseek/deepseek-v4-flash".to_string());
+        projection.model_catalog.insert(
+            "deepseek/deepseek-v4-flash".to_string(),
+            crate::run::frontend_state_types::CliModelCatalogEntry::from_provider_model(
+                Some(1_000_000),
+                None,
+                None,
+            ),
+        );
+        projection.token_stats.context_tokens = 44_500;
+        projection.token_stats.input_tokens = 227_600;
+        projection.token_stats.output_tokens = 2_600;
+        projection.token_stats.cache_read_tokens = 194_700;
+        projection.token_stats.cache_miss_tokens = 32_900;
+        projection.last_turn_tokens.input_tokens = 227_600;
+        projection.last_turn_tokens.output_tokens = 2_600;
+        projection.last_turn_tokens.cache_read_tokens = 19_400;
+        projection.last_turn_tokens.cache_miss_tokens = 3_200;
+
+        let footer = projection.footer_text();
+
+        assert!(!footer.contains("ctx 44.5K/1M"), "{footer}");
+        assert!(!footer.contains("cache H/M/W 194.7K/32.9K/0"), "{footer}");
+        assert!(footer.contains("turn in/out 227.6K/2.6K"), "{footer}");
+        assert!(footer.contains("turn cache H/M/W 19.4K/3.2K/0"), "{footer}");
     }
 }

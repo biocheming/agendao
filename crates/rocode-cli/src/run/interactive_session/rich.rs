@@ -1157,9 +1157,25 @@ async fn handle_async_sse_event_rich(
                 handle_permission_from_sse(runtime, api_client, &permission_id, &info_json).await;
             }
         }
-        CliServerEvent::SessionUpdated { .. } => {
-            // Streaming blocks are handled incrementally via OutputBlock.
-            // Full reconciliation only happens on SessionIdle.
+        CliServerEvent::SessionUpdated { session_id, source } => {
+            // Keep transcript authority on the live OutputBlock path, but
+            // refresh telemetry eagerly so usage/cache meters update while the
+            // turn is still running.
+            let is_current_session = runtime
+                .server_session_id
+                .as_deref()
+                .is_some_and(|current| current == session_id);
+            if is_current_session
+                && super::super::cli_session_update_requires_refresh(source.as_deref())
+            {
+                super::super::cli_refresh_session_telemetry(
+                    api_client,
+                    &runtime.frontend_projection,
+                    &session_id,
+                )
+                .await;
+                refresh_rich_prompt(runtime);
+            }
         }
         CliServerEvent::SessionIdle { session_id } => {
             let is_current_session = runtime
@@ -1535,7 +1551,8 @@ fn handle_sse_event_rich(
                         status: "complete".to_string(),
                         detail: Some(format!(
                             "input {} · output {}",
-                            prompt_tokens, completion_tokens
+                            format_token_count(prompt_tokens),
+                            format_token_count(completion_tokens)
                         )),
                     });
                 }

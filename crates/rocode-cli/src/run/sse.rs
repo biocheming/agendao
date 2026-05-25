@@ -1059,7 +1059,8 @@ fn handle_sse_event(
                         status: "complete".to_string(),
                         detail: Some(format!(
                             "input {} · output {}",
-                            prompt_tokens, completion_tokens
+                            format_token_count(prompt_tokens),
+                            format_token_count(completion_tokens)
                         )),
                         });
                 }
@@ -1462,56 +1463,64 @@ async fn cli_refresh_server_info(
     }
 
     if let Some(session_id) = server_session_id {
-        match api_client.get_session_telemetry(session_id).await {
-            Ok(telemetry) => {
-                if let Ok(mut projection) = projection.lock() {
-                    projection.session_runtime = Some(telemetry.runtime.clone());
-                    projection.stage_summaries = telemetry.stages.clone();
-                    projection.telemetry_topology = Some(telemetry.topology.clone());
-                    if matches!(
-                        telemetry.runtime.run_status,
-                        crate::api_client::SessionRunStatusKind::Compacting
-                    ) {
-                        projection.run_tail =
-                            Some(crate::run::frontend_state_types::CliRunTailState {
-                                status: "compacting".to_string(),
-                                detail: Some("Preparing a smaller context window.".to_string()),
-                            });
-                    } else if projection
-                        .run_tail
-                        .as_ref()
-                        .is_some_and(|tail| tail.status == "compacting")
-                    {
-                        projection.run_tail = None;
-                    }
-                    projection.sync_usage_from_snapshot(&telemetry.usage, Some(&telemetry.usage_books));
-                    projection.cache_diagnostic =
-                        cli_context_closure_cache_diagnostic_label(
-                            telemetry.context_closure_contract.as_ref(),
-                        )
-                        .or_else(|| {
-                            telemetry
-                                .cache_evidence
-                                .as_ref()
-                                .cloned()
-                                .and_then(|value| serde_json::from_value(value).ok())
-                                .and_then(|summary| cli_cache_evidence_status_label(&summary))
-                        })
-                        .or_else(|| {
-                            telemetry
-                                .cache_semantics
-                                .as_ref()
-                                .and_then(|summary| summary.label.clone())
+        cli_refresh_session_telemetry(api_client, projection, session_id).await;
+    }
+}
+
+async fn cli_refresh_session_telemetry(
+    api_client: &CliApiClient,
+    projection: &Arc<Mutex<CliFrontendProjection>>,
+    session_id: &str,
+) {
+    match api_client.get_session_telemetry(session_id).await {
+        Ok(telemetry) => {
+            if let Ok(mut projection) = projection.lock() {
+                projection.session_runtime = Some(telemetry.runtime.clone());
+                projection.stage_summaries = telemetry.stages.clone();
+                projection.telemetry_topology = Some(telemetry.topology.clone());
+                if matches!(
+                    telemetry.runtime.run_status,
+                    crate::api_client::SessionRunStatusKind::Compacting
+                ) {
+                    projection.run_tail =
+                        Some(crate::run::frontend_state_types::CliRunTailState {
+                            status: "compacting".to_string(),
+                            detail: Some("Preparing a smaller context window.".to_string()),
                         });
-                    projection.ingress_diagnostic =
-                        ingress_stabilization_label(telemetry.ingress_stabilization.as_ref());
-                    projection.provider_diagnostic =
-                        provider_diagnostic_label(telemetry.provider_diagnostic_summary.as_ref());
+                } else if projection
+                    .run_tail
+                    .as_ref()
+                    .is_some_and(|tail| tail.status == "compacting")
+                {
+                    projection.run_tail = None;
                 }
+                projection.sync_usage_from_snapshot(&telemetry.usage, Some(&telemetry.usage_books));
+                projection.cache_diagnostic =
+                    cli_context_closure_cache_diagnostic_label(
+                        telemetry.context_closure_contract.as_ref(),
+                    )
+                    .or_else(|| {
+                        telemetry
+                            .cache_evidence
+                            .as_ref()
+                            .cloned()
+                            .and_then(|value| serde_json::from_value(value).ok())
+                            .and_then(|summary| cli_cache_evidence_status_label(&summary))
+                    })
+                    .or_else(|| {
+                        telemetry
+                            .cache_semantics
+                            .as_ref()
+                            .and_then(|summary| summary.label.clone())
+                    });
+                projection.ingress_diagnostic =
+                    ingress_stabilization_label(telemetry.ingress_stabilization.as_ref());
+                projection.provider_diagnostic =
+                    provider_diagnostic_label(telemetry.provider_diagnostic_summary.as_ref());
             }
-            Err(error) => {
-                tracing::debug!("Failed to refresh session telemetry: {}", error);
-            }
+        }
+        Err(error) => {
+            tracing::debug!("Failed to refresh session telemetry: {}", error);
         }
     }
 }
