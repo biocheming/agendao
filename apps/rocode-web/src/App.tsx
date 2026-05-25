@@ -539,12 +539,10 @@ export default function App() {
   );
   const outputFlushFrameRef = useRef<number | null>(null);
   const pendingSessionRefreshTimerRef = useRef<number | null>(null);
-  const pendingHistoryReloadTimerRef = useRef<number | null>(null);
   const showThinkingRef = useRef(showThinking);
   const connectResolveRequestRef = useRef(0);
   const recentModelScopeRef = useRef<string | null>(null);
   const recentModelAutoSuppressedRef = useRef(false);
-  const [messageReloadToken, setMessageReloadToken] = useState(0);
 
   const recentModels = useMemo(
     () => workspaceContext?.recent_models ?? [],
@@ -1055,12 +1053,6 @@ export default function App() {
     }
   }, []);
 
-  const clearPendingHistoryReload = useCallback(() => {
-    if (pendingHistoryReloadTimerRef.current !== null) {
-      window.clearTimeout(pendingHistoryReloadTimerRef.current);
-      pendingHistoryReloadTimerRef.current = null;
-    }
-  }, []);
 
   const selectSession = useCallback((sessionId: string | null) => {
     routeSyncSourceRef.current = "app";
@@ -1364,7 +1356,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [messageReloadToken, selectedSessionId, showThinking]);
+  }, [selectedSessionId, showThinking]);
 
   const refreshSessionsFromServer = useCallback(async () => {
     try {
@@ -1390,21 +1382,6 @@ export default function App() {
       void refreshSessionsFromServer();
     }, 120);
   }, [refreshSessionsFromServer]);
-
-  const scheduleSelectedHistoryReload = useCallback((sessionId: string) => {
-    if (pendingHistoryReloadTimerRef.current !== null) {
-      return;
-    }
-    pendingHistoryReloadTimerRef.current = window.setTimeout(() => {
-      pendingHistoryReloadTimerRef.current = null;
-      if (selectedSessionRef.current !== sessionId) {
-        return;
-      }
-      startTransition(() => {
-        setMessageReloadToken((current) => current + 1);
-      });
-    }, 120);
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1598,12 +1575,16 @@ export default function App() {
       if (type === "session.updated") {
         // P1-2: high-frequency topology reconciles are handled via output
         // blocks — skip the full session refresh to avoid redundant work.
+        //
+        // Web Phase 1: session.updated only drives SessionRecord metadata
+        // refresh (sidebar / session list), never transcript. Transcript
+        // authority lives in output_block + session.status + permission.*
+        // + question.*. Removing the history reload here eliminates the
+        // double-authority path (local incremental + history rebuild) that
+        // caused replay / duplicate / last-block instability.
         const source = typeof event.source === "string" ? event.source : "";
         if (source !== "topology") {
           scheduleSessionRefresh();
-          if (eventSessionId === selectedSessionRef.current) {
-            scheduleSelectedHistoryReload(eventSessionId);
-          }
         }
         return;
       }
@@ -1722,16 +1703,13 @@ export default function App() {
       controller?.abort();
       clearPendingOutputBlockFlush();
       clearPendingSessionRefresh();
-      clearPendingHistoryReload();
     };
   }, [
-    clearPendingHistoryReload,
     clearPendingOutputBlockFlush,
     clearPendingSessionRefresh,
     flushPendingOutputBlocks,
     refreshExecutionActivity,
     schedulePendingOutputBlockFlush,
-    scheduleSelectedHistoryReload,
     scheduleSessionRefresh,
   ]);
 

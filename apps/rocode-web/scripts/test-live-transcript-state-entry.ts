@@ -905,6 +905,58 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
 }
 
 {
+  const history: MessageRecord[] = [
+    {
+      id: "assistant-1",
+      role: "assistant",
+      parts: [{ id: "reasoning-part-1", type: "reasoning", text: "main reasoning" }],
+    },
+  ];
+
+  const pruned = pruneLiveBlocksCoveredByHistory(history, [
+    {
+      kind: "reasoning",
+      phase: "full",
+      role: "assistant",
+      text: "main reasoning",
+      live_identity: {
+        message_id: "assistant-1",
+        part_key: "reasoning/main",
+        part_kind: "assistant_reasoning",
+        phase: "snapshot",
+        legacy_block_id: "assistant-1",
+      },
+      id: "assistant-1",
+    },
+    {
+      kind: "reasoning",
+      phase: "full",
+      role: "assistant",
+      text: "branch reasoning",
+      live_identity: {
+        message_id: "assistant-1",
+        part_key: "reasoning/branch-a",
+        part_kind: "assistant_reasoning",
+        phase: "snapshot",
+        legacy_block_id: "assistant-1",
+      },
+      id: "assistant-1",
+    },
+  ]);
+
+  assert.equal(
+    pruned.length,
+    1,
+    "history without output_block.live_identity must only prune the canonical reasoning/main slot",
+  );
+  assert.equal(
+    pruned[0]?.live_identity?.part_key,
+    "reasoning/branch-a",
+    "history without output_block.live_identity must not over-prune non-main reasoning branches",
+  );
+}
+
+{
   const schedulerProgress: OutputBlock = {
     kind: "scheduler_stage",
     role: "assistant",
@@ -1030,4 +1082,391 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
     0,
     "history rebuild must not materialize scheduler stage into authoritative transcript feed",
   );
+}
+
+// ── Web Phase 1 regression: End finalize + streaming text contracts ─────
+
+// T1: message start -> delta* -> full -> end.
+// Phase 2: deltas silently accumulate in live cache; only full/end upsert
+// into visible feed. The full block carries complete coalesced text.
+{
+  let messages: ReturnType<typeof applyOutputBlock> = [];
+  messages = applyOutputBlock(
+    messages,
+    assistantMessageBlock("msg-1", "", { phase: "start" }),
+    true,
+  );
+  // Deltas are silent in visible feed (Phase 2).
+  messages = applyOutputBlock(
+    messages,
+    assistantMessageBlock("msg-1", "fragment", { phase: "delta" }),
+    true,
+  );
+  assert.equal(messages.length, 0, "delta must not create visible feed entry");
+  messages = applyOutputBlock(
+    messages,
+    assistantMessageBlock("msg-1", "another fragment", { phase: "delta" }),
+    true,
+  );
+  assert.equal(messages.length, 0, "repeated deltas must not touch visible feed");
+  // Full snapshot carries the authoritative text and upserts.
+  messages = applyOutputBlock(
+    messages,
+    assistantMessageBlock("msg-1", "hello world", { phase: "full" }),
+    true,
+  );
+  assert.equal(messages.length, 1, "full must upsert into visible feed");
+  assert.equal(messages[0]?.text, "hello world");
+  // End finalizes without duplicating.
+  messages = applyOutputBlock(
+    messages,
+    assistantMessageBlock("msg-1", "", { phase: "end" }),
+    true,
+  );
+  assert.equal(messages.length, 1, "end must not duplicate visible block");
+  assert.equal(messages[0]?.text, "hello world", "end must retain full-snapshot text");
+}
+
+// T1-reasoning: reasoning delta silent, full upserts, end finalizes.
+{
+  function reasoningBlock(messageId: string, text: string, overrides: Partial<OutputBlock> = {}): OutputBlock {
+    return {
+      kind: "reasoning",
+      phase: "delta",
+      role: "assistant",
+      id: messageId,
+      text,
+      live_identity: {
+        message_id: messageId,
+        part_key: "reasoning/main",
+        part_kind: "assistant_reasoning",
+        phase: "snapshot",
+        legacy_block_id: messageId,
+      },
+      ...overrides,
+    };
+  }
+
+  let messages: ReturnType<typeof applyOutputBlock> = [];
+  messages = applyOutputBlock(messages, reasoningBlock("msg-1", "", { phase: "start" }), true);
+  // Phase 2: deltas are silent.
+  messages = applyOutputBlock(messages, reasoningBlock("msg-1", "fragment", { phase: "delta" }), true);
+  assert.equal(messages.length, 0, "reasoning delta must not touch visible feed");
+  // Full upserts.
+  messages = applyOutputBlock(
+    messages,
+    reasoningBlock("msg-1", "thinking more", { phase: "full" }),
+    true,
+  );
+  assert.equal(messages.length, 1, "reasoning full must upsert into visible feed");
+  assert.equal(messages[0]?.text, "thinking more");
+  // Empty end is no-op.
+  messages = applyOutputBlock(messages, reasoningBlock("msg-1", "", { phase: "end" }), true);
+  assert.equal(messages.length, 1, "reasoning end must not duplicate");
+  assert.equal(messages[0]?.text, "thinking more");
+}
+
+// T4: appendLiveBlock end marks streaming text phase="end" and preserves text.
+{
+  const live: OutputBlock[] = [];
+  const afterDelta = appendLiveBlock(
+    live,
+    assistantMessageBlock("msg-1", "partial text", { phase: "delta" }),
+  );
+  assert.equal(afterDelta.length, 1, "delta must insert live block");
+  assert.equal(afterDelta[0]?.text, "partial text");
+
+  const afterEnd = appendLiveBlock(
+    afterDelta,
+    assistantMessageBlock("msg-1", "", { phase: "end" }),
+  );
+  assert.equal(afterEnd.length, 1, "end must not prune streaming text block");
+  assert.equal(
+    afterEnd[0]?.phase,
+    "end",
+    "end must set retained block phase to end for downstream settle detection",
+  );
+  assert.equal(
+    afterEnd[0]?.text,
+    "partial text",
+    "end must preserve accumulated text from prior deltas when end payload is empty",
+  );
+}
+
+// T4-end-with-text: when end carries accumulated text, use it.
+{
+  const live: OutputBlock[] = [];
+  const afterEnd = appendLiveBlock(
+    live,
+    assistantMessageBlock("msg-1", "final consolidated text", { phase: "end" }),
+  );
+  assert.equal(afterEnd.length, 1, "end with text must retain the block");
+  assert.equal(afterEnd[0]?.phase, "end");
+  assert.equal(afterEnd[0]?.text, "final consolidated text");
+}
+
+// T5: multi-part reasoning — distinct part_keys must not collide in live cache.
+{
+  function reasoningWithPartKey(
+    messageId: string,
+    partKey: string,
+    text: string,
+    phase: string,
+  ): OutputBlock {
+    return {
+      kind: "reasoning",
+      phase,
+      role: "assistant",
+      text,
+      live_identity: {
+        message_id: messageId,
+        part_key: partKey,
+        part_kind: "assistant_reasoning" as const,
+        phase: "snapshot" as const,
+        legacy_block_id: messageId,
+      },
+    };
+  }
+
+  const live: OutputBlock[] = [];
+  const afterMain = appendLiveBlock(
+    live,
+    reasoningWithPartKey("msg-1", "reasoning/main", "main thinking", "full"),
+  );
+  assert.equal(afterMain.length, 1, "reasoning/main must insert live block");
+
+  const afterBranch = appendLiveBlock(
+    afterMain,
+    reasoningWithPartKey("msg-1", "reasoning/branch-a", "branch analysis", "full"),
+  );
+  assert.equal(
+    afterBranch.length,
+    2,
+    "reasoning/branch-a must not collide with reasoning/main in live cache",
+  );
+  assert.equal(afterBranch[0]?.text, "main thinking");
+  assert.equal(afterBranch[1]?.text, "branch analysis");
+
+  // Updating reasoning/main must not affect reasoning/branch-a.
+  const afterMainUpdate = appendLiveBlock(
+    afterBranch,
+    reasoningWithPartKey("msg-1", "reasoning/main", "main thinking revised", "full"),
+  );
+  assert.equal(
+    afterMainUpdate.length,
+    2,
+    "updating reasoning/main must not delete reasoning/branch-a",
+  );
+  assert.equal(afterMainUpdate[0]?.text, "main thinking revised");
+  assert.equal(afterMainUpdate[1]?.text, "branch analysis");
+}
+
+// T5-visible: multi-part reasoning in visible feed must not collide.
+{
+  function reasoningWithPartKey(
+    messageId: string,
+    partKey: string,
+    text: string,
+    phase: string,
+  ): OutputBlock {
+    return {
+      kind: "reasoning",
+      phase,
+      role: "assistant",
+      text,
+      live_identity: {
+        message_id: messageId,
+        part_key: partKey,
+        part_kind: "assistant_reasoning" as const,
+        phase: "snapshot" as const,
+        legacy_block_id: messageId,
+      },
+    };
+  }
+
+  let messages: ReturnType<typeof applyOutputBlock> = [];
+  messages = applyOutputBlock(
+    messages,
+    reasoningWithPartKey("msg-1", "reasoning/main", "main thinking", "full"),
+    true,
+  );
+  assert.equal(messages.length, 1, "first reasoning part must insert");
+
+  messages = applyOutputBlock(
+    messages,
+    reasoningWithPartKey("msg-1", "reasoning/branch-a", "branch analysis", "full"),
+    true,
+  );
+  assert.equal(
+    messages.length,
+    2,
+    "second reasoning part with different part_key must not overwrite first in visible feed",
+  );
+  assert.equal(messages[0]?.text, "main thinking");
+  assert.equal(messages[1]?.text, "branch analysis");
+}
+
+// T5-history-merge: multi-part reasoning via history + live merge must
+// not collide. mergeLiveTextBlock uses slotKey() for streaming text
+// matching during mergeHistoryWithLiveBlocks.
+{
+  function reasoningWithPartKey(
+    messageId: string,
+    partKey: string,
+    text: string,
+    phase: string,
+  ): OutputBlock {
+    return {
+      kind: "reasoning",
+      phase,
+      role: "assistant",
+      text,
+      live_identity: {
+        message_id: messageId,
+        part_key: partKey,
+        part_kind: "assistant_reasoning" as const,
+        phase: "snapshot" as const,
+        legacy_block_id: messageId,
+      },
+    };
+  }
+
+  const liveBlocks: OutputBlock[] = [
+    reasoningWithPartKey("msg-1", "reasoning/main", "main thinking", "full"),
+    reasoningWithPartKey("msg-1", "reasoning/branch-a", "branch analysis", "full"),
+  ];
+
+  // Full history covers both reasoning parts.
+  const fullHistory: MessageRecord[] = [{
+    id: "msg-1",
+    role: "assistant",
+    parts: [],
+  }];
+
+  const merged = mergeHistoryWithLiveBlocks(fullHistory, liveBlocks, true);
+  const reasoningBlocks = merged.filter((m) => m.kind === "reasoning");
+  assert.equal(
+    reasoningBlocks.length,
+    2,
+    "history+live merge must preserve distinct part_keys as separate reasoning blocks",
+  );
+
+  // Prune at slotKey granularity: history with no output_blocks
+  // should not prune any streaming text live blocks (slotKey requires
+  // output_block.live_identity to populate coveredIds).
+  const pruned = pruneLiveBlocksCoveredByHistory(fullHistory, liveBlocks);
+  assert.equal(
+    pruned.length,
+    2,
+    "history without output_block.live_identity must not prune slot-keyed live blocks",
+  );
+}
+
+// Phase 2 regression: buildFeedFromHistory must render persisted
+// text and reasoning parts via synthetic "full" blocks (not "delta",
+// which is a silent no-op in the visible feed).
+{
+  const { buildFeedFromHistory } = await import("../src/lib/liveTranscriptState");
+
+  const history: MessageRecord[] = [{
+    id: "assistant-1",
+    role: "assistant",
+    parts: [
+      { id: "p1", type: "reasoning", text: "thinking aloud" },
+      { id: "p2", type: "text", text: "hello world" },
+    ],
+  }];
+
+  const feed = buildFeedFromHistory(history, true);
+  const reasoning = feed.filter((m) => m.kind === "reasoning");
+  const text = feed.filter((m) => m.kind === "message");
+
+  assert.equal(reasoning.length, 1, "persisted reasoning part must render one visible block");
+  assert.equal(reasoning[0]?.text, "thinking aloud", "reasoning text must be preserved");
+  assert.equal(text.length, 1, "persisted text part must render one visible block");
+  assert.equal(text[0]?.text, "hello world", "assistant text must be preserved");
+}
+
+// T4: full/end mixed finalize — delta → full → delta → end converges to
+// one block with correct accumulated text. This covers the coalescer
+// interleaving full snapshots and trailing deltas before End.
+{
+  let messages: ReturnType<typeof applyOutputBlock> = [];
+  messages = applyOutputBlock(
+    messages,
+    assistantMessageBlock("msg-1", "", { phase: "start" }),
+    true,
+  );
+  // Delta: silent (Phase 2).
+  messages = applyOutputBlock(
+    messages,
+    assistantMessageBlock("msg-1", "fragment-a", { phase: "delta" }),
+    true,
+  );
+  assert.equal(messages.length, 0);
+  // Full snapshot carries coalesced text.
+  messages = applyOutputBlock(
+    messages,
+    assistantMessageBlock("msg-1", "fragment-a more-text", { phase: "full" }),
+    true,
+  );
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0]?.text, "fragment-a more-text");
+  // Trailing delta: silent.
+  messages = applyOutputBlock(
+    messages,
+    assistantMessageBlock("msg-1", " trailing", { phase: "delta" }),
+    true,
+  );
+  assert.equal(messages.length, 1);
+  // End with accumulated trailing text.
+  messages = applyOutputBlock(
+    messages,
+    assistantMessageBlock("msg-1", "fragment-a more-text trailing", { phase: "end" }),
+    true,
+  );
+  assert.equal(messages.length, 1, "full+end mix must converge to one block");
+  assert.equal(messages[0]?.text, "fragment-a more-text trailing");
+}
+
+// T3-adapted: persisted history parts without output_block.live_identity
+// still cover the canonical main slot for assistant text/reasoning.
+// This is a deliberate backward-compatibility fallback, not a generic
+// "incomplete history never prunes" rule.
+{
+  const liveBlocks: OutputBlock[] = [
+    assistantMessageBlock("msg-1", "complete live text", { phase: "full" }),
+  ];
+
+  // Persisted history has a text part but no output_block/live_identity.
+  // Fallback slot inference must still cover text/main.
+  const persistedTextHistory: MessageRecord[] = [{
+    id: "msg-1",
+    role: "assistant",
+    parts: [{ id: "p1", type: "text", text: "partial" }],
+  }];
+
+  const pruned = pruneLiveBlocksCoveredByHistory(persistedTextHistory, liveBlocks);
+  // The history part has no output_block, so slotKey inference uses
+  // "msg-1:text/main". The live block has live_identity with part_key
+  // "text/main". slotKey matches, so the canonical text slot is absorbed.
+  assert.equal(pruned.length, 0, "persisted text part must cover canonical text/main live block");
+
+  // Persisted reasoning-only history must not prune the text/main slot.
+  const reasoningOnlyHistory: MessageRecord[] = [{
+    id: "msg-1",
+    role: "assistant",
+    parts: [{ id: "p1", type: "reasoning", text: "thinking" }],
+  }];
+
+  const textLiveBlock: OutputBlock[] = [
+    assistantMessageBlock("msg-1", "complete live text", { phase: "full" }),
+  ];
+  const prunedReasoningOnly = pruneLiveBlocksCoveredByHistory(reasoningOnlyHistory, textLiveBlock);
+  assert.equal(
+    prunedReasoningOnly.length,
+    1,
+    "persisted reasoning-only history must not prune canonical text/main live block",
+  );
+  assert.equal(prunedReasoningOnly[0]?.text, "complete live text");
 }
