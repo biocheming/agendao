@@ -59,7 +59,8 @@ use rocode_orchestrator::{
     ModelResolver, ObjectiveDefinition, Orchestrator, OrchestratorContext, ScopeDefinition,
     ToolExecutor as OrchestratorToolExecutor, ToolRunner,
 };
-use rocode_types::{ControlInputKind, ControlInputPhase};
+use rocode_session::prompt::assistant_text_live_identity;
+use rocode_types::{ControlInputKind, ControlInputPhase, LivePartPhase};
 
 use super::super::tui::request_question_answers;
 use super::super::{
@@ -2616,7 +2617,11 @@ async fn session_prompt_inner(
                                 assistant_text,
                             )),
                             id: Some(assistant_message_id.clone()),
-                            live_identity: None,
+                            live_identity: Some(assistant_text_live_identity(
+                                &assistant_message_id,
+                                Some(assistant_message_id.clone()),
+                                LivePartPhase::Snapshot,
+                            )),
                         },
                     )
                     .await;

@@ -1140,21 +1140,21 @@ mod tests {
         let style = CliStyle::plain();
         let reasoning_identity = live_identity(
             "assistant-final",
-            "reasoning/main",
+            rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
             LiveMessagePartKind::AssistantReasoning,
             LivePartPhase::Snapshot,
             Some("assistant-final"),
         );
         let tool_start_identity = live_identity(
             "assistant-final",
-            "tool_call/tool-1",
+            &rocode_types::tool_call_part_key("tool-1"),
             LiveMessagePartKind::ToolCall,
             LivePartPhase::Start,
             Some("tool-1"),
         );
         let tool_done_identity = live_identity(
             "assistant-final",
-            "tool_result/tool-1",
+            &rocode_types::tool_result_part_key("tool-1"),
             LiveMessagePartKind::ToolResult,
             LivePartPhase::End,
             Some("tool-1"),
@@ -1194,7 +1194,7 @@ mod tests {
                 Some("assistant-final"),
                 Some(live_identity(
                     "assistant-final",
-                    "text/main",
+                    rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                     LiveMessagePartKind::AssistantText,
                     LivePartPhase::Snapshot,
                     Some("assistant-final"),
@@ -1210,7 +1210,7 @@ mod tests {
                 Some("assistant-final"),
                 Some(live_identity(
                     "assistant-final",
-                    "text/main",
+                    rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                     LiveMessagePartKind::AssistantText,
                     LivePartPhase::Snapshot,
                     Some("assistant-final"),
@@ -1226,7 +1226,7 @@ mod tests {
                 Some("assistant-final"),
                 Some(live_identity(
                     "assistant-final",
-                    "text/main",
+                    rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                     LiveMessagePartKind::AssistantText,
                     LivePartPhase::Snapshot,
                     Some("assistant-final"),
@@ -1242,7 +1242,7 @@ mod tests {
                 Some("assistant-final"),
                 Some(live_identity(
                     "assistant-final",
-                    "text/main",
+                    rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                     LiveMessagePartKind::AssistantText,
                     LivePartPhase::Snapshot,
                     Some("assistant-final"),
@@ -1258,7 +1258,7 @@ mod tests {
                 Some("assistant-final"),
                 Some(live_identity(
                     "assistant-final",
-                    "text/main",
+                    rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                     LiveMessagePartKind::AssistantText,
                     LivePartPhase::End,
                     Some("assistant-final"),
@@ -1306,7 +1306,7 @@ mod tests {
                 Some("assistant-1"),
                 Some(live_identity(
                     "assistant-1",
-                    "text/main",
+                    rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                     LiveMessagePartKind::AssistantText,
                     LivePartPhase::Snapshot,
                     Some("assistant-1"),
@@ -1343,7 +1343,7 @@ mod tests {
                     Some("assistant-1"),
                     Some(live_identity(
                         "assistant-1",
-                        "reasoning/main",
+                        rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
                         LiveMessagePartKind::AssistantReasoning,
                         LivePartPhase::Snapshot,
                         Some("assistant-1"),
@@ -1388,7 +1388,7 @@ mod tests {
                 Some("assistant-1"),
                 Some(live_identity(
                     "assistant-1",
-                    "reasoning/main",
+                    rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
                     LiveMessagePartKind::AssistantReasoning,
                     LivePartPhase::Snapshot,
                     Some("assistant-1"),
@@ -1447,7 +1447,7 @@ mod tests {
                 Some("assistant-1"),
                 Some(live_identity(
                     "assistant-1",
-                    "reasoning/main",
+                    rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
                     LiveMessagePartKind::AssistantReasoning,
                     LivePartPhase::Snapshot,
                     Some("assistant-1"),
@@ -1504,7 +1504,7 @@ mod tests {
                 Some("assistant-1"),
                 Some(live_identity(
                     "assistant-1",
-                    "text/main",
+                    rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                     LiveMessagePartKind::AssistantText,
                     LivePartPhase::Snapshot,
                     Some("assistant-1"),
@@ -1568,7 +1568,7 @@ mod tests {
                     Some("assistant-1"),
                     Some(live_identity(
                         "assistant-1",
-                        "reasoning/main",
+                        rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
                         LiveMessagePartKind::AssistantReasoning,
                         LivePartPhase::Snapshot,
                         Some("assistant-1"),
@@ -1627,7 +1627,7 @@ mod tests {
                 Some("tool-1"),
                 Some(live_identity(
                     "assistant-1",
-                    "tool_result/tool-1",
+                    &rocode_types::tool_result_part_key("tool-1"),
                     LiveMessagePartKind::ToolResult,
                     LivePartPhase::Snapshot,
                     Some("tool-1"),
@@ -1678,7 +1678,7 @@ mod tests {
                     Some("assistant-1"),
                     Some(live_identity(
                         "assistant-1",
-                        "reasoning/main",
+                        rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
                         LiveMessagePartKind::AssistantReasoning,
                         LivePartPhase::Snapshot,
                         Some("assistant-1"),
@@ -1699,7 +1699,7 @@ mod tests {
                 Some("tool-1"),
                 Some(live_identity(
                     "assistant-1",
-                    "tool_result/tool-1",
+                    &rocode_types::tool_result_part_key("tool-1"),
                     LiveMessagePartKind::ToolResult,
                     LivePartPhase::Snapshot,
                     Some("tool-1"),
@@ -1759,7 +1759,7 @@ mod tests {
                 Some("assistant-1"),
                 Some(live_identity(
                     "assistant-1",
-                    "reasoning/main",
+                    rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
                     LiveMessagePartKind::AssistantReasoning,
                     LivePartPhase::Start,
                     Some("assistant-1"),
@@ -1779,7 +1779,7 @@ mod tests {
                 Some("assistant-1"),
                 Some(live_identity(
                     "assistant-1",
-                    "reasoning/main",
+                    rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
                     LiveMessagePartKind::AssistantReasoning,
                     LivePartPhase::End,
                     Some("assistant-1"),
@@ -1823,7 +1823,7 @@ mod tests {
                 Some("stage-1"),
                 Some(live_identity(
                     "assistant-1",
-                    "scheduler/stage-1",
+                    &rocode_types::scheduler_stage_part_key("stage-1"),
                     LiveMessagePartKind::SchedulerStage,
                     LivePartPhase::Snapshot,
                     None,
@@ -1858,7 +1858,7 @@ mod tests {
                 Some("tool-call-1"),
                 Some(live_identity(
                     "assistant-1",
-                    "tool_call/tool-call-1",
+                    &rocode_types::tool_call_part_key("tool-call-1"),
                     LiveMessagePartKind::ToolCall,
                     LivePartPhase::Snapshot,
                     Some("tool-call-1"),
@@ -2149,7 +2149,7 @@ mod tests {
                 Some("tool-call-1"),
                 Some(live_identity(
                     "assistant-1",
-                    "tool_result/tool-call-1",
+                    &rocode_types::tool_result_part_key("tool-call-1"),
                     LiveMessagePartKind::ToolResult,
                     LivePartPhase::End,
                     Some("tool-call-1"),
@@ -2290,7 +2290,7 @@ mod tests {
                 Some("assistant-1"),
                 Some(live_identity(
                     "assistant-1",
-                    "text/main",
+                    rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                     LiveMessagePartKind::AssistantText,
                     LivePartPhase::Start,
                     Some("assistant-1"),
@@ -2310,7 +2310,7 @@ mod tests {
                 Some("assistant-1"),
                 Some(live_identity(
                     "assistant-1",
-                    "text/main",
+                    rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                     LiveMessagePartKind::AssistantText,
                     LivePartPhase::End,
                     Some("assistant-1"),
@@ -2347,7 +2347,7 @@ mod tests {
             )),
             Some(&live_identity(
                 "assistant-1",
-                "reasoning/main",
+                rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantReasoning,
                 LivePartPhase::Snapshot,
                 Some("assistant-1"),
@@ -2364,14 +2364,14 @@ mod tests {
         let style = CliStyle::plain();
         let snapshot_identity = live_identity(
             "assistant-1",
-            "reasoning/main",
+            rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
             LiveMessagePartKind::AssistantReasoning,
             LivePartPhase::Snapshot,
             Some("assistant-1"),
         );
         let end_identity = live_identity(
             "assistant-1",
-            "reasoning/main",
+            rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
             LiveMessagePartKind::AssistantReasoning,
             LivePartPhase::End,
             Some("assistant-1"),
@@ -2431,7 +2431,7 @@ mod tests {
             &OutputBlock::SchedulerStage(Box::new(stage_with_status("running"))),
             Some(&live_identity(
                 "assistant-1",
-                "scheduler/stage-1",
+                &rocode_types::scheduler_stage_part_key("stage-1"),
                 LiveMessagePartKind::SchedulerStage,
                 LivePartPhase::Snapshot,
                 None,
@@ -2506,7 +2506,7 @@ mod tests {
         let style = CliStyle::plain();
         let identity = live_identity(
             "assistant-1",
-            "tool_result/tool-1",
+            &rocode_types::tool_result_part_key("tool-1"),
             LiveMessagePartKind::ToolResult,
             LivePartPhase::Snapshot,
             Some("assistant-1"),
@@ -2529,8 +2529,12 @@ mod tests {
         );
 
         let mut transcript = CliVisibleTranscript::default();
-        transcript.upsert_live_slot("assistant-1:tool_result/tool-1", first.clone(), first);
-        transcript.upsert_live_slot("assistant-1:tool_result/tool-1", second.clone(), second);
+        let slot_key = rocode_types::live_slot_key(
+            "assistant-1",
+            &rocode_types::tool_result_part_key("tool-1"),
+        );
+        transcript.upsert_live_slot(&slot_key, first.clone(), first);
+        transcript.upsert_live_slot(&slot_key, second.clone(), second);
 
         let rendered = transcript.rendered_text();
         assert!(
@@ -2556,14 +2560,14 @@ mod tests {
         };
         let snapshot_identity = live_identity(
             "assistant-1",
-            "reasoning/main",
+            rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
             LiveMessagePartKind::AssistantReasoning,
             LivePartPhase::Snapshot,
             Some("assistant-1"),
         );
         let end_identity = live_identity(
             "assistant-1",
-            "reasoning/main",
+            rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
             LiveMessagePartKind::AssistantReasoning,
             LivePartPhase::End,
             Some("assistant-1"),
@@ -2614,39 +2618,52 @@ mod tests {
 
     #[test]
     fn shared_sample_preserves_five_assistant_messages_and_four_tool_cycles() {
-        let mut transcript = CliVisibleTranscript::default();
+        let runtime = test_runtime_with_attached_focus_data();
         let fixture = live_transcript_state_fixture();
+        let style = CliStyle::plain();
 
         for entry in &fixture.shared_turn_cycles.entries {
-            transcript.append_rendered(&format!("[message:assistant] {}\n", entry.message_text));
+            handle_sse_event(
+                &runtime,
+                output_block_event(
+                    Some(&entry.message_id),
+                    Some(entry.assistant_identity()),
+                    serde_json::json!({
+                        "kind": "message",
+                        "phase": "full",
+                        "role": "assistant",
+                        "text": entry.message_text
+                    }),
+                ),
+                &style,
+            );
             if let Some(tool) = &entry.tool {
-                let tool_label = rocode_command::output_blocks::tool_cli_activity_label(
-                    &rocode_command::output_blocks::ToolBlock::done(
-                        tool.tool_name.clone(),
-                        Some(tool.tool_detail.clone()),
+                handle_sse_event(
+                    &runtime,
+                    output_block_event(
+                        Some(&tool.tool_id),
+                        Some(tool.tool_result_identity(&entry.message_id)),
+                        serde_json::json!({
+                            "kind": "tool",
+                            "phase": "done",
+                            "name": tool.tool_name,
+                            "detail": tool.tool_detail
+                        }),
                     ),
+                    &style,
                 );
-                transcript.append_rendered(&format!(
-                    "[tool:done] {} :: {}\n",
-                    tool_label, tool.tool_detail
-                ));
             }
         }
 
-        let rendered = transcript.rendered_text();
-        assert_eq!(
-            rendered.matches("[message:assistant]").count(),
-            fixture.shared_turn_cycles.expected.assistant_message_count,
-            "{rendered}"
-        );
-        assert_eq!(
-            rendered.matches("[tool:done] Skill").count(),
-            fixture.shared_turn_cycles.expected.tool_result_count,
-            "{rendered}"
-        );
+        let rendered = runtime
+            .root_session_transcript
+            .lock()
+            .expect("root transcript")
+            .rendered_text();
+
         for entry in &fixture.shared_turn_cycles.entries {
             assert!(
-                rendered.contains(&format!("[message:assistant] {}", entry.message_text)),
+                rendered.contains(&entry.message_text),
                 "{rendered}"
             );
         }
@@ -2656,20 +2673,88 @@ mod tests {
             .iter()
             .filter_map(|entry| entry.tool.as_ref())
         {
-            let tool_label = rocode_command::output_blocks::tool_cli_activity_label(
-                &rocode_command::output_blocks::ToolBlock::done(
-                    entry.tool_name.clone(),
-                    Some(entry.tool_detail.clone()),
-                ),
-            );
             assert!(
-                rendered.contains(&format!(
-                    "[tool:done] {} :: {}",
-                    tool_label, entry.tool_detail
-                )),
+                rendered.contains(&entry.tool_detail),
                 "{rendered}"
             );
         }
+
+        let assistant_count = fixture
+            .shared_turn_cycles
+            .entries
+            .iter()
+            .filter(|entry| rendered.contains(&entry.message_text))
+            .count();
+        let tool_count = fixture
+            .shared_turn_cycles
+            .entries
+            .iter()
+            .filter_map(|entry| entry.tool.as_ref())
+            .filter(|tool| rendered.contains(&tool.tool_detail))
+            .count();
+        assert_eq!(
+            assistant_count,
+            fixture.shared_turn_cycles.expected.assistant_message_count,
+            "{rendered}"
+        );
+        assert_eq!(
+            tool_count,
+            fixture.shared_turn_cycles.expected.tool_result_count,
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn shared_sample_tool_running_progress_stays_out_of_cli_transcript() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let fixture = live_transcript_state_fixture();
+        let style = CliStyle::plain();
+
+        handle_sse_event(
+            &runtime,
+            output_block_event(
+                Some(&fixture.tool_progress_exclusion.tool_running.tool_id),
+                Some(fixture.tool_progress_exclusion.tool_running_identity()),
+                serde_json::json!({
+                    "kind": "tool",
+                    "phase": "running",
+                    "name": fixture.tool_progress_exclusion.tool_running.tool_name,
+                    "detail": fixture.tool_progress_exclusion.tool_running.tool_detail
+                }),
+            ),
+            &style,
+        );
+
+        let rendered = runtime
+            .root_session_transcript
+            .lock()
+            .expect("root transcript")
+            .rendered_text();
+        assert_eq!(rendered, "● root line\n", "{rendered}");
+    }
+
+    #[test]
+    fn shared_sample_scheduler_stage_identity_stays_out_of_cli_transcript() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let fixture = live_transcript_state_fixture();
+        let style = CliStyle::plain();
+
+        handle_sse_event(
+            &runtime,
+            output_block_event(
+                Some(&fixture.scheduler_stage_exclusion.stage_id),
+                Some(fixture.scheduler_stage_exclusion.scheduler_identity()),
+                fixture.scheduler_stage_exclusion.payload(),
+            ),
+            &style,
+        );
+
+        let rendered = runtime
+            .root_session_transcript
+            .lock()
+            .expect("root transcript")
+            .rendered_text();
+        assert_eq!(rendered, "● root line\n", "{rendered}");
     }
 
     #[test]
@@ -2793,7 +2878,7 @@ mod tests {
                 id: Some("assistant-attached".to_string()),
                 live_identity: Some(live_identity(
                     "assistant-attached",
-                    "text/main",
+                    rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                     LiveMessagePartKind::AssistantText,
                     LivePartPhase::Snapshot,
                     Some("assistant-attached"),
@@ -2814,7 +2899,7 @@ mod tests {
                 id: Some("assistant-attached".to_string()),
                 live_identity: Some(live_identity(
                     "assistant-attached",
-                    "text/main",
+                    rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                     LiveMessagePartKind::AssistantText,
                     LivePartPhase::Snapshot,
                     Some("assistant-attached"),

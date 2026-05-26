@@ -625,7 +625,7 @@ mod tests {
     use rocode_command::stage_protocol::{telemetry_event_names, StageEvent};
     use rocode_types::{
         ControlInputKind, ControlInputPhase, LiveMessagePartIdentity, LiveMessagePartKind,
-        LivePartPhase,
+        LivePartPhase, ASSISTANT_TEXT_MAIN_PART_KEY,
     };
 
     #[test]
@@ -636,7 +636,7 @@ mod tests {
             Some("block-1"),
             Some(LiveMessagePartIdentity {
                 message_id: "msg-1".to_string(),
-                part_key: "text/main".to_string(),
+                part_key: ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
                 part_kind: LiveMessagePartKind::AssistantText,
                 phase: LivePartPhase::Snapshot,
                 legacy_block_id: Some("block-1".to_string()),
@@ -651,7 +651,7 @@ mod tests {
         assert_eq!(value["block"]["tone"], "success");
         assert_eq!(value["block"]["text"], "ok");
         assert_eq!(value["live_identity"]["message_id"], "msg-1");
-        assert_eq!(value["live_identity"]["part_key"], "text/main");
+        assert_eq!(value["live_identity"]["part_key"], ASSISTANT_TEXT_MAIN_PART_KEY);
         assert_eq!(value["live_identity"]["part_kind"], "assistant_text");
         assert_eq!(value["live_identity"]["phase"], "snapshot");
         assert_eq!(value["live_identity"]["legacy_block_id"], "block-1");

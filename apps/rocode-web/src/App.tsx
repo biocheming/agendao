@@ -82,6 +82,7 @@ import {
   mergeHistoryWithLiveBlocks,
   pruneLiveBlocksCoveredByHistory,
   shouldQueueLiveTranscriptBlock,
+  visibleSnapshotFromLiveBlocks,
 } from "./lib/liveTranscriptState";
 import {
   type PermissionInteractionRecord,
@@ -188,8 +189,98 @@ type PromptPart =
 
 type SessionLiveBlockCache = Record<string, OutputBlock[]>;
 type SessionOptimisticFeedCache = Record<string, FeedMessage[]>;
+type SessionRuntimeSurface = {
+  banner: string | null;
+  sessionEvents: OutputBlock[];
+  inspectItems: OutputBlock[];
+  queueItems: OutputBlock[];
+};
 
 type PendingCommandInvocation = PendingCommandInvocationRecord;
+
+function createEmptyRuntimeSurface(): SessionRuntimeSurface {
+  return {
+    banner: null,
+    sessionEvents: [],
+    inspectItems: [],
+    queueItems: [],
+  };
+}
+
+function runtimeSurfacePreview(block: OutputBlock): string | null {
+  const candidate = [
+    block.display?.summary,
+    block.summary,
+    block.text,
+    block.detail,
+    block.preview,
+    block.body,
+  ].find((value) => typeof value === "string" && value.trim().length > 0);
+  return typeof candidate === "string" ? candidate.trim() : null;
+}
+
+function runtimeSurfaceLabel(block: OutputBlock): string {
+  const candidate = [
+    block.title,
+    block.event,
+    block.name,
+    block.display?.header,
+    block.kind,
+  ].find((value) => typeof value === "string" && value.trim().length > 0);
+  return typeof candidate === "string" ? candidate.trim() : block.kind;
+}
+
+function runtimeSurfacePhase(block: OutputBlock): string | null {
+  return typeof block.phase === "string" && block.phase.trim() ? block.phase.trim() : null;
+}
+
+function RuntimeSurfaceList({
+  title,
+  blocks,
+}: {
+  title: string;
+  blocks: OutputBlock[];
+}) {
+  if (blocks.length === 0) return null;
+  const visibleBlocks = blocks.slice(-5).reverse();
+  return (
+    <div className="grid gap-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="roc-section-label">{title}</div>
+        <span className="roc-badge px-2.5 py-1 text-xs">{blocks.length}</span>
+      </div>
+      <div className="grid gap-2">
+        {visibleBlocks.map((block, index) => {
+          const preview = runtimeSurfacePreview(block);
+          const phase = runtimeSurfacePhase(block);
+          const stableKey = `${block.kind}:${block.id ?? block.live_identity?.part_key ?? index}:${block.ts ?? index}`;
+          return (
+            <div key={stableKey} className="rounded-2xl border border-border/45 bg-background/66 px-3 py-2.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-medium text-foreground/92">{runtimeSurfaceLabel(block)}</span>
+                <span className="roc-badge px-2 py-0.5 text-[10px] uppercase tracking-[0.18em]">
+                  {block.kind}
+                </span>
+                {phase ? (
+                  <span className="roc-badge px-2 py-0.5 text-[10px] uppercase tracking-[0.18em]">
+                    {phase}
+                  </span>
+                ) : null}
+              </div>
+              {preview ? (
+                <p className="mt-1.5 line-clamp-3 text-sm leading-6 text-muted-foreground">
+                  {preview}
+                </p>
+              ) : (
+                <p className="mt-1.5 text-sm leading-6 text-muted-foreground">No text payload.</p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 const THEMES: Array<{ id: ThemeId; label: string }> = [
   { id: "daylight", label: "Daylight" },
@@ -477,6 +568,9 @@ export default function App() {
   const [statusLine, setStatusLine] = useState("ready");
   const [latestRuntimeError, setLatestRuntimeError] = useState<string | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
+  const [runtimeSurfaceBySession, setRuntimeSurfaceBySession] = useState<
+    Record<string, SessionRuntimeSurface>
+  >({});
   const [deletingSessions, setDeletingSessions] = useState(false);
   const [question, setQuestion] = useState<QuestionInteractionRecord | null>(null);
   const [permission, setPermission] = useState<PermissionInteractionRecord | null>(null);
@@ -987,6 +1081,64 @@ export default function App() {
     selectedSessionRef.current = selectedSessionId;
   }, [selectedSessionId]);
 
+  const updateRuntimeSurface = useCallback(
+    (sessionId: string, updater: (current: SessionRuntimeSurface) => SessionRuntimeSurface) => {
+      setRuntimeSurfaceBySession((prev) => {
+        const current = prev[sessionId] ?? createEmptyRuntimeSurface();
+        const next = updater(current);
+        if (next === current) return prev;
+        return { ...prev, [sessionId]: next };
+      });
+    },
+    [],
+  );
+
+  const appendRuntimeSurfaceBlock = useCallback(
+    (
+      sessionId: string,
+      key: "sessionEvents" | "inspectItems" | "queueItems",
+      block: OutputBlock,
+      limit: number,
+    ) => {
+      updateRuntimeSurface(sessionId, (current) => ({
+        ...current,
+        [key]: [...current[key].slice(-(limit - 1)), block],
+      }));
+    },
+    [updateRuntimeSurface],
+  );
+
+  const setRuntimeSurfaceBanner = useCallback(
+    (sessionId: string, nextBanner: string | null) => {
+      updateRuntimeSurface(sessionId, (current) =>
+        current.banner === nextBanner ? current : { ...current, banner: nextBanner },
+      );
+    },
+    [updateRuntimeSurface],
+  );
+
+  const currentRuntimeSurface = useMemo(
+    () =>
+      selectedSessionId
+        ? (runtimeSurfaceBySession[selectedSessionId] ?? createEmptyRuntimeSurface())
+        : createEmptyRuntimeSurface(),
+    [runtimeSurfaceBySession, selectedSessionId],
+  );
+  const hasCurrentRuntimeSurface =
+    Boolean(currentRuntimeSurface.banner) ||
+    currentRuntimeSurface.sessionEvents.length > 0 ||
+    currentRuntimeSurface.inspectItems.length > 0 ||
+    currentRuntimeSurface.queueItems.length > 0;
+
+  useEffect(() => {
+    const validSessionIds = new Set(sessions.map((session) => session.id));
+    setRuntimeSurfaceBySession((prev) => {
+      const nextEntries = Object.entries(prev).filter(([sessionId]) => validSessionIds.has(sessionId));
+      if (nextEntries.length === Object.keys(prev).length) return prev;
+      return Object.fromEntries(nextEntries);
+    });
+  }, [sessions]);
+
   useEffect(() => {
     showThinkingRef.current = showThinking;
   }, [showThinking]);
@@ -998,6 +1150,19 @@ export default function App() {
     }
   }, []);
 
+  const pendingVisibleSnapshotKey = useCallback((block: OutputBlock): string => {
+    const messageId = block.live_identity?.message_id?.trim() || "";
+    const partKey = block.live_identity?.part_key?.trim() || "";
+    if (block.kind === "message" || block.kind === "reasoning") {
+      return `${block.kind}:${messageId}:${partKey || block.id || ""}`;
+    }
+    if (block.kind === "tool") {
+      const toolId = block.tool_call_id?.trim() || block.id?.trim() || "";
+      return `${block.kind}:${messageId}:${partKey || toolId}:${block.live_identity?.part_kind || block.phase || ""}`;
+    }
+    return `${block.kind}:${block.id?.trim() || messageId || block.phase || ""}`;
+  }, []);
+
   const flushPendingOutputBlocks = useCallback(() => {
     clearPendingOutputBlockFlush();
 
@@ -1007,29 +1172,16 @@ export default function App() {
       return;
     }
     pendingOutputBlocksRef.current = {};
+    const activeSessionId = selectedSessionRef.current;
+    const visibleSnapshots = activeSessionId ? (queuedBySession[activeSessionId] ?? []) : [];
 
-    const nextLiveBlocks = { ...liveBlocksRef.current };
-    for (const sessionId of sessionIds) {
-      const queued = queuedBySession[sessionId];
-      if (!queued?.length) continue;
-      nextLiveBlocks[sessionId] = queued.reduce(
-        (current, block) => appendLiveBlock(current, block),
-        nextLiveBlocks[sessionId] ?? [],
-      );
-    }
-    liveBlocksRef.current = nextLiveBlocks;
-
-    const selectedSessionId = selectedSessionRef.current;
-    const visibleQueue = selectedSessionId
-      ? (queuedBySession[selectedSessionId] ?? []).filter((block) => shouldQueueLiveTranscriptBlock(block))
-      : [];
-    if (visibleQueue.length === 0) {
+    if (visibleSnapshots.length === 0) {
       return;
     }
 
     startTransition(() => {
       setMessages((current) =>
-        visibleQueue.reduce(
+        visibleSnapshots.reduce(
           (messages, block) => applyOutputBlock(messages, block, showThinkingRef.current),
           current,
         ),
@@ -1045,6 +1197,18 @@ export default function App() {
       flushPendingOutputBlocks();
     });
   }, [flushPendingOutputBlocks]);
+
+  const materializePendingOutputBlocksForSession = useCallback((sessionId: string): OutputBlock[] => {
+    const nextQueued = { ...pendingOutputBlocksRef.current };
+    if (sessionId in nextQueued) {
+      delete nextQueued[sessionId];
+      pendingOutputBlocksRef.current = nextQueued;
+      if (Object.keys(nextQueued).length === 0) {
+        clearPendingOutputBlockFlush();
+      }
+    }
+    return liveBlocksRef.current[sessionId] ?? [];
+  }, [clearPendingOutputBlockFlush]);
 
   const clearPendingSessionRefresh = useCallback(() => {
     if (pendingSessionRefreshTimerRef.current !== null) {
@@ -1187,6 +1351,50 @@ export default function App() {
   }, [messages]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    const selectedLiveBlocks = selectedSessionId ? (liveBlocksRef.current[selectedSessionId] ?? []) : [];
+    const pendingVisible = selectedSessionId ? (pendingOutputBlocksRef.current[selectedSessionId] ?? []) : [];
+    (
+      window as Window & {
+        __rocodeWebDebug?: {
+          selectedSessionId: string | null;
+          showThinking: boolean;
+          messages: Array<{ kind: string; id?: string; tool_call_id?: string; text?: string }>;
+          liveBlocks: Array<{ kind: string; id?: string; tool_call_id?: string; text?: string; detail?: string; part_key?: string; part_kind?: string }>;
+          pendingVisible: Array<{ kind: string; id?: string; tool_call_id?: string; text?: string; detail?: string; part_key?: string; part_kind?: string }>;
+        };
+      }
+    ).__rocodeWebDebug = {
+      selectedSessionId,
+      showThinking,
+      messages: messages.map((message) => ({
+        kind: message.kind,
+        id: message.id,
+        tool_call_id: message.tool_call_id,
+        text: message.text?.slice(0, 160),
+      })),
+      liveBlocks: selectedLiveBlocks.map((block) => ({
+        kind: block.kind,
+        id: block.id,
+        tool_call_id: block.tool_call_id,
+        text: block.text?.slice(0, 160),
+        detail: block.detail?.slice(0, 160),
+        part_key: block.live_identity?.part_key,
+        part_kind: block.live_identity?.part_kind,
+      })),
+      pendingVisible: pendingVisible.map((block) => ({
+        kind: block.kind,
+        id: block.id,
+        tool_call_id: block.tool_call_id,
+        text: block.text?.slice(0, 160),
+        detail: block.detail?.slice(0, 160),
+        part_key: block.live_identity?.part_key,
+        part_kind: block.live_identity?.part_kind,
+      })),
+    };
+  }, [messages, selectedSessionId, showThinking]);
+
+  useEffect(() => {
     let cancelled = false;
 
     const loadBootstrap = async () => {
@@ -1307,6 +1515,7 @@ export default function App() {
     if (!selectedSessionId) {
       setMessages([]);
       setMessageHistory([]);
+      setBanner(null);
       autoPreviewSignatureRef.current = "";
       return;
     }
@@ -1319,10 +1528,22 @@ export default function App() {
         const history = await apiJson<MessageRecord[]>(`/session/${selectedSessionId}/message`);
         if (cancelled) return;
         setMessageHistory(history);
-        const prunedLiveBlocks = pruneLiveBlocksCoveredByHistory(
-          history,
-          liveBlocksRef.current[selectedSessionId] ?? [],
-        );
+        // New-session race: history may return while this session still has
+        // unflushed live output blocks queued in RAF. Materialize them first,
+        // otherwise a partial persisted history snapshot can overwrite the
+        // correct realtime feed until the user refreshes.
+        const currentLiveBlocks = materializePendingOutputBlocksForSession(selectedSessionId);
+        // While a run is still streaming, retained live blocks are the more
+        // authoritative view for the current turn. Avoid pruning them against
+        // a partial persisted history snapshot that can lag behind the live
+        // stream and fragment visible transcript state.
+        const shouldPruneFromHistory = !streaming;
+        const prunedLiveBlocks = shouldPruneFromHistory
+          ? pruneLiveBlocksCoveredByHistory(
+              history,
+              currentLiveBlocks,
+            )
+          : currentLiveBlocks;
         liveBlocksRef.current = {
           ...liveBlocksRef.current,
           [selectedSessionId]: prunedLiveBlocks,
@@ -1356,7 +1577,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [selectedSessionId, showThinking]);
+  }, [apiJson, materializePendingOutputBlocksForSession, selectedSessionId, showThinking, streaming]);
 
   const refreshSessionsFromServer = useCallback(async () => {
     try {
@@ -1530,19 +1751,53 @@ export default function App() {
             }
           : undefined;
         if (!block) return;
+        // Phase W3: route non-transcript blocks to their dedicated surfaces.
         if (block.kind === "scheduler_stage") {
           applySchedulerStageOutputBlock(block, eventSessionId);
+          return;
         }
         if (block.kind === "tool") {
           applyLiveExecutionOutputBlock(block, eventSessionId);
         }
+        if (block.kind === "session_event") {
+          appendRuntimeSurfaceBlock(eventSessionId, "sessionEvents", block, 50);
+          return;
+        }
+        if (block.kind === "status") {
+          setRuntimeSurfaceBanner(eventSessionId, block.text?.trim() || null);
+          return;
+        }
+        if (block.kind === "queue_item") {
+          appendRuntimeSurfaceBlock(eventSessionId, "queueItems", block, 20);
+          return;
+        }
+        if (block.kind === "inspect") {
+          appendRuntimeSurfaceBlock(eventSessionId, "inspectItems", block, 10);
+          return;
+        }
         if (shouldQueueLiveTranscriptBlock(block)) {
-          const queue = pendingOutputBlocksRef.current[eventSessionId] ?? [];
-          queue.push(block);
-          // P2-3: enforce one-deep-ish cap. Drop oldest if over budget.
-          while (queue.length > maxPendingOutputBlocks) queue.shift();
-          pendingOutputBlocksRef.current[eventSessionId] = queue;
-          schedulePendingOutputBlockFlush();
+          const currentLiveBlocks = liveBlocksRef.current[eventSessionId] ?? [];
+          const nextLiveBlocks = appendLiveBlock(currentLiveBlocks, block);
+          liveBlocksRef.current = {
+            ...liveBlocksRef.current,
+            [eventSessionId]: nextLiveBlocks,
+          };
+          if (eventSessionId === selectedSessionRef.current) {
+            const visible = visibleSnapshotFromLiveBlocks(nextLiveBlocks, block);
+            if (visible) {
+              const queue = pendingOutputBlocksRef.current[eventSessionId] ?? [];
+              const queueKey = pendingVisibleSnapshotKey(visible);
+              const existingIndex = queue.findIndex((candidate) => pendingVisibleSnapshotKey(candidate) === queueKey);
+              if (existingIndex >= 0) {
+                queue[existingIndex] = visible;
+              } else {
+                queue.push(visible);
+              }
+              while (queue.length > maxPendingOutputBlocks) queue.shift();
+              pendingOutputBlocksRef.current[eventSessionId] = queue;
+              schedulePendingOutputBlockFlush();
+            }
+          }
         }
         return;
       }
@@ -1705,12 +1960,16 @@ export default function App() {
       clearPendingSessionRefresh();
     };
   }, [
+    appendRuntimeSurfaceBlock,
     clearPendingOutputBlockFlush,
     clearPendingSessionRefresh,
     flushPendingOutputBlocks,
+    maxPendingOutputBlocks,
+    pendingVisibleSnapshotKey,
     refreshExecutionActivity,
     schedulePendingOutputBlockFlush,
     scheduleSessionRefresh,
+    setRuntimeSurfaceBanner,
   ]);
 
   const createSession = async (options?: {
@@ -2537,6 +2796,48 @@ export default function App() {
                 >
                   <XIcon className="size-4" />
                 </button>
+              </div>
+            </div>
+          ) : null}
+
+          {selectedSessionId && hasCurrentRuntimeSurface ? (
+            <div className="mx-auto w-full max-w-[88rem] px-4 pt-3 md:px-5">
+              <div className="roc-panel grid gap-4 px-4 py-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="roc-section-label">Runtime Surface</div>
+                    <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                      Session-scoped runtime events that do not belong in the conversation transcript.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {currentRuntimeSurface.queueItems.length > 0 ? (
+                      <span className="roc-badge px-2.5 py-1 text-xs">
+                        queue {currentRuntimeSurface.queueItems.length}
+                      </span>
+                    ) : null}
+                    {currentRuntimeSurface.sessionEvents.length > 0 ? (
+                      <span className="roc-badge px-2.5 py-1 text-xs">
+                        session {currentRuntimeSurface.sessionEvents.length}
+                      </span>
+                    ) : null}
+                    {currentRuntimeSurface.inspectItems.length > 0 ? (
+                      <span className="roc-badge px-2.5 py-1 text-xs">
+                        inspect {currentRuntimeSurface.inspectItems.length}
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+                {currentRuntimeSurface.banner ? (
+                  <div className="rounded-2xl border border-amber-500/25 bg-amber-500/8 px-3.5 py-3 text-sm leading-6 text-amber-900 dark:text-amber-100">
+                    {currentRuntimeSurface.banner}
+                  </div>
+                ) : null}
+                <div className="grid gap-4 lg:grid-cols-3">
+                  <RuntimeSurfaceList title="Queue" blocks={currentRuntimeSurface.queueItems} />
+                  <RuntimeSurfaceList title="Session Events" blocks={currentRuntimeSurface.sessionEvents} />
+                  <RuntimeSurfaceList title="Inspect" blocks={currentRuntimeSurface.inspectItems} />
+                </div>
               </div>
             </div>
           ) : null}

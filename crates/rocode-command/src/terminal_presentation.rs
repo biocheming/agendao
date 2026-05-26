@@ -1103,7 +1103,10 @@ fn assistant_segment_semantic_key(segment: &TerminalAssistantSegment) -> (u8, us
 mod tests {
     use super::*;
     use crate::governance_fixtures::live_transcript_state_fixture;
-    use rocode_types::{LiveMessagePartIdentity, LiveMessagePartKind, LivePartPhase};
+    use rocode_types::{
+        tool_call_part_key, tool_result_part_key, LiveMessagePartIdentity, LiveMessagePartKind,
+        LivePartPhase,
+    };
 
     fn live_identity(
         message_id: &str,
@@ -2127,7 +2130,7 @@ mod tests {
         let mut state = TerminalSemanticStreamRenderState::default();
         let identity = live_identity(
             "assistant-1",
-            "text/main",
+            rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
             LiveMessagePartKind::AssistantText,
             LivePartPhase::Snapshot,
         );
@@ -2171,13 +2174,13 @@ mod tests {
         let mut state = TerminalSemanticStreamRenderState::default();
         let start_identity = live_identity(
             "assistant-1",
-            "text/main",
+            rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
             LiveMessagePartKind::AssistantText,
             LivePartPhase::Start,
         );
         let append_identity = live_identity(
             "assistant-1",
-            "text/main",
+            rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
             LiveMessagePartKind::AssistantText,
             LivePartPhase::Append,
         );
@@ -2227,13 +2230,13 @@ mod tests {
         let mut state = TerminalSemanticStreamRenderState::default();
         let start_identity = live_identity(
             "assistant-1",
-            "reasoning/main",
+            rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
             LiveMessagePartKind::AssistantReasoning,
             LivePartPhase::Start,
         );
         let append_identity = live_identity(
             "assistant-1",
-            "reasoning/main",
+            rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
             LiveMessagePartKind::AssistantReasoning,
             LivePartPhase::Append,
         );
@@ -2262,7 +2265,7 @@ mod tests {
 
         let end_identity = live_identity(
             "assistant-1",
-            "reasoning/main",
+            rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
             LiveMessagePartKind::AssistantReasoning,
             LivePartPhase::End,
         );
@@ -2295,7 +2298,7 @@ mod tests {
 
         let first_identity = live_identity(
             "assistant-1",
-            "reasoning/main",
+            rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
             LiveMessagePartKind::AssistantReasoning,
             LivePartPhase::Snapshot,
         );
@@ -2312,7 +2315,7 @@ mod tests {
 
         let rewrite_identity = live_identity(
             "assistant-1",
-            "reasoning/main",
+            rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
             LiveMessagePartKind::AssistantReasoning,
             LivePartPhase::Snapshot,
         );
@@ -2346,7 +2349,7 @@ mod tests {
         ));
         let tool_start_identity = live_identity(
             "assistant-1",
-            "tool_call/tool-1",
+            &tool_call_part_key("tool-1"),
             LiveMessagePartKind::ToolCall,
             LivePartPhase::Start,
         );
@@ -2363,7 +2366,7 @@ mod tests {
         let tool_done = tool_done("websearch", "晴 18C");
         let tool_done_identity = live_identity(
             "assistant-1",
-            "tool_result/tool-1",
+            &tool_result_part_key("tool-1"),
             LiveMessagePartKind::ToolResult,
             LivePartPhase::End,
         );

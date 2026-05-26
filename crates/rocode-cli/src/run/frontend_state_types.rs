@@ -1369,7 +1369,7 @@ mod tests {
         let style = CliStyle::plain();
         let identity = LiveMessagePartIdentity {
             message_id: "msg-1".to_string(),
-            part_key: "scheduler/stage-1".to_string(),
+            part_key: rocode_types::scheduler_stage_part_key("stage-1"),
             part_kind: LiveMessagePartKind::SchedulerStage,
             phase: LivePartPhase::Snapshot,
             legacy_block_id: None,
@@ -1424,7 +1424,7 @@ mod tests {
         let style = CliStyle::plain();
         let start_identity = LiveMessagePartIdentity {
             message_id: "msg-1".to_string(),
-            part_key: "text/main".to_string(),
+            part_key: rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
             part_kind: LiveMessagePartKind::AssistantText,
             phase: LivePartPhase::Start,
             legacy_block_id: Some("msg-1".to_string()),
@@ -1460,7 +1460,7 @@ mod tests {
         let style = CliStyle::plain();
         let start_identity = LiveMessagePartIdentity {
             message_id: "msg-1".to_string(),
-            part_key: "reasoning/main".to_string(),
+            part_key: rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY.to_string(),
             part_kind: LiveMessagePartKind::AssistantReasoning,
             phase: LivePartPhase::Start,
             legacy_block_id: Some("msg-1".to_string()),
@@ -1494,7 +1494,7 @@ mod tests {
         let style = CliStyle::plain();
         let assistant_start = LiveMessagePartIdentity {
             message_id: "msg-1".to_string(),
-            part_key: "text/main".to_string(),
+            part_key: rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
             part_kind: LiveMessagePartKind::AssistantText,
             phase: LivePartPhase::Start,
             legacy_block_id: Some("msg-1".to_string()),
@@ -1505,7 +1505,7 @@ mod tests {
         };
         let reasoning_start = LiveMessagePartIdentity {
             message_id: "msg-1".to_string(),
-            part_key: "reasoning/main".to_string(),
+            part_key: rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY.to_string(),
             part_kind: LiveMessagePartKind::AssistantReasoning,
             phase: LivePartPhase::Start,
             legacy_block_id: Some("msg-1".to_string()),
@@ -1553,7 +1553,7 @@ mod tests {
         let style = CliStyle::plain();
         let identity = LiveMessagePartIdentity {
             message_id: "msg-1".to_string(),
-            part_key: "tool_call/call-1".to_string(),
+            part_key: rocode_types::tool_call_part_key("call-1"),
             part_kind: LiveMessagePartKind::ToolCall,
             phase: LivePartPhase::Snapshot,
             legacy_block_id: Some("call-1".to_string()),
@@ -1575,7 +1575,7 @@ mod tests {
         let style = CliStyle::plain();
         let identity = LiveMessagePartIdentity {
             message_id: "msg-1".to_string(),
-            part_key: "reasoning/main".to_string(),
+            part_key: rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY.to_string(),
             part_kind: LiveMessagePartKind::AssistantReasoning,
             phase: LivePartPhase::Snapshot,
             legacy_block_id: Some("msg-1".to_string()),

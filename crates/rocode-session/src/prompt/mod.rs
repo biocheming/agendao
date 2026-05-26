@@ -243,7 +243,7 @@ pub fn assistant_text_live_identity(
 ) -> rocode_types::LiveMessagePartIdentity {
     rocode_types::LiveMessagePartIdentity {
         message_id: message_id.to_string(),
-        part_key: "text/main".to_string(),
+        part_key: rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
         part_kind: rocode_types::LiveMessagePartKind::AssistantText,
         phase,
         legacy_block_id,
@@ -257,7 +257,7 @@ pub fn assistant_reasoning_live_identity(
 ) -> rocode_types::LiveMessagePartIdentity {
     rocode_types::LiveMessagePartIdentity {
         message_id: message_id.to_string(),
-        part_key: "reasoning/main".to_string(),
+        part_key: rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY.to_string(),
         part_kind: rocode_types::LiveMessagePartKind::AssistantReasoning,
         phase,
         legacy_block_id,
@@ -271,7 +271,7 @@ pub fn tool_call_live_identity(
 ) -> rocode_types::LiveMessagePartIdentity {
     rocode_types::LiveMessagePartIdentity {
         message_id: message_id.to_string(),
-        part_key: format!("tool_call/{tool_call_id}"),
+        part_key: rocode_types::tool_call_part_key(tool_call_id),
         part_kind: rocode_types::LiveMessagePartKind::ToolCall,
         phase,
         legacy_block_id: Some(tool_call_id.to_string()),
@@ -285,7 +285,7 @@ pub fn tool_result_live_identity(
 ) -> rocode_types::LiveMessagePartIdentity {
     rocode_types::LiveMessagePartIdentity {
         message_id: message_id.to_string(),
-        part_key: format!("tool_result/{tool_call_id}"),
+        part_key: rocode_types::tool_result_part_key(tool_call_id),
         part_kind: rocode_types::LiveMessagePartKind::ToolResult,
         phase,
         legacy_block_id: Some(tool_call_id.to_string()),

@@ -652,7 +652,7 @@ mod tests {
     fn live_message_part_identity_serde_round_trip() {
         let identity = LiveMessagePartIdentity {
             message_id: "msg-1".to_string(),
-            part_key: "text/main".to_string(),
+            part_key: ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
             part_kind: LiveMessagePartKind::AssistantText,
             phase: LivePartPhase::Snapshot,
             legacy_block_id: Some("block-1".to_string()),
@@ -666,7 +666,7 @@ mod tests {
     fn live_message_part_identity_without_legacy_block_id() {
         let identity = LiveMessagePartIdentity {
             message_id: "msg-2".to_string(),
-            part_key: "tool_call/call-1".to_string(),
+            part_key: tool_call_part_key("call-1"),
             part_kind: LiveMessagePartKind::ToolCall,
             phase: LivePartPhase::Start,
             legacy_block_id: None,
@@ -682,14 +682,14 @@ mod tests {
     fn live_message_part_identity_wire_field_names() {
         let identity = LiveMessagePartIdentity {
             message_id: "msg-1".to_string(),
-            part_key: "reasoning/main".to_string(),
+            part_key: ASSISTANT_REASONING_MAIN_PART_KEY.to_string(),
             part_kind: LiveMessagePartKind::AssistantReasoning,
             phase: LivePartPhase::Append,
             legacy_block_id: None,
         };
         let value = serde_json::to_value(&identity).expect("serialize");
         assert_eq!(value["message_id"], "msg-1");
-        assert_eq!(value["part_key"], "reasoning/main");
+        assert_eq!(value["part_key"], ASSISTANT_REASONING_MAIN_PART_KEY);
         assert_eq!(value["part_kind"], "assistant_reasoning");
         assert_eq!(value["phase"], "append");
         assert!(value.get("legacy_block_id").is_none());
@@ -754,4 +754,46 @@ pub struct LiveMessagePartIdentity {
     pub phase: LivePartPhase,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legacy_block_id: Option<String>,
+}
+
+pub const ASSISTANT_TEXT_PART_KEY_PREFIX: &str = "text/";
+pub const ASSISTANT_REASONING_PART_KEY_PREFIX: &str = "reasoning/";
+pub const ASSISTANT_TEXT_MAIN_PART_KEY: &str = "text/main";
+pub const ASSISTANT_REASONING_MAIN_PART_KEY: &str = "reasoning/main";
+pub const TOOL_CALL_PART_KEY_PREFIX: &str = "tool_call/";
+pub const TOOL_RESULT_PART_KEY_PREFIX: &str = "tool_result/";
+pub const SCHEDULER_STAGE_PART_KEY_PREFIX: &str = "scheduler/";
+
+pub fn assistant_text_part_key(segment: &str) -> String {
+    format!("{ASSISTANT_TEXT_PART_KEY_PREFIX}{segment}")
+}
+
+pub fn assistant_reasoning_part_key(segment: &str) -> String {
+    format!("{ASSISTANT_REASONING_PART_KEY_PREFIX}{segment}")
+}
+
+pub fn tool_call_part_key(tool_call_id: &str) -> String {
+    format!("{TOOL_CALL_PART_KEY_PREFIX}{tool_call_id}")
+}
+
+pub fn tool_result_part_key(tool_call_id: &str) -> String {
+    format!("{TOOL_RESULT_PART_KEY_PREFIX}{tool_call_id}")
+}
+
+pub fn scheduler_stage_part_key(stage_id: &str) -> String {
+    format!("{SCHEDULER_STAGE_PART_KEY_PREFIX}{stage_id}")
+}
+
+pub fn live_slot_key(message_id: &str, part_key: &str) -> String {
+    format!("{message_id}:{part_key}")
+}
+
+pub fn tool_id_from_part_key(part_key: &str) -> Option<&str> {
+    if let Some(candidate) = part_key.strip_prefix(TOOL_CALL_PART_KEY_PREFIX) {
+        return (!candidate.trim().is_empty()).then_some(candidate);
+    }
+    if let Some(candidate) = part_key.strip_prefix(TOOL_RESULT_PART_KEY_PREFIX) {
+        return (!candidate.trim().is_empty()).then_some(candidate);
+    }
+    None
 }

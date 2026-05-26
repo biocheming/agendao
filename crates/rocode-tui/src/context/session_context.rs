@@ -1505,7 +1505,7 @@ mod tests {
 
         let reasoning_identity = live_identity(
             "assistant-1",
-            "reasoning/main",
+            rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
             rocode_types::LiveMessagePartKind::AssistantReasoning,
             rocode_types::LivePartPhase::Snapshot,
             Some("assistant-1"),
@@ -1543,7 +1543,7 @@ mod tests {
             }),
             Some(&live_identity(
                 "assistant-1",
-                "reasoning/main",
+                rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
                 rocode_types::LiveMessagePartKind::AssistantReasoning,
                 rocode_types::LivePartPhase::End,
                 Some("assistant-1"),
@@ -1561,7 +1561,7 @@ mod tests {
             }),
             Some(&live_identity(
                 "assistant-1",
-                "text/main",
+                rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                 rocode_types::LiveMessagePartKind::AssistantText,
                 rocode_types::LivePartPhase::Snapshot,
                 Some("assistant-1"),
@@ -1595,7 +1595,7 @@ mod tests {
         let mut ctx = SessionContext::new();
         let text_identity = live_identity(
             "assistant-1",
-            "text/main",
+            rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
             rocode_types::LiveMessagePartKind::AssistantText,
             rocode_types::LivePartPhase::Snapshot,
             Some("assistant-1"),
