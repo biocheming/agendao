@@ -529,7 +529,7 @@ export function SessionSidebar({
       </div>
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className="gap-5">
+        <DialogContent className="max-w-md gap-5">
           <DialogHeader>
             <DialogTitle>Create Project</DialogTitle>
             <DialogDescription>
@@ -574,7 +574,7 @@ export function SessionSidebar({
       </Dialog>
 
       <Dialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
-        <DialogContent className="gap-5">
+        <DialogContent className="max-w-md gap-5">
           <DialogHeader>
             <DialogTitle>Delete Selected Sessions</DialogTitle>
             <DialogDescription>

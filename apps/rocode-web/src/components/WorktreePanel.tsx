@@ -128,7 +128,7 @@ export function WorktreePanel({ className }: WorktreePanelProps) {
                 <PlusIcon className="size-4" />
               </Button>
             </DialogTrigger>
-            <DialogContent className="gap-5">
+            <DialogContent className="max-w-md gap-5">
               <DialogHeader>
                 <DialogTitle>Create Worktree</DialogTitle>
                 <DialogDescription>

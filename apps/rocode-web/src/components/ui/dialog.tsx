@@ -61,7 +61,7 @@ function DialogContent({
       <DialogPrimitive.Content
         data-slot="dialog-content"
         className={cn(
-          "roc-floating-surface fixed top-[50%] left-[50%] grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 p-6 sm:max-w-lg",
+          "roc-floating-surface fixed top-[50%] left-[50%] grid w-full max-w-[calc(100%-2rem)] max-h-[min(42rem,calc(100vh-2rem))] translate-x-[-50%] translate-y-[-50%] gap-4 overflow-x-hidden overflow-y-auto p-5 sm:max-w-lg sm:p-6",
           className
         )}
         {...props}

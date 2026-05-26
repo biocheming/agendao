@@ -261,122 +261,123 @@ export function MemoryTab({
           </div>
 
           {selectedMemoryId && memoryDetail && !memoryDetailLoading ? (
-            <div className="absolute inset-0 z-10 grid gap-4 overflow-y-auto rounded-lg bg-background p-4 shadow-lg">
-              <div className="flex items-center gap-3">
-                <button type="button" className="text-xs text-muted-foreground hover:text-foreground transition-colors" onClick={() => onSelectMemoryId("")}>
+            <div className="absolute inset-2 z-10 overflow-hidden rounded-[22px] border border-border/60 bg-background/98 shadow-2xl backdrop-blur-sm">
+              <div className="flex items-center gap-3 border-b border-border/60 px-4 py-3">
+                <button type="button" className="text-xs text-muted-foreground transition-colors hover:text-foreground" onClick={() => onSelectMemoryId("")}>
                   ← Back to records
                 </button>
-                <span className="text-xs text-muted-foreground">{memoryRecordIdValue(memoryDetail.record.id)}</span>
+                <span className="truncate text-xs text-muted-foreground">{memoryRecordIdValue(memoryDetail.record.id)}</span>
               </div>
-
-              <div className="border-l-2 border-l-foreground/10 bg-muted/30 px-4 py-3">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div className="min-w-0">
-                    <strong className="block text-base text-foreground">{memoryDetail.record.title}</strong>
-                    <p className="m-0 mt-1 text-sm leading-relaxed text-muted-foreground">{memoryDetail.record.summary}</p>
+              <div className="grid max-h-full gap-4 overflow-y-auto px-4 py-4">
+                <div className="border-l-2 border-l-foreground/10 bg-muted/30 px-4 py-3">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <strong className="block text-base text-foreground">{memoryDetail.record.title}</strong>
+                      <p className="m-0 mt-1 text-sm leading-relaxed text-muted-foreground">{memoryDetail.record.summary}</p>
+                    </div>
+                    <div className="flex gap-3 text-xs text-muted-foreground">
+                      <span>{memoryDetail.record.kind} / {memoryDetail.record.scope}</span>
+                      <span>{memoryDetail.record.status} / {memoryDetail.record.validation_status}</span>
+                    </div>
                   </div>
-                  <div className="flex gap-3 text-xs text-muted-foreground">
-                    <span>{memoryDetail.record.kind} / {memoryDetail.record.scope}</span>
-                    <span>{memoryDetail.record.status} / {memoryDetail.record.validation_status}</span>
-                  </div>
+                  {(memoryDetail.record.linked_skill_name || memoryDetail.record.derived_skill_name) ? (
+                    <div className="mt-2 flex gap-4 text-xs text-muted-foreground">
+                      <span>linked {memoryDetail.record.linked_skill_name || "--"}</span>
+                      <span>target {memoryDetail.record.derived_skill_name || "--"}</span>
+                    </div>
+                  ) : null}
                 </div>
-                {(memoryDetail.record.linked_skill_name || memoryDetail.record.derived_skill_name) ? (
-                  <div className="mt-2 flex gap-4 text-xs text-muted-foreground">
-                    <span>linked {memoryDetail.record.linked_skill_name || "--"}</span>
-                    <span>target {memoryDetail.record.derived_skill_name || "--"}</span>
+
+                <details open>
+                  <summary className="cursor-pointer list-none">
+                    <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Record Semantics</span>
+                  </summary>
+                  <div className="mt-2 grid gap-3 sm:grid-cols-3">
+                    <div className="grid gap-1">
+                      <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Triggers</span>
+                      {arrayOrEmpty(memoryDetail.record.trigger_conditions).length
+                        ? arrayOrEmpty(memoryDetail.record.trigger_conditions).map((v) => (<span key={v} className="text-sm">{v}</span>))
+                        : <span className="text-sm text-muted-foreground">--</span>}
+                    </div>
+                    <div className="grid gap-1">
+                      <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Boundaries</span>
+                      {arrayOrEmpty(memoryDetail.record.boundaries).length
+                        ? arrayOrEmpty(memoryDetail.record.boundaries).map((v) => (<span key={v} className="text-sm">{v}</span>))
+                        : <span className="text-sm text-muted-foreground">--</span>}
+                    </div>
+                    <div className="grid gap-1">
+                      <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Normalized Facts</span>
+                      {arrayOrEmpty(memoryDetail.record.normalized_facts).length
+                        ? arrayOrEmpty(memoryDetail.record.normalized_facts).map((v) => (<span key={v} className="text-sm">{v}</span>))
+                        : <span className="text-sm text-muted-foreground">--</span>}
+                    </div>
                   </div>
-                ) : null}
+                </details>
+
+                <details>
+                  <summary className="cursor-pointer list-none">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Validation + Conflicts</span>
+                      <span className="text-xs text-muted-foreground">{arrayOrEmpty(memoryConflicts?.conflicts).length} conflict{arrayOrEmpty(memoryConflicts?.conflicts).length === 1 ? "" : "s"}</span>
+                    </div>
+                  </summary>
+                  <div className="mt-2 grid gap-4 sm:grid-cols-2">
+                    <div className="grid gap-2">
+                      <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Validation</span>
+                      {memoryValidationReport?.latest ? (
+                        <div className="grid gap-1 text-sm">
+                          <strong>{memoryValidationReport.latest.status}</strong>
+                          <span className="text-muted-foreground">Checked: {unixTimeLabel(memoryValidationReport.latest.checked_at)}</span>
+                          {arrayOrEmpty(memoryValidationReport.latest.issues).length
+                            ? arrayOrEmpty(memoryValidationReport.latest.issues).map((issue) => (<span key={issue}>{issue}</span>))
+                            : <span className="text-muted-foreground">No issues.</span>}
+                        </div>
+                      ) : <span className="text-sm text-muted-foreground">No validation report yet.</span>}
+                    </div>
+                    <div className="grid gap-2">
+                      <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Conflicts</span>
+                      {arrayOrEmpty(memoryConflicts?.conflicts).length ? (
+                        <div className="grid gap-2">
+                          {arrayOrEmpty(memoryConflicts?.conflicts).map((conflict) => (
+                            <div key={conflict.id} className="rounded bg-muted/30 px-3 py-2 text-sm">
+                              <strong className="block">{conflict.conflict_kind}</strong>
+                              <span className="block text-muted-foreground">Other: {memoryRecordIdValue(conflict.other_record_id)}</span>
+                              <span className="block">{conflict.detail}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : <span className="text-sm text-muted-foreground">No conflicts.</span>}
+                    </div>
+                  </div>
+                </details>
+
+                <details>
+                  <summary className="cursor-pointer list-none">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Evidence</span>
+                      <span className="text-xs text-muted-foreground">{arrayOrEmpty(memoryDetail.record.evidence_refs).length} ref{arrayOrEmpty(memoryDetail.record.evidence_refs).length === 1 ? "" : "s"}</span>
+                    </div>
+                  </summary>
+                  <div className="mt-2 grid gap-2">
+                    {arrayOrEmpty(memoryDetail.record.evidence_refs).length ? (
+                      arrayOrEmpty(memoryDetail.record.evidence_refs).map((ref, index) => (
+                        <div key={`${ref.session_id ?? "session"}-${index}`} className="rounded bg-muted/30 px-3 py-2 text-sm">
+                          <div>session: {ref.session_id || "--"}</div>
+                          <div>message: {ref.message_id || "--"}</div>
+                          <div>tool: {ref.tool_call_id || "--"}</div>
+                          <div>stage: {ref.stage_id || "--"}</div>
+                          {ref.note ? <div className="text-muted-foreground">note: {ref.note}</div> : null}
+                        </div>
+                      ))
+                    ) : <span className="text-sm text-muted-foreground">No evidence refs.</span>}
+                  </div>
+                </details>
               </div>
-
-              <details open>
-                <summary className="cursor-pointer list-none">
-                  <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Record Semantics</span>
-                </summary>
-                <div className="mt-2 grid gap-3 sm:grid-cols-3">
-                  <div className="grid gap-1">
-                    <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Triggers</span>
-                    {arrayOrEmpty(memoryDetail.record.trigger_conditions).length
-                      ? arrayOrEmpty(memoryDetail.record.trigger_conditions).map((v) => (<span key={v} className="text-sm">{v}</span>))
-                      : <span className="text-sm text-muted-foreground">--</span>}
-                  </div>
-                  <div className="grid gap-1">
-                    <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Boundaries</span>
-                    {arrayOrEmpty(memoryDetail.record.boundaries).length
-                      ? arrayOrEmpty(memoryDetail.record.boundaries).map((v) => (<span key={v} className="text-sm">{v}</span>))
-                      : <span className="text-sm text-muted-foreground">--</span>}
-                  </div>
-                  <div className="grid gap-1">
-                    <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Normalized Facts</span>
-                    {arrayOrEmpty(memoryDetail.record.normalized_facts).length
-                      ? arrayOrEmpty(memoryDetail.record.normalized_facts).map((v) => (<span key={v} className="text-sm">{v}</span>))
-                      : <span className="text-sm text-muted-foreground">--</span>}
-                  </div>
-                </div>
-              </details>
-
-              <details>
-                <summary className="cursor-pointer list-none">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Validation + Conflicts</span>
-                    <span className="text-xs text-muted-foreground">{arrayOrEmpty(memoryConflicts?.conflicts).length} conflict{arrayOrEmpty(memoryConflicts?.conflicts).length === 1 ? "" : "s"}</span>
-                  </div>
-                </summary>
-                <div className="mt-2 grid gap-4 sm:grid-cols-2">
-                  <div className="grid gap-2">
-                    <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Validation</span>
-                    {memoryValidationReport?.latest ? (
-                      <div className="grid gap-1 text-sm">
-                        <strong>{memoryValidationReport.latest.status}</strong>
-                        <span className="text-muted-foreground">Checked: {unixTimeLabel(memoryValidationReport.latest.checked_at)}</span>
-                        {arrayOrEmpty(memoryValidationReport.latest.issues).length
-                          ? arrayOrEmpty(memoryValidationReport.latest.issues).map((issue) => (<span key={issue}>{issue}</span>))
-                          : <span className="text-muted-foreground">No issues.</span>}
-                      </div>
-                    ) : <span className="text-sm text-muted-foreground">No validation report yet.</span>}
-                  </div>
-                  <div className="grid gap-2">
-                    <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Conflicts</span>
-                    {arrayOrEmpty(memoryConflicts?.conflicts).length ? (
-                      <div className="grid gap-2">
-                        {arrayOrEmpty(memoryConflicts?.conflicts).map((conflict) => (
-                          <div key={conflict.id} className="bg-muted/30 rounded px-3 py-2 text-sm">
-                            <strong className="block">{conflict.conflict_kind}</strong>
-                            <span className="block text-muted-foreground">Other: {memoryRecordIdValue(conflict.other_record_id)}</span>
-                            <span className="block">{conflict.detail}</span>
-                          </div>
-                        ))}
-                      </div>
-                    ) : <span className="text-sm text-muted-foreground">No conflicts.</span>}
-                  </div>
-                </div>
-              </details>
-
-              <details>
-                <summary className="cursor-pointer list-none">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Evidence</span>
-                    <span className="text-xs text-muted-foreground">{arrayOrEmpty(memoryDetail.record.evidence_refs).length} ref{arrayOrEmpty(memoryDetail.record.evidence_refs).length === 1 ? "" : "s"}</span>
-                  </div>
-                </summary>
-                <div className="mt-2 grid gap-2">
-                  {arrayOrEmpty(memoryDetail.record.evidence_refs).length ? (
-                    arrayOrEmpty(memoryDetail.record.evidence_refs).map((ref, index) => (
-                      <div key={`${ref.session_id ?? "session"}-${index}`} className="bg-muted/30 rounded px-3 py-2 text-sm">
-                        <div>session: {ref.session_id || "--"}</div>
-                        <div>message: {ref.message_id || "--"}</div>
-                        <div>tool: {ref.tool_call_id || "--"}</div>
-                        <div>stage: {ref.stage_id || "--"}</div>
-                        {ref.note ? <div className="text-muted-foreground">note: {ref.note}</div> : null}
-                      </div>
-                    ))
-                  ) : <span className="text-sm text-muted-foreground">No evidence refs.</span>}
-                </div>
-              </details>
             </div>
           ) : null}
 
           {selectedMemoryId && memoryDetailLoading ? (
-            <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-background/80">
+            <div className="absolute inset-2 z-10 flex items-center justify-center rounded-[22px] border border-border/50 bg-background/85 backdrop-blur-sm">
               <span className="text-sm text-muted-foreground">Loading detail...</span>
             </div>
           ) : null}

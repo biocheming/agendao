@@ -1299,11 +1299,11 @@ export function SkillsTab({
 
           {/* Master-detail overlay */}
           {selectedSkillEntry && !skillDetailLoading ? (
-            <div className="absolute inset-0 z-10 grid gap-4 overflow-y-auto rounded-lg bg-background p-4 shadow-lg">
-              <div className="flex items-center gap-3">
+            <div className="absolute inset-2 z-10 overflow-hidden rounded-[22px] border border-border/60 bg-background/98 shadow-2xl backdrop-blur-sm">
+              <div className="flex items-center gap-3 border-b border-border/60 px-4 py-3">
                 <button
                   type="button"
-                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  className="text-xs text-muted-foreground transition-colors hover:text-foreground"
                   onClick={() => onSelectedSkillNameChange("")}
                 >
                   ← Back to catalog
@@ -1321,165 +1321,160 @@ export function SkillsTab({
                   </span>
                 ) : null}
               </div>
-
-              {/* Skill header */}
-              <div className="border-l-2 border-l-foreground/10 bg-muted/30 px-4 py-3">
-                <strong className="block text-base text-foreground">{selectedSkillEntry.name}</strong>
-                <p className="m-0 mt-1 text-sm text-muted-foreground">
-                  {selectedSkillEntry.description || "No description"}
-                </p>
-                <div className="mt-2 flex flex-wrap gap-1.5 text-[10px]">
-                  {selectedManagedRecord ? (
-                    <>
-                      <span className="rounded-full border border-border/40 bg-muted px-2 py-0.5 text-muted-foreground">
-                        source {selectedManagedRecord.source?.source_id || "workspace-local"}
-                      </span>
+              <div className="grid max-h-full gap-4 overflow-y-auto px-4 py-4">
+                <div className="border-l-2 border-l-foreground/10 bg-muted/30 px-4 py-3">
+                  <strong className="block text-base text-foreground">{selectedSkillEntry.name}</strong>
+                  <p className="m-0 mt-1 text-sm text-muted-foreground">
+                    {selectedSkillEntry.description || "No description"}
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-1.5 text-[10px]">
+                    {selectedManagedRecord ? (
+                      <>
+                        <span className="rounded-full border border-border/40 bg-muted px-2 py-0.5 text-muted-foreground">
+                          source {selectedManagedRecord.source?.source_id || "workspace-local"}
+                        </span>
+                        <span
+                          className={cn(
+                            "rounded-full border px-2 py-0.5",
+                            selectedManagedRecord.locally_modified || selectedManagedRecord.deleted_locally
+                              ? "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-950/60 dark:text-amber-200"
+                              : "border-border/40 bg-muted text-muted-foreground",
+                          )}
+                        >
+                          {managedSkillStateLabel(selectedManagedRecord)}
+                        </span>
+                      </>
+                    ) : null}
+                    {selectedLatestGuard ? (
                       <span
                         className={cn(
                           "rounded-full border px-2 py-0.5",
-                          selectedManagedRecord.locally_modified || selectedManagedRecord.deleted_locally
-                            ? "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-950/60 dark:text-amber-200"
-                            : "border-border/40 bg-muted text-muted-foreground",
+                          selectedLatestGuard.status === "blocked"
+                            ? "border-red-300 bg-red-50 text-red-800 dark:border-red-700 dark:bg-red-950/60 dark:text-red-300"
+                            : selectedLatestGuard.status === "warn"
+                              ? "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-950/60 dark:text-amber-200"
+                              : "border-border/40 bg-muted text-muted-foreground",
                         )}
                       >
-                        {managedSkillStateLabel(selectedManagedRecord)}
+                        {latestGuardStatusLabel(selectedLatestGuard)} · {selectedLatestGuard.violations.length} violations
                       </span>
-                    </>
-                  ) : null}
-                  {selectedLatestGuard ? (
-                    <span
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="text-sm text-muted-foreground">
+                  <span>Location: {selectedSkillEntry.location}</span>
+                  <span className="mx-2">·</span>
+                  <span>Category: {selectedSkillEntry.category || "--"}</span>
+                  <span className="mx-2">·</span>
+                  <span>{selectedSkillEntry.supporting_files.length} files</span>
+                </div>
+                {!selectedSkillEntry.writable ? (
+                  <div className="text-xs text-amber-700 dark:text-amber-300">
+                    Read-only skill outside workspace root <code>{skillWorkspaceRoot}</code>. Edits disabled.
+                  </div>
+                ) : null}
+
+                <div className="flex flex-wrap gap-2">
+                  {(["methodology", "raw"] as SkillEditorMode[]).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
                       className={cn(
-                        "rounded-full border px-2 py-0.5",
-                        selectedLatestGuard.status === "blocked"
-                          ? "border-red-300 bg-red-50 text-red-800 dark:border-red-700 dark:bg-red-950/60 dark:text-red-300"
-                          : selectedLatestGuard.status === "warn"
-                            ? "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-950/60 dark:text-amber-200"
-                            : "border-border/40 bg-muted text-muted-foreground",
+                        "rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors",
+                        editSkillEditorMode === mode
+                          ? "border-border bg-accent text-foreground"
+                          : "border-border/50 bg-background/60 text-muted-foreground hover:bg-accent/60",
                       )}
+                      onClick={() => onEditSkillEditorModeChange(mode)}
+                      disabled={!selectedSkillEntry.writable || skillDetailLoading}
                     >
-                      {latestGuardStatusLabel(selectedLatestGuard)} · {selectedLatestGuard.violations.length} violations
-                    </span>
-                  ) : null}
+                      {mode === "methodology" ? "Methodology Form" : "Raw Markdown"}
+                    </button>
+                  ))}
                 </div>
-              </div>
 
-              {/* Metadata */}
-              <div className="text-sm text-muted-foreground">
-                <span>Location: {selectedSkillEntry.location}</span>
-                <span className="mx-2">·</span>
-                <span>Category: {selectedSkillEntry.category || "--"}</span>
-                <span className="mx-2">·</span>
-                <span>{selectedSkillEntry.supporting_files.length} files</span>
-              </div>
-              {!selectedSkillEntry.writable ? (
-                <div className="text-xs text-amber-700 dark:text-amber-300">
-                  Read-only skill outside workspace root <code>{skillWorkspaceRoot}</code>. Edits disabled.
-                </div>
-              ) : null}
+                {editSkillEditorMode === "methodology" ? (
+                  <div className="grid gap-3">
+                    <input
+                      type="text"
+                      placeholder="description"
+                      value={editSkillDescription}
+                      onChange={(event) => onEditSkillDescriptionChange(event.target.value)}
+                      disabled={!selectedSkillEntry.writable}
+                    />
+                    {!editSkillMethodologyMatched ? (
+                      <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/60 dark:text-amber-200">
+                        Current SKILL.md did not round-trip into the methodology template. Saving
+                        in methodology mode will rewrite the body from this structured form.
+                      </div>
+                    ) : null}
+                    <SkillMethodologyEditor
+                      draft={editSkillMethodologyDraft}
+                      onChange={onEditSkillMethodologyDraftChange}
+                      previewBody={editSkillMethodologyPreview}
+                      previewError={editSkillMethodologyPreviewError}
+                      disabled={!selectedSkillEntry.writable}
+                    />
+                  </div>
+                ) : (
+                  <textarea
+                    className="min-h-[24rem] w-full resize-y rounded-lg border border-border/40 bg-background p-3.5 font-mono text-sm leading-relaxed text-foreground"
+                    value={skillEditorContent}
+                    onChange={(event) => onSkillEditorContentChange(event.target.value)}
+                    spellCheck={false}
+                    readOnly={!selectedSkillEntry.writable}
+                  />
+                )}
 
-              {/* Editor mode toggle */}
-              <div className="flex flex-wrap gap-2">
-                {(["methodology", "raw"] as SkillEditorMode[]).map((mode) => (
+                <div className="flex items-center gap-2">
                   <button
-                    key={mode}
+                    className={secondaryButtonClass}
                     type="button"
-                    className={cn(
-                      "rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors",
-                      editSkillEditorMode === mode
-                        ? "border-border bg-accent text-foreground"
-                        : "border-border/50 bg-background/60 text-muted-foreground hover:bg-accent/60",
-                    )}
-                    onClick={() => onEditSkillEditorModeChange(mode)}
-                    disabled={!selectedSkillEntry.writable || skillDetailLoading}
+                    disabled={busyKey === `skill:guard:skill ${selectedSkillEntry.name}`}
+                    onClick={onRunSelectedSkillGuard}
                   >
-                    {mode === "methodology" ? "Methodology Form" : "Raw Markdown"}
+                    {busyKey === `skill:guard:skill ${selectedSkillEntry.name}`
+                      ? "Scanning..."
+                      : "Run Guard Check"}
                   </button>
-                ))}
-              </div>
-
-              {/* Editor body */}
-              {editSkillEditorMode === "methodology" ? (
-                <div className="grid gap-3">
-                  <input
-                    type="text"
-                    placeholder="description"
-                    value={editSkillDescription}
-                    onChange={(event) => onEditSkillDescriptionChange(event.target.value)}
-                    disabled={!selectedSkillEntry.writable}
-                  />
-                  {!editSkillMethodologyMatched ? (
-                    <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/60 dark:text-amber-200">
-                      Current SKILL.md did not round-trip into the methodology template. Saving
-                      in methodology mode will rewrite the body from this structured form.
-                    </div>
-                  ) : null}
-                  <SkillMethodologyEditor
-                    draft={editSkillMethodologyDraft}
-                    onChange={onEditSkillMethodologyDraftChange}
-                    previewBody={editSkillMethodologyPreview}
-                    previewError={editSkillMethodologyPreviewError}
-                    disabled={!selectedSkillEntry.writable}
-                  />
+                  <button
+                    className={primaryButtonClass}
+                    type="button"
+                    disabled={
+                      !skillsMutationsEnabled ||
+                      !selectedSkillEntry.writable ||
+                      skillDetailLoading ||
+                      (editSkillEditorMode === "methodology" &&
+                        (!editSkillDescription.trim() ||
+                          Boolean(editSkillMethodologyPreviewError))) ||
+                      busyKey === `skill:edit:${selectedSkillEntry.name}`
+                    }
+                    onClick={onSaveSelectedSkill}
+                  >
+                    {busyKey === `skill:edit:${selectedSkillEntry.name}` ? "Saving..." : "Save Skill"}
+                  </button>
+                  <button
+                    className={secondaryButtonClass}
+                    type="button"
+                    disabled={
+                      !skillsMutationsEnabled ||
+                      !selectedSkillEntry.writable ||
+                      busyKey === `skill:delete:${selectedSkillEntry.name}`
+                    }
+                    onClick={onDeleteSelectedSkill}
+                  >
+                    {busyKey === `skill:delete:${selectedSkillEntry.name}`
+                      ? "Deleting..."
+                      : "Delete Skill"}
+                  </button>
                 </div>
-              ) : (
-                <textarea
-                  className="min-h-[24rem] w-full resize-y rounded-lg border border-border/40 bg-background p-3.5 text-sm leading-relaxed font-mono text-foreground"
-                  value={skillEditorContent}
-                  onChange={(event) => onSkillEditorContentChange(event.target.value)}
-                  spellCheck={false}
-                  readOnly={!selectedSkillEntry.writable}
-                />
-              )}
-
-              {/* Actions */}
-              <div className="flex items-center gap-2">
-                <button
-                  className={secondaryButtonClass}
-                  type="button"
-                  disabled={busyKey === `skill:guard:skill ${selectedSkillEntry.name}`}
-                  onClick={onRunSelectedSkillGuard}
-                >
-                  {busyKey === `skill:guard:skill ${selectedSkillEntry.name}`
-                    ? "Scanning..."
-                    : "Run Guard Check"}
-                </button>
-                <button
-                  className={primaryButtonClass}
-                  type="button"
-                  disabled={
-                    !skillsMutationsEnabled ||
-                    !selectedSkillEntry.writable ||
-                    skillDetailLoading ||
-                    (editSkillEditorMode === "methodology" &&
-                      (!editSkillDescription.trim() ||
-                        Boolean(editSkillMethodologyPreviewError))) ||
-                    busyKey === `skill:edit:${selectedSkillEntry.name}`
-                  }
-                  onClick={onSaveSelectedSkill}
-                >
-                  {busyKey === `skill:edit:${selectedSkillEntry.name}` ? "Saving..." : "Save Skill"}
-                </button>
-                <button
-                  className={secondaryButtonClass}
-                  type="button"
-                  disabled={
-                    !skillsMutationsEnabled ||
-                    !selectedSkillEntry.writable ||
-                    busyKey === `skill:delete:${selectedSkillEntry.name}`
-                  }
-                  onClick={onDeleteSelectedSkill}
-                >
-                  {busyKey === `skill:delete:${selectedSkillEntry.name}`
-                    ? "Deleting..."
-                    : "Delete Skill"}
-                </button>
               </div>
             </div>
           ) : null}
 
-          {/* Loading overlay */}
           {selectedSkillEntry && skillDetailLoading ? (
-            <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-background/80">
+            <div className="absolute inset-2 z-10 flex items-center justify-center rounded-[22px] border border-border/50 bg-background/85 backdrop-blur-sm">
               <span className="text-sm text-muted-foreground">Loading skill source...</span>
             </div>
           ) : null}

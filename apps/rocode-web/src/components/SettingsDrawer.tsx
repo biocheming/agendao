@@ -1924,13 +1924,13 @@ export function SettingsDrawer({
   const checkboxClass = "roc-form-checkbox";
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-start justify-end" data-testid="settings-overlay" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-start justify-end bg-black/40 p-2 backdrop-blur-sm sm:p-3" data-testid="settings-overlay" onClick={onClose}>
       <section
-        className="h-full w-full max-w-3xl bg-background border-l border-border/60 overflow-y-auto flex flex-col"
+        className="flex h-full w-full max-w-[44rem] flex-col overflow-y-auto rounded-[28px] border border-border/60 bg-background shadow-2xl"
         data-testid="settings-drawer"
         onClick={(event) => event.stopPropagation()}
       >
-        <header className="flex items-start justify-between gap-4 px-8 pt-8 pb-6">
+        <header className="flex items-start justify-between gap-4 px-5 pb-5 pt-6 sm:px-7 sm:pb-6 sm:pt-7">
           <div>
             <p className="m-0 mb-1.5 text-xs tracking-widest uppercase text-amber-700 font-bold">Settings</p>
             <h2 className="text-xl font-semibold tracking-tight">General, providers, scheduler, validation, skills, MCP, plugins, LSP</h2>
@@ -1950,8 +1950,8 @@ export function SettingsDrawer({
           </div>
         </header>
 
-        <nav className="px-8 border-b border-border/60">
-          <div className="flex flex-wrap gap-6">
+        <nav className="border-b border-border/60 px-5 sm:px-7">
+          <div className="flex flex-wrap gap-4 sm:gap-6">
             {SETTINGS_TABS.map((tab) => (
               <button
                 key={tab.id}
@@ -1972,7 +1972,7 @@ export function SettingsDrawer({
           </div>
         </nav>
 
-        <div className="flex flex-col gap-6 flex-1 min-h-0 px-8 pb-8 pt-6">
+        <div className="flex flex-1 min-h-0 flex-col gap-6 px-5 pb-6 pt-5 sm:px-7 sm:pb-7 sm:pt-6">
           {feedback ? <div className="rounded-lg border border-amber-300 bg-amber-50/80 px-4 py-2.5 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/60 dark:text-amber-200">{feedback}</div> : null}
           {loading ? <div className="flex flex-col items-center justify-center gap-3 text-muted-foreground py-8">Loading settings...</div> : null}
           {!loading && isolatedNotice ? (
