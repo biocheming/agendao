@@ -129,6 +129,9 @@ function capabilityBadges(capabilities?: ProviderModelCapabilitiesRecord | null)
   return badges;
 }
 
+const MODEL_META_BADGE_CLASS =
+  "inline-flex h-5 items-center gap-1 rounded-full border border-border/45 bg-background/72 px-2 text-[10px] font-medium leading-none text-muted-foreground";
+
 function renderModelBadge({
   label,
   icon: Icon,
@@ -139,7 +142,7 @@ function renderModelBadge({
   return (
     <span
       key={label}
-      className="inline-flex items-center gap-1 rounded-full border border-border/45 bg-background/72 px-2 py-0.75 text-[10px] font-medium text-muted-foreground"
+      className={MODEL_META_BADGE_CLASS}
       title={label}
     >
       <Icon className="size-3" />
@@ -506,7 +509,7 @@ export function ComposerPanel({
           model.name ?? "",
           ...badges.map((badge) => badge.label),
         ]}
-        className="items-start rounded-xl px-3 py-2.5"
+        className="items-start rounded-2xl px-3 py-2"
         onSelect={() => {
           onModelChange(optionKey);
           setModelPickerOpen(false);
@@ -521,7 +524,7 @@ export function ComposerPanel({
               )}
             />
           </div>
-          <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
             <div className="flex min-w-0 items-center gap-2">
               <span className="truncate text-sm font-medium text-foreground">
                 {model.name?.trim() || model.id}
@@ -532,9 +535,9 @@ export function ComposerPanel({
                 </span>
               ) : null}
             </div>
-            <div className="flex flex-wrap items-center gap-1.5">
+            <div className="flex flex-wrap items-center gap-1">
               {model.context_window ? (
-                <span className="rounded-full border border-border/45 bg-background/72 px-2 py-0.75 text-[10px] font-medium text-muted-foreground">
+                <span className={MODEL_META_BADGE_CLASS}>
                   {formatCompactCapacity(model.context_window)} ctx
                 </span>
               ) : null}
@@ -757,8 +760,8 @@ export function ComposerPanel({
                                   <div className="truncate text-[12px] font-medium leading-4.5 text-foreground">
                                     {selectedModelTitle}
                                   </div>
-                                  <div className="flex min-w-0 items-center gap-1.5">
-                                    <div className="truncate text-[10px] leading-4 text-muted-foreground">
+                                  <div className="flex min-w-0 flex-wrap items-center gap-1">
+                                    <div className="min-w-0 truncate text-[10px] leading-4 text-muted-foreground">
                                       {selectedModelSubtitle}
                                     </div>
                                     {selectedModelBadges.length > 0 ? (
@@ -775,20 +778,20 @@ export function ComposerPanel({
                           <PopoverContent
                             align="start"
                             sideOffset={10}
-                            className="w-[26rem] max-w-[calc(100vw-2rem)] overflow-hidden p-0"
+                            className="w-[min(24rem,calc(100vw-1rem))] max-h-[min(30rem,calc(100vh-1rem))] overflow-hidden p-0"
                           >
                             <Command
                               shouldFilter
-                              className="max-h-[24rem] rounded-[24px] bg-transparent"
+                              className="max-h-[22rem] rounded-[24px] bg-transparent"
                             >
                               <CommandInput placeholder="Filter models, providers, capabilities..." />
-                              <CommandList className="max-h-[19rem]">
+                              <CommandList className="max-h-[17.5rem]">
                                 <CommandEmpty>No matching model.</CommandEmpty>
                                 <CommandGroup heading="Automatic">
                                   <CommandItem
                                     value={AUTO_MODEL_VALUE}
                                     keywords={["auto", "default", "automatic", "workspace", "session"]}
-                                    className="items-start rounded-xl px-3 py-2.5"
+                                    className="items-start rounded-2xl px-3 py-2"
                                     onSelect={() => {
                                       onModelChange("");
                                       setModelPickerOpen(false);
@@ -809,7 +812,7 @@ export function ComposerPanel({
                                         <span className="text-sm font-medium text-foreground">
                                           Auto
                                         </span>
-                                        <span className="text-[11px] leading-5 text-muted-foreground">
+                                        <span className="text-[11px] leading-[1.35] text-muted-foreground">
                                           Use the session or workspace default model.
                                         </span>
                                       </div>

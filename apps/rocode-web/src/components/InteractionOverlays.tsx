@@ -19,6 +19,52 @@ interface InteractionOverlaysProps {
   onReplyPermission: (reply: "once" | "turn" | "session" | "reject") => void;
 }
 
+function shouldCollapseValue(value: string): boolean {
+  return value.includes("\n") || value.length > 96;
+}
+
+function collapsedPreview(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function CollapsibleCodeValue({
+  value,
+  testId,
+}: {
+  value: string;
+  testId?: string;
+}) {
+  if (!shouldCollapseValue(value)) {
+    return (
+      <code
+        className="block overflow-hidden rounded-2xl border border-border/45 bg-background/72 px-3 py-2 font-mono text-[12px] leading-5 text-foreground break-all"
+        data-testid={testId}
+      >
+        {value}
+      </code>
+    );
+  }
+
+  const preview = collapsedPreview(value);
+
+  return (
+    <details className="group rounded-2xl border border-border/45 bg-background/72" data-testid={testId}>
+      <summary className="flex cursor-pointer list-none items-start justify-between gap-3 px-3 py-2.5">
+        <code className="line-clamp-2 flex-1 font-mono text-[12px] leading-5 text-foreground break-all">
+          {preview}
+        </code>
+        <span className="shrink-0 rounded-full border border-border/50 bg-background/80 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground transition-colors group-open:text-foreground">
+          <span className="group-open:hidden">Expand</span>
+          <span className="hidden group-open:inline">Collapse</span>
+        </span>
+      </summary>
+      <pre className="max-h-56 overflow-auto border-t border-border/45 px-3 py-3 text-[12px] leading-5 text-foreground whitespace-pre-wrap break-all">
+        <code>{value}</code>
+      </pre>
+    </details>
+  );
+}
+
 export function InteractionOverlays({
   question,
   permission,
@@ -33,15 +79,20 @@ export function InteractionOverlays({
   onSubmitQuestion,
   onReplyPermission,
 }: InteractionOverlaysProps) {
+  const overlayShellClassName =
+    "w-full max-w-xl max-h-[min(42rem,calc(100vh-2rem))] overflow-hidden rounded-3xl border border-border bg-card shadow-2xl";
+
   return (
     <>
       {question ? (
-        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center" data-testid="question-overlay" onClick={onRejectQuestion}>
-          <section className="w-full max-w-lg bg-card rounded-3xl border border-border shadow-2xl p-6 flex flex-col gap-5" data-testid="question-modal" onClick={(event) => event.stopPropagation()}>
-            <header className="flex items-center justify-between">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm" data-testid="question-overlay" onClick={onRejectQuestion}>
+          <section className={overlayShellClassName} data-testid="question-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="flex max-h-[inherit] flex-col gap-5 p-5 sm:p-6">
+            <header className="flex shrink-0 items-center justify-between">
               <h2>Question</h2>
             </header>
-            <div className="flex flex-col gap-5">
+            <div className="min-h-0 overflow-y-auto pr-1">
+              <div className="flex flex-col gap-5">
               {question.questions.map((item, index) => (
                 <div key={`question-${index}`} className="grid gap-3">
                   {item.header ? <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">{item.header}</p> : null}
@@ -102,8 +153,9 @@ export function InteractionOverlays({
                   )}
                 </div>
               ))}
+              </div>
             </div>
-            <footer className="flex items-center justify-end gap-3 pt-3 border-t border-border">
+            <footer className="flex shrink-0 items-center justify-end gap-3 border-t border-border pt-3">
               <button
                 className="min-h-[36px] rounded-full px-4 border border-border bg-card/70 text-foreground text-sm inline-flex items-center justify-center cursor-pointer transition-all duration-150 hover:-translate-y-px hover:bg-accent"
                 type="button"
@@ -123,17 +175,20 @@ export function InteractionOverlays({
                 Submit
               </button>
             </footer>
+            </div>
           </section>
         </div>
       ) : null}
 
       {permission ? (
-        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center" data-testid="permission-overlay">
-          <section className="w-full max-w-lg bg-card rounded-3xl border border-border shadow-2xl p-6 flex flex-col gap-5" data-testid="permission-modal" onClick={(event) => event.stopPropagation()}>
-            <header className="flex items-center justify-between">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm" data-testid="permission-overlay">
+          <section className={overlayShellClassName} data-testid="permission-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="flex max-h-[inherit] flex-col gap-5 p-5 sm:p-6">
+            <header className="flex shrink-0 items-center justify-between">
               <h2>Permission</h2>
             </header>
-            <div className="flex flex-col gap-5">
+            <div className="min-h-0 overflow-y-auto pr-1">
+              <div className="flex flex-col gap-5">
               {permission.message ? <p>{permission.message}</p> : null}
               {permissionSubmitError ? (
                 <p
@@ -205,18 +260,23 @@ export function InteractionOverlays({
                 {permission.command ? (
                   <div>
                     <dt>Command</dt>
-                    <dd>{permission.command}</dd>
+                    <dd className="mt-1">
+                      <CollapsibleCodeValue value={permission.command} testId="permission-command" />
+                    </dd>
                   </div>
                 ) : null}
                 {permission.filepath ? (
                   <div>
                     <dt>Path</dt>
-                    <dd>{permission.filepath}</dd>
+                    <dd className="mt-1">
+                      <CollapsibleCodeValue value={permission.filepath} testId="permission-path" />
+                    </dd>
                   </div>
                 ) : null}
               </dl>
+              </div>
             </div>
-            <footer className="flex items-center justify-end gap-3 pt-3 border-t border-border">
+            <footer className="flex shrink-0 flex-wrap items-center justify-end gap-3 border-t border-border pt-3">
               <button
                 className="min-h-[36px] rounded-full px-4 border border-border bg-card/70 text-foreground text-sm inline-flex items-center justify-center cursor-pointer transition-all duration-150 hover:-translate-y-px hover:bg-accent"
                 type="button"
@@ -258,6 +318,7 @@ export function InteractionOverlays({
                 Allow Once
               </button>
             </footer>
+            </div>
           </section>
         </div>
       ) : null}

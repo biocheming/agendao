@@ -30,7 +30,7 @@ function PopoverContent({
         align={align}
         sideOffset={sideOffset}
         className={cn(
-          "roc-floating-surface w-72 origin-(--radix-popover-content-transform-origin) p-4",
+          "roc-floating-surface w-72 max-w-[calc(100vw-1rem)] max-h-[min(32rem,calc(100vh-1rem))] origin-(--radix-popover-content-transform-origin) overflow-x-hidden overflow-y-auto p-4",
           className
         )}
         {...props}
