@@ -217,10 +217,8 @@ pub fn history_session_event_to_web(
 }
 
 fn history_tool_call_detail(input: &serde_json::Value, status: &str) -> Option<String> {
-    match status {
-        "completed" | "error" => None,
-        _ => tool_call_observable_arguments(input),
-    }
+    let _ = status;
+    tool_call_observable_arguments(input)
 }
 
 fn history_tool_result_detail(title: Option<&str>, content: &str) -> Option<String> {
@@ -1209,6 +1207,29 @@ mod tests {
         assert_eq!(
             web.get("detail").and_then(|value| value.as_str()),
             Some("{\"file_path\":\"/tmp/normalized.txt\"}")
+        );
+    }
+
+    #[test]
+    fn history_tool_call_to_web_keeps_observable_input_after_completion() {
+        let web = history_tool_call_to_web(
+            "call_123",
+            "read",
+            &json!({"file_path":"/tmp/normalized.txt"}),
+            Some("completed"),
+            Some("{\"file_path\":\"/tmp/raw.txt\"}"),
+        );
+
+        assert_eq!(web.get("phase").and_then(|value| value.as_str()), Some("done"));
+        assert_eq!(
+            web.get("detail").and_then(|value| value.as_str()),
+            Some("{\"file_path\":\"/tmp/normalized.txt\"}")
+        );
+        assert_ne!(
+            web.get("display")
+                .and_then(|value| value.get("summary"))
+                .and_then(|value| value.as_str()),
+            Some("Done")
         );
     }
 

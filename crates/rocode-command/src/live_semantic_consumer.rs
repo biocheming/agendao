@@ -288,6 +288,7 @@ impl LiveSemanticConsumer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rocode_types::{scheduler_stage_part_key, tool_call_part_key, tool_result_part_key};
 
     fn identity(
         msg_id: &str,
@@ -312,7 +313,7 @@ mod tests {
             Some("hello"),
             Some(&identity(
                 "msg-1",
-                "text/main",
+                rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantText,
                 LivePartPhase::Snapshot,
             )),
@@ -324,7 +325,7 @@ mod tests {
             Some("hello world"),
             Some(&identity(
                 "msg-1",
-                "text/main",
+                rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantText,
                 LivePartPhase::Snapshot,
             )),
@@ -336,7 +337,7 @@ mod tests {
             None,
             Some(&identity(
                 "msg-1",
-                "text/main",
+                rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantText,
                 LivePartPhase::End,
             )),
@@ -358,7 +359,7 @@ mod tests {
             Some("hello"),
             Some(&identity(
                 "msg-1",
-                "text/main",
+                rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantText,
                 LivePartPhase::Snapshot,
             )),
@@ -370,7 +371,7 @@ mod tests {
             Some(" world"),
             Some(&identity(
                 "msg-1",
-                "text/main",
+                rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantText,
                 LivePartPhase::Snapshot,
             )),
@@ -382,7 +383,7 @@ mod tests {
             None,
             Some(&identity(
                 "msg-1",
-                "text/main",
+                rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantText,
                 LivePartPhase::End,
             )),
@@ -404,7 +405,7 @@ mod tests {
             Some("msg1 text"),
             Some(&identity(
                 "msg-1",
-                "text/main",
+                rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantText,
                 LivePartPhase::Snapshot,
             )),
@@ -415,7 +416,7 @@ mod tests {
             Some("msg1 text"),
             Some(&identity(
                 "msg-1",
-                "text/main",
+                rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantText,
                 LivePartPhase::Snapshot,
             )),
@@ -428,7 +429,7 @@ mod tests {
             Some("msg2 text"),
             Some(&identity(
                 "msg-2",
-                "text/main",
+                rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantText,
                 LivePartPhase::Snapshot,
             )),
@@ -445,7 +446,7 @@ mod tests {
             Some("old text"),
             Some(&identity(
                 "msg-1",
-                "text/main",
+                rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantText,
                 LivePartPhase::Snapshot,
             )),
@@ -456,7 +457,7 @@ mod tests {
             Some("new text"),
             Some(&identity(
                 "msg-1",
-                "text/main",
+                rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantText,
                 LivePartPhase::Snapshot,
             )),
@@ -473,7 +474,7 @@ mod tests {
             Some("thinking..."),
             Some(&identity(
                 "msg-1",
-                "reasoning/main",
+                rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantReasoning,
                 LivePartPhase::Snapshot,
             )),
@@ -485,7 +486,7 @@ mod tests {
             Some("thinking...done"),
             Some(&identity(
                 "msg-1",
-                "reasoning/main",
+                rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantReasoning,
                 LivePartPhase::Snapshot,
             )),
@@ -497,7 +498,7 @@ mod tests {
             None,
             Some(&identity(
                 "msg-1",
-                "reasoning/main",
+                rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantReasoning,
                 LivePartPhase::End,
             )),
@@ -521,7 +522,7 @@ mod tests {
             None,
             Some(&identity(
                 "msg-1",
-                "tool_call/call-1",
+                &tool_call_part_key("call-1"),
                 LiveMessagePartKind::ToolCall,
                 LivePartPhase::Start,
             )),
@@ -537,7 +538,7 @@ mod tests {
             None,
             Some(&identity(
                 "msg-1",
-                "tool_result/call-1",
+                &tool_result_part_key("call-1"),
                 LiveMessagePartKind::ToolResult,
                 LivePartPhase::End,
             )),
@@ -565,7 +566,7 @@ mod tests {
             Some("stage text"),
             Some(&identity(
                 "msg-1",
-                "scheduler/stage-1",
+                &scheduler_stage_part_key("stage-1"),
                 LiveMessagePartKind::SchedulerStage,
                 LivePartPhase::Snapshot,
             )),
@@ -581,7 +582,7 @@ mod tests {
             Some(""),
             Some(&identity(
                 "msg-1",
-                "text/main",
+                rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantText,
                 LivePartPhase::Snapshot,
             )),
@@ -597,7 +598,7 @@ mod tests {
             Some("alpha"),
             Some(&identity(
                 "msg-1",
-                "reasoning/main",
+                rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantReasoning,
                 LivePartPhase::Snapshot,
             )),
@@ -609,7 +610,7 @@ mod tests {
             Some(" beta"),
             Some(&identity(
                 "msg-1",
-                "reasoning/main",
+                rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantReasoning,
                 LivePartPhase::Snapshot,
             )),
@@ -621,7 +622,7 @@ mod tests {
             None,
             Some(&identity(
                 "msg-1",
-                "reasoning/main",
+                rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
                 LiveMessagePartKind::AssistantReasoning,
                 LivePartPhase::End,
             )),

@@ -14,7 +14,9 @@ use rocode_command::agent_presenter::{
     history_session_event_to_web, history_tool_call_to_web, history_tool_result_to_web,
     output_block_to_web,
 };
-use rocode_command::output_blocks::OutputBlock;
+use rocode_command::output_blocks::{
+    MessageBlock, MessagePhase, MessageRole, OutputBlock, ReasoningBlock,
+};
 use rocode_multimodal::{MultimodalDisplaySummary, PersistedMultimodalExplain, SessionPartAdapter};
 
 use super::session_crud::persist_sessions_if_enabled;
@@ -183,6 +185,7 @@ fn part_type_name(part_type: &rocode_session::PartType) -> &'static str {
 
 fn part_to_info(
     part: &rocode_session::MessagePart,
+    message_role: &rocode_session::MessageRole,
     message_metadata: &HashMap<String, serde_json::Value>,
     tool_names: &HashMap<String, String>,
     pending_questions: &mut Vec<super::super::tui::QuestionInfo>,
@@ -242,7 +245,61 @@ fn part_to_info(
     } else {
         None
     };
-    let mut output_block = if let Some(tool_call) = tool_call.as_ref() {
+    let message_id = part
+        .message_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty());
+    let is_assistant_message = matches!(message_role, rocode_session::MessageRole::Assistant);
+    let mut output_block = if is_assistant_message {
+        match (message_id, &part.part_type) {
+            (Some(message_id), rocode_session::PartType::Text { text, .. }) => {
+                let mut block = output_block_to_web(&OutputBlock::Message(MessageBlock {
+                    role: MessageRole::Assistant,
+                    phase: MessagePhase::Full,
+                    text: compact_instruction_system_reminder(text, message_metadata)
+                        .unwrap_or_else(|| rocode_session::sanitize_display_text(text)),
+                }));
+                if let serde_json::Value::Object(map) = &mut block {
+                    map.insert(
+                        "live_identity".to_string(),
+                        serde_json::to_value(rocode_session::prompt::assistant_text_live_identity(
+                            message_id,
+                            Some(part.id.clone()),
+                            rocode_types::LivePartPhase::Snapshot,
+                        ))
+                        .expect("assistant text identity"),
+                    );
+                }
+                Some(block)
+            }
+            (Some(message_id), rocode_session::PartType::Reasoning { text }) => {
+                let mut block = output_block_to_web(&OutputBlock::Reasoning(ReasoningBlock {
+                    phase: MessagePhase::Full,
+                    text: text.clone(),
+                }));
+                if let serde_json::Value::Object(map) = &mut block {
+                    map.insert(
+                        "live_identity".to_string(),
+                        serde_json::to_value(
+                            rocode_session::prompt::assistant_reasoning_live_identity(
+                                message_id,
+                                Some(part.id.clone()),
+                                rocode_types::LivePartPhase::Snapshot,
+                            ),
+                        )
+                        .expect("assistant reasoning identity"),
+                    );
+                }
+                Some(block)
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    if output_block.is_none() {
+        output_block = if let Some(tool_call) = tool_call.as_ref() {
         Some(history_tool_call_to_web(
             &tool_call.id,
             &tool_call.name,
@@ -250,7 +307,7 @@ fn part_to_info(
             tool_call.status.as_deref(),
             tool_call.raw.as_deref(),
         ))
-    } else if let Some(tool_result) = tool_result.as_ref() {
+        } else if let Some(tool_result) = tool_result.as_ref() {
         let tool_name = tool_names
             .get(&tool_result.tool_call_id)
             .cloned()
@@ -264,7 +321,7 @@ fn part_to_info(
             tool_result.is_error,
             tool_result.metadata.as_ref().unwrap_or(&empty_meta),
         ))
-    } else if let rocode_session::PartType::Agent { name, status } = &part.part_type {
+        } else if let rocode_session::PartType::Agent { name, status } = &part.part_type {
         Some(history_session_event_to_web(
             "agent",
             format!("Agent · {name}"),
@@ -273,12 +330,12 @@ fn part_to_info(
             vec![("Agent".to_string(), name.clone(), None)],
             None,
         ))
-    } else if let rocode_session::PartType::Subtask {
+        } else if let rocode_session::PartType::Subtask {
         id,
         description,
         status,
     } = &part.part_type
-    {
+        {
         Some(history_session_event_to_web(
             "subtask",
             if description.trim().is_empty() {
@@ -302,7 +359,7 @@ fn part_to_info(
             ],
             None,
         ))
-    } else if let rocode_session::PartType::Retry { count, reason } = &part.part_type {
+        } else if let rocode_session::PartType::Retry { count, reason } = &part.part_type {
         Some(history_session_event_to_web(
             "retry",
             "Retry",
@@ -315,7 +372,7 @@ fn part_to_info(
             )],
             Some(reason.clone()),
         ))
-    } else if let rocode_session::PartType::StepStart { id, name } = &part.part_type {
+        } else if let rocode_session::PartType::StepStart { id, name } = &part.part_type {
         Some(history_session_event_to_web(
             "step",
             format!("Step · {name}"),
@@ -324,7 +381,7 @@ fn part_to_info(
             vec![("ID".to_string(), id.clone(), None)],
             None,
         ))
-    } else if let rocode_session::PartType::StepFinish { id, output } = &part.part_type {
+        } else if let rocode_session::PartType::StepFinish { id, output } = &part.part_type {
         Some(history_session_event_to_web(
             "step",
             "Step complete",
@@ -333,9 +390,10 @@ fn part_to_info(
             vec![("ID".to_string(), id.clone(), None)],
             output.clone(),
         ))
-    } else {
-        None
-    };
+        } else {
+            None
+        };
+    }
     if let Some(serde_json::Value::Object(map)) = output_block.as_mut() {
         map.insert(
             "ts".to_string(),
@@ -460,11 +518,11 @@ fn message_to_info(
     let mut parts: Vec<PartInfo> = message
         .parts
         .iter()
-        .map(|part| part_to_info(part, &message.metadata, tool_names, pending_questions))
+        .map(|part| part_to_info(part, &message.role, &message.metadata, tool_names, pending_questions))
         .collect();
     if let Some(block) = scheduler_stage_block {
         for part in &mut parts {
-            if part.part_type == "text" && part.output_block.is_none() {
+            if part.part_type == "text" {
                 part.ignored = Some(true);
             }
         }
@@ -1083,6 +1141,127 @@ mod tests {
         let expected = rocode_session::sanitize_display_text(reminder_text);
 
         assert_eq!(info.parts[0].text.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn message_to_info_adds_canonical_live_identity_for_assistant_text_history() {
+        let mut message = SessionMessage::assistant("ses_test");
+        message.parts.push(MessagePart {
+            id: "prt_text".to_string(),
+            part_type: PartType::Text {
+                text: "final answer".to_string(),
+                synthetic: None,
+                ignored: None,
+            },
+            created_at: chrono::Utc::now(),
+            message_id: Some(message.id.clone()),
+        });
+
+        let info = message_to_info("ses_test", &message, &HashMap::new(), &mut Vec::new());
+        let block = info.parts[0]
+            .output_block
+            .as_ref()
+            .expect("assistant text history output_block");
+
+        assert_eq!(block.get("kind").and_then(|value| value.as_str()), Some("message"));
+        assert_eq!(
+            block.get("live_identity")
+                .and_then(|value| value.get("part_key"))
+                .and_then(|value| value.as_str()),
+            Some(rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY)
+        );
+        assert_eq!(
+            block.get("live_identity")
+                .and_then(|value| value.get("part_kind"))
+                .and_then(|value| value.as_str()),
+            Some("assistant_text")
+        );
+    }
+
+    #[test]
+    fn message_to_info_adds_canonical_live_identity_for_assistant_reasoning_history() {
+        let mut message = SessionMessage::assistant("ses_test");
+        message.parts.push(MessagePart {
+            id: "prt_reasoning".to_string(),
+            part_type: PartType::Reasoning {
+                text: "thinking".to_string(),
+            },
+            created_at: chrono::Utc::now(),
+            message_id: Some(message.id.clone()),
+        });
+
+        let info = message_to_info("ses_test", &message, &HashMap::new(), &mut Vec::new());
+        let block = info.parts[0]
+            .output_block
+            .as_ref()
+            .expect("assistant reasoning history output_block");
+
+        assert_eq!(block.get("kind").and_then(|value| value.as_str()), Some("reasoning"));
+        assert_eq!(
+            block.get("live_identity")
+                .and_then(|value| value.get("part_key"))
+                .and_then(|value| value.as_str()),
+            Some(rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY)
+        );
+        assert_eq!(
+            block.get("live_identity")
+                .and_then(|value| value.get("part_kind"))
+                .and_then(|value| value.as_str()),
+            Some("assistant_reasoning")
+        );
+    }
+
+    #[test]
+    fn message_to_info_keeps_completed_tool_call_arguments_in_history_output_block() {
+        let mut message = SessionMessage::assistant("ses_test");
+        message.parts.push(MessagePart {
+            id: "prt_tool_call".to_string(),
+            part_type: PartType::ToolCall {
+                id: "tool-call-0".to_string(),
+                name: "read".to_string(),
+                input: serde_json::json!({"file_path":"/tmp/normalized.txt"}),
+                status: rocode_session::ToolCallStatus::Completed,
+                raw: Some("{\"file_path\":\"/tmp/raw.txt\"}".to_string()),
+                state: None,
+            },
+            created_at: chrono::Utc::now(),
+            message_id: Some(message.id.clone()),
+        });
+
+        let info = message_to_info("ses_test", &message, &HashMap::new(), &mut Vec::new());
+        let block = info.parts[0]
+            .output_block
+            .as_ref()
+            .expect("tool call history output_block");
+
+        assert_eq!(block.get("kind").and_then(|value| value.as_str()), Some("tool"));
+        assert_eq!(block.get("phase").and_then(|value| value.as_str()), Some("done"));
+        assert_eq!(
+            block.get("detail").and_then(|value| value.as_str()),
+            Some("{\"file_path\":\"/tmp/normalized.txt\"}")
+        );
+    }
+
+    #[test]
+    fn message_to_info_does_not_add_assistant_live_identity_to_user_text_history() {
+        let mut message = SessionMessage::user("ses_test", "hello");
+        message.parts.clear();
+        message.parts.push(MessagePart {
+            id: "prt_text".to_string(),
+            part_type: PartType::Text {
+                text: "hello".to_string(),
+                synthetic: None,
+                ignored: None,
+            },
+            created_at: chrono::Utc::now(),
+            message_id: Some(message.id.clone()),
+        });
+
+        let info = message_to_info("ses_test", &message, &HashMap::new(), &mut Vec::new());
+        assert!(
+            info.parts[0].output_block.is_none(),
+            "user text history must not be rewritten as assistant transcript output_block"
+        );
     }
 
     #[test]

@@ -1,6 +1,9 @@
 use crate::output_blocks::SchedulerStageBlock;
 use crate::stage_protocol::StageEvent;
-use rocode_types::LiveMessagePartIdentity;
+use rocode_types::{
+    tool_call_part_key, tool_result_part_key, ASSISTANT_TEXT_MAIN_PART_KEY,
+    LiveMessagePartIdentity, scheduler_stage_part_key,
+};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -162,7 +165,7 @@ impl SharedTurnCycleEntry {
     pub fn assistant_identity(&self) -> LiveMessagePartIdentity {
         LiveMessagePartIdentity {
             message_id: self.message_id.clone(),
-            part_key: "text/main".to_string(),
+            part_key: ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
             part_kind: rocode_types::LiveMessagePartKind::AssistantText,
             phase: rocode_types::LivePartPhase::Snapshot,
             legacy_block_id: Some(self.message_id.clone()),
@@ -174,7 +177,7 @@ impl SharedTurnCycleTool {
     pub fn tool_result_identity(&self, message_id: &str) -> LiveMessagePartIdentity {
         LiveMessagePartIdentity {
             message_id: message_id.to_string(),
-            part_key: format!("tool_result/{}", self.tool_id),
+            part_key: tool_result_part_key(&self.tool_id),
             part_kind: rocode_types::LiveMessagePartKind::ToolResult,
             phase: rocode_types::LivePartPhase::End,
             legacy_block_id: Some(self.tool_id.clone()),
@@ -186,7 +189,7 @@ impl ToolProgressExclusionFixture {
     pub fn message_identity(&self) -> LiveMessagePartIdentity {
         LiveMessagePartIdentity {
             message_id: self.message.message_id.clone(),
-            part_key: "text/main".to_string(),
+            part_key: ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
             part_kind: rocode_types::LiveMessagePartKind::AssistantText,
             phase: rocode_types::LivePartPhase::Snapshot,
             legacy_block_id: Some(self.message.message_id.clone()),
@@ -196,7 +199,7 @@ impl ToolProgressExclusionFixture {
     pub fn tool_running_identity(&self) -> LiveMessagePartIdentity {
         LiveMessagePartIdentity {
             message_id: self.message.message_id.clone(),
-            part_key: format!("tool_call/{}", self.tool_running.tool_id),
+            part_key: tool_call_part_key(&self.tool_running.tool_id),
             part_kind: rocode_types::LiveMessagePartKind::ToolCall,
             phase: rocode_types::LivePartPhase::Snapshot,
             legacy_block_id: Some(self.tool_running.tool_id.clone()),
@@ -206,7 +209,7 @@ impl ToolProgressExclusionFixture {
     pub fn tool_result_identity(&self) -> LiveMessagePartIdentity {
         LiveMessagePartIdentity {
             message_id: self.message.message_id.clone(),
-            part_key: format!("tool_result/{}", self.tool_result.tool_id),
+            part_key: tool_result_part_key(&self.tool_result.tool_id),
             part_kind: rocode_types::LiveMessagePartKind::ToolResult,
             phase: rocode_types::LivePartPhase::End,
             legacy_block_id: Some(self.tool_result.tool_id.clone()),
@@ -218,7 +221,7 @@ impl SchedulerStageExclusionFixture {
     pub fn scheduler_identity(&self) -> LiveMessagePartIdentity {
         LiveMessagePartIdentity {
             message_id: self.message_id.clone(),
-            part_key: format!("scheduler/{}", self.stage_id),
+            part_key: scheduler_stage_part_key(&self.stage_id),
             part_kind: rocode_types::LiveMessagePartKind::SchedulerStage,
             phase: rocode_types::LivePartPhase::Snapshot,
             legacy_block_id: None,

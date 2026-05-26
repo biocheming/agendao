@@ -255,11 +255,23 @@ impl SessionSchedulerLifecycleHook {
             .refresh_stage_summary_from_message(&self.session_id, message)
             .await;
         if let Some(block) = scheduler_stage_block_from_message(message) {
+            // LTS-B3: scheduler stage is runtime status, not transcript.
+            // Give it an explicit SchedulerStage identity so all frontends
+            // can route it to the activity/progress surface without
+            // guessing by block.kind.
+            let stage_id = block.stage_id.clone().unwrap_or_else(|| message.id.clone());
+            let stage_identity = rocode_types::LiveMessagePartIdentity {
+                message_id: message.id.clone(),
+                part_key: rocode_types::scheduler_stage_part_key(&stage_id),
+                part_kind: rocode_types::LiveMessagePartKind::SchedulerStage,
+                phase: rocode_types::LivePartPhase::Snapshot,
+                legacy_block_id: Some(message.id.clone()),
+            };
             self.emit_realtime_block(OutputBlockEvent {
                 session_id: self.session_id.clone(),
                 block: OutputBlock::SchedulerStage(Box::new(block)),
                 id: Some(message.id.clone()),
-                live_identity: None,
+                live_identity: Some(stage_identity),
             })
             .await;
         }
@@ -307,9 +319,10 @@ impl SessionSchedulerLifecycleHook {
                     .ok()
                     .and_then(|guard| guard.last().map(|active| active.message_id.clone()))?;
                 let identity = match tool.phase {
-                    // LTS-B2: running tool detail is progress-only and must not
-                    // participate in transcript-bearing live identity routing.
-                    ToolPhase::Running => return None,
+                    ToolPhase::Running => {
+                        let phase = rocode_types::LivePartPhase::Append;
+                        tool_call_live_identity(&message_id, tool_call_id, phase)
+                    }
                     ToolPhase::Start => {
                         let phase = rocode_types::LivePartPhase::Start;
                         tool_call_live_identity(&message_id, tool_call_id, phase)

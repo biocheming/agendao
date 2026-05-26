@@ -5,6 +5,7 @@ import type { MessageRecord, OutputBlock } from "../src/lib/history";
 import {
   appendLiveBlock,
   applyOutputBlock,
+  buildFeedFromHistory,
   mergeHistoryWithLiveBlocks,
   normalizeBlockText,
   pruneLiveBlocksCoveredByHistory,
@@ -15,6 +16,13 @@ import {
   canonicalLiveExecutionStatus,
   partitionLiveExecutions,
 } from "../src/lib/liveExecutionState";
+import {
+  ASSISTANT_REASONING_MAIN_PART_KEY,
+  ASSISTANT_TEXT_MAIN_PART_KEY,
+  assistantReasoningPartKey,
+  toolCallPartKey,
+  toolResultPartKey,
+} from "../src/lib/liveIdentity";
 import { buildRunTailSummary } from "../src/lib/runTailSummary";
 import { toolActivityLabel, toolKindLabel } from "../src/lib/toolLabels";
 
@@ -86,7 +94,7 @@ function toolBlock(overrides: Partial<OutputBlock> = {}): OutputBlock {
     role: "assistant",
     live_identity: {
       message_id: "assistant-1",
-      part_key: "tool_result/tool-call-1",
+      part_key: toolResultPartKey("tool-call-1"),
       part_kind: "tool_result",
       phase: "snapshot",
       legacy_block_id: "tool-call-1",
@@ -124,7 +132,7 @@ function assistantMessageBlock(messageId: string, text: string, overrides: Parti
     text,
     live_identity: {
       message_id: messageId,
-      part_key: "text/main",
+      part_key: ASSISTANT_TEXT_MAIN_PART_KEY,
       part_kind: "assistant_text",
       phase: "snapshot",
       legacy_block_id: messageId,
@@ -143,9 +151,28 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
     text,
     live_identity: {
       message_id: messageId,
-      part_key: `tool_result/${toolId}`,
+      part_key: toolResultPartKey(toolId),
       part_kind: "tool_result",
       phase: "end",
+      legacy_block_id: toolId,
+    },
+    ...overrides,
+  };
+}
+
+function runningToolBlockFor(toolId: string, text: string, overrides: Partial<OutputBlock> = {}): OutputBlock {
+  return {
+    kind: "tool",
+    phase: "running",
+    role: "assistant",
+    id: toolId,
+    title: "SkillsList",
+    text,
+    live_identity: {
+      message_id: "assistant-1",
+      part_key: toolCallPartKey(toolId),
+      part_kind: "tool_call",
+      phase: "append",
       legacy_block_id: toolId,
     },
     ...overrides,
@@ -289,6 +316,53 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
 }
 
 {
+  resetLiveTranscriptFeedSequence();
+  let visible = applyOutputBlock(
+    [],
+    {
+      kind: "tool",
+      phase: "running",
+      role: "assistant",
+      detail: '{"command":"echo a"}',
+      live_identity: {
+        message_id: "assistant-1",
+        part_key: toolCallPartKey("tool-call-0"),
+        part_kind: "tool_call",
+        phase: "snapshot",
+        legacy_block_id: "tool-call-0",
+      },
+    },
+    true,
+  );
+  visible = applyOutputBlock(
+    visible,
+    {
+      kind: "tool",
+      phase: "running",
+      role: "assistant",
+      detail: '{"command":"echo b"}',
+      live_identity: {
+        message_id: "assistant-2",
+        part_key: toolCallPartKey("tool-call-0"),
+        part_kind: "tool_call",
+        phase: "snapshot",
+        legacy_block_id: "tool-call-0",
+      },
+    },
+    true,
+  );
+
+  assert.equal(visible.length, 2, "same raw tool_call_id in different messages must not overwrite");
+  assert.deepEqual(
+    visible.map((message) => `${message.id}:${message.text}`),
+    [
+      'tool-call-0:{"command":"echo a"}',
+      'tool-call-0:{"command":"echo b"}',
+    ],
+  );
+}
+
+{
   const contractText = normalizeBlockText(
     toolBlock({
       id: undefined,
@@ -377,7 +451,7 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
     text: "should not insert",
     live_identity: {
       message_id: "assistant-1",
-      part_key: "text/main",
+      part_key: ASSISTANT_TEXT_MAIN_PART_KEY,
       part_kind: "assistant_text",
       phase: "snapshot",
       legacy_block_id: "assistant-1",
@@ -445,6 +519,89 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
 
 {
   resetLiveTranscriptFeedSequence();
+  let visible = applyOutputBlock(
+    [],
+    {
+      kind: "message",
+      phase: "delta",
+      role: "assistant",
+      id: "compat-msg-1",
+      text: "这",
+    },
+    true,
+  );
+  visible = applyOutputBlock(
+    visible,
+    {
+      kind: "message",
+      phase: "delta",
+      role: "assistant",
+      id: "compat-msg-1",
+      text: "是一段",
+    },
+    true,
+  );
+  visible = applyOutputBlock(
+    visible,
+    {
+      kind: "message",
+      phase: "delta",
+      role: "assistant",
+      id: "compat-msg-1",
+      text: "完整回复",
+    },
+    true,
+  );
+
+  assert.equal(visible.length, 1, "compatibility message deltas must accumulate into one visible block");
+  assert.equal(visible[0]?.id, "compat-msg-1");
+  assert.equal(visible[0]?.text, "这是一段完整回复");
+}
+
+{
+  resetLiveTranscriptFeedSequence();
+  let visible = applyOutputBlock(
+    [],
+    {
+      kind: "reasoning",
+      phase: "delta",
+      role: "assistant",
+      id: "compat-think-1",
+      text: "先",
+    },
+    true,
+  );
+  visible = applyOutputBlock(
+    visible,
+    {
+      kind: "reasoning",
+      phase: "delta",
+      role: "assistant",
+      id: "compat-think-1",
+      text: "检索",
+    },
+    true,
+  );
+  visible = applyOutputBlock(
+    visible,
+    {
+      kind: "reasoning",
+      phase: "delta",
+      role: "assistant",
+      id: "compat-think-1",
+      text: "再归纳",
+    },
+    true,
+  );
+
+  assert.equal(visible.length, 1, "compatibility reasoning deltas must accumulate into one visible block");
+  assert.equal(visible[0]?.kind, "reasoning");
+  assert.equal(visible[0]?.id, "compat-think-1");
+  assert.equal(visible[0]?.text, "先检索再归纳");
+}
+
+{
+  resetLiveTranscriptFeedSequence();
   const unknownBlock: OutputBlock = {
     kind: "mystery_block",
     phase: "full",
@@ -461,10 +618,84 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
 
 {
   resetLiveTranscriptFeedSequence();
+  let visible = applyOutputBlock(
+    [],
+    {
+      kind: "tool",
+      phase: "running",
+      role: "assistant",
+      id: "compat-tool-a",
+      title: "Bash",
+      detail: '{"command":"echo a"}',
+    },
+    true,
+  );
+  visible = applyOutputBlock(
+    visible,
+    {
+      kind: "tool",
+      phase: "done",
+      role: "assistant",
+      id: "compat-tool-a",
+      title: "Bash",
+      detail: "result a",
+    },
+    true,
+  );
+
+  assert.equal(visible.length, 2, "compatibility tool running/result must be separate visible blocks");
+  assert.deepEqual(
+    visible.map((message) => `${message.phase}:${message.id}:${message.text}`),
+    [
+      'running:compat-tool-a:{"command":"echo a"}',
+      "done:compat-tool-a:result a",
+    ],
+  );
+}
+
+{
+  let liveBlocks: OutputBlock[] = [];
+  liveBlocks = appendLiveBlock(
+    liveBlocks,
+    {
+      kind: "tool",
+      phase: "running",
+      role: "assistant",
+      id: "compat-tool-a",
+      title: "Bash",
+      detail: '{"command":"echo a"}',
+    },
+  );
+  liveBlocks = appendLiveBlock(
+    liveBlocks,
+    {
+      kind: "tool",
+      phase: "running",
+      role: "assistant",
+      id: "compat-tool-b",
+      title: "Bash",
+      detail: '{"command":"echo b"}',
+    },
+  );
+
+  assert.equal(liveBlocks.length, 2, "different compatibility tool ids must retain distinct live cache slots");
+  assert.deepEqual(
+    liveBlocks.map((block) => `${block.id}:${normalizeBlockText(block)}`),
+    [
+      'compat-tool-a:{"command":"echo a"}',
+      'compat-tool-b:{"command":"echo b"}',
+    ],
+  );
+}
+
+// Phase W1: session_event must not enter the conversation feed.
+{
+  resetLiveTranscriptFeedSequence();
   const visible = applyOutputBlock(
     [],
     {
       kind: "session_event",
+      id: "evt-1",
       event: "subtask",
       title: "Subtask · inspect scheduler",
       status: "pending",
@@ -472,23 +703,57 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
     },
     true,
   );
-  assert.equal(visible.length, 1);
-  assert.equal(visible[0]?.kind, "session_event");
+  assert.equal(visible.length, 0, "session_event must not enter conversation feed");
 }
 
+// Phase W1: inspect must not enter the conversation feed.
 {
   resetLiveTranscriptFeedSequence();
   const visible = applyOutputBlock(
     [],
     {
       kind: "inspect",
+      id: "inspect-1",
       summary: "2 stage events",
       body: "stage-1\nstage-2",
     },
     true,
   );
-  assert.equal(visible.length, 1);
-  assert.equal(visible[0]?.kind, "inspect");
+  assert.equal(visible.length, 0, "inspect must not enter conversation feed");
+}
+
+// Phase W1: status must not enter the conversation feed.
+{
+  resetLiveTranscriptFeedSequence();
+  const visible = applyOutputBlock(
+    [],
+    { kind: "status", tone: "error", text: "something failed" },
+    true,
+  );
+  assert.equal(visible.length, 0, "status must not enter conversation feed");
+}
+
+// Phase W1: session_event / inspect must not even enter transcript queue.
+{
+  assert.equal(
+    shouldQueueLiveTranscriptBlock({
+      kind: "session_event",
+      id: "evt-2",
+      event: "subtask",
+      title: "Queued event",
+    }),
+    false,
+    "session_event must be rejected at transcript queue ingress",
+  );
+  assert.equal(
+    shouldQueueLiveTranscriptBlock({
+      kind: "inspect",
+      id: "inspect-2",
+      summary: "debug payload",
+    }),
+    false,
+    "inspect must be rejected at transcript queue ingress",
+  );
 }
 
 {
@@ -500,7 +765,7 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
     text: "",
     live_identity: {
       message_id: "assistant-1",
-      part_key: "text/main",
+      part_key: ASSISTANT_TEXT_MAIN_PART_KEY,
       part_kind: "assistant_text",
       phase: "start",
       legacy_block_id: "assistant-1",
@@ -513,7 +778,7 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
     text: "",
     live_identity: {
       message_id: "assistant-1",
-      part_key: "text/main",
+      part_key: ASSISTANT_TEXT_MAIN_PART_KEY,
       part_kind: "assistant_text",
       phase: "snapshot",
       legacy_block_id: "assistant-1",
@@ -560,7 +825,7 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
     text: "",
     live_identity: {
       message_id: "assistant-1",
-      part_key: "reasoning/main",
+      part_key: ASSISTANT_REASONING_MAIN_PART_KEY,
       part_kind: "assistant_reasoning",
       phase: "start",
       legacy_block_id: "assistant-1",
@@ -573,7 +838,7 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
     text: "",
     live_identity: {
       message_id: "assistant-1",
-      part_key: "reasoning/main",
+      part_key: ASSISTANT_REASONING_MAIN_PART_KEY,
       part_kind: "assistant_reasoning",
       phase: "snapshot",
       legacy_block_id: "assistant-1",
@@ -611,30 +876,34 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
   let visible = applyOutputBlock([], toolBlock({ id: undefined, phase: "start", text: "" }), true);
   visible = applyOutputBlock(
     visible,
-    toolBlock({
-      id: undefined,
-      phase: "running",
-      title: fixture.tool_progress_exclusion.tool_running.tool_name,
-      text: fixture.tool_progress_exclusion.tool_running.tool_detail,
-    }),
+    runningToolBlockFor(
+      "tool-call-1",
+      fixture.tool_progress_exclusion.tool_running.tool_detail,
+      { title: fixture.tool_progress_exclusion.tool_running.tool_name },
+    ),
     true,
   );
   visible = applyOutputBlock(
     visible,
-    toolBlock({
-      id: undefined,
-      phase: "running",
-      title: fixture.tool_progress_exclusion.tool_running.tool_name,
-      text: fixture.tool_progress_exclusion.tool_running.tool_detail,
-    }),
+    runningToolBlockFor(
+      "tool-call-1",
+      fixture.tool_progress_exclusion.tool_running.tool_detail,
+      { title: fixture.tool_progress_exclusion.tool_running.tool_name },
+    ),
     true,
   );
 
+  // Phase W2: running tool_call dedups against itself.
+  // The preceding start block (phase="start", empty text) does not
+  // produce a visible entry — boundary signals are not content.
   assert.equal(
     visible.length,
-    0,
-    "tool running detail is progress-state and must not enter authoritative visible transcript feed",
+    1,
+    "tool running detail must dedup into single live TOOL block",
   );
+  assert.equal(visible[0]?.kind, "tool");
+  assert.equal(visible[0]?.tool_call_id, "tool-call-1");
+  assert.equal(visible[0]?.text, fixture.tool_progress_exclusion.tool_running.tool_detail);
 }
 
 {
@@ -649,6 +918,98 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
 }
 
 {
+  let liveBlocks: OutputBlock[] = [];
+  liveBlocks = appendLiveBlock(
+    liveBlocks,
+    {
+      kind: "tool",
+      phase: "running",
+      role: "assistant",
+      detail: "{\"command\":\"curl\"}",
+      live_identity: {
+        message_id: "assistant-1",
+        part_key: toolCallPartKey("tool-call-9"),
+        part_kind: "tool_call",
+        phase: "snapshot",
+        legacy_block_id: "tool-call-9",
+      },
+    },
+  );
+  liveBlocks = appendLiveBlock(
+    liveBlocks,
+    {
+      kind: "tool",
+      phase: "running",
+      role: "assistant",
+      detail: "{\"command\":\"curl -s https://api.semanticscholar.org\"}",
+      live_identity: {
+        message_id: "assistant-1",
+        part_key: toolCallPartKey("tool-call-9"),
+        part_kind: "tool_call",
+        phase: "snapshot",
+        legacy_block_id: "tool-call-9",
+      },
+    },
+  );
+
+  assert.equal(liveBlocks.length, 1, "running tool snapshots should retain one live slot");
+  assert.equal(
+    normalizeBlockText(liveBlocks[0] as OutputBlock),
+    "{\"command\":\"curl -s https://api.semanticscholar.org\"}",
+    "later richer tool snapshot must replace the earlier shorter one",
+  );
+}
+
+{
+  resetLiveTranscriptFeedSequence();
+  const history = buildFeedFromHistory([
+    {
+      id: "tool-message-1",
+      role: "tool",
+      parts: [
+        {
+          id: "part-1",
+          type: "tool_result",
+          output_block: {
+            kind: "tool",
+            phase: "done",
+            id: "tool-call-0",
+            tool_call_id: "tool-call-0",
+            detail: "result a",
+          },
+        },
+      ],
+    },
+    {
+      id: "tool-message-2",
+      role: "tool",
+      parts: [
+        {
+          id: "part-2",
+          type: "tool_result",
+          output_block: {
+            kind: "tool",
+            phase: "done",
+            id: "tool-call-0",
+            tool_call_id: "tool-call-0",
+            detail: "result b",
+          },
+        },
+      ],
+    },
+  ] as MessageRecord[], true);
+
+  assert.equal(history.length, 2, "history tool results with reused raw call_id must stay distinct");
+  assert.deepEqual(
+    history.map((message) => `${message.id}:${message.tool_call_id}:${message.text}`),
+    [
+      "tool-message-1:part-1:tool:tool-call-0:result a",
+      "tool-message-2:part-2:tool:tool-call-0:result b",
+    ],
+  );
+}
+
+{
   const emptyAssistantStart: OutputBlock = {
     kind: "message",
     phase: "start",
@@ -656,7 +1017,7 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
     text: "",
     live_identity: {
       message_id: "assistant-1",
-      part_key: "text/main",
+      part_key: ASSISTANT_TEXT_MAIN_PART_KEY,
       part_kind: "assistant_text",
       phase: "start",
       legacy_block_id: "assistant-1",
@@ -669,7 +1030,7 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
     text: "",
     live_identity: {
       message_id: "assistant-1",
-      part_key: "text/main",
+      part_key: ASSISTANT_TEXT_MAIN_PART_KEY,
       part_kind: "assistant_text",
       phase: "append",
       legacy_block_id: "assistant-1",
@@ -702,28 +1063,28 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
   let liveBlocks: OutputBlock[] = [];
   liveBlocks = appendLiveBlock(
     liveBlocks,
-    toolBlock({
-      id: undefined,
-      phase: "running",
-      title: fixture.tool_progress_exclusion.tool_running.tool_name,
-      text: fixture.tool_progress_exclusion.tool_running.tool_detail,
-    }),
+    runningToolBlockFor(
+      "tool-call-1",
+      fixture.tool_progress_exclusion.tool_running.tool_detail,
+      { title: fixture.tool_progress_exclusion.tool_running.tool_name },
+    ),
   );
   liveBlocks = appendLiveBlock(
     liveBlocks,
-    toolBlock({
-      id: undefined,
-      phase: "running",
-      title: fixture.tool_progress_exclusion.tool_running.tool_name,
-      text: fixture.tool_progress_exclusion.tool_running.tool_detail,
-    }),
+    runningToolBlockFor(
+      "tool-call-1",
+      fixture.tool_progress_exclusion.tool_running.tool_detail,
+      { title: fixture.tool_progress_exclusion.tool_running.tool_name },
+    ),
   );
 
   assert.equal(
     liveBlocks.length,
-    0,
-    "tool running detail is progress-state and must not enter retained live transcript cache",
+    1,
+    "tool running detail should retain one live transcript cache slot per tool call",
   );
+  assert.equal(liveBlocks[0]?.tool_call_id, "tool-call-1");
+  assert.equal(liveBlocks[0]?.text, fixture.tool_progress_exclusion.tool_running.tool_detail);
 }
 
 {
@@ -758,11 +1119,11 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
   let liveBlocks: OutputBlock[] = [];
   liveBlocks = appendLiveBlock(
     liveBlocks,
-    toolBlock({ id: undefined, phase: "running", text: '{"category":"literature-research/skills"}' }),
+    runningToolBlockFor("tool-call-1", '{"category":"literature-research/skills"}'),
   );
   liveBlocks = appendLiveBlock(
     liveBlocks,
-    toolBlock({ id: undefined, phase: "running", text: '{"category":"scientific-skills"}' }),
+    runningToolBlockFor("tool-call-2", '{"category":"scientific-skills"}'),
   );
 
   const rebuilt = mergeHistoryWithLiveBlocks(history, liveBlocks, true);
@@ -770,8 +1131,12 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
 
   assert.equal(
     toolMessages.length,
-    0,
-    "rebuilt feed must exclude running tool detail because retained live cache no longer treats it as transcript authority",
+    2,
+    "rebuilt feed should preserve distinct running tool blocks without collapsing them together",
+  );
+  assert.deepEqual(
+    toolMessages.map((message) => message.tool_call_id),
+    ["tool-call-1", "tool-call-2"],
   );
 }
 
@@ -876,7 +1241,12 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
     {
       id: "assistant-1",
       role: "assistant",
-      parts: [{ id: "text-part-1", type: "text", text: "final answer" }],
+      parts: [{
+        id: "text-part-1",
+        type: "text",
+        text: "final answer",
+        output_block: assistantMessageBlock("assistant-1", "final answer", { phase: "full" }),
+      }],
     },
   ];
 
@@ -888,7 +1258,7 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
       text: "final answer",
       live_identity: {
         message_id: "assistant-1",
-        part_key: "text/main",
+        part_key: ASSISTANT_TEXT_MAIN_PART_KEY,
         part_kind: "assistant_text",
         phase: "snapshot",
         legacy_block_id: "assistant-1",
@@ -909,7 +1279,25 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
     {
       id: "assistant-1",
       role: "assistant",
-      parts: [{ id: "reasoning-part-1", type: "reasoning", text: "main reasoning" }],
+      parts: [{
+        id: "reasoning-part-1",
+        type: "reasoning",
+        text: "main reasoning",
+        output_block: {
+          kind: "reasoning",
+          phase: "full",
+          role: "assistant",
+          text: "main reasoning",
+          live_identity: {
+            message_id: "assistant-1",
+            part_key: ASSISTANT_REASONING_MAIN_PART_KEY,
+            part_kind: "assistant_reasoning",
+            phase: "snapshot",
+            legacy_block_id: "assistant-1",
+          },
+          id: "assistant-1",
+        },
+      }],
     },
   ];
 
@@ -921,7 +1309,7 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
       text: "main reasoning",
       live_identity: {
         message_id: "assistant-1",
-        part_key: "reasoning/main",
+        part_key: ASSISTANT_REASONING_MAIN_PART_KEY,
         part_kind: "assistant_reasoning",
         phase: "snapshot",
         legacy_block_id: "assistant-1",
@@ -935,7 +1323,7 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
       text: "branch reasoning",
       live_identity: {
         message_id: "assistant-1",
-        part_key: "reasoning/branch-a",
+        part_key: assistantReasoningPartKey("branch-a"),
         part_kind: "assistant_reasoning",
         phase: "snapshot",
         legacy_block_id: "assistant-1",
@@ -947,12 +1335,12 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
   assert.equal(
     pruned.length,
     1,
-    "history without output_block.live_identity must only prune the canonical reasoning/main slot",
+    "history output_block.live_identity must only prune the owned reasoning slot",
   );
   assert.equal(
     pruned[0]?.live_identity?.part_key,
-    "reasoning/branch-a",
-    "history without output_block.live_identity must not over-prune non-main reasoning branches",
+    assistantReasoningPartKey("branch-a"),
+    "history output_block.live_identity must not over-prune non-owned reasoning branches",
   );
 }
 
@@ -1138,7 +1526,7 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
       text,
       live_identity: {
         message_id: messageId,
-        part_key: "reasoning/main",
+        part_key: ASSISTANT_REASONING_MAIN_PART_KEY,
         part_kind: "assistant_reasoning",
         phase: "snapshot",
         legacy_block_id: messageId,
@@ -1205,6 +1593,62 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
   assert.equal(afterEnd[0]?.text, "final consolidated text");
 }
 
+// T4-snapshot-accumulate: repeated full snapshots for the same live slot may
+// arrive as token-sized increments on Web SSE and must accumulate instead of
+// collapsing to the last token.
+{
+  const reasoningBlock = (text: string, phase: OutputBlock["phase"]): OutputBlock => ({
+    kind: "reasoning",
+    phase,
+    role: "assistant",
+    text,
+    live_identity: {
+      message_id: "msg-snapshot-1",
+      part_key: ASSISTANT_REASONING_MAIN_PART_KEY,
+      part_kind: "assistant_reasoning",
+      phase: phase === "start" ? "start" : phase === "end" ? "end" : "snapshot",
+      legacy_block_id: "msg-snapshot-1",
+    },
+  });
+
+  let live: OutputBlock[] = [];
+  live = appendLiveBlock(live, reasoningBlock("", "start"));
+  live = appendLiveBlock(live, reasoningBlock("for", "full"));
+  live = appendLiveBlock(live, reasoningBlock("", "end"));
+  live = appendLiveBlock(live, reasoningBlock("", "start"));
+  live = appendLiveBlock(live, reasoningBlock(" papers", "full"));
+  live = appendLiveBlock(live, reasoningBlock("", "end"));
+  live = appendLiveBlock(live, reasoningBlock("", "start"));
+  live = appendLiveBlock(live, reasoningBlock(".", "full"));
+  live = appendLiveBlock(live, reasoningBlock("", "end"));
+
+  assert.equal(live.length, 1, "repeated full snapshots for one reasoning slot must retain one live block");
+  assert.equal(live[0]?.text, "for papers.", "token-sized full snapshots must accumulate in arrival order");
+  assert.equal(live[0]?.phase, "end", "final end must settle the accumulated reasoning block");
+}
+
+// T4-punctuation-suppression: punctuation-only live snapshots without prior
+// accumulated text must not materialize standalone cards.
+{
+  let live: OutputBlock[] = [];
+  live = appendLiveBlock(
+    live,
+    assistantMessageBlock("msg-punct-1", "。", { phase: "full" }),
+  );
+  assert.equal(
+    live.length,
+    0,
+    "punctuation-only full snapshot without prior text must stay suppressed until meaningful text arrives",
+  );
+
+  live = appendLiveBlock(
+    live,
+    assistantMessageBlock("msg-punct-1", "。检索开始", { phase: "full" }),
+  );
+  assert.equal(live.length, 1, "meaningful follow-up snapshot must materialize the live text block");
+  assert.equal(live[0]?.text, "。检索开始");
+}
+
 // T5: multi-part reasoning — distinct part_keys must not collide in live cache.
 {
   function reasoningWithPartKey(
@@ -1231,18 +1675,18 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
   const live: OutputBlock[] = [];
   const afterMain = appendLiveBlock(
     live,
-    reasoningWithPartKey("msg-1", "reasoning/main", "main thinking", "full"),
+    reasoningWithPartKey("msg-1", ASSISTANT_REASONING_MAIN_PART_KEY, "main thinking", "full"),
   );
-  assert.equal(afterMain.length, 1, "reasoning/main must insert live block");
+  assert.equal(afterMain.length, 1, "main reasoning slot must insert live block");
 
   const afterBranch = appendLiveBlock(
     afterMain,
-    reasoningWithPartKey("msg-1", "reasoning/branch-a", "branch analysis", "full"),
+    reasoningWithPartKey("msg-1", assistantReasoningPartKey("branch-a"), "branch analysis", "full"),
   );
   assert.equal(
     afterBranch.length,
     2,
-    "reasoning/branch-a must not collide with reasoning/main in live cache",
+    "branch reasoning slot must not collide with main reasoning in live cache",
   );
   assert.equal(afterBranch[0]?.text, "main thinking");
   assert.equal(afterBranch[1]?.text, "branch analysis");
@@ -1250,12 +1694,12 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
   // Updating reasoning/main must not affect reasoning/branch-a.
   const afterMainUpdate = appendLiveBlock(
     afterBranch,
-    reasoningWithPartKey("msg-1", "reasoning/main", "main thinking revised", "full"),
+    reasoningWithPartKey("msg-1", ASSISTANT_REASONING_MAIN_PART_KEY, "main thinking revised", "full"),
   );
   assert.equal(
     afterMainUpdate.length,
     2,
-    "updating reasoning/main must not delete reasoning/branch-a",
+    "updating main reasoning must not delete branch reasoning",
   );
   assert.equal(afterMainUpdate[0]?.text, "main thinking revised");
   assert.equal(afterMainUpdate[1]?.text, "branch analysis");
@@ -1287,14 +1731,14 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
   let messages: ReturnType<typeof applyOutputBlock> = [];
   messages = applyOutputBlock(
     messages,
-    reasoningWithPartKey("msg-1", "reasoning/main", "main thinking", "full"),
+    reasoningWithPartKey("msg-1", ASSISTANT_REASONING_MAIN_PART_KEY, "main thinking", "full"),
     true,
   );
   assert.equal(messages.length, 1, "first reasoning part must insert");
 
   messages = applyOutputBlock(
     messages,
-    reasoningWithPartKey("msg-1", "reasoning/branch-a", "branch analysis", "full"),
+    reasoningWithPartKey("msg-1", assistantReasoningPartKey("branch-a"), "branch analysis", "full"),
     true,
   );
   assert.equal(
@@ -1332,8 +1776,8 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
   }
 
   const liveBlocks: OutputBlock[] = [
-    reasoningWithPartKey("msg-1", "reasoning/main", "main thinking", "full"),
-    reasoningWithPartKey("msg-1", "reasoning/branch-a", "branch analysis", "full"),
+    reasoningWithPartKey("msg-1", ASSISTANT_REASONING_MAIN_PART_KEY, "main thinking", "full"),
+    reasoningWithPartKey("msg-1", assistantReasoningPartKey("branch-a"), "branch analysis", "full"),
   ];
 
   // Full history covers both reasoning parts.
@@ -1387,6 +1831,58 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
   assert.equal(text[0]?.text, "hello world", "assistant text must be preserved");
 }
 
+// T3-history-main-text-bridge: live text/main updates must merge into the
+// existing persisted assistant text card instead of inserting a duplicate
+// card just because history uses msg_id:message while live uses msg_id+part_key.
+{
+  const history: MessageRecord[] = [{
+    id: "msg-bridge-1",
+    role: "assistant",
+    parts: [{ id: "p1", type: "text", text: "好的，我来使用 Semantic Scholar API" }],
+  }];
+
+  let messages = buildFeedFromHistory(history, true);
+  assert.equal(messages.length, 1, "history must build one assistant card");
+
+  messages = applyOutputBlock(
+    messages,
+    assistantMessageBlock("msg-bridge-1", "好的，我来使用 Semantic Scholar API 来检索论文。"),
+    true,
+  );
+
+  assert.equal(
+    messages.length,
+    1,
+    "live text/main must update the persisted main assistant card instead of inserting a second card",
+  );
+  assert.equal(messages[0]?.text, "好的，我来使用 Semantic Scholar API 来检索论文。");
+}
+
+// T3-history-main-text-no-shrink: once a persisted/larger assistant main card
+// exists, a shorter live full snapshot for the same main slot must not shrink
+// it to punctuation or another truncated fragment.
+{
+  const history: MessageRecord[] = [{
+    id: "msg-bridge-2",
+    role: "assistant",
+    parts: [{ id: "p1", type: "text", text: "好的，我来使用 Semantic Scholar API 来检索论文" }],
+  }];
+
+  let messages = buildFeedFromHistory(history, true);
+  messages = applyOutputBlock(
+    messages,
+    assistantMessageBlock("msg-bridge-2", "。"),
+    true,
+  );
+
+  assert.equal(messages.length, 1, "short live snapshot must not create a duplicate card");
+  assert.equal(
+    messages[0]?.text,
+    "好的，我来使用 Semantic Scholar API 来检索论文",
+    "shorter live snapshot must not overwrite the richer persisted assistant text",
+  );
+}
+
 // T4: full/end mixed finalize — delta → full → delta → end converges to
 // one block with correct accumulated text. This covers the coalescer
 // interleaving full snapshots and trailing deltas before End.
@@ -1429,17 +1925,76 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
   assert.equal(messages[0]?.text, "fragment-a more-text trailing");
 }
 
-// T3-adapted: persisted history parts without output_block.live_identity
-// still cover the canonical main slot for assistant text/reasoning.
-// This is a deliberate backward-compatibility fallback, not a generic
-// "incomplete history never prunes" rule.
+// T4-order: live transcript must preserve arrival order across reasoning,
+// tool, and assistant blocks. Web must not regroup by block kind.
+{
+  let messages: ReturnType<typeof applyOutputBlock> = [];
+  messages = applyOutputBlock(
+    messages,
+    {
+      kind: "reasoning",
+      phase: "full",
+      role: "assistant",
+      text: "先检索作者身份",
+      live_identity: {
+        message_id: "msg-order-1",
+        part_key: ASSISTANT_REASONING_MAIN_PART_KEY,
+        part_kind: "assistant_reasoning",
+        phase: "snapshot",
+        legacy_block_id: "msg-order-1",
+      },
+    },
+    true,
+  );
+  messages = applyOutputBlock(
+    messages,
+    runningToolBlockFor("tool-order-1", '{"url":"https://api.semanticscholar.org/..."}', {
+      title: "WebFetch",
+      live_identity: {
+        message_id: "msg-order-1",
+        part_key: toolCallPartKey("tool-order-1"),
+        part_kind: "tool_call",
+        phase: "append",
+        legacy_block_id: "tool-order-1",
+      },
+    }),
+    true,
+  );
+  messages = applyOutputBlock(
+    messages,
+    toolBlockFor("msg-order-1", "tool-order-1", "api.semanticscholar.org · application/json", {
+      title: "WebFetch",
+    }),
+    true,
+  );
+  messages = applyOutputBlock(
+    messages,
+    assistantMessageBlock("msg-order-2", "检索到 49 篇论文。"),
+    true,
+  );
+
+  assert.deepEqual(
+    messages.map((message) => `${message.kind}:${message.phase}:${message.text}`),
+    [
+      "reasoning:full:先检索作者身份",
+      'tool:running:{"url":"https://api.semanticscholar.org/..."}',
+      "tool:end:api.semanticscholar.org · application/json",
+      "message:full:检索到 49 篇论文。",
+    ],
+    "live transcript must preserve cross-kind arrival order instead of regrouping by block type",
+  );
+}
+
+// T3-adapted: without server-issued output_block.live_identity, persisted
+// history must not claim transcript slot ownership. Web no longer invents
+// canonical part_key names for history prune.
 {
   const liveBlocks: OutputBlock[] = [
     assistantMessageBlock("msg-1", "complete live text", { phase: "full" }),
   ];
 
-  // Persisted history has a text part but no output_block/live_identity.
-  // Fallback slot inference must still cover text/main.
+  // Persisted history text without output_block/live_identity must not
+  // prune the live transcript slot.
   const persistedTextHistory: MessageRecord[] = [{
     id: "msg-1",
     role: "assistant",
@@ -1447,12 +2002,14 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
   }];
 
   const pruned = pruneLiveBlocksCoveredByHistory(persistedTextHistory, liveBlocks);
-  // The history part has no output_block, so slotKey inference uses
-  // "msg-1:text/main". The live block has live_identity with part_key
-  // "text/main". slotKey matches, so the canonical text slot is absorbed.
-  assert.equal(pruned.length, 0, "persisted text part must cover canonical text/main live block");
+  assert.equal(
+    pruned.length,
+    1,
+    "persisted text without output_block.live_identity must not prune text/main live block",
+  );
+  assert.equal(pruned[0]?.text, "complete live text");
 
-  // Persisted reasoning-only history must not prune the text/main slot.
+  // Persisted reasoning-only history also must not prune the text/main slot.
   const reasoningOnlyHistory: MessageRecord[] = [{
     id: "msg-1",
     role: "assistant",
@@ -1466,7 +2023,215 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
   assert.equal(
     prunedReasoningOnly.length,
     1,
-    "persisted reasoning-only history must not prune canonical text/main live block",
+    "persisted reasoning-only history must not prune text/main live block",
   );
   assert.equal(prunedReasoningOnly[0]?.text, "complete live text");
+}
+
+// ── Phase W4: live/history/reconcile contract tests ───────────────────
+
+// W4-T1: two different tool_call_id running blocks in live cache must
+// not overwrite each other.
+{
+  function runningToolBlock(toolId: string, text?: string): OutputBlock {
+    return {
+      kind: "tool",
+      phase: "full",
+      role: "assistant",
+      text: text ?? `detail-${toolId}`,
+      live_identity: {
+        message_id: "msg-1",
+        part_key: `tool_call/${toolId}`,
+        part_kind: "tool_call" as const,
+        phase: "snapshot" as const,
+        legacy_block_id: toolId,
+      },
+    };
+  }
+
+  let live: OutputBlock[] = [];
+  live = appendLiveBlock(live, runningToolBlock("call-a", "detail-a"));
+  live = appendLiveBlock(live, runningToolBlock("call-b", "detail-b"));
+  assert.equal(live.length, 2, "two running tools must retain distinct live cache slots");
+  assert.equal(live[0]?.text, "detail-a");
+  assert.equal(live[1]?.text, "detail-b");
+
+  // Updating call-a must not affect call-b.
+  const afterUpdate = appendLiveBlock(live, runningToolBlock("call-a", "detail-a-revised"));
+  assert.equal(afterUpdate.length, 2, "updating one tool must not delete the other");
+  assert.equal(afterUpdate[0]?.text, "detail-a-revised");
+  assert.equal(afterUpdate[1]?.text, "detail-b");
+}
+
+// W4-T2: tool_call -> tool_result transition must use separate slots
+// in the visible transcript feed. Running and result for the same
+// call_id must not overwrite each other.
+{
+  function resultToolBlock(toolId: string, text?: string): OutputBlock {
+    return {
+      kind: "tool",
+      phase: "done",
+      role: "assistant",
+      text: text ?? `result-${toolId}`,
+      live_identity: {
+        message_id: "msg-1",
+        part_key: `tool_result/${toolId}`,
+        part_kind: "tool_result" as const,
+        phase: "end" as const,
+        legacy_block_id: toolId,
+      },
+    };
+  }
+
+  let messages: ReturnType<typeof applyOutputBlock> = [];
+  messages = applyOutputBlock(messages, runningToolBlock("call-1", "running-detail"), true);
+  assert.equal(messages.length, 1, "running tool must create visible entry");
+  assert.equal(messages[0]?.text, "running-detail");
+
+  // Result block must create a SEPARATE entry, not overwrite the running one.
+  messages = applyOutputBlock(messages, resultToolBlock("call-1", "result-text"), true);
+  assert.equal(
+    messages.length,
+    2,
+    "running and result must be separate visible entries",
+  );
+  assert.equal(messages[0]?.text, "running-detail");
+  assert.equal(messages[1]?.text, "result-text");
+}
+
+// W4-T3: history rebuild for tool blocks must preserve distinct
+// running tool entries without collapsing them.
+{
+  const history: MessageRecord[] = [{
+    id: "msg-1",
+    role: "assistant",
+    parts: [
+      {
+        id: "tp-1",
+        type: "tool_call",
+        output_block: {
+          kind: "tool",
+          phase: "done",
+          role: "assistant",
+          text: "history-result-a",
+          live_identity: {
+            message_id: "msg-1",
+            part_key: "tool_result/call-a",
+            part_kind: "tool_result" as const,
+            phase: "end" as const,
+            legacy_block_id: "call-a",
+          },
+        },
+      },
+    ],
+  }];
+
+  const liveBlocks: OutputBlock[] = [
+    {
+      kind: "tool",
+      phase: "full",
+      role: "assistant",
+      text: "live-running-b",
+      live_identity: {
+        message_id: "msg-1",
+        part_key: "tool_call/call-b",
+        part_kind: "tool_call" as const,
+        phase: "snapshot" as const,
+        legacy_block_id: "call-b",
+      },
+    },
+  ];
+
+  const merged = mergeHistoryWithLiveBlocks(history, liveBlocks, true);
+  const toolMsgs = merged.filter((m) => m.kind === "tool");
+  assert.equal(
+    toolMsgs.length,
+    2,
+    "history result and live running must both appear in rebuilt feed",
+  );
+}
+
+// W4-T5: history rebuild must preserve tool_call/tool_result semantics so the
+// card layer can keep TOOL RUNNING / TOOL RESULT labels after reload.
+{
+  const history: MessageRecord[] = [{
+    id: "msg-1",
+    role: "assistant",
+    parts: [
+      {
+        id: "tp-1",
+        type: "tool_call",
+        output_block: {
+          kind: "tool",
+          phase: "running",
+          text: "history-running",
+          tool_call_id: "call-a",
+        },
+      },
+      {
+        id: "tp-2",
+        type: "tool_result",
+        output_block: {
+          kind: "tool",
+          phase: "done",
+          text: "history-result",
+          tool_call_id: "call-a",
+        },
+      },
+    ],
+  }];
+
+  const rebuilt = buildFeedFromHistory(history, true);
+  const toolMsgs = rebuilt.filter((message) => message.kind === "tool");
+  assert.equal(toolMsgs.length, 2, "history rebuild should keep both tool entries");
+  assert.equal(toolMsgs[0]?.metadata?.rocode_web_history_part_kind, "tool_call");
+  assert.equal(toolMsgs[1]?.metadata?.rocode_web_history_part_kind, "tool_result");
+}
+
+// W4-T4: prune at tool level — history covering one tool call must
+// not prune a different tool's live block.
+{
+  const history: MessageRecord[] = [{
+    id: "msg-1",
+    role: "assistant",
+    parts: [{
+      id: "tp-1",
+      type: "tool_result",
+      output_block: {
+        kind: "tool",
+        phase: "done",
+        text: "result-a",
+        live_identity: {
+          message_id: "msg-1",
+          part_key: "tool_result/call-a",
+          part_kind: "tool_result" as const,
+          phase: "end" as const,
+          legacy_block_id: "call-a",
+        },
+      },
+    }],
+  }];
+
+  const liveBlocks: OutputBlock[] = [
+    {
+      kind: "tool",
+      phase: "full",
+      text: "running-b",
+      live_identity: {
+        message_id: "msg-1",
+        part_key: "tool_call/call-b",
+        part_kind: "tool_call" as const,
+        phase: "snapshot" as const,
+        legacy_block_id: "call-b",
+      },
+    },
+  ];
+
+  const pruned = pruneLiveBlocksCoveredByHistory(history, liveBlocks);
+  assert.equal(
+    pruned.length,
+    1,
+    "history covering call-a must not prune call-b's live block",
+  );
+  assert.equal(pruned[0]?.text, "running-b");
 }

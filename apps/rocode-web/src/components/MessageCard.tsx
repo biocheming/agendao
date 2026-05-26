@@ -22,7 +22,7 @@ import { useCallback, useState } from "react";
 import { MessageResponse } from "./ai-elements/message";
 import type { FeedMessage, OutputBlock, OutputField } from "../lib/history";
 import { SchedulerStageCard } from "./SchedulerStageCard";
-import { isSkillToolName, toolActivityLabel, toolKindLabel } from "../lib/toolLabels";
+import { isSkillToolName, toolActivityLabel } from "../lib/toolLabels";
 import {
   Tooltip,
   TooltipContent,
@@ -259,6 +259,7 @@ function DisclosureCard({
   summary,
   defaultExpanded = false,
   tone = "default",
+  blockMeta,
   children,
 }: {
   icon: React.ReactNode;
@@ -267,6 +268,12 @@ function DisclosureCard({
   summary?: string | null;
   defaultExpanded?: boolean;
   tone?: "default" | "danger";
+  blockMeta?: {
+    kind: string;
+    feedId?: string;
+    blockId?: string;
+    anchorId?: string;
+  };
   children: React.ReactNode;
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
@@ -274,6 +281,11 @@ function DisclosureCard({
   return (
     <section
       className="roc-detail-card"
+      data-testid="transcript-block"
+      data-kind={blockMeta?.kind}
+      data-feed-id={blockMeta?.feedId}
+      data-block-id={blockMeta?.blockId}
+      data-message-anchor={blockMeta?.anchorId}
       data-expanded={expanded ? "true" : "false"}
       data-tone={tone === "danger" ? "danger" : undefined}
     >
@@ -310,13 +322,20 @@ function DisclosureCard({
   );
 }
 
-function ReasoningBlock({ text }: { text: string }) {
+function ReasoningBlock({ message }: { message: FeedMessage }) {
+  const text = message.text;
   return (
     <DisclosureCard
       icon={<BrainCircuitIcon className="size-4" />}
-      label="Reasoning"
-      title="Reasoning trace"
+      label="THINKING"
+      title="Thinking"
       summary={excerptText(text, 132) || "Collapsed by default so the visible response keeps its reading pace."}
+      blockMeta={{
+        kind: message.kind,
+        feedId: message.feedId,
+        blockId: message.id,
+        anchorId: message.anchorId,
+      }}
     >
       <StructuredText value={text} className="text-muted-foreground" />
     </DisclosureCard>
@@ -410,11 +429,21 @@ function InfoBlock({ message }: { message: OutputBlock }) {
 }
 
 function ToolBlock({ message, active }: { message: OutputBlock; active: boolean }) {
+  // Phase W2/W5: prefer live_identity for live tool cards, then fall back to
+  // the persisted history marker injected by buildFeedFromHistory() so history
+  // rebuild preserves TOOL RUNNING / TOOL RESULT semantics.
+  const metadataPartKind =
+    typeof message.metadata?.rocode_web_history_part_kind === "string"
+      ? message.metadata.rocode_web_history_part_kind
+      : null;
+  const partKind = message.live_identity?.part_kind ?? metadataPartKind;
+  const isRunning = partKind === "tool_call";
+  const isResult = partKind === "tool_result";
+  const label = isRunning ? "TOOL RUNNING" : isResult ? "TOOL RESULT" : "TOOL";
+  const iconColor = isRunning ? "text-amber-500" : isResult ? "text-emerald-500" : "";
   const displaySummary = message.display?.summary?.trim() || null;
   const displayFields = message.display?.fields?.length ? message.display.fields : undefined;
   const displayPreviewText = message.display?.preview?.text?.trim() || null;
-  // Shared display contract wins. Raw detail/text only survives as a
-  // compatibility fallback when older payloads lack structured display hints.
   const hasDisplayContract = Boolean(displaySummary || displayFields?.length || displayPreviewText);
   const summary =
     displaySummary ||
@@ -441,11 +470,23 @@ function ToolBlock({ message, active }: { message: OutputBlock; active: boolean 
 
   return (
     <DisclosureCard
-      icon={<WrenchIcon className="size-4" />}
-      label={toolKindLabel(skillLike ? "skill" : "tool")}
+      icon={<WrenchIcon className={cn("size-4", iconColor)} />}
+      label={label}
       title={toolTitle}
       summary={summary}
       defaultExpanded={active}
+      blockMeta={{
+        kind: message.kind,
+        feedId:
+          typeof (message as FeedMessage).feedId === "string"
+            ? (message as FeedMessage).feedId
+            : undefined,
+        blockId: message.id,
+        anchorId:
+          typeof (message as FeedMessage).anchorId === "string"
+            ? (message as FeedMessage).anchorId
+            : undefined,
+      }}
     >
       <div className="grid gap-2.5">
         {message.tool_call_id || message.stage_id ? (
@@ -513,7 +554,7 @@ export function MessageCard({
 
   if (message.kind === "reasoning") {
     if (!message.text.trim()) return null;
-    return <ReasoningBlock text={message.text} />;
+    return <ReasoningBlock message={message} />;
   }
 
   if (message.kind === "status") {
@@ -535,7 +576,7 @@ export function MessageCard({
 
   const role = message.role ?? "assistant";
   const isUser = role === "user";
-  const roleLabel = isUser ? "You" : "ROCode";
+  const roleLabel = isUser ? "USER" : "ASSIST";
   const clock = formatClock(message.ts);
   const summary = readableSummary(message);
   const cacheSummary = cacheBustSummaryFromMetadata(message.metadata);

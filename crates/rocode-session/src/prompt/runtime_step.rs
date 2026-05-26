@@ -392,7 +392,8 @@ impl<'a> SessionStepSink<'a> {
                 let message_id = self.assistant_message_id()?;
                 let identity = match tool.phase {
                     rocode_content::output_blocks::ToolPhase::Running => {
-                        return None;
+                        let phase = rocode_types::LivePartPhase::Append;
+                        tool_call_live_identity(&message_id, tool_call_id, phase)
                     }
                     rocode_content::output_blocks::ToolPhase::Done
                     | rocode_content::output_blocks::ToolPhase::Error => {
@@ -569,7 +570,6 @@ impl<'a> LoopSink for SessionStepSink<'a> {
                         )
                     };
                     if should_emit_start {
-                        self.ensure_assistant_output_started().await;
                         self.emit_output_block(
                             OutputBlock::Tool(ToolBlock::start(next_name.clone())),
                             Some(id.clone()),
@@ -642,7 +642,6 @@ impl<'a> LoopSink for SessionStepSink<'a> {
                         )
                     };
                     if let Some(detail) = detail {
-                        self.ensure_assistant_output_started().await;
                         self.emit_output_block(
                             OutputBlock::Tool(ToolBlock::running(tool_name, detail)),
                             Some(id.clone()),
@@ -731,7 +730,6 @@ impl<'a> LoopSink for SessionStepSink<'a> {
                         if should_emit_detail { detail } else { None },
                     )
                 };
-                self.ensure_assistant_output_started().await;
                 if should_emit_start {
                     self.emit_output_block(
                         OutputBlock::Tool(ToolBlock::start(call.name.clone())),

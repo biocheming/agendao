@@ -1512,24 +1512,30 @@ async fn lifecycle_hook_routes_attached_session_content_to_attached_session() {
             .map(|identity| identity.as_ref().map(|id| (&id.part_key, id.phase)))
             .collect::<Vec<_>>(),
         vec![
-            Some((&"text/main".to_string(), rocode_types::LivePartPhase::Start)),
             Some((
-                &"text/main".to_string(),
-                rocode_types::LivePartPhase::Append
-            )),
-            Some((
-                &"reasoning/main".to_string(),
+                &rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
                 rocode_types::LivePartPhase::Start
             )),
             Some((
-                &"reasoning/main".to_string(),
+                &rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
                 rocode_types::LivePartPhase::Append
             )),
             Some((
-                &"reasoning/main".to_string(),
+                &rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY.to_string(),
+                rocode_types::LivePartPhase::Start
+            )),
+            Some((
+                &rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY.to_string(),
+                rocode_types::LivePartPhase::Append
+            )),
+            Some((
+                &rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY.to_string(),
                 rocode_types::LivePartPhase::End
             )),
-            Some((&"text/main".to_string(), rocode_types::LivePartPhase::End)),
+            Some((
+                &rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
+                rocode_types::LivePartPhase::End
+            )),
         ]
     );
 }
@@ -1654,13 +1660,13 @@ async fn lifecycle_hook_emits_scheduler_stage_and_reasoning_blocks_for_non_attac
     assert!(emitted_identities.iter().any(|identity| matches!(
         identity,
         Some(live_identity)
-            if live_identity.part_key == "text/main"
+            if live_identity.part_key == rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY
                 && live_identity.phase == rocode_types::LivePartPhase::Append
     )));
     assert!(emitted_identities.iter().any(|identity| matches!(
         identity,
         Some(live_identity)
-            if live_identity.part_key == "reasoning/main"
+            if live_identity.part_key == rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY
                 && live_identity.phase == rocode_types::LivePartPhase::Append
     )));
 }

@@ -15,6 +15,7 @@ import { isLiveStageStatus } from "../lib/contextPressure";
 import { buildRunTailSummary, type RunTailSummary } from "../lib/runTailSummary";
 import { isSkillToolName, toolActivityLabel } from "../lib/toolLabels";
 import type { OutputField, OutputPreview } from "../lib/history";
+import { toolIdFromPartKey } from "../lib/liveIdentity";
 
 export interface ActivityFilters {
   stageId: string;
@@ -100,19 +101,22 @@ function stableToolCallIdFromBlock(block: OutputBlock): string | null {
   }
   const wireLegacyBlockId = block.live_identity?.legacy_block_id?.trim();
   if (wireLegacyBlockId) return wireLegacyBlockId;
-  const partKey = block.live_identity?.part_key?.trim();
-  if (!partKey) return null;
-  if (!(partKey.startsWith("tool_call/") || partKey.startsWith("tool_result/"))) {
-    return null;
-  }
-  const slash = partKey.indexOf("/");
-  if (slash < 0 || slash === partKey.length - 1) return null;
-  const candidate = partKey.slice(slash + 1).trim();
-  return candidate || null;
+  return toolIdFromPartKey(block.live_identity?.part_key) ?? null;
 }
 
 function liveExecutionKind(block: OutputBlock): LiveExecutionEntry["kind"] {
   return isSkillToolName(block.name ?? block.title ?? "") ? "skill" : "tool";
+}
+
+function liveExecutionStatus(block: OutputBlock): LiveExecutionEntry["status"] {
+  const partKind = block.live_identity?.part_kind;
+  if (partKind === "tool_call") {
+    return "running";
+  }
+  if (partKind === "tool_result") {
+    return canonicalLiveExecutionStatus(block.phase === "error" ? "error" : "done");
+  }
+  return canonicalLiveExecutionStatus(block.phase);
 }
 
 function liveExecutionSummary(block: OutputBlock): string | null {
@@ -347,7 +351,7 @@ export function useExecutionActivity({
     const next: LiveExecutionEntry = {
       id,
       label,
-      status: canonicalLiveExecutionStatus(block.phase),
+      status: liveExecutionStatus(block),
       kind: liveExecutionKind(block),
       summary: liveExecutionSummary(block),
       fields: liveExecutionFields(block),

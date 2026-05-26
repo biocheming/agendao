@@ -966,7 +966,7 @@ mod tests {
         let mut transcript = CliVisibleTranscript::new(false);
         let identity = rocode_types::LiveMessagePartIdentity {
             message_id: "assistant-1".to_string(),
-            part_key: "text/main".to_string(),
+            part_key: rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
             part_kind: rocode_types::LiveMessagePartKind::AssistantText,
             phase: rocode_types::LivePartPhase::Snapshot,
             legacy_block_id: Some("assistant-1".to_string()),
@@ -1011,7 +1011,7 @@ mod tests {
         let mut transcript = CliVisibleTranscript::new(false);
         let identity = rocode_types::LiveMessagePartIdentity {
             message_id: "assistant-1".to_string(),
-            part_key: "scheduler/stage-1".to_string(),
+            part_key: rocode_types::scheduler_stage_part_key("stage-1"),
             part_kind: rocode_types::LiveMessagePartKind::SchedulerStage,
             phase: rocode_types::LivePartPhase::Snapshot,
             legacy_block_id: None,
@@ -1147,7 +1147,7 @@ mod tests {
         };
         let identity = rocode_types::LiveMessagePartIdentity {
             message_id: "assistant-1".to_string(),
-            part_key: "text/main".to_string(),
+            part_key: rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
             part_kind: rocode_types::LiveMessagePartKind::AssistantText,
             phase: rocode_types::LivePartPhase::Snapshot,
             legacy_block_id: Some("assistant-1".to_string()),
@@ -1194,7 +1194,7 @@ mod tests {
         };
         let identity = rocode_types::LiveMessagePartIdentity {
             message_id: "assistant-1".to_string(),
-            part_key: "text/main".to_string(),
+            part_key: rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY.to_string(),
             part_kind: rocode_types::LiveMessagePartKind::AssistantText,
             phase: rocode_types::LivePartPhase::Snapshot,
             legacy_block_id: Some("assistant-1".to_string()),

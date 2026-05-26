@@ -569,7 +569,7 @@ mod tests {
             "sessionID": "session-1",
             "live_identity": {
                 "message_id": "assistant-1",
-                "part_key": "text/main",
+                "part_key": rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                 "part_kind": "assistant_text",
                 "phase": "snapshot",
                 "legacy_block_id": "assistant-1:text/main"
@@ -612,7 +612,7 @@ mod tests {
             "sessionID": "session-1",
             "live_identity": {
                 "message_id": "assistant-1",
-                "part_key": "text/main",
+                "part_key": rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
                 "part_kind": "assistant_text",
                 "phase": "snapshot",
                 "legacy_block_id": "assistant-1:text/main"
@@ -633,7 +633,7 @@ mod tests {
                 live_identity: Some(ref live_identity),
                 ..
             }) if live_identity.message_id == "assistant-1"
-                && live_identity.part_key == "text/main"
+                && live_identity.part_key == rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY
         ));
     }
 

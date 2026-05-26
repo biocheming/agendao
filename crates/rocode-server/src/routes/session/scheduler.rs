@@ -39,6 +39,7 @@ use crate::session_runtime::{
 use crate::{ApiError, Result, ServerState};
 use rocode_provider::transform::{apply_caching, ProviderType};
 use rocode_session::prompt::{
+    assistant_text_live_identity,
     auto_compact_session_with_focus_if_needed, govern_pre_dispatch_session_context,
     ContextPressureGovernanceOutcome, OutputBlockEvent, OutputBlockHook,
 };
@@ -48,7 +49,7 @@ use rocode_types::{
     ConfigPolicyValidationOwner, ConfigPolicyValidationScope, ConfigPolicyValidationScopeKind,
     ConfigPolicyValidationSeverity, ContextPressureGovernanceSummary, MemoryDetailView,
     MemoryEvidenceRef, MemoryRecordId, SessionContinuityPacket, SessionEffectiveSchedulerTraceStep,
-    SessionEffectiveSchedulerTraceStepKind,
+    SessionEffectiveSchedulerTraceStepKind, LivePartPhase,
 };
 
 use super::super::permission::request_permission;
@@ -2499,8 +2500,12 @@ pub async fn run_local_scheduler_prompt(
                                 OutputMessageRole::Assistant,
                                 assistant_text.clone(),
                             )),
-                            id: Some(assistant_message_id),
-                            live_identity: None,
+                            id: Some(assistant_message_id.clone()),
+                            live_identity: Some(assistant_text_live_identity(
+                                &assistant_message_id,
+                                Some(assistant_message_id.clone()),
+                                LivePartPhase::Snapshot,
+                            )),
                         },
                     )
                     .await;
@@ -2804,7 +2809,11 @@ pub async fn run_local_scheduler_prompt(
                         assistant_text.clone(),
                     )),
                     id: Some(assistant_message_id.clone()),
-                    live_identity: None,
+                    live_identity: Some(assistant_text_live_identity(
+                        &assistant_message_id,
+                        Some(assistant_message_id.clone()),
+                        LivePartPhase::Snapshot,
+                    )),
                 },
             )
             .await;
