@@ -39,17 +39,17 @@ use crate::session_runtime::{
 use crate::{ApiError, Result, ServerState};
 use rocode_provider::transform::{apply_caching, ProviderType};
 use rocode_session::prompt::{
-    assistant_text_live_identity,
-    auto_compact_session_with_focus_if_needed, govern_pre_dispatch_session_context,
-    ContextPressureGovernanceOutcome, OutputBlockEvent, OutputBlockHook,
+    assistant_text_live_identity, auto_compact_session_with_focus_if_needed,
+    govern_pre_dispatch_session_context, ContextPressureGovernanceOutcome, OutputBlockEvent,
+    OutputBlockHook,
 };
 use rocode_session::{MessageRole, PartType as SessionPartType, SessionMessage};
 use rocode_types::{
     message_latest_compaction_summary, ConfigPolicyValidationEffect, ConfigPolicyValidationItem,
     ConfigPolicyValidationOwner, ConfigPolicyValidationScope, ConfigPolicyValidationScopeKind,
-    ConfigPolicyValidationSeverity, ContextPressureGovernanceSummary, MemoryDetailView,
-    MemoryEvidenceRef, MemoryRecordId, SessionContinuityPacket, SessionEffectiveSchedulerTraceStep,
-    SessionEffectiveSchedulerTraceStepKind, LivePartPhase,
+    ConfigPolicyValidationSeverity, ContextPressureGovernanceSummary, LivePartPhase,
+    MemoryDetailView, MemoryEvidenceRef, MemoryRecordId, SessionContinuityPacket,
+    SessionEffectiveSchedulerTraceStep, SessionEffectiveSchedulerTraceStepKind,
 };
 
 use super::super::permission::request_permission;
@@ -101,6 +101,7 @@ fn scheduler_ingress_envelope(
     envelope.scheduler_stage_id = Some(profile_name.to_string());
     envelope.stabilization.policy =
         rocode_session::prompt::INGRESS_POLICY_SCHEDULER_METADATA_ONLY.to_string();
+    envelope.source_origin = Some(rocode_types::MessageSourceOrigin::Scheduler);
     envelope
 }
 

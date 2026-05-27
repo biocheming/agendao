@@ -1220,7 +1220,10 @@ mod tests {
             Some("{\"file_path\":\"/tmp/raw.txt\"}"),
         );
 
-        assert_eq!(web.get("phase").and_then(|value| value.as_str()), Some("done"));
+        assert_eq!(
+            web.get("phase").and_then(|value| value.as_str()),
+            Some("done")
+        );
         assert_eq!(
             web.get("detail").and_then(|value| value.as_str()),
             Some("{\"file_path\":\"/tmp/normalized.txt\"}")

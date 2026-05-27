@@ -651,7 +651,10 @@ mod tests {
         assert_eq!(value["block"]["tone"], "success");
         assert_eq!(value["block"]["text"], "ok");
         assert_eq!(value["live_identity"]["message_id"], "msg-1");
-        assert_eq!(value["live_identity"]["part_key"], ASSISTANT_TEXT_MAIN_PART_KEY);
+        assert_eq!(
+            value["live_identity"]["part_key"],
+            ASSISTANT_TEXT_MAIN_PART_KEY
+        );
         assert_eq!(value["live_identity"]["part_kind"], "assistant_text");
         assert_eq!(value["live_identity"]["phase"], "snapshot");
         assert_eq!(value["live_identity"]["legacy_block_id"], "block-1");

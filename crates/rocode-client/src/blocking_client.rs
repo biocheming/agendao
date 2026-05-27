@@ -350,6 +350,8 @@ impl BlockingApiClient {
         variant: Option<String>,
         ingress_source: Option<String>,
         idempotency_key: Option<String>,
+        source_origin: Option<rocode_types::MessageSourceOrigin>,
+        source_surface: Option<rocode_types::MessageSourceSurface>,
     ) -> anyhow::Result<PromptResponse> {
         let request = PromptRequest {
             message: (!content.trim().is_empty()).then_some(content),
@@ -360,8 +362,8 @@ impl BlockingApiClient {
             scheduler_profile,
             model,
             variant,
-            command: None,
-            arguments: None,
+            command: None, arguments: None,
+            source_origin, source_surface,
         };
         self.post_json(
             &format!("/session/{}/prompt", session_id),
@@ -379,6 +381,8 @@ impl BlockingApiClient {
         variant: Option<String>,
         ingress_source: Option<String>,
         idempotency_key: Option<String>,
+        source_origin: Option<rocode_types::MessageSourceOrigin>,
+        source_surface: Option<rocode_types::MessageSourceSurface>,
     ) -> anyhow::Result<PromptResponse> {
         let request = PromptRequest {
             message: None,
@@ -387,10 +391,9 @@ impl BlockingApiClient {
             ingress_source,
             agent: None,
             scheduler_profile: None,
-            model,
-            variant,
-            command: Some(command),
-            arguments,
+            model, variant,
+            command: Some(command), arguments,
+            source_origin, source_surface,
         };
         self.post_json(
             &format!("/session/{}/prompt", session_id),

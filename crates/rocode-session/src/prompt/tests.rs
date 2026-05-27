@@ -21,10 +21,12 @@ use rocode_skill::{RuntimeInstructionSource, SkillGovernanceAuthority};
 use rocode_storage::{Database, SkillEvolutionProposalRepository};
 use rocode_tool::{Tool, ToolContext, ToolError, ToolResult};
 use rocode_types::{
+    message_source_origin, message_source_surface,
     ContextPressureGovernanceStatus, LightweightTrimSummary, MemoryEvidenceRef, MemoryKind,
     MemoryRecord, MemoryRecordId, MemoryScope, MemoryStatus, MemoryValidationStatus,
-    ProposalStatus, SkillCapabilityGroupKind, SkillCapabilityMember, SkillCapabilityMemberRole,
-    SkillRetirementReason, SkillRetirementReasonKind, SkillVitalityState,
+    MessageSourceOrigin, MessageSourceSurface, ProposalStatus, SkillCapabilityGroupKind,
+    SkillCapabilityMember, SkillCapabilityMemberRole, SkillRetirementReason,
+    SkillRetirementReasonKind, SkillVitalityState,
 };
 use std::fs;
 use std::sync::Arc;
@@ -1481,6 +1483,147 @@ async fn create_user_message_uses_parts_as_authority_not_ingress_shadow_text() {
         !rendered.contains("shadow text should not reach the model"),
         "{rendered}"
     );
+}
+
+#[tokio::test]
+async fn annotate_ingress_metadata_writes_canonical_source_when_present() {
+    let prompt = SessionPrompt::default();
+    let mut session = Session::new("proj", ".");
+    let mut ingress = IngressTurnEnvelope::new_text(
+        session.id.clone(),
+        IngressSource::Tui,
+        "turn_src",
+        100,
+        "message with canonical source",
+    );
+    ingress.source_origin = Some(MessageSourceOrigin::Operator);
+    ingress.source_surface = Some(MessageSourceSurface::Tui);
+
+    let input = PromptInput {
+        session_id: session.id.clone(),
+        message_id: None,
+        model: None,
+        agent: None,
+        no_reply: false,
+        system: None,
+        variant: None,
+        parts: vec![PartInput::Text {
+            text: "test".to_string(),
+        }],
+        tools: None,
+        ingress: Some(ingress),
+    };
+
+    prompt
+        .create_user_message(&input, &mut session)
+        .await
+        .expect("user message should be created");
+
+    let user_msg = session
+        .messages
+        .iter()
+        .find(|m| matches!(m.role, MessageRole::User))
+        .expect("user message should exist");
+
+    let origin = message_source_origin(&user_msg.metadata);
+    let surface = message_source_surface(&user_msg.metadata);
+    assert_eq!(origin, Some(MessageSourceOrigin::Operator));
+    assert_eq!(surface, Some(MessageSourceSurface::Tui));
+}
+
+#[tokio::test]
+async fn annotate_ingress_metadata_skips_canonical_source_when_absent() {
+    let prompt = SessionPrompt::default();
+    let mut session = Session::new("proj", ".");
+    // IngressTurnEnvelope::new_text leaves source_origin/source_surface as None.
+    let ingress = IngressTurnEnvelope::new_text(
+        session.id.clone(),
+        IngressSource::Api,
+        "turn_no_src",
+        100,
+        "message without canonical source",
+    );
+
+    let input = PromptInput {
+        session_id: session.id.clone(),
+        message_id: None,
+        model: None,
+        agent: None,
+        no_reply: false,
+        system: None,
+        variant: None,
+        parts: vec![PartInput::Text {
+            text: "test".to_string(),
+        }],
+        tools: None,
+        ingress: Some(ingress),
+    };
+
+    prompt
+        .create_user_message(&input, &mut session)
+        .await
+        .expect("user message should be created");
+
+    let user_msg = session
+        .messages
+        .iter()
+        .find(|m| matches!(m.role, MessageRole::User))
+        .expect("user message should exist");
+
+    assert!(
+        !user_msg.metadata.contains_key("message_source.origin"),
+        "source origin key should be absent when ingress has no source"
+    );
+    assert!(
+        !user_msg.metadata.contains_key("message_source.surface"),
+        "source surface key should be absent when ingress has no source"
+    );
+}
+
+#[tokio::test]
+async fn annotate_ingress_writes_origin_even_without_surface() {
+    let prompt = SessionPrompt::default();
+    let mut session = Session::new("proj", ".");
+    let mut ingress = IngressTurnEnvelope::new_text(
+        session.id.clone(),
+        IngressSource::Scheduler,
+        "turn_sched",
+        100,
+        "scheduler message",
+    );
+    ingress.source_origin = Some(MessageSourceOrigin::Scheduler);
+    // surface intentionally left None — scheduler has no transport surface
+
+    let input = PromptInput {
+        session_id: session.id.clone(),
+        message_id: None,
+        model: None,
+        agent: None,
+        no_reply: false,
+        system: None,
+        variant: None,
+        parts: vec![PartInput::Text {
+            text: "test".to_string(),
+        }],
+        tools: None,
+        ingress: Some(ingress),
+    };
+
+    prompt
+        .create_user_message(&input, &mut session)
+        .await
+        .expect("user message should be created");
+
+    let user_msg = session
+        .messages
+        .iter()
+        .find(|m| matches!(m.role, MessageRole::User))
+        .expect("user message should exist");
+
+    let origin = message_source_origin(&user_msg.metadata);
+    let surface = message_source_surface(&user_msg.metadata);
+    assert_eq!(origin, Some(MessageSourceOrigin::Scheduler));
+    assert_eq!(surface, None, "surface should be absent when ingress has no surface");
 }
 
 #[tokio::test]

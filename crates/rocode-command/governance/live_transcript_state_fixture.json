@@ -1,5 +1,41 @@
 {
   "description": "Canonical live transcript state fixture shared by CLI/TUI/Web regression tests.",
+  "version": 2,
+  "contract_version": "2026-05-26",
+
+  "canonical_live_stream": {
+    "description": "A complete live streaming turn: user prompt -> reasoning -> tool cycles -> assistant text -> end. All three frontends must produce the same visible blocks.",
+    "events": [
+      {"kind": "message", "phase": "start", "role": "assistant", "text": "", "id": "assistant-1", "live_identity": {"message_id": "assistant-1", "part_key": "text/main", "part_kind": "assistant_text", "phase": "start", "legacy_block_id": "assistant-1"}},
+      {"kind": "reasoning", "phase": "start", "text": "", "id": "assistant-1", "live_identity": {"message_id": "assistant-1", "part_key": "reasoning/main", "part_kind": "assistant_reasoning", "phase": "start", "legacy_block_id": "assistant-1"}},
+      {"kind": "reasoning", "phase": "full", "text": "I need to search for this information.", "id": "assistant-1", "live_identity": {"message_id": "assistant-1", "part_key": "reasoning/main", "part_kind": "assistant_reasoning", "phase": "snapshot", "legacy_block_id": "assistant-1"}},
+      {"kind": "reasoning", "phase": "end", "text": "", "id": "assistant-1", "live_identity": {"message_id": "assistant-1", "part_key": "reasoning/main", "part_kind": "assistant_reasoning", "phase": "end", "legacy_block_id": "assistant-1"}},
+      {"kind": "tool", "phase": "start", "name": "pubmed_search", "detail": "", "id": "tool-call-1", "live_identity": {"message_id": "assistant-1", "part_key": "tool_call/tool-call-1", "part_kind": "tool_call", "phase": "start", "legacy_block_id": "tool-call-1"}},
+      {"kind": "tool", "phase": "running", "name": "pubmed_search", "detail": "{\"query\": \"test\"}", "id": "tool-call-1", "live_identity": {"message_id": "assistant-1", "part_key": "tool_call/tool-call-1", "part_kind": "tool_call", "phase": "append", "legacy_block_id": "tool-call-1"}},
+      {"kind": "tool", "phase": "done", "name": "pubmed_search", "detail": "Found 5 results", "id": "tool-call-1", "live_identity": {"message_id": "assistant-1", "part_key": "tool_result/tool-call-1", "part_kind": "tool_result", "phase": "end", "legacy_block_id": "tool-call-1"}},
+      {"kind": "tool", "phase": "start", "name": "read_file", "detail": "", "id": "tool-call-2", "live_identity": {"message_id": "assistant-1", "part_key": "tool_call/tool-call-2", "part_kind": "tool_call", "phase": "start", "legacy_block_id": "tool-call-2"}},
+      {"kind": "tool", "phase": "done", "name": "read_file", "detail": "file content", "id": "tool-call-2", "live_identity": {"message_id": "assistant-1", "part_key": "tool_result/tool-call-2", "part_kind": "tool_result", "phase": "end", "legacy_block_id": "tool-call-2"}},
+      {"kind": "message", "phase": "full", "role": "assistant", "text": "Here is what I found.", "id": "assistant-1", "live_identity": {"message_id": "assistant-1", "part_key": "text/main", "part_kind": "assistant_text", "phase": "snapshot", "legacy_block_id": "assistant-1"}},
+      {"kind": "message", "phase": "end", "role": "assistant", "text": "", "id": "assistant-1", "live_identity": {"message_id": "assistant-1", "part_key": "text/main", "part_kind": "assistant_text", "phase": "end", "legacy_block_id": "assistant-1"}}
+    ],
+    "expected": {
+      "transcript_blocks": {
+        "order": ["reasoning", "tool", "tool", "message"],
+        "assistant_count": 1,
+        "thinking_count": 1,
+        "tool_count": 2,
+        "tool_running_in_transcript": false
+      },
+      "activity_blocks": {
+        "tool_running_visible": true,
+        "tool_running_count": 1,
+        "scheduler_stage_in_activity": false
+      },
+      "no_duplicate_headers": true,
+      "no_replay_on_history_reload": true
+    }
+  },
+
   "shared_turn_cycles": {
     "entries": [
       {

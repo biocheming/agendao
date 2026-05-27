@@ -53,7 +53,7 @@ use crate::app::state::AppState;
 use crate::components::{
     exit_logo_lines, Agent, AgentSelectDialog, AlertDialog, CommandPalette, ForkDialog, ForkEntry,
     HelpDialog, HomeView, McpDialog, McpItem, ModeKind, Model, ModelSelectDialog, PendingSubmit,
-    PermissionAction, PermissionPrompt, Prompt, PromptStashDialog, ProviderDialog, QuestionOption,
+    PermissionPrompt, Prompt, PromptStashDialog, ProviderDialog, QuestionOption,
     QuestionPrompt, QuestionRequest, QuestionType, RecoveryActionDialog, RecoveryActionItem,
     SessionDeleteState, SessionExportDialog, SessionItem, SessionListDialog, SessionRenameDialog,
     SkillListDialog, SkillProposalReviewDialog, SkillProposalReviewItem, SlashCommandPopup,
@@ -102,24 +102,6 @@ const PERF_LOG_INTERVAL_SECS: u64 = 10;
 const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_DIM: &str = "\x1b[90m";
 const ANSI_BOLD: &str = "\x1b[1m";
-
-fn session_update_requires_sync(source: Option<&str>) -> bool {
-    // P1-2: exclude high-frequency sources that are handled incrementally
-    // via output blocks. "topology" (ReconcileReason::Topology) is the new
-    // canonical source for scheduler stage deltas — it fires on every stage
-    // message change and must NOT trigger a full session sync.
-    !matches!(
-        source,
-        Some(
-            "prompt.stream"
-                | "stream.prompt"
-                | "prompt.scheduler.stage.content"
-                | "prompt.scheduler.stage.reasoning"
-                | "prompt.scheduler.stage.child.final"
-                | "topology"
-        )
-    )
-}
 
 pub struct App {
     context: Arc<AppContext>,
@@ -281,6 +263,12 @@ pub struct AppLaunchConfig {
     pub session_id: Option<String>,
     pub initial_prompt: Option<String>,
     pub working_dir: Option<PathBuf>,
+    /// Unix socket path for local IPC transport auto-selection.
+    pub unix_socket_path: Option<String>,
+    /// Run in Direct (in-process) mode — no server, no IPC.
+    /// The TUI constructs OrchestrationCore internally with
+    /// unified session authority.
+    pub local_direct: bool,
 }
 
 impl App {
@@ -302,10 +290,15 @@ impl App {
         }
 
         let base_url = resolve_tui_base_url(config.base_url.as_deref());
-        let api_client = Arc::new(ApiClient::new_with_password(
-            base_url.clone(),
-            config.server_password.clone(),
-        ));
+        let api_client = if config.local_direct {
+            Arc::new(ApiClient::new_local())
+        } else {
+            Arc::new(ApiClient::new_with_password(
+                base_url.clone(),
+                config.server_password.clone(),
+                config.unix_socket_path.clone(),
+            ))
+        };
         context.set_api_client(api_client);
         let sse_session_filter: SessionFilter = Arc::new(std::sync::Mutex::new(None));
 
@@ -624,6 +617,300 @@ impl App {
         apply_selection_highlight(buffer, area, &self.selection);
     }
 
+    // P0-3: TUI state mutation gate (lock-level, documented; full semantic
+    // convergence is P1 scope).
+    // All state changes flow through:
+    //   SSE event → parse → StateChange → handle_event → context mutation → rerender
+    // The context.session.write() lock is the single state mutation gate.
+    // Transcript materialization is distributed across session_context.rs
+    // (apply_message_block, apply_reasoning_block, apply_tool_block, etc.)
+    // — lock-level single entry, not yet semantic-level single sink.
+    fn handle_state_change(&mut self, change: &StateChange) {
+        match change {
+            StateChange::SessionUpdated { session_id, source } => {
+                self.handle_session_updated_reconcile(session_id, source.as_deref());
+            }
+            StateChange::SessionStatusBusy(session_id) => {
+                self.set_session_status(session_id, SessionStatus::Running);
+                self.queue_session_telemetry_refresh(session_id);
+                self.sync_prompt_spinner_state();
+            }
+            StateChange::SessionStatusCompacting(session_id) => {
+                self.set_session_status(session_id, SessionStatus::Compacting);
+                self.queue_session_telemetry_refresh(session_id);
+                self.sync_prompt_spinner_state();
+            }
+            StateChange::SessionStatusReconnecting(session_id) => {
+                self.set_session_status(session_id, SessionStatus::Reconnecting);
+                self.sync_prompt_spinner_state();
+            }
+            StateChange::SessionStatusIdle(session_id) => {
+                self.set_session_status(session_id, SessionStatus::Idle);
+                self.queue_session_telemetry_refresh(session_id);
+                self.sync_prompt_spinner_state();
+            }
+            StateChange::SessionStatusRetrying {
+                session_id,
+                attempt,
+                message,
+                next,
+            } => {
+                self.set_session_status(
+                    session_id,
+                    SessionStatus::Retrying {
+                        message: message.clone(),
+                        attempt: *attempt,
+                        next: *next,
+                    },
+                );
+                self.queue_session_telemetry_refresh(session_id);
+                self.sync_prompt_spinner_state();
+            }
+            StateChange::ConfigUpdated => {
+                let _ = self.sync_config_from_server();
+                self.event_caused_change = true;
+            }
+            StateChange::QuestionCreated { session_id, .. }
+            | StateChange::QuestionResolved { session_id, .. } => {
+                let should_sync = match self.context.current_route() {
+                    Route::Session {
+                        session_id: active_session_id,
+                    } => active_session_id == *session_id,
+                    _ => true,
+                };
+                if should_sync {
+                    self.event_caused_change = self.sync_question_requests();
+                    self.sync_runtime.last_question_sync = Instant::now();
+                }
+            }
+            StateChange::PermissionRequested {
+                session_id,
+                permission,
+            } => {
+                let should_surface = match self.context.current_route() {
+                    Route::Session {
+                        session_id: active_session_id,
+                    } => active_session_id == *session_id,
+                    _ => true,
+                };
+                if should_surface {
+                    self.enqueue_permission_request(permission.clone());
+                    self.sync_runtime.last_permission_sync = Instant::now();
+                    self.event_caused_change = true;
+                }
+            }
+            StateChange::PermissionResolved {
+                session_id,
+                permission_id,
+            } => {
+                let should_surface = match self.context.current_route() {
+                    Route::Session {
+                        session_id: active_session_id,
+                    } => active_session_id == *session_id,
+                    _ => true,
+                };
+                if should_surface {
+                    self.clear_permission_request(permission_id);
+                    self.permission_runtime.last_submit_error = None;
+                    self.sync_runtime.last_permission_sync = Instant::now();
+                    self.event_caused_change = true;
+                }
+            }
+            StateChange::ControlInputTransition { session_id, .. }
+            | StateChange::ToolCallStarted { session_id, .. }
+            | StateChange::ToolCallCompleted { session_id, .. } => {
+                self.queue_session_telemetry_refresh(session_id);
+            }
+            StateChange::TopologyChanged { session_id } => {
+                self.handle_topology_changed(session_id);
+            }
+            StateChange::DiffUpdated { session_id, diffs } => {
+                let mut session_ctx = self.context.session.write();
+                session_ctx
+                    .session_diff
+                    .insert(session_id.clone(), diffs.clone());
+                drop(session_ctx);
+            }
+            StateChange::OutputBlock {
+                session_id,
+                id,
+                payload,
+                live_identity,
+            } => {
+                let current_session = self.current_session_id();
+                let is_active_session = current_session.as_deref() == Some(session_id.as_str());
+                let current_is_parent_of_target = current_session.as_deref().is_some_and(|active| {
+                    let session_ctx = self.context.session.read();
+                    session_ctx
+                        .sessions
+                        .get(session_id)
+                        .and_then(|session| session.parent_id.as_deref())
+                        == Some(active)
+                });
+
+                {
+                    let mut session_ctx = self.context.session.write();
+                    session_ctx.apply_output_block_incremental(
+                        session_id,
+                        id.as_deref(),
+                        payload,
+                        live_identity.as_ref(),
+                    );
+                }
+                if payload.get("kind").and_then(|value| value.as_str()) == Some("scheduler_stage")
+                {
+                    if let Ok(block) = serde_json::from_value::<
+                        rocode_command::output_blocks::SchedulerStageBlock,
+                    >(payload.clone())
+                    {
+                        self.context.apply_scheduler_stage_summary(session_id, &block);
+                    }
+                }
+
+                if let Route::Session { session_id: active } = self.context.current_route() {
+                    if active == *session_id {
+                        if payload.get("kind").and_then(|value| value.as_str())
+                            == Some("scheduler_stage")
+                        {
+                            self.refresh_attached_sessions();
+                        }
+                        self.event_caused_change = true;
+                    }
+                }
+
+                if current_is_parent_of_target {
+                    self.refresh_attached_sessions();
+                    self.event_caused_change = true;
+                }
+
+                if is_active_session && self.status_dialog.is_open() {
+                    self.refresh_active_status_dialog();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_status_dialog_mouse(
+        &mut self,
+        button: crossterm::event::MouseButton,
+        col: u16,
+        row: u16,
+    ) -> bool {
+        if !self.status_dialog.is_open() {
+            return false;
+        }
+
+        if self.status_dialog.handle_click(col, row) {
+            self.close_status_dialog_modal();
+            return true;
+        }
+        if self.status_dialog.contains_point(col, row) {
+            if button == crossterm::event::MouseButton::Left {
+                if let Some(area) = self.status_dialog.selection_area() {
+                    if col >= area.x
+                        && col < area.x.saturating_add(area.width)
+                        && row >= area.y
+                        && row < area.y.saturating_add(area.height)
+                    {
+                        self.selection.start_scoped(row, col, Some(area));
+                    } else {
+                        self.selection.clear();
+                    }
+                }
+            }
+            return true;
+        }
+
+        false
+    }
+
+    fn handle_mouse_down(
+        &mut self,
+        button: crossterm::event::MouseButton,
+        col: u16,
+        row: u16,
+        mouse_event: &crossterm::event::MouseEvent,
+    ) -> anyhow::Result<bool> {
+        if button == crossterm::event::MouseButton::Right {
+            // Right-click copies selection (if any) then clears it.
+            if self.selection.is_active() {
+                self.copy_selection();
+            }
+            return Ok(true);
+        }
+
+        if self.handle_permission_prompt_mouse(col, row) {
+            return Ok(true);
+        }
+
+        if self.handle_question_prompt_mouse(col, row) {
+            return Ok(true);
+        }
+
+        if self.handle_status_dialog_mouse(button, col, row) {
+            return Ok(true);
+        }
+
+        if self.handle_dialog_mouse(mouse_event)? {
+            return Ok(true);
+        }
+
+        if button == crossterm::event::MouseButton::Left {
+            if let Route::Session { .. } = self.context.current_route() {
+                if let Some(sv) = self.context.session_view_handle() {
+                    if sv.handle_sidebar_click(&self.context, col, row) {
+                        // Check if the click triggered attached-session navigation.
+                        if let Some(cs_idx) = sv.take_pending_navigate_attached() {
+                            let sessions = self.context.attached_sessions();
+                            if let Some(child) = sessions.get(cs_idx) {
+                                let attached_id = child.session_id.clone();
+                                self.context.navigate_session(attached_id.clone());
+                                self.ensure_session_view(&attached_id);
+                                let _ = self.sync_session_from_server(&attached_id);
+                            }
+                        }
+                        if sv.take_pending_navigate_parent() {
+                            self.navigate_to_parent_session();
+                        }
+                        return Ok(true);
+                    }
+                    if sv.is_point_in_sidebar(col, row) {
+                        return Ok(true);
+                    }
+                    if sv.handle_scrollbar_click(col, row) {
+                        return Ok(true);
+                    }
+                    if sv.handle_click(col, row) {
+                        return Ok(true);
+                    }
+                }
+            }
+            if let Route::Session { .. } = self.context.current_route() {
+                if let Some(sv) = self.context.session_view_handle() {
+                    if let Some(area) = sv.selection_area() {
+                        if col >= area.x
+                            && col < area.x.saturating_add(area.width)
+                            && row >= area.y
+                            && row < area.y.saturating_add(area.height)
+                        {
+                            self.selection.start_scoped(row, col, Some(area));
+                        } else {
+                            self.selection.clear();
+                        }
+                    } else {
+                        self.selection.clear();
+                    }
+                }
+            } else {
+                // Clear previous selection and start a new one.
+                self.selection.start(row, col);
+            }
+        }
+
+        Ok(false)
+    }
+
     fn handle_event(&mut self, event: &Event) -> anyhow::Result<()> {
         self.event_caused_change = true;
 
@@ -634,92 +921,11 @@ impl App {
                 }
                 let key = normalize_key_event(*key);
 
-                // Handle inline permission prompt before dialogs
-                if self.permission_prompt.is_open {
-                    if self.permission_prompt.is_current_request_submitting() {
-                        return Ok(());
-                    }
-                    match key.code {
-                        KeyCode::Char('y') | KeyCode::Enter => {
-                            if let Some(request) = self.permission_prompt.approve_once() {
-                                self.resolve_permission_request(
-                                    &request.id,
-                                    "once",
-                                    Some("approved once".to_string()),
-                                );
-                            }
-                        }
-                        KeyCode::Char('0') | KeyCode::Char('n') => {
-                            if let Some(request) = self.permission_prompt.deny() {
-                                self.resolve_permission_request(
-                                    &request.id,
-                                    "reject",
-                                    Some("rejected".to_string()),
-                                );
-                            }
-                        }
-                        KeyCode::Char('1') => {
-                            if let Some(request) = self.permission_prompt.approve_once() {
-                                self.resolve_permission_request(
-                                    &request.id,
-                                    "once",
-                                    Some("approved once".to_string()),
-                                );
-                            }
-                        }
-                        KeyCode::Char('2') => {
-                            if let Some(request) = self.permission_prompt.approve_turn() {
-                                self.resolve_permission_request(
-                                    &request.id,
-                                    "turn",
-                                    Some("approved for turn".to_string()),
-                                );
-                            }
-                        }
-                        KeyCode::Char('3') | KeyCode::Char('a') => {
-                            if let Some(request) = self.permission_prompt.approve_session() {
-                                self.resolve_permission_request(
-                                    &request.id,
-                                    "session",
-                                    Some("approved for session".to_string()),
-                                );
-                            }
-                        }
-                        KeyCode::Esc => {
-                            if let Some(request) = self.permission_prompt.deny() {
-                                self.resolve_permission_request(
-                                    &request.id,
-                                    "reject",
-                                    Some("rejected".to_string()),
-                                );
-                            }
-                        }
-                        _ => {}
-                    }
+                if self.handle_permission_prompt_key(key) {
                     return Ok(());
                 }
 
-                // Handle inline question prompt before dialogs
-                if self.question_prompt.is_open {
-                    match key.code {
-                        KeyCode::Up | KeyCode::BackTab => self.question_prompt.move_up(),
-                        KeyCode::Down | KeyCode::Tab => self.question_prompt.move_down(),
-                        KeyCode::Char(' ') => self.question_prompt.handle_space(),
-                        KeyCode::Enter => {
-                            if let Some((question, answers)) = self.question_prompt.confirm() {
-                                self.submit_question_reply(&question.id, answers);
-                            }
-                        }
-                        KeyCode::Esc => {
-                            if let Some(question) = self.question_prompt.current().cloned() {
-                                self.reject_question(&question.id);
-                            }
-                            self.question_prompt.close();
-                        }
-                        KeyCode::Char(c) => self.question_prompt.type_char(c),
-                        KeyCode::Backspace => self.question_prompt.backspace(),
-                        _ => {}
-                    }
+                if self.handle_question_prompt_key(key) {
                     return Ok(());
                 }
 
@@ -1137,152 +1343,13 @@ impl App {
                 self.viewport_area = Rect::new(0, 0, *width, *height);
             }
             Event::Mouse(mouse_event) => {
-                use crossterm::event::{MouseButton, MouseEventKind};
+                use crossterm::event::MouseEventKind;
                 match mouse_event.kind {
                     MouseEventKind::Down(button) => {
                         let col = mouse_event.column;
                         let row = mouse_event.row;
-
-                        if button == MouseButton::Right {
-                            // Right-click copies selection (if any) then clears it
-                            if self.selection.is_active() {
-                                self.copy_selection();
-                            }
+                        if self.handle_mouse_down(button, col, row, mouse_event)? {
                             return Ok(());
-                        }
-
-                        if self.permission_prompt.is_open {
-                            self.permission_prompt.handle_click(col, row);
-                            if let Some(action) = self.permission_prompt.take_pending_action() {
-                                match action {
-                                    PermissionAction::ApproveOnce => {
-                                        if let Some(request) = self.permission_prompt.approve_once()
-                                        {
-                                            self.resolve_permission_request(
-                                                &request.id,
-                                                "once",
-                                                Some("approved once".to_string()),
-                                            );
-                                        }
-                                    }
-                                    PermissionAction::ApproveTurn => {
-                                        if let Some(request) = self.permission_prompt.approve_turn()
-                                        {
-                                            self.resolve_permission_request(
-                                                &request.id,
-                                                "turn",
-                                                Some("approved for turn".to_string()),
-                                            );
-                                        }
-                                    }
-                                    PermissionAction::ApproveSession => {
-                                        if let Some(request) =
-                                            self.permission_prompt.approve_session()
-                                        {
-                                            self.resolve_permission_request(
-                                                &request.id,
-                                                "session",
-                                                Some("approved for session".to_string()),
-                                            );
-                                        }
-                                    }
-                                    PermissionAction::Deny => {
-                                        if let Some(request) = self.permission_prompt.deny() {
-                                            self.resolve_permission_request(
-                                                &request.id,
-                                                "reject",
-                                                Some("rejected".to_string()),
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            return Ok(());
-                        }
-
-                        // Question prompt click
-                        if self.question_prompt.is_open {
-                            self.question_prompt.handle_click(col, row);
-                            return Ok(());
-                        }
-
-                        if self.status_dialog.is_open() {
-                            if self.status_dialog.handle_click(col, row) {
-                                self.close_status_dialog_modal();
-                                return Ok(());
-                            }
-                            if self.status_dialog.contains_point(col, row) {
-                                if button == MouseButton::Left {
-                                    if let Some(area) = self.status_dialog.selection_area() {
-                                        if col >= area.x
-                                            && col < area.x.saturating_add(area.width)
-                                            && row >= area.y
-                                            && row < area.y.saturating_add(area.height)
-                                        {
-                                            self.selection.start_scoped(row, col, Some(area));
-                                        } else {
-                                            self.selection.clear();
-                                        }
-                                    }
-                                }
-                                return Ok(());
-                            }
-                        }
-
-                        if self.handle_dialog_mouse(mouse_event)? {
-                            return Ok(());
-                        }
-
-                        if button == MouseButton::Left {
-                            if let Route::Session { .. } = self.context.current_route() {
-                                if let Some(sv) = self.context.session_view_handle() {
-                                    if sv.handle_sidebar_click(&self.context, col, row) {
-                                        // Check if the click triggered attached-session navigation
-                                        if let Some(cs_idx) = sv.take_pending_navigate_attached() {
-                                            let sessions = self.context.attached_sessions();
-                                            if let Some(child) = sessions.get(cs_idx) {
-                                                let attached_id = child.session_id.clone();
-                                                self.context.navigate_session(attached_id.clone());
-                                                self.ensure_session_view(&attached_id);
-                                                let _ = self.sync_session_from_server(&attached_id);
-                                            }
-                                        }
-                                        if sv.take_pending_navigate_parent() {
-                                            self.navigate_to_parent_session();
-                                        }
-                                        return Ok(());
-                                    }
-                                    if sv.is_point_in_sidebar(col, row) {
-                                        return Ok(());
-                                    }
-                                    if sv.handle_scrollbar_click(col, row) {
-                                        return Ok(());
-                                    }
-                                    if sv.handle_click(col, row) {
-                                        return Ok(());
-                                    }
-                                }
-                            }
-                            if let Route::Session { .. } = self.context.current_route() {
-                                if let Some(sv) = self.context.session_view_handle() {
-                                    if let Some(area) = sv.selection_area() {
-                                        if col >= area.x
-                                            && col < area.x.saturating_add(area.width)
-                                            && row >= area.y
-                                            && row < area.y.saturating_add(area.height)
-                                        {
-                                            self.selection.start_scoped(row, col, Some(area));
-                                        } else {
-                                            self.selection.clear();
-                                        }
-                                    } else {
-                                        self.selection.clear();
-                                    }
-                                }
-                            } else {
-                                // Clear previous selection and start a new one
-                                self.selection.start(row, col);
-                            }
                         }
                     }
                     MouseEventKind::ScrollUp => {
@@ -1499,196 +1566,7 @@ impl App {
                         }
                     }
                 }
-                CustomEvent::StateChanged(StateChange::SessionUpdated { session_id, source }) => {
-                    self.diagnostics.perf.session_updated_events = self
-                        .diagnostics
-                        .perf
-                        .session_updated_events
-                        .saturating_add(1);
-                    // P1-3: session.updated is the RECONCILE FALLBACK path.
-                    // Incremental updates (output blocks, custom events) are the
-                    // PRIMARY refresh mechanism. This handler only triggers a
-                    // debounced full sync for non-droppable reconcile reasons.
-                    if let Route::Session { session_id: active } = self.context.current_route() {
-                        if active == *session_id && session_update_requires_sync(source.as_deref())
-                        {
-                            self.sync_runtime.pending_session_sync = Some(session_id.to_string());
-                            self.sync_runtime.pending_session_sync_due_at = Some(
-                                Instant::now() + Duration::from_millis(SESSION_SYNC_DEBOUNCE_MS),
-                            );
-                        }
-                    }
-                    self.sync_prompt_spinner_state();
-                }
-                CustomEvent::StateChanged(StateChange::SessionStatusBusy(session_id)) => {
-                    self.set_session_status(session_id, SessionStatus::Running);
-                    self.queue_session_telemetry_refresh(session_id);
-                    self.sync_prompt_spinner_state();
-                }
-                CustomEvent::StateChanged(StateChange::SessionStatusCompacting(session_id)) => {
-                    self.set_session_status(session_id, SessionStatus::Compacting);
-                    self.queue_session_telemetry_refresh(session_id);
-                    self.sync_prompt_spinner_state();
-                }
-                CustomEvent::StateChanged(StateChange::SessionStatusReconnecting(session_id)) => {
-                    self.set_session_status(session_id, SessionStatus::Reconnecting);
-                    self.sync_prompt_spinner_state();
-                }
-                CustomEvent::StateChanged(StateChange::SessionStatusIdle(session_id)) => {
-                    self.set_session_status(session_id, SessionStatus::Idle);
-                    self.queue_session_telemetry_refresh(session_id);
-                    self.sync_prompt_spinner_state();
-                }
-                CustomEvent::StateChanged(StateChange::SessionStatusRetrying {
-                    session_id,
-                    attempt,
-                    message,
-                    next,
-                }) => {
-                    self.set_session_status(
-                        session_id,
-                        SessionStatus::Retrying {
-                            message: message.clone(),
-                            attempt: *attempt,
-                            next: *next,
-                        },
-                    );
-                    self.queue_session_telemetry_refresh(session_id);
-                    self.sync_prompt_spinner_state();
-                }
-                CustomEvent::StateChanged(StateChange::ConfigUpdated) => {
-                    let _ = self.sync_config_from_server();
-                    self.event_caused_change = true;
-                }
-                CustomEvent::StateChanged(StateChange::QuestionCreated { session_id, .. })
-                | CustomEvent::StateChanged(StateChange::QuestionResolved { session_id, .. }) => {
-                    let should_sync = match self.context.current_route() {
-                        Route::Session {
-                            session_id: active_session_id,
-                        } => active_session_id == *session_id,
-                        _ => true,
-                    };
-                    if should_sync {
-                        self.event_caused_change = self.sync_question_requests();
-                        self.sync_runtime.last_question_sync = Instant::now();
-                    }
-                }
-                CustomEvent::StateChanged(StateChange::PermissionRequested {
-                    session_id,
-                    permission,
-                }) => {
-                    let should_surface = match self.context.current_route() {
-                        Route::Session {
-                            session_id: active_session_id,
-                        } => active_session_id == *session_id,
-                        _ => true,
-                    };
-                    if should_surface {
-                        self.enqueue_permission_request(permission.clone());
-                        self.sync_runtime.last_permission_sync = Instant::now();
-                        self.event_caused_change = true;
-                    }
-                }
-                CustomEvent::StateChanged(StateChange::PermissionResolved {
-                    session_id,
-                    permission_id,
-                }) => {
-                    let should_surface = match self.context.current_route() {
-                        Route::Session {
-                            session_id: active_session_id,
-                        } => active_session_id == *session_id,
-                        _ => true,
-                    };
-                    if should_surface {
-                        self.clear_permission_request(permission_id);
-                        self.permission_runtime.last_submit_error = None;
-                        self.sync_runtime.last_permission_sync = Instant::now();
-                        self.event_caused_change = true;
-                    }
-                }
-                CustomEvent::StateChanged(StateChange::ControlInputTransition {
-                    session_id,
-                    ..
-                }) => {
-                    self.queue_session_telemetry_refresh(session_id);
-                }
-                CustomEvent::StateChanged(StateChange::ToolCallStarted { session_id, .. }) => {
-                    self.queue_session_telemetry_refresh(session_id);
-                }
-                CustomEvent::StateChanged(StateChange::ToolCallCompleted {
-                    session_id, ..
-                }) => {
-                    self.queue_session_telemetry_refresh(session_id);
-                }
-                CustomEvent::StateChanged(StateChange::TopologyChanged { session_id }) => {
-                    self.handle_topology_changed(session_id);
-                }
-                CustomEvent::StateChanged(StateChange::DiffUpdated { session_id, diffs }) => {
-                    let mut session_ctx = self.context.session.write();
-                    session_ctx
-                        .session_diff
-                        .insert(session_id.clone(), diffs.clone());
-                    drop(session_ctx);
-                }
-                CustomEvent::StateChanged(StateChange::OutputBlock {
-                    session_id,
-                    id,
-                    payload,
-                    live_identity,
-                }) => {
-                    let current_session = self.current_session_id();
-                    let is_active_session = current_session.as_deref() == Some(session_id.as_str());
-                    let current_is_parent_of_target =
-                        current_session.as_deref().is_some_and(|active| {
-                            let session_ctx = self.context.session.read();
-                            session_ctx
-                                .sessions
-                                .get(session_id)
-                                .and_then(|session| session.parent_id.as_deref())
-                                == Some(active)
-                        });
-
-                    {
-                        let mut session_ctx = self.context.session.write();
-                        session_ctx.apply_output_block_incremental(
-                            session_id,
-                            id.as_deref(),
-                            payload,
-                            live_identity.as_ref(),
-                        );
-                    }
-                    if payload.get("kind").and_then(|value| value.as_str())
-                        == Some("scheduler_stage")
-                    {
-                        if let Ok(block) = serde_json::from_value::<
-                            rocode_command::output_blocks::SchedulerStageBlock,
-                        >(payload.clone())
-                        {
-                            self.context
-                                .apply_scheduler_stage_summary(session_id, &block);
-                        }
-                    }
-
-                    if let Route::Session { session_id: active } = self.context.current_route() {
-                        if active == *session_id {
-                            if payload.get("kind").and_then(|value| value.as_str())
-                                == Some("scheduler_stage")
-                            {
-                                self.refresh_attached_sessions();
-                            }
-                            self.event_caused_change = true;
-                        }
-                    }
-
-                    if current_is_parent_of_target {
-                        self.refresh_attached_sessions();
-                        self.event_caused_change = true;
-                    }
-
-                    if is_active_session && self.status_dialog.is_open() {
-                        self.refresh_active_status_dialog();
-                    }
-                }
+                CustomEvent::StateChanged(change) => self.handle_state_change(change),
                 _ => {}
             },
             Event::Tick => {
@@ -1968,19 +1846,19 @@ mod tests {
 
     #[test]
     fn session_update_requires_sync_for_prompt_final_sources() {
-        assert!(session_update_requires_sync(Some("prompt.final")));
-        assert!(session_update_requires_sync(Some("prompt.completed")));
-        assert!(session_update_requires_sync(Some(
+        assert!(super::sync::session_update_requires_sync(Some("prompt.final")));
+        assert!(super::sync::session_update_requires_sync(Some("prompt.completed")));
+        assert!(super::sync::session_update_requires_sync(Some(
             "prompt.scheduler.completed"
         )));
-        assert!(!session_update_requires_sync(Some("prompt.stream")));
-        assert!(session_update_requires_sync(Some(
+        assert!(!super::sync::session_update_requires_sync(Some("prompt.stream")));
+        assert!(super::sync::session_update_requires_sync(Some(
             "prompt.scheduler.stage.step"
         )));
-        assert!(session_update_requires_sync(Some(
+        assert!(super::sync::session_update_requires_sync(Some(
             "prompt.scheduler.stage.usage"
         )));
-        assert!(!session_update_requires_sync(Some(
+        assert!(!super::sync::session_update_requires_sync(Some(
             "prompt.scheduler.stage.reasoning"
         )));
     }

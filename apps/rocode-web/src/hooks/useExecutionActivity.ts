@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { OutputBlock } from "../lib/history";
+import type { OutputBlock, ToolOutputBlock } from "../lib/history";
 import {
   canonicalLiveExecutionStatus,
   type LiveExecutionEntry,
@@ -14,7 +14,14 @@ import type {
 import { isLiveStageStatus } from "../lib/contextPressure";
 import { buildRunTailSummary, type RunTailSummary } from "../lib/runTailSummary";
 import { isSkillToolName, toolActivityLabel } from "../lib/toolLabels";
-import type { OutputField, OutputPreview } from "../lib/history";
+import { hasDisplayContract, type OutputField, type OutputPreview } from "../lib/history";
+import {
+  toolDisplayFields,
+  toolDisplayPreview,
+  toolDisplayRawLabelKey,
+  toolDisplaySummary,
+  toolExecutionKind,
+} from "../lib/toolPresentation";
 import { toolIdFromPartKey } from "../lib/liveIdentity";
 
 export interface ActivityFilters {
@@ -95,7 +102,7 @@ function metadataString(metadata: Record<string, unknown> | null | undefined, ke
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-function stableToolCallIdFromBlock(block: OutputBlock): string | null {
+function stableToolCallIdFromBlock(block: ToolOutputBlock): string | null {
   if (typeof block.tool_call_id === "string" && block.tool_call_id.trim()) {
     return block.tool_call_id.trim();
   }
@@ -104,11 +111,12 @@ function stableToolCallIdFromBlock(block: OutputBlock): string | null {
   return toolIdFromPartKey(block.live_identity?.part_key) ?? null;
 }
 
-function liveExecutionKind(block: OutputBlock): LiveExecutionEntry["kind"] {
-  return isSkillToolName(block.name ?? block.title ?? "") ? "skill" : "tool";
+// P2-3: Tool display helpers consolidated in lib/toolPresentation.ts
+function liveExecutionKind(block: ToolOutputBlock): LiveExecutionEntry["kind"] {
+  return toolExecutionKind(block);
 }
 
-function liveExecutionStatus(block: OutputBlock): LiveExecutionEntry["status"] {
+function liveExecutionStatus(block: ToolOutputBlock): LiveExecutionEntry["status"] {
   const partKind = block.live_identity?.part_kind;
   if (partKind === "tool_call") {
     return "running";
@@ -119,53 +127,27 @@ function liveExecutionStatus(block: OutputBlock): LiveExecutionEntry["status"] {
   return canonicalLiveExecutionStatus(block.phase);
 }
 
-function liveExecutionSummary(block: OutputBlock): string | null {
-  // Execution activity prefers the shared display contract. Raw detail/text is
-  // only a compatibility fallback for older tool payloads.
-  const hasDisplayContract = Boolean(
-    block.display?.summary?.trim() ||
-    block.display?.fields?.length ||
-    block.display?.preview?.text?.trim(),
-  );
-  const candidate = [
-    block.display?.summary,
-    block.summary,
-    metadataString(block.metadata, "skill_name"),
-    !hasDisplayContract ? block.detail : null,
-    !hasDisplayContract ? block.text : null,
-  ].find((value) => typeof value === "string" && value.trim().length > 0);
-  return typeof candidate === "string" ? candidate.trim() : null;
+function liveExecutionSummary(block: ToolOutputBlock): string | null {
+  // P2-3: Delegates to shared toolDisplaySummary which handles
+  // display.summary → summary → compatibility detail fallback chain.
+  return toolDisplaySummary(block);
 }
 
-function liveExecutionFields(block: OutputBlock): OutputField[] {
-  return Array.isArray(block.display?.fields) ? block.display.fields : [];
+function liveExecutionFields(block: ToolOutputBlock): OutputField[] {
+  return toolDisplayFields(block) ?? [];
 }
 
-function liveExecutionPreview(block: OutputBlock): OutputPreview | null {
-  const displayPreview = block.display?.preview;
-  const hasDisplayContract = Boolean(
-    block.display?.summary?.trim() ||
-    block.display?.fields?.length ||
-    displayPreview?.text?.trim(),
-  );
-  if (displayPreview?.text?.trim()) {
-    return {
-      kind: displayPreview.kind?.trim() || "text",
-      text: displayPreview.text.trim(),
-      truncated: Boolean(displayPreview.truncated),
-    };
-  }
-  if (!hasDisplayContract && block.preview?.trim()) {
-    return {
-      kind: "text",
-      text: block.preview.trim(),
-      truncated: false,
-    };
-  }
-  return null;
+function liveExecutionPreview(block: ToolOutputBlock): OutputPreview | null {
+  const { previewText, previewKind, previewTruncated } = toolDisplayPreview(block);
+  if (!previewText) return null;
+  return {
+    kind: previewKind || "text",
+    text: previewText,
+    truncated: previewTruncated,
+  };
 }
 
-function liveExecutionStageId(block: OutputBlock): string | null {
+function liveExecutionStageId(block: ToolOutputBlock): string | null {
   if (typeof block.stage_id === "string" && block.stage_id.trim()) {
     return block.stage_id.trim();
   }
@@ -344,7 +326,7 @@ export function useExecutionActivity({
   const applyLiveExecutionOutputBlock = useCallback((block: OutputBlock, sessionId = sessionRef.current) => {
     if (!sessionId || block.kind !== "tool") return;
 
-    const label = toolActivityLabel(block.name ?? block.title ?? "tool");
+    const label = toolActivityLabel(toolDisplayRawLabelKey(block));
     const toolCallId = stableToolCallIdFromBlock(block);
     const stageId = liveExecutionStageId(block);
     const id = toolCallId ?? `${label}:${stageId ?? "root"}`;

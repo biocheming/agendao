@@ -74,7 +74,8 @@ use rocode_provider::{cache::CacheEvidenceSummary, Provider, ToolDefinition};
 use rocode_skill::{infer_runtime_skill_names, RuntimeInstructionSource, SkillGovernanceAuthority};
 use rocode_types::SkillRuntimeCompositionHintKind;
 use rocode_types::{
-    context_usage_percent, message_latest_compaction_summary, tool_call_replay_text,
+    context_usage_percent, message_latest_compaction_summary,
+    tool_call_replay_text,
     ContextCompactionAssessmentSummary, ContextCompactionBackoffSummary,
     ContextCompactionDecisionTrace, ContextCompactionInstalledDiagnostics,
     ContextCompactionLifecycleStatus, ContextCompactionLifecycleSummary, ContextCompactionSummary,
@@ -2732,6 +2733,18 @@ impl SessionPrompt {
             msg.metadata.insert(
                 "ingress_scheduler_stage_id".to_string(),
                 serde_json::json!(stage_id),
+            );
+        }
+        if let Some(origin) = ingress.source_origin {
+            msg.metadata.insert(
+                rocode_types::MESSAGE_SOURCE_ORIGIN_KEY.to_string(),
+                serde_json::to_value(origin).unwrap_or_default(),
+            );
+        }
+        if let Some(surface) = ingress.source_surface {
+            msg.metadata.insert(
+                rocode_types::MESSAGE_SOURCE_SURFACE_KEY.to_string(),
+                serde_json::to_value(surface).unwrap_or_default(),
             );
         }
     }

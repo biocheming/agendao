@@ -17,6 +17,7 @@ rocode-state = { path = "../rocode-state" }
 rocode-runtime-context = { path = "../rocode-runtime-context" }
 rocode-memory = { path = "../rocode-memory" }
 rocode-session = { path = "../rocode-session" }
+rocode-session-core = { path = "../rocode-session-core" }
 rocode-skill = { path = "../rocode-skill" }
 rocode-storage = { path = "../rocode-storage" }
 rocode-types = { path = "../rocode-types" }
@@ -26,6 +27,7 @@ rocode-mcp = { path = "../rocode-mcp" }
 rocode-plugin = { path = "../rocode-plugin" }
 rocode-tool = { path = "../rocode-tool" }
 rocode-command = { path = "../rocode-command" }
+libc = { version = "0.2" }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 serde = { workspace = true }

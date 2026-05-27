@@ -374,23 +374,27 @@ enum CliUiActionOutcome {
     Break,
 }
 
+// ── P1-1 four-layer CLI architecture ──────────────────────────────────
+// Parsing    — argument definitions, user input decoding (cli.rs)
+// Projection — transcript/lane computation, state derivation
+// Rendering  — terminal output, ANSI styling, block→string formatting
+// Interaction — keyboard dispatch, prompt lifecycle, event loop dispatch
+//
+// Each layer MUST NOT import from lower-numbered layers.
+// Projection functions that produce formatted strings belong in Rendering.
+// See also: run/rendering.rs (rendering layer contract).
+
+// ── Parsing layer ─────────────────────────────────────────────────────
 include!("run/ui_actions.rs");
 
+// ── Projection layer ──────────────────────────────────────────────────
 #[path = "run/frontend_state_projection.rs"]
 mod frontend_state_projection;
-#[path = "run/frontend_state_prompt.rs"]
-mod frontend_state_prompt;
-#[path = "run/frontend_state_surface.rs"]
-mod frontend_state_surface;
 #[path = "run/frontend_state_topology.rs"]
 mod frontend_state_topology;
 #[path = "run/frontend_state_types.rs"]
 pub(crate) mod frontend_state_types;
 use frontend_state_projection::CliFrontendPhase;
-use frontend_state_prompt::CliPromptChrome;
-use frontend_state_surface::{
-    cli_copy_target_transcript, cli_refresh_prompt, print_cli_list_on_surface, CliTerminalSurface,
-};
 use frontend_state_topology::{cli_print_execution_topology, CliObservedExecutionTopology};
 include!("run/frontend_state.rs");
 
@@ -403,6 +407,23 @@ mod session_projection_layout;
 #[path = "run/session_projection_usage.rs"]
 mod session_projection_usage;
 include!("run/session_projection.rs");
+
+// ── Rendering layer ───────────────────────────────────────────────────
+// Terminal surface, prompt chrome, and styled-output formatting.
+// frontend_state_prompt will transition here as prompt rendering is
+// untangled from event-loop dispatch.
+#[path = "run/frontend_state_surface.rs"]
+mod frontend_state_surface;
+#[path = "run/frontend_state_prompt.rs"]
+mod frontend_state_prompt;
+use frontend_state_prompt::CliPromptChrome;
+use frontend_state_surface::{
+    cli_copy_target_transcript, cli_refresh_prompt, print_cli_list_on_surface, CliTerminalSurface,
+};
+#[path = "run/rendering.rs"]
+mod rendering;
+
+// ── Interaction layer ────────────────────────────────────────────────
 include!("run/sse.rs");
 
 #[derive(Debug, Clone)]
@@ -2662,10 +2683,7 @@ mod tests {
             .rendered_text();
 
         for entry in &fixture.shared_turn_cycles.entries {
-            assert!(
-                rendered.contains(&entry.message_text),
-                "{rendered}"
-            );
+            assert!(rendered.contains(&entry.message_text), "{rendered}");
         }
         for entry in fixture
             .shared_turn_cycles
@@ -2673,10 +2691,7 @@ mod tests {
             .iter()
             .filter_map(|entry| entry.tool.as_ref())
         {
-            assert!(
-                rendered.contains(&entry.tool_detail),
-                "{rendered}"
-            );
+            assert!(rendered.contains(&entry.tool_detail), "{rendered}");
         }
 
         let assistant_count = fixture
@@ -2693,13 +2708,11 @@ mod tests {
             .filter(|tool| rendered.contains(&tool.tool_detail))
             .count();
         assert_eq!(
-            assistant_count,
-            fixture.shared_turn_cycles.expected.assistant_message_count,
+            assistant_count, fixture.shared_turn_cycles.expected.assistant_message_count,
             "{rendered}"
         );
         assert_eq!(
-            tool_count,
-            fixture.shared_turn_cycles.expected.tool_result_count,
+            tool_count, fixture.shared_turn_cycles.expected.tool_result_count,
             "{rendered}"
         );
     }
@@ -2780,6 +2793,85 @@ mod tests {
         let error_line = format!("Run failed: {}", run_tail.error_message);
         assert!(error_line.contains("Run failed"), "{error_line}");
         assert!(error_line.contains(&run_tail.error_message), "{error_line}");
+    }
+
+    #[test]
+    fn canonical_live_stream_matches_cli_visible_transcript_contract() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let fixture = live_transcript_state_fixture();
+        let canonical = &fixture.canonical_live_stream;
+        let style = CliStyle::plain();
+
+        for event in &canonical.events {
+            handle_sse_event(
+                &runtime,
+                output_block_event(
+                    event.id.as_deref(),
+                    event.live_identity.clone(),
+                    event.payload(),
+                ),
+                &style,
+            );
+        }
+
+        let rendered = runtime
+            .frontend_projection
+            .lock()
+            .expect("frontend projection")
+            .transcript
+            .rendered_text();
+        let rendered = strip_ansi(&rendered);
+
+        // Cache-consistency guard: root_session_transcript must stay in sync
+        // with the canonical projection.transcript for root-focused sessions.
+        assert_eq!(
+            runtime
+                .root_session_transcript
+                .lock()
+                .expect("root transcript")
+                .rendered_text(),
+            runtime
+                .frontend_projection
+                .lock()
+                .expect("frontend projection")
+                .transcript
+                .rendered_text(),
+            "root_session_transcript cache must match canonical projection.transcript"
+        );
+
+        assert_eq!(
+            rendered.matches("[thinking]").count(),
+            canonical.expected.transcript_blocks.thinking_count,
+            "{rendered}"
+        );
+        assert_eq!(
+            rendered.matches("[message:assistant]").count(),
+            canonical.expected.transcript_blocks.assistant_count,
+            "{rendered}"
+        );
+        assert_eq!(
+            rendered.matches("[tool:").count(),
+            canonical.expected.transcript_blocks.tool_count,
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains("{\"query\": \"test\"}"),
+            "tool running progress detail must stay out of CLI authoritative transcript: {rendered}"
+        );
+
+        let reasoning_pos = rendered.find("[thinking]").expect("thinking block");
+        let first_tool_pos = rendered.find("[tool:").expect("tool block");
+        let assistant_pos = rendered
+            .find("[message:assistant]")
+            .expect("assistant block");
+        assert!(
+            reasoning_pos < first_tool_pos && first_tool_pos < assistant_pos,
+            "canonical transcript order must be thinking -> tool -> assistant: {rendered}"
+        );
+
+        assert!(rendered.contains("Here is what I found."), "{rendered}");
+        assert!(rendered.contains("Found 5 results"), "{rendered}");
+        assert!(rendered.contains("file content"), "{rendered}");
     }
 
     #[test]

@@ -193,8 +193,8 @@ pub(super) async fn execute_session_recovery(
             variant: session_variant_override(&session),
             agent: session_agent_override(&session),
             scheduler_profile: session_scheduler_profile_override(&session),
-            command: None,
-            arguments: None,
+            command: None, arguments: None,
+            source_origin: Some(rocode_types::MessageSourceOrigin::System), source_surface: None,
             recovery: Some(RecoveryExecutionContext {
                 action: Some(req.action.clone()),
                 target_id: req.target_id.clone(),

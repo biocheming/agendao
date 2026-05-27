@@ -983,6 +983,8 @@ async fn run_server_prompt_rich(
                 "cli_{}",
                 rocode_core::id::create(rocode_core::id::Prefix::User, true, None)
             )),
+            Some(rocode_types::MessageSourceOrigin::Operator),
+            Some(rocode_types::MessageSourceSurface::Cli),
         )
         .await
     {
@@ -1158,9 +1160,48 @@ async fn handle_async_sse_event_rich(
             }
         }
         CliServerEvent::SessionUpdated { session_id, source } => {
-            // Keep transcript authority on the live OutputBlock path, but
-            // refresh telemetry eagerly so usage/cache meters update while the
-            // turn is still running.
+            handle_rich_session_followup(
+                runtime,
+                state,
+                api_client,
+                style,
+                CliRichSessionFollowup::Updated { session_id, source },
+            )
+            .await;
+        }
+        CliServerEvent::SessionIdle { session_id } => {
+            handle_rich_session_followup(
+                runtime,
+                state,
+                api_client,
+                style,
+                CliRichSessionFollowup::Idle { session_id },
+            )
+            .await;
+        }
+        other => handle_sse_event_rich(runtime, state, other, style),
+    }
+}
+
+enum CliRichSessionFollowup {
+    Updated {
+        session_id: String,
+        source: Option<String>,
+    },
+    Idle {
+        session_id: String,
+    },
+}
+
+async fn handle_rich_session_followup(
+    runtime: &CliExecutionRuntime,
+    state: &mut CliInteractiveRichState,
+    api_client: &Arc<CliApiClient>,
+    style: &CliStyle,
+    followup: CliRichSessionFollowup,
+) {
+    match followup {
+        CliRichSessionFollowup::Updated { session_id, source } => {
             let is_current_session = runtime
                 .server_session_id
                 .as_deref()
@@ -1177,7 +1218,7 @@ async fn handle_async_sse_event_rich(
                 refresh_rich_prompt(runtime);
             }
         }
-        CliServerEvent::SessionIdle { session_id } => {
+        CliRichSessionFollowup::Idle { session_id } => {
             let is_current_session = runtime
                 .server_session_id
                 .as_deref()
@@ -1200,10 +1241,11 @@ async fn handle_async_sse_event_rich(
                 refresh_rich_prompt(runtime);
             }
         }
-        other => handle_sse_event_rich(runtime, state, other, style),
     }
 }
 
+// P1-1: bootstrap/stream/prompt ingress are extracted; rich.rs still owns the
+// rich-session event loop plus render dispatch for this surface.
 fn handle_sse_event_rich(
     runtime: &CliExecutionRuntime,
     state: &mut CliInteractiveRichState,

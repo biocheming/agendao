@@ -103,6 +103,16 @@ impl RuntimeTelemetryAuthority {
             SessionRunStatus::Retry { .. } => {
                 self.runtime_state.mark_running(session_id, None).await;
             }
+            SessionRunStatus::Blocked { reason, recheck_at } => {
+                self.runtime_state
+                    .mark_blocked(session_id, reason.clone(), *recheck_at)
+                    .await;
+            }
+            SessionRunStatus::Sleeping { reason, wake_at } => {
+                self.runtime_state
+                    .mark_sleeping(session_id, reason.clone(), *wake_at)
+                    .await;
+            }
         }
         self.record_stage_event(
             session_id,
@@ -118,6 +128,56 @@ impl RuntimeTelemetryAuthority {
             ),
         )
         .await;
+    }
+
+    /// Recheck a blocked session. Returns `Some(Idle)` when the session was
+    /// blocked and its `recheck_at` has passed (or is `None`, allowing manual
+    /// override). Returns `None` when the session is not blocked or the
+    /// recheck time has not arrived.
+    ///
+    /// This method goes through `set_session_run_status` so that the
+    /// `RuntimeStateStore` projection and event bus are updated atomically.
+    pub(crate) async fn recheck_session(
+        &self,
+        session_id: &str,
+    ) -> Option<SessionRunStatus> {
+        let current = self.runtime_control.session_run_status(session_id).await;
+        match current {
+            SessionRunStatus::Blocked { recheck_at, .. } => {
+                let now = chrono::Utc::now().timestamp_millis();
+                if recheck_at.map_or(true, |ts| now >= ts) {
+                    self.set_session_run_status(session_id, SessionRunStatus::Idle)
+                        .await;
+                    Some(SessionRunStatus::Idle)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Wake a sleeping session. Symmetric to `recheck_session`: returns
+    /// `Some(Idle)` when the session was sleeping and its `wake_at` has
+    /// passed (or is `None`, allowing manual override).
+    pub(crate) async fn wake_session(
+        &self,
+        session_id: &str,
+    ) -> Option<SessionRunStatus> {
+        let current = self.runtime_control.session_run_status(session_id).await;
+        match current {
+            SessionRunStatus::Sleeping { wake_at, .. } => {
+                let now = chrono::Utc::now().timestamp_millis();
+                if wake_at.map_or(true, |ts| now >= ts) {
+                    self.set_session_run_status(session_id, SessionRunStatus::Idle)
+                        .await;
+                    Some(SessionRunStatus::Idle)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
     }
 
     pub(crate) async fn session_run_statuses(
@@ -1121,5 +1181,116 @@ mod tests {
             .expect("idle transition should arrive");
         assert!(second.contains("\"type\":\"session.status\""));
         assert!(second.contains("\"type\":\"idle\""));
+    }
+
+    #[tokio::test]
+    async fn blocked_session_recheck_round_trip_via_telemetry_authority() {
+        let (tx, _rx) = tokio::sync::broadcast::channel(1);
+        let telemetry = RuntimeTelemetryAuthority::new(tx, None);
+        let sid = "recheck-telemetry";
+
+        telemetry
+            .set_session_run_status(sid, SessionRunStatus::Blocked {
+                reason: Some("waiting".to_string()),
+                recheck_at: Some(1),
+            })
+            .await;
+
+        // Verify control + projection both see Blocked.
+        assert!(matches!(
+            telemetry.runtime_control().session_run_status(sid).await,
+            SessionRunStatus::Blocked { .. }
+        ));
+        assert_eq!(
+            telemetry.runtime_state().get(sid).await.expect("state should exist").run_status,
+            crate::session_runtime::state::RunStatus::Blocked
+        );
+
+        // Recheck via telemetry authority — goes through the bridge.
+        let result = telemetry.recheck_session(sid).await;
+        assert!(result.is_some(), "recheck should succeed");
+        assert!(matches!(result.unwrap(), SessionRunStatus::Idle));
+
+        // Verify control AND projection are both updated.
+        assert!(matches!(
+            telemetry.runtime_control().session_run_status(sid).await,
+            SessionRunStatus::Idle
+        ));
+        assert_eq!(
+            telemetry.runtime_state().get(sid).await.expect("state should still exist").run_status,
+            crate::session_runtime::state::RunStatus::Idle,
+            "RuntimeStateStore must be updated via the telemetry bridge"
+        );
+    }
+
+    #[tokio::test]
+    async fn blocked_session_recheck_not_due_via_telemetry() {
+        let (tx, _rx) = tokio::sync::broadcast::channel(1);
+        let telemetry = RuntimeTelemetryAuthority::new(tx, None);
+        let sid = "recheck-future";
+
+        telemetry
+            .set_session_run_status(sid, SessionRunStatus::Blocked {
+                reason: Some("waiting".to_string()),
+                recheck_at: Some(9999999999999i64),
+            })
+            .await;
+
+        let result = telemetry.recheck_session(sid).await;
+        assert!(result.is_none(), "recheck should not fire before recheck_at");
+    }
+
+    #[tokio::test]
+    async fn sleeping_session_wake_round_trip_via_telemetry_authority() {
+        let (tx, _rx) = tokio::sync::broadcast::channel(1);
+        let telemetry = RuntimeTelemetryAuthority::new(tx, None);
+        let sid = "wake-telemetry";
+
+        telemetry
+            .set_session_run_status(sid, SessionRunStatus::Sleeping {
+                reason: Some("paused until morning".to_string()),
+                wake_at: Some(1),
+            })
+            .await;
+
+        assert!(matches!(
+            telemetry.runtime_control().session_run_status(sid).await,
+            SessionRunStatus::Sleeping { .. }
+        ));
+        assert_eq!(
+            telemetry.runtime_state().get(sid).await.expect("state should exist").run_status,
+            crate::session_runtime::state::RunStatus::Sleeping
+        );
+
+        let result = telemetry.wake_session(sid).await;
+        assert!(result.is_some(), "wake should succeed when wake_at has passed");
+        assert!(matches!(result.unwrap(), SessionRunStatus::Idle));
+
+        assert!(matches!(
+            telemetry.runtime_control().session_run_status(sid).await,
+            SessionRunStatus::Idle
+        ));
+        assert_eq!(
+            telemetry.runtime_state().get(sid).await.expect("state should still exist").run_status,
+            crate::session_runtime::state::RunStatus::Idle,
+            "RuntimeStateStore must be updated via the telemetry bridge on wake"
+        );
+    }
+
+    #[tokio::test]
+    async fn sleeping_session_wake_not_due_via_telemetry() {
+        let (tx, _rx) = tokio::sync::broadcast::channel(1);
+        let telemetry = RuntimeTelemetryAuthority::new(tx, None);
+        let sid = "wake-future";
+
+        telemetry
+            .set_session_run_status(sid, SessionRunStatus::Sleeping {
+                reason: Some("sleeping".to_string()),
+                wake_at: Some(9999999999999i64),
+            })
+            .await;
+
+        let result = telemetry.wake_session(sid).await;
+        assert!(result.is_none(), "wake should not fire before wake_at");
     }
 }

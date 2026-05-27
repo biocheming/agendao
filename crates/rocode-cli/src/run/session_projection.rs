@@ -1,3 +1,15 @@
+// P1-1 Projection layer — transcript/lane computation and state derivation.
+//
+// Contract:
+// - Projection reads raw session state and produces CliVisibleTranscript,
+//   CliPromptLanes, CliRunTailState, etc.
+// - Projection MUST NOT produce terminal output (use rendering.rs).
+// - Projection MUST NOT handle keyboard or event loop dispatch (use
+//   interaction layer).
+// - Functions named cli_render_* or cli_print_* that produce formatted
+//   strings belong in the rendering layer. They currently live here for
+//   historical reasons and will migrate as the split progresses.
+
 use rocode_command::live_semantic_consumer::LiveSemanticConsumer;
 use rocode_command::output_blocks::{tool_cli_activity_label, ReasoningBlock, ToolPhase};
 use session_projection_usage::{cli_usage_snapshot_lines, format_token_count};
@@ -15,6 +27,23 @@ fn cli_is_terminal_stage_status(status: Option<&str>) -> bool {
     matches!(status, Some("done" | "blocked" | "cancelled"))
 }
 
+// P0-2: Transcript authority hierarchy.
+//
+// Canonical authority (single source of truth):
+//   projection.transcript: CliVisibleTranscript
+//     — The live visible transcript. All rendering reads from this.
+//     — Updated via cli_sync_projection_transcript() after live slot changes.
+//
+// Derived snapshots (read-only caches, never drive rendering):
+//   root_session_transcript: CliVisibleTranscript
+//     — Cached snapshot of the root session transcript. Used when switching
+//       back from an attached session view. Never reverse-written to projection.
+//   root_history_transcript: CliVisibleTranscript
+//     — Persisted history snapshot for history-suffix rendering. Populated
+//       from server history on session load, not from live events.
+//   attached_session_transcripts: HashMap<String, CliVisibleTranscript>
+//     — Cached snapshots for non-root sessions. Never reverse-written to
+//       the root projection.
 fn cli_set_root_server_session(runtime: &mut CliExecutionRuntime, session_id: String) {
     runtime.server_session_id = Some(session_id.clone());
     if let Ok(mut related) = runtime.related_session_ids.lock() {
@@ -81,6 +110,9 @@ fn cli_render_session_block(
         Err(_) if transcript_identity.is_some() => default_accumulator,
         Err(_) => return render_cli_block_rich(block, style),
     };
+    // P0-4: Legacy rendering path — only activated when live_identity is
+    // missing (compatibility with old server or unmigrated block types).
+    // Identity-bearing blocks must route through cli_apply_live_slot_update.
     if let Some(live_identity) = live_identity {
         if matches!(
             live_identity.part_kind,
@@ -90,10 +122,20 @@ fn cli_render_session_block(
             if live_identity.phase != rocode_types::LivePartPhase::End {
                 return String::new();
             }
+            // P0-4: LEGACY FALLBACK — End-phase text/reasoning for identity-
+            // bearing blocks routes through the accumulator for final rendering.
+            // Normal delta/full blocks take the live slot path above.
             return cli_render_legacy_streaming_block(&accumulator, block_id, block, style)
                 .unwrap_or_default();
         }
     } else {
+        // P0-4: LEGACY FALLBACK — no live_identity at all. The accumulator
+        // provides the only render path. Tracked via tracing so operators
+        // can measure how much traffic still hits this path.
+        tracing::debug!(
+            block_id = ?block_id,
+            "legacy streaming render — no live_identity on block"
+        );
         if let Some(rendered) =
             cli_render_legacy_streaming_block(&accumulator, block_id, block, style)
         {
@@ -550,6 +592,8 @@ impl CliRunStatusLabel for crate::api_client::SessionRunStatusKind {
             crate::api_client::SessionRunStatusKind::WaitingOnTool => "waiting_on_tool",
             crate::api_client::SessionRunStatusKind::WaitingOnUser => "waiting_on_user",
             crate::api_client::SessionRunStatusKind::Cancelling => "cancelling",
+            crate::api_client::SessionRunStatusKind::Blocked => "blocked",
+            crate::api_client::SessionRunStatusKind::Sleeping => "sleeping",
         }
     }
 }

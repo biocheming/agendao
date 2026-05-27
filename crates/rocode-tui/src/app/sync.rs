@@ -1,7 +1,49 @@
 use super::*;
 use crate::context::collect_attached_sessions_from_stage_summaries;
 
+pub(super) fn session_update_requires_sync(source: Option<&str>) -> bool {
+    // P1-2: exclude high-frequency sources that are handled incrementally
+    // via output blocks. "topology" (ReconcileReason::Topology) is the new
+    // canonical source for scheduler stage deltas — it fires on every stage
+    // message change and must NOT trigger a full session sync.
+    !matches!(
+        source,
+        Some(
+            "prompt.stream"
+                | "stream.prompt"
+                | "prompt.scheduler.stage.content"
+                | "prompt.scheduler.stage.reasoning"
+                | "prompt.scheduler.stage.child.final"
+                | "topology"
+        )
+    )
+}
+
 impl App {
+    pub(super) fn handle_session_updated_reconcile(
+        &mut self,
+        session_id: &str,
+        source: Option<&str>,
+    ) {
+        self.diagnostics.perf.session_updated_events = self
+            .diagnostics
+            .perf
+            .session_updated_events
+            .saturating_add(1);
+        // P1-2/P1-3: session.updated is the RECONCILE FALLBACK path.
+        // Incremental updates (output blocks, custom events) are the primary
+        // refresh mechanism. This handler only triggers a debounced full sync
+        // for non-droppable reconcile reasons.
+        if let Route::Session { session_id: active } = self.context.current_route() {
+            if active == session_id && session_update_requires_sync(source) {
+                self.sync_runtime.pending_session_sync = Some(session_id.to_string());
+                self.sync_runtime.pending_session_sync_due_at =
+                    Some(Instant::now() + Duration::from_millis(SESSION_SYNC_DEBOUNCE_MS));
+            }
+        }
+        self.sync_prompt_spinner_state();
+    }
+
     fn is_optimistic_local_session_id(session_id: &str) -> bool {
         session_id.starts_with("local_session_")
     }

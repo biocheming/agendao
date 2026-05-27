@@ -43,6 +43,17 @@ mod tests {
     #[test]
     fn live_transcript_state_fixture_loads_and_matches_expected_shape() {
         let fixture = live_transcript_state_fixture();
+        assert_eq!(fixture.version, 2);
+        assert_eq!(fixture.contract_version, "2026-05-26");
+        assert_eq!(fixture.canonical_live_stream.events.len(), 11);
+        assert_eq!(
+            fixture
+                .canonical_live_stream
+                .expected
+                .transcript_blocks
+                .order,
+            vec!["reasoning", "tool", "tool", "message"]
+        );
         assert_eq!(
             fixture.shared_turn_cycles.entries.len(),
             fixture.shared_turn_cycles.expected.assistant_message_count

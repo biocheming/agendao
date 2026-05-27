@@ -55,6 +55,8 @@ pub struct ServerRuntimeOptions {
     pub mdns: bool,
     pub mdns_domain: String,
     pub cors: Vec<String>,
+    /// Optional Unix socket path for local IPC
+    pub unix_socket_path: Option<String>,
 }
 
 struct PluginBridgeFetchProxy {
@@ -227,8 +229,8 @@ fn spawn_plugin_idle_monitor(loader: Arc<PluginLoader>) {
 
 pub struct ServerState {
     pub(crate) workspace_root: PathBuf,
-    pub(crate) sessions: Mutex<SessionManager>,
-    pub(crate) providers: tokio::sync::RwLock<ProviderRegistry>,
+    pub(crate) sessions: Arc<Mutex<SessionManager>>,
+    pub(crate) providers: Arc<tokio::sync::RwLock<ProviderRegistry>>,
     pub(crate) catalog_authority: Arc<ModelCatalogAuthority>,
     pub(crate) resolved_context: tokio::sync::RwLock<ResolvedWorkspaceContext>,
     pub(crate) config_store: Arc<rocode_config::ConfigStore>,
@@ -313,8 +315,8 @@ impl ServerState {
         let queued_followups = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         Self {
             workspace_root: normalize_workspace_root(workspace_root),
-            sessions: Mutex::new(SessionManager::new()),
-            providers: tokio::sync::RwLock::new(ProviderRegistry::new()),
+            sessions: Arc::new(Mutex::new(SessionManager::new())),
+            providers: Arc::new(tokio::sync::RwLock::new(ProviderRegistry::new())),
             catalog_authority: rocode_provider::default_model_catalog_authority(),
             resolved_context: tokio::sync::RwLock::new(ResolvedWorkspaceContext::empty()),
             config_store,
@@ -422,9 +424,8 @@ impl ServerState {
             }
         }
 
-        state.providers = tokio::sync::RwLock::new(create_registry_from_bootstrap_config(
-            &bootstrap_config,
-            &auth_store,
+        state.providers = Arc::new(tokio::sync::RwLock::new(
+            create_registry_from_bootstrap_config(&bootstrap_config, &auth_store),
         ));
         state.config_store = config_store.clone();
         state.user_state = user_state;
@@ -1161,22 +1162,39 @@ pub async fn run_server_runtime(options: ServerRuntimeOptions) -> anyhow::Result
     if server_password().is_none() {
         eprintln!("Warning: ROCODE_SERVER_PASSWORD is not set; loopback server is unsecured.");
     }
+    let start_http = options.port != 0 || options.unix_socket_path.is_none();
     let bind_port = if options.port == 0 {
-        3000
+        if options.unix_socket_path.is_some() {
+            0 // Unix-socket-only mode: port 0 means HTTP is disabled
+        } else {
+            3000
+        }
     } else {
         options.port
     };
     set_cors_whitelist(options.cors);
-    let _mdns_publisher =
-        start_mdns_publisher_if_needed(options.mdns, &bind_host, bind_port, &options.mdns_domain);
-    let addr: SocketAddr = format!("{}:{}", bind_host, bind_port).parse()?;
-    println!(
-        "Starting ROCode server on {} (workspace: {})",
-        addr,
-        workspace_root.display()
-    );
-
-    run_server(addr, workspace_root).await
+    if start_http {
+        let _mdns_publisher = start_mdns_publisher_if_needed(
+            options.mdns,
+            &bind_host,
+            bind_port,
+            &options.mdns_domain,
+        );
+        let addr: SocketAddr = format!("{}:{}", bind_host, bind_port).parse()?;
+        println!(
+            "Starting ROCode server on {} (workspace: {})",
+            addr,
+            workspace_root.display()
+        );
+        run_server_with_unix_socket(addr, workspace_root, options.unix_socket_path).await
+    } else {
+        println!(
+            "Starting ROCode server on Unix socket {} (workspace: {})",
+            options.unix_socket_path.as_deref().unwrap_or("<unknown>"),
+            workspace_root.display()
+        );
+        run_unix_socket_only(workspace_root, options.unix_socket_path.unwrap()).await
+    }
 }
 
 pub async fn run_server(addr: SocketAddr, workspace_root: PathBuf) -> anyhow::Result<()> {
@@ -1217,6 +1235,99 @@ pub async fn run_server_with_state(
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     tracing::info!("Server listening on {}", addr);
+
+    axum::serve(listener, app).await?;
+
+    Ok(())
+}
+
+/// Start server in Unix-socket-only mode (HTTP disabled).
+pub async fn run_unix_socket_only(
+    workspace_root: PathBuf,
+    socket_path: String,
+) -> anyhow::Result<()> {
+    let server_url = format!("unix://{}", socket_path);
+    let state = Arc::new(
+        ServerState::new_with_storage_for_url_in_workspace(server_url, workspace_root.clone())
+            .await?,
+    );
+
+    // Shared authorities: config, sessions, providers are the same
+    // Arc instances as ServerState — HTTP route changes are immediately
+    // visible to the Unix socket prompt path (no restart needed).
+    // ToolRegistry uses a separate instance (type mismatch:
+    // server stores Arc<ToolRegistry>, core stores Arc<RwLock<ToolRegistry>>).
+    let core = Arc::new(
+        rocode_orchestrator::OrchestrationCore::<rocode_session::SessionManager>::new_with_shared_authorities(
+            Arc::clone(&state.config_store),
+            Arc::clone(&state.sessions),
+            Arc::clone(&state.providers),
+            Arc::new(tokio::sync::RwLock::new(rocode_tool::ToolRegistry::new())),
+        ),
+    );
+
+    let unix_server = crate::unix_socket::UnixSocketServer::new(
+        Arc::clone(&state),
+        core,
+        socket_path.clone(),
+    );
+
+    tracing::info!("Unix-socket-only mode: listening on {}", socket_path);
+    unix_server.serve().await
+}
+
+async fn run_server_with_unix_socket(
+    addr: SocketAddr,
+    workspace_root: PathBuf,
+    unix_socket_path: Option<String>,
+) -> anyhow::Result<()> {
+    let server_url = if addr.ip().is_unspecified() {
+        format!("http://127.0.0.1:{}", addr.port())
+    } else {
+        format!("http://{}", addr)
+    };
+    let state = Arc::new(
+        ServerState::new_with_storage_for_url_in_workspace(server_url, workspace_root.clone()).await?,
+    );
+
+    // Start Unix socket server if path is provided
+    if let Some(socket_path) = unix_socket_path {
+        // Shared authorities: config, sessions, providers are the same
+        // Arc instances as ServerState — no per-startup copy needed.
+        let core = Arc::new(
+            rocode_orchestrator::OrchestrationCore::<rocode_session::SessionManager>::new_with_shared_authorities(
+                Arc::clone(&state.config_store),
+                Arc::clone(&state.sessions),
+                Arc::clone(&state.providers),
+                Arc::new(tokio::sync::RwLock::new(rocode_tool::ToolRegistry::new())),
+            ),
+        );
+
+        let unix_server = crate::unix_socket::UnixSocketServer::new(
+            Arc::clone(&state),
+            core,
+            socket_path.clone(),
+        );
+
+        tokio::spawn(async move {
+            if let Err(e) = unix_server.serve().await {
+                tracing::error!("Unix socket server error: {}", e);
+            }
+        });
+
+        tracing::info!("Unix socket server listening on {}", socket_path);
+    }
+
+    // Start HTTP server
+    let app = routes::router()
+        .layer(middleware::from_fn(server_auth_middleware))
+        .layer(cors_layer())
+        .layer(TraceLayer::new_for_http())
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    tracing::info!("HTTP server listening on {}", addr);
 
     axum::serve(listener, app).await?;
 

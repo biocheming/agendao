@@ -83,6 +83,9 @@ struct TuiArgs {
     mdns_domain: String,
     #[arg(long)]
     cors: Vec<String>,
+    /// Run in Direct (in-process) mode — no server, no IPC.
+    #[arg(long, default_value_t = false)]
+    local: bool,
 }
 
 #[derive(Args)]
@@ -256,6 +259,8 @@ pub async fn dispatch_if_product_command(args: Vec<OsString>) -> anyhow::Result<
                 cors: args.cors,
                 attach_url: None,
                 password: None,
+                unix_socket_path: None,
+                local: args.local,
             })
             .await?;
         }
@@ -275,6 +280,8 @@ pub async fn dispatch_if_product_command(args: Vec<OsString>) -> anyhow::Result<
                 cors: vec![],
                 attach_url: Some(args.url),
                 password: args.password,
+                unix_socket_path: None,
+                local: false,
             })
             .await?;
         }
@@ -374,20 +381,10 @@ mod tests {
 
 fn default_tui_request() -> TuiCommandRequest {
     TuiCommandRequest {
-        project: None,
-        model: None,
-        continue_last: false,
-        session: None,
-        fork: false,
-        prompt: None,
-        agent: None,
-        port: 0,
-        hostname: "127.0.0.1".to_string(),
-        mdns: false,
-        mdns_domain: "rocode.local".to_string(),
-        cors: vec![],
-        attach_url: None,
-        password: None,
+        project: None, model: None, continue_last: false, session: None, fork: false,
+        prompt: None, agent: None, port: 0, hostname: "127.0.0.1".to_string(),
+        mdns: false, mdns_domain: "rocode.local".to_string(), cors: vec![],
+        attach_url: None, password: None, unix_socket_path: None, local: false,
     }
 }
 

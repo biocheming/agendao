@@ -20,9 +20,31 @@ import {
 } from "lucide-react";
 import { useCallback, useState } from "react";
 import { MessageResponse } from "./ai-elements/message";
-import type { FeedMessage, OutputBlock, OutputField } from "../lib/history";
+import {
+  isMultimodalInfoOutputBlock,
+  isReasoningOutputBlock,
+  isSchedulerStageOutputBlock,
+  isStatusOutputBlock,
+  isToolOutputBlock,
+  type FeedBlock,
+  type FeedMessage,
+  type MultimodalInfoOutputBlock,
+  type OutputBlock,
+  type OutputField,
+  type StatusOutputBlock,
+  type ToolOutputBlock,
+} from "../lib/history";
 import { SchedulerStageCard } from "./SchedulerStageCard";
 import { isSkillToolName, toolActivityLabel } from "../lib/toolLabels";
+import { sanitizeAssistantDisplayText } from "../lib/blockPresentation";
+import { compactText, excerptText, normalizeValue } from "../lib/stagePresentation";
+import {
+  toolCompatDetail,
+  toolDisplayFields,
+  toolDisplayPreview,
+  toolDisplayRawLabelKey,
+  toolDisplaySummary,
+} from "../lib/toolPresentation";
 import {
   Tooltip,
   TooltipContent,
@@ -54,10 +76,6 @@ function formatClock(ts?: number) {
   });
 }
 
-function compactText(value?: string | null) {
-  return value?.replace(/\s+/g, " ").trim() ?? "";
-}
-
 function readableSummary(message: FeedMessage) {
   const summary = compactText(message.summary);
   if (!summary) return null;
@@ -70,95 +88,14 @@ function readableSummary(message: FeedMessage) {
   return summary;
 }
 
-function excerptText(value?: string | null, maxLength = 120) {
-  const text = compactText(value);
-  if (!text) return null;
-  if (text.length <= maxLength) return text;
-  return `${text.slice(0, maxLength - 1)}…`;
-}
-
-function looksLikeStructuredEnvelope(value: unknown) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const keys = Object.keys(value as Record<string, unknown>);
-  if (keys.length === 0) return false;
-  const knownEnvelopeKeys = [
-    "kind",
-    "phase",
-    "role",
-    "text",
-    "parts",
-    "metadata",
-    "output_block",
-    "display",
-    "structured",
-    "summary",
-    "fields",
-    "tool_call_id",
-    "stage_id",
-    "choices",
-    "usage",
-    "object",
-    "created",
-    "model",
-    "candidates",
-    "output",
-  ];
-  return keys.some((key) => knownEnvelopeKeys.includes(key));
-}
-
-function stripTrailingStructuredJson(text: string) {
-  const trimmed = text.trimEnd();
-  const candidateStarts = [trimmed.lastIndexOf("\n\n{"), trimmed.lastIndexOf("\n{"), trimmed.lastIndexOf("\n\n[")];
-
-  for (const startIndex of candidateStarts) {
-    if (startIndex < 0) continue;
-    const candidate = trimmed.slice(startIndex).trimStart();
-    if (!(candidate.startsWith("{") || candidate.startsWith("["))) continue;
-    try {
-      const parsed = JSON.parse(candidate);
-      if (!looksLikeStructuredEnvelope(parsed)) continue;
-      const prefix = trimmed.slice(0, startIndex).trimEnd();
-      if (!prefix) continue;
-      return prefix;
-    } catch {
-      continue;
-    }
+function attachedSessionLabel(message: FeedMessage): string {
+  if (typeof message.title === "string" && message.title.trim()) {
+    return message.title;
   }
-
-  return trimmed;
-}
-
-function sanitizeDisplayedMessageText(message: FeedMessage) {
-  const raw = message.text?.trimEnd() ?? "";
-  if (!raw) return raw;
-  if ((message.role ?? "assistant") !== "assistant") return raw;
-  return stripTrailingStructuredJson(raw);
-}
-
-function normalizeValue(value: unknown) {
-  const text = String(value ?? "").trim();
-  if (!text) return { structured: false, text: "" };
-
-  const candidate = text.startsWith("{") || text.startsWith("[");
-  if (candidate) {
-    try {
-      return {
-        structured: true,
-        text: JSON.stringify(JSON.parse(text), null, 2),
-      };
-    } catch {
-      // Keep original text when JSON parsing fails.
-    }
+  if (isSchedulerStageOutputBlock(message) && typeof message.stage === "string" && message.stage.trim()) {
+    return message.stage;
   }
-
-  return {
-    structured:
-      text.includes("\n") ||
-      text.length > 140 ||
-      text.includes("{") ||
-      text.includes("["),
-    text,
-  };
+  return message.attached_session_id ?? "";
 }
 
 function MetaActionButton({
@@ -322,7 +259,7 @@ function DisclosureCard({
   );
 }
 
-function ReasoningBlock({ message }: { message: FeedMessage }) {
+function ReasoningBlock({ message }: { message: FeedBlock<"reasoning"> }) {
   const text = message.text;
   return (
     <DisclosureCard
@@ -342,7 +279,7 @@ function ReasoningBlock({ message }: { message: FeedMessage }) {
   );
 }
 
-function StatusBlock({ message }: { message: OutputBlock }) {
+function StatusBlock({ message }: { message: StatusOutputBlock }) {
   const isError = message.tone === "error";
   const title = message.title?.trim() || (isError ? "Runtime error" : "System update");
   const summary = message.summary?.trim() || excerptText(message.text, 120) || null;
@@ -391,7 +328,7 @@ function StatusBlock({ message }: { message: OutputBlock }) {
   );
 }
 
-function InfoBlock({ message }: { message: OutputBlock }) {
+function InfoBlock({ message }: { message: MultimodalInfoOutputBlock }) {
   const title = message.title?.trim() || "Context note";
   const summary = message.summary?.trim() || excerptText(message.text, 120) || null;
   const hasDetail = Boolean(message.text?.trim() || message.fields?.length);
@@ -428,7 +365,7 @@ function InfoBlock({ message }: { message: OutputBlock }) {
   );
 }
 
-function ToolBlock({ message, active }: { message: OutputBlock; active: boolean }) {
+function ToolBlock({ message, active }: { message: ToolOutputBlock; active: boolean }) {
   // Phase W2/W5: prefer live_identity for live tool cards, then fall back to
   // the persisted history marker injected by buildFeedFromHistory() so history
   // rebuild preserves TOOL RUNNING / TOOL RESULT semantics.
@@ -441,28 +378,16 @@ function ToolBlock({ message, active }: { message: OutputBlock; active: boolean 
   const isResult = partKind === "tool_result";
   const label = isRunning ? "TOOL RUNNING" : isResult ? "TOOL RESULT" : "TOOL";
   const iconColor = isRunning ? "text-amber-500" : isResult ? "text-emerald-500" : "";
-  const displaySummary = message.display?.summary?.trim() || null;
-  const displayFields = message.display?.fields?.length ? message.display.fields : undefined;
-  const displayPreviewText = message.display?.preview?.text?.trim() || null;
-  const hasDisplayContract = Boolean(displaySummary || displayFields?.length || displayPreviewText);
-  const summary =
-    displaySummary ||
-    message.summary?.trim() ||
-    (!hasDisplayContract ? message.detail?.trim() || message.text?.trim() || null : null) ||
-    null;
-  const rawHeader = message.display?.header?.trim() || null;
-  const rawTitle = message.title?.trim() || null;
-  const rawName = message.name?.trim() || null;
-  const skillLike = isSkillToolName(rawName ?? rawTitle ?? rawHeader ?? "");
-  const toolTitle = rawHeader && !/^[A-Za-z0-9._:-]+$/.test(rawHeader)
-    ? rawHeader
-    : toolActivityLabel(rawHeader ?? rawTitle ?? rawName ?? message.kind);
-  const fields = displayFields ?? message.fields;
-  const previewText = displayPreviewText || (!hasDisplayContract ? message.preview?.trim() || null : null);
-  const previewKind = message.display?.preview?.kind?.trim() || null;
-  const previewTruncated = Boolean(message.display?.preview?.truncated);
-  const compatDetailFallback =
-    !hasDisplayContract && !fields?.length ? message.detail?.trim() || null : null;
+
+  // P2-3: tool presentation is centralized in lib/toolPresentation.ts
+  const summary = toolDisplaySummary(message);
+  const rawLabelKey = toolDisplayRawLabelKey(message);
+  const skillLike = isSkillToolName(rawLabelKey);
+  const toolTitle = toolActivityLabel(rawLabelKey);
+  const fields = toolDisplayFields(message);
+  const { previewText, previewKind, previewTruncated } = toolDisplayPreview(message);
+
+  const compatDetail = toolCompatDetail(message);
   const hasStructuredObject =
     message.structured !== null &&
     message.structured !== undefined &&
@@ -496,8 +421,8 @@ function ToolBlock({ message, active }: { message: OutputBlock; active: boolean 
           </div>
         ) : null}
         {fields?.length ? <FieldList fields={fields} /> : null}
-        {compatDetailFallback ? (
-          <StructuredText value={compatDetailFallback} className="text-muted-foreground" />
+        {compatDetail ? (
+          <StructuredText value={compatDetail} className="text-muted-foreground" />
         ) : null}
         {previewText ? (
           <div className="grid gap-1.5">
@@ -533,7 +458,7 @@ export function MessageCard({
   onNavigateAttachedSession,
 }: MessageCardProps) {
   const [copied, setCopied] = useState(false);
-  const displayText = sanitizeDisplayedMessageText(message);
+  const displayText = sanitizeAssistantDisplayText(message.text ?? "", message.kind, message.role);
 
   const handleCopy = useCallback(async () => {
     await navigator.clipboard.writeText(displayText);
@@ -541,7 +466,7 @@ export function MessageCard({
     setTimeout(() => setCopied(false), 2000);
   }, [displayText]);
 
-  if (message.kind === "scheduler_stage") {
+  if (isSchedulerStageOutputBlock(message)) {
     return (
       <SchedulerStageCard
         message={message}
@@ -552,16 +477,16 @@ export function MessageCard({
     );
   }
 
-  if (message.kind === "reasoning") {
+  if (isReasoningOutputBlock(message)) {
     if (!message.text.trim()) return null;
     return <ReasoningBlock message={message} />;
   }
 
-  if (message.kind === "status") {
+  if (isStatusOutputBlock(message)) {
     return <StatusBlock message={message} />;
   }
 
-  if (message.kind === "tool") {
+  if (isToolOutputBlock(message)) {
     return (
       <ToolBlock
         message={message}
@@ -570,7 +495,7 @@ export function MessageCard({
     );
   }
 
-  if (message.kind === "multimodal_info") {
+  if (isMultimodalInfoOutputBlock(message)) {
     return <InfoBlock message={message} />;
   }
 
@@ -715,12 +640,12 @@ export function MessageCard({
               onNavigateAttachedSession(message.attached_session_id!, {
                 stageId: message.stage_id ?? null,
                 toolCallId: message.tool_call_id ?? null,
-                label: message.title || message.stage || message.attached_session_id,
+                label: attachedSessionLabel(message),
               })
             }
           >
             <SparklesIcon className="mr-1 size-3.5" />
-            Open attached session {message.title || message.attached_session_id}
+            Open attached session {attachedSessionLabel(message)}
           </MetaActionButton>
         </div>
       ) : null}

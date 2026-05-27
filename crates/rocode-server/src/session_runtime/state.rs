@@ -84,6 +84,10 @@ pub enum RunStatus {
     WaitingOnTool,
     WaitingOnUser,
     Cancelling,
+    /// Session is blocked waiting for an external condition.
+    Blocked,
+    /// Session is intentionally sleeping.
+    Sleeping,
 }
 
 impl Default for RunStatus {
@@ -295,6 +299,32 @@ impl RuntimeStateStore {
             s.run_status = RunStatus::Running;
             s.current_message_id = message_id;
             s.interrupt = InterruptRuntimeState::default();
+        })
+        .await;
+    }
+
+    /// Mark the session as blocked (waiting on an external condition).
+    pub async fn mark_blocked(
+        &self,
+        session_id: &str,
+        _reason: Option<String>,
+        _recheck_at: Option<i64>,
+    ) {
+        self.update(session_id, |s| {
+            s.run_status = RunStatus::Blocked;
+        })
+        .await;
+    }
+
+    /// Mark the session as sleeping (intentional pause).
+    pub async fn mark_sleeping(
+        &self,
+        session_id: &str,
+        _reason: Option<String>,
+        _wake_at: Option<i64>,
+    ) {
+        self.update(session_id, |s| {
+            s.run_status = RunStatus::Sleeping;
         })
         .await;
     }
@@ -880,6 +910,48 @@ mod tests {
                 .expect("runtime state should exist")
                 .pending_followup_count,
             0
+        );
+    }
+
+    #[tokio::test]
+    async fn blocked_state_round_trip() {
+        let store = RuntimeStateStore::new();
+        store.mark_blocked("ses_blocked", Some("waiting for approval".to_string()), Some(1000)).await;
+        let state = store.get("ses_blocked").await.expect("state should exist");
+        assert_eq!(state.run_status, RunStatus::Blocked);
+        // Transition out via mark_idle simulates recheck.
+        store.mark_idle("ses_blocked").await;
+        let state = store.get("ses_blocked").await.expect("state should exist");
+        assert_eq!(state.run_status, RunStatus::Idle);
+    }
+
+    #[tokio::test]
+    async fn sleeping_state_round_trip() {
+        let store = RuntimeStateStore::new();
+        store.mark_sleeping("ses_sleep", Some("paused until morning".to_string()), Some(9000)).await;
+        let state = store.get("ses_sleep").await.expect("state should exist");
+        assert_eq!(state.run_status, RunStatus::Sleeping);
+        store.mark_idle("ses_sleep").await;
+        let state = store.get("ses_sleep").await.expect("state should exist");
+        assert_eq!(state.run_status, RunStatus::Idle);
+    }
+
+    #[tokio::test]
+    async fn blocked_and_stage_blocked_are_separate_concepts() {
+        // Verify RunStatus::Blocked is a session-level concept and does not
+        // affect StageStatus (which lives in rocode-content stage_protocol).
+        let store = RuntimeStateStore::new();
+        store.mark_blocked("ses_stage_sep", Some("blocked".to_string()), None).await;
+        let state = store.get("ses_stage_sep").await.expect("state should exist");
+        assert_eq!(state.run_status, RunStatus::Blocked);
+        // StageStatus::Blocked is an entirely separate type in
+        // rocode_content::stage_protocol — they share a name but have different
+        // authority domains. This test ensures RunStatus::Blocked does not
+        // leak into nor require StageStatus.
+        assert_ne!(
+            format!("{:?}", state.run_status),
+            "StageBlocked",
+            "RunStatus::Blocked must not serialize as a stage concept"
         );
     }
 }

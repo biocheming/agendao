@@ -1,3 +1,17 @@
+// P1-1: CLI interactive session — four-layer architecture.
+//
+// Layer 1 — Parse:     stream_shared.rs, bootstrap_shared.rs
+//   Wire events → structured blocks. SSE parsing and event normalization.
+// Layer 2 — Project:   session_projection.rs (in parent module)
+//   Structured blocks → transcript/lane state. Live slot upsert/finalize/commit.
+// Layer 3 — Render:    rich.rs, compact.rs
+//   Transcript state → terminal ANSI output. Rich mode and compact mode.
+// Layer 4 — Interact:  prompt_shared.rs
+//   Keyboard input → commands. Prompt session and input dispatch.
+//
+// Current state: bootstrap / stream / prompt attachment are extracted at the
+// module boundary. rich.rs still owns the rich-session event loop and render
+// dispatch, but parse/bootstrap/interact ingress no longer live in this entry.
 pub(super) use super::*;
 
 mod bootstrap_shared;
