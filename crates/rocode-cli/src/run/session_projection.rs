@@ -336,7 +336,12 @@ pub(crate) fn cli_live_slot_has_visible_content(block: &OutputBlock) -> bool {
     }
 }
 
-pub(crate) fn cli_apply_live_slot_update(
+pub(crate) // ── Projection reducers (state mutators — authority stay here) ──
+// These functions mutate CliVisibleTranscript, frontend_projection,
+// or runtime.* state. They are the canonical projection authority and
+// MUST NOT be moved to rendering.rs.
+
+fn cli_apply_live_slot_update(
     transcript: &mut CliVisibleTranscript,
     block: &OutputBlock,
     live_identity: &rocode_types::LiveMessagePartIdentity,
@@ -695,6 +700,14 @@ fn cli_list_attached_sessions(runtime: &CliExecutionRuntime) {
         &style,
     );
 }
+
+// ── Rendering helpers (pure formatters — TODO: migrate to rendering.rs) ──
+// These functions take projection data and produce formatted strings.
+// They MUST NOT mutate runtime state, transcript, or projection.
+// Blocked from physical migration by include!() scope: as_ref_label trait,
+// session_projection_usage imports, and StageSummary type context are
+// shared with the parent run module scope but not accessible from
+// submodule rendering.rs.
 
 fn cli_format_stage_summary_brief(stage: &rocode_command::stage_protocol::StageSummary) -> String {
     let mut parts = vec![format!(
