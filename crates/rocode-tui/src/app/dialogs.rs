@@ -1684,6 +1684,40 @@ impl App {
 
         Ok(false)
     }
+
+    pub(super) fn handle_status_dialog_mouse(
+        &mut self,
+        button: crossterm::event::MouseButton,
+        col: u16,
+        row: u16,
+    ) -> bool {
+        if !self.status_dialog.is_open() {
+            return false;
+        }
+
+        if self.status_dialog.handle_click(col, row) {
+            self.close_status_dialog_modal();
+            return true;
+        }
+        if self.status_dialog.contains_point(col, row) {
+            if button == crossterm::event::MouseButton::Left {
+                if let Some(area) = self.status_dialog.selection_area() {
+                    if col >= area.x
+                        && col < area.x.saturating_add(area.width)
+                        && row >= area.y
+                        && row < area.y.saturating_add(area.height)
+                    {
+                        self.selection.start_scoped(row, col, Some(area));
+                    } else {
+                        self.selection.clear();
+                    }
+                }
+            }
+            return true;
+        }
+
+        false
+    }
 }
 
 fn change_summary(change: &rocode_types::SuggestedSkillChange) -> String {

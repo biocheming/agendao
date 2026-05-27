@@ -560,4 +560,187 @@ impl App {
         let mut session_ctx = self.context.session.write();
         session_ctx.set_status(session_id, status);
     }
+
+    /// Apply a server-pushed session run status change: set the local
+    /// SessionStatus, queue a telemetry refresh (unless this is a transient
+    /// reconnecting state), and sync the prompt spinner.
+    pub(super) fn apply_session_run_status_change(
+        &mut self,
+        session_id: &str,
+        status: SessionStatus,
+    ) {
+        let skip_telemetry = matches!(status, SessionStatus::Reconnecting);
+        self.set_session_status(session_id, status);
+        if !skip_telemetry {
+            self.queue_session_telemetry_refresh(session_id);
+        }
+        self.sync_prompt_spinner_state();
+    }
+
+    /// Route-gating: return true when a session-scoped event should surface
+    /// on the current view. Events for non-active sessions surface when the
+    /// user is on home/multi-session view; events for the active session
+    /// always surface.
+    pub(super) fn should_surface_event_for_session(&self, session_id: &str) -> bool {
+        match self.context.current_route() {
+            crate::router::Route::Session {
+                session_id: active_session_id,
+            } => active_session_id == session_id,
+            _ => true,
+        }
+    }
+
+    /// Apply an incoming OutputBlock from the server event stream.
+    /// Handles incremental block insertion, scheduler-stage metadata, attached
+    /// session refresh, and active status-dialog refresh.
+    pub(super) fn apply_output_block_change(
+        &mut self,
+        session_id: &str,
+        id: &Option<String>,
+        payload: &serde_json::Value,
+        live_identity: &Option<rocode_types::LiveMessagePartIdentity>,
+    ) {
+        let current_session = self.current_session_id();
+        let is_active_session = current_session.as_deref() == Some(session_id);
+        let current_is_parent_of_target = current_session.as_deref().is_some_and(|active| {
+            let session_ctx = self.context.session.read();
+            session_ctx
+                .sessions
+                .get(session_id)
+                .and_then(|session| session.parent_id.as_deref())
+                == Some(active)
+        });
+
+        {
+            let mut session_ctx = self.context.session.write();
+            session_ctx.apply_output_block_incremental(
+                session_id,
+                id.as_deref(),
+                payload,
+                live_identity.as_ref(),
+            );
+        }
+        if payload.get("kind").and_then(|value| value.as_str()) == Some("scheduler_stage") {
+            if let Ok(block) = serde_json::from_value::<
+                rocode_command::output_blocks::SchedulerStageBlock,
+            >(payload.clone())
+            {
+                self.context.apply_scheduler_stage_summary(session_id, &block);
+            }
+        }
+
+        if let crate::router::Route::Session { session_id: active } = self.context.current_route() {
+            if active == *session_id {
+                if payload.get("kind").and_then(|value| value.as_str())
+                    == Some("scheduler_stage")
+                {
+                    self.refresh_attached_sessions();
+                }
+                self.event_caused_change = true;
+            }
+        }
+
+        if current_is_parent_of_target {
+            self.refresh_attached_sessions();
+            self.event_caused_change = true;
+        }
+
+        if is_active_session && self.status_dialog.is_open() {
+            self.refresh_active_status_dialog();
+        }
+    }
+
+    /// Server → client state-change dispatcher. Routes each StateChange
+    /// variant to the appropriate domain handler (status, question,
+    /// permission, topology, diff, output blocks).
+    pub(super) fn handle_state_change(&mut self, change: &StateChange) {
+        match change {
+            StateChange::SessionUpdated { session_id, source } => {
+                self.handle_session_updated_reconcile(session_id, source.as_deref());
+            }
+            StateChange::SessionStatusBusy(session_id) => {
+                self.apply_session_run_status_change(session_id, SessionStatus::Running);
+            }
+            StateChange::SessionStatusCompacting(session_id) => {
+                self.apply_session_run_status_change(session_id, SessionStatus::Compacting);
+            }
+            StateChange::SessionStatusReconnecting(session_id) => {
+                self.apply_session_run_status_change(session_id, SessionStatus::Reconnecting);
+            }
+            StateChange::SessionStatusIdle(session_id) => {
+                self.apply_session_run_status_change(session_id, SessionStatus::Idle);
+            }
+            StateChange::SessionStatusRetrying {
+                session_id,
+                attempt,
+                message,
+                next,
+            } => {
+                self.apply_session_run_status_change(
+                    session_id,
+                    SessionStatus::Retrying {
+                        message: message.clone(),
+                        attempt: *attempt,
+                        next: *next,
+                    },
+                );
+            }
+            StateChange::ConfigUpdated => {
+                let _ = self.sync_config_from_server();
+                self.event_caused_change = true;
+            }
+            StateChange::QuestionCreated { session_id, .. }
+            | StateChange::QuestionResolved { session_id, .. } => {
+                if self.should_surface_event_for_session(session_id) {
+                    self.event_caused_change = self.sync_question_requests();
+                    self.sync_runtime.last_question_sync = Instant::now();
+                }
+            }
+            StateChange::PermissionRequested {
+                session_id,
+                permission,
+            } => {
+                if self.should_surface_event_for_session(session_id) {
+                    self.enqueue_permission_request(permission.clone());
+                    self.sync_runtime.last_permission_sync = Instant::now();
+                    self.event_caused_change = true;
+                }
+            }
+            StateChange::PermissionResolved {
+                session_id,
+                permission_id,
+            } => {
+                if self.should_surface_event_for_session(session_id) {
+                    self.clear_permission_request(permission_id);
+                    self.permission_runtime.last_submit_error = None;
+                    self.sync_runtime.last_permission_sync = Instant::now();
+                    self.event_caused_change = true;
+                }
+            }
+            StateChange::ControlInputTransition { session_id, .. }
+            | StateChange::ToolCallStarted { session_id, .. }
+            | StateChange::ToolCallCompleted { session_id, .. } => {
+                self.queue_session_telemetry_refresh(session_id);
+            }
+            StateChange::TopologyChanged { session_id } => {
+                self.handle_topology_changed(session_id);
+            }
+            StateChange::DiffUpdated { session_id, diffs } => {
+                let mut session_ctx = self.context.session.write();
+                session_ctx
+                    .session_diff
+                    .insert(session_id.clone(), diffs.clone());
+                drop(session_ctx);
+            }
+            StateChange::OutputBlock {
+                session_id,
+                id,
+                payload,
+                live_identity,
+            } => {
+                self.apply_output_block_change(session_id, id, payload, live_identity);
+            }
+            _ => {}
+        }
+    }
 }
