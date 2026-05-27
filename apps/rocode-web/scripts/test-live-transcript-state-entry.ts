@@ -2,14 +2,16 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import type { MessageRecord, OutputBlock } from "../src/lib/history";
+import { primaryDisplayText } from "../src/lib/blockTextPolicy";
 import {
   appendLiveBlock,
   applyOutputBlock,
   buildFeedFromHistory,
+  createOptimisticUserFeedMessage,
   mergeHistoryWithLiveBlocks,
-  normalizeBlockText,
   pruneLiveBlocksCoveredByHistory,
   resetLiveTranscriptFeedSequence,
+  setActiveFeedSequence,
   shouldQueueLiveTranscriptBlock,
 } from "../src/lib/liveTranscriptState";
 import {
@@ -19,12 +21,12 @@ import {
 import {
   ASSISTANT_REASONING_MAIN_PART_KEY,
   ASSISTANT_TEXT_MAIN_PART_KEY,
-  assistantReasoningPartKey,
-  toolCallPartKey,
-  toolResultPartKey,
 } from "../src/lib/liveIdentity";
+import { sanitizeAssistantDisplayText } from "../src/lib/blockPresentation";
 import { buildRunTailSummary } from "../src/lib/runTailSummary";
+import { stageSummaryText } from "../src/lib/stagePresentation";
 import { toolActivityLabel, toolKindLabel } from "../src/lib/toolLabels";
+import { registerObservationSink, type ObservationEvent, type ObservationSink } from "../src/lib/observationEvents";
 
 type LiveFixture = {
   shared_turn_cycles: {
@@ -94,7 +96,7 @@ function toolBlock(overrides: Partial<OutputBlock> = {}): OutputBlock {
     role: "assistant",
     live_identity: {
       message_id: "assistant-1",
-      part_key: toolResultPartKey("tool-call-1"),
+      part_key: `tool_result/tool-call-1`,
       part_kind: "tool_result",
       phase: "snapshot",
       legacy_block_id: "tool-call-1",
@@ -151,7 +153,7 @@ function toolBlockFor(messageId: string, toolId: string, text: string, overrides
     text,
     live_identity: {
       message_id: messageId,
-      part_key: toolResultPartKey(toolId),
+      part_key: `tool_result/${toolId}`,
       part_kind: "tool_result",
       phase: "end",
       legacy_block_id: toolId,
@@ -170,7 +172,7 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
     text,
     live_identity: {
       message_id: "assistant-1",
-      part_key: toolCallPartKey(toolId),
+      part_key: `tool_call/${toolId}`,
       part_kind: "tool_call",
       phase: "append",
       legacy_block_id: toolId,
@@ -307,6 +309,58 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
 
 {
   resetLiveTranscriptFeedSequence();
+  const seqA = {
+    value: 0,
+    nextId() {
+      this.value += 1;
+      return `A-${this.value}`;
+    },
+    reset() {
+      this.value = 0;
+    },
+  };
+  const seqB = {
+    value: 0,
+    nextId() {
+      this.value += 1;
+      return `B-${this.value}`;
+    },
+    reset() {
+      this.value = 0;
+    },
+  };
+
+  const releaseA = setActiveFeedSequence(seqA);
+  assert.equal(
+    createOptimisticUserFeedMessage("owned by A").feedId,
+    "A-1",
+    "first owner must control feed ids",
+  );
+
+  const releaseB = setActiveFeedSequence(seqB);
+  assert.equal(
+    createOptimisticUserFeedMessage("owned by B").feedId,
+    "B-1",
+    "later owner must override active feed sequence",
+  );
+
+  releaseA();
+  assert.equal(
+    createOptimisticUserFeedMessage("B still owns after A cleanup").feedId,
+    "B-2",
+    "older owner cleanup must not steal feed-sequence ownership from newer owner",
+  );
+
+  releaseB();
+  assert.equal(
+    createOptimisticUserFeedMessage("default restored").feedId,
+    "feed-1",
+    "releasing last owner must restore default feed sequence",
+  );
+}
+
+{
+  resetLiveTranscriptFeedSequence();
   let visible = applyOutputBlock([], toolBlock({ id: undefined, text: '{"category":"a"}' }), true);
   visible = applyOutputBlock(visible, toolBlock({ id: undefined, text: '{"category":"b"}' }), true);
 
@@ -316,19 +370,22 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
 }
 
 {
+  // P2-3: Changed from part_kind "tool_call" to "tool_result" because P1-5
+  // isTranscriptBearingIdentity excludes tool_call from the visible feed.
+  // tool_result IS transcript-bearing, so the same-ID-overwrite test remains valid.
   resetLiveTranscriptFeedSequence();
   let visible = applyOutputBlock(
     [],
     {
       kind: "tool",
-      phase: "running",
+      phase: "end",
       role: "assistant",
       detail: '{"command":"echo a"}',
       live_identity: {
         message_id: "assistant-1",
-        part_key: toolCallPartKey("tool-call-0"),
-        part_kind: "tool_call",
-        phase: "snapshot",
+        part_key: `tool_result/tool-call-0`,
+        part_kind: "tool_result",
+        phase: "end",
         legacy_block_id: "tool-call-0",
       },
     },
@@ -338,14 +395,14 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
     visible,
     {
       kind: "tool",
-      phase: "running",
+      phase: "end",
       role: "assistant",
       detail: '{"command":"echo b"}',
       live_identity: {
         message_id: "assistant-2",
-        part_key: toolCallPartKey("tool-call-0"),
-        part_kind: "tool_call",
-        phase: "snapshot",
+        part_key: `tool_result/tool-call-0`,
+        part_kind: "tool_result",
+        phase: "end",
         legacy_block_id: "tool-call-0",
       },
     },
@@ -363,7 +420,7 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
 }
 
 {
-  const contractText = normalizeBlockText(
+  const contractText = primaryDisplayText(
     toolBlock({
       id: undefined,
       text: '{"category":"raw-json"}',
@@ -392,7 +449,7 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
 }
 
 {
-  const contractFieldText = normalizeBlockText({
+  const contractFieldText = primaryDisplayText({
     kind: "tool",
     phase: "full",
     role: "assistant",
@@ -413,7 +470,7 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
 }
 
 {
-  const compatibilityText = normalizeBlockText({
+  const compatibilityText = primaryDisplayText({
     kind: "tool",
     phase: "full",
     role: "assistant",
@@ -680,7 +737,7 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
 
   assert.equal(liveBlocks.length, 2, "different compatibility tool ids must retain distinct live cache slots");
   assert.deepEqual(
-    liveBlocks.map((block) => `${block.id}:${normalizeBlockText(block)}`),
+    liveBlocks.map((block) => `${block.id}:${primaryDisplayText(block)}`),
     [
       'compat-tool-a:{"command":"echo a"}',
       'compat-tool-b:{"command":"echo b"}',
@@ -871,35 +928,33 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
   );
 }
 
+// P1-5: tool_call blocks are excluded from the transcript feed.
+// The dedup algorithm is tested using tool_result identity blocks,
+// which are transcript-bearing and follow the same upsert path.
 {
   resetLiveTranscriptFeedSequence();
   let visible = applyOutputBlock([], toolBlock({ id: undefined, phase: "start", text: "" }), true);
   visible = applyOutputBlock(
     visible,
-    runningToolBlockFor(
-      "tool-call-1",
-      fixture.tool_progress_exclusion.tool_running.tool_detail,
-      { title: fixture.tool_progress_exclusion.tool_running.tool_name },
-    ),
+    toolBlockFor("assistant-1", "tool-call-1", fixture.tool_progress_exclusion.tool_running.tool_detail, {
+      title: fixture.tool_progress_exclusion.tool_running.tool_name,
+    }),
     true,
   );
   visible = applyOutputBlock(
     visible,
-    runningToolBlockFor(
-      "tool-call-1",
-      fixture.tool_progress_exclusion.tool_running.tool_detail,
-      { title: fixture.tool_progress_exclusion.tool_running.tool_name },
-    ),
+    toolBlockFor("assistant-1", "tool-call-1", fixture.tool_progress_exclusion.tool_running.tool_detail, {
+      title: fixture.tool_progress_exclusion.tool_running.tool_name,
+    }),
     true,
   );
 
-  // Phase W2: running tool_call dedups against itself.
   // The preceding start block (phase="start", empty text) does not
   // produce a visible entry — boundary signals are not content.
   assert.equal(
     visible.length,
     1,
-    "tool running detail must dedup into single live TOOL block",
+    "tool result detail must dedup into single live TOOL block per upsertFeedMessage",
   );
   assert.equal(visible[0]?.kind, "tool");
   assert.equal(visible[0]?.tool_call_id, "tool-call-1");
@@ -928,8 +983,8 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
       detail: "{\"command\":\"curl\"}",
       live_identity: {
         message_id: "assistant-1",
-        part_key: toolCallPartKey("tool-call-9"),
-        part_kind: "tool_call",
+        part_key: `tool_result/tool-call-9`,
+        part_kind: "tool_result",
         phase: "snapshot",
         legacy_block_id: "tool-call-9",
       },
@@ -944,8 +999,8 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
       detail: "{\"command\":\"curl -s https://api.semanticscholar.org\"}",
       live_identity: {
         message_id: "assistant-1",
-        part_key: toolCallPartKey("tool-call-9"),
-        part_kind: "tool_call",
+        part_key: `tool_result/tool-call-9`,
+        part_kind: "tool_result",
         phase: "snapshot",
         legacy_block_id: "tool-call-9",
       },
@@ -954,7 +1009,7 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
 
   assert.equal(liveBlocks.length, 1, "running tool snapshots should retain one live slot");
   assert.equal(
-    normalizeBlockText(liveBlocks[0] as OutputBlock),
+    primaryDisplayText(liveBlocks[0] as OutputBlock),
     "{\"command\":\"curl -s https://api.semanticscholar.org\"}",
     "later richer tool snapshot must replace the earlier shorter one",
   );
@@ -1059,29 +1114,27 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
   );
 }
 
+// P1-5 adapted: tool_call is excluded from live cache. Test dedup
+// algorithm with tool_result identity (transcript-bearing).
 {
   let liveBlocks: OutputBlock[] = [];
   liveBlocks = appendLiveBlock(
     liveBlocks,
-    runningToolBlockFor(
-      "tool-call-1",
-      fixture.tool_progress_exclusion.tool_running.tool_detail,
-      { title: fixture.tool_progress_exclusion.tool_running.tool_name },
-    ),
+    toolBlockFor("assistant-1", "tool-call-1", fixture.tool_progress_exclusion.tool_running.tool_detail, {
+      title: fixture.tool_progress_exclusion.tool_running.tool_name,
+    }),
   );
   liveBlocks = appendLiveBlock(
     liveBlocks,
-    runningToolBlockFor(
-      "tool-call-1",
-      fixture.tool_progress_exclusion.tool_running.tool_detail,
-      { title: fixture.tool_progress_exclusion.tool_running.tool_name },
-    ),
+    toolBlockFor("assistant-1", "tool-call-1", fixture.tool_progress_exclusion.tool_running.tool_detail, {
+      title: fixture.tool_progress_exclusion.tool_running.tool_name,
+    }),
   );
 
   assert.equal(
     liveBlocks.length,
     1,
-    "tool running detail should retain one live transcript cache slot per tool call",
+    "tool result detail should retain one live transcript cache slot per tool call",
   );
   assert.equal(liveBlocks[0]?.tool_call_id, "tool-call-1");
   assert.equal(liveBlocks[0]?.text, fixture.tool_progress_exclusion.tool_running.tool_detail);
@@ -1119,11 +1172,11 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
   let liveBlocks: OutputBlock[] = [];
   liveBlocks = appendLiveBlock(
     liveBlocks,
-    runningToolBlockFor("tool-call-1", '{"category":"literature-research/skills"}'),
+    toolBlockFor("assistant-1", "tool-call-1", '{"category":"literature-research/skills"}'),
   );
   liveBlocks = appendLiveBlock(
     liveBlocks,
-    runningToolBlockFor("tool-call-2", '{"category":"scientific-skills"}'),
+    toolBlockFor("assistant-1", "tool-call-2", '{"category":"scientific-skills"}'),
   );
 
   const rebuilt = mergeHistoryWithLiveBlocks(history, liveBlocks, true);
@@ -1132,7 +1185,7 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
   assert.equal(
     toolMessages.length,
     2,
-    "rebuilt feed should preserve distinct running tool blocks without collapsing them together",
+    "P1-5: rebuilt feed should preserve distinct tool_result blocks without collapsing",
   );
   assert.deepEqual(
     toolMessages.map((message) => message.tool_call_id),
@@ -1323,7 +1376,7 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
       text: "branch reasoning",
       live_identity: {
         message_id: "assistant-1",
-        part_key: assistantReasoningPartKey("branch-a"),
+        part_key: `reasoning/branch-a`,
         part_kind: "assistant_reasoning",
         phase: "snapshot",
         legacy_block_id: "assistant-1",
@@ -1339,7 +1392,7 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
   );
   assert.equal(
     pruned[0]?.live_identity?.part_key,
-    assistantReasoningPartKey("branch-a"),
+    `reasoning/branch-a`,
     "history output_block.live_identity must not over-prune non-owned reasoning branches",
   );
 }
@@ -1681,7 +1734,7 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
 
   const afterBranch = appendLiveBlock(
     afterMain,
-    reasoningWithPartKey("msg-1", assistantReasoningPartKey("branch-a"), "branch analysis", "full"),
+    reasoningWithPartKey("msg-1", `reasoning/branch-a`, "branch analysis", "full"),
   );
   assert.equal(
     afterBranch.length,
@@ -1738,7 +1791,7 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
 
   messages = applyOutputBlock(
     messages,
-    reasoningWithPartKey("msg-1", assistantReasoningPartKey("branch-a"), "branch analysis", "full"),
+    reasoningWithPartKey("msg-1", `reasoning/branch-a`, "branch analysis", "full"),
     true,
   );
   assert.equal(
@@ -1777,7 +1830,7 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
 
   const liveBlocks: OutputBlock[] = [
     reasoningWithPartKey("msg-1", ASSISTANT_REASONING_MAIN_PART_KEY, "main thinking", "full"),
-    reasoningWithPartKey("msg-1", assistantReasoningPartKey("branch-a"), "branch analysis", "full"),
+    reasoningWithPartKey("msg-1", `reasoning/branch-a`, "branch analysis", "full"),
   ];
 
   // Full history covers both reasoning parts.
@@ -1952,7 +2005,7 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
       title: "WebFetch",
       live_identity: {
         message_id: "msg-order-1",
-        part_key: toolCallPartKey("tool-order-1"),
+        part_key: `tool_call/tool-order-1`,
         part_kind: "tool_call",
         phase: "append",
         legacy_block_id: "tool-order-1",
@@ -1977,11 +2030,11 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
     messages.map((message) => `${message.kind}:${message.phase}:${message.text}`),
     [
       "reasoning:full:先检索作者身份",
-      'tool:running:{"url":"https://api.semanticscholar.org/..."}',
       "tool:end:api.semanticscholar.org · application/json",
       "message:full:检索到 49 篇论文。",
     ],
-    "live transcript must preserve cross-kind arrival order instead of regrouping by block type",
+    "P1-5: tool_call blocks excluded from transcript feed; live transcript "
+    + "must preserve cross-kind arrival order of remaining blocks",
   );
 }
 
@@ -2030,7 +2083,9 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
 
 // ── Phase W4: live/history/reconcile contract tests ───────────────────
 
-// W4-T1: two different tool_call_id running blocks in live cache must
+// P2-3 adapted: W4-T1 uses tool_result (transcript-bearing) identity so
+// the live cache correctly retains distinct tool blocks.
+// W4-T1: two different tool_result_id blocks in live cache must
 // not overwrite each other.
 {
   function runningToolBlock(toolId: string, text?: string): OutputBlock {
@@ -2041,8 +2096,8 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
       text: text ?? `detail-${toolId}`,
       live_identity: {
         message_id: "msg-1",
-        part_key: `tool_call/${toolId}`,
-        part_kind: "tool_call" as const,
+        part_key: `tool_result/${toolId}`,
+        part_kind: "tool_result" as const,
         phase: "snapshot" as const,
         legacy_block_id: toolId,
       },
@@ -2063,10 +2118,26 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
   assert.equal(afterUpdate[1]?.text, "detail-b");
 }
 
-// W4-T2: tool_call -> tool_result transition must use separate slots
-// in the visible transcript feed. Running and result for the same
-// call_id must not overwrite each other.
+// P1-5 adapted W4-T2: tool_call blocks are excluded from the transcript
+// feed. Only tool_result blocks (resultToolBlock) appear. Running tool
+// state belongs to the execution panel, not the transcript.
 {
+  function runningToolBlockW4(toolId: string, text?: string): OutputBlock {
+    return {
+      kind: "tool",
+      phase: "full",
+      role: "assistant",
+      text: text ?? `detail-${toolId}`,
+      live_identity: {
+        message_id: "msg-1",
+        part_key: `tool_call/${toolId}`,
+        part_kind: "tool_call" as const,
+        phase: "snapshot" as const,
+        legacy_block_id: toolId,
+      },
+    };
+  }
+
   function resultToolBlock(toolId: string, text?: string): OutputBlock {
     return {
       kind: "tool",
@@ -2084,19 +2155,18 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
   }
 
   let messages: ReturnType<typeof applyOutputBlock> = [];
-  messages = applyOutputBlock(messages, runningToolBlock("call-1", "running-detail"), true);
-  assert.equal(messages.length, 1, "running tool must create visible entry");
-  assert.equal(messages[0]?.text, "running-detail");
+  // P1-5: tool_call is excluded from the transcript feed.
+  messages = applyOutputBlock(messages, runningToolBlockW4("call-1", "running-detail"), true);
+  assert.equal(messages.length, 0, "P1-5: tool_call must NOT create visible transcript entry");
 
-  // Result block must create a SEPARATE entry, not overwrite the running one.
+  // Result block creates the first visible entry.
   messages = applyOutputBlock(messages, resultToolBlock("call-1", "result-text"), true);
   assert.equal(
     messages.length,
-    2,
-    "running and result must be separate visible entries",
+    1,
+    "P1-5: tool_result must create visible entry; tool_call is excluded",
   );
-  assert.equal(messages[0]?.text, "running-detail");
-  assert.equal(messages[1]?.text, "result-text");
+  assert.equal(messages[0]?.text, "result-text");
 }
 
 // W4-T3: history rebuild for tool blocks must preserve distinct
@@ -2134,8 +2204,8 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
       text: "live-running-b",
       live_identity: {
         message_id: "msg-1",
-        part_key: "tool_call/call-b",
-        part_kind: "tool_call" as const,
+        part_key: `tool_result/call-b`,
+        part_kind: "tool_result" as const,
         phase: "snapshot" as const,
         legacy_block_id: "call-b",
       },
@@ -2234,4 +2304,496 @@ function runningToolBlockFor(toolId: string, text: string, overrides: Partial<Ou
     "history covering call-a must not prune call-b's live block",
   );
   assert.equal(pruned[0]?.text, "running-b");
+}
+
+// ── P2-3: Fixture tests for centralized block display contracts ──────
+
+// P2-3-Fixture-1: assistant text with trailing JSON that is NOT an envelope
+// (e.g. in markdown code block). sanitizeAssistantDisplayText must preserve it.
+{
+  const text = "这是回复文本\n```json\n{\"key\":\"value\"}\n```";
+  const cleaned = sanitizeAssistantDisplayText(text, "message", "assistant");
+  assert.equal(
+    cleaned,
+    text,
+    "assistant text with markdown-fenced JSON must not be stripped (not an envelope)",
+  );
+}
+
+// P2-3-Fixture-2: assistant text ending with a real compatibility structured
+// envelope. sanitizeAssistantDisplayText must strip the trailing JSON.
+{
+  const prefix = "这是回复文本";
+  // keys chosen from ENVELOPE_GUESS_KEYS to trigger isCompatibilityStructuredEnvelope
+  const envelope = JSON.stringify({
+    kind: "choices",
+    choices: [{ text: "candidate" }],
+    usage: { input: 100, output: 50 },
+  }, null, 2);
+  const text = `${prefix}\n\n${envelope}`;
+  const cleaned = sanitizeAssistantDisplayText(text, "message", "assistant");
+  assert.equal(
+    cleaned,
+    prefix,
+    "assistant text with trailing structured envelope must be stripped of trailing JSON",
+  );
+  assert.ok(
+    !cleaned.includes("choices"),
+    "cleaned text must not contain envelope keys",
+  );
+}
+
+// P2-3-Fixture-3: tool block with new display contract (display.summary present).
+// primaryDisplayText must prefer display.summary over old legacy fields.
+{
+  const block: OutputBlock = {
+    kind: "tool",
+    phase: "end",
+    role: "assistant",
+    display: {
+      summary: "Fetched 3 papers from Semantic Scholar",
+      header: "WebFetch",
+      fields: [{ label: "URL", value: "https://api.semanticscholar.org" }],
+    },
+    detail: '{"command":"curl -s https://api.semanticscholar.org"}',
+    text: '{"command":"curl"}',
+  };
+  const text = primaryDisplayText(block);
+  assert.equal(
+    text,
+    "Fetched 3 papers from Semantic Scholar",
+    "tool with display.summary must prefer it over legacy detail/text",
+  );
+}
+
+// P2-3-Fixture-4: tool block with old detail-only payload (no display contract).
+// primaryDisplayText must fall back to detail.
+{
+  const block: OutputBlock = {
+    kind: "tool",
+    phase: "end",
+    role: "assistant",
+    detail: '{"command":"curl -s https://api.semanticscholar.org"}',
+  };
+  const text = primaryDisplayText(block);
+  assert.equal(
+    text,
+    '{"command":"curl -s https://api.semanticscholar.org"}',
+    "tool without display contract must fall back to detail field",
+  );
+}
+
+// P2-3-Fixture-5: scheduler_stage with focus, last_event, and text all present.
+// stageSummaryText must prefer focus over lastEventLabel over raw text.
+{
+  const block = {
+    kind: "scheduler_stage" as const,
+    focus: "Researching protein structures",
+    last_event: "scheduler.stage.waiting",
+    text: "Stage is waiting for tool result",
+    status: "running",
+  };
+  const summary = stageSummaryText(block as SchedulerStageOutputBlock);
+  assert.equal(
+    summary,
+    "Researching protein structures",
+    "stageSummaryText must prefer focus field over last_event and raw text",
+  );
+}
+
+// P2-3-Fixture-6: status block with title, text, and summary all present.
+// primaryDisplayText must use STATUS_CHAIN priority.
+{
+  const block: OutputBlock = {
+    kind: "status",
+    phase: "full",
+    title: "Status Title",
+    text: "Status text content",
+    summary: "Status summary",
+    tone: "info",
+  };
+  const text = primaryDisplayText(block);
+  assert.equal(
+    text,
+    "Status text content",
+    "status block must prefer text over title/summary per STATUS_CHAIN",
+  );
+}
+
+// P2-3-Fixture-7: reasoning text must NOT go through assistant cleaning,
+// even when role="assistant". The kind parameter is the primary boundary
+// guard — only kind="message" triggers envelope stripping.
+{
+  const prefix = "推理过程分析";
+  const envelope = JSON.stringify({
+    choices: [{ kind: "candidate", text: "output" }],
+    usage: { input: 50, output: 20 },
+  });
+  const text = `${prefix}\n\n${envelope}`;
+
+  // reasoning kind with role="assistant" — the real scenario.
+  // kind guard must prevent stripping.
+  const cleanedReasoning = sanitizeAssistantDisplayText(text, "reasoning", "assistant");
+  assert.equal(
+    cleanedReasoning,
+    text,
+    "reasoning text with trailing JSON must NOT be stripped even when role=assistant — kind guard must block",
+  );
+
+  // message kind with role="assistant" — envelope stripping IS expected.
+  const cleanedMessage = sanitizeAssistantDisplayText(text, "message", "assistant");
+  assert.equal(
+    cleanedMessage,
+    prefix,
+    "message kind with role=assistant must still strip trailing envelope (regression check)",
+  );
+
+  // non-assistant role as additional guard.
+  const cleanedSystem = sanitizeAssistantDisplayText(text, "message", "system");
+  assert.equal(
+    cleanedSystem,
+    text,
+    "message kind with non-assistant role must NOT strip (role guard defense-in-depth)",
+  );
+}
+
+// P2-3-Fixture-8: multimodal_info block must NOT go through tool/status display strategies.
+// primaryDisplayText must fall through to the default DISPLAY_FIRST_CHAIN.
+// Verify that the text is NOT empty (proves it hits the default chain),
+// and that DISPLAY_FIRST_CHAIN order is respected (summary before body).
+{
+  const block: OutputBlock = {
+    kind: "multimodal_info",
+    phase: "full",
+    text: "Image analysis: detected protein structure diagram",
+    summary: "Multimodal summary override",
+  };
+  const text = primaryDisplayText(block);
+  // DISPLAY_FIRST_CHAIN: displaySummary → blockSummary → displayFields → ...
+  // Since block.summary exists, it wins over rawText.
+  assert.equal(
+    text,
+    "Multimodal summary override",
+    "multimodal_info must use default DISPLAY_FIRST_CHAIN (summary before text)",
+  );
+
+  const blockNoSummary: OutputBlock = {
+    kind: "multimodal_info",
+    phase: "full",
+    text: "Image analysis: detected protein structure diagram",
+  };
+  const textNoSummary = primaryDisplayText(blockNoSummary);
+  assert.equal(
+    textNoSummary,
+    "Image analysis: detected protein structure diagram",
+    "multimodal_info without display/summary must fall through to rawText via DISPLAY_FIRST_CHAIN",
+  );
+}
+
+// ── P2-3: Identity contract tests — tool_call vs tool_result routing ──
+
+// P2-3-Contract-1: REAL tool_call blocks must be excluded from the transcript
+// feed per P1-5 isTranscriptBearingIdentity contract.
+{
+  resetLiveTranscriptFeedSequence();
+  const messages = applyOutputBlock(
+    [],
+    runningToolBlockFor("call-1", "running-detail"),
+    true,
+  );
+  assert.equal(
+    messages.length,
+    0,
+    "P1-5: tool_call identity block must NOT enter visible transcript feed",
+  );
+}
+
+// P2-3-Contract-2: REAL tool_call blocks must be excluded from the live
+// cache — appendLiveBlock calls shouldQueueLiveTranscriptBlock which
+// filters non_transcript_live routes.
+{
+  let live: OutputBlock[] = [];
+  live = appendLiveBlock(
+    live,
+    runningToolBlockFor("call-1", "running-detail"),
+  );
+  assert.equal(
+    live.length,
+    0,
+    "P1-5: tool_call must NOT enter live transcript cache",
+  );
+}
+
+// P2-3-Contract-3: REAL tool_result blocks must enter the transcript feed.
+{
+  resetLiveTranscriptFeedSequence();
+  const messages = applyOutputBlock(
+    [],
+    {
+      kind: "tool",
+      phase: "end",
+      role: "assistant",
+      text: "result-text",
+      live_identity: {
+        message_id: "msg-1",
+        part_key: `tool_result/call-1`,
+        part_kind: "tool_result",
+        phase: "end",
+        legacy_block_id: "call-1",
+      },
+    },
+    true,
+  );
+  assert.equal(
+    messages.length,
+    1,
+    "P1-5: tool_result identity block must enter visible transcript feed",
+  );
+  assert.equal(messages[0]?.text, "result-text");
+}
+
+// P2-3-Contract-4: REAL tool_result blocks must enter the live cache.
+{
+  let live: OutputBlock[] = [];
+  live = appendLiveBlock(
+    live,
+    {
+      kind: "tool",
+      phase: "full",
+      role: "assistant",
+      text: "result-text",
+      live_identity: {
+        message_id: "msg-1",
+        part_key: `tool_result/call-1`,
+        part_kind: "tool_result",
+        phase: "snapshot",
+        legacy_block_id: "call-1",
+      },
+    },
+  );
+  assert.equal(
+    live.length,
+    1,
+    "P1-5: tool_result identity block must enter live transcript cache",
+  );
+  assert.equal(live[0]?.text, "result-text");
+}
+
+// P2-3-Contract-5: tool_call and tool_result with the SAME call_id must
+// occupy different slots. tool_call goes to execution panel (non-transcript),
+// tool_result goes to transcript. In pruneLiveBlocksCoveredByHistory,
+// non-transcript blocks are ALWAYS kept (route !== "transcript" → keep).
+{
+  const liveBlocks: OutputBlock[] = [
+    {
+      kind: "tool",
+      phase: "full",
+      text: "running-b",
+      live_identity: {
+        message_id: "msg-1",
+        part_key: `tool_call/call-b`,
+        part_kind: "tool_call" as const,
+        phase: "snapshot" as const,
+        legacy_block_id: "call-b",
+      },
+    },
+    {
+      kind: "tool",
+      phase: "done",
+      text: "result-b",
+      live_identity: {
+        message_id: "msg-1",
+        part_key: `tool_result/call-b`,
+        part_kind: "tool_result" as const,
+        phase: "end" as const,
+        legacy_block_id: "call-b",
+      },
+    },
+  ];
+
+  const history: MessageRecord[] = [{
+    id: "msg-1",
+    role: "assistant",
+    parts: [{
+      id: "tp-1",
+      type: "tool_result",
+      output_block: {
+        kind: "tool",
+        phase: "done",
+        text: "result-b",
+        live_identity: {
+          message_id: "msg-1",
+          part_key: `tool_result/call-b`,
+          part_kind: "tool_result" as const,
+          phase: "end" as const,
+          legacy_block_id: "call-b",
+        },
+      },
+    }],
+  }];
+
+  // pruneLiveBlocksCoveredByHistory keeps non-transcript blocks (tool_call)
+  // but removes transcript blocks covered by history (tool_result).
+  const pruned = pruneLiveBlocksCoveredByHistory(history, liveBlocks);
+  assert.equal(
+    pruned.length,
+    1,
+    "P1-5: tool_call in live cache must survive prune even when tool_result for same call_id is covered by history",
+  );
+  assert.equal(pruned[0]?.text, "running-b");
+  assert.equal(pruned[0]?.live_identity?.part_kind, "tool_call");
+}
+
+// ── P2-4: Unified observation event trace tests ────────────────────────
+
+function observationCollector(): { events: ObservationEvent[]; sink: ObservationSink } {
+  const events: ObservationEvent[] = [];
+  return { events, sink: (event) => events.push(event) };
+}
+
+// P2-4-T1: Message full block traverses all 5 pipeline stages in order.
+{
+  const collector = observationCollector();
+  registerObservationSink(collector.sink);
+
+  const block: OutputBlock = {
+    kind: "message",
+    phase: "full",
+    role: "assistant",
+    text: "Hello world",
+    live_identity: {
+      message_id: "msg-1",
+      part_key: ASSISTANT_TEXT_MAIN_PART_KEY,
+      part_kind: "assistant_text",
+      phase: "snapshot",
+    },
+  };
+
+  applyOutputBlock([], block, true);
+  registerObservationSink(null);
+
+  const kinds = collector.events.map((e) => e.kind);
+  assert.ok(
+    kinds.includes("block_received"),
+    "P2-4-T1: must emit block_received",
+  );
+  assert.ok(
+    kinds.includes("block_normalized"),
+    "P2-4-T1: must emit block_normalized",
+  );
+  assert.ok(
+    kinds.includes("block_committed"),
+    "P2-4-T1: must emit block_committed for message full block",
+  );
+  // Verify ordering: received before normalized before committed
+  const recvIdx = kinds.indexOf("block_received");
+  const normIdx = kinds.indexOf("block_normalized");
+  const commitIdx = kinds.indexOf("block_committed");
+  assert.ok(
+    recvIdx < normIdx && normIdx < commitIdx,
+    "P2-4-T1: event order must be received → normalized → committed",
+  );
+}
+
+// P2-4-T2: Compatibility route triggers legacy_fallback_used with legacyPath="route".
+{
+  const collector = observationCollector();
+  registerObservationSink(collector.sink);
+
+  const compatibilityBlock: OutputBlock = {
+    kind: "message",
+    phase: "full",
+    role: "assistant",
+    text: "No identity",
+    // No live_identity — routes to compatibility
+  };
+
+  applyOutputBlock([], compatibilityBlock, true);
+  registerObservationSink(null);
+
+  const routeFallback = collector.events.find(
+    (e) => e.kind === "legacy_fallback_used" && e.legacyPath === "route",
+  );
+  assert.ok(
+    routeFallback,
+    "P2-4-T2: compatibility-routed block must emit legacy_fallback_used with legacyPath=route",
+  );
+}
+
+// P2-4-T3: history_rebuilt emits with correct historyMessageCount.
+{
+  const collector = observationCollector();
+  registerObservationSink(collector.sink);
+
+  const history: MessageRecord[] = [
+    { id: "hist-1", role: "assistant", parts: [] },
+    { id: "hist-2", role: "user", parts: [] },
+  ];
+
+  buildFeedFromHistory(history, true);
+  registerObservationSink(null);
+
+  const rebuilt = collector.events.find((e) => e.kind === "history_rebuilt");
+  assert.ok(rebuilt, "P2-4-T3: buildFeedFromHistory must emit history_rebuilt");
+  assert.equal(
+    rebuilt?.historyMessageCount,
+    2,
+    "P2-4-T3: historyMessageCount must match history.length",
+  );
+}
+
+// P2-4-T4: Compatibility delta triggers both route and streaming_delta legacy events.
+{
+  const collector = observationCollector();
+  registerObservationSink(collector.sink);
+
+  const compatibilityDelta: OutputBlock = {
+    kind: "message",
+    phase: "delta",
+    role: "assistant",
+    text: "streaming",
+    id: "old-block-1",
+    // No live_identity
+  };
+
+  applyOutputBlock([], compatibilityDelta, true);
+  registerObservationSink(null);
+
+  const fallbackEvents = collector.events.filter(
+    (e) => e.kind === "legacy_fallback_used",
+  );
+  const hasRoute = fallbackEvents.some((e) => e.legacyPath === "route");
+  const hasStreamingDelta = fallbackEvents.some(
+    (e) => e.legacyPath === "streaming_delta",
+  );
+  assert.ok(
+    hasRoute,
+    "P2-4-T4: compatibility delta must emit legacy fallback for route",
+  );
+  assert.ok(
+    hasStreamingDelta,
+    "P2-4-T4: compatibility delta must emit legacy fallback for streaming_delta",
+  );
+}
+
+// P2-4-T5: No sink registered — pipeline functions correctly without observation.
+{
+  const block: OutputBlock = {
+    kind: "message",
+    phase: "full",
+    role: "assistant",
+    text: "Silent",
+    live_identity: {
+      message_id: "msg-s",
+      part_key: ASSISTANT_TEXT_MAIN_PART_KEY,
+      part_kind: "assistant_text",
+      phase: "snapshot",
+    },
+  };
+
+  const messages = applyOutputBlock([], block, true);
+  assert.ok(
+    messages.length > 0,
+    "P2-4-T5: pipeline must produce correct output when no observation sink is registered",
+  );
 }

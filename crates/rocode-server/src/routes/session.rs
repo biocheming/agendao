@@ -3,6 +3,7 @@ mod cancel;
 mod effective_policy;
 mod events;
 mod executions;
+mod local_api;
 mod messages;
 pub(crate) mod prompt;
 mod recovery;
@@ -30,6 +31,10 @@ pub(crate) use self::scheduler::{
     PromptRequestSchedulerProfileSource,
 };
 pub(crate) use self::session_crud::resolved_session_directory;
+pub use self::local_api::{
+    local_create_session, local_get_session, local_list_messages, local_list_sessions,
+    local_prompt, local_register_provider,
+};
 
 // ─── Re-exports for external crates (pub) ──────────────────────────────────
 pub use self::scheduler::{
@@ -39,6 +44,7 @@ pub use self::scheduler::{
 
 // ─── Imports used only by session_routes() ─────────────────────────────────
 use self::cancel::{abort_prompt, abort_scheduler_stage, abort_session};
+use self::session_crud::{recheck_blocked_session, wake_sleeping_session};
 use self::events::{get_session_event_stages, get_session_events};
 use self::executions::{cancel_session_execution, get_session_executions, list_all_executions};
 use self::messages::{add_message_part, delete_message, delete_part, list_messages, send_message};
@@ -122,6 +128,8 @@ pub(crate) fn session_routes() -> Router<Arc<ServerState>> {
         .route("/{id}/prompt", post(session_prompt))
         .route("/{id}/prompt/abort", post(abort_prompt))
         .route("/{id}/prompt_async", post(prompt_async))
+        .route("/{id}/recheck", post(recheck_blocked_session))
+        .route("/{id}/wake", post(wake_sleeping_session))
         .route("/{id}/diff", get(get_session_diff))
         .route("/{id}/events", get(get_session_events))
         .route("/{id}/events/stages", get(get_session_event_stages))

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{mpsc, RwLock};
 use std::thread;
 
@@ -16,20 +17,107 @@ macro_rules! sync_api_methods {
     };
 }
 
+fn local_workspace_root() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
 struct RuntimeApiClient {
     runtime: tokio::runtime::Runtime,
     client: rocode_client::AsyncApiClient,
+    /// Optional transport selected via TransportSelector (Unix/HTTP fallback).
+    transport: Option<rocode_client::FrontendTransport>,
+    /// In-process server runtime for `--local`. This is the authoritative
+    /// local execution path because it reuses the server's prompt/session
+    /// ingress pipeline instead of the older text-only DirectTransport.
+    local_server: Option<std::sync::Arc<rocode_server::ServerState>>,
 }
 
 impl RuntimeApiClient {
-    fn new_with_password(base_url: String, server_password: Option<String>) -> Self {
-        let runtime = tokio::runtime::Builder::new_current_thread()
+    fn build_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
             .enable_all()
             .build()
-            .expect("failed to start TUI API gateway runtime");
+            .expect("failed to start TUI API gateway runtime")
+    }
+
+    fn get_messages_after(
+        &self,
+        session_id: &str,
+        after: Option<&str>,
+        limit: Option<usize>,
+    ) -> anyhow::Result<Vec<MessageInfo>> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            let session_id = session_id.to_string();
+            let after = after.map(str::to_string);
+            return self.block_on(async move {
+                rocode_server::local_list_messages(state, &session_id, after, limit).await
+            });
+        }
+        self.block_on(self.client.get_messages_after(session_id, after, limit))
+    }
+
+    fn get_messages(&self, session_id: &str) -> anyhow::Result<Vec<MessageInfo>> {
+        self.get_messages_after(session_id, None, None)
+    }
+
+    fn new_local_for_workspace(workspace_root: PathBuf) -> Self {
+        let runtime = Self::build_runtime();
+
+        let local_server = Some(std::sync::Arc::new(
+            runtime
+                .block_on(async {
+                    rocode_server::ServerState::new_with_storage_for_url_in_workspace(
+                        "http://127.0.0.1:0".to_string(),
+                        workspace_root,
+                    )
+                    .await
+                })
+                .expect("failed to initialize in-process server state for --local"),
+        ));
+
+        let client = rocode_client::AsyncApiClient::new_with_password(
+            "http://127.0.0.1:0".to_string(),
+            None,
+        );
+
+        Self {
+            runtime,
+            client,
+            transport: None,
+            local_server,
+        }
+    }
+
+    /// Constructor for local (in-process server) mode — no server process, no IPC.
+    fn new_local() -> Self {
+        Self::new_local_for_workspace(local_workspace_root())
+    }
+
+    fn new_with_password(
+        base_url: String,
+        server_password: Option<String>,
+        unix_socket_path: Option<String>,
+    ) -> Self {
+        let runtime = Self::build_runtime();
+
+        // Use TransportSelector for automatic transport selection
+        // (Unix Socket first with connectivity test, HTTP fallback).
+        let transport = unix_socket_path.and_then(|path| {
+            let selector = rocode_client::transport::TransportSelector::new(
+                Some(path),
+                base_url.clone(),
+                server_password.clone(),
+            );
+            runtime.block_on(async { selector.select().await.ok() })
+        });
+
         Self {
             runtime,
             client: rocode_client::AsyncApiClient::new_with_password(base_url, server_password),
+            transport,
+            local_server: None,
         }
     }
 
@@ -45,14 +133,128 @@ impl RuntimeApiClient {
         scheduler_profile: Option<String>,
         directory: Option<String>,
     ) -> anyhow::Result<SessionInfo> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            return self.block_on(async move {
+                rocode_server::local_create_session(
+                    state,
+                    CreateSessionRequest {
+                        scheduler_profile,
+                        directory,
+                        project_id: None,
+                        title: None,
+                    },
+                )
+                .await
+            });
+        }
         self.block_on(self.client.create_session(scheduler_profile, directory))
     }
 
     fn get_session(&self, session_id: &str) -> anyhow::Result<SessionInfo> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            let session_id = session_id.to_string();
+            return self.block_on(async move {
+                rocode_server::local_get_session(state, &session_id).await
+            });
+        }
         self.block_on(self.client.get_session(session_id))
     }
 
+    fn send_prompt(
+        &self,
+        session_id: &str,
+        content: String,
+        parts: Option<Vec<PromptPart>>,
+        agent: Option<String>,
+        scheduler_profile: Option<String>,
+        model: Option<String>,
+        variant: Option<String>,
+        ingress_source: Option<String>,
+        idempotency_key: Option<String>,
+        source_origin: Option<rocode_types::MessageSourceOrigin>,
+        source_surface: Option<rocode_types::MessageSourceSurface>,
+    ) -> anyhow::Result<PromptResponse> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            let session_id = session_id.to_string();
+            return self.block_on(async move {
+                rocode_server::local_prompt(
+                    state,
+                    &session_id,
+                    PromptRequest {
+                        message: (!content.trim().is_empty()).then_some(content),
+                        parts, idempotency_key,
+                        ingress_source: ingress_source.or(Some("tui".to_string())),
+                        source_origin,
+                        source_surface,
+                        agent, scheduler_profile, model, variant,
+                        command: None, arguments: None,
+                    },
+                )
+                .await
+            });
+        }
+        self.block_on(self.client.send_prompt(
+            session_id, content, parts, agent, scheduler_profile,
+            model, variant, ingress_source, idempotency_key,
+            source_origin, source_surface,
+        ))
+    }
+
+    fn send_command_prompt(
+        &self,
+        session_id: &str,
+        command: String,
+        arguments: Option<String>,
+        model: Option<String>,
+        variant: Option<String>,
+        ingress_source: Option<String>,
+        idempotency_key: Option<String>,
+        source_origin: Option<rocode_types::MessageSourceOrigin>,
+        source_surface: Option<rocode_types::MessageSourceSurface>,
+    ) -> anyhow::Result<PromptResponse> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            let session_id = session_id.to_string();
+            return self.block_on(async move {
+                rocode_server::local_prompt(
+                    state,
+                    &session_id,
+                    PromptRequest {
+                        message: None, parts: None,
+                        idempotency_key,
+                        ingress_source: ingress_source.or(Some("tui".to_string())),
+                        source_origin,
+                        source_surface,
+                        agent: None, scheduler_profile: None,
+                        model, variant,
+                        command: Some(command), arguments,
+                    },
+                )
+                .await
+            });
+        }
+        self.block_on(self.client.send_command_prompt(
+            session_id, command, arguments, model, variant, ingress_source, idempotency_key,
+            source_origin, source_surface,
+        ))
+    }
+
     fn list_sessions(&self) -> anyhow::Result<Vec<SessionListItem>> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            return self.block_on(async move {
+                rocode_server::local_list_sessions(state, None, None).await
+            });
+        }
+        // Unix socket / HTTP fallback via FrontendTransport.
+        if let Some(ref transport) = self.transport {
+            if let Ok(items) = self.block_on(transport.list_sessions()) {
+                return Ok(items);
+            }
+        }
         self.block_on(self.client.list_sessions(None, None))
     }
 
@@ -61,6 +263,13 @@ impl RuntimeApiClient {
         search: Option<&str>,
         limit: Option<usize>,
     ) -> anyhow::Result<Vec<SessionListItem>> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            let search = search.map(str::to_string);
+            return self.block_on(async move {
+                rocode_server::local_list_sessions(state, search, limit).await
+            });
+        }
         self.block_on(self.client.list_sessions(search, limit))
     }
 
@@ -110,8 +319,6 @@ impl RuntimeApiClient {
         fn reply_permission(&self, permission_id: &str, reply: &str, message: Option<String>) -> ();
         fn update_session_title(&self, session_id: &str, title: &str) -> SessionInfo;
         fn delete_session(&self, session_id: &str) -> bool;
-        fn send_prompt(&self, session_id: &str, content: String, parts: Option<Vec<PromptPart>>, agent: Option<String>, scheduler_profile: Option<String>, model: Option<String>, variant: Option<String>, ingress_source: Option<String>, idempotency_key: Option<String>) -> PromptResponse;
-        fn send_command_prompt(&self, session_id: &str, command: String, arguments: Option<String>, model: Option<String>, variant: Option<String>, ingress_source: Option<String>, idempotency_key: Option<String>) -> PromptResponse;
         fn execute_shell(&self, session_id: &str, command: String, workdir: Option<String>) -> serde_json::Value;
         fn abort_session(&self, session_id: &str) -> serde_json::Value;
         fn cancel_tool_call(&self, session_id: &str, tool_call_id: &str) -> serde_json::Value;
@@ -174,8 +381,6 @@ impl RuntimeApiClient {
         fn remove_mcp_auth(&self, name: &str) -> bool;
         fn connect_mcp(&self, name: &str) -> bool;
         fn disconnect_mcp(&self, name: &str) -> bool;
-        fn get_messages(&self, session_id: &str) -> Vec<MessageInfo>;
-        fn get_messages_after(&self, session_id: &str, after: Option<&str>, limit: Option<usize>) -> Vec<MessageInfo>;
         fn get_lsp_servers(&self) -> Vec<String>;
         fn get_formatters(&self) -> Vec<String>;
         fn share_session(&self, session_id: &str) -> ShareResponse;
@@ -202,18 +407,50 @@ pub struct ApiClient {
 
 impl ApiClient {
     pub fn new(base_url: String) -> Self {
-        Self::new_with_password(base_url, None)
+        Self::new_with_password(base_url, None, None)
     }
 
-    pub fn new_with_password(base_url: String, server_password: Option<String>) -> Self {
+    /// Direct (in-process) mode — no server, no IPC.
+    /// Uses OrchestrationCore<rocode_session::SessionManager> for unified
+    /// session authority across all operations.
+    pub fn new_local() -> Self {
+        let (jobs, receiver) = mpsc::channel::<ApiJob>();
+        thread::Builder::new()
+            .name("rocode-tui-api-gateway".to_string())
+            .spawn(move || {
+                let client = RuntimeApiClient::new_local();
+                while let Ok(job) = receiver.recv() {
+                    job(&client);
+                }
+            })
+            .expect("failed to start TUI API gateway thread");
+
+        Self {
+            priority_client: BlockingApiClient::new_with_password(
+                "http://localhost:0".to_string(), None,
+            ),
+            base_url: "direct://local".to_string(),
+            jobs,
+            current_session: RwLock::new(None),
+        }
+    }
+
+    pub fn new_with_password(
+        base_url: String,
+        server_password: Option<String>,
+        unix_socket_path: Option<String>,
+    ) -> Self {
         let (jobs, receiver) = mpsc::channel::<ApiJob>();
         let thread_base_url = base_url.clone();
         let thread_server_password = server_password.clone();
         thread::Builder::new()
             .name("rocode-tui-api-gateway".to_string())
             .spawn(move || {
-                let client =
-                    RuntimeApiClient::new_with_password(thread_base_url, thread_server_password);
+                let client = RuntimeApiClient::new_with_password(
+                    thread_base_url,
+                    thread_server_password,
+                    unix_socket_path,
+                );
                 while let Ok(job) = receiver.recv() {
                     job(&client);
                 }
@@ -463,6 +700,8 @@ impl ApiClient {
                 variant,
                 Some("tui".to_string()),
                 idempotency_key,
+                Some(rocode_types::MessageSourceOrigin::Operator),
+                Some(rocode_types::MessageSourceSurface::Tui),
             )
         })
     }
@@ -486,6 +725,8 @@ impl ApiClient {
                 variant,
                 Some("tui".to_string()),
                 idempotency_key,
+                Some(rocode_types::MessageSourceOrigin::Operator),
+                Some(rocode_types::MessageSourceSurface::Tui),
             )
         })
     }
@@ -1114,5 +1355,310 @@ impl ApiClient {
             .read()
             .ok()
             .and_then(|current| current.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use once_cell::sync::Lazy;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    static LOCAL_ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+    struct LocalTestPaths {
+        workspace_root: PathBuf,
+        data_root: PathBuf,
+    }
+
+    struct LocalEnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        old_rocode_data_dir: Option<String>,
+        old_xdg_data_home: Option<String>,
+    }
+
+    impl Drop for LocalEnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.old_rocode_data_dir {
+                    Some(value) => std::env::set_var("ROCODE_DATA_DIR", value),
+                    None => std::env::remove_var("ROCODE_DATA_DIR"),
+                }
+                match &self.old_xdg_data_home {
+                    Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+                    None => std::env::remove_var("XDG_DATA_HOME"),
+                }
+            }
+        }
+    }
+
+    fn test_local_paths() -> LocalTestPaths {
+        let root = std::env::temp_dir().join(format!("rocode-tui-local-{}", uuid::Uuid::new_v4()));
+        let workspace_root = root.join("workspace");
+        let data_root = root.join("data");
+        std::fs::create_dir_all(&workspace_root).expect("create temp workspace root");
+        std::fs::create_dir_all(&data_root).expect("create temp data root");
+        LocalTestPaths {
+            workspace_root,
+            data_root,
+        }
+    }
+
+    fn install_local_test_env(data_root: &PathBuf) -> LocalEnvGuard {
+        let lock = LOCAL_ENV_LOCK.lock().expect("lock local env");
+        let old_rocode_data_dir = std::env::var("ROCODE_DATA_DIR").ok();
+        let old_xdg_data_home = std::env::var("XDG_DATA_HOME").ok();
+        unsafe {
+            std::env::set_var("ROCODE_DATA_DIR", data_root);
+            std::env::set_var("XDG_DATA_HOME", data_root);
+        }
+        LocalEnvGuard {
+            _lock: lock,
+            old_rocode_data_dir,
+            old_xdg_data_home,
+        }
+    }
+
+    fn wait_for_messages<F>(client: &RuntimeApiClient, session_id: &str, predicate: F) -> Vec<MessageInfo>
+    where
+        F: Fn(&[MessageInfo]) -> bool,
+    {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let messages = client
+                .get_messages(session_id)
+                .expect("read local messages while waiting");
+            if predicate(&messages) {
+                return messages;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for expected local messages: {:?}",
+                messages
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    struct MockLocalProvider {
+        call_count: AtomicUsize,
+        model: rocode_provider::ModelInfo,
+    }
+
+    impl MockLocalProvider {
+        fn new() -> Self {
+            Self {
+                call_count: AtomicUsize::new(0),
+                model: rocode_provider::ModelInfo {
+                    id: "mock-model".to_string(),
+                    name: "Mock Model".to_string(),
+                    provider: "mock-local".to_string(),
+                    context_window: 8192,
+                    max_input_tokens: None,
+                    max_output_tokens: 4096,
+                    supports_vision: false,
+                    supports_tools: false,
+                    cost_per_million_input: 0.0,
+                    cost_per_million_output: 0.0,
+                    cost_per_million_cache_read: None,
+                    cost_per_million_cache_write: None,
+                },
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl rocode_provider::Provider for MockLocalProvider {
+        fn id(&self) -> &str {
+            "mock-local"
+        }
+
+        fn name(&self) -> &str {
+            "Mock Local Provider"
+        }
+
+        fn models(&self) -> Vec<rocode_provider::ModelInfo> {
+            vec![self.model.clone()]
+        }
+
+        fn get_model(&self, id: &str) -> Option<&rocode_provider::ModelInfo> {
+            (id == self.model.id).then_some(&self.model)
+        }
+
+        async fn chat(
+            &self,
+            _request: rocode_provider::ChatRequest,
+        ) -> Result<rocode_provider::ChatResponse, rocode_provider::ProviderError> {
+            let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
+            Ok(rocode_provider::ChatResponse {
+                id: format!("mock-local-{idx}"),
+                model: "mock-model".to_string(),
+                choices: vec![rocode_provider::Choice {
+                    index: 0,
+                    message: rocode_provider::Message::assistant("hello from local"),
+                    finish_reason: Some("stop".to_string()),
+                }],
+                usage: Some(rocode_provider::Usage {
+                    prompt_tokens: 10,
+                    completion_tokens: 5,
+                    total_tokens: 15,
+                    cache_read_input_tokens: Some(0),
+                    cache_miss_input_tokens: Some(0),
+                    cache_creation_input_tokens: Some(0),
+                }),
+            })
+        }
+
+        async fn chat_stream(
+            &self,
+            _request: rocode_provider::ChatRequest,
+        ) -> Result<rocode_provider::StreamResult, rocode_provider::ProviderError> {
+            Err(rocode_provider::ProviderError::ApiError(
+                "streaming not implemented".into(),
+            ))
+        }
+    }
+
+    #[test]
+    fn local_runtime_get_messages_reads_shared_authority() {
+        let paths = test_local_paths();
+        let _env = install_local_test_env(&paths.data_root);
+        let client = RuntimeApiClient::new_local_for_workspace(paths.workspace_root);
+        let state = Arc::clone(client.local_server.as_ref().expect("local server state"));
+        client
+            .block_on(async {
+                rocode_server::local_register_provider(
+                    &state,
+                    Arc::new(MockLocalProvider::new()),
+                )
+                .await;
+                Ok::<(), anyhow::Error>(())
+            })
+            .expect("register mock local provider");
+        let session = client
+            .create_session(None, Some(".".to_string()))
+            .expect("create local session");
+
+        client
+            .send_prompt(
+                &session.id,
+                "hello local".to_string(),
+                None,
+                None,
+                None,
+                Some("mock-local/mock-model".to_string()),
+                Some("fast".to_string()),
+                Some("tui".to_string()),
+                Some("tui_local_1".to_string()),
+                Some(rocode_types::MessageSourceOrigin::Operator),
+                Some(rocode_types::MessageSourceSurface::Tui),
+            )
+            .expect("send local prompt");
+
+        let messages = wait_for_messages(&client, &session.id, |messages| {
+            messages.iter().any(|message| {
+                message.role == "user"
+                    && message
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.get("ingress_idempotency_key"))
+                        .and_then(|value| value.as_str())
+                        == Some("tui_local_1")
+            })
+        });
+        assert!(
+            messages.iter().any(|message| {
+                message.role == "user"
+                    && message
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.get("ingress_idempotency_key"))
+                        .and_then(|value| value.as_str())
+                        == Some("tui_local_1")
+            }),
+            "local message read should come from shared server authority"
+        );
+
+        let first_message_id = messages
+            .first()
+            .map(|message| message.id.clone())
+            .expect("at least one message");
+        let incremental = client
+            .get_messages_after(&session.id, Some(first_message_id.as_str()), Some(16))
+            .expect("read incremental local messages");
+        assert!(
+            incremental.iter().all(|message| message.id != first_message_id),
+            "incremental local read should honor the after anchor"
+        );
+    }
+
+    #[test]
+    fn local_runtime_accepts_structured_prompt_parts() {
+        let paths = test_local_paths();
+        let _env = install_local_test_env(&paths.data_root);
+        let client = RuntimeApiClient::new_local_for_workspace(paths.workspace_root);
+        let state = Arc::clone(client.local_server.as_ref().expect("local server state"));
+        client
+            .block_on(async {
+                rocode_server::local_register_provider(
+                    &state,
+                    Arc::new(MockLocalProvider::new()),
+                )
+                .await;
+                Ok::<(), anyhow::Error>(())
+            })
+            .expect("register mock local provider");
+        let session = client
+            .create_session(None, Some(".".to_string()))
+            .expect("create local session");
+
+        client
+            .send_prompt(
+                &session.id,
+                "delegate locally".to_string(),
+                Some(vec![PromptPart::Agent {
+                    name: "explore".to_string(),
+                }]),
+                None,
+                None,
+                Some("mock-local/mock-model".to_string()),
+                None,
+                Some("tui".to_string()),
+                Some("multipart_local_1".to_string()),
+                Some(rocode_types::MessageSourceOrigin::Operator),
+                Some(rocode_types::MessageSourceSurface::Tui),
+            )
+            .expect("multipart prompt should succeed in local mode");
+
+        let messages = wait_for_messages(&client, &session.id, |messages| {
+            messages.iter().any(|message| {
+                message.role == "user"
+                    && message
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.get("ingress_idempotency_key"))
+                        .and_then(|value| value.as_str())
+                        == Some("multipart_local_1")
+                    && message.parts.iter().any(|part| part.part_type == "agent")
+            })
+        });
+        assert!(
+            messages.iter().any(|message| {
+                message.role == "user"
+                    && message
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.get("ingress_idempotency_key"))
+                        .and_then(|value| value.as_str())
+                        == Some("multipart_local_1")
+                    && message.parts.iter().any(|part| {
+                        part.part_type == "agent"
+                    })
+            }),
+            "multipart prompt should round-trip through local server authority"
+        );
     }
 }

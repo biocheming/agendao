@@ -3367,10 +3367,13 @@ dependencies = [
  "rocode-api",
  "rocode-command",
  "rocode-config",
+ "rocode-orchestrator",
  "rocode-runtime-context",
  "rocode-state",
+ "rocode-types",
  "serde",
  "serde_json",
+ "tokio",
  "urlencoding",
 ]
 
@@ -3564,6 +3567,7 @@ name = "rocode-orchestrator"
 version = "2026.5.25"
 dependencies = [
  "async-trait",
+ "chrono",
  "futures",
  "glob",
  "jsonc-parser",
@@ -3573,12 +3577,15 @@ dependencies = [
  "rocode-core",
  "rocode-execution-types",
  "rocode-provider",
+ "rocode-session-core",
+ "rocode-tool",
  "rocode-types",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "uuid",
  "walkdir",
 ]
 
@@ -3674,6 +3681,7 @@ dependencies = [
  "futures",
  "hex",
  "hmac",
+ "libc",
  "once_cell",
  "portable-pty",
  "rocode-agent",
@@ -3691,6 +3699,7 @@ dependencies = [
  "rocode-provider",
  "rocode-runtime-context",
  "rocode-session",
+ "rocode-session-core",
  "rocode-skill",
  "rocode-state",
  "rocode-storage",
@@ -3736,6 +3745,7 @@ dependencies = [
  "rocode-orchestrator",
  "rocode-plugin",
  "rocode-provider",
+ "rocode-session-core",
  "rocode-skill",
  "rocode-storage",
  "rocode-tool",
@@ -3750,6 +3760,18 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
+ "uuid",
+]
+
+[[package]]
+name = "rocode-session-core"
+version = "2026.5.25"
+dependencies = [
+ "chrono",
+ "rocode-types",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
  "uuid",
 ]
 
@@ -3885,6 +3907,7 @@ dependencies = [
  "rocode-orchestrator",
  "rocode-provider",
  "rocode-runtime-context",
+ "rocode-server",
  "rocode-session",
  "rocode-skill",
  "rocode-state",

@@ -21,6 +21,7 @@ members = [
     "crates/rocode-memory",
     "crates/rocode-execution-types",
     "crates/rocode-session",
+    "crates/rocode-session-core",
     "crates/rocode-skill",
     "crates/rocode-storage",
     "crates/rocode-tool",

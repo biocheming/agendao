@@ -1,5 +1,6 @@
 pub mod agent_tree;
 pub mod conversation;
+pub mod core; // Phase 2: New orchestration core
 pub mod error;
 pub mod error_cause;
 pub mod execution_resolver;
@@ -8,6 +9,7 @@ pub mod iterative_workflow_runtime;
 pub mod lifecycle;
 pub mod output_metadata;
 pub mod output_projection;
+pub mod prompt_execution; // Phase 4.4: Prompt execution logic
 pub mod request_execution;
 pub mod runtime;
 pub mod scheduler;
@@ -25,6 +27,8 @@ mod workflow_workspace;
 
 pub use agent_tree::*;
 pub use conversation::*;
+pub use core::*; // Phase 2: Export OrchestrationCore
+pub use rocode_session_core::{SessionAccess, SessionManager as CoreSessionManager, SessionStore};
 pub use error::*;
 pub use error_cause::*;
 pub use execution_resolver::*;

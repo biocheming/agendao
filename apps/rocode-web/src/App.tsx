@@ -5,7 +5,6 @@ import {
   type FormEvent,
   Suspense,
   lazy,
-  startTransition,
   useCallback,
   useEffect,
   useMemo,
@@ -19,13 +18,18 @@ import { InteractionOverlays } from "./components/InteractionOverlays";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { WorkspacePanel, type WorkspacePanelTab } from "./components/WorkspacePanel";
 import { loadWebPlugins } from "./web-plugin-loader";
-import { api, apiJson, apiUrl, parseSSE } from "./lib/api";
+import { api, apiJson, apiUrl } from "./lib/api";
 import { cn } from "./lib/utils";
 import { useConversationJump } from "./hooks/useConversationJump";
 import { useExecutionActivity } from "./hooks/useExecutionActivity";
 import { useMultimodalComposer } from "./hooks/useMultimodalComposer";
+import { useRuntimeSurface } from "./hooks/useRuntimeSurface";
 import { useSchedulerNavigation } from "./hooks/useSchedulerNavigation";
+import { useSessionRegistry } from "./hooks/useSessionRegistry";
+import { useServerEventStream } from "./hooks/useServerEventStream";
 import { useTerminalSessions } from "./hooks/useTerminalSessions";
+import { useTranscriptFeedState } from "./hooks/useTranscriptFeedState";
+import { useWebBootstrap } from "./hooks/useWebBootstrap";
 import { useResizableHeight, useResizableWidth } from "./hooks/useResizableWidth";
 import { prepareComposerAttachments } from "./lib/composerAttachments";
 import {
@@ -69,20 +73,16 @@ import {
   toWorkspaceReferencePath,
 } from "./lib/composerContext";
 import type {
+  AuxiliaryOutputBlock,
   FeedMessage,
   MessageRecord,
   OutputBlock,
+  RuntimeSurfaceOutputBlock,
 } from "./lib/history";
 import {
-  appendLiveBlock,
   applyOutputBlock,
-  buildFeedFromHistory,
   createOptimisticUserFeedMessage,
   estimateContextTokensFromHistory,
-  mergeHistoryWithLiveBlocks,
-  pruneLiveBlocksCoveredByHistory,
-  shouldQueueLiveTranscriptBlock,
-  visibleSnapshotFromLiveBlocks,
 } from "./lib/liveTranscriptState";
 import {
   type PermissionInteractionRecord,
@@ -90,8 +90,6 @@ import {
   type QuestionAnswerValue,
   type QuestionInfoResponseRecord,
   type QuestionInteractionRecord,
-  permissionInteractionFromEvent,
-  questionInteractionFromEvent,
   questionInteractionFromInfo,
 } from "./lib/interaction";
 import type {
@@ -106,7 +104,6 @@ import {
   type ConnectProtocolOption,
   type KnownProviderEntry,
   type ProviderRecord,
-  type ProviderConnectSchemaResponseRecord,
   type ResolveProviderConnectResponseRecord,
   flattenProviderModels,
 } from "./lib/provider";
@@ -139,8 +136,12 @@ import {
   TerminalSquareIcon,
   XIcon,
 } from "lucide-react";
-
-type ThemeId = "daylight" | "sunset" | "cobalt";
+import {
+  DEFAULT_WEB_MODE,
+  THEMES,
+  type ExecutionMode,
+  type ThemeId,
+} from "./lib/webRuntime";
 
 function readRuntimeBudgetNumber(
   config: Record<string, unknown> | null | undefined,
@@ -155,14 +156,6 @@ function readRuntimeBudgetNumber(
   const camelKey = snakeKey.replace(/_([a-z])/g, (_, chr: string) => chr.toUpperCase());
   const value = record[snakeKey] ?? record[camelKey];
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
-}
-
-interface ExecutionMode {
-  id: string;
-  name: string;
-  kind: string;
-  hidden?: boolean;
-  mode?: string;
 }
 
 type PromptPart =
@@ -187,27 +180,9 @@ type PromptPart =
       agent: string;
     };
 
-type SessionLiveBlockCache = Record<string, OutputBlock[]>;
-type SessionOptimisticFeedCache = Record<string, FeedMessage[]>;
-type SessionRuntimeSurface = {
-  banner: string | null;
-  sessionEvents: OutputBlock[];
-  inspectItems: OutputBlock[];
-  queueItems: OutputBlock[];
-};
-
 type PendingCommandInvocation = PendingCommandInvocationRecord;
 
-function createEmptyRuntimeSurface(): SessionRuntimeSurface {
-  return {
-    banner: null,
-    sessionEvents: [],
-    inspectItems: [],
-    queueItems: [],
-  };
-}
-
-function runtimeSurfacePreview(block: OutputBlock): string | null {
+function runtimeSurfacePreview(block: RuntimeSurfaceOutputBlock): string | null {
   const candidate = [
     block.display?.summary,
     block.summary,
@@ -219,19 +194,23 @@ function runtimeSurfacePreview(block: OutputBlock): string | null {
   return typeof candidate === "string" ? candidate.trim() : null;
 }
 
-function runtimeSurfaceLabel(block: OutputBlock): string {
+function runtimeSurfaceLabel(block: RuntimeSurfaceOutputBlock): string {
   const candidate = [
     block.title,
     block.event,
-    block.name,
     block.display?.header,
     block.kind,
   ].find((value) => typeof value === "string" && value.trim().length > 0);
   return typeof candidate === "string" ? candidate.trim() : block.kind;
 }
 
-function runtimeSurfacePhase(block: OutputBlock): string | null {
+function runtimeSurfacePhase(block: RuntimeSurfaceOutputBlock): string | null {
   return typeof block.phase === "string" && block.phase.trim() ? block.phase.trim() : null;
+}
+
+function runtimeSurfaceDebugDetail(block: OutputBlock): string | undefined {
+  if (!("detail" in block)) return undefined;
+  return typeof block.detail === "string" ? block.detail : undefined;
 }
 
 function RuntimeSurfaceList({
@@ -239,7 +218,7 @@ function RuntimeSurfaceList({
   blocks,
 }: {
   title: string;
-  blocks: OutputBlock[];
+  blocks: AuxiliaryOutputBlock[];
 }) {
   if (blocks.length === 0) return null;
   const visibleBlocks = blocks.slice(-5).reverse();
@@ -281,12 +260,6 @@ function RuntimeSurfaceList({
     </div>
   );
 }
-
-const THEMES: Array<{ id: ThemeId; label: string }> = [
-  { id: "daylight", label: "Daylight" },
-  { id: "sunset", label: "Sunset" },
-  { id: "cobalt", label: "Cobalt" },
-];
 
 function resolveActiveModelRef(session: SessionRecord | null, selectedModel: string) {
   const explicit = selectedModel.trim();
@@ -410,14 +383,6 @@ function promptPreviewText(content: string, parts: PromptPart[]): string {
   return attachmentCount === 1 ? "[1 attachment]" : `[${attachmentCount} attachments]`;
 }
 
-function metadataString(
-  metadata: Record<string, unknown> | null | undefined,
-  key: string,
-): string | undefined {
-  const value = metadata?.[key];
-  return typeof value === "string" && value.trim() ? value : undefined;
-}
-
 function ingressStabilizationLabel(value: Record<string, unknown> | null | undefined) {
   if (!value) return null;
   const sourceValue = value.source;
@@ -432,52 +397,8 @@ function ingressStabilizationLabel(value: Record<string, unknown> | null | undef
   return batchCount > 1 ? `${source} · ${policy} · batch ${batchCount}` : `${source} · ${policy}`;
 }
 
-function isEquivalentUserMessage(message: FeedMessage, optimistic: FeedMessage): boolean {
-  return (
-    message.kind === "message" &&
-    message.role === "user" &&
-    message.text.trim() === optimistic.text.trim()
-  );
-}
-
-function mergeOptimisticMessages(
-  messages: FeedMessage[],
-  optimistic: FeedMessage[],
-): { messages: FeedMessage[]; remaining: FeedMessage[] } {
-  if (optimistic.length === 0) {
-    return { messages, remaining: optimistic };
-  }
-
-  const remaining = [...optimistic];
-  for (const message of messages) {
-    const matchIndex = remaining.findIndex((candidate) =>
-      isEquivalentUserMessage(message, candidate),
-    );
-    if (matchIndex >= 0) {
-      remaining.splice(matchIndex, 1);
-    }
-  }
-
-  return {
-    messages: remaining.length > 0 ? [...messages, ...remaining] : messages,
-    remaining,
-  };
-}
-
 function modeKey(mode: ExecutionMode): string {
   return `${mode.kind}:${mode.id}`;
-}
-
-const DEFAULT_WEB_MODE = "preset:auto";
-
-function applyPreferences(config: Record<string, unknown>) {
-  const ui = (config.uiPreferences ?? config.ui_preferences ?? {}) as Record<string, unknown>;
-  return {
-    theme: String(ui.webTheme ?? ui.web_theme ?? "daylight") as ThemeId,
-    mode: String(ui.webMode ?? ui.web_mode ?? ""),
-    model: String(ui.webModel ?? ui.web_model ?? ""),
-    showThinking: Boolean(ui.showThinking ?? ui.show_thinking ?? true),
-  };
 }
 
 function formatError(error: unknown): string {
@@ -534,8 +455,22 @@ function previewPathFromMessageMetadata(
 export default function App() {
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<FeedMessage[]>([]);
-  const [messageHistory, setMessageHistory] = useState<MessageRecord[]>([]);
+  // P0-2 / P0-3: Transcript authority and ingress contract.
+  //
+  // Single visible authority:
+  //   messages: FeedMessage[] — the canonical conversation feed.
+  //
+  // Two sanctioned ingress paths (both write to messages):
+  //   1. Live flush: applyOutputBlock() via RAF-batched SSE queue
+  //   2. History rebuild: mergeHistoryWithLiveBlocks() from server history
+  //
+  // Input buffers (feed the authority, never read by UI):
+  //   pendingOutputBlocksRef — RAF-batched SSE output_block queue
+  //   liveBlocksRef           — identity-keyed live cache for dedup
+  //
+  // Reconciliation input (merged into authority, not independent source):
+  //   messageHistory: MessageRecord[] — raw server history
+  //   optimisticMessagesRef           — user messages before server ack
   const [selectedMessageIds, setSelectedMessageIds] = useState<Set<string>>(() => new Set());
   const [composer, setComposer] = useState("");
   const [attachments, setAttachments] = useState<PromptPart[]>([]);
@@ -568,9 +503,6 @@ export default function App() {
   const [statusLine, setStatusLine] = useState("ready");
   const [latestRuntimeError, setLatestRuntimeError] = useState<string | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
-  const [runtimeSurfaceBySession, setRuntimeSurfaceBySession] = useState<
-    Record<string, SessionRuntimeSurface>
-  >({});
   const [deletingSessions, setDeletingSessions] = useState(false);
   const [question, setQuestion] = useState<QuestionInteractionRecord | null>(null);
   const [permission, setPermission] = useState<PermissionInteractionRecord | null>(null);
@@ -612,15 +544,39 @@ export default function App() {
   const routeInitializedRef = useRef(false);
   const selectedSessionRef = useRef<string | null>(null);
   const autoPreviewSignatureRef = useRef<string>("");
-  const liveBlocksRef = useRef<SessionLiveBlockCache>({});
-  const optimisticMessagesRef = useRef<SessionOptimisticFeedCache>({});
   const maxPendingOutputBlocks = useMemo(
     () =>
       readRuntimeBudgetNumber(workspaceContext?.config, "web_max_pending_output_blocks", 256),
     [workspaceContext?.config],
   );
-  const pendingOutputBlocksRef = useRef<Record<string, OutputBlock[]>>({});
 
+  const {
+    clearPendingOutputBlockFlush,
+    clearTranscriptFeed,
+    flushPendingOutputBlocks,
+    liveBlocksRef,
+    messageHistory,
+    messages,
+    optimisticMessagesRef,
+    pendingOutputBlocksRef,
+    queueVisibleLiveSnapshot,
+    rebuildFeedFromHistory,
+    setMessages,
+  } = useTranscriptFeedState({
+    maxPendingOutputBlocks,
+    selectedSessionRef,
+    sessionIds: sessions.map((session) => session.id),
+    showThinking,
+  });
+  const {
+    appendRuntimeSurfaceBlock,
+    currentRuntimeSurface,
+    hasCurrentRuntimeSurface,
+    setRuntimeSurfaceBanner,
+  } = useRuntimeSurface({
+    selectedSessionId,
+    sessionIds: sessions.map((session) => session.id),
+  });
   // P2-3: viewport budget for rendered messages. When exceeded, only the most
   // recent messages are rendered. Full transcript is preserved in state.
   // Derived from rocode_config::RuntimeBudgetConfig.tui_max_viewport_messages.
@@ -631,9 +587,6 @@ export default function App() {
       : messages,
     [messages, MAX_RENDERED_MESSAGES],
   );
-  const outputFlushFrameRef = useRef<number | null>(null);
-  const pendingSessionRefreshTimerRef = useRef<number | null>(null);
-  const showThinkingRef = useRef(showThinking);
   const connectResolveRequestRef = useRef(0);
   const recentModelScopeRef = useRef<string | null>(null);
   const recentModelAutoSuppressedRef = useRef(false);
@@ -1033,35 +986,35 @@ export default function App() {
     setBanner(`Copied ${selected.length} selected message${selected.length === 1 ? "" : "s"} as Markdown`);
   };
 
-  const reloadCoreSettingsData = async () => {
-    try {
-      const [providersData, modeData, connectSchema, context] = await Promise.all([
-        apiJson<ConfigProvidersResponseRecord>("/config/providers"),
-        apiJson<ExecutionMode[]>("/mode"),
-        apiJson<ProviderConnectSchemaResponseRecord>(
-          "/provider/connect/schema",
-        ),
-        apiJson<WorkspaceContextRecord>("/workspace/context"),
-      ]);
-      const prefs = applyPreferences(context.config ?? {});
-      setProviders(providersData.providers ?? providersData.all ?? []);
-      setKnownProviders(connectSchema.providers ?? []);
-      setConnectProtocols(connectSchema.protocols ?? []);
-      setWorkspaceContext(context);
-      setServiceRootPath((current) => workspaceRootFromContext(context) || current);
-      setTheme(THEMES.some((item) => item.id === prefs.theme) ? prefs.theme : "daylight");
-      setSelectedMode(prefs.mode || DEFAULT_WEB_MODE);
-      setSelectedModel(prefs.model);
-      setShowThinking(prefs.showThinking);
-      setModes(
-        (modeData ?? [])
-          .filter((mode) => mode.hidden !== true)
-          .filter((mode) => mode.kind !== "agent" || mode.mode !== "subagent"),
-      );
-    } catch (error) {
-      setBanner(`Failed to refresh config data: ${formatError(error)}`);
-    }
-  };
+  const { clearPendingSessionRefresh, scheduleSessionRefresh } = useSessionRegistry({
+    fetchSessions,
+    formatError,
+    setBanner,
+    setSelectedSessionId,
+    setSessions,
+  });
+
+  const { reloadCoreSettingsData, reloadProvidersAndModes } = useWebBootstrap({
+    apiJson,
+    fetchSessions,
+    formatError,
+    preferencesReadyRef,
+    provisionExternalAdapterSession,
+    setBanner,
+    setConnectProtocol,
+    setConnectProtocols,
+    setKnownProviders,
+    setModes,
+    setProviders,
+    setSelectedMode,
+    setSelectedModel,
+    setSelectedSessionId,
+    setServiceRootPath,
+    setSessions,
+    setShowThinking,
+    setTheme,
+    setWorkspaceContext,
+  });
 
   useEffect(() => {
     if (!selectedWorkspacePath) return;
@@ -1080,143 +1033,6 @@ export default function App() {
   useEffect(() => {
     selectedSessionRef.current = selectedSessionId;
   }, [selectedSessionId]);
-
-  const updateRuntimeSurface = useCallback(
-    (sessionId: string, updater: (current: SessionRuntimeSurface) => SessionRuntimeSurface) => {
-      setRuntimeSurfaceBySession((prev) => {
-        const current = prev[sessionId] ?? createEmptyRuntimeSurface();
-        const next = updater(current);
-        if (next === current) return prev;
-        return { ...prev, [sessionId]: next };
-      });
-    },
-    [],
-  );
-
-  const appendRuntimeSurfaceBlock = useCallback(
-    (
-      sessionId: string,
-      key: "sessionEvents" | "inspectItems" | "queueItems",
-      block: OutputBlock,
-      limit: number,
-    ) => {
-      updateRuntimeSurface(sessionId, (current) => ({
-        ...current,
-        [key]: [...current[key].slice(-(limit - 1)), block],
-      }));
-    },
-    [updateRuntimeSurface],
-  );
-
-  const setRuntimeSurfaceBanner = useCallback(
-    (sessionId: string, nextBanner: string | null) => {
-      updateRuntimeSurface(sessionId, (current) =>
-        current.banner === nextBanner ? current : { ...current, banner: nextBanner },
-      );
-    },
-    [updateRuntimeSurface],
-  );
-
-  const currentRuntimeSurface = useMemo(
-    () =>
-      selectedSessionId
-        ? (runtimeSurfaceBySession[selectedSessionId] ?? createEmptyRuntimeSurface())
-        : createEmptyRuntimeSurface(),
-    [runtimeSurfaceBySession, selectedSessionId],
-  );
-  const hasCurrentRuntimeSurface =
-    Boolean(currentRuntimeSurface.banner) ||
-    currentRuntimeSurface.sessionEvents.length > 0 ||
-    currentRuntimeSurface.inspectItems.length > 0 ||
-    currentRuntimeSurface.queueItems.length > 0;
-
-  useEffect(() => {
-    const validSessionIds = new Set(sessions.map((session) => session.id));
-    setRuntimeSurfaceBySession((prev) => {
-      const nextEntries = Object.entries(prev).filter(([sessionId]) => validSessionIds.has(sessionId));
-      if (nextEntries.length === Object.keys(prev).length) return prev;
-      return Object.fromEntries(nextEntries);
-    });
-  }, [sessions]);
-
-  useEffect(() => {
-    showThinkingRef.current = showThinking;
-  }, [showThinking]);
-
-  const clearPendingOutputBlockFlush = useCallback(() => {
-    if (outputFlushFrameRef.current !== null) {
-      window.cancelAnimationFrame(outputFlushFrameRef.current);
-      outputFlushFrameRef.current = null;
-    }
-  }, []);
-
-  const pendingVisibleSnapshotKey = useCallback((block: OutputBlock): string => {
-    const messageId = block.live_identity?.message_id?.trim() || "";
-    const partKey = block.live_identity?.part_key?.trim() || "";
-    if (block.kind === "message" || block.kind === "reasoning") {
-      return `${block.kind}:${messageId}:${partKey || block.id || ""}`;
-    }
-    if (block.kind === "tool") {
-      const toolId = block.tool_call_id?.trim() || block.id?.trim() || "";
-      return `${block.kind}:${messageId}:${partKey || toolId}:${block.live_identity?.part_kind || block.phase || ""}`;
-    }
-    return `${block.kind}:${block.id?.trim() || messageId || block.phase || ""}`;
-  }, []);
-
-  const flushPendingOutputBlocks = useCallback(() => {
-    clearPendingOutputBlockFlush();
-
-    const queuedBySession = pendingOutputBlocksRef.current;
-    const sessionIds = Object.keys(queuedBySession);
-    if (sessionIds.length === 0) {
-      return;
-    }
-    pendingOutputBlocksRef.current = {};
-    const activeSessionId = selectedSessionRef.current;
-    const visibleSnapshots = activeSessionId ? (queuedBySession[activeSessionId] ?? []) : [];
-
-    if (visibleSnapshots.length === 0) {
-      return;
-    }
-
-    startTransition(() => {
-      setMessages((current) =>
-        visibleSnapshots.reduce(
-          (messages, block) => applyOutputBlock(messages, block, showThinkingRef.current),
-          current,
-        ),
-      );
-    });
-  }, [clearPendingOutputBlockFlush]);
-
-  const schedulePendingOutputBlockFlush = useCallback(() => {
-    if (outputFlushFrameRef.current !== null) {
-      return;
-    }
-    outputFlushFrameRef.current = window.requestAnimationFrame(() => {
-      flushPendingOutputBlocks();
-    });
-  }, [flushPendingOutputBlocks]);
-
-  const materializePendingOutputBlocksForSession = useCallback((sessionId: string): OutputBlock[] => {
-    const nextQueued = { ...pendingOutputBlocksRef.current };
-    if (sessionId in nextQueued) {
-      delete nextQueued[sessionId];
-      pendingOutputBlocksRef.current = nextQueued;
-      if (Object.keys(nextQueued).length === 0) {
-        clearPendingOutputBlockFlush();
-      }
-    }
-    return liveBlocksRef.current[sessionId] ?? [];
-  }, [clearPendingOutputBlockFlush]);
-
-  const clearPendingSessionRefresh = useCallback(() => {
-    if (pendingSessionRefreshTimerRef.current !== null) {
-      window.clearTimeout(pendingSessionRefreshTimerRef.current);
-      pendingSessionRefreshTimerRef.current = null;
-    }
-  }, []);
-
 
   const selectSession = useCallback((sessionId: string | null) => {
     routeSyncSourceRef.current = "app";
@@ -1281,9 +1097,9 @@ export default function App() {
 
   useEffect(() => {
     autoPreviewSignatureRef.current = "";
-    setMessageHistory([]);
+    clearTranscriptFeed();
     setSelectedMessageIds(new Set());
-  }, [selectedSessionId]);
+  }, [clearTranscriptFeed, selectedSessionId]);
 
   useEffect(() => {
     const query = connectQuery.trim();
@@ -1378,7 +1194,7 @@ export default function App() {
         id: block.id,
         tool_call_id: block.tool_call_id,
         text: block.text?.slice(0, 160),
-        detail: block.detail?.slice(0, 160),
+        detail: runtimeSurfaceDebugDetail(block)?.slice(0, 160),
         part_key: block.live_identity?.part_key,
         part_kind: block.live_identity?.part_kind,
       })),
@@ -1387,90 +1203,12 @@ export default function App() {
         id: block.id,
         tool_call_id: block.tool_call_id,
         text: block.text?.slice(0, 160),
-        detail: block.detail?.slice(0, 160),
+        detail: runtimeSurfaceDebugDetail(block)?.slice(0, 160),
         part_key: block.live_identity?.part_key,
         part_kind: block.live_identity?.part_kind,
       })),
     };
   }, [messages, selectedSessionId, showThinking]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const loadBootstrap = async () => {
-      try {
-        const initialRoute = readWebSessionRoute();
-        let routeSessionId = initialRoute.sessionId;
-        let routeSessionProvisioned = false;
-        if (!routeSessionId && initialRoute.externalProvisioning) {
-          try {
-            routeSessionId = await provisionExternalAdapterSession(
-              initialRoute.externalProvisioning,
-              { replace: true },
-            );
-            routeSessionProvisioned = true;
-          } catch (error) {
-            if (!cancelled) {
-              setBanner(`Failed to provision external adapter session: ${formatError(error)}`);
-            }
-          }
-        }
-
-        const [sessionData, providersData, modeData, context, connectSchema, paths] = await Promise.all([
-          fetchSessions(),
-          apiJson<ConfigProvidersResponseRecord>("/config/providers"),
-          apiJson<ExecutionMode[]>("/mode"),
-          apiJson<WorkspaceContextRecord>("/workspace/context"),
-          apiJson<ProviderConnectSchemaResponseRecord>(
-            "/provider/connect/schema",
-          ),
-          apiJson<PathsResponseRecord>("/path"),
-        ]);
-
-        if (cancelled) return;
-
-        const nextProviders = providersData.providers ?? providersData.all ?? [];
-        const nextModes = (modeData ?? [])
-          .filter((mode) => mode.hidden !== true)
-          .filter((mode) => mode.kind !== "agent" || mode.mode !== "subagent");
-        const prefs = applyPreferences(context.config ?? {});
-        const workspaceRoot = workspaceRootFromContext(context);
-
-        setServiceRootPath(workspaceRoot || paths.cwd || "");
-        setSessions(sessionData);
-        setProviders(nextProviders);
-        setKnownProviders(connectSchema.providers ?? []);
-        setConnectProtocols(connectSchema.protocols ?? []);
-        setWorkspaceContext(context);
-        setModes(nextModes);
-        setTheme(THEMES.some((item) => item.id === prefs.theme) ? prefs.theme : "daylight");
-        setSelectedMode(prefs.mode || DEFAULT_WEB_MODE);
-        setSelectedModel(prefs.model);
-        setShowThinking(prefs.showThinking);
-        setConnectProtocol((current) => current || connectSchema.protocols?.[0]?.id || "");
-        const routeSessionExists = Boolean(
-          routeSessionId && sessionData.some((session) => session.id === routeSessionId),
-        );
-        setSelectedSessionId(
-          (current) =>
-            current
-            ?? (routeSessionProvisioned || routeSessionExists
-              ? routeSessionId
-              : sessionData[0]?.id ?? null),
-        );
-        preferencesReadyRef.current = true;
-      } catch (error) {
-        if (!cancelled) {
-          setBanner(`Bootstrap failed: ${formatError(error)}`);
-        }
-      }
-    };
-
-    void loadBootstrap();
-    return () => {
-      cancelled = true;
-    };
-  }, [apiJson, provisionExternalAdapterSession]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1513,8 +1251,7 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedSessionId) {
-      setMessages([]);
-      setMessageHistory([]);
+      clearTranscriptFeed();
       setBanner(null);
       autoPreviewSignatureRef.current = "";
       return;
@@ -1527,41 +1264,11 @@ export default function App() {
       try {
         const history = await apiJson<MessageRecord[]>(`/session/${selectedSessionId}/message`);
         if (cancelled) return;
-        setMessageHistory(history);
-        // New-session race: history may return while this session still has
-        // unflushed live output blocks queued in RAF. Materialize them first,
-        // otherwise a partial persisted history snapshot can overwrite the
-        // correct realtime feed until the user refreshes.
-        const currentLiveBlocks = materializePendingOutputBlocksForSession(selectedSessionId);
-        // While a run is still streaming, retained live blocks are the more
-        // authoritative view for the current turn. Avoid pruning them against
-        // a partial persisted history snapshot that can lag behind the live
-        // stream and fragment visible transcript state.
-        const shouldPruneFromHistory = !streaming;
-        const prunedLiveBlocks = shouldPruneFromHistory
-          ? pruneLiveBlocksCoveredByHistory(
-              history,
-              currentLiveBlocks,
-            )
-          : currentLiveBlocks;
-        liveBlocksRef.current = {
-          ...liveBlocksRef.current,
-          [selectedSessionId]: prunedLiveBlocks,
-        };
-        const mergedHistory = mergeHistoryWithLiveBlocks(
+        rebuildFeedFromHistory({
           history,
-          prunedLiveBlocks,
-          showThinking,
-        );
-        const merged = mergeOptimisticMessages(
-          mergedHistory,
-          optimisticMessagesRef.current[selectedSessionId] ?? [],
-        );
-        optimisticMessagesRef.current = {
-          ...optimisticMessagesRef.current,
-          [selectedSessionId]: merged.remaining,
-        };
-        setMessages(merged.messages);
+          sessionId: selectedSessionId,
+          streaming,
+        });
       } catch (error) {
         if (!cancelled) {
           setBanner(`Failed to load messages: ${formatError(error)}`);
@@ -1577,32 +1284,35 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [apiJson, materializePendingOutputBlocksForSession, selectedSessionId, showThinking, streaming]);
+  }, [apiJson, clearTranscriptFeed, rebuildFeedFromHistory, selectedSessionId, streaming]);
 
-  const refreshSessionsFromServer = useCallback(async () => {
-    try {
-      const sessionData = await fetchSessions();
-      setSessions(sessionData);
-      setSelectedSessionId((current) => {
-        if (current && sessionData.some((session) => session.id === current)) {
-          return current;
-        }
-        return sessionData[0]?.id ?? null;
-      });
-    } catch (error) {
-      setBanner(`Failed to refresh sessions: ${formatError(error)}`);
-    }
-  }, [fetchSessions]);
-
-  const scheduleSessionRefresh = useCallback(() => {
-    if (pendingSessionRefreshTimerRef.current !== null) {
-      return;
-    }
-    pendingSessionRefreshTimerRef.current = window.setTimeout(() => {
-      pendingSessionRefreshTimerRef.current = null;
-      void refreshSessionsFromServer();
-    }, 120);
-  }, [refreshSessionsFromServer]);
+  useServerEventStream({
+    applyLiveExecutionOutputBlock,
+    applySchedulerStageOutputBlock,
+    appendRuntimeSurfaceBlock,
+    clearPendingOutputBlockFlush,
+    clearPendingSessionRefresh,
+    flushPendingOutputBlocks,
+    onConfigUpdated: reloadProvidersAndModes,
+    queueVisibleLiveSnapshot,
+    refreshExecutionActivity,
+    scheduleSessionRefresh,
+    selectedSessionRef,
+    setLatestRuntimeError,
+    setMessages,
+    setPermission,
+    setPermissionSubmitCompletedAt,
+    setPermissionSubmitError,
+    setPermissionSubmitStartedAt,
+    setPermissionSubmitting,
+    setQuestion,
+    setQuestionAnswers,
+    setQuestionSubmitting,
+    setRuntimeSurfaceBanner,
+    setStatusLine,
+    setStreaming,
+    showThinking,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -1688,289 +1398,6 @@ export default function App() {
       cancelled = true;
     };
   }, [selectedFilePath]);
-
-  useEffect(() => {
-    let active = true;
-    let controller: AbortController | null = null;
-
-    const reloadProvidersAndModes = async () => {
-      try {
-        const [providersData, modeData, connectSchema] = await Promise.all([
-          apiJson<ConfigProvidersResponseRecord>("/config/providers"),
-          apiJson<ExecutionMode[]>("/mode"),
-          apiJson<ProviderConnectSchemaResponseRecord>(
-            "/provider/connect/schema",
-          ),
-        ]);
-        if (!active) return;
-        setProviders(providersData.providers ?? providersData.all ?? []);
-        setKnownProviders(connectSchema.providers ?? []);
-        setConnectProtocols(connectSchema.protocols ?? []);
-        setModes(
-          (modeData ?? [])
-            .filter((mode) => mode.hidden !== true)
-            .filter((mode) => mode.kind !== "agent" || mode.mode !== "subagent"),
-        );
-      } catch (error) {
-        if (active) {
-          setBanner(`Failed to refresh config data: ${formatError(error)}`);
-        }
-      }
-    };
-
-    const handleServerEvent = (payload: unknown) => {
-      const event = payload as Record<string, unknown>;
-      const type = typeof event.type === "string" ? event.type : "";
-      const eventSessionId =
-        typeof event.sessionID === "string"
-          ? event.sessionID
-          : typeof event.session_id === "string"
-            ? event.session_id
-            : undefined;
-
-      // P1-3 PRIMARY incremental path: output blocks deliver message deltas
-      // and tool progress directly. UI updates here; session.updated is only
-      // the reconcile fallback for non-droppable reasons.
-      if (type === "output_block" && eventSessionId === selectedSessionRef.current) {
-        const rawBlock = event.block as OutputBlock | undefined;
-        // P3-E: Parse live_identity from SSE wire format.
-        const rawLiveIdentity = event.live_identity as Record<string, unknown> | undefined;
-        const liveIdentity: OutputBlock["live_identity"] = rawLiveIdentity?.message_id
-          ? (rawLiveIdentity as unknown as OutputBlock["live_identity"])
-          : undefined;
-        const block = rawBlock
-          ? {
-              ...rawBlock,
-              id:
-                typeof rawBlock.id === "string"
-                  ? rawBlock.id
-                  : typeof event.id === "string"
-                    ? event.id
-                    : undefined,
-              live_identity: liveIdentity ?? rawBlock.live_identity,
-            }
-          : undefined;
-        if (!block) return;
-        // Phase W3: route non-transcript blocks to their dedicated surfaces.
-        if (block.kind === "scheduler_stage") {
-          applySchedulerStageOutputBlock(block, eventSessionId);
-          return;
-        }
-        if (block.kind === "tool") {
-          applyLiveExecutionOutputBlock(block, eventSessionId);
-        }
-        if (block.kind === "session_event") {
-          appendRuntimeSurfaceBlock(eventSessionId, "sessionEvents", block, 50);
-          return;
-        }
-        if (block.kind === "status") {
-          setRuntimeSurfaceBanner(eventSessionId, block.text?.trim() || null);
-          return;
-        }
-        if (block.kind === "queue_item") {
-          appendRuntimeSurfaceBlock(eventSessionId, "queueItems", block, 20);
-          return;
-        }
-        if (block.kind === "inspect") {
-          appendRuntimeSurfaceBlock(eventSessionId, "inspectItems", block, 10);
-          return;
-        }
-        if (shouldQueueLiveTranscriptBlock(block)) {
-          const currentLiveBlocks = liveBlocksRef.current[eventSessionId] ?? [];
-          const nextLiveBlocks = appendLiveBlock(currentLiveBlocks, block);
-          liveBlocksRef.current = {
-            ...liveBlocksRef.current,
-            [eventSessionId]: nextLiveBlocks,
-          };
-          if (eventSessionId === selectedSessionRef.current) {
-            const visible = visibleSnapshotFromLiveBlocks(nextLiveBlocks, block);
-            if (visible) {
-              const queue = pendingOutputBlocksRef.current[eventSessionId] ?? [];
-              const queueKey = pendingVisibleSnapshotKey(visible);
-              const existingIndex = queue.findIndex((candidate) => pendingVisibleSnapshotKey(candidate) === queueKey);
-              if (existingIndex >= 0) {
-                queue[existingIndex] = visible;
-              } else {
-                queue.push(visible);
-              }
-              while (queue.length > maxPendingOutputBlocks) queue.shift();
-              pendingOutputBlocksRef.current[eventSessionId] = queue;
-              schedulePendingOutputBlockFlush();
-            }
-          }
-        }
-        return;
-      }
-
-      if (type === "error" && eventSessionId === selectedSessionRef.current) {
-        flushPendingOutputBlocks();
-        setLatestRuntimeError(String(event.error ?? "Unknown error"));
-        setMessages((current) =>
-          applyOutputBlock(
-            current,
-            {
-              kind: "status",
-              tone: "error",
-              text: String(event.error ?? "Unknown error"),
-            },
-            showThinking,
-          ),
-        );
-        setStreaming(false);
-        setStatusLine("error");
-        return;
-      }
-
-      // P1-3: session.updated is the RECONCILE FALLBACK, not the primary
-      // refresh path. Incremental updates (output blocks, permission
-      // requested/resolved) are the PRIMARY mechanism and update the UI
-      // locally via setMessages / setPermission / setRuntimeStatus.
-      // This handler exists to reconcile state after non-droppable events
-      // (turn.final, metadata.change, permission, steering, status.change).
-      if (type === "session.updated") {
-        // P1-2: high-frequency topology reconciles are handled via output
-        // blocks — skip the full session refresh to avoid redundant work.
-        //
-        // Web Phase 1: session.updated only drives SessionRecord metadata
-        // refresh (sidebar / session list), never transcript. Transcript
-        // authority lives in output_block + session.status + permission.*
-        // + question.*. Removing the history reload here eliminates the
-        // double-authority path (local incremental + history rebuild) that
-        // caused replay / duplicate / last-block instability.
-        const source = typeof event.source === "string" ? event.source : "";
-        if (source !== "topology") {
-          scheduleSessionRefresh();
-        }
-        return;
-      }
-
-      if (type === "config.updated") {
-        void reloadProvidersAndModes();
-        return;
-      }
-
-      if (type === "session.status" && eventSessionId === selectedSessionRef.current) {
-        flushPendingOutputBlocks();
-        const rawStatus = event.status;
-        const statusCandidate =
-          typeof rawStatus === "string"
-            ? rawStatus
-            : rawStatus && typeof rawStatus === "object" && "type" in rawStatus
-              ? String((rawStatus as { type?: unknown }).type ?? "")
-              : String(rawStatus ?? "");
-        const status = statusCandidate === "retry" ? "retrying" : statusCandidate;
-        if (status === "idle" || status === "complete" || status === "error") {
-          setStreaming(false);
-          setStatusLine(status || "idle");
-          if (status !== "error") {
-            setLatestRuntimeError(null);
-          }
-        } else if (status === "compacting" || status === "retrying") {
-          setStreaming(true);
-          setStatusLine(status);
-          setLatestRuntimeError(null);
-        }
-        return;
-      }
-
-      if (type === "question.created" && eventSessionId === selectedSessionRef.current) {
-        flushPendingOutputBlocks();
-        setQuestion(questionInteractionFromEvent(event, eventSessionId));
-        setQuestionAnswers({});
-        setStreaming(false);
-        setStatusLine("awaiting_user");
-        setLatestRuntimeError(null);
-        return;
-      }
-
-      if (type === "question.resolved" && eventSessionId === selectedSessionRef.current) {
-        setQuestion(null);
-        setQuestionAnswers({});
-        setQuestionSubmitting(false);
-        setLatestRuntimeError(null);
-        setStreaming(true);
-        setStatusLine("running");
-        return;
-      }
-
-      if (type === "execution.topology.changed" && eventSessionId === selectedSessionRef.current) {
-        void refreshExecutionActivity(eventSessionId);
-        return;
-      }
-
-      if (type === "permission.requested" && eventSessionId === selectedSessionRef.current) {
-        setPermission(permissionInteractionFromEvent(event, eventSessionId));
-        setPermissionSubmitting(false);
-        setPermissionSubmitError(null);
-        setPermissionSubmitStartedAt(null);
-        setPermissionSubmitCompletedAt(null);
-        setLatestRuntimeError(null);
-        setStreaming(false);
-        setStatusLine("awaiting_user");
-        return;
-      }
-
-      if (type === "permission.resolved") {
-        const resolvedPermissionId = String(event.permissionID ?? "");
-        let resolvedCurrentPermission = false;
-        setPermission((current) => {
-          if (!current) return null;
-          if (resolvedPermissionId && current.permission_id !== resolvedPermissionId) {
-            return current;
-          }
-          resolvedCurrentPermission = true;
-          return null;
-        });
-        if (resolvedCurrentPermission || !resolvedPermissionId) {
-          setPermissionSubmitting(false);
-          setPermissionSubmitError(null);
-          setPermissionSubmitCompletedAt(new Date().toISOString());
-          setLatestRuntimeError(null);
-          setStreaming(true);
-          setStatusLine("running");
-        }
-      }
-    };
-
-    const connect = async () => {
-      while (active) {
-        controller = new AbortController();
-        try {
-          const response = await fetch(apiUrl("/event?tier=web"), {
-            headers: { Accept: "text/event-stream" },
-            signal: controller.signal,
-          });
-          if (!response.ok) {
-            throw new Error(`${response.status} ${response.statusText}`);
-          }
-          await parseSSE(response, (_eventName, payload) => handleServerEvent(payload));
-        } catch (error) {
-          if (!active || controller.signal.aborted) return;
-          setStatusLine("reconnecting");
-          await new Promise((resolve) => window.setTimeout(resolve, 1500));
-        }
-      }
-    };
-
-    void connect();
-    return () => {
-      active = false;
-      controller?.abort();
-      clearPendingOutputBlockFlush();
-      clearPendingSessionRefresh();
-    };
-  }, [
-    appendRuntimeSurfaceBlock,
-    clearPendingOutputBlockFlush,
-    clearPendingSessionRefresh,
-    flushPendingOutputBlocks,
-    maxPendingOutputBlocks,
-    pendingVisibleSnapshotKey,
-    refreshExecutionActivity,
-    schedulePendingOutputBlockFlush,
-    scheduleSessionRefresh,
-    setRuntimeSurfaceBanner,
-  ]);
 
   const createSession = async (options?: {
     directory?: string;

@@ -375,6 +375,26 @@ pub enum PartType {
 
 impl SessionMessage {
     pub fn user(session_id: impl Into<String>, text: impl Into<String>) -> Self {
+        Self::user_inner(session_id, text, HashMap::new())
+    }
+
+    /// User message with canonical source metadata.
+    pub fn user_with_source(
+        session_id: impl Into<String>,
+        text: impl Into<String>,
+        origin: MessageSourceOrigin,
+        surface: MessageSourceSurface,
+    ) -> Self {
+        let mut metadata = HashMap::new();
+        apply_message_source_metadata(&mut metadata, origin, surface);
+        Self::user_inner(session_id, text, metadata)
+    }
+
+    fn user_inner(
+        session_id: impl Into<String>,
+        text: impl Into<String>,
+        metadata: HashMap<String, serde_json::Value>,
+    ) -> Self {
         Self {
             id: format!("msg_{}", uuid::Uuid::new_v4()),
             session_id: session_id.into(),
@@ -390,7 +410,7 @@ impl SessionMessage {
                 message_id: None,
             }],
             created_at: Utc::now(),
-            metadata: HashMap::new(),
+            metadata,
             usage: None,
             finish: None,
         }
@@ -796,4 +816,80 @@ pub fn tool_id_from_part_key(part_key: &str) -> Option<&str> {
         return (!candidate.trim().is_empty()).then_some(candidate);
     }
     None
+}
+
+// ============================================================================
+// Message Source Metadata — canonical contract for message origin tracking.
+// All message-writing entry points MUST use these keys and helpers so
+// downstream consumers (telemetry, audit, UI) see a single stable schema.
+// ============================================================================
+
+/// Metadata key: who originated this message.
+pub const MESSAGE_SOURCE_ORIGIN_KEY: &str = "message_source.origin";
+/// Metadata key: which surface/transport was used.
+pub const MESSAGE_SOURCE_SURFACE_KEY: &str = "message_source.surface";
+/// Metadata key: this is a synthetic/system-generated message.
+pub const MESSAGE_SOURCE_SYNTHETIC_KEY: &str = "message_source.synthetic";
+/// Metadata key: this message was imported (fork/history).
+pub const MESSAGE_SOURCE_IMPORTED_KEY: &str = "message_source.imported";
+
+/// Who originated this message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageSourceOrigin {
+    /// Human operator (CLI/TUI/Web input).
+    Operator,
+    /// Scheduler / runtime injected.
+    Scheduler,
+    /// External adapter / webhook / callback.
+    ExternalTrigger,
+    /// Child agent handoff.
+    ChildHandoff,
+    /// Imported from fork / history.
+    ImportedHistory,
+    /// System-generated (steering, notice, etc.).
+    System,
+}
+
+/// Which surface/transport the message arrived through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageSourceSurface {
+    Cli,
+    Tui,
+    Web,
+    HttpApi,
+    UnixSocket,
+    Direct,
+    ExternalAdapter,
+}
+
+/// Apply canonical source metadata to a SessionMessage.
+pub fn apply_message_source_metadata(
+    metadata: &mut HashMap<String, serde_json::Value>,
+    origin: MessageSourceOrigin,
+    surface: MessageSourceSurface,
+) {
+    metadata.insert(
+        MESSAGE_SOURCE_ORIGIN_KEY.to_string(),
+        serde_json::to_value(origin).unwrap_or_default(),
+    );
+    metadata.insert(
+        MESSAGE_SOURCE_SURFACE_KEY.to_string(),
+        serde_json::to_value(surface).unwrap_or_default(),
+    );
+}
+
+/// Read source origin from metadata (best-effort; returns None if key missing).
+pub fn message_source_origin(metadata: &HashMap<String, serde_json::Value>) -> Option<MessageSourceOrigin> {
+    metadata
+        .get(MESSAGE_SOURCE_ORIGIN_KEY)
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+}
+
+/// Read source surface from metadata (best-effort).
+pub fn message_source_surface(metadata: &HashMap<String, serde_json::Value>) -> Option<MessageSourceSurface> {
+    metadata
+        .get(MESSAGE_SOURCE_SURFACE_KEY)
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
 }

@@ -1207,6 +1207,12 @@ pub(crate) struct SessionPromptRequest {
     pub idempotency_key: Option<String>,
     #[serde(default)]
     pub ingress_source: Option<String>,
+    /// Canonical message origin (Operator, Scheduler, etc.).
+    #[serde(default)]
+    pub source_origin: Option<rocode_types::MessageSourceOrigin>,
+    /// Which surface/transport the request arrived through.
+    #[serde(default)]
+    pub source_surface: Option<rocode_types::MessageSourceSurface>,
     pub model: Option<String>,
     pub variant: Option<String>,
     pub agent: Option<String>,
@@ -1226,12 +1232,11 @@ impl SessionPromptRequest {
             parts: None,
             idempotency_key: ingress.idempotency_key.clone(),
             ingress_source: None,
-            model: None,
-            variant: None,
-            agent: None,
-            scheduler_profile: None,
-            command: None,
-            arguments: None,
+            source_origin: None,
+            source_surface: None,
+            model: None, variant: None,
+            agent: None, scheduler_profile: None,
+            command: None, arguments: None,
             recovery: None,
         }
     }
@@ -1298,6 +1303,15 @@ fn task_ingress_for_prompt(
             .as_ref()
             .map(|command| command.name.clone())
             .or_else(|| req.command.clone());
+    }
+
+    // Carry canonical source metadata from the request into the ingress
+    // so downstream message construction can stamp it on the user message.
+    if ingress.source_origin.is_none() {
+        ingress.source_origin = req.source_origin;
+    }
+    if ingress.source_surface.is_none() {
+        ingress.source_surface = req.source_surface;
     }
 
     Ok(ingress)
@@ -3117,11 +3131,10 @@ mod tests {
             ingress_source: None,
             model: None,
             variant: None,
-            agent: None,
-            scheduler_profile: None,
-            command: None,
-            arguments: None,
+            agent: None, scheduler_profile: None,
+            command: None, arguments: None,
             recovery: None,
+            source_origin: None, source_surface: None,
         }
     }
 

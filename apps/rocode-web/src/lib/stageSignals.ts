@@ -31,6 +31,9 @@ function sentenceCase(value: string) {
   return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
 }
 
+// P2-3 RETAINED HEURISTIC: Display-only label beautification.
+// Maps machine-readable wait targets to human-readable labels.
+// Only affects UI display text, never transcript routing or content semantics.
 export function humanizeStageWaitTarget(value?: string | null) {
   const trimmed = value?.trim();
   if (!trimmed) return null;
@@ -42,6 +45,9 @@ export function humanizeStageWaitTarget(value?: string | null) {
   return trimmed;
 }
 
+// P2-3 RETAINED HEURISTIC: Display-only label beautification.
+// Maps machine-readable stage event names to human-readable labels.
+// Only affects UI display text, never transcript routing or content semantics.
 export function humanizeStageEvent(value?: string | null) {
   const trimmed = value?.trim();
   if (!trimmed) return null;

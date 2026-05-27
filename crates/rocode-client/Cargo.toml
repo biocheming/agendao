@@ -9,10 +9,13 @@ license.workspace = true
 rocode-api = { path = "../rocode-api" }
 rocode-command = { path = "../rocode-command" }
 rocode-config = { path = "../rocode-config" }
+rocode-orchestrator = { path = "../rocode-orchestrator" }
 rocode-runtime-context = { path = "../rocode-runtime-context" }
 rocode-state = { path = "../rocode-state" }
+rocode-types = { path = "../rocode-types" }
 anyhow = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tokio = { workspace = true }
 urlencoding = "2.1"

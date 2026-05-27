@@ -1,6 +1,15 @@
 import { Button } from "@/components/ui/button";
-import type { FeedMessage } from "@/lib/history";
-import { humanizeStageEvent, humanizeStageWaitTarget } from "@/lib/stageSignals";
+import type { FeedBlock } from "@/lib/history";
+import {
+  compactText,
+  excerptText,
+  humanizeStageEvent,
+  humanizeStageWaitTarget,
+  normalizeValue,
+  stageDisplayTitle,
+  stageSummaryText,
+  stageTokenChips,
+} from "@/lib/stagePresentation";
 import { cn } from "@/lib/utils";
 import {
   ActivityIcon,
@@ -14,69 +23,13 @@ import { useState } from "react";
 import { MessageResponse } from "./ai-elements/message";
 
 interface SchedulerStageCardProps {
-  message: FeedMessage;
+  message: FeedBlock<"scheduler_stage">;
   highlighted?: boolean;
   onNavigateStage: (stageId: string) => void;
   onNavigateAttachedSession: (
     sessionId: string,
     context?: { stageId?: string | null; toolCallId?: string | null; label?: string | null },
   ) => void;
-}
-
-function tokenSummary(message: FeedMessage) {
-  return [
-    message.prompt_tokens ? `input ${formatCompactTokenCount(message.prompt_tokens)}` : null,
-    message.completion_tokens ? `output ${formatCompactTokenCount(message.completion_tokens)}` : null,
-    message.reasoning_tokens ? `reasoning ${formatCompactTokenCount(message.reasoning_tokens)}` : null,
-    message.cache_read_tokens ? `cache read ${formatCompactTokenCount(message.cache_read_tokens)}` : null,
-    message.cache_miss_tokens ? `cache miss ${formatCompactTokenCount(message.cache_miss_tokens)}` : null,
-    message.cache_write_tokens ? `cache write ${formatCompactTokenCount(message.cache_write_tokens)}` : null,
-  ].filter(Boolean);
-}
-
-function formatCompactTokenCount(value: number) {
-  if (!Number.isFinite(value)) return "0";
-  const abs = Math.abs(value);
-  if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
-  if (abs >= 1_000) return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}K`;
-  return String(Math.round(value));
-}
-
-function compactText(value: unknown) {
-  return String(value ?? "").replace(/\s+/g, " ").trim();
-}
-
-function sectionSummary(value: unknown, maxLength = 140) {
-  const text = compactText(value);
-  if (!text) return null;
-  if (text.length <= maxLength) return text;
-  return `${text.slice(0, maxLength - 1)}…`;
-}
-
-function normalizeValue(value: unknown) {
-  const text = String(value ?? "").trim();
-  if (!text) return { structured: false, text: "" };
-
-  const candidate = text.startsWith("{") || text.startsWith("[");
-  if (candidate) {
-    try {
-      return {
-        structured: true,
-        text: JSON.stringify(JSON.parse(text), null, 2),
-      };
-    } catch {
-      // Fall back to raw text.
-    }
-  }
-
-  return {
-    structured:
-      text.includes("\n") ||
-      text.length > 140 ||
-      text.includes("{") ||
-      text.includes("["),
-    text,
-  };
 }
 
 function StructuredValue({ value }: { value: unknown }) {
@@ -183,15 +136,12 @@ export function SchedulerStageCard({
       : null,
     typeof message.step === "number" ? `step ${message.step}` : null,
   ].filter(Boolean);
-  const tokens = tokenSummary(message);
-  const stageTitle = message.title || message.stage || "Scheduler Stage";
+  // P2-3: stage display logic centralized in lib/stagePresentation.ts
+  const tokens = stageTokenChips(message);
+  const stageTitle = stageDisplayTitle(message);
   const waitingLabel = humanizeStageWaitTarget(message.waiting_on);
   const lastEventLabel = humanizeStageEvent(message.last_event);
-  const stageSummary =
-    compactText(message.focus) ||
-    compactText(lastEventLabel) ||
-    compactText(message.text) ||
-    null;
+  const stageSummary = stageSummaryText(message);
 
   const decisionInlineFields = message.decision?.fields
     ?.map((field) => ({
@@ -367,7 +317,7 @@ export function SchedulerStageCard({
                     icon={<InfoIcon className="size-4" />}
                     label="Response"
                     title={title}
-                    summary={sectionSummary(section.body || "")}
+                    summary={excerptText(section.body || "", 140)}
                     defaultOpen={false}
                   >
                     <MarkdownSectionValue value={section.body || ""} />

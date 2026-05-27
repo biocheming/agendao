@@ -300,96 +300,96 @@ fn part_to_info(
 
     if output_block.is_none() {
         output_block = if let Some(tool_call) = tool_call.as_ref() {
-        Some(history_tool_call_to_web(
-            &tool_call.id,
-            &tool_call.name,
-            &tool_call.input,
-            tool_call.status.as_deref(),
-            tool_call.raw.as_deref(),
-        ))
+            Some(history_tool_call_to_web(
+                &tool_call.id,
+                &tool_call.name,
+                &tool_call.input,
+                tool_call.status.as_deref(),
+                tool_call.raw.as_deref(),
+            ))
         } else if let Some(tool_result) = tool_result.as_ref() {
-        let tool_name = tool_names
-            .get(&tool_result.tool_call_id)
-            .cloned()
-            .unwrap_or_else(|| tool_result.tool_call_id.clone());
-        let empty_meta = HashMap::new();
-        Some(history_tool_result_to_web(
-            &tool_result.tool_call_id,
-            &tool_name,
-            tool_result.title.as_deref(),
-            &tool_result.content,
-            tool_result.is_error,
-            tool_result.metadata.as_ref().unwrap_or(&empty_meta),
-        ))
+            let tool_name = tool_names
+                .get(&tool_result.tool_call_id)
+                .cloned()
+                .unwrap_or_else(|| tool_result.tool_call_id.clone());
+            let empty_meta = HashMap::new();
+            Some(history_tool_result_to_web(
+                &tool_result.tool_call_id,
+                &tool_name,
+                tool_result.title.as_deref(),
+                &tool_result.content,
+                tool_result.is_error,
+                tool_result.metadata.as_ref().unwrap_or(&empty_meta),
+            ))
         } else if let rocode_session::PartType::Agent { name, status } = &part.part_type {
-        Some(history_session_event_to_web(
-            "agent",
-            format!("Agent · {name}"),
-            Some(status.as_str()),
-            Some(format!("Agent `{name}` entered `{status}` state.")),
-            vec![("Agent".to_string(), name.clone(), None)],
-            None,
-        ))
+            Some(history_session_event_to_web(
+                "agent",
+                format!("Agent · {name}"),
+                Some(status.as_str()),
+                Some(format!("Agent `{name}` entered `{status}` state.")),
+                vec![("Agent".to_string(), name.clone(), None)],
+                None,
+            ))
         } else if let rocode_session::PartType::Subtask {
-        id,
-        description,
-        status,
-    } = &part.part_type
+            id,
+            description,
+            status,
+        } = &part.part_type
         {
-        Some(history_session_event_to_web(
-            "subtask",
-            if description.trim().is_empty() {
-                "Subtask".to_string()
-            } else {
-                format!("Subtask · {description}")
-            },
-            Some(status.as_str()),
-            Some(format!("Subtask `{id}` is `{status}`.")),
-            vec![
-                ("ID".to_string(), id.clone(), None),
-                (
-                    "Description".to_string(),
-                    if description.trim().is_empty() {
-                        "—".to_string()
-                    } else {
-                        description.clone()
-                    },
-                    None,
-                ),
-            ],
-            None,
-        ))
+            Some(history_session_event_to_web(
+                "subtask",
+                if description.trim().is_empty() {
+                    "Subtask".to_string()
+                } else {
+                    format!("Subtask · {description}")
+                },
+                Some(status.as_str()),
+                Some(format!("Subtask `{id}` is `{status}`.")),
+                vec![
+                    ("ID".to_string(), id.clone(), None),
+                    (
+                        "Description".to_string(),
+                        if description.trim().is_empty() {
+                            "—".to_string()
+                        } else {
+                            description.clone()
+                        },
+                        None,
+                    ),
+                ],
+                None,
+            ))
         } else if let rocode_session::PartType::Retry { count, reason } = &part.part_type {
-        Some(history_session_event_to_web(
-            "retry",
-            "Retry",
-            Some("running"),
-            Some(format!("Retry attempt {}", count)),
-            vec![(
-                "Attempt".to_string(),
-                count.to_string(),
-                Some("status".to_string()),
-            )],
-            Some(reason.clone()),
-        ))
+            Some(history_session_event_to_web(
+                "retry",
+                "Retry",
+                Some("running"),
+                Some(format!("Retry attempt {}", count)),
+                vec![(
+                    "Attempt".to_string(),
+                    count.to_string(),
+                    Some("status".to_string()),
+                )],
+                Some(reason.clone()),
+            ))
         } else if let rocode_session::PartType::StepStart { id, name } = &part.part_type {
-        Some(history_session_event_to_web(
-            "step",
-            format!("Step · {name}"),
-            Some("running"),
-            Some("Step started".to_string()),
-            vec![("ID".to_string(), id.clone(), None)],
-            None,
-        ))
+            Some(history_session_event_to_web(
+                "step",
+                format!("Step · {name}"),
+                Some("running"),
+                Some("Step started".to_string()),
+                vec![("ID".to_string(), id.clone(), None)],
+                None,
+            ))
         } else if let rocode_session::PartType::StepFinish { id, output } = &part.part_type {
-        Some(history_session_event_to_web(
-            "step",
-            "Step complete",
-            Some("completed"),
-            Some("Step finished".to_string()),
-            vec![("ID".to_string(), id.clone(), None)],
-            output.clone(),
-        ))
+            Some(history_session_event_to_web(
+                "step",
+                "Step complete",
+                Some("completed"),
+                Some("Step finished".to_string()),
+                vec![("ID".to_string(), id.clone(), None)],
+                output.clone(),
+            ))
         } else {
             None
         };
@@ -518,7 +518,15 @@ fn message_to_info(
     let mut parts: Vec<PartInfo> = message
         .parts
         .iter()
-        .map(|part| part_to_info(part, &message.role, &message.metadata, tool_names, pending_questions))
+        .map(|part| {
+            part_to_info(
+                part,
+                &message.role,
+                &message.metadata,
+                tool_names,
+                pending_questions,
+            )
+        })
         .collect();
     if let Some(block) = scheduler_stage_block {
         for part in &mut parts {
@@ -733,7 +741,11 @@ pub(super) async fn send_message(
     let session = sessions
         .get_mut(&session_id)
         .ok_or_else(|| ApiError::SessionNotFound(session_id.clone()))?;
-    session.add_user_message(&req.content);
+    session.add_user_message_with_source(
+        req.content.clone(),
+        rocode_types::MessageSourceOrigin::Operator,
+        rocode_types::MessageSourceSurface::HttpApi,
+    );
     if let Some(variant) = req.variant.as_deref() {
         session.insert_metadata("model_variant".to_string(), serde_json::json!(variant));
     }
@@ -1163,15 +1175,20 @@ mod tests {
             .as_ref()
             .expect("assistant text history output_block");
 
-        assert_eq!(block.get("kind").and_then(|value| value.as_str()), Some("message"));
         assert_eq!(
-            block.get("live_identity")
+            block.get("kind").and_then(|value| value.as_str()),
+            Some("message")
+        );
+        assert_eq!(
+            block
+                .get("live_identity")
                 .and_then(|value| value.get("part_key"))
                 .and_then(|value| value.as_str()),
             Some(rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY)
         );
         assert_eq!(
-            block.get("live_identity")
+            block
+                .get("live_identity")
                 .and_then(|value| value.get("part_kind"))
                 .and_then(|value| value.as_str()),
             Some("assistant_text")
@@ -1196,15 +1213,20 @@ mod tests {
             .as_ref()
             .expect("assistant reasoning history output_block");
 
-        assert_eq!(block.get("kind").and_then(|value| value.as_str()), Some("reasoning"));
         assert_eq!(
-            block.get("live_identity")
+            block.get("kind").and_then(|value| value.as_str()),
+            Some("reasoning")
+        );
+        assert_eq!(
+            block
+                .get("live_identity")
                 .and_then(|value| value.get("part_key"))
                 .and_then(|value| value.as_str()),
             Some(rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY)
         );
         assert_eq!(
-            block.get("live_identity")
+            block
+                .get("live_identity")
                 .and_then(|value| value.get("part_kind"))
                 .and_then(|value| value.as_str()),
             Some("assistant_reasoning")
@@ -1234,8 +1256,14 @@ mod tests {
             .as_ref()
             .expect("tool call history output_block");
 
-        assert_eq!(block.get("kind").and_then(|value| value.as_str()), Some("tool"));
-        assert_eq!(block.get("phase").and_then(|value| value.as_str()), Some("done"));
+        assert_eq!(
+            block.get("kind").and_then(|value| value.as_str()),
+            Some("tool")
+        );
+        assert_eq!(
+            block.get("phase").and_then(|value| value.as_str()),
+            Some("done")
+        );
         assert_eq!(
             block.get("detail").and_then(|value| value.as_str()),
             Some("{\"file_path\":\"/tmp/normalized.txt\"}")

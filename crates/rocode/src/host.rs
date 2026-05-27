@@ -24,6 +24,9 @@ pub struct TuiCommandRequest {
     pub cors: Vec<String>,
     pub attach_url: Option<String>,
     pub password: Option<String>,
+    pub unix_socket_path: Option<String>,
+    /// Use Direct (in-process) mode — no server, no IPC.
+    pub local: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -121,6 +124,7 @@ pub async fn run_server_command(request: ServerCommandRequest) -> anyhow::Result
         mdns: request.mdns,
         mdns_domain: request.mdns_domain,
         cors: request.cors,
+        unix_socket_path: None,
     })
     .await
 }
@@ -174,6 +178,7 @@ pub async fn run_web_command(request: WebCommandRequest) -> anyhow::Result<()> {
         mdns,
         mdns_domain,
         cors: effective_cors,
+        unix_socket_path: None,
     }));
 
     launcher::wait_for_server_ready(&backend_url, Duration::from_secs(90), None).await?;
@@ -197,6 +202,8 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
         cors,
         attach_url,
         password,
+        unix_socket_path,
+        local,
     } = request;
 
     if fork && !continue_last && session.is_none() {
@@ -205,9 +212,32 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
 
     let working_dir = project.clone();
     let server_password = password.or_else(current_server_password);
+
     let mut server_task = None;
     let base_url = if let Some(url) = attach_url {
+        if local {
+            anyhow::bail!("--local is incompatible with --attach-url");
+        }
         url
+    } else if local {
+        // Direct mode: no server needed, TUI constructs the core internally.
+        eprintln!("Starting TUI in Direct (in-process) mode");
+        let run_result = tokio::task::spawn_blocking(move || {
+            rocode_tui::run_tui_with_config(AppLaunchConfig {
+                base_url: None,
+                server_password: None,
+                model,
+                initial_prompt: prompt,
+                agent_name: agent,
+                session_id: session,
+                working_dir,
+                unix_socket_path: None,
+                local_direct: true,
+            })
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("rocode-tui task failed to join: {}", error))?;
+        return run_result;
     } else {
         let client_host = if mdns && hostname == "127.0.0.1" {
             "127.0.0.1".to_string()
@@ -227,6 +257,7 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
                 mdns,
                 mdns_domain,
                 cors,
+                unix_socket_path: unix_socket_path.clone(),
             },
         )));
         launcher::wait_for_server_ready(&server_url, Duration::from_secs(90), None).await?;
@@ -239,6 +270,7 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
         continue_last,
         session,
         fork,
+        unix_socket_path.as_deref(),
     )
     .await?;
     // rocode-tui creates and drives its own Tokio runtime internally.
@@ -253,6 +285,8 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
             agent_name: agent,
             session_id: selected_session,
             working_dir,
+            unix_socket_path,
+            local_direct: false,
         })
     })
     .await
@@ -272,15 +306,41 @@ async fn resolve_requested_session(
     continue_last: bool,
     session: Option<String>,
     fork: bool,
+    unix_socket_path: Option<&str>,
 ) -> anyhow::Result<Option<String>> {
+    // Use TransportSelector for automatic transport selection
+    // (Unix Socket first with connectivity test, HTTP fallback).
+    let transport = match unix_socket_path {
+        Some(socket_path) => {
+            let selector = rocode_client::transport::TransportSelector::new(
+                Some(socket_path.to_string()),
+                base_url.to_string(),
+                server_password.clone(),
+            );
+            selector.select().await.ok()
+        }
+        None => None,
+    };
+
     let api_client =
         rocode_client::AsyncApiClient::new_with_password(base_url.to_string(), server_password);
     let selected = if let Some(session_id) = session {
         Some(session_id)
     } else if continue_last {
-        api_client
-            .list_sessions(None, Some(100))
-            .await?
+        // Try listing via transport (Unix Socket) first, fall back to HTTP.
+        let sessions = if let Some(ref t) = transport {
+            t.list_sessions()
+                .await
+                .unwrap_or_else(|_| vec![])
+        } else {
+            vec![]
+        };
+        let sessions = if sessions.is_empty() {
+            api_client.list_sessions(None, Some(100)).await?
+        } else {
+            sessions
+        };
+        sessions
             .into_iter()
             .find(|s| s.parent_id.is_none())
             .map(|s| s.id)

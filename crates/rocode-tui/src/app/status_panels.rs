@@ -1647,6 +1647,8 @@ fn format_run_status(status: &crate::api::SessionRunStatusKind) -> &'static str 
         crate::api::SessionRunStatusKind::WaitingOnTool => "waiting_on_tool",
         crate::api::SessionRunStatusKind::WaitingOnUser => "waiting_on_user",
         crate::api::SessionRunStatusKind::Cancelling => "cancelling",
+        crate::api::SessionRunStatusKind::Blocked => "blocked",
+        crate::api::SessionRunStatusKind::Sleeping => "sleeping",
     }
 }
 

@@ -202,19 +202,16 @@ impl AsyncApiClient {
         variant: Option<String>,
         ingress_source: Option<String>,
         idempotency_key: Option<String>,
+        source_origin: Option<rocode_types::MessageSourceOrigin>,
+        source_surface: Option<rocode_types::MessageSourceSurface>,
     ) -> anyhow::Result<PromptResponse> {
         let url = server_url(&self.base_url, &format!("/session/{}/prompt", session_id));
         let req = PromptRequest {
             message: (!content.trim().is_empty()).then_some(content),
-            parts,
-            idempotency_key,
-            ingress_source,
-            agent,
-            scheduler_profile,
-            model,
-            variant,
-            command: None,
-            arguments: None,
+            parts, idempotency_key, ingress_source,
+            agent, scheduler_profile, model, variant,
+            command: None, arguments: None,
+            source_origin, source_surface,
         };
         let resp = self.client.post(&url).json(&req).send().await?;
         Self::json_ok(resp, "send prompt").await
@@ -229,19 +226,17 @@ impl AsyncApiClient {
         variant: Option<String>,
         ingress_source: Option<String>,
         idempotency_key: Option<String>,
+        source_origin: Option<rocode_types::MessageSourceOrigin>,
+        source_surface: Option<rocode_types::MessageSourceSurface>,
     ) -> anyhow::Result<PromptResponse> {
         let url = server_url(&self.base_url, &format!("/session/{}/prompt", session_id));
         let req = PromptRequest {
-            message: None,
-            parts: None,
-            idempotency_key,
-            ingress_source,
-            agent: None,
-            scheduler_profile: None,
-            model,
-            variant,
-            command: Some(command),
-            arguments,
+            message: None, parts: None,
+            idempotency_key, ingress_source,
+            agent: None, scheduler_profile: None,
+            model, variant,
+            command: Some(command), arguments,
+            source_origin, source_surface,
         };
         let resp = self.client.post(&url).json(&req).send().await?;
         Self::json_ok(resp, "send command prompt").await

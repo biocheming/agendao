@@ -614,9 +614,7 @@ fn event_passes_subscription_caps(
             let kind = block.get("kind").and_then(|v| v.as_str()).unwrap_or("");
             let phase = block.get("phase").and_then(|v| v.as_str()).unwrap_or("");
             match kind {
-                "reasoning" => {
-                    !caps.final_only && (phase != "delta" || caps.reasoning_delta)
-                }
+                "reasoning" => !caps.final_only && (phase != "delta" || caps.reasoning_delta),
                 "message" => !caps.final_only && caps.message_text_delta,
                 "scheduler_stage" => !caps.final_only && caps.tool_progress,
                 "tool" => {
@@ -1671,10 +1669,18 @@ mod tests {
     fn coalescer_accumulates_deltas_into_growing_snapshot() {
         let mut c = LiveSnapshotCoalescer::new();
 
-        let s1 = c.coalesce(coalesce_delta("hello", "msg-1", rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY));
+        let s1 = c.coalesce(coalesce_delta(
+            "hello",
+            "msg-1",
+            rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
+        ));
         assert_eq!(snapshot_block_text(&s1), Some("hello".to_string()));
 
-        let s2 = c.coalesce(coalesce_delta(" world", "msg-1", rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY));
+        let s2 = c.coalesce(coalesce_delta(
+            " world",
+            "msg-1",
+            rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
+        ));
         assert_eq!(snapshot_block_text(&s2), Some("hello world".to_string()));
         assert_eq!(
             snapshot_phase(&s2),
@@ -1707,8 +1713,14 @@ mod tests {
         else {
             panic!("expected output block");
         };
-        assert_eq!(block.get("phase").and_then(|value| value.as_str()), Some("full"));
-        assert_eq!(block.get("text").and_then(|value| value.as_str()), Some("think"));
+        assert_eq!(
+            block.get("phase").and_then(|value| value.as_str()),
+            Some("full")
+        );
+        assert_eq!(
+            block.get("text").and_then(|value| value.as_str()),
+            Some("think")
+        );
         assert_eq!(
             live_identity.as_ref().map(|identity| identity.phase),
             Some(rocode_types::LivePartPhase::Snapshot)
@@ -1736,7 +1748,11 @@ mod tests {
     #[test]
     fn coalescer_clears_state_on_end_phase() {
         let mut c = LiveSnapshotCoalescer::new();
-        c.coalesce(coalesce_delta("hello", "msg-1", rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY));
+        c.coalesce(coalesce_delta(
+            "hello",
+            "msg-1",
+            rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
+        ));
         assert_eq!(c.accum.len(), 1, "accum should track one entry");
 
         // End phase on the same identity must clear the entry.
@@ -1760,19 +1776,31 @@ mod tests {
     fn coalescer_keys_state_by_session_message_and_part_key() {
         let mut c = LiveSnapshotCoalescer::new();
 
-        let first_message = c.coalesce(coalesce_delta("msg1", "msg-1", rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY));
+        let first_message = c.coalesce(coalesce_delta(
+            "msg1",
+            "msg-1",
+            rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
+        ));
         assert_eq!(
             snapshot_block_text(&first_message),
             Some("msg1".to_string())
         );
 
-        let second_message = c.coalesce(coalesce_delta("msg2", "msg-2", rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY));
+        let second_message = c.coalesce(coalesce_delta(
+            "msg2",
+            "msg-2",
+            rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
+        ));
         assert_eq!(
             snapshot_block_text(&second_message),
             Some("msg2".to_string())
         );
 
-        let reasoning_part = c.coalesce(coalesce_delta("thinking", "msg-1", rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY));
+        let reasoning_part = c.coalesce(coalesce_delta(
+            "thinking",
+            "msg-1",
+            rocode_types::ASSISTANT_REASONING_MAIN_PART_KEY,
+        ));
         assert_eq!(
             snapshot_block_text(&reasoning_part),
             Some("thinking".to_string())
@@ -1802,7 +1830,11 @@ mod tests {
     #[test]
     fn coalescer_snapshot_has_full_phase_not_delta() {
         let mut c = LiveSnapshotCoalescer::new();
-        let result = c.coalesce(coalesce_delta("test", "msg-1", rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY));
+        let result = c.coalesce(coalesce_delta(
+            "test",
+            "msg-1",
+            rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
+        ));
         let ServerEvent::OutputBlock { ref block, .. } = result else {
             panic!("expected OutputBlock")
         };
@@ -1816,8 +1848,16 @@ mod tests {
     #[test]
     fn coalesced_snapshots_stay_mergeable_for_pending_debounce() {
         let mut c = LiveSnapshotCoalescer::new();
-        let mut first = c.coalesce(coalesce_delta("hel", "msg-1", rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY));
-        let second = c.coalesce(coalesce_delta("lo", "msg-1", rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY));
+        let mut first = c.coalesce(coalesce_delta(
+            "hel",
+            "msg-1",
+            rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
+        ));
+        let second = c.coalesce(coalesce_delta(
+            "lo",
+            "msg-1",
+            rocode_types::ASSISTANT_TEXT_MAIN_PART_KEY,
+        ));
 
         assert!(
             is_mergeable_output_delta(&first),

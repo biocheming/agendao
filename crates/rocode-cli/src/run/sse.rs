@@ -361,6 +361,8 @@ async fn resolve_prompt_submission(
                     "cli_command_{}",
                     rocode_core::id::create(rocode_core::id::Prefix::User, true, None)
                 )),
+                Some(rocode_types::MessageSourceOrigin::Operator),
+                Some(rocode_types::MessageSourceSurface::Cli),
             )
             .await?;
     }
@@ -459,6 +461,8 @@ async fn run_server_prompt_with_parts(
                 "cli_{}",
                 rocode_core::id::create(rocode_core::id::Prefix::User, true, None)
             )),
+            Some(rocode_types::MessageSourceOrigin::Operator),
+            Some(rocode_types::MessageSourceSurface::Cli),
         )
         .await
     {
@@ -928,6 +932,9 @@ fn handle_sse_event(
                                 projection.scroll_offset = 0;
                             }
                         }
+                        // P0-3: LEGACY fallback — direct stdout when no terminal surface
+                        // (pipe/non-interactive mode). In interactive mode, all output must
+                        // go through CliTerminalSurface.append_rendered().
                         print!("{}", rendered);
                         let _ = io::stdout().flush();
                     }
@@ -996,6 +1003,7 @@ fn handle_sse_event(
                                     projection.scroll_offset = 0;
                                 }
                             }
+                            // P0-3: LEGACY fallback — direct stdout when no terminal surface.
                             print!("{}", rendered);
                             let _ = io::stdout().flush();
                         }

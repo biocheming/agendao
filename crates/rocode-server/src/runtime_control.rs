@@ -181,6 +181,18 @@ pub enum SessionRunStatus {
         message: String,
         next: i64,
     },
+    /// Session is blocked waiting for an external condition.
+    Blocked {
+        reason: Option<String>,
+        /// Epoch millis when to recheck; None = blocked indefinitely.
+        recheck_at: Option<i64>,
+    },
+    /// Session is intentionally sleeping.
+    Sleeping {
+        reason: Option<String>,
+        /// Epoch millis when to wake; None = sleeping indefinitely.
+        wake_at: Option<i64>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -321,6 +333,52 @@ impl RuntimeControlRegistry {
                 })
                 .await;
             }
+            SessionRunStatus::Blocked { reason, recheck_at } => {
+                let mut meta = serde_json::json!({});
+                if let Some(r) = reason.as_deref() {
+                    meta["reason"] = serde_json::json!(r);
+                }
+                if let Some(ts) = recheck_at {
+                    meta["recheck_at"] = serde_json::json!(ts);
+                }
+                self.upsert_execution(ExecutionRecord {
+                    id: execution_id,
+                    session_id: session_id.to_string(),
+                    kind: ExecutionKind::PromptRun,
+                    status: ExecutionStatus::Waiting,
+                    label: Some("Prompt run".to_string()),
+                    parent_id: None, stage_id: None,
+                    waiting_on: Some("blocked".to_string()),
+                    recent_event: Some(reason.unwrap_or_else(|| "Blocked".to_string())),
+                    started_at: now_millis(),
+                    updated_at: now_millis(),
+                    metadata: Some(meta),
+                })
+                .await;
+            }
+            SessionRunStatus::Sleeping { reason, wake_at } => {
+                let mut meta = serde_json::json!({});
+                if let Some(r) = reason.as_deref() {
+                    meta["reason"] = serde_json::json!(r);
+                }
+                if let Some(ts) = wake_at {
+                    meta["wake_at"] = serde_json::json!(ts);
+                }
+                self.upsert_execution(ExecutionRecord {
+                    id: execution_id,
+                    session_id: session_id.to_string(),
+                    kind: ExecutionKind::PromptRun,
+                    status: ExecutionStatus::Waiting,
+                    label: Some("Prompt run".to_string()),
+                    parent_id: None, stage_id: None,
+                    waiting_on: Some("sleeping".to_string()),
+                    recent_event: Some(reason.unwrap_or_else(|| "Sleeping".to_string())),
+                    started_at: now_millis(),
+                    updated_at: now_millis(),
+                    metadata: Some(meta),
+                })
+                .await;
+            }
         }
     }
 
@@ -338,10 +396,33 @@ impl RuntimeControlRegistry {
                         SessionRunStatus::Busy
                     }
                     ExecutionStatus::Waiting => {
-                        if record.waiting_on.as_deref() == Some("compaction") {
-                            SessionRunStatus::Compacting
-                        } else {
-                            SessionRunStatus::Busy
+                        match record.waiting_on.as_deref() {
+                            Some("compaction") => SessionRunStatus::Compacting,
+                            Some("blocked") => {
+                                let metadata = record.metadata.as_ref();
+                                SessionRunStatus::Blocked {
+                                    reason: metadata
+                                        .and_then(|v| v.get("reason"))
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string()),
+                                    recheck_at: metadata
+                                        .and_then(|v| v.get("recheck_at"))
+                                        .and_then(|v| v.as_i64()),
+                                }
+                            }
+                            Some("sleeping") => {
+                                let metadata = record.metadata.as_ref();
+                                SessionRunStatus::Sleeping {
+                                    reason: metadata
+                                        .and_then(|v| v.get("reason"))
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string()),
+                                    wake_at: metadata
+                                        .and_then(|v| v.get("wake_at"))
+                                        .and_then(|v| v.as_i64()),
+                                }
+                            }
+                            _ => SessionRunStatus::Busy,
                         }
                     }
                     ExecutionStatus::Retry => {
@@ -1827,4 +1908,5 @@ mod tests {
             ExecutionNodeKind::Question
         );
     }
+
 }

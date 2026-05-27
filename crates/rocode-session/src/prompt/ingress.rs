@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use rocode_types::{
     ExternalAdapterEvent, ExternalAdapterIngressRef, ExternalAdapterValidationError,
+    MessageSourceOrigin, MessageSourceSurface,
 };
 use serde::{Deserialize, Serialize};
 
@@ -113,6 +114,12 @@ pub struct IngressTurnEnvelope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_adapter: Option<ExternalAdapterIngressRef>,
     pub stabilization: IngressStabilizationMetadata,
+    /// Canonical message origin (Operator, Scheduler, etc.).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_origin: Option<rocode_types::MessageSourceOrigin>,
+    /// Which surface/transport the ingress arrived through.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_surface: Option<rocode_types::MessageSourceSurface>,
 }
 
 impl IngressTurnEnvelope {
@@ -138,6 +145,8 @@ impl IngressTurnEnvelope {
             scheduler_stage_id: None,
             idempotency_key: None,
             external_adapter: None,
+            source_origin: None,
+            source_surface: None,
             stabilization: IngressStabilizationMetadata::single(
                 turn_id,
                 INGRESS_POLICY_UNSPECIFIED,
@@ -193,6 +202,8 @@ pub fn external_adapter_event_to_ingress_turn(
     );
     turn.external_adapter = Some(ExternalAdapterIngressRef::from(event));
     turn.stabilization.policy = INGRESS_POLICY_EXTERNAL_ADAPTER_METADATA_ONLY.to_string();
+    turn.source_origin = Some(MessageSourceOrigin::ExternalTrigger);
+    turn.source_surface = Some(MessageSourceSurface::ExternalAdapter);
 
     Ok(turn)
 }

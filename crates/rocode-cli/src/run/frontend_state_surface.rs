@@ -36,6 +36,20 @@ struct CliPromptRefreshSnapshot {
     footer_text: String,
 }
 
+// P0-3: Output sink hierarchy (documented; structural convergence in P1).
+//
+// Canonical sink — transcript-bearing output should go through here:
+//   append_rendered(text) — updates projection.transcript AND emits to stdout.
+//
+// Special-purpose paths (exceptions, not alternatives):
+//   print_ephemeral_text() — overlay output (lists, status), not transcript.
+//   print_block() — routes to prompt aux lane or append_rendered.
+//   refresh_prompt() — prompt redraw, never transcript output.
+//
+// Legacy bypass (still active, marked for convergence):
+//   Direct print!() in sse.rs — when terminal_surface is None
+//     (pipe/non-interactive). Also does projection.transcript.append_rendered()
+//     so the authority is updated, but the output path bypasses the surface.
 impl CliTerminalSurface {
     pub(super) fn new(
         style: CliStyle,

@@ -14,6 +14,8 @@ struct ServerCli {
     mdns_domain: String,
     #[arg(long)]
     cors: Vec<String>,
+    #[arg(long)]
+    unix_socket: Option<String>,
 }
 
 #[tokio::main]
@@ -28,6 +30,7 @@ async fn main() -> anyhow::Result<()> {
         mdns: cli.mdns,
         mdns_domain: cli.mdns_domain,
         cors: cli.cors,
+        unix_socket_path: cli.unix_socket,
     })
     .await
 }

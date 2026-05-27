@@ -96,6 +96,10 @@ pub struct SessionContext {
     pub sessions: HashMap<String, Session>,
     pub messages: HashMap<String, Vec<Message>>,
     pub message_index: HashMap<String, HashMap<String, usize>>,
+    // P0-4: Legacy fallback routing cache. Only populated when blocks
+    // arrive without live_identity. The cache maps (session_id, prefix) →
+    // generated message ID so the same heuristic ID is reused across
+    // related blocks. Must not be used for identity-bearing blocks.
     pub legacy_streaming_ids: HashMap<String, HashMap<String, String>>,
     pub current_session_id: Option<String>,
     pub session_status: HashMap<String, SessionStatus>,
@@ -450,6 +454,11 @@ impl SessionContext {
         }
     }
 
+    // P0-2: MessagePart text extraction authority (helper-level, not
+    // transcript authority). All consumers (mappers, render, merge) must
+    // use these for part-to-text conversion — no ad-hoc conversions
+    // elsewhere. The real visible transcript authority is
+    // SessionContext.messages with its per-part ordering and update rules.
     fn message_part_text_content(parts: &[MessagePart]) -> Option<String> {
         let mut text = String::new();
         for part in parts {
@@ -604,6 +613,14 @@ impl SessionContext {
                         text: String::new(),
                     });
                 }
+            }
+            "full" => {
+                message
+                    .parts
+                    .retain(|part| !matches!(part, MessagePart::Reasoning { .. }));
+                message.parts.push(MessagePart::Reasoning {
+                    text: text.to_string(),
+                });
             }
             "delta" => {
                 // Append reasoning text
@@ -1737,5 +1754,113 @@ mod tests {
         assert!(run_tail.completed_usage.total_cost > 0.0);
         assert!(!run_tail.awaiting_user_detail.is_empty());
         assert!(!run_tail.error_message.is_empty());
+    }
+
+    #[test]
+    fn canonical_live_stream_matches_tui_visible_transcript_contract() {
+        let mut ctx = SessionContext::new();
+        let fixture = live_transcript_state_fixture();
+        let canonical = &fixture.canonical_live_stream;
+
+        ctx.upsert_session(Session {
+            id: "session-1".to_string(),
+            title: "Session".to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+
+        for event in &canonical.events {
+            ctx.apply_output_block_incremental(
+                "session-1",
+                event.id.as_deref(),
+                &event.payload(),
+                event.live_identity.as_ref(),
+            );
+        }
+
+        let messages = ctx.messages.get("session-1").expect("messages");
+        let assistant_messages = messages
+            .iter()
+            .filter(|message| message.role == MessageRole::Assistant)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            assistant_messages.len(),
+            canonical.expected.transcript_blocks.assistant_count,
+            "{assistant_messages:?}"
+        );
+
+        let final_answer = *assistant_messages.first().expect("final assistant message");
+
+        let reasoning_parts = final_answer
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                MessagePart::Reasoning { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reasoning_parts,
+            vec!["I need to search for this information."],
+            "{:?}",
+            final_answer.parts
+        );
+
+        let final_tool_results = final_answer
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                MessagePart::ToolResult { id, result, .. } => Some((id.as_str(), result.as_str())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            final_tool_results.len(),
+            canonical.expected.transcript_blocks.tool_count,
+            "{:?}",
+            final_answer.parts
+        );
+        assert!(
+            final_tool_results
+                .iter()
+                .any(|(_, result)| *result == "Found 5 results"),
+            "{final_tool_results:?}"
+        );
+        assert!(
+            final_tool_results
+                .iter()
+                .any(|(_, result)| *result == "file content"),
+            "{final_tool_results:?}"
+        );
+        assert_eq!(final_tool_results.len(), 2, "{final_tool_results:?}");
+        assert!(
+            final_answer
+                .parts
+                .iter()
+                .all(|part| !matches!(part, MessagePart::ToolCall { .. })),
+            "tool running/start progress must stay out of TUI authoritative transcript: {:?}",
+            final_answer.parts
+        );
+        let part_kinds = final_answer
+            .parts
+            .iter()
+            .map(|part| match part {
+                MessagePart::Reasoning { .. } => "reasoning",
+                MessagePart::ToolResult { .. } => "tool_result",
+                MessagePart::Text { .. } => "text",
+                MessagePart::ToolCall { .. } => "tool_call",
+                MessagePart::File { .. } => "file",
+                MessagePart::Image { .. } => "image",
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            part_kinds,
+            vec!["reasoning", "tool_result", "tool_result", "text"],
+            "{part_kinds:?}"
+        );
     }
 }

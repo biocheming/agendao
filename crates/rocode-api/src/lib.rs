@@ -321,6 +321,8 @@ pub enum SessionRunStatusKind {
     WaitingOnTool,
     WaitingOnUser,
     Cancelling,
+    Blocked,
+    Sleeping,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -833,6 +835,10 @@ pub struct PromptRequest {
     pub idempotency_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ingress_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_origin: Option<rocode_types::MessageSourceOrigin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_surface: Option<rocode_types::MessageSourceSurface>,
     pub agent: Option<String>,
     pub scheduler_profile: Option<String>,
     pub model: Option<String>,

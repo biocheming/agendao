@@ -2,7 +2,9 @@ use std::collections::HashSet;
 
 use chrono::{SecondsFormat, Utc};
 
-use crate::components::{PermissionLifetime, PermissionRequest, PermissionType};
+use crossterm::event::{KeyCode, KeyEvent};
+
+use crate::components::{PermissionAction, PermissionLifetime, PermissionRequest, PermissionType};
 use crate::event::{CustomEvent, PermissionReplyOutcome};
 
 use super::App;
@@ -236,5 +238,85 @@ impl App {
             .remove(permission_id);
         self.permission_prompt.clear_submit_state(permission_id);
         self.permission_prompt.remove_request(permission_id);
+    }
+
+    pub(super) fn resolve_permission_prompt_action(&mut self, action: PermissionAction) {
+        match action {
+            PermissionAction::ApproveOnce => {
+                if let Some(request) = self.permission_prompt.approve_once() {
+                    self.resolve_permission_request(
+                        &request.id,
+                        "once",
+                        Some("approved once".to_string()),
+                    );
+                }
+            }
+            PermissionAction::ApproveTurn => {
+                if let Some(request) = self.permission_prompt.approve_turn() {
+                    self.resolve_permission_request(
+                        &request.id,
+                        "turn",
+                        Some("approved for turn".to_string()),
+                    );
+                }
+            }
+            PermissionAction::ApproveSession => {
+                if let Some(request) = self.permission_prompt.approve_session() {
+                    self.resolve_permission_request(
+                        &request.id,
+                        "session",
+                        Some("approved for session".to_string()),
+                    );
+                }
+            }
+            PermissionAction::Deny => {
+                if let Some(request) = self.permission_prompt.deny() {
+                    self.resolve_permission_request(
+                        &request.id,
+                        "reject",
+                        Some("rejected".to_string()),
+                    );
+                }
+            }
+        }
+    }
+
+    pub(super) fn handle_permission_prompt_key(&mut self, key: KeyEvent) -> bool {
+        if !self.permission_prompt.is_open {
+            return false;
+        }
+        if self.permission_prompt.is_current_request_submitting() {
+            return true;
+        }
+
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Enter | KeyCode::Char('1') => {
+                self.resolve_permission_prompt_action(PermissionAction::ApproveOnce);
+            }
+            KeyCode::Char('0') | KeyCode::Char('n') | KeyCode::Esc => {
+                self.resolve_permission_prompt_action(PermissionAction::Deny);
+            }
+            KeyCode::Char('2') => {
+                self.resolve_permission_prompt_action(PermissionAction::ApproveTurn);
+            }
+            KeyCode::Char('3') | KeyCode::Char('a') => {
+                self.resolve_permission_prompt_action(PermissionAction::ApproveSession);
+            }
+            _ => {}
+        }
+
+        true
+    }
+
+    pub(super) fn handle_permission_prompt_mouse(&mut self, col: u16, row: u16) -> bool {
+        if !self.permission_prompt.is_open {
+            return false;
+        }
+
+        self.permission_prompt.handle_click(col, row);
+        if let Some(action) = self.permission_prompt.take_pending_action() {
+            self.resolve_permission_prompt_action(action);
+        }
+        true
     }
 }

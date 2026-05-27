@@ -15,6 +15,7 @@ rocode-config = { path = "../rocode-config" }
 rocode-multimodal = { path = "../rocode-multimodal" }
 rocode-voice = { path = "../rocode-voice" }
 rocode-provider = { path = "../rocode-provider" }
+rocode-server = { path = "../rocode-server" }
 rocode-session = { path = "../rocode-session" }
 rocode-skill = { path = "../rocode-skill" }
 rocode-agent = { path = "../rocode-agent" }

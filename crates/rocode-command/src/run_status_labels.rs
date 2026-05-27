@@ -62,6 +62,16 @@ pub fn canonical_run_status_labels(status: &str) -> RunStatusLabels {
             title: "Cancelling",
             badge: "CANCELLING",
         },
+        "blocked" => RunStatusLabels {
+            slug: "blocked",
+            title: "Blocked",
+            badge: "BLOCKED",
+        },
+        "sleeping" => RunStatusLabels {
+            slug: "sleeping",
+            title: "Sleeping",
+            badge: "SLEEPING",
+        },
         "retrying" => RunStatusLabels {
             slug: "retrying",
             title: "Retrying",

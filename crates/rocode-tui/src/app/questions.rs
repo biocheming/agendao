@@ -437,4 +437,41 @@ impl App {
             }
         }
     }
+
+    pub(super) fn handle_question_prompt_key(&mut self, key: KeyEvent) -> bool {
+        if !self.question_prompt.is_open {
+            return false;
+        }
+
+        match key.code {
+            KeyCode::Up | KeyCode::BackTab => self.question_prompt.move_up(),
+            KeyCode::Down | KeyCode::Tab => self.question_prompt.move_down(),
+            KeyCode::Char(' ') => self.question_prompt.handle_space(),
+            KeyCode::Enter => {
+                if let Some((question, answers)) = self.question_prompt.confirm() {
+                    self.submit_question_reply(&question.id, answers);
+                }
+            }
+            KeyCode::Esc => {
+                if let Some(question) = self.question_prompt.current().cloned() {
+                    self.reject_question(&question.id);
+                }
+                self.question_prompt.close();
+            }
+            KeyCode::Char(c) => self.question_prompt.type_char(c),
+            KeyCode::Backspace => self.question_prompt.backspace(),
+            _ => {}
+        }
+
+        true
+    }
+
+    pub(super) fn handle_question_prompt_mouse(&mut self, col: u16, row: u16) -> bool {
+        if !self.question_prompt.is_open {
+            return false;
+        }
+
+        self.question_prompt.handle_click(col, row);
+        true
+    }
 }

@@ -53,6 +53,10 @@ function humanizeToolIdentifier(value: string) {
   return result || value;
 }
 
+// P2-3 RETAINED HEURISTIC: Display-only label beautification.
+// isSkillToolName guesses whether a tool name refers to a skill operation
+// based on hardcoded name patterns. It only affects UI labels, never
+// transcript routing, text priority, or structured content decisions.
 export function isSkillToolName(value?: string | null) {
   const normalized = value?.trim().toLowerCase();
   if (!normalized) return false;
@@ -65,6 +69,9 @@ export function isSkillToolName(value?: string | null) {
   );
 }
 
+// P2-3 RETAINED HEURISTIC: Display-only label beautification.
+// humanizes machine tool identifiers into human-readable labels.
+// Only affects UI display text, never transcript routing or content semantics.
 export function toolActivityLabel(value?: string | null) {
   const trimmed = value?.trim();
   if (!trimmed) return "Tool";

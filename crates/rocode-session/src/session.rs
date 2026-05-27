@@ -9,9 +9,10 @@ use rocode_core::bus::{Bus, BusEventDef};
 use rocode_plugin::{HookContext, HookEvent};
 use rocode_types::Session as SessionRecord;
 pub use rocode_types::{
-    FileDiff, PermissionRuleset, SessionContextKind, SessionForkExplain, SessionForkHistoryMode,
-    SessionForkLifecycleExplain, SessionForkLifecycleScope, SessionOwnershipSummary, SessionRevert,
-    SessionShare, SessionStatus, SessionSummary, SessionTime, SessionUsage, SessionUsageBooks,
+    FileDiff, MessageSourceOrigin, MessageSourceSurface, PermissionRuleset, SessionContextKind,
+    SessionForkExplain, SessionForkHistoryMode, SessionForkLifecycleExplain,
+    SessionForkLifecycleScope, SessionOwnershipSummary, SessionRevert, SessionShare,
+    SessionStatus, SessionSummary, SessionTime, SessionUsage, SessionUsageBooks,
 };
 
 #[cfg(test)]
@@ -741,6 +742,19 @@ impl Session {
         self.inner.messages.last_mut().unwrap()
     }
 
+    /// Add a user message with canonical source metadata.
+    pub fn add_user_message_with_source(
+        &mut self,
+        text: impl Into<String>,
+        origin: MessageSourceOrigin,
+        surface: MessageSourceSurface,
+    ) -> &mut SessionMessage {
+        let msg = SessionMessage::user_with_source(&self.inner.id, text, origin, surface);
+        self.inner.messages.push(msg);
+        self.touch();
+        self.inner.messages.last_mut().unwrap()
+    }
+
     /// Add a synthetic user message with optional attachments.
     pub fn add_synthetic_user_message(
         &mut self,
@@ -770,6 +784,51 @@ impl Session {
         self.inner.messages.push(msg);
         self.touch();
         self.inner.messages.last_mut().unwrap()
+    }
+
+    /// Add a tool result message (for orchestrator LLM loop compatibility).
+    /// Uses `PartType::ToolResult` so downstream prompt building, telemetry,
+    /// compaction, and governance logic correctly identify it as a tool result.
+    pub fn add_tool_result(
+        &mut self,
+        tool_call_id: &str,
+        content: &str,
+        is_error: bool,
+    ) -> String {
+        let id = format!("msg_{}", uuid::Uuid::new_v4());
+        let now = chrono::Utc::now();
+        let msg = SessionMessage {
+            id: id.clone(),
+            session_id: self.inner.id.clone(),
+            role: MessageRole::Tool,
+            parts: vec![MessagePart {
+                id: format!("prt_{}", uuid::Uuid::new_v4()),
+                part_type: crate::PartType::ToolResult {
+                    tool_call_id: tool_call_id.to_string(),
+                    content: content.to_string(),
+                    is_error,
+                    title: None,
+                    metadata: None,
+                    attachments: None,
+                },
+                created_at: now,
+                message_id: Some(id.clone()),
+            }],
+            created_at: now,
+            metadata: HashMap::new(),
+            usage: None,
+            finish: None,
+        };
+        self.inner.messages.push(msg);
+        self.touch();
+        id
+    }
+
+    /// Accumulate token usage across LLM rounds (for orchestrator compatibility).
+    pub fn add_usage(&mut self, input_tokens: u64, output_tokens: u64) {
+        let usage = self.inner.usage.get_or_insert_with(SessionUsage::default);
+        usage.input_tokens = usage.input_tokens.saturating_add(input_tokens);
+        usage.output_tokens = usage.output_tokens.saturating_add(output_tokens);
     }
 
     /// Get the last user message
@@ -1121,6 +1180,70 @@ impl Session {
                 updated_at,
             },
         }
+    }
+}
+
+// ── Trait impl: SessionAccess (rocode_session_core) ──
+// Bridges rocode_session::Session into the orchestrator's session trait,
+// enabling unified session authority without the crate cycle.
+impl rocode_session_core::SessionAccess for Session {
+    fn add_user_message(&mut self, text: &str) -> String {
+        self.add_user_message(text).id.clone()
+    }
+
+    fn add_user_message_with_source(
+        &mut self,
+        text: &str,
+        origin: MessageSourceOrigin,
+        surface: MessageSourceSurface,
+    ) -> String {
+        self.add_user_message_with_source(text, origin, surface).id.clone()
+    }
+
+    fn add_assistant_message(&mut self, text: &str) -> String {
+        let msg = self.add_assistant_message();
+        msg.add_text(text);
+        msg.id.clone()
+    }
+
+    fn add_tool_result(&mut self, tool_call_id: &str, content: &str, is_error: bool) -> String {
+        self.add_tool_result(tool_call_id, content, is_error)
+    }
+
+    fn add_usage(&mut self, input_tokens: u64, output_tokens: u64) {
+        self.add_usage(input_tokens, output_tokens)
+    }
+
+    fn record(&self) -> &SessionRecord {
+        self.record()
+    }
+
+    fn record_mut(&mut self) -> &mut SessionRecord {
+        self.record_mut()
+    }
+}
+
+// ── Trait impl: SessionStore (rocode_session_core) ──
+impl rocode_session_core::SessionStore for SessionManager {
+    type Session = Session;
+
+    fn ensure_session(&mut self, id: &str) -> &mut Session {
+        if self.get_mut(id).is_none() {
+            self.create(id, ".");
+        }
+        self.get_mut(id).unwrap()
+    }
+
+    fn get(&self, id: &str) -> Option<&Session> {
+        self.get(id)
+    }
+
+    fn get_mut(&mut self, id: &str) -> Option<&mut Session> {
+        self.get_mut(id)
+    }
+
+    fn list(&self) -> Vec<&Session> {
+        self.list()
     }
 }
 

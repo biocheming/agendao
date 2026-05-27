@@ -549,6 +549,22 @@ pub(super) async fn session_status(
                     Some(message),
                     Some(next),
                 ),
+                SessionRunStatus::Blocked { reason, .. } => (
+                    "blocked".to_string(),
+                    false,
+                    false,
+                    None,
+                    reason,
+                    None,
+                ),
+                SessionRunStatus::Sleeping { reason, .. } => (
+                    "sleeping".to_string(),
+                    false,
+                    false,
+                    None,
+                    reason,
+                    None,
+                ),
             };
             (
                 s.id.clone(),
@@ -1641,7 +1657,11 @@ pub(super) async fn execute_shell(
     let session = sessions
         .get_mut(&id)
         .ok_or_else(|| ApiError::SessionNotFound(id.clone()))?;
-    session.add_user_message(format!("$ {}", req.command));
+    session.add_user_message_with_source(
+        format!("$ {}", req.command),
+        rocode_types::MessageSourceOrigin::Operator,
+        rocode_types::MessageSourceSurface::HttpApi,
+    );
     let assistant = session.add_assistant_message();
     assistant.add_text(format!("Shell command queued: {}", req.command));
     let assistant_id = assistant.id.clone();
@@ -1676,7 +1696,11 @@ pub(super) async fn execute_command(
         .as_deref()
         .map(|args| format!("/{cmd} {args}", cmd = req.command))
         .unwrap_or_else(|| format!("/{}", req.command));
-    session.add_user_message(text);
+    session.add_user_message_with_source(
+        text,
+        rocode_types::MessageSourceOrigin::Operator,
+        rocode_types::MessageSourceSurface::HttpApi,
+    );
     let assistant = session.add_assistant_message();
     assistant.add_text(format!("Command queued: {}", req.command));
     let assistant_id = assistant.id.clone();
@@ -1820,7 +1844,11 @@ pub(super) async fn prompt_async(
         .message
         .as_deref()
         .ok_or_else(|| ApiError::BadRequest("Field `message` is required".to_string()))?;
-    session.add_user_message(text);
+    session.add_user_message_with_source(
+        text,
+        rocode_types::MessageSourceOrigin::Operator,
+        rocode_types::MessageSourceSurface::HttpApi,
+    );
     let assistant = session.add_assistant_message();
     let assistant_id = assistant.id.clone();
     drop(sessions);
@@ -1831,4 +1859,42 @@ pub(super) async fn prompt_async(
         "message_id": assistant_id,
         "model": req.model,
     })))
+}
+
+pub(super) async fn recheck_blocked_session(
+    State(state): State<Arc<ServerState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    // Go through RuntimeTelemetryAuthority so that RuntimeStateStore projection
+    // and event bus stay consistent with the control-layer status update.
+    match state.runtime_telemetry.recheck_session(&id).await {
+        Some(new_status) => Ok(Json(serde_json::json!({
+            "session_id": id,
+            "rechecked": true,
+            "new_status": new_status,
+        }))),
+        None => Ok(Json(serde_json::json!({
+            "session_id": id,
+            "rechecked": false,
+            "reason": "session is not blocked or recheck_at has not passed",
+        }))),
+    }
+}
+
+pub(super) async fn wake_sleeping_session(
+    State(state): State<Arc<ServerState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    match state.runtime_telemetry.wake_session(&id).await {
+        Some(new_status) => Ok(Json(serde_json::json!({
+            "session_id": id,
+            "woken": true,
+            "new_status": new_status,
+        }))),
+        None => Ok(Json(serde_json::json!({
+            "session_id": id,
+            "woken": false,
+            "reason": "session is not sleeping or wake_at has not passed",
+        }))),
+    }
 }
