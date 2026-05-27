@@ -811,7 +811,9 @@ pub(crate) fn variants_for_model(
         .unwrap_or_default()
 }
 
-async fn list_providers(State(state): State<Arc<ServerState>>) -> Json<ProviderListResponse> {
+pub(crate) async fn list_providers(
+    State(state): State<Arc<ServerState>>,
+) -> Json<ProviderListResponse> {
     let variant_lookup = get_model_variant_lookup(state.as_ref()).await;
     let models_data = load_catalog_snapshot(state.as_ref()).await.data;
 
@@ -1098,7 +1100,7 @@ fn provider_descriptor_response(
     }
 }
 
-async fn get_provider_descriptor(
+pub(crate) async fn get_provider_descriptor(
     State(state): State<Arc<ServerState>>,
     Path(id): Path<String>,
 ) -> Result<Json<ProviderDescriptorResponse>> {
@@ -1333,7 +1335,7 @@ pub struct RefreshProviderCatalogResponse {
     pub error_message: Option<String>,
 }
 
-async fn refresh_provider_catalog(
+pub(crate) async fn refresh_provider_catalog(
     State(state): State<Arc<ServerState>>,
 ) -> Result<Json<RefreshProviderCatalogResponse>> {
     let before = state.catalog_authority.snapshot().await;
@@ -1378,7 +1380,7 @@ pub struct KnownProvidersResponse {
 /// Returns all providers known to `models.dev`, regardless of whether they are
 /// currently connected.  Each entry includes the primary env var(s) and a flag
 /// indicating whether the provider is already connected.
-async fn list_known_providers(
+pub(crate) async fn list_known_providers(
     State(state): State<Arc<ServerState>>,
 ) -> Json<KnownProvidersResponse> {
     let providers = known_provider_entries(state.as_ref()).await;
@@ -1412,7 +1414,7 @@ pub struct ResolveProviderConnectResponse {
     pub custom_draft: ProviderConnectDraft,
 }
 
-async fn get_provider_connect_schema(
+pub(crate) async fn get_provider_connect_schema(
     State(state): State<Arc<ServerState>>,
 ) -> Json<ProviderConnectSchemaResponse> {
     let providers = known_provider_entries(state.as_ref()).await;
@@ -1429,7 +1431,7 @@ async fn get_provider_connect_schema(
     })
 }
 
-async fn resolve_provider_connect(
+pub(crate) async fn resolve_provider_connect(
     State(state): State<Arc<ServerState>>,
     Json(req): Json<ResolveProviderConnectRequest>,
 ) -> Json<ResolveProviderConnectResponse> {
@@ -1576,7 +1578,7 @@ pub struct ConnectProviderRequest {
     pub protocol: Option<String>,
 }
 
-async fn connect_provider(
+pub(crate) async fn connect_provider(
     State(state): State<Arc<ServerState>>,
     Json(req): Json<ConnectProviderRequest>,
 ) -> Result<Json<bool>> {

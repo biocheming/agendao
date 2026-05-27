@@ -195,6 +195,8 @@ pub(crate) async fn run_non_interactive(
         variant,
         thinking,
         interactive_mode,
+        local,
+        unix_socket: _,
     } = options;
     let working_dir = match dir {
         Some(dir) => dir,
@@ -224,7 +226,12 @@ pub(crate) async fn run_non_interactive(
         .await;
     }
 
-    let base_url = if let Some(base_url) = attach {
+    if local && attach.is_some() {
+        anyhow::bail!("--local is incompatible with --attach");
+    }
+    let base_url = if local {
+        "http://127.0.0.1:0".to_string()
+    } else if let Some(base_url) = attach {
         base_url
     } else {
         runtime_context
@@ -235,6 +242,18 @@ pub(crate) async fn run_non_interactive(
             .await?
     };
     let api_client = CliApiClient::new(base_url.clone());
+    let local_server: Option<Arc<rocode_server::ServerState>> = if local {
+        eprintln!("Starting CLI in Direct (in-process) mode");
+        Some(Arc::new(
+            rocode_server::ServerState::new_with_storage_for_url_in_workspace(
+                "http://127.0.0.1:0".to_string(),
+                working_dir.clone(),
+            )
+            .await?,
+        ))
+    } else {
+        None
+    };
     let remote_context = api_client.get_workspace_context().await.ok();
     let show_thinking = cli_resolve_show_thinking(
         thinking,
@@ -249,6 +268,23 @@ pub(crate) async fn run_non_interactive(
     });
     if let Some(model_ref) = model.as_deref() {
         cli_save_recent_model_ref(&api_client, model_ref).await;
+    }
+
+    if let Some(local) = local_server {
+        run_direct_prompt(
+            &local,
+            &input,
+            command.as_deref(),
+            continue_last,
+            session.as_deref(),
+            model.as_deref(),
+            requested_agent.as_deref(),
+            variant.as_deref(),
+            title.as_deref(),
+            &cli_session_directory(&working_dir),
+        )
+        .await?;
+        return Ok(());
     }
 
     run_non_interactive_attach(RemoteAttachOptions {
@@ -267,8 +303,78 @@ pub(crate) async fn run_non_interactive(
         title,
         directory: Some(cli_session_directory(&working_dir)),
         show_thinking,
+        local_server: None,
     })
     .await
+}
+
+async fn run_direct_prompt(
+    state: &Arc<rocode_server::ServerState>,
+    input: &str,
+    command: Option<&str>,
+    _continue_last: bool,
+    _session: Option<&str>,
+    model: Option<&str>,
+    _agent: Option<&str>,
+    _variant: Option<&str>,
+    _title: Option<&str>,
+    _directory: &str,
+) -> anyhow::Result<()> {
+    // Create new session.
+    let session = rocode_server::local_create_session(
+        Arc::clone(state),
+        rocode_client::CreateSessionRequest {
+            scheduler_profile: None,
+            directory: _directory.to_string().into(),
+            project_id: None,
+            title: _title.map(|s| s.to_string()),
+        },
+    )
+    .await?;
+
+    // Send prompt.
+    let message = if let Some(cmd) = command {
+        if input.trim().is_empty() {
+            format!("/{}", cmd)
+        } else {
+            format!("/{} {}", cmd, input)
+        }
+    } else {
+        input.to_string()
+    };
+    rocode_server::local_prompt(
+        Arc::clone(state),
+        &session.id,
+        rocode_client::PromptRequest {
+            message: Some(message),
+            parts: None,
+            idempotency_key: None,
+            ingress_source: Some("cli".to_string()),
+            agent: _agent.map(|s| s.to_string()),
+            scheduler_profile: None,
+            model: model.map(|s| s.to_string()),
+            variant: _variant.map(|s| s.to_string()),
+            command: command.map(|s| s.to_string()),
+            arguments: None,
+            source_origin: Some(rocode_types::MessageSourceOrigin::Operator),
+            source_surface: Some(rocode_types::MessageSourceSurface::Cli),
+        },
+    )
+    .await?;
+
+    // Read back messages and print response.
+    let messages = rocode_server::local_list_messages(Arc::clone(state), &session.id, None, None).await?;
+    for msg in &messages {
+        if msg.role != "user" {
+            for part in &msg.parts {
+                if let Some(text) = part.text.as_deref() {
+                    print!("{}", text);
+                }
+            }
+        }
+    }
+    println!();
+    Ok(())
 }
 
 pub(crate) struct RunNonInteractiveOptions {
@@ -290,6 +396,10 @@ pub(crate) struct RunNonInteractiveOptions {
     pub variant: Option<String>,
     pub thinking: bool,
     pub interactive_mode: InteractiveCliMode,
+    pub local: bool,
+    // Staged for transport selection; consumed in the next wiring pass.
+    #[allow(dead_code)]
+    pub unix_socket: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]

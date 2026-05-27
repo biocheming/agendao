@@ -49,6 +49,7 @@ pub use provider::*;
 pub use pty::*;
 pub use session::*;
 pub use tui::*;
+#[allow(unused_imports)]
 pub use workspace::*;
 
 use axum::{
