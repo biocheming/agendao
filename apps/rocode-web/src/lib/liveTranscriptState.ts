@@ -83,7 +83,7 @@ function stableToolCallIdFromIdentity(block: OutputBlock): string | undefined {
 }
 
 function compatibilityToolCallId(block: OutputBlock): string | undefined {
-  const explicit = block.tool_call_id?.trim();
+  const explicit = isToolOutputBlock(block) ? block.tool_call_id?.trim() : undefined;
   if (explicit) return explicit;
   const raw = block.id?.trim();
   return raw || undefined;

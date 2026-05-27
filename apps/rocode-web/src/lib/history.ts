@@ -71,9 +71,6 @@ interface OutputBlockBase {
   presentation?: OutputPresentation;
   ts?: number;
   id?: string;
-  stage_id?: string;
-  tool_call_id?: string;
-  attached_session_id?: string;
   title?: string;
   text?: string;
   summary?: string;
@@ -101,10 +98,13 @@ export interface ReasoningOutputBlock extends OutputBlockBase {
 export interface ToolOutputBlock extends OutputBlockBase, CompatibilityDisplayMixin {
   kind: "tool";
   name?: string;
+  tool_call_id?: string;
+  stage_id?: string;
 }
 
 export interface SchedulerStageOutputBlock extends OutputBlockBase {
   kind: "scheduler_stage";
+  stage_id?: string;
   profile?: string;
   status?: string;
   stage?: string;
@@ -207,8 +207,8 @@ export interface FeedMessageMeta {
   text: string;
 }
 
-export type FeedMessage = OutputBlock & FeedMessageMeta;
 export type FeedBlock<K extends OutputBlockKind> = OutputBlockOfKind<K> & FeedMessageMeta;
+export type FeedMessage = { [K in OutputBlockKind]: FeedBlock<K> }[OutputBlockKind];
 
 export function isMessageOutputBlock(block: OutputBlock): block is MessageOutputBlock {
   return block.kind === "message";
@@ -232,6 +232,20 @@ export function isStatusOutputBlock(block: OutputBlock): block is StatusOutputBl
 
 export function isMultimodalInfoOutputBlock(block: OutputBlock): block is MultimodalInfoOutputBlock {
   return block.kind === "multimodal_info";
+}
+
+export function feedStageId(message: FeedMessage): string | undefined {
+  return isToolOutputBlock(message) || isSchedulerStageOutputBlock(message)
+    ? message.stage_id
+    : undefined;
+}
+
+export function feedToolCallId(message: FeedMessage): string | undefined {
+  return isToolOutputBlock(message) ? message.tool_call_id : undefined;
+}
+
+export function feedAttachedSessionId(message: FeedMessage): string | undefined {
+  return isSchedulerStageOutputBlock(message) ? message.attached_session_id : undefined;
 }
 
 export function isStreamingTextOutputBlock(

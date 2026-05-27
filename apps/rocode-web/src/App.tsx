@@ -31,6 +31,8 @@ import { useTerminalSessions } from "./hooks/useTerminalSessions";
 import { useTranscriptFeedState } from "./hooks/useTranscriptFeedState";
 import { useWebBootstrap } from "./hooks/useWebBootstrap";
 import { useResizableHeight, useResizableWidth } from "./hooks/useResizableWidth";
+import { useProviderConnectForm } from "./hooks/useProviderConnectForm";
+import { useExternalAdapterProvisioning } from "./hooks/useExternalAdapterProvisioning";
 import { prepareComposerAttachments } from "./lib/composerAttachments";
 import {
   currentContextTokensFromSources,
@@ -79,6 +81,7 @@ import type {
   OutputBlock,
   RuntimeSurfaceOutputBlock,
 } from "./lib/history";
+import { feedToolCallId as feedToolCallIdFromMessage, isToolOutputBlock } from "./lib/history";
 import {
   applyOutputBlock,
   createOptimisticUserFeedMessage,
@@ -481,21 +484,29 @@ export default function App() {
   const [workspaceContext, setWorkspaceContext] = useState<WorkspaceContextRecord | null>(null);
   const [selectedModel, setSelectedModel] = useState("");
   const [selectedMode, setSelectedMode] = useState(DEFAULT_WEB_MODE);
-  const [connectQuery, setConnectQuery] = useState("");
-  const [connectProviderId, setConnectProviderId] = useState("");
+  const [connectForm, connectFormActions] = useProviderConnectForm(
+    connectProtocols, apiJson as <T>(url: string, init?: RequestInit) => Promise<T>, formatError,
+  );
+  const connectQuery = connectForm.query;
+  const setConnectQuery = connectFormActions.setQuery;
+  const connectProviderId = connectForm.providerId;
+  const setConnectProviderId = connectFormActions.setProviderId;
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
   const [rightSidebarOpen, setRightSidebarOpen] = useState(true);
   const leftResize = useResizableWidth(312, 220, 520, "left");
   const rightResize = useResizableWidth(420, 320, 880, "right");
   const terminalResize = useResizableHeight(320, 180, 640);
-  const [connectProtocol, setConnectProtocol] = useState("");
-  const [connectApiKey, setConnectApiKey] = useState("");
-  const [connectBaseUrl, setConnectBaseUrl] = useState("");
-  const [connectResolution, setConnectResolution] =
-    useState<ResolveProviderConnectResponseRecord | null>(null);
-  const [connectResolveBusy, setConnectResolveBusy] = useState(false);
-  const [connectResolveError, setConnectResolveError] = useState<string | null>(null);
-  const [connectBusy, setConnectBusy] = useState(false);
+  const connectProtocol = connectForm.protocol;
+  const setConnectProtocol = connectFormActions.setProtocol;
+  const connectApiKey = connectForm.apiKey;
+  const setConnectApiKey = connectFormActions.setApiKey;
+  const connectBaseUrl = connectForm.baseUrl;
+  const setConnectBaseUrl = connectFormActions.setBaseUrl;
+  const connectResolution = connectForm.resolution;
+  const connectResolveBusy = connectForm.resolveBusy;
+  const connectResolveError = connectForm.resolveError;
+  const connectBusy = connectForm.busy;
+  const setConnectBusy = connectFormActions.setBusy;
   const [theme, setTheme] = useState<ThemeId>("daylight");
   const [showThinking, setShowThinking] = useState(true);
   const [streaming, setStreaming] = useState(false);
@@ -587,7 +598,7 @@ export default function App() {
       : messages,
     [messages, MAX_RENDERED_MESSAGES],
   );
-  const connectResolveRequestRef = useRef(0);
+  // connectResolveRequestRef moved to useProviderConnectForm
   const recentModelScopeRef = useRef<string | null>(null);
   const recentModelAutoSuppressedRef = useRef(false);
 
@@ -894,48 +905,23 @@ export default function App() {
     return normalizeSessionRecords(sessionData?.items ?? []);
   }, [apiJson]);
 
-  const provisionExternalAdapterSession = useCallback(
-    async (
-      route: WebExternalAdapterProvisioningRoute,
-      options: { replace?: boolean } = {},
-    ): Promise<string> => {
-      const request: ProvisionExternalAdapterSessionRequestRecord = {
-        adapter_id: route.adapterId,
-        actor_id: route.actorId,
-        workspace_id: route.workspaceId,
-        route_policy_id: route.routePolicyId,
-        scheduler_profile: route.schedulerProfile,
-        directory: route.directory,
-        project_id: route.projectId,
-        title: route.title,
-      };
-      const provisioned = await apiJson<ProvisionExternalAdapterSessionResponseRecord>(
-        "/external-adapter/session/provision",
-        {
-          method: "POST",
-          body: JSON.stringify(request),
-        },
-      );
-      const normalized = normalizeSessionRecord(provisioned.session);
+  const onSessionReady = useCallback(
+    (session: SessionRecord, directory: string, replace: boolean) => {
       setSessions((current) =>
-        normalizeSessionRecords([normalized, ...current.filter((item) => item.id !== normalized.id)]),
+        normalizeSessionRecords([session, ...current.filter((item) => item.id !== session.id)]),
       );
-      setCurrentWorkspacePath(
-        (current) => normalized.directory?.trim() || request.directory?.trim() || current,
-      );
+      setCurrentWorkspacePath((current) => directory || current);
       writeWebSessionRoute(
-        {
-          sessionId: normalized.id,
-          messageId: null,
-          highlightIds: [],
-          externalProvisioning: null,
-        },
-        { replace: options.replace ?? true },
+        { sessionId: session.id, messageId: null, highlightIds: [], externalProvisioning: null },
+        { replace },
       );
-      return normalized.id;
     },
-    [apiJson],
+    [],
   );
+  const provisionExternalAdapterSession = useExternalAdapterProvisioning({
+    apiJson,
+    onSessionReady,
+  });
 
   const copyMessageLink = async (message: FeedMessage) => {
     if (!selectedSessionId || !message.anchorId) return;
@@ -1101,51 +1087,7 @@ export default function App() {
     setSelectedMessageIds(new Set());
   }, [clearTranscriptFeed, selectedSessionId]);
 
-  useEffect(() => {
-    const query = connectQuery.trim();
-    if (!query) {
-      connectResolveRequestRef.current += 1;
-      setConnectResolveBusy(false);
-      setConnectResolveError(null);
-      setConnectResolution(null);
-      return;
-    }
-
-    const requestId = connectResolveRequestRef.current + 1;
-    connectResolveRequestRef.current = requestId;
-    const timer = window.setTimeout(() => {
-      setConnectResolveBusy(true);
-      setConnectResolveError(null);
-      void (async () => {
-        try {
-          const response = await apiJson<ResolveProviderConnectResponseRecord>(
-            "/provider/connect/resolve",
-            {
-              method: "POST",
-              body: JSON.stringify({ query }),
-            },
-          );
-          if (connectResolveRequestRef.current !== requestId) return;
-          setConnectResolution(response);
-          setConnectProviderId(response.draft.provider_id);
-          setConnectBaseUrl(response.draft.base_url ?? "");
-          setConnectProtocol(
-            response.draft.protocol ?? connectProtocols[0]?.id ?? "openai",
-          );
-        } catch (error) {
-          if (connectResolveRequestRef.current !== requestId) return;
-          setConnectResolution(null);
-          setConnectResolveError(formatError(error));
-        } finally {
-          if (connectResolveRequestRef.current === requestId) {
-            setConnectResolveBusy(false);
-          }
-        }
-      })();
-    }, 120);
-
-    return () => window.clearTimeout(timer);
-  }, [apiJson, connectProtocols, connectQuery, knownProviders]);
+  // Provider connect resolution moved to useProviderConnectForm
 
   useEffect(() => {
     const selectedWorkspace = currentSession?.directory?.trim();
@@ -1186,13 +1128,13 @@ export default function App() {
       messages: messages.map((message) => ({
         kind: message.kind,
         id: message.id,
-        tool_call_id: message.tool_call_id,
+        tool_call_id: feedToolCallIdFromMessage(message),
         text: message.text?.slice(0, 160),
       })),
       liveBlocks: selectedLiveBlocks.map((block) => ({
         kind: block.kind,
         id: block.id,
-        tool_call_id: block.tool_call_id,
+        tool_call_id: isToolOutputBlock(block) ? block.tool_call_id : undefined,
         text: block.text?.slice(0, 160),
         detail: runtimeSurfaceDebugDetail(block)?.slice(0, 160),
         part_key: block.live_identity?.part_key,
@@ -1201,7 +1143,7 @@ export default function App() {
       pendingVisible: pendingVisible.map((block) => ({
         kind: block.kind,
         id: block.id,
-        tool_call_id: block.tool_call_id,
+        tool_call_id: isToolOutputBlock(block) ? block.tool_call_id : undefined,
         text: block.text?.slice(0, 160),
         detail: runtimeSurfaceDebugDetail(block)?.slice(0, 160),
         part_key: block.live_identity?.part_key,
