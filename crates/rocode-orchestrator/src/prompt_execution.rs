@@ -834,14 +834,11 @@ pub async fn execute_prompt_streaming_with_session<S: SessionStore + Send + 'sta
                     }
                     None => {
                         // Stream ended without Done event
-                        state.current_stream = None;
-                        state.finished = true;
                         return None;
                     }
                 }
             } else {
                 // No current stream and not finished - shouldn't happen
-                state.finished = true;
                 return None;
             }
         }

@@ -104,6 +104,7 @@ impl CliVisibleTranscript {
 
     /// Commit a live slot — convert it to Committed, preserving position
     /// and rendered_ansi. If the slot doesn't exist, this is a no-op.
+    #[cfg(test)]
     pub(crate) fn commit_slot(&mut self, slot_key: &str) {
         for entry in &mut self.entries {
             if let TranscriptEntry::LiveSlot {

@@ -104,12 +104,14 @@ struct JsonRpcRequest<T> {
 
 #[derive(Debug, Deserialize)]
 struct JsonRpcResponse<T> {
-    jsonrpc: String,
+    #[serde(rename = "jsonrpc")]
+    _jsonrpc: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     result: Option<T>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<JsonRpcError>,
-    id: u64,
+    #[serde(rename = "id")]
+    _id: u64,
 }
 
 #[derive(Debug, Deserialize)]

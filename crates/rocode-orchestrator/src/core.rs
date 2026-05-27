@@ -17,7 +17,10 @@ use std::sync::Arc;
 ///
 /// Phase 4: Extract authorities from ServerState
 pub struct OrchestrationCore<S: SessionStore = SessionManager> {
-    // Phase 4.1: ConfigStore
+    // Phase 4.1: ConfigStore shared authority.
+    // Kept on the core so prompt execution can grow config-aware behavior
+    // without re-threading another authority through every adapter path.
+    #[allow(dead_code)]
     config_store: Arc<rocode_config::ConfigStore>,
     // Phase 4.2: SessionManager (generic over SessionStore impl)
     sessions: Arc<tokio::sync::Mutex<S>>,
