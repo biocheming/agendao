@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import type { FeedBlock } from "@/lib/history";
+import { feedAttachedSessionId, type FeedBlock } from "@/lib/history";
 import {
   compactText,
   excerptText,
@@ -128,6 +128,7 @@ export function SchedulerStageCard({
   onNavigateStage,
   onNavigateAttachedSession,
 }: SchedulerStageCardProps) {
+  const attachedSessionId = feedAttachedSessionId(message);
   const chips = [
     message.profile,
     message.status,
@@ -165,7 +166,7 @@ export function SchedulerStageCard({
       data-testid="scheduler-stage-card"
       data-feed-id={message.feedId}
       data-stage-id={message.stage_id}
-      data-attached-session-id={message.attached_session_id}
+      data-attached-session-id={attachedSessionId}
     >
       <div className="roc-message-meta-row">
         <div className="roc-message-meta-group">
@@ -216,7 +217,7 @@ export function SchedulerStageCard({
               stage {message.stage_id}
             </Button>
           ) : null}
-          {message.attached_session_id ? (
+          {attachedSessionId ? (
             <Button
               type="button"
               variant="ghost"
@@ -224,15 +225,15 @@ export function SchedulerStageCard({
               className="roc-action roc-action-compact gap-1.5 px-3"
               data-testid="scheduler-stage-open-child"
               onClick={() =>
-                onNavigateAttachedSession(message.attached_session_id!, {
+                onNavigateAttachedSession(attachedSessionId, {
                   stageId: message.stage_id ?? null,
-                  toolCallId: message.tool_call_id ?? null,
-                  label: message.title || message.stage || message.stage_id || message.attached_session_id,
+                  toolCallId: null,
+                  label: message.title || message.stage || message.stage_id || attachedSessionId,
                 })
               }
             >
               <GitBranchPlusIcon className="size-3.5" />
-              attached {message.attached_session_id}
+              attached {attachedSessionId}
             </Button>
           ) : null}
         </div>

@@ -1,13 +1,7 @@
+import type { FeedMessage } from "../lib/history";
+import { feedStageId } from "../lib/history";
 import type { RefObject } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-
-export interface FeedJumpMessage {
-  feedId: string;
-  anchorId?: string;
-  kind?: string;
-  id?: string;
-  stage_id?: string;
-}
 
 export interface ConversationJumpTarget {
   messageId?: string | null;
@@ -18,7 +12,7 @@ export interface ConversationJumpTarget {
 }
 
 interface UseConversationJumpOptions {
-  messages: FeedJumpMessage[];
+  messages: FeedMessage[];
   feedRef: RefObject<HTMLDivElement | null>;
   onMiss: (message: string) => void;
 }
@@ -28,7 +22,7 @@ function toolCallIdFromExecutionId(executionId?: string | null) {
   return executionId.startsWith("tool_call:") ? executionId.slice("tool_call:".length) : executionId;
 }
 
-function findConversationTarget(messages: FeedJumpMessage[], target: ConversationJumpTarget) {
+function findConversationTarget(messages: FeedMessage[], target: ConversationJumpTarget) {
   const toolCallId = target.toolCallId || toolCallIdFromExecutionId(target.executionId);
   if (target.messageId) {
     const anchorMessage = [...messages]
@@ -52,7 +46,7 @@ function findConversationTarget(messages: FeedJumpMessage[], target: Conversatio
   if (target.stageId) {
     const stageMessage = [...messages]
       .reverse()
-      .find((message) => message.stage_id === target.stageId);
+      .find((message) => feedStageId(message) === target.stageId);
     if (stageMessage) return stageMessage;
   }
 

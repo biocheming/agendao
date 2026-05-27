@@ -21,6 +21,9 @@ import {
 import { useCallback, useState } from "react";
 import { MessageResponse } from "./ai-elements/message";
 import {
+  feedAttachedSessionId,
+  feedStageId,
+  feedToolCallId,
   isMultimodalInfoOutputBlock,
   isReasoningOutputBlock,
   isSchedulerStageOutputBlock,
@@ -95,7 +98,7 @@ function attachedSessionLabel(message: FeedMessage): string {
   if (isSchedulerStageOutputBlock(message) && typeof message.stage === "string" && message.stage.trim()) {
     return message.stage;
   }
-  return message.attached_session_id ?? "";
+  return feedAttachedSessionId(message) ?? "";
 }
 
 function MetaActionButton({
@@ -504,12 +507,15 @@ export function MessageCard({
   const roleLabel = isUser ? "USER" : "ASSIST";
   const clock = formatClock(message.ts);
   const summary = readableSummary(message);
+  const stageId = feedStageId(message);
+  const toolCallId = feedToolCallId(message);
+  const attachedSessionId = feedAttachedSessionId(message);
   const cacheSummary = cacheBustSummaryFromMetadata(message.metadata);
   const cacheDiagnosticLabel = cacheBustSummaryStatusLabel(cacheSummary);
   const cacheDiagnosticDetail = cacheBustSummaryLabel(cacheSummary);
   const active =
-    Boolean(activeStageId && message.stage_id === activeStageId) ||
-    Boolean(activeToolCallId && message.tool_call_id === activeToolCallId);
+    Boolean(activeStageId && stageId === activeStageId) ||
+    Boolean(activeToolCallId && toolCallId === activeToolCallId);
 
   return (
     <article
@@ -518,7 +524,7 @@ export function MessageCard({
       data-feed-id={message.feedId}
       data-message-anchor={message.anchorId}
       data-block-id={message.id}
-      data-stage-id={message.stage_id}
+      data-stage-id={stageId}
       data-kind={message.kind}
     >
       <div className={cn("w-full", isUser ? "max-w-[82%]" : "max-w-full")}>
@@ -550,14 +556,14 @@ export function MessageCard({
                 </span>
               ) : null}
             </div>
-            {message.stage_id || message.tool_call_id ? (
+            {stageId || toolCallId ? (
               <div className="roc-message-meta-group">
-                {message.stage_id ? (
-                  <MetaActionButton onClick={() => onNavigateStage(message.stage_id!)}>
-                    stage {message.stage_id}
+                {stageId ? (
+                  <MetaActionButton onClick={() => onNavigateStage(stageId)}>
+                    stage {stageId}
                   </MetaActionButton>
                 ) : null}
-                {message.tool_call_id ? <span className="roc-badge">tool {message.tool_call_id}</span> : null}
+                {toolCallId ? <span className="roc-badge">tool {toolCallId}</span> : null}
               </div>
             ) : null}
           </div>
@@ -632,14 +638,14 @@ export function MessageCard({
           ) : null}
         </section>
       </div>
-      {!isUser && message.attached_session_id ? (
+      {!isUser && attachedSessionId ? (
         <div className="pl-1">
           <MetaActionButton
             className="roc-action roc-action-pill justify-center px-3.5 py-1.5 text-xs text-foreground no-underline"
             onClick={() =>
-              onNavigateAttachedSession(message.attached_session_id!, {
-                stageId: message.stage_id ?? null,
-                toolCallId: message.tool_call_id ?? null,
+              onNavigateAttachedSession(attachedSessionId, {
+                stageId: stageId ?? null,
+                toolCallId: toolCallId ?? null,
                 label: attachedSessionLabel(message),
               })
             }
