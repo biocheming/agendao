@@ -3339,6 +3339,7 @@ dependencies = [
  "rocode-plugin",
  "rocode-provider",
  "rocode-runtime-context",
+ "rocode-server",
  "rocode-session",
  "rocode-skill",
  "rocode-state",

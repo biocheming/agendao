@@ -50,12 +50,12 @@ pub(crate) fn config_routes() -> Router<Arc<ServerState>> {
         )
 }
 
-async fn get_config(State(state): State<Arc<ServerState>>) -> Result<Json<AppConfig>> {
+pub(crate) async fn get_config(State(state): State<Arc<ServerState>>) -> Result<Json<AppConfig>> {
     let config = state.config_store.config();
     Ok(Json((*config).clone()))
 }
 
-async fn get_config_validation(
+pub(crate) async fn get_config_validation(
     State(state): State<Arc<ServerState>>,
 ) -> Result<Json<ConfigPolicyValidationSnapshot>> {
     Ok(Json(build_config_policy_validation_snapshot(&state).await))
@@ -97,7 +97,7 @@ pub struct ConfigProvidersResponse {
     pub default_model: HashMap<String, String>,
 }
 
-async fn get_config_providers(
+pub(crate) async fn get_config_providers(
     State(state): State<Arc<ServerState>>,
 ) -> Json<ConfigProvidersResponse> {
     let variant_lookup = crate::routes::provider::get_model_variant_lookup(state.as_ref()).await;

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
 use clap::{Args, Parser, Subcommand};
+use rocode_client::transport::TransportSelector;
 
 use crate::host::{
     run_acp_command, run_server_command, run_tui, run_web_command, AcpCommandRequest,
@@ -86,6 +87,9 @@ struct TuiArgs {
     /// Run in Direct (in-process) mode — no server, no IPC.
     #[arg(long, default_value_t = false)]
     local: bool,
+    /// Prefer Unix socket IPC using the standard local socket path.
+    #[arg(long, default_value_t = false, conflicts_with = "local")]
+    unix_socket: bool,
 }
 
 #[derive(Args)]
@@ -98,6 +102,9 @@ struct AttachArgs {
     session: Option<String>,
     #[arg(short = 'p', long)]
     password: Option<String>,
+    /// Prefer Unix socket IPC using the standard local socket path.
+    #[arg(long, default_value_t = false)]
+    unix_socket: bool,
 }
 
 #[derive(Args)]
@@ -114,6 +121,9 @@ struct ServerArgs {
     mdns_domain: String,
     #[arg(long)]
     cors: Vec<String>,
+    /// Also listen on the standard local Unix socket path.
+    #[arg(long, default_value_t = false)]
+    unix_socket: bool,
 }
 
 #[derive(Args)]
@@ -177,6 +187,16 @@ fn normalize_tui_shorthand_args(args: Vec<OsString>) -> Vec<OsString> {
     normalized.push(OsString::from("tui"));
     normalized.extend(iter);
     normalized
+}
+
+fn default_unix_socket_path(enabled: bool) -> anyhow::Result<Option<String>> {
+    if !enabled {
+        return Ok(None);
+    }
+
+    TransportSelector::default_unix_socket_path().map(Some).ok_or_else(|| {
+        anyhow::anyhow!("--unix-socket is not supported on this platform")
+    })
 }
 
 impl InstallMethod {
@@ -259,7 +279,7 @@ pub async fn dispatch_if_product_command(args: Vec<OsString>) -> anyhow::Result<
                 cors: args.cors,
                 attach_url: None,
                 password: None,
-                unix_socket_path: None,
+                unix_socket_path: default_unix_socket_path(args.unix_socket)?,
                 local: args.local,
             })
             .await?;
@@ -280,7 +300,7 @@ pub async fn dispatch_if_product_command(args: Vec<OsString>) -> anyhow::Result<
                 cors: vec![],
                 attach_url: Some(args.url),
                 password: args.password,
-                unix_socket_path: None,
+                unix_socket_path: default_unix_socket_path(args.unix_socket)?,
                 local: false,
             })
             .await?;
@@ -293,6 +313,7 @@ pub async fn dispatch_if_product_command(args: Vec<OsString>) -> anyhow::Result<
                 mdns: args.mdns,
                 mdns_domain: args.mdns_domain,
                 cors: args.cors,
+                unix_socket_path: default_unix_socket_path(args.unix_socket)?,
             })
             .await?;
         }
@@ -376,6 +397,58 @@ mod tests {
             display_args(normalized),
             vec!["rocode", "run", "-s", "ses_123"]
         );
+    }
+
+    #[test]
+    fn unix_socket_flag_enables_default_socket_for_tui() {
+        let cli = ProductCli::parse_from(["rocode", "tui", "--unix-socket"]);
+        let ProductCommand::Tui(args) = cli.command.expect("tui command") else {
+            panic!("expected tui command");
+        };
+
+        assert!(args.unix_socket);
+        let socket_path = default_unix_socket_path(args.unix_socket);
+        #[cfg(unix)]
+        assert_eq!(socket_path.unwrap().as_deref(), Some("/tmp/rocode.sock"));
+        #[cfg(not(unix))]
+        assert!(socket_path.is_err());
+    }
+
+    #[test]
+    fn unix_socket_conflicts_with_local_for_tui() {
+        let result = ProductCli::try_parse_from(["rocode", "tui", "--local", "--unix-socket"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn unix_socket_flag_enables_default_socket_for_attach() {
+        let cli =
+            ProductCli::parse_from(["rocode", "attach", "http://127.0.0.1:3000", "--unix-socket"]);
+        let ProductCommand::Attach(args) = cli.command.expect("attach command") else {
+            panic!("expected attach command");
+        };
+
+        assert!(args.unix_socket);
+        let socket_path = default_unix_socket_path(args.unix_socket);
+        #[cfg(unix)]
+        assert_eq!(socket_path.unwrap().as_deref(), Some("/tmp/rocode.sock"));
+        #[cfg(not(unix))]
+        assert!(socket_path.is_err());
+    }
+
+    #[test]
+    fn unix_socket_flag_enables_default_socket_for_serve() {
+        let cli = ProductCli::parse_from(["rocode", "serve", "--unix-socket"]);
+        let ProductCommand::Serve(args) = cli.command.expect("serve command") else {
+            panic!("expected serve command");
+        };
+
+        assert!(args.unix_socket);
+        let socket_path = default_unix_socket_path(args.unix_socket);
+        #[cfg(unix)]
+        assert_eq!(socket_path.unwrap().as_deref(), Some("/tmp/rocode.sock"));
+        #[cfg(not(unix))]
+        assert!(socket_path.is_err());
     }
 }
 

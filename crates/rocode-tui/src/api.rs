@@ -274,6 +274,13 @@ impl RuntimeApiClient {
     }
 
     fn connect_provider(&self, request: &ConnectProviderRequest) -> anyhow::Result<()> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            let request = request.clone();
+            return self.block_on(async move {
+                rocode_server::local_connect_provider(state, request).await
+            });
+        }
         self.block_on(self.client.connect_provider(
             &request.provider_id,
             &request.api_key,
@@ -290,6 +297,13 @@ impl RuntimeApiClient {
         &self,
         provider_id: &str,
     ) -> anyhow::Result<ProviderDescriptorResponse> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            let provider_id = provider_id.to_string();
+            return self.block_on(async move {
+                rocode_server::local_get_provider_descriptor(state, &provider_id).await
+            });
+        }
         self.block_on(self.client.get_provider_descriptor(provider_id))
     }
 
@@ -322,23 +336,9 @@ impl RuntimeApiClient {
         fn execute_shell(&self, session_id: &str, command: String, workdir: Option<String>) -> serde_json::Value;
         fn abort_session(&self, session_id: &str) -> serde_json::Value;
         fn cancel_tool_call(&self, session_id: &str, tool_call_id: &str) -> serde_json::Value;
-        fn get_config_providers(&self) -> ProviderListResponse;
-        fn get_config(&self) -> rocode_config::Config;
-        fn get_config_validation(&self) -> ConfigPolicyValidationSnapshot;
-        fn get_workspace_context(&self) -> rocode_runtime_context::ResolvedWorkspaceContext;
-        fn get_multimodal_policy(&self) -> MultimodalPolicyResponse;
-        fn get_multimodal_capabilities(&self, model: Option<&str>) -> MultimodalCapabilitiesResponse;
-        fn preflight_multimodal(&self, request: &MultimodalPreflightRequest) -> MultimodalPreflightResponse;
-        fn get_recent_models(&self) -> Vec<rocode_state::RecentModelEntry>;
-        fn put_recent_models(&self, recent_models: &[rocode_state::RecentModelEntry]) -> Vec<rocode_state::RecentModelEntry>;
         fn patch_config(&self, patch: &serde_json::Value) -> rocode_config::Config;
         fn put_provider_model_config(&self, provider_id: &str, model_key: &str, model: &rocode_config::ModelConfig) -> rocode_config::Config;
         fn delete_provider_model_config(&self, provider_id: &str, model_key: &str) -> rocode_config::Config;
-        fn get_all_providers(&self) -> FullProviderListResponse;
-        fn get_known_providers(&self) -> KnownProvidersResponse;
-        fn get_provider_connect_schema(&self) -> ProviderConnectSchemaResponse;
-        fn resolve_provider_connect(&self, query: &str) -> ResolveProviderConnectResponse;
-        fn refresh_provider_catalog(&self) -> RefreshProviderCatalogResponse;
         fn set_auth(&self, provider_id: &str, api_key: &str) -> ();
         fn register_custom_provider(&self, provider_id: &str, base_url: &str, protocol: &str, api_key: &str) -> ();
         fn list_agents(&self) -> Vec<AgentInfo>;
@@ -388,6 +388,160 @@ impl RuntimeApiClient {
         fn compact_session(&self, session_id: &str, focus: Option<&str>) -> CompactResponse;
         fn revert_session(&self, session_id: &str, message_id: &str) -> RevertResponse;
         fn fork_session(&self, session_id: &str, message_id: Option<&str>) -> SessionInfo;
+    }
+
+    fn get_config_providers(&self) -> anyhow::Result<ProviderListResponse> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            return self.block_on(async move {
+                rocode_server::local_get_config_providers(state).await
+            });
+        }
+        self.block_on(self.client.get_config_providers())
+    }
+
+    fn get_config(&self) -> anyhow::Result<rocode_config::Config> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            return self.block_on(async move { rocode_server::local_get_config(state).await });
+        }
+        self.block_on(self.client.get_config())
+    }
+
+    fn get_config_validation(&self) -> anyhow::Result<ConfigPolicyValidationSnapshot> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            return self.block_on(async move {
+                rocode_server::local_get_config_validation(state).await
+            });
+        }
+        self.block_on(self.client.get_config_validation())
+    }
+
+    fn get_workspace_context(
+        &self,
+    ) -> anyhow::Result<rocode_runtime_context::ResolvedWorkspaceContext> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            return self.block_on(async move {
+                rocode_server::local_get_workspace_context(state).await
+            });
+        }
+        self.block_on(self.client.get_workspace_context())
+    }
+
+    fn get_multimodal_policy(&self) -> anyhow::Result<MultimodalPolicyResponse> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            return self.block_on(async move {
+                rocode_server::local_get_multimodal_policy(state).await
+            });
+        }
+        self.block_on(self.client.get_multimodal_policy())
+    }
+
+    fn get_multimodal_capabilities(
+        &self,
+        model: Option<&str>,
+    ) -> anyhow::Result<MultimodalCapabilitiesResponse> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            let model = model.map(str::to_string);
+            return self.block_on(async move {
+                rocode_server::local_get_multimodal_capabilities(state, model).await
+            });
+        }
+        self.block_on(self.client.get_multimodal_capabilities(model))
+    }
+
+    fn preflight_multimodal(
+        &self,
+        request: &MultimodalPreflightRequest,
+    ) -> anyhow::Result<MultimodalPreflightResponse> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            let request = request.clone();
+            return self.block_on(async move {
+                rocode_server::local_preflight_multimodal(state, request).await
+            });
+        }
+        self.block_on(self.client.preflight_multimodal(request))
+    }
+
+    fn get_recent_models(&self) -> anyhow::Result<Vec<rocode_state::RecentModelEntry>> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            return self.block_on(async move { rocode_server::local_get_recent_models(state).await });
+        }
+        self.block_on(self.client.get_recent_models())
+    }
+
+    fn put_recent_models(
+        &self,
+        recent_models: &[rocode_state::RecentModelEntry],
+    ) -> anyhow::Result<Vec<rocode_state::RecentModelEntry>> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            let recent_models = recent_models.to_vec();
+            return self.block_on(async move {
+                rocode_server::local_put_recent_models(state, recent_models).await
+            });
+        }
+        self.block_on(self.client.put_recent_models(recent_models))
+    }
+
+    fn get_all_providers(&self) -> anyhow::Result<FullProviderListResponse> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            return self.block_on(async move {
+                rocode_server::local_get_all_providers(state).await
+            });
+        }
+        self.block_on(self.client.get_all_providers())
+    }
+
+    fn get_known_providers(&self) -> anyhow::Result<KnownProvidersResponse> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            return self.block_on(async move {
+                rocode_server::local_get_known_providers(state).await
+            });
+        }
+        self.block_on(self.client.get_known_providers())
+    }
+
+    fn get_provider_connect_schema(&self) -> anyhow::Result<ProviderConnectSchemaResponse> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            return self.block_on(async move {
+                rocode_server::local_get_provider_connect_schema(state).await
+            });
+        }
+        self.block_on(self.client.get_provider_connect_schema())
+    }
+
+    fn resolve_provider_connect(
+        &self,
+        query: &str,
+    ) -> anyhow::Result<ResolveProviderConnectResponse> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            let query = query.to_string();
+            return self.block_on(async move {
+                rocode_server::local_resolve_provider_connect(state, query).await
+            });
+        }
+        self.block_on(self.client.resolve_provider_connect(query))
+    }
+
+    fn refresh_provider_catalog(&self) -> anyhow::Result<RefreshProviderCatalogResponse> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            return self.block_on(async move {
+                rocode_server::local_refresh_provider_catalog(state).await
+            });
+        }
+        self.block_on(self.client.refresh_provider_catalog())
     }
 }
 

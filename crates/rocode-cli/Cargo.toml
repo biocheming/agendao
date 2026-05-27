@@ -18,6 +18,7 @@ rocode-permission = { path = "../rocode-permission" }
 rocode-agent = { path = "../rocode-agent" }
 rocode-launcher = { path = "../rocode-launcher" }
 rocode-client = { path = "../rocode-client" }
+rocode-server = { path = "../rocode-server" }
 rocode-memory = { path = "../rocode-memory" }
 rocode-provider = { path = "../rocode-provider" }
 rocode-plugin = { path = "../rocode-plugin" }

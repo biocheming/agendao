@@ -172,6 +172,12 @@ pub(crate) struct RunCommandArgs {
     pub(crate) thinking: bool,
     #[arg(long = "interactive-mode", default_value = "rich")]
     pub(crate) interactive_mode: InteractiveCliMode,
+    /// Run in Direct (in-process) mode — no server, no IPC.
+    #[arg(long, default_value_t = false)]
+    pub(crate) local: bool,
+    /// Unix socket path for local IPC.
+    #[arg(long)]
+    pub(crate) unix_socket: Option<String>,
 }
 
 #[derive(Args, Clone, Debug)]

@@ -14,6 +14,7 @@ mod event_stream;
 mod generate;
 mod github;
 mod import_export;
+mod local_dispatch;
 mod mcp_cmd;
 mod provider_cmd;
 mod providers;
@@ -65,6 +66,8 @@ fn run_options_from_args(
         variant: args.variant,
         thinking: args.thinking,
         interactive_mode: interactive_mode.unwrap_or(args.interactive_mode),
+        local: args.local,
+        unix_socket: args.unix_socket,
     }
 }
 

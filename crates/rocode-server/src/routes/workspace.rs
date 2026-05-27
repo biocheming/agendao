@@ -21,7 +21,7 @@ pub struct RecentModelsPayload {
     pub recent_models: Vec<RecentModelEntry>,
 }
 
-async fn get_workspace_context(
+pub(crate) async fn get_workspace_context(
     State(state): State<Arc<ServerState>>,
 ) -> Result<Json<ResolvedWorkspaceContext>> {
     let context = state
@@ -31,7 +31,7 @@ async fn get_workspace_context(
     Ok(Json(context))
 }
 
-async fn get_workspace_recent_models(
+pub(crate) async fn get_workspace_recent_models(
     State(state): State<Arc<ServerState>>,
 ) -> Result<Json<RecentModelsPayload>> {
     let context = state
@@ -43,7 +43,7 @@ async fn get_workspace_recent_models(
     }))
 }
 
-async fn put_workspace_recent_models(
+pub(crate) async fn put_workspace_recent_models(
     State(state): State<Arc<ServerState>>,
     Json(payload): Json<RecentModelsPayload>,
 ) -> Result<Json<RecentModelsPayload>> {

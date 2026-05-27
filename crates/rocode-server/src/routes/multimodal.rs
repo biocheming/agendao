@@ -22,12 +22,12 @@ pub(crate) fn multimodal_routes() -> Router<Arc<ServerState>> {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
-struct MultimodalCapabilitiesQuery {
+pub(crate) struct MultimodalCapabilitiesQuery {
     #[serde(default)]
-    model: Option<String>,
+    pub(crate) model: Option<String>,
 }
 
-async fn get_multimodal_policy(
+pub(crate) async fn get_multimodal_policy(
     State(state): State<Arc<ServerState>>,
 ) -> Result<Json<MultimodalPolicyResponse>> {
     let config = state.config_store.config();
@@ -37,7 +37,7 @@ async fn get_multimodal_policy(
     }))
 }
 
-async fn get_multimodal_capabilities(
+pub(crate) async fn get_multimodal_capabilities(
     State(state): State<Arc<ServerState>>,
     Query(query): Query<MultimodalCapabilitiesQuery>,
 ) -> Result<Json<MultimodalCapabilitiesResponse>> {
@@ -62,7 +62,7 @@ async fn get_multimodal_capabilities(
     }))
 }
 
-async fn post_multimodal_preflight(
+pub(crate) async fn post_multimodal_preflight(
     State(state): State<Arc<ServerState>>,
     Json(payload): Json<MultimodalPreflightRequest>,
 ) -> Result<Json<MultimodalPreflightResponse>> {

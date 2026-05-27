@@ -131,3 +131,176 @@ pub async fn local_register_provider(
 ) {
     state.providers.write().await.register_arc(provider);
 }
+
+pub async fn local_get_config(
+    state: Arc<ServerState>,
+) -> anyhow::Result<rocode_config::Config> {
+    let Json(config) = super::super::config::get_config(State(state))
+        .await
+        .map_err(api_error)?;
+    Ok(config)
+}
+
+pub async fn local_get_config_validation(
+    state: Arc<ServerState>,
+) -> anyhow::Result<rocode_types::ConfigPolicyValidationSnapshot> {
+    let Json(snapshot) = super::super::config::get_config_validation(State(state))
+        .await
+        .map_err(api_error)?;
+    Ok(snapshot)
+}
+
+pub async fn local_get_config_providers(
+    state: Arc<ServerState>,
+) -> anyhow::Result<rocode_api::ProviderListResponse> {
+    let Json(response) = super::super::config::get_config_providers(State(state)).await;
+    serde_json::from_value(serde_json::to_value(response)?)
+        .context("failed to convert local config providers payload")
+}
+
+pub async fn local_get_workspace_context(
+    state: Arc<ServerState>,
+) -> anyhow::Result<rocode_runtime_context::ResolvedWorkspaceContext> {
+    let Json(context) = super::super::workspace::get_workspace_context(State(state))
+        .await
+        .map_err(api_error)?;
+    Ok(context)
+}
+
+pub async fn local_get_recent_models(
+    state: Arc<ServerState>,
+) -> anyhow::Result<Vec<rocode_state::RecentModelEntry>> {
+    let Json(payload) = super::super::workspace::get_workspace_recent_models(State(state))
+        .await
+        .map_err(api_error)?;
+    Ok(payload.recent_models)
+}
+
+pub async fn local_put_recent_models(
+    state: Arc<ServerState>,
+    recent_models: Vec<rocode_state::RecentModelEntry>,
+) -> anyhow::Result<Vec<rocode_state::RecentModelEntry>> {
+    let Json(payload) = super::super::workspace::put_workspace_recent_models(
+        State(state),
+        Json(super::super::workspace::RecentModelsPayload { recent_models }),
+    )
+    .await
+    .map_err(api_error)?;
+    Ok(payload.recent_models)
+}
+
+pub async fn local_get_multimodal_policy(
+    state: Arc<ServerState>,
+) -> anyhow::Result<rocode_api::MultimodalPolicyResponse> {
+    let Json(response) = super::super::multimodal::get_multimodal_policy(State(state))
+        .await
+        .map_err(api_error)?;
+    Ok(response)
+}
+
+pub async fn local_get_multimodal_capabilities(
+    state: Arc<ServerState>,
+    model: Option<String>,
+) -> anyhow::Result<rocode_api::MultimodalCapabilitiesResponse> {
+    let Json(response) = super::super::multimodal::get_multimodal_capabilities(
+        State(state),
+        Query(super::super::multimodal::MultimodalCapabilitiesQuery { model }),
+    )
+    .await
+    .map_err(api_error)?;
+    Ok(response)
+}
+
+pub async fn local_preflight_multimodal(
+    state: Arc<ServerState>,
+    request: rocode_api::MultimodalPreflightRequest,
+) -> anyhow::Result<rocode_api::MultimodalPreflightResponse> {
+    let Json(response) =
+        super::super::multimodal::post_multimodal_preflight(State(state), Json(request))
+        .await
+        .map_err(api_error)?;
+    Ok(response)
+}
+
+pub async fn local_get_all_providers(
+    state: Arc<ServerState>,
+) -> anyhow::Result<rocode_api::FullProviderListResponse> {
+    let Json(response) = super::super::provider::list_providers(State(state)).await;
+    serde_json::from_value(serde_json::to_value(response)?)
+        .context("failed to convert local providers payload")
+}
+
+pub async fn local_get_known_providers(
+    state: Arc<ServerState>,
+) -> anyhow::Result<rocode_api::KnownProvidersResponse> {
+    let Json(response) = super::super::provider::list_known_providers(State(state)).await;
+    serde_json::from_value(serde_json::to_value(response)?)
+        .context("failed to convert local known providers payload")
+}
+
+pub async fn local_get_provider_connect_schema(
+    state: Arc<ServerState>,
+) -> anyhow::Result<rocode_api::ProviderConnectSchemaResponse> {
+    let Json(response) = super::super::provider::get_provider_connect_schema(State(state)).await;
+    serde_json::from_value(serde_json::to_value(response)?)
+        .context("failed to convert local provider connect schema payload")
+}
+
+pub async fn local_get_provider_descriptor(
+    state: Arc<ServerState>,
+    provider_id: &str,
+) -> anyhow::Result<rocode_api::ProviderDescriptorResponse> {
+    let Json(response) = super::super::provider::get_provider_descriptor(
+        State(state),
+        Path(provider_id.to_string()),
+    )
+    .await
+    .map_err(api_error)?;
+    serde_json::from_value(serde_json::to_value(response)?)
+        .context("failed to convert local provider descriptor payload")
+}
+
+pub async fn local_resolve_provider_connect(
+    state: Arc<ServerState>,
+    query: String,
+) -> anyhow::Result<rocode_api::ResolveProviderConnectResponse> {
+    let Json(response) = super::super::provider::resolve_provider_connect(
+        State(state),
+        Json(super::super::provider::ResolveProviderConnectRequest { query }),
+    )
+    .await;
+    serde_json::from_value(serde_json::to_value(response)?)
+        .context("failed to convert local provider connect resolution payload")
+}
+
+pub async fn local_refresh_provider_catalog(
+    state: Arc<ServerState>,
+) -> anyhow::Result<rocode_api::RefreshProviderCatalogResponse> {
+    let Json(response) = super::super::provider::refresh_provider_catalog(State(state))
+        .await
+        .map_err(api_error)?;
+    serde_json::from_value(serde_json::to_value(response)?)
+        .context("failed to convert local provider catalog refresh payload")
+}
+
+pub async fn local_connect_provider(
+    state: Arc<ServerState>,
+    request: rocode_api::ConnectProviderRequest,
+) -> anyhow::Result<()> {
+    let Json(connected) = super::super::provider::connect_provider(
+        State(state),
+        Json(super::super::provider::ConnectProviderRequest {
+            provider_id: request.provider_id,
+            api_key: request.api_key,
+            base_url: request.base_url,
+            protocol: request.protocol,
+        }),
+    )
+    .await
+    .map_err(api_error)?;
+    if connected {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("local provider connect returned false"))
+    }
+}

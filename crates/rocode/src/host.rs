@@ -37,6 +37,7 @@ pub struct ServerCommandRequest {
     pub mdns: bool,
     pub mdns_domain: String,
     pub cors: Vec<String>,
+    pub unix_socket_path: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -124,7 +125,7 @@ pub async fn run_server_command(request: ServerCommandRequest) -> anyhow::Result
         mdns: request.mdns,
         mdns_domain: request.mdns_domain,
         cors: request.cors,
-        unix_socket_path: None,
+        unix_socket_path: request.unix_socket_path,
     })
     .await
 }
@@ -209,6 +210,9 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
     if fork && !continue_last && session.is_none() {
         anyhow::bail!("--fork requires --continue or --session");
     }
+    if local && unix_socket_path.is_some() {
+        anyhow::bail!("--local is incompatible with --unix-socket");
+    }
 
     let working_dir = project.clone();
     let server_password = password.or_else(current_server_password);
@@ -246,7 +250,14 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
         };
         let bind_port = if port == 0 { 3000 } else { port };
         let server_url = format!("http://{}:{}", client_host, bind_port);
-        eprintln!("Starting local server for TUI at {}", server_url);
+        if let Some(socket_path) = unix_socket_path.as_deref() {
+            eprintln!(
+                "Starting local server for TUI at {} with Unix socket {}",
+                server_url, socket_path
+            );
+        } else {
+            eprintln!("Starting local server for TUI at {}", server_url);
+        }
         server_task = Some(tokio::spawn(rocode_server::run_server_runtime(
             ServerRuntimeOptions {
                 port: bind_port,
@@ -438,6 +449,7 @@ pub async fn run_acp_command(request: AcpCommandRequest) -> anyhow::Result<()> {
         mdns,
         mdns_domain,
         cors,
+        unix_socket_path: None,
     })
     .await
 }

@@ -17,6 +17,7 @@ use rocode_command::terminal_presentation::{
 };
 use rocode_config::schema::ShareMode;
 use rocode_runtime_context::ResolvedWorkspaceContext;
+use rocode_server;
 use serde::Deserialize;
 use std::io::IsTerminal;
 use std::io::{self, Write};
@@ -152,6 +153,9 @@ pub(crate) struct RemoteAttachOptions {
     pub title: Option<String>,
     pub directory: Option<String>,
     pub show_thinking: bool,
+    // Staged for local attach dispatch; consumed in the next wiring pass.
+    #[allow(dead_code)]
+    pub local_server: Option<Arc<rocode_server::ServerState>>,
 }
 
 fn remote_show_thinking_from_context(context: &ResolvedWorkspaceContext) -> Option<bool> {
@@ -785,6 +789,7 @@ pub(crate) async fn run_non_interactive_attach(options: RemoteAttachOptions) -> 
         title,
         directory,
         show_thinking,
+        local_server: _,
     } = options;
     let client = reqwest::Client::new();
     let show_thinking = Arc::new(AtomicBool::new(show_thinking));
