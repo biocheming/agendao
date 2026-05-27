@@ -33,25 +33,12 @@ import { useWebBootstrap } from "./hooks/useWebBootstrap";
 import { useResizableHeight, useResizableWidth } from "./hooks/useResizableWidth";
 import { useProviderConnectForm } from "./hooks/useProviderConnectForm";
 import { useExternalAdapterProvisioning } from "./hooks/useExternalAdapterProvisioning";
+import { useDiagnosticsFromTelemetry } from "./hooks/useDiagnosticsFromTelemetry";
 import { prepareComposerAttachments } from "./lib/composerAttachments";
 import {
   currentContextTokensFromSources,
   isLiveStageStatus,
 } from "./lib/contextPressure";
-import {
-  cacheBustSummaryFromMetadata,
-  cacheBustSummaryLabel,
-  cacheSemanticsFromTelemetry,
-  type CacheEvidenceSummaryRecord,
-} from "./lib/cacheDiagnostics";
-import {
-  contextClosureCoarseDiagnosticLabel,
-  contextClosureContractFromTelemetry,
-} from "./lib/contextClosureDiagnostics";
-import {
-  providerDiagnosticFromMetadata,
-  providerDiagnosticLabel,
-} from "./lib/providerDiagnostics";
 import {
   buildWebSessionUrl,
   readWebSessionRoute,
@@ -793,55 +780,8 @@ export default function App() {
     }
     return null;
   }, [messageHistory]);
-  const latestClosureDiagnostic = useMemo(() => {
-    const contextClosure = contextClosureContractFromTelemetry(executionActivity.telemetry);
-    if (contextClosure) {
-      return contextClosureCoarseDiagnosticLabel(contextClosure);
-    }
-
-    const semanticsLabel = cacheSemanticsFromTelemetry(executionActivity.telemetry)?.label;
-    if (semanticsLabel) return semanticsLabel;
-
-    const telemetrySummary =
-      executionActivity.telemetry?.cache_evidence &&
-      typeof executionActivity.telemetry.cache_evidence === "object"
-        ? (executionActivity.telemetry.cache_evidence as CacheEvidenceSummaryRecord)
-        : null;
-    const telemetryLabel = cacheBustSummaryLabel(telemetrySummary);
-    if (telemetryLabel) return telemetryLabel;
-
-    for (let index = messageHistory.length - 1; index >= 0; index -= 1) {
-      const message = messageHistory[index];
-      if (message?.role !== "assistant") continue;
-      const label = cacheBustSummaryLabel(cacheBustSummaryFromMetadata(message.metadata));
-      if (label) return label;
-    }
-    return null;
-  }, [
-    executionActivity.telemetry?.cache_evidence,
-    executionActivity.telemetry?.context_closure_contract,
-    executionActivity.telemetry?.cache_semantics,
-    messageHistory,
-  ]);
-  const latestIngressDiagnostic = useMemo(
-    () => ingressStabilizationLabel(executionActivity.telemetry?.ingress_stabilization ?? null),
-    [executionActivity.telemetry?.ingress_stabilization],
-  );
-  const latestProviderDiagnostic = useMemo(() => {
-    const telemetrySummary = providerDiagnosticFromMetadata({
-      provider_diagnostic: executionActivity.telemetry?.provider_diagnostic_summary ?? null,
-    });
-    const telemetryLabel = providerDiagnosticLabel(telemetrySummary);
-    if (telemetryLabel) return telemetryLabel;
-
-    for (let index = messageHistory.length - 1; index >= 0; index -= 1) {
-      const message = messageHistory[index];
-      if (message?.role !== "assistant") continue;
-      const label = providerDiagnosticLabel(providerDiagnosticFromMetadata(message.metadata));
-      if (label) return label;
-    }
-    return null;
-  }, [executionActivity.telemetry?.provider_diagnostic_summary, messageHistory]);
+  const { latestClosureDiagnostic, latestIngressDiagnostic, latestProviderDiagnostic } =
+    useDiagnosticsFromTelemetry(executionActivity.telemetry, messageHistory);
   const refreshExecutionActivity = executionActivity.refreshExecutionActivity;
   const applySchedulerStageOutputBlock = executionActivity.applySchedulerStageOutputBlock;
   const applyLiveExecutionOutputBlock = executionActivity.applyLiveExecutionOutputBlock;
