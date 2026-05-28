@@ -1,7 +1,9 @@
 use super::{PromptOptions, PromptResponse, SessionDetail};
 use anyhow::{Context, Result};
-use rocode_api::SessionListItem;
+use rocode_api::{AgentInfo, ExecutionModeInfo, FullProviderListResponse, SessionListItem};
 use rocode_orchestrator::{CoreSessionManager, OrchestrationCore, SessionStore};
+use rocode_runtime_context::ResolvedWorkspaceContext;
+use rocode_state::RecentModelEntry;
 use std::sync::Arc;
 
 /// Direct transport - calls OrchestrationCore in-process.
@@ -112,5 +114,32 @@ impl<S: SessionStore> DirectTransport<S> {
                 })
                 .collect(),
         })
+    }
+
+    pub async fn get_workspace_context(&self) -> Result<ResolvedWorkspaceContext> {
+        anyhow::bail!("workspace context is not exposed through DirectTransport")
+    }
+
+    pub async fn get_recent_models(&self) -> Result<Vec<RecentModelEntry>> {
+        anyhow::bail!("recent models are not exposed through DirectTransport")
+    }
+
+    pub async fn put_recent_models(
+        &self,
+        _recent_models: &[RecentModelEntry],
+    ) -> Result<Vec<RecentModelEntry>> {
+        anyhow::bail!("recent models are not exposed through DirectTransport")
+    }
+
+    pub async fn get_all_providers(&self) -> Result<FullProviderListResponse> {
+        anyhow::bail!("provider catalogue is not exposed through DirectTransport")
+    }
+
+    pub async fn list_execution_modes(&self) -> Result<Vec<ExecutionModeInfo>> {
+        anyhow::bail!("execution modes are not exposed through DirectTransport")
+    }
+
+    pub async fn list_agents(&self) -> Result<Vec<AgentInfo>> {
+        anyhow::bail!("agents are not exposed through DirectTransport")
     }
 }

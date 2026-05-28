@@ -198,6 +198,12 @@ async fn handle_request<S: SessionStore + Send + 'static>(
     let result = match request.method.as_str() {
         "prompt" => handle_prompt(request.params, state, core).await,
         "list_sessions" => handle_list_sessions(state).await,
+        "get_workspace_context" => handle_get_workspace_context(state).await,
+        "get_recent_models" => handle_get_recent_models(state).await,
+        "put_recent_models" => handle_put_recent_models(request.params, state).await,
+        "get_all_providers" => handle_get_all_providers(state).await,
+        "list_execution_modes" => handle_list_execution_modes(state).await,
+        "list_agents" => handle_list_agents(state).await,
         "get_session" => handle_get_session(request.params, state).await,
         _ => Err(JsonRpcError {
             code: -32601,
@@ -325,6 +331,71 @@ async fn handle_list_sessions(
     })
 }
 
+async fn handle_get_recent_models(
+    state: &Arc<ServerState>,
+) -> Result<serde_json::Value, JsonRpcError> {
+    let response = crate::local_get_recent_models(Arc::clone(state))
+        .await
+        .map_err(to_rpc_internal_error)?;
+    serde_json::to_value(response).map_err(to_rpc_serde_error)
+}
+
+async fn handle_put_recent_models(
+    params: serde_json::Value,
+    state: &Arc<ServerState>,
+) -> Result<serde_json::Value, JsonRpcError> {
+    let req: PutRecentModelsRequest = serde_json::from_value(params).map_err(|e| {
+        tracing::warn!("put_recent_models invalid params: {}", e);
+        JsonRpcError {
+            code: -32602,
+            message: "Invalid params".to_string(),
+        }
+    })?;
+    let response = crate::local_put_recent_models(
+        Arc::clone(state),
+        req.recent_models,
+    )
+    .await
+    .map_err(to_rpc_internal_error)?;
+    serde_json::to_value(response).map_err(to_rpc_serde_error)
+}
+
+async fn handle_get_workspace_context(
+    state: &Arc<ServerState>,
+) -> Result<serde_json::Value, JsonRpcError> {
+    let response = crate::local_get_workspace_context(Arc::clone(state))
+        .await
+        .map_err(to_rpc_internal_error)?;
+    serde_json::to_value(response).map_err(to_rpc_serde_error)
+}
+
+async fn handle_get_all_providers(
+    state: &Arc<ServerState>,
+) -> Result<serde_json::Value, JsonRpcError> {
+    let response = crate::local_get_all_providers(Arc::clone(state))
+        .await
+        .map_err(to_rpc_internal_error)?;
+    serde_json::to_value(response).map_err(to_rpc_serde_error)
+}
+
+async fn handle_list_execution_modes(
+    state: &Arc<ServerState>,
+) -> Result<serde_json::Value, JsonRpcError> {
+    let response = crate::local_list_execution_modes(Arc::clone(state))
+        .await
+        .map_err(to_rpc_internal_error)?;
+    serde_json::to_value(response).map_err(to_rpc_serde_error)
+}
+
+async fn handle_list_agents(
+    state: &Arc<ServerState>,
+) -> Result<serde_json::Value, JsonRpcError> {
+    let response = crate::local_list_agents(Arc::clone(state))
+        .await
+        .map_err(to_rpc_internal_error)?;
+    serde_json::to_value(response).map_err(to_rpc_serde_error)
+}
+
 async fn handle_get_session(
     params: serde_json::Value,
     state: &Arc<ServerState>,
@@ -381,6 +452,22 @@ async fn handle_get_session(
     })
 }
 
+fn to_rpc_internal_error(error: anyhow::Error) -> JsonRpcError {
+    tracing::error!("JSON-RPC internal error: {}", error);
+    JsonRpcError {
+        code: -32603,
+        message: "Internal error".to_string(),
+    }
+}
+
+fn to_rpc_serde_error(error: serde_json::Error) -> JsonRpcError {
+    tracing::error!("JSON-RPC serialization error: {}", error);
+    JsonRpcError {
+        code: -32603,
+        message: "Internal error".to_string(),
+    }
+}
+
 // ============================================================================
 // JSON-RPC Protocol Types
 // ============================================================================
@@ -431,6 +518,11 @@ struct PromptResponse {
     session_id: String,
     message_id: String,
     text: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PutRecentModelsRequest {
+    recent_models: Vec<rocode_state::RecentModelEntry>,
 }
 
 #[derive(Debug, Deserialize)]

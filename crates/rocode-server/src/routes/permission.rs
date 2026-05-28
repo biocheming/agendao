@@ -488,7 +488,7 @@ pub(crate) async fn request_permission(
     }
 }
 
-async fn list_permissions() -> Json<Vec<PermissionRequestInfo>> {
+pub(crate) async fn list_permissions() -> Json<Vec<PermissionRequestInfo>> {
     let engine = PERMISSION_ENGINE.lock().await;
     let mut result: Vec<_> = engine
         .list()

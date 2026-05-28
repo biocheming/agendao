@@ -31,6 +31,8 @@ pub(super) async fn run_chat_session(
     port_override: Option<u16>,
     working_dir: PathBuf,
     runtime_context: &FrontendRuntimeContext,
+    local: bool,
+    unix_socket: Option<String>,
 ) -> anyhow::Result<()> {
     match interactive_mode {
         InteractiveCliMode::Rich => {
@@ -43,6 +45,8 @@ pub(super) async fn run_chat_session(
                 port_override,
                 working_dir,
                 runtime_context,
+                local,
+                unix_socket.clone(),
             )
             .await
         }
@@ -57,6 +61,8 @@ pub(super) async fn run_chat_session(
                 port_override,
                 working_dir,
                 runtime_context,
+                local,
+                unix_socket,
             )
             .await
         }

@@ -1,8 +1,16 @@
 use super::*;
+use std::sync::Arc;
 
-pub(super) async fn fetch_server_model_list(api_client: &Arc<CliApiClient>) -> Option<Vec<String>> {
-    api_client.get_all_providers().await.ok().map(|response| {
-        let mut models: Vec<String> = response
+pub(super) async fn fetch_server_model_list(
+    api_client: &Arc<CliApiClient>,
+    local_state: &Option<Arc<rocode_server::ServerState>>,
+    transport: &Option<Arc<rocode_client::FrontendTransport>>,
+) -> Option<Vec<String>> {
+    let response = crate::local_dispatch::get_all_providers(local_state, transport, api_client)
+        .await
+        .ok();
+    response.map(|r| {
+        let mut models: Vec<String> = r
             .all
             .into_iter()
             .flat_map(|provider| {

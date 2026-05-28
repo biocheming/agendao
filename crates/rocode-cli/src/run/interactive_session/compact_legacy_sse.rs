@@ -5,6 +5,7 @@ pub(super) async fn wait_for_rich_input(
     config: &Config,
     agent_registry: &AgentRegistry,
     api_client: &Arc<CliApiClient>,
+    local_state: &Option<Arc<rocode_server::ServerState>>,
     dispatch_rx: &mut mpsc::UnboundedReceiver<CliDispatchInput>,
     sse_rx: &mut mpsc::UnboundedReceiver<CliServerEvent>,
     repl_style: &CliStyle,
@@ -22,7 +23,7 @@ pub(super) async fn wait_for_rich_input(
             }
             sse_event = sse_rx.recv() => {
                 if let Some(event) = sse_event {
-                    handle_interactive_sse_event(runtime, api_client, event, repl_style).await;
+                    handle_interactive_sse_event(runtime, api_client, local_state, event, repl_style).await;
                 }
             }
         }
@@ -32,11 +33,12 @@ pub(super) async fn wait_for_rich_input(
 pub(super) async fn drain_available_sse_events(
     runtime: &CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
+    local_state: &Option<Arc<rocode_server::ServerState>>,
     sse_rx: &mut mpsc::UnboundedReceiver<CliServerEvent>,
     repl_style: &CliStyle,
 ) {
     super::prompt_shared::drain_sse_events(sse_rx, |event| {
-        handle_interactive_sse_event(runtime, api_client, event, repl_style)
+        handle_interactive_sse_event(runtime, api_client, local_state, event, repl_style)
     })
     .await;
 }
@@ -44,6 +46,7 @@ pub(super) async fn drain_available_sse_events(
 async fn handle_interactive_sse_event(
     runtime: &CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
+    local_state: &Option<Arc<rocode_server::ServerState>>,
     event: CliServerEvent,
     repl_style: &CliStyle,
 ) {
@@ -56,7 +59,7 @@ async fn handle_interactive_sse_event(
             session_id: _,
             questions_json,
         } => {
-            handle_question_from_sse(runtime, api_client, &request_id, &questions_json).await;
+            handle_question_from_sse(runtime, api_client, local_state, &request_id, &questions_json).await;
         }
         CliServerEvent::PermissionRequested {
             session_id,
@@ -64,7 +67,7 @@ async fn handle_interactive_sse_event(
             info_json,
         } => {
             if cli_tracks_related_session(runtime, &session_id) {
-                handle_permission_from_sse(runtime, api_client, &permission_id, &info_json).await;
+                handle_permission_from_sse(runtime, api_client, local_state, &permission_id, &info_json).await;
             }
         }
         other => {

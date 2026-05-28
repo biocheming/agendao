@@ -1,6 +1,10 @@
 use super::{PromptOptions, PromptResponse, SessionDetail};
 use anyhow::{Context, Result};
-use rocode_api::SessionListItem;
+use rocode_api::{
+    AgentInfo, ExecutionModeInfo, FullProviderListResponse, SessionListItem,
+};
+use rocode_runtime_context::ResolvedWorkspaceContext;
+use rocode_state::RecentModelEntry;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -82,6 +86,41 @@ impl UnixSocketTransport {
     pub async fn list_sessions(&self) -> Result<Vec<SessionListItem>> {
         self.send_request("list_sessions", serde_json::json!({}))
             .await
+    }
+
+    pub async fn get_recent_models(&self) -> Result<Vec<RecentModelEntry>> {
+        self.send_request("get_recent_models", serde_json::json!({}))
+            .await
+    }
+
+    pub async fn get_workspace_context(&self) -> Result<ResolvedWorkspaceContext> {
+        self.send_request("get_workspace_context", serde_json::json!({}))
+            .await
+    }
+
+    pub async fn put_recent_models(
+        &self,
+        recent_models: &[RecentModelEntry],
+    ) -> Result<Vec<RecentModelEntry>> {
+        self.send_request(
+            "put_recent_models",
+            serde_json::json!({ "recent_models": recent_models }),
+        )
+        .await
+    }
+
+    pub async fn get_all_providers(&self) -> Result<FullProviderListResponse> {
+        self.send_request("get_all_providers", serde_json::json!({}))
+            .await
+    }
+
+    pub async fn list_execution_modes(&self) -> Result<Vec<ExecutionModeInfo>> {
+        self.send_request("list_execution_modes", serde_json::json!({}))
+            .await
+    }
+
+    pub async fn list_agents(&self) -> Result<Vec<AgentInfo>> {
+        self.send_request("list_agents", serde_json::json!({})).await
     }
 
     pub async fn get_session(&self, session_id: &str) -> Result<SessionDetail> {

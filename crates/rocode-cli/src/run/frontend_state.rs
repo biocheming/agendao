@@ -408,10 +408,20 @@ fn cli_recent_session_info_for_directory(
 }
 
 async fn cli_load_recent_session_info(
+    local_server: &Option<Arc<rocode_server::ServerState>>,
+    transport: &Option<Arc<rocode_client::FrontendTransport>>,
     api_client: &CliApiClient,
     current_dir: &Path,
 ) -> Option<CliRecentSessionInfo> {
-    let sessions = api_client.list_sessions(None, Some(20)).await.ok()?;
+    let sessions = crate::local_dispatch::list_sessions(
+        local_server,
+        transport,
+        api_client,
+        None,
+        Some(20),
+    )
+    .await
+    .ok()?;
     cli_recent_session_info_for_directory(&sessions, current_dir)
 }
 

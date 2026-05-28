@@ -15,6 +15,9 @@ pub use unix::UnixSocketTransport;
 pub use selector::TransportSelector;
 
 use anyhow::Result;
+use rocode_api::{AgentInfo, ExecutionModeInfo, FullProviderListResponse};
+use rocode_runtime_context::ResolvedWorkspaceContext;
+use rocode_state::RecentModelEntry;
 
 /// Transport layer for frontend-to-core communication.
 ///
@@ -70,6 +73,57 @@ impl FrontendTransport {
             Self::Direct(t) => t.list_sessions().await,
             Self::Unix(t) => t.list_sessions().await,
             Self::Http(t) => t.list_sessions().await,
+        }
+    }
+
+    pub async fn get_workspace_context(&self) -> Result<ResolvedWorkspaceContext> {
+        match self {
+            Self::Direct(t) => t.get_workspace_context().await,
+            Self::Unix(t) => t.get_workspace_context().await,
+            Self::Http(t) => t.get_workspace_context().await,
+        }
+    }
+
+    pub async fn get_recent_models(&self) -> Result<Vec<RecentModelEntry>> {
+        match self {
+            Self::Direct(t) => t.get_recent_models().await,
+            Self::Unix(t) => t.get_recent_models().await,
+            Self::Http(t) => t.get_recent_models().await,
+        }
+    }
+
+    pub async fn put_recent_models(
+        &self,
+        recent_models: &[RecentModelEntry],
+    ) -> Result<Vec<RecentModelEntry>> {
+        match self {
+            Self::Direct(t) => t.put_recent_models(recent_models).await,
+            Self::Unix(t) => t.put_recent_models(recent_models).await,
+            Self::Http(t) => t.put_recent_models(recent_models).await,
+        }
+    }
+
+    pub async fn get_all_providers(&self) -> Result<FullProviderListResponse> {
+        match self {
+            Self::Direct(t) => t.get_all_providers().await,
+            Self::Unix(t) => t.get_all_providers().await,
+            Self::Http(t) => t.get_all_providers().await,
+        }
+    }
+
+    pub async fn list_execution_modes(&self) -> Result<Vec<ExecutionModeInfo>> {
+        match self {
+            Self::Direct(t) => t.list_execution_modes().await,
+            Self::Unix(t) => t.list_execution_modes().await,
+            Self::Http(t) => t.list_execution_modes().await,
+        }
+    }
+
+    pub async fn list_agents(&self) -> Result<Vec<AgentInfo>> {
+        match self {
+            Self::Direct(t) => t.list_agents().await,
+            Self::Unix(t) => t.list_agents().await,
+            Self::Http(t) => t.list_agents().await,
         }
     }
 

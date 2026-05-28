@@ -313,10 +313,15 @@ async fn cli_capture_voice_prompt(
     runtime: &mut CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
     sse_rx: &mut mpsc::UnboundedReceiver<CliServerEvent>,
+    local_state: &Option<Arc<rocode_server::ServerState>>,
+    transport: &Option<Arc<rocode_client::FrontendTransport>>,
     current_dir: &Path,
     style: &CliStyle,
 ) -> anyhow::Result<()> {
-    let workspace_context = api_client.get_workspace_context().await.ok();
+    let workspace_context =
+        crate::local_dispatch::get_workspace_context(local_state, transport, api_client)
+            .await
+            .ok();
     let config = workspace_context
         .map(|context| context.config)
         .or_else(|| load_config(current_dir).ok())
@@ -469,6 +474,8 @@ async fn cli_capture_voice_prompt(
         runtime,
         api_client,
         sse_rx,
+        local_state,
+        transport,
         capture.transcript.as_deref().unwrap_or_default(),
         if summary.compact_label.is_empty() {
             "[voice input]"
@@ -498,6 +505,8 @@ async fn cli_execute_ui_action(
     runtime: &mut CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
     sse_rx: &mut mpsc::UnboundedReceiver<CliServerEvent>,
+    local_state: &Option<Arc<rocode_server::ServerState>>,
+    transport: &Option<Arc<rocode_client::FrontendTransport>>,
     provider_registry: &ProviderRegistry,
     agent_registry: &AgentRegistry,
     current_dir: &Path,
@@ -534,7 +543,16 @@ async fn cli_execute_ui_action(
         }
         UiActionId::Exit => Ok(CliUiActionOutcome::Break),
         UiActionId::VoiceInput => {
-            cli_capture_voice_prompt(runtime, api_client, sse_rx, current_dir, repl_style).await?;
+            cli_capture_voice_prompt(
+                runtime,
+                api_client,
+                sse_rx,
+                local_state,
+                transport,
+                current_dir,
+                repl_style,
+            )
+            .await?;
             Ok(CliUiActionOutcome::Continue)
         }
         UiActionId::ShowHelp => {
@@ -931,7 +949,13 @@ async fn cli_execute_ui_action(
                 }
                 CliModelCommand::Select(model_ref) => {
                     let normalized_model_ref = cli_normalize_model_ref(&model_ref);
-                    let exists = match api_client.get_all_providers().await {
+                    let exists = match crate::local_dispatch::get_all_providers(
+                        local_state,
+                        transport,
+                        api_client,
+                    )
+                    .await
+                    {
                         Ok(response) => response.all.into_iter().any(|provider| {
                             provider.models.into_iter().any(|model| {
                                 format!("{}/{}", provider.id, model.id) == normalized_model_ref
@@ -960,7 +984,13 @@ async fn cli_execute_ui_action(
                         if let Ok(mut projection) = runtime.frontend_projection.lock() {
                             projection.current_model_label = Some(normalized_model_ref.clone());
                         }
-                        cli_save_recent_model_ref(&api_client, &normalized_model_ref).await;
+                        cli_save_recent_model_ref(
+                            local_state,
+                            transport,
+                            api_client,
+                            &normalized_model_ref,
+                        )
+                        .await;
                         let _ = print_block(
                             Some(runtime),
                             OutputBlock::Status(StatusBlock::title(format!(
@@ -1054,7 +1084,13 @@ async fn cli_execute_ui_action(
             }
 
             let style = CliStyle::detect();
-            let mut lines = match api_client.get_all_providers().await {
+            let mut lines = match crate::local_dispatch::get_all_providers(
+                local_state,
+                transport,
+                api_client,
+            )
+            .await
+            {
                 Ok(response) => response
                     .all
                     .into_iter()
@@ -1078,7 +1114,9 @@ async fn cli_execute_ui_action(
             };
             lines.sort();
             lines.dedup();
-            let recent = api_client.get_recent_models().await.unwrap_or_default();
+            let recent = crate::local_dispatch::get_recent_models(local_state, transport, api_client)
+                .await
+                .unwrap_or_default();
             if !recent.is_empty() {
                 let recent_lines = recent
                     .iter()
@@ -1138,7 +1176,9 @@ async fn cli_execute_ui_action(
         }
         UiActionId::OpenModeList => {
             if let Some(mode_ref) = argument.map(str::trim).filter(|value| !value.is_empty()) {
-                match api_client.list_execution_modes().await {
+                match crate::local_dispatch::list_execution_modes(local_state, transport, api_client)
+                    .await
+                {
                     Ok(modes) => {
                         let normalized = mode_ref.to_ascii_lowercase();
                         let found = modes.into_iter().find(|mode| {
@@ -1192,7 +1232,9 @@ async fn cli_execute_ui_action(
                 return Ok(CliUiActionOutcome::Continue);
             }
             let style = CliStyle::detect();
-            match api_client.list_execution_modes().await {
+            match crate::local_dispatch::list_execution_modes(local_state, transport, api_client)
+                .await
+            {
                 Ok(modes) => {
                     let lines = modes
                         .into_iter()
@@ -1557,8 +1599,23 @@ async fn cli_execute_ui_action(
             Ok(CliUiActionOutcome::Continue)
         }
         UiActionId::OpenAgentList => {
+            let resolved_agents = crate::local_dispatch::list_agents(local_state, transport, api_client)
+                .await
+                .unwrap_or_else(|_| {
+                    agent_registry
+                        .list()
+                        .into_iter()
+                        .map(|info| rocode_client::AgentInfo {
+                            id: info.name.clone(),
+                            name: info.name.clone(),
+                            description: info.description.clone(),
+                            mode: Some(format!("{:?}", info.mode).to_ascii_lowercase()),
+                            hidden: Some(info.hidden),
+                        })
+                        .collect()
+                });
             if let Some(agent_name) = argument.map(str::trim).filter(|value| !value.is_empty()) {
-                let agents = agent_registry.list();
+                let agents = resolved_agents;
                 let found = agents.iter().find(|info| info.name == agent_name);
                 if let Some(info) = found {
                     runtime.resolved_agent_name = info.name.clone();
@@ -1585,18 +1642,19 @@ async fn cli_execute_ui_action(
             }
             let style = CliStyle::detect();
             let mut lines = Vec::new();
-            for info in agent_registry.list() {
+            for info in resolved_agents {
                 let active = if info.name == runtime.resolved_agent_name {
                     " ← active".to_string()
                 } else {
                     String::new()
                 };
-                let model_info = info
-                    .model
-                    .as_ref()
-                    .map(|m| format!(" ({}/{})", m.provider_id, m.model_id))
+                let mode_info = info
+                    .mode
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                    .map(|mode| format!(" ({mode})"))
                     .unwrap_or_default();
-                lines.push(format!("{}{}{}", info.name, model_info, active));
+                lines.push(format!("{}{}{}", info.name, mode_info, active));
             }
             let _ =
                 print_cli_list_on_surface(Some(runtime), "Available Agents", None, &lines, &style);
@@ -1651,16 +1709,27 @@ async fn cli_execute_ui_action(
                             .await;
                         return Ok(CliUiActionOutcome::Continue);
                     }
-                    _ => match api_client.list_sessions(Some(target), Some(20)).await {
-                        Ok(sessions) => {
-                            if let Some(session) = sessions.into_iter().find(|session| {
+                    _ => match crate::local_dispatch::list_sessions(
+                        local_state,
+                        transport,
+                        api_client,
+                        None,
+                        Some(20),
+                    )
+                    .await
+                    .map(|sessions| {
+                        let needle = target.to_ascii_lowercase();
+                        sessions
+                            .into_iter()
+                            .filter(|session| {
                                 session.id == target
                                     || session.id.starts_with(target)
-                                    || session
-                                        .title
-                                        .to_ascii_lowercase()
-                                        .contains(&target.to_ascii_lowercase())
-                            }) {
+                                    || session.title.to_ascii_lowercase().contains(&needle)
+                            })
+                            .collect::<Vec<_>>()
+                    }) {
+                        Ok(sessions) => {
+                            if let Some(session) = sessions.into_iter().next() {
                                 cli_set_root_server_session(runtime, session.id.clone());
                                 let _ = print_block(
                                     Some(runtime),
