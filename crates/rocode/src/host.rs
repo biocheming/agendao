@@ -25,8 +25,6 @@ pub struct TuiCommandRequest {
     pub attach_url: Option<String>,
     pub password: Option<String>,
     pub unix_socket_path: Option<String>,
-    /// Use Direct (in-process) mode — no server, no IPC.
-    pub local: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -204,28 +202,28 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
         attach_url,
         password,
         unix_socket_path,
-        local,
     } = request;
 
     if fork && !continue_last && session.is_none() {
         anyhow::bail!("--fork requires --continue or --session");
     }
-    if local && unix_socket_path.is_some() {
-        anyhow::bail!("--local is incompatible with --unix-socket");
-    }
 
     let working_dir = project.clone();
     let server_password = password.or_else(current_server_password);
+    let use_http = attach_url.is_some();
+    let use_socket = !use_http && unix_socket_path.is_some();
+    let use_direct = !use_http && !use_socket;
 
-    let mut server_task = None;
-    let base_url = if let Some(url) = attach_url {
-        if local {
-            anyhow::bail!("--local is incompatible with --attach-url");
-        }
-        url
-    } else if local {
-        // Direct mode: no server needed, TUI constructs the core internally.
+    if use_direct {
         eprintln!("Starting TUI in Direct (in-process) mode");
+        let local_server = create_local_server_state(working_dir.clone()).await?;
+        let selected_session = resolve_requested_session_local(
+            &local_server,
+            continue_last,
+            session,
+            fork,
+        )
+        .await?;
         let run_result = tokio::task::spawn_blocking(move || {
             rocode_tui::run_tui_with_config(AppLaunchConfig {
                 base_url: None,
@@ -233,15 +231,21 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
                 model,
                 initial_prompt: prompt,
                 agent_name: agent,
-                session_id: session,
+                session_id: selected_session,
                 working_dir,
                 unix_socket_path: None,
                 local_direct: true,
+                local_server: Some(local_server),
             })
         })
         .await
         .map_err(|error| anyhow::anyhow!("rocode-tui task failed to join: {}", error))?;
         return run_result;
+    }
+
+    let mut server_task = None;
+    let base_url = if let Some(url) = attach_url {
+        url
     } else {
         let client_host = if mdns && hostname == "127.0.0.1" {
             "127.0.0.1".to_string()
@@ -288,18 +292,19 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
     // Run it on a blocking thread so we do not try to nest runtimes inside
     // the product shell's async runtime.
     let run_result = tokio::task::spawn_blocking(move || {
-        rocode_tui::run_tui_with_config(AppLaunchConfig {
-            base_url: Some(base_url),
-            server_password,
-            model,
-            initial_prompt: prompt,
-            agent_name: agent,
-            session_id: selected_session,
-            working_dir,
-            unix_socket_path,
-            local_direct: false,
+            rocode_tui::run_tui_with_config(AppLaunchConfig {
+                base_url: Some(base_url),
+                server_password,
+                model,
+                initial_prompt: prompt,
+                agent_name: agent,
+                session_id: selected_session,
+                working_dir,
+                unix_socket_path,
+                local_direct: false,
+                local_server: None,
+            })
         })
-    })
     .await
     .map_err(|error| anyhow::anyhow!("rocode-tui task failed to join: {}", error))?;
 
@@ -311,6 +316,56 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
     run_result
 }
 
+async fn create_local_server_state(
+    working_dir: Option<std::path::PathBuf>,
+) -> anyhow::Result<Arc<rocode_server::ServerState>> {
+    let workspace_root = match working_dir {
+        Some(dir) => dir.canonicalize().unwrap_or(dir),
+        None => std::env::current_dir()?,
+    };
+    Ok(Arc::new(
+        rocode_server::ServerState::new_with_storage_for_url_in_workspace(
+            "http://127.0.0.1:0".to_string(),
+            workspace_root,
+        )
+        .await?,
+    ))
+}
+
+async fn resolve_requested_session_local(
+    state: &Arc<rocode_server::ServerState>,
+    continue_last: bool,
+    session: Option<String>,
+    fork: bool,
+) -> anyhow::Result<Option<String>> {
+    let selected = if let Some(session_id) = session {
+        Some(session_id)
+    } else if continue_last {
+        rocode_server::local_list_sessions(Arc::clone(state), None, Some(100))
+            .await?
+            .into_iter()
+            .find(|s| s.parent_id.is_none())
+            .map(|s| s.id)
+    } else {
+        None
+    };
+
+    if !fork {
+        return Ok(selected);
+    }
+
+    let Some(session_id) = selected else {
+        anyhow::bail!(
+            "No session is available to fork. Use --session <id> or --continue with an existing session."
+        );
+    };
+
+    let forked =
+        rocode_server::local_fork_session(Arc::clone(state), &session_id, None).await?;
+    eprintln!("Forked session {} -> {}", session_id, forked.id);
+    Ok(Some(forked.id))
+}
+
 async fn resolve_requested_session(
     base_url: &str,
     server_password: Option<String>,
@@ -319,8 +374,6 @@ async fn resolve_requested_session(
     fork: bool,
     unix_socket_path: Option<&str>,
 ) -> anyhow::Result<Option<String>> {
-    // Use TransportSelector for automatic transport selection
-    // (Unix Socket first with connectivity test, HTTP fallback).
     let transport = match unix_socket_path {
         Some(socket_path) => {
             let selector = rocode_client::transport::TransportSelector::new(
@@ -328,7 +381,7 @@ async fn resolve_requested_session(
                 base_url.to_string(),
                 server_password.clone(),
             );
-            selector.select().await.ok()
+            Some(selector.select_unix_required().await?)
         }
         None => None,
     };
@@ -338,11 +391,8 @@ async fn resolve_requested_session(
     let selected = if let Some(session_id) = session {
         Some(session_id)
     } else if continue_last {
-        // Try listing via transport (Unix Socket) first, fall back to HTTP.
         let sessions = if let Some(ref t) = transport {
-            t.list_sessions()
-                .await
-                .unwrap_or_else(|_| vec![])
+            t.list_sessions().await?
         } else {
             vec![]
         };

@@ -146,7 +146,12 @@ fn cli_resolve_show_thinking(explicit_flag: bool, config: Option<&Config>, fallb
         .unwrap_or(fallback)
 }
 
-async fn cli_save_recent_model_ref(api_client: &CliApiClient, model_ref: &str) {
+async fn cli_save_recent_model_ref(
+    local_server: &Option<Arc<rocode_server::ServerState>>,
+    transport: &Option<Arc<rocode_client::FrontendTransport>>,
+    api_client: &CliApiClient,
+    model_ref: &str,
+) {
     let Some((provider, model)) = model_ref.split_once('/') else {
         return;
     };
@@ -155,7 +160,9 @@ async fn cli_save_recent_model_ref(api_client: &CliApiClient, model_ref: &str) {
     if provider.is_empty() || model.is_empty() {
         return;
     }
-    let mut recent = api_client.get_recent_models().await.unwrap_or_default();
+    let mut recent = crate::local_dispatch::get_recent_models(local_server, transport, api_client)
+        .await
+        .unwrap_or_default();
     recent.retain(|entry| {
         !(entry.provider.eq_ignore_ascii_case(provider) && entry.model.eq_ignore_ascii_case(model))
     });
@@ -167,7 +174,9 @@ async fn cli_save_recent_model_ref(api_client: &CliApiClient, model_ref: &str) {
         },
     );
     recent.truncate(rocode_state::MAX_RECENT_MODELS);
-    if let Err(error) = api_client.put_recent_models(&recent).await {
+    if let Err(error) =
+        crate::local_dispatch::put_recent_models(local_server, transport, api_client, &recent).await
+    {
         tracing::warn!(%error, "failed to persist CLI recent model");
     }
 }
@@ -195,9 +204,11 @@ pub(crate) async fn run_non_interactive(
         variant,
         thinking,
         interactive_mode,
-        local,
-        unix_socket: _,
+        unix_socket,
     } = options;
+    let use_http = attach.is_some();
+    let use_socket = !use_http && unix_socket.is_some();
+    let use_direct = !use_http && !use_socket;
     let working_dir = match dir {
         Some(dir) => dir,
         None => std::env::current_dir()?,
@@ -222,14 +233,13 @@ pub(crate) async fn run_non_interactive(
             port,
             working_dir,
             runtime_context,
+            use_direct,
+            unix_socket,
         )
         .await;
     }
 
-    if local && attach.is_some() {
-        anyhow::bail!("--local is incompatible with --attach");
-    }
-    let base_url = if local {
+    let base_url = if use_direct {
         "http://127.0.0.1:0".to_string()
     } else if let Some(base_url) = attach {
         base_url
@@ -238,11 +248,12 @@ pub(crate) async fn run_non_interactive(
             .discover_or_start_server_with_request(crate::ServerDiscoveryRequest {
                 port_override: port,
                 cwd: Some(working_dir.clone()),
+                unix_socket_path: unix_socket.clone(),
             })
             .await?
     };
     let api_client = CliApiClient::new(base_url.clone());
-    let local_server: Option<Arc<rocode_server::ServerState>> = if local {
+    let local_server: Option<Arc<rocode_server::ServerState>> = if use_direct {
         eprintln!("Starting CLI in Direct (in-process) mode");
         Some(Arc::new(
             rocode_server::ServerState::new_with_storage_for_url_in_workspace(
@@ -254,7 +265,25 @@ pub(crate) async fn run_non_interactive(
     } else {
         None
     };
-    let remote_context = api_client.get_workspace_context().await.ok();
+    let transport = if use_direct {
+        None
+    } else if let Some(socket_path) = unix_socket.as_deref() {
+        rocode_client::transport::TransportSelector::new(
+            Some(socket_path.to_string()),
+            base_url.clone(),
+            None,
+        )
+        .select_unix_required()
+        .await
+        .map(Arc::new)
+        .map(Some)?
+    } else {
+        None
+    };
+    let remote_context =
+        crate::local_dispatch::get_workspace_context(&local_server, &transport, &api_client)
+            .await
+            .ok();
     let show_thinking = cli_resolve_show_thinking(
         thinking,
         remote_context.as_ref().map(|context| &context.config),
@@ -267,16 +296,17 @@ pub(crate) async fn run_non_interactive(
             .map(|entry| format!("{}/{}", entry.provider, entry.model))
     });
     if let Some(model_ref) = model.as_deref() {
-        cli_save_recent_model_ref(&api_client, model_ref).await;
+        cli_save_recent_model_ref(&local_server, &transport, &api_client, model_ref).await;
     }
 
     if let Some(local) = local_server {
-        run_direct_prompt(
+        run_cli_prompt_local(
             &local,
             &input,
             command.as_deref(),
             continue_last,
             session.as_deref(),
+            fork,
             model.as_deref(),
             requested_agent.as_deref(),
             variant.as_deref(),
@@ -285,6 +315,25 @@ pub(crate) async fn run_non_interactive(
         )
         .await?;
         return Ok(());
+    }
+
+    if let Some(socket_path) = unix_socket.as_deref() {
+        if let Some(transport) = transport.as_deref() {
+            if let rocode_client::FrontendTransport::Unix(_) = transport {
+                eprintln!("Connected via Unix socket: {}", socket_path);
+            }
+            run_cli_prompt_transport(
+                transport,
+                &input,
+                command.as_deref(),
+                model.as_deref(),
+                requested_agent.as_deref(),
+                variant.as_deref(),
+            )
+            .await?;
+            return Ok(());
+        }
+        anyhow::bail!("Unix socket mode requested but no Unix transport is available");
     }
 
     run_non_interactive_attach(RemoteAttachOptions {
@@ -308,52 +357,42 @@ pub(crate) async fn run_non_interactive(
     .await
 }
 
-async fn run_direct_prompt(
+async fn run_cli_prompt_local(
     state: &Arc<rocode_server::ServerState>,
     input: &str,
     command: Option<&str>,
-    _continue_last: bool,
-    _session: Option<&str>,
+    continue_last: bool,
+    session: Option<&str>,
+    fork: bool,
     model: Option<&str>,
-    _agent: Option<&str>,
-    _variant: Option<&str>,
-    _title: Option<&str>,
-    _directory: &str,
+    agent: Option<&str>,
+    variant: Option<&str>,
+    title: Option<&str>,
+    directory: &str,
 ) -> anyhow::Result<()> {
-    // Create new session.
-    let session = rocode_server::local_create_session(
-        Arc::clone(state),
-        rocode_client::CreateSessionRequest {
-            scheduler_profile: None,
-            directory: _directory.to_string().into(),
-            project_id: None,
-            title: _title.map(|s| s.to_string()),
-        },
+    let session_id = resolve_local_session(
+        state,
+        continue_last,
+        session,
+        fork,
+        title,
+        directory,
     )
     .await?;
 
-    // Send prompt.
-    let message = if let Some(cmd) = command {
-        if input.trim().is_empty() {
-            format!("/{}", cmd)
-        } else {
-            format!("/{} {}", cmd, input)
-        }
-    } else {
-        input.to_string()
-    };
+    let message = build_prompt_message(input, command);
     rocode_server::local_prompt(
         Arc::clone(state),
-        &session.id,
+        &session_id,
         rocode_client::PromptRequest {
             message: Some(message),
             parts: None,
             idempotency_key: None,
             ingress_source: Some("cli".to_string()),
-            agent: _agent.map(|s| s.to_string()),
+            agent: agent.map(|s| s.to_string()),
             scheduler_profile: None,
             model: model.map(|s| s.to_string()),
-            variant: _variant.map(|s| s.to_string()),
+            variant: variant.map(|s| s.to_string()),
             command: command.map(|s| s.to_string()),
             arguments: None,
             source_origin: Some(rocode_types::MessageSourceOrigin::Operator),
@@ -362,9 +401,96 @@ async fn run_direct_prompt(
     )
     .await?;
 
-    // Read back messages and print response.
-    let messages = rocode_server::local_list_messages(Arc::clone(state), &session.id, None, None).await?;
-    for msg in &messages {
+    let messages =
+        rocode_server::local_list_messages(Arc::clone(state), &session_id, None, None).await?;
+    print_assistant_messages(&messages);
+    Ok(())
+}
+
+async fn resolve_local_session(
+    state: &Arc<rocode_server::ServerState>,
+    continue_last: bool,
+    session: Option<&str>,
+    fork: bool,
+    title: Option<&str>,
+    directory: &str,
+) -> anyhow::Result<String> {
+    let base_id = if let Some(session_id) = session {
+        Some(session_id.to_string())
+    } else if continue_last {
+        rocode_server::local_list_sessions(Arc::clone(state), None, Some(100))
+            .await?
+            .into_iter()
+            .find(|s| s.parent_id.is_none() && s.directory == directory)
+            .map(|s| s.id)
+    } else {
+        None
+    };
+
+    if let Some(base_id) = base_id {
+        if fork {
+            let forked =
+                rocode_server::local_fork_session(Arc::clone(state), &base_id, None).await?;
+            return Ok(forked.id);
+        }
+        return Ok(base_id);
+    }
+
+    let created = rocode_server::local_create_session(
+        Arc::clone(state),
+        rocode_client::CreateSessionRequest {
+            scheduler_profile: None,
+            directory: Some(directory.to_string()),
+            project_id: None,
+            title: title.map(|s| s.to_string()),
+        },
+    )
+    .await?;
+    Ok(created.id)
+}
+
+async fn run_cli_prompt_transport(
+    transport: &rocode_client::FrontendTransport,
+    input: &str,
+    command: Option<&str>,
+    model: Option<&str>,
+    agent: Option<&str>,
+    variant: Option<&str>,
+) -> anyhow::Result<()> {
+    let session_id = rocode_core::id::create(rocode_core::id::Prefix::Session, false, None);
+    let message = build_prompt_message(input, command);
+    let response = transport
+        .prompt(
+            &session_id,
+            &message,
+            rocode_client::transport::PromptOptions {
+                agent_id: agent.map(|s| s.to_string()),
+                model: model.map(|s| s.to_string()),
+                variant: variant.map(|s| s.to_string()),
+                source_origin: Some(rocode_types::MessageSourceOrigin::Operator),
+                source_surface: Some(rocode_types::MessageSourceSurface::Cli),
+                ..Default::default()
+            },
+        )
+        .await?;
+    println!("{}", response.text);
+    Ok(())
+}
+
+fn build_prompt_message(input: &str, command: Option<&str>) -> String {
+    if let Some(cmd) = command {
+        if input.trim().is_empty() {
+            format!("/{}", cmd)
+        } else {
+            format!("/{} {}", cmd, input)
+        }
+    } else {
+        input.to_string()
+    }
+}
+
+fn print_assistant_messages(messages: &[rocode_client::MessageInfo]) {
+    for msg in messages {
         if msg.role != "user" {
             for part in &msg.parts {
                 if let Some(text) = part.text.as_deref() {
@@ -374,7 +500,6 @@ async fn run_direct_prompt(
         }
     }
     println!();
-    Ok(())
 }
 
 pub(crate) struct RunNonInteractiveOptions {
@@ -396,9 +521,6 @@ pub(crate) struct RunNonInteractiveOptions {
     pub variant: Option<String>,
     pub thinking: bool,
     pub interactive_mode: InteractiveCliMode,
-    pub local: bool,
-    // Staged for transport selection; consumed in the next wiring pass.
-    #[allow(dead_code)]
     pub unix_socket: Option<String>,
 }
 

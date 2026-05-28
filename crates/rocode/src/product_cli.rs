@@ -74,6 +74,9 @@ struct TuiArgs {
     prompt: Option<String>,
     #[arg(long)]
     agent: Option<String>,
+    /// Explicitly attach over HTTP instead of the default Direct mode.
+    #[arg(long = "attach-url")]
+    attach_url: Option<String>,
     #[arg(long, default_value_t = 0)]
     port: u16,
     #[arg(long, default_value = "127.0.0.1")]
@@ -84,12 +87,13 @@ struct TuiArgs {
     mdns_domain: String,
     #[arg(long)]
     cors: Vec<String>,
-    /// Run in Direct (in-process) mode — no server, no IPC.
+    /// Force Direct (in-process) mode. This is already the default unless
+    /// `--socket` or `--attach-url` is provided.
     #[arg(long, default_value_t = false)]
     local: bool,
-    /// Prefer Unix socket IPC using the standard local socket path.
-    #[arg(long, default_value_t = false, conflicts_with = "local")]
-    unix_socket: bool,
+    /// Use the standard local Unix socket path instead of Direct mode.
+    #[arg(long = "socket", alias = "unix-socket", default_value_t = false)]
+    socket: bool,
 }
 
 #[derive(Args)]
@@ -103,8 +107,8 @@ struct AttachArgs {
     #[arg(short = 'p', long)]
     password: Option<String>,
     /// Prefer Unix socket IPC using the standard local socket path.
-    #[arg(long, default_value_t = false)]
-    unix_socket: bool,
+    #[arg(long = "socket", alias = "unix-socket", default_value_t = false)]
+    socket: bool,
 }
 
 #[derive(Args)]
@@ -122,8 +126,8 @@ struct ServerArgs {
     #[arg(long)]
     cors: Vec<String>,
     /// Also listen on the standard local Unix socket path.
-    #[arg(long, default_value_t = false)]
-    unix_socket: bool,
+    #[arg(long = "socket", alias = "unix-socket", default_value_t = false)]
+    socket: bool,
 }
 
 #[derive(Args)]
@@ -189,13 +193,13 @@ fn normalize_tui_shorthand_args(args: Vec<OsString>) -> Vec<OsString> {
     normalized
 }
 
-fn default_unix_socket_path(enabled: bool) -> anyhow::Result<Option<String>> {
+fn resolve_socket_path(enabled: bool) -> anyhow::Result<Option<String>> {
     if !enabled {
         return Ok(None);
     }
 
     TransportSelector::default_unix_socket_path().map(Some).ok_or_else(|| {
-        anyhow::anyhow!("--unix-socket is not supported on this platform")
+        anyhow::anyhow!("--socket is not supported on this platform")
     })
 }
 
@@ -264,6 +268,7 @@ pub async fn dispatch_if_product_command(args: Vec<OsString>) -> anyhow::Result<
             run_tui(default_tui_request()).await?;
         }
         Some(ProductCommand::Tui(args)) => {
+            let unix_socket_path = resolve_socket_path(args.socket)?;
             run_tui(TuiCommandRequest {
                 project: args.project,
                 model: args.model,
@@ -277,10 +282,9 @@ pub async fn dispatch_if_product_command(args: Vec<OsString>) -> anyhow::Result<
                 mdns: args.mdns,
                 mdns_domain: args.mdns_domain,
                 cors: args.cors,
-                attach_url: None,
+                attach_url: args.attach_url,
                 password: None,
-                unix_socket_path: default_unix_socket_path(args.unix_socket)?,
-                local: args.local,
+                unix_socket_path,
             })
             .await?;
         }
@@ -300,8 +304,7 @@ pub async fn dispatch_if_product_command(args: Vec<OsString>) -> anyhow::Result<
                 cors: vec![],
                 attach_url: Some(args.url),
                 password: args.password,
-                unix_socket_path: default_unix_socket_path(args.unix_socket)?,
-                local: false,
+                unix_socket_path: resolve_socket_path(args.socket)?,
             })
             .await?;
         }
@@ -313,7 +316,7 @@ pub async fn dispatch_if_product_command(args: Vec<OsString>) -> anyhow::Result<
                 mdns: args.mdns,
                 mdns_domain: args.mdns_domain,
                 cors: args.cors,
-                unix_socket_path: default_unix_socket_path(args.unix_socket)?,
+                unix_socket_path: resolve_socket_path(args.socket)?,
             })
             .await?;
         }
@@ -400,14 +403,14 @@ mod tests {
     }
 
     #[test]
-    fn unix_socket_flag_enables_default_socket_for_tui() {
-        let cli = ProductCli::parse_from(["rocode", "tui", "--unix-socket"]);
+    fn socket_flag_enables_default_socket_for_tui() {
+        let cli = ProductCli::parse_from(["rocode", "tui", "--socket"]);
         let ProductCommand::Tui(args) = cli.command.expect("tui command") else {
             panic!("expected tui command");
         };
 
-        assert!(args.unix_socket);
-        let socket_path = default_unix_socket_path(args.unix_socket);
+        assert!(args.socket);
+        let socket_path = resolve_socket_path(args.socket);
         #[cfg(unix)]
         assert_eq!(socket_path.unwrap().as_deref(), Some("/tmp/rocode.sock"));
         #[cfg(not(unix))]
@@ -415,21 +418,25 @@ mod tests {
     }
 
     #[test]
-    fn unix_socket_conflicts_with_local_for_tui() {
-        let result = ProductCli::try_parse_from(["rocode", "tui", "--local", "--unix-socket"]);
-        assert!(result.is_err());
+    fn tui_accepts_local_with_socket_override() {
+        let cli = ProductCli::parse_from(["rocode", "tui", "--local", "--socket"]);
+        let ProductCommand::Tui(args) = cli.command.expect("tui command") else {
+            panic!("expected tui command");
+        };
+        assert!(args.local);
+        assert!(args.socket);
     }
 
     #[test]
-    fn unix_socket_flag_enables_default_socket_for_attach() {
+    fn socket_flag_enables_default_socket_for_attach() {
         let cli =
-            ProductCli::parse_from(["rocode", "attach", "http://127.0.0.1:3000", "--unix-socket"]);
+            ProductCli::parse_from(["rocode", "attach", "http://127.0.0.1:3000", "--socket"]);
         let ProductCommand::Attach(args) = cli.command.expect("attach command") else {
             panic!("expected attach command");
         };
 
-        assert!(args.unix_socket);
-        let socket_path = default_unix_socket_path(args.unix_socket);
+        assert!(args.socket);
+        let socket_path = resolve_socket_path(args.socket);
         #[cfg(unix)]
         assert_eq!(socket_path.unwrap().as_deref(), Some("/tmp/rocode.sock"));
         #[cfg(not(unix))]
@@ -437,14 +444,14 @@ mod tests {
     }
 
     #[test]
-    fn unix_socket_flag_enables_default_socket_for_serve() {
-        let cli = ProductCli::parse_from(["rocode", "serve", "--unix-socket"]);
+    fn socket_flag_enables_default_socket_for_serve() {
+        let cli = ProductCli::parse_from(["rocode", "serve", "--socket"]);
         let ProductCommand::Serve(args) = cli.command.expect("serve command") else {
             panic!("expected serve command");
         };
 
-        assert!(args.unix_socket);
-        let socket_path = default_unix_socket_path(args.unix_socket);
+        assert!(args.socket);
+        let socket_path = resolve_socket_path(args.socket);
         #[cfg(unix)]
         assert_eq!(socket_path.unwrap().as_deref(), Some("/tmp/rocode.sock"));
         #[cfg(not(unix))]
@@ -457,7 +464,7 @@ fn default_tui_request() -> TuiCommandRequest {
         project: None, model: None, continue_last: false, session: None, fork: false,
         prompt: None, agent: None, port: 0, hostname: "127.0.0.1".to_string(),
         mdns: false, mdns_domain: "rocode.local".to_string(), cors: vec![],
-        attach_url: None, password: None, unix_socket_path: None, local: false,
+        attach_url: None, password: None, unix_socket_path: None,
     }
 }
 

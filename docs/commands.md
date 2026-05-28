@@ -51,6 +51,14 @@ rocode [subcommand] [options]
 
 不带子命令时，默认进入 `tui` 模式。
 
+默认传输策略：
+
+- `rocode tui` 默认 Direct（in-process）
+- `rocode run` / `rocode cli` 默认 Direct（in-process）
+- `--socket` 显式覆盖为 Unix socket
+- `--attach-url` / `--attach` 显式覆盖为 HTTP
+- `rocode web` 保持 HTTP-first
+
 ---
 
 ## rocode tui -- 交互式 TUI 会话
@@ -74,17 +82,26 @@ rocode tui [PROJECT] [选项]
 | `--fork` | flag | false | 从已有会话分叉后再进入 TUI（需要 `-c` 或 `-s`） |
 | `--prompt` | string | -- | 初始提示词 |
 | `--agent` | string | -- | 指定智能体名称 |
+| `--attach-url` | string | -- | 显式改走 HTTP 并附加到给定服务地址 |
+| `--socket` | flag | false | 显式改走标准本地 Unix socket |
 | `--port` | u16 | 0 | HTTP 服务端口（0 = 自动） |
 | `--hostname` | string | 127.0.0.1 | 绑定地址 |
 | `--mdns` | flag | false | 启用 mDNS 服务发现 |
 | `--mdns-domain` | string | rocode.local | mDNS 域名 |
 | `--cors` | string[] | [] | CORS 允许源列表 |
+| `--local` | flag | false | 强制 Direct；当前只是显式声明默认行为 |
 
 ### 示例
 
 ```bash
 # 在当前目录启动 TUI
 rocode tui
+
+# 显式改走 Unix socket
+rocode tui --socket
+
+# 显式改走 HTTP
+rocode tui --attach-url http://127.0.0.1:3000
 
 # 指定模型和项目
 rocode tui ./my-project -m zhipuai/glm-5.1
@@ -125,18 +142,26 @@ rocode run --command <command> [选项]
 | `-f, --file` | path[] | [] | 附加文件 |
 | `--format` | enum | default | 输出格式: `default` 或 `json` |
 | `--title` | string | -- | 会话标题 |
-| `--attach` | string | -- | 附加到指定 URL 的服务器 |
+| `--attach` | string | -- | 显式改走 HTTP 并附加到指定 URL |
+| `--socket` | flag | false | 显式改走标准本地 Unix socket |
 | `--dir` | path | -- | 工作目录 |
 | `--port` | u16 | -- | 自动拉起本地服务器时使用的端口 |
 | `--variant` | string | -- | 模型变体 |
 | `--thinking` | flag | false | 显示思考过程 |
 | `--interactive-mode` | enum | rich | CLI 交互模式: `rich` 或 `compact` |
+| `--local` | flag | false | 强制 Direct；当前只是显式声明默认行为 |
 
 ### 示例
 
 ```bash
 # 发送单条消息
 rocode run "解释这段代码的作用"
+
+# 显式走 Unix socket
+rocode run --socket "继续当前任务"
+
+# 显式走 HTTP
+rocode run --attach http://127.0.0.1:3000 "继续当前任务"
 
 # 使用特定模型
 rocode run -m alibaba-cn/qwen3.6-plus "写一个排序算法"
@@ -155,7 +180,7 @@ rocode run --command /status
 
 ## rocode attach -- 附加到远程服务器
 
-将 TUI 客户端附加到一个正在运行的 ROCode HTTP 服务器。
+将 TUI 客户端附加到一个正在运行的 ROCode 服务。默认按给定 URL 走 HTTP；如果额外提供 `--socket`，则显式要求走标准本地 Unix socket，并仅把 URL 作为同一服务的基准地址。
 
 ### 用法
 
@@ -171,6 +196,7 @@ rocode attach <URL> [选项]
 | `--dir` | path | -- | 工作目录 |
 | `-s, --session` | string | -- | 会话 ID |
 | `-p, --password` | string | -- | 连接密码 |
+| `--socket` | flag | false | 显式要求改走标准本地 Unix socket |
 
 ### 示例
 
@@ -200,6 +226,7 @@ rocode serve [选项]
 | `--mdns` | flag | false | 启用 mDNS |
 | `--mdns-domain` | string | rocode.local | mDNS 域名 |
 | `--cors` | string[] | [] | CORS 允许源 |
+| `--socket` | flag | false | 同时监听标准本地 Unix socket |
 
 ---
 

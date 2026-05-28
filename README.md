@@ -190,10 +190,30 @@ cargo run -p rocode -- --help
 cargo run -p rocode --
 ```
 
+当前默认传输策略：
+
+- `rocode tui` 默认走 Direct（in-process）
+- `rocode run` / `rocode cli` 默认走 Direct（in-process）
+- `--socket` 显式覆盖为本地 Unix socket
+- `--attach-url` / `--attach` 显式覆盖为 HTTP
+- `rocode web` 保持 HTTP-first
+
 显式指定 TUI:
 
 ```bash
 cargo run -p rocode -- tui
+```
+
+显式走 Unix socket:
+
+```bash
+cargo run -p rocode -- tui --socket
+```
+
+显式走 HTTP attach:
+
+```bash
+cargo run -p rocode -- tui --attach-url http://127.0.0.1:3000
 ```
 
 单次运行:
@@ -202,10 +222,23 @@ cargo run -p rocode -- tui
 cargo run -p rocode -- run "请审查当前仓库里最危险的改动"
 ```
 
+显式走 Unix socket 或 HTTP:
+
+```bash
+cargo run -p rocode -- run --socket "继续当前任务"
+cargo run -p rocode -- run --attach http://127.0.0.1:3000 "继续当前任务"
+```
+
 启动 HTTP Server:
 
 ```bash
 cargo run -p rocode -- serve --hostname 127.0.0.1 --port 3000
+```
+
+启动 HTTP Server 并同时监听标准本地 socket:
+
+```bash
+cargo run -p rocode -- serve --socket
 ```
 
 启动 Web:
