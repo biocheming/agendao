@@ -7,7 +7,9 @@ use axum::Json;
 
 use crate::routes::session::messages::ListMessagesQuery;
 use crate::routes::session::prompt::SessionPromptRequest;
-use crate::routes::session::session_crud::{CreateSessionRequest, ListSessionsQuery};
+use crate::routes::session::session_crud::{
+    CreateSessionRequest, ForkSessionRequest, ListSessionsQuery,
+};
 use crate::ServerState;
 
 fn api_error<E: std::fmt::Display>(error: E) -> anyhow::Error {
@@ -87,6 +89,85 @@ pub async fn local_list_messages(
                 .context("failed to convert local message payload")
         })
         .collect()
+}
+
+pub async fn local_list_questions(
+    state: Arc<ServerState>,
+) -> anyhow::Result<Vec<rocode_api::QuestionInfo>> {
+    let Json(questions) = super::super::tui::list_questions(State(state)).await;
+    serde_json::from_value(serde_json::to_value(questions)?)
+        .context("failed to convert local questions payload")
+}
+
+pub async fn local_reply_question(
+    state: Arc<ServerState>,
+    question_id: &str,
+    answers: Vec<Vec<String>>,
+) -> anyhow::Result<()> {
+    let Json(_ok) = super::super::tui::reply_question(
+        State(state),
+        Path(question_id.to_string()),
+        Json(super::super::tui::ReplyQuestionRequest { answers }),
+    )
+    .await
+    .map_err(api_error)?;
+    Ok(())
+}
+
+pub async fn local_reject_question(
+    state: Arc<ServerState>,
+    question_id: &str,
+) -> anyhow::Result<()> {
+    let Json(_ok) = super::super::tui::reject_question(
+        State(state),
+        Path(question_id.to_string()),
+    )
+    .await
+    .map_err(api_error)?;
+    Ok(())
+}
+
+pub async fn local_list_permissions(
+    _state: Arc<ServerState>,
+) -> anyhow::Result<Vec<rocode_api::PermissionRequestInfo>> {
+    let Json(permissions) = super::super::permission::list_permissions().await;
+    serde_json::from_value(serde_json::to_value(permissions)?)
+        .context("failed to convert local permissions payload")
+}
+
+pub async fn local_reply_permission(
+    state: Arc<ServerState>,
+    permission_id: &str,
+    reply: String,
+    message: Option<String>,
+) -> anyhow::Result<()> {
+    let Json(_ok) = super::super::permission::reply_permission(
+        State(state),
+        Path(permission_id.to_string()),
+        Json(super::super::permission::ReplyPermissionRequest { reply, message }),
+    )
+    .await
+    .map_err(api_error)?;
+    Ok(())
+}
+
+pub async fn local_fork_session(
+    state: Arc<ServerState>,
+    session_id: &str,
+    message_id: Option<String>,
+) -> anyhow::Result<rocode_types::SessionInfo> {
+    let Json(session) = super::session_crud::fork_session(
+        State(state),
+        Path(session_id.to_string()),
+        Json(ForkSessionRequest {
+            message_id,
+            history_mode: None,
+            history_message_limit: None,
+        }),
+    )
+    .await
+    .map_err(api_error)?;
+    Ok(session)
 }
 
 pub async fn local_prompt(
@@ -303,4 +384,24 @@ pub async fn local_connect_provider(
     } else {
         Err(anyhow::anyhow!("local provider connect returned false"))
     }
+}
+
+pub async fn local_list_agents(
+    state: Arc<ServerState>,
+) -> anyhow::Result<Vec<rocode_api::AgentInfo>> {
+    let Json(response) = super::super::list_agents(State(state), HeaderMap::new())
+        .await
+        .map_err(api_error)?;
+    serde_json::from_value(serde_json::to_value(response)?)
+        .context("failed to convert local agents payload")
+}
+
+pub async fn local_list_execution_modes(
+    state: Arc<ServerState>,
+) -> anyhow::Result<Vec<rocode_api::ExecutionModeInfo>> {
+    let Json(response) = super::super::list_execution_modes(State(state), HeaderMap::new())
+        .await
+        .map_err(api_error)?;
+    serde_json::from_value(serde_json::to_value(response)?)
+        .context("failed to convert local execution modes payload")
 }

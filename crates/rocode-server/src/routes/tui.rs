@@ -164,7 +164,9 @@ pub(crate) async fn cancel_questions_for_session(
     cancelled.len()
 }
 
-async fn list_questions(State(state): State<Arc<ServerState>>) -> Json<Vec<QuestionInfo>> {
+pub(crate) async fn list_questions(
+    State(state): State<Arc<ServerState>>,
+) -> Json<Vec<QuestionInfo>> {
     Json(state.runtime_telemetry.list_questions().await)
 }
 
@@ -183,7 +185,7 @@ pub struct ReplyQuestionRequest {
     pub answers: Vec<Vec<String>>,
 }
 
-async fn reply_question(
+pub(crate) async fn reply_question(
     State(state): State<Arc<ServerState>>,
     Path(id): Path<String>,
     Json(req): Json<ReplyQuestionRequest>,
@@ -197,7 +199,7 @@ async fn reply_question(
     Ok(Json(true))
 }
 
-async fn reject_question(
+pub(crate) async fn reject_question(
     State(state): State<Arc<ServerState>>,
     Path(id): Path<String>,
 ) -> Result<Json<bool>> {

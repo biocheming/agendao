@@ -11,6 +11,8 @@ pub(super) async fn run_chat_session(
     port_override: Option<u16>,
     working_dir: PathBuf,
     runtime_context: &FrontendRuntimeContext,
+    local: bool,
+    unix_socket: Option<String>,
 ) -> anyhow::Result<()> {
     let super::bootstrap_shared::InteractiveSessionBootstrap {
         working_dir,
@@ -25,6 +27,8 @@ pub(super) async fn run_chat_session(
         repl_style,
         server_url,
         server_session_id,
+        local_state,
+        transport,
     } = super::bootstrap_shared::bootstrap_interactive_session(
         model,
         provider,
@@ -34,6 +38,8 @@ pub(super) async fn run_chat_session(
         port_override,
         working_dir,
         runtime_context,
+        local,
+        unix_socket,
     )
     .await?;
 
@@ -46,7 +52,9 @@ pub(super) async fn run_chat_session(
 
     let mut dispatch_rx = match interactive_mode {
         InteractiveCliMode::Rich => {
-            let server_models = super::prompt_shared::fetch_server_model_list(&api_client).await;
+            let server_models =
+                super::prompt_shared::fetch_server_model_list(&api_client, &local_state, &transport)
+                    .await;
             Some(attach_rich_prompt(
                 &mut runtime,
                 &repl_style,
@@ -79,6 +87,8 @@ pub(super) async fn run_chat_session(
         &server_session_id,
         &api_client,
         &runtime,
+        local,
+        &local_state,
     )
     .await;
 
@@ -107,6 +117,7 @@ pub(super) async fn run_chat_session(
                         &config,
                         agent_registry_arc.as_ref(),
                         &api_client,
+                        &local_state,
                         dispatch_rx,
                         &mut sse_rx,
                         &repl_style,
@@ -124,6 +135,7 @@ pub(super) async fn run_chat_session(
                     super::compact_legacy_sse::drain_available_sse_events(
                         &runtime,
                         &api_client,
+                        &local_state,
                         &mut sse_rx,
                         &repl_style,
                     )
@@ -150,6 +162,8 @@ pub(super) async fn run_chat_session(
                 &mut runtime,
                 &api_client,
                 &mut sse_rx,
+                &local_state,
+                &transport,
                 &provider_registry,
                 &agent_registry_arc,
                 &working_dir,
@@ -174,6 +188,8 @@ pub(super) async fn run_chat_session(
                         &mut runtime,
                         &api_client,
                         &mut sse_rx,
+                        &local_state,
+                        &transport,
                         &provider_registry,
                         &agent_registry_arc,
                         &working_dir,
@@ -217,6 +233,8 @@ pub(super) async fn run_chat_session(
                             &mut runtime,
                             &api_client,
                             &mut sse_rx,
+                            &local_state,
+                            &transport,
                             &action.prompt,
                             &repl_style,
                             false,
@@ -537,6 +555,8 @@ pub(super) async fn run_chat_session(
             &mut runtime,
             &api_client,
             &mut sse_rx,
+            &local_state,
+            &transport,
             &trimmed,
             &repl_style,
             true,
@@ -546,6 +566,7 @@ pub(super) async fn run_chat_session(
         super::compact_legacy_sse::drain_available_sse_events(
             &runtime,
             &api_client,
+            &local_state,
             &mut sse_rx,
             &repl_style,
         )

@@ -582,7 +582,9 @@ async fn run_app_async(app: Arc<Mutex<App>>) -> anyhow::Result<()> {
     clear_current_event();
     clear_fiber_tree();
     clear_render_context();
-    server_event_task.abort();
+    if let Some(task) = server_event_task {
+        task.abort();
+    }
     let _ = crate::app::terminal::restore();
 
     result

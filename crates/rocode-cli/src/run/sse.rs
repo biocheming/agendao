@@ -283,6 +283,7 @@ fn question_defs_from_info(
 async fn resolve_prompt_submission(
     runtime: &CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
+    local_state: &Option<Arc<rocode_server::ServerState>>,
     session_id: &str,
     style: &CliStyle,
     prompt_response: crate::api_client::PromptResponse,
@@ -310,8 +311,7 @@ async fn resolve_prompt_submission(
         };
         ignored_question_ids.insert(question_id.clone());
 
-        let questions = api_client
-            .list_questions()
+        let questions = crate::local_dispatch::list_questions(local_state, api_client)
             .await?
             .into_iter()
             .find(|question| question.id == question_id)
@@ -339,17 +339,17 @@ async fn resolve_prompt_submission(
         )
         .await
         .map_err(|error| anyhow::anyhow!("command question failed: {}", error))?;
-        api_client
-            .reply_question(&question_id, answers.clone())
+        crate::local_dispatch::reply_question(local_state, api_client, &question_id, answers.clone())
             .await?;
 
-        let session = api_client.get_session(session_id).await?;
+        let session = crate::local_dispatch::get_session(local_state, api_client, session_id).await?;
         let Some(pending) = pending_command_from_session(&session, &question_id) else {
             return Ok((response, ignored_question_ids));
         };
         let arguments = merge_pending_command_arguments(&pending, &answers);
-        response = api_client
-            .send_command_prompt(
+        response = crate::local_dispatch::send_command_prompt(
+            local_state,
+            api_client,
                 session_id,
                 pending.command.clone(),
                 (!arguments.trim().is_empty()).then_some(arguments),
@@ -372,6 +372,8 @@ async fn run_server_prompt(
     runtime: &mut CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
     sse_rx: &mut mpsc::UnboundedReceiver<CliServerEvent>,
+    local_state: &Option<Arc<rocode_server::ServerState>>,
+    transport: &Option<Arc<rocode_client::FrontendTransport>>,
     input: &str,
     style: &CliStyle,
     update_recovery_base: bool,
@@ -380,6 +382,8 @@ async fn run_server_prompt(
         runtime,
         api_client,
         sse_rx,
+        local_state,
+        transport,
         input,
         input,
         None,
@@ -393,6 +397,8 @@ async fn run_server_prompt_with_parts(
     runtime: &mut CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
     sse_rx: &mut mpsc::UnboundedReceiver<CliServerEvent>,
+    local_state: &Option<Arc<rocode_server::ServerState>>,
+    transport: &Option<Arc<rocode_client::FrontendTransport>>,
     input: &str,
     display_input: &str,
     parts: Option<Vec<crate::api_client::PromptPart>>,
@@ -447,8 +453,10 @@ async fn run_server_prompt_with_parts(
         runtime.scheduler_profile_name.as_deref(),
     );
 
-    let prompt_response = match api_client
-        .send_prompt(
+    let prompt_response = match crate::local_dispatch::send_prompt(
+        local_state,
+        transport,
+        api_client,
             &session_id,
             input.to_string(),
             parts,
@@ -489,7 +497,15 @@ async fn run_server_prompt_with_parts(
     };
 
     let (_accepted_response, ignored_question_ids) =
-        resolve_prompt_submission(runtime, api_client, &session_id, style, prompt_response).await?;
+        resolve_prompt_submission(
+            runtime,
+            api_client,
+            local_state,
+            &session_id,
+            style,
+            prompt_response,
+        )
+        .await?;
 
     loop {
         match sse_rx.recv().await {
@@ -505,6 +521,7 @@ async fn run_server_prompt_with_parts(
                     handle_question_from_sse(
                         runtime,
                         api_client,
+                        local_state,
                         &request_id,
                         &questions_json,
                     )
@@ -525,6 +542,7 @@ async fn run_server_prompt_with_parts(
                     handle_permission_from_sse(
                         runtime,
                         api_client,
+                        local_state,
                         &permission_id,
                         &info_json,
                     )
@@ -543,6 +561,7 @@ async fn run_server_prompt_with_parts(
                 handle_session_updated_from_sse(
                     runtime,
                     api_client,
+                    local_state,
                     &session_id,
                     source.as_deref(),
                     style,
@@ -569,6 +588,7 @@ async fn run_server_prompt_with_parts(
                 handle_session_updated_from_sse(
                     runtime,
                     api_client,
+                    local_state,
                     &session_id,
                     Some("prompt.done"),
                     style,
@@ -1084,6 +1104,7 @@ fn handle_sse_event(
 async fn handle_question_from_sse(
     runtime: &CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
+    local_state: &Option<Arc<rocode_server::ServerState>>,
     request_id: &str,
     questions_json: &serde_json::Value,
 ) {
@@ -1104,7 +1125,10 @@ async fn handle_question_from_sse(
             Ok(questions) => questions,
             Err(error) => {
                 tracing::warn!("Failed to parse questions from SSE: {}", error);
-                if let Err(reject_error) = api_client.reject_question(request_id).await {
+                if let Err(reject_error) =
+                    crate::local_dispatch::reject_question(local_state, api_client, request_id)
+                        .await
+                {
                     tracing::warn!(
                         request_id,
                         error = %reject_error,
@@ -1117,7 +1141,9 @@ async fn handle_question_from_sse(
 
     if questions.is_empty() {
         tracing::debug!("Empty question list from SSE — rejecting");
-        if let Err(error) = api_client.reject_question(request_id).await {
+        if let Err(error) =
+            crate::local_dispatch::reject_question(local_state, api_client, request_id).await
+        {
             tracing::warn!(
                 request_id,
                 error = %error,
@@ -1144,12 +1170,17 @@ async fn handle_question_from_sse(
 
     match result {
         Ok(answers) => {
-            if let Err(error) = api_client.reply_question(request_id, answers).await {
+            if let Err(error) =
+                crate::local_dispatch::reply_question(local_state, api_client, request_id, answers)
+                    .await
+            {
                 tracing::error!("Failed to reply question `{}`: {}", request_id, error);
             }
         }
         Err(_) => {
-            if let Err(error) = api_client.reject_question(request_id).await {
+            if let Err(error) =
+                crate::local_dispatch::reject_question(local_state, api_client, request_id).await
+            {
                 tracing::error!("Failed to reject question `{}`: {}", request_id, error);
             }
         }
@@ -1159,6 +1190,7 @@ async fn handle_question_from_sse(
 async fn handle_permission_from_sse(
     runtime: &CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
+    local_state: &Option<Arc<rocode_server::ServerState>>,
     permission_id: &str,
     info_json: &serde_json::Value,
 ) {
@@ -1184,13 +1216,14 @@ async fn handle_permission_from_sse(
             Ok(info) => info,
             Err(error) => {
                 tracing::warn!(permission_id, %error, "failed to parse permission info from SSE");
-                let _ = api_client
-                    .reply_permission(
-                        permission_id,
-                        "reject",
-                        Some("Invalid permission request payload".to_string()),
-                    )
-                    .await;
+                let _ = crate::local_dispatch::reply_permission(
+                    local_state,
+                    api_client,
+                    permission_id,
+                    "reject",
+                    Some("Invalid permission request payload".to_string()),
+                )
+                .await;
                 return;
             }
         };
@@ -1334,13 +1367,14 @@ async fn handle_permission_from_sse(
                 }
             }
             cli_refresh_prompt(runtime);
-            let _ = api_client
-                .reply_permission(
-                    permission_id,
-                    "reject",
-                    Some(format!("Permission prompt IO error: {}", error)),
-                )
-                .await;
+            let _ = crate::local_dispatch::reply_permission(
+                local_state,
+                api_client,
+                permission_id,
+                "reject",
+                Some(format!("Permission prompt IO error: {}", error)),
+            )
+            .await;
             return;
         }
         Err(error) => {
@@ -1359,13 +1393,14 @@ async fn handle_permission_from_sse(
                 }
             }
             cli_refresh_prompt(runtime);
-            let _ = api_client
-                .reply_permission(
-                    permission_id,
-                    "reject",
-                    Some(format!("Permission prompt failed: {}", error)),
-                )
-                .await;
+            let _ = crate::local_dispatch::reply_permission(
+                local_state,
+                api_client,
+                permission_id,
+                "reject",
+                Some(format!("Permission prompt failed: {}", error)),
+            )
+            .await;
             return;
         }
     };
@@ -1394,9 +1429,14 @@ async fn handle_permission_from_sse(
     }
     cli_refresh_prompt(runtime);
 
-    if let Err(error) = api_client
-        .reply_permission(permission_id, reply, message)
-        .await
+    if let Err(error) = crate::local_dispatch::reply_permission(
+        local_state,
+        api_client,
+        permission_id,
+        reply,
+        message,
+    )
+    .await
     {
         tracing::error!(permission_id, %error, "failed to reply permission");
         if let Ok(mut projection) = runtime.frontend_projection.lock() {
@@ -1657,10 +1697,11 @@ fn cli_transcript_from_history(
 async fn cli_refresh_session_transcript_from_history(
     runtime: &CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
+    local_state: &Option<Arc<rocode_server::ServerState>>,
     session_id: &str,
     style: &CliStyle,
 ) -> Option<CliVisibleTranscript> {
-    match api_client.get_messages(session_id).await {
+    match crate::local_dispatch::list_messages(local_state, api_client, session_id).await {
         Ok(messages) => {
             let transcript = cli_transcript_from_history(&messages, style);
             cli_replace_root_history_transcript(runtime, transcript);
@@ -1680,6 +1721,7 @@ async fn cli_refresh_session_transcript_from_history(
 async fn handle_session_updated_from_sse(
     runtime: &CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
+    local_state: &Option<Arc<rocode_server::ServerState>>,
     session_id: &str,
     source: Option<&str>,
     style: &CliStyle,
@@ -1696,7 +1738,7 @@ async fn handle_session_updated_from_sse(
         .lock()
         .ok()
         .map(|transcript| transcript.clone());
-    match api_client.get_session(server_session_id).await {
+    match crate::local_dispatch::get_session(local_state, api_client, server_session_id).await {
         Ok(session) => {
             if let Ok(mut projection) = runtime.frontend_projection.lock() {
                 projection.session_title = Some(session.title);
@@ -1715,9 +1757,14 @@ async fn handle_session_updated_from_sse(
         Some(server_session_id),
     )
     .await;
-    let refreshed_history =
-        cli_refresh_session_transcript_from_history(runtime, api_client, server_session_id, style)
-            .await;
+    let refreshed_history = cli_refresh_session_transcript_from_history(
+        runtime,
+        api_client,
+        local_state,
+        server_session_id,
+        style,
+    )
+    .await;
     if let Some(transcript) = refreshed_history.clone() {
         cli_replace_root_session_transcript(runtime, transcript.clone());
         if cli_is_root_focused(runtime) {

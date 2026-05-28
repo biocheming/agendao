@@ -1,6 +1,10 @@
 use super::{PromptOptions, PromptResponse, SessionDetail};
 use anyhow::Result;
-use rocode_api::SessionListItem;
+use rocode_api::{
+    AgentInfo, ExecutionModeInfo, FullProviderListResponse, SessionListItem,
+};
+use rocode_runtime_context::ResolvedWorkspaceContext;
+use rocode_state::RecentModelEntry;
 
 /// HTTP transport - wraps existing AsyncApiClient
 pub struct HttpTransport {
@@ -51,6 +55,33 @@ impl HttpTransport {
 
     pub async fn list_sessions(&self) -> Result<Vec<SessionListItem>> {
         self.client.list_sessions(None, Some(100)).await
+    }
+
+    pub async fn get_workspace_context(&self) -> Result<ResolvedWorkspaceContext> {
+        self.client.get_workspace_context().await
+    }
+
+    pub async fn get_recent_models(&self) -> Result<Vec<RecentModelEntry>> {
+        self.client.get_recent_models().await
+    }
+
+    pub async fn put_recent_models(
+        &self,
+        recent_models: &[RecentModelEntry],
+    ) -> Result<Vec<RecentModelEntry>> {
+        self.client.put_recent_models(recent_models).await
+    }
+
+    pub async fn get_all_providers(&self) -> Result<FullProviderListResponse> {
+        self.client.get_all_providers().await
+    }
+
+    pub async fn list_execution_modes(&self) -> Result<Vec<ExecutionModeInfo>> {
+        self.client.list_execution_modes().await
+    }
+
+    pub async fn list_agents(&self) -> Result<Vec<AgentInfo>> {
+        self.client.list_agents().await
     }
 
     pub async fn get_session(&self, session_id: &str) -> Result<SessionDetail> {

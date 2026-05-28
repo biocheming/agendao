@@ -915,7 +915,7 @@ struct AgentApiModelRef {
 /// Matches the TS `Agent.Info` schema returned by the original OpenCode `/agent` endpoint.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct AgentInfo {
+pub(crate) struct AgentInfo {
     /// Extra field for TUI backward compat (not in TS schema, harmless).
     id: String,
     name: String,
@@ -950,7 +950,7 @@ static AGENT_LIST_CACHE: Lazy<RwLock<Option<Vec<AgentInfo>>>> = Lazy::new(|| RwL
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ExecutionModeInfo {
+pub(crate) struct ExecutionModeInfo {
     id: String,
     name: String,
     kind: String,
@@ -1011,7 +1011,7 @@ fn should_apply_plugin_config_hooks(headers: &HeaderMap) -> bool {
     !is_valid_internal_request(headers)
 }
 
-async fn list_agents(
+pub(crate) async fn list_agents(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<AgentInfo>>> {
@@ -1175,7 +1175,7 @@ fn build_execution_mode_list(config: Option<&AppConfig>) -> Result<Vec<Execution
     Ok(items)
 }
 
-async fn list_execution_modes(
+pub(crate) async fn list_execution_modes(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<ExecutionModeInfo>>> {

@@ -327,6 +327,67 @@ impl RuntimeApiClient {
         self.block_on(self.client.get_provider_descriptor(provider_id))
     }
 
+    fn list_questions(&self) -> anyhow::Result<Vec<QuestionInfo>> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            return self
+                .block_on(async move { rocode_server::local_list_questions(state).await });
+        }
+        self.block_on(self.client.list_questions())
+    }
+
+    fn reply_question(
+        &self,
+        question_id: &str,
+        answers: Vec<Vec<String>>,
+    ) -> anyhow::Result<()> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            let question_id = question_id.to_string();
+            return self.block_on(async move {
+                rocode_server::local_reply_question(state, &question_id, answers).await
+            });
+        }
+        self.block_on(self.client.reply_question(question_id, answers))
+    }
+
+    fn reject_question(&self, question_id: &str) -> anyhow::Result<()> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            let question_id = question_id.to_string();
+            return self.block_on(async move {
+                rocode_server::local_reject_question(state, &question_id).await
+            });
+        }
+        self.block_on(self.client.reject_question(question_id))
+    }
+
+    fn list_permissions(&self) -> anyhow::Result<Vec<PermissionRequestInfo>> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            return self
+                .block_on(async move { rocode_server::local_list_permissions(state).await });
+        }
+        self.block_on(self.client.list_permissions())
+    }
+
+    fn reply_permission(
+        &self,
+        permission_id: &str,
+        reply: &str,
+        message: Option<String>,
+    ) -> anyhow::Result<()> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            let permission_id = permission_id.to_string();
+            let reply = reply.to_string();
+            return self.block_on(async move {
+                rocode_server::local_reply_permission(state, &permission_id, reply, message).await
+            });
+        }
+        self.block_on(self.client.reply_permission(permission_id, reply, message))
+    }
+
     fn update_skill_proposal_status(
         &self,
         id: &str,
@@ -346,11 +407,6 @@ impl RuntimeApiClient {
         fn get_session_diff(&self, session_id: &str) -> Vec<ApiDiffEntry>;
         fn get_session_recovery(&self, session_id: &str) -> SessionRecoveryProtocol;
         fn execute_session_recovery(&self, session_id: &str, action: RecoveryActionKind, target_id: Option<String>) -> serde_json::Value;
-        fn list_questions(&self) -> Vec<QuestionInfo>;
-        fn reply_question(&self, question_id: &str, answers: Vec<Vec<String>>) -> ();
-        fn reject_question(&self, question_id: &str) -> ();
-        fn list_permissions(&self) -> Vec<PermissionRequestInfo>;
-        fn reply_permission(&self, permission_id: &str, reply: &str, message: Option<String>) -> ();
         fn update_session_title(&self, session_id: &str, title: &str) -> SessionInfo;
         fn delete_session(&self, session_id: &str) -> bool;
         fn execute_shell(&self, session_id: &str, command: String, workdir: Option<String>) -> serde_json::Value;
@@ -837,7 +893,13 @@ impl ApiClient {
     }
 
     pub fn list_questions(&self) -> anyhow::Result<Vec<QuestionInfo>> {
-        self.call("list questions", |client| client.list_questions())
+        self.call("list questions", |client| {
+            if let Some(ref state) = client.local_server {
+                let state = std::sync::Arc::clone(state);
+                return client.block_on(async move { rocode_server::local_list_questions(state).await });
+            }
+            client.list_questions()
+        })
     }
 
     pub fn reply_question(
@@ -847,6 +909,12 @@ impl ApiClient {
     ) -> anyhow::Result<()> {
         let question_id = question_id.to_string();
         self.call("reply question", move |client| {
+            if let Some(ref state) = client.local_server {
+                let state = std::sync::Arc::clone(state);
+                return client.block_on(async move {
+                    rocode_server::local_reply_question(state, &question_id, answers).await
+                });
+            }
             client.reply_question(&question_id, answers)
         })
     }
@@ -854,12 +922,26 @@ impl ApiClient {
     pub fn reject_question(&self, question_id: &str) -> anyhow::Result<()> {
         let question_id = question_id.to_string();
         self.call("reject question", move |client| {
+            if let Some(ref state) = client.local_server {
+                let state = std::sync::Arc::clone(state);
+                return client.block_on(async move {
+                    rocode_server::local_reject_question(state, &question_id).await
+                });
+            }
             client.reject_question(&question_id)
         })
     }
 
     pub fn list_permissions(&self) -> anyhow::Result<Vec<PermissionRequestInfo>> {
-        self.call("list permissions", |client| client.list_permissions())
+        self.call("list permissions", |client| {
+            if let Some(ref state) = client.local_server {
+                let state = std::sync::Arc::clone(state);
+                return client.block_on(async move {
+                    rocode_server::local_list_permissions(state).await
+                });
+            }
+            client.list_permissions()
+        })
     }
 
     pub fn reply_permission(
@@ -871,6 +953,12 @@ impl ApiClient {
         let permission_id = permission_id.to_string();
         let reply = reply.to_string();
         self.call("reply permission", move |client| {
+            if let Some(ref state) = client.local_server {
+                let state = std::sync::Arc::clone(state);
+                return client.block_on(async move {
+                    rocode_server::local_reply_permission(state, &permission_id, reply, message).await
+                });
+            }
             client.reply_permission(&permission_id, &reply, message)
         })
     }

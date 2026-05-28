@@ -417,6 +417,8 @@ pub(super) async fn run_chat_session_rich(
     port_override: Option<u16>,
     working_dir: PathBuf,
     runtime_context: &FrontendRuntimeContext,
+    local: bool,
+    unix_socket: Option<String>,
 ) -> anyhow::Result<()> {
     let super::bootstrap_shared::InteractiveSessionBootstrap {
         working_dir,
@@ -431,6 +433,8 @@ pub(super) async fn run_chat_session_rich(
         repl_style,
         server_url,
         server_session_id,
+        local_state,
+        transport,
     } = super::bootstrap_shared::bootstrap_interactive_session(
         model,
         provider,
@@ -440,6 +444,8 @@ pub(super) async fn run_chat_session_rich(
         port_override,
         working_dir,
         runtime_context,
+        local,
+        unix_socket,
     )
     .await?;
 
@@ -449,7 +455,9 @@ pub(super) async fn run_chat_session_rich(
         "CLI interactive rich connected to server and created session"
     );
 
-    let server_models = super::prompt_shared::fetch_server_model_list(&api_client).await;
+    let server_models =
+        super::prompt_shared::fetch_server_model_list(&api_client, &local_state, &transport)
+            .await;
 
     let mut dispatch_rx = Some(super::attach_rich_prompt(
         &mut runtime,
@@ -470,6 +478,8 @@ pub(super) async fn run_chat_session_rich(
         &server_session_id,
         &api_client,
         &runtime,
+        local,
+        &local_state,
     )
     .await;
 
@@ -497,6 +507,7 @@ pub(super) async fn run_chat_session_rich(
                     &config,
                     agent_registry_arc.as_ref(),
                     &api_client,
+                    &local_state,
                     &mut state,
                     dispatch_rx,
                     &mut sse_rx,
@@ -524,6 +535,8 @@ pub(super) async fn run_chat_session_rich(
                 &mut runtime,
                 &api_client,
                 &mut sse_rx,
+                &local_state,
+                &transport,
                 &provider_registry,
                 &agent_registry_arc,
                 &working_dir,
@@ -545,6 +558,8 @@ pub(super) async fn run_chat_session_rich(
                         &mut runtime,
                         &api_client,
                         &mut sse_rx,
+                        &local_state,
+                        &transport,
                         &provider_registry,
                         &agent_registry_arc,
                         &working_dir,
@@ -589,6 +604,8 @@ pub(super) async fn run_chat_session_rich(
                             &mut state,
                             &api_client,
                             &mut sse_rx,
+                            &local_state,
+                            &transport,
                             &action.prompt,
                             &repl_style,
                             false,
@@ -889,6 +906,8 @@ pub(super) async fn run_chat_session_rich(
             &mut state,
             &api_client,
             &mut sse_rx,
+            &local_state,
+            &transport,
             &trimmed,
             &repl_style,
             true,
@@ -915,6 +934,8 @@ async fn run_server_prompt_rich(
     state: &mut CliInteractiveRichState,
     api_client: &Arc<CliApiClient>,
     sse_rx: &mut mpsc::UnboundedReceiver<CliServerEvent>,
+    local_state: &Option<Arc<rocode_server::ServerState>>,
+    transport: &Option<Arc<rocode_client::FrontendTransport>>,
     input: &str,
     style: &CliStyle,
     update_recovery_base: bool,
@@ -969,8 +990,10 @@ async fn run_server_prompt_rich(
         runtime.scheduler_profile_name.as_deref(),
     );
 
-    let prompt_response = match api_client
-        .send_prompt(
+    let prompt_response = match crate::local_dispatch::send_prompt(
+        local_state,
+        transport,
+        api_client,
             &root_session_id,
             input.to_string(),
             None,
@@ -1013,6 +1036,7 @@ async fn run_server_prompt_rich(
     let (_accepted_response, ignored_question_ids) = resolve_prompt_submission(
         runtime,
         api_client,
+        local_state,
         &root_session_id,
         style,
         prompt_response,
@@ -1030,8 +1054,14 @@ async fn run_server_prompt_rich(
                     continue;
                 }
                 if cli_tracks_related_session(runtime, &session_id) {
-                    handle_question_from_sse(runtime, api_client, &request_id, &questions_json)
-                        .await;
+                    handle_question_from_sse(
+                        runtime,
+                        api_client,
+                        local_state,
+                        &request_id,
+                        &questions_json,
+                    )
+                    .await;
                 }
             }
             Some(CliServerEvent::QuestionResolved { request_id })
@@ -1045,8 +1075,14 @@ async fn run_server_prompt_rich(
                 info_json,
             }) => {
                 if cli_tracks_related_session(runtime, &session_id) {
-                    handle_permission_from_sse(runtime, api_client, &permission_id, &info_json)
-                        .await;
+                    handle_permission_from_sse(
+                        runtime,
+                        api_client,
+                        local_state,
+                        &permission_id,
+                        &info_json,
+                    )
+                    .await;
                 }
             }
             Some(CliServerEvent::ConfigUpdated) => {
@@ -1067,6 +1103,7 @@ async fn run_server_prompt_rich(
                     runtime,
                     state,
                     &api_client,
+                    local_state,
                     CliServerEvent::SessionIdle {
                         session_id: idle_session_id.clone(),
                     },
@@ -1104,6 +1141,7 @@ async fn wait_for_rich_input_rich(
     config: &Config,
     agent_registry: &AgentRegistry,
     api_client: &Arc<CliApiClient>,
+    local_state: &Option<Arc<rocode_server::ServerState>>,
     state: &mut CliInteractiveRichState,
     dispatch_rx: &mut mpsc::UnboundedReceiver<CliDispatchInput>,
     sse_rx: &mut mpsc::UnboundedReceiver<CliServerEvent>,
@@ -1124,7 +1162,7 @@ async fn wait_for_rich_input_rich(
                 let Some(event) = sse_event else {
                     return Ok(None);
                 };
-                handle_async_sse_event_rich(runtime, state, api_client, event, style).await;
+                handle_async_sse_event_rich(runtime, state, api_client, local_state, event, style).await;
             }
         }
     }
@@ -1134,6 +1172,7 @@ async fn handle_async_sse_event_rich(
     runtime: &CliExecutionRuntime,
     state: &mut CliInteractiveRichState,
     api_client: &Arc<CliApiClient>,
+    local_state: &Option<Arc<rocode_server::ServerState>>,
     event: CliServerEvent,
     style: &CliStyle,
 ) {
@@ -1147,7 +1186,14 @@ async fn handle_async_sse_event_rich(
             questions_json,
         } => {
             if cli_tracks_related_session(runtime, &session_id) {
-                handle_question_from_sse(runtime, api_client, &request_id, &questions_json).await;
+                handle_question_from_sse(
+                    runtime,
+                    api_client,
+                    local_state,
+                    &request_id,
+                    &questions_json,
+                )
+                .await;
             }
         }
         CliServerEvent::PermissionRequested {
@@ -1156,7 +1202,14 @@ async fn handle_async_sse_event_rich(
             info_json,
         } => {
             if cli_tracks_related_session(runtime, &session_id) {
-                handle_permission_from_sse(runtime, api_client, &permission_id, &info_json).await;
+                handle_permission_from_sse(
+                    runtime,
+                    api_client,
+                    local_state,
+                    &permission_id,
+                    &info_json,
+                )
+                .await;
             }
         }
         CliServerEvent::SessionUpdated { session_id, source } => {

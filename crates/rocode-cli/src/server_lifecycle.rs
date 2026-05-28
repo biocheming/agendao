@@ -7,6 +7,7 @@ use futures::future::BoxFuture;
 pub struct ServerDiscoveryRequest {
     pub port_override: Option<u16>,
     pub cwd: Option<PathBuf>,
+    pub unix_socket_path: Option<String>,
 }
 
 type DiscoverServerHook = dyn Fn(ServerDiscoveryRequest) -> BoxFuture<'static, anyhow::Result<String>>
@@ -49,6 +50,7 @@ impl FrontendRuntimeContext {
         self.discover_or_start_server_with_request(ServerDiscoveryRequest {
             port_override,
             cwd: None,
+            unix_socket_path: None,
         })
         .await
     }
