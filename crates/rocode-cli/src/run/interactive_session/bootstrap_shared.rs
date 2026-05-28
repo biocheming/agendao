@@ -13,6 +13,8 @@ pub(super) struct InteractiveSessionBootstrap {
     pub(super) repl_style: CliStyle,
     pub(super) server_url: String,
     pub(super) server_session_id: String,
+    pub(super) local_state: Option<Arc<rocode_server::ServerState>>,
+    pub(super) transport: Option<Arc<rocode_client::FrontendTransport>>,
 }
 
 pub(super) async fn bootstrap_interactive_session(
@@ -24,21 +26,40 @@ pub(super) async fn bootstrap_interactive_session(
     port_override: Option<u16>,
     working_dir: PathBuf,
     runtime_context: &FrontendRuntimeContext,
+    local: bool,
+    unix_socket: Option<String>,
 ) -> anyhow::Result<InteractiveSessionBootstrap> {
     let working_dir = working_dir.canonicalize().unwrap_or(working_dir);
     let config = load_config(&working_dir)?;
     let command_registry = CommandRegistry::new();
 
-    let server_discovery_handle = {
+    let local_state: Option<Arc<rocode_server::ServerState>> = if local {
+        eprintln!("Starting CLI interactive session in Direct (in-process) mode");
+        Some(Arc::new(
+            rocode_server::ServerState::new_with_storage_for_url_in_workspace(
+                "http://127.0.0.1:0".to_string(),
+                working_dir.clone(),
+            )
+            .await?,
+        ))
+    } else {
+        None
+    };
+
+    let discovery_socket_path = unix_socket.clone();
+    let server_discovery_handle = if local {
+        None
+    } else {
         let ctx = runtime_context.clone();
         let wd = working_dir.clone();
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             ctx.discover_or_start_server_with_request(crate::ServerDiscoveryRequest {
                 port_override,
                 cwd: Some(wd),
+                unix_socket_path: discovery_socket_path,
             })
             .await
-        })
+        }))
     };
 
     let provider_registry = Arc::new(setup_providers_for_dir(&config, &working_dir).await?);
@@ -67,10 +88,33 @@ pub(super) async fn bootstrap_interactive_session(
     }
 
     let agent_registry = Arc::new(AgentRegistry::from_config(&config));
-    let server_url = server_discovery_handle.await??;
+    let server_url = if let Some(handle) = server_discovery_handle {
+        handle.await??
+    } else {
+        "http://127.0.0.1:0".to_string()
+    };
     let api_client = Arc::new(CliApiClient::new(server_url.clone()));
-    let server_context = api_client.get_workspace_context().await.ok();
-    let recent_session_info = cli_load_recent_session_info(&api_client, &working_dir).await;
+    let transport = if local {
+        None
+    } else if let Some(socket_path) = unix_socket.as_deref() {
+        rocode_client::transport::TransportSelector::new(
+            Some(socket_path.to_string()),
+            server_url.clone(),
+            None,
+        )
+        .select_unix_required()
+        .await
+        .map(Arc::new)
+        .map(Some)?
+    } else {
+        None
+    };
+    let server_context =
+        crate::local_dispatch::get_workspace_context(&local_state, &transport, &api_client)
+            .await
+            .ok();
+    let recent_session_info =
+        cli_load_recent_session_info(&local_state, &transport, &api_client, &working_dir).await;
     let explicit_model_requested = model.is_some();
     let (recent_model, recent_provider) = if explicit_model_requested {
         (None, None)
@@ -121,15 +165,34 @@ pub(super) async fn bootstrap_interactive_session(
         working_dir: working_dir.clone(),
     })
     .await?;
-    cli_save_recent_model_ref(&api_client, &runtime.resolved_model_label).await;
+    cli_save_recent_model_ref(
+        &local_state,
+        &transport,
+        &api_client,
+        &runtime.resolved_model_label,
+    )
+    .await;
     let repl_style = CliStyle::detect();
 
-    let session_info = api_client
-        .create_session(
-            selection.requested_scheduler_profile.clone(),
-            Some(cli_session_directory(&working_dir)),
+    let session_info = if let Some(ref state) = local_state {
+        rocode_server::local_create_session(
+            Arc::clone(state),
+            rocode_client::CreateSessionRequest {
+                scheduler_profile: selection.requested_scheduler_profile.clone(),
+                directory: Some(cli_session_directory(&working_dir)),
+                project_id: None,
+                title: None,
+            },
         )
-        .await?;
+        .await?
+    } else {
+        api_client
+            .create_session(
+                selection.requested_scheduler_profile.clone(),
+                Some(cli_session_directory(&working_dir)),
+            )
+            .await?
+    };
     let server_session_id = session_info.id.clone();
     runtime.api_client = Some(api_client.clone());
     cli_set_root_server_session(&mut runtime, server_session_id.clone());
@@ -147,5 +210,7 @@ pub(super) async fn bootstrap_interactive_session(
         repl_style,
         server_url,
         server_session_id,
+        local_state,
+        transport,
     })
 }

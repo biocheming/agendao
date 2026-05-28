@@ -1,8 +1,4 @@
-/// Transport selector - automatically choose the best transport mode
-///
-/// Priority:
-/// 1. Unix Socket (if available) - fastest local IPC
-/// 2. HTTP (fallback) - works for remote and local
+/// Transport selector - choose Unix socket explicitly or fall back to HTTP.
 
 use super::FrontendTransport;
 use anyhow::Result;
@@ -33,9 +29,9 @@ impl TransportSelector {
         }
     }
 
-    /// Select the best available transport
+    /// Select the best available transport.
     ///
-    /// Tries Unix Socket first, falls back to HTTP if unavailable
+    /// Tries Unix Socket first, falls back to HTTP if unavailable.
     pub async fn select(&self) -> Result<FrontendTransport> {
         // Try Unix Socket first if path is provided
         if let Some(socket_path) = &self.unix_socket_path {
@@ -66,6 +62,28 @@ impl TransportSelector {
             self.http_base_url.clone(),
             self.http_password.clone(),
         ))
+    }
+
+    /// Require a Unix socket transport.
+    ///
+    /// This is for explicit user intent such as `--socket`, where silently
+    /// falling back to HTTP would violate the selected transport mode.
+    pub async fn select_unix_required(&self) -> Result<FrontendTransport> {
+        let Some(socket_path) = &self.unix_socket_path else {
+            anyhow::bail!("Unix socket mode requested but no socket path was provided");
+        };
+        if !Path::new(socket_path).exists() {
+            anyhow::bail!("Unix socket path does not exist: {}", socket_path);
+        }
+
+        eprintln!("Attempting Unix Socket connection: {}", socket_path);
+        let transport = FrontendTransport::unix(socket_path.clone());
+        transport
+            .list_sessions()
+            .await
+            .map_err(|error| anyhow::anyhow!("Unix Socket connection failed: {}", error))?;
+        eprintln!("Unix Socket connection successful");
+        Ok(transport)
     }
 
     /// Get the default Unix socket path for the current platform
@@ -142,6 +160,23 @@ mod tests {
         assert!(
             matches!(transport, FrontendTransport::Http(_)),
             "Expected HTTP transport when socket path does not exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_selector_unix_required_errors_when_socket_does_not_exist() {
+        let selector = TransportSelector::new(
+            Some("/nonexistent/socket.sock".to_string()),
+            "http://localhost:3000".to_string(),
+            None,
+        );
+
+        let error = selector.select_unix_required().await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Unix socket path does not exist"),
+            "unexpected error: {error}"
         );
     }
 }

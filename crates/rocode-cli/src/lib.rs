@@ -1,4 +1,5 @@
 use clap::Parser;
+use rocode_client::transport::TransportSelector;
 
 mod agent_cmd;
 mod agent_stream_adapter;
@@ -43,11 +44,20 @@ pub use server_lifecycle::{FrontendRuntimeContext, ServerDiscoveryRequest};
 use session_cmd::{handle_session_command, handle_steer_command};
 use skill_cmd::handle_skill_command;
 
+fn resolve_socket_path(enabled: bool) -> anyhow::Result<Option<String>> {
+    if !enabled {
+        return Ok(None);
+    }
+    TransportSelector::default_unix_socket_path().map(Some).ok_or_else(|| {
+        anyhow::anyhow!("--socket is not supported on this platform")
+    })
+}
+
 fn run_options_from_args(
     args: RunCommandArgs,
     interactive_mode: Option<InteractiveCliMode>,
-) -> RunNonInteractiveOptions {
-    RunNonInteractiveOptions {
+) -> anyhow::Result<RunNonInteractiveOptions> {
+    Ok(RunNonInteractiveOptions {
         message: args.message,
         command: args.command,
         continue_last: args.continue_last,
@@ -66,9 +76,8 @@ fn run_options_from_args(
         variant: args.variant,
         thinking: args.thinking,
         interactive_mode: interactive_mode.unwrap_or(args.interactive_mode),
-        local: args.local,
-        unix_socket: args.unix_socket,
-    }
+        unix_socket: resolve_socket_path(args.socket)?,
+    })
 }
 
 pub async fn run_frontend() -> anyhow::Result<()> {
@@ -87,7 +96,7 @@ where
 
     match cli.command {
         Commands::Run { args } => {
-            run_non_interactive(run_options_from_args(args, None), &runtime_context).await?;
+            run_non_interactive(run_options_from_args(args, None)?, &runtime_context).await?;
         }
         Commands::Cli { args } => {
             if args.run.interactive_mode != InteractiveCliMode::Rich {
@@ -96,7 +105,7 @@ where
                 );
             }
             run_non_interactive(
-                run_options_from_args(args.run, Some(InteractiveCliMode::Rich)),
+                run_options_from_args(args.run, Some(InteractiveCliMode::Rich))?,
                 &runtime_context,
             )
             .await?;

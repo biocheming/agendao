@@ -160,7 +160,7 @@ pub(crate) struct RunCommandArgs {
     pub(crate) format: RunOutputFormat,
     #[arg(long)]
     pub(crate) title: Option<String>,
-    #[arg(long)]
+    #[arg(long = "attach", alias = "attach-url")]
     pub(crate) attach: Option<String>,
     #[arg(long)]
     pub(crate) dir: Option<PathBuf>,
@@ -172,12 +172,13 @@ pub(crate) struct RunCommandArgs {
     pub(crate) thinking: bool,
     #[arg(long = "interactive-mode", default_value = "rich")]
     pub(crate) interactive_mode: InteractiveCliMode,
-    /// Run in Direct (in-process) mode — no server, no IPC.
+    /// Force Direct (in-process) mode. This is already the default unless
+    /// `--socket` or `--attach` / `--attach-url` is provided.
     #[arg(long, default_value_t = false)]
     pub(crate) local: bool,
-    /// Unix socket path for local IPC.
-    #[arg(long)]
-    pub(crate) unix_socket: Option<String>,
+    /// Use the standard local Unix socket instead of Direct mode.
+    #[arg(long = "socket", alias = "unix-socket", default_value_t = false)]
+    pub(crate) socket: bool,
 }
 
 #[derive(Args, Clone, Debug)]

@@ -90,6 +90,20 @@ impl RuntimeApiClient {
         }
     }
 
+    fn new_local_with_server(local_server: std::sync::Arc<rocode_server::ServerState>) -> Self {
+        let runtime = Self::build_runtime();
+        let client = rocode_client::AsyncApiClient::new_with_password(
+            "http://127.0.0.1:0".to_string(),
+            None,
+        );
+        Self {
+            runtime,
+            client,
+            transport: None,
+            local_server: Some(local_server),
+        }
+    }
+
     /// Constructor for local (in-process server) mode — no server process, no IPC.
     fn new_local() -> Self {
         Self::new_local_for_workspace(local_workspace_root())
@@ -99,26 +113,25 @@ impl RuntimeApiClient {
         base_url: String,
         server_password: Option<String>,
         unix_socket_path: Option<String>,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let runtime = Self::build_runtime();
-
-        // Use TransportSelector for automatic transport selection
-        // (Unix Socket first with connectivity test, HTTP fallback).
-        let transport = unix_socket_path.and_then(|path| {
+        let transport = if let Some(path) = unix_socket_path {
             let selector = rocode_client::transport::TransportSelector::new(
                 Some(path),
                 base_url.clone(),
                 server_password.clone(),
             );
-            runtime.block_on(async { selector.select().await.ok() })
-        });
+            Some(runtime.block_on(async { selector.select_unix_required().await })?)
+        } else {
+            None
+        };
 
-        Self {
+        Ok(Self {
             runtime,
             client: rocode_client::AsyncApiClient::new_with_password(base_url, server_password),
             transport,
             local_server: None,
-        }
+        })
     }
 
     fn block_on<R>(
@@ -270,6 +283,13 @@ impl RuntimeApiClient {
                 rocode_server::local_list_sessions(state, search, limit).await
             });
         }
+        if search.is_none() {
+            if let Some(ref transport) = self.transport {
+                if let Ok(items) = self.block_on(transport.list_sessions()) {
+                    return Ok(items);
+                }
+            }
+        }
         self.block_on(self.client.list_sessions(search, limit))
     }
 
@@ -341,8 +361,6 @@ impl RuntimeApiClient {
         fn delete_provider_model_config(&self, provider_id: &str, model_key: &str) -> rocode_config::Config;
         fn set_auth(&self, provider_id: &str, api_key: &str) -> ();
         fn register_custom_provider(&self, provider_id: &str, base_url: &str, protocol: &str, api_key: &str) -> ();
-        fn list_agents(&self) -> Vec<AgentInfo>;
-        fn list_execution_modes(&self) -> Vec<ExecutionModeInfo>;
         fn list_skills(&self, query: Option<&SkillCatalogQuery>) -> Vec<SkillCatalogEntry>;
         fn get_skill_detail(&self, query: &SkillDetailQuery) -> SkillDetailResponse;
         fn manage_skill(&self, req: &SkillManageRequest) -> SkillManageResponse;
@@ -418,6 +436,34 @@ impl RuntimeApiClient {
         self.block_on(self.client.get_config_validation())
     }
 
+    fn list_agents(&self) -> anyhow::Result<Vec<AgentInfo>> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            return self.block_on(async move { rocode_server::local_list_agents(state).await });
+        }
+        if let Some(ref transport) = self.transport {
+            if let Ok(items) = self.block_on(transport.list_agents()) {
+                return Ok(items);
+            }
+        }
+        self.block_on(self.client.list_agents())
+    }
+
+    fn list_execution_modes(&self) -> anyhow::Result<Vec<ExecutionModeInfo>> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            return self.block_on(async move {
+                rocode_server::local_list_execution_modes(state).await
+            });
+        }
+        if let Some(ref transport) = self.transport {
+            if let Ok(items) = self.block_on(transport.list_execution_modes()) {
+                return Ok(items);
+            }
+        }
+        self.block_on(self.client.list_execution_modes())
+    }
+
     fn get_workspace_context(
         &self,
     ) -> anyhow::Result<rocode_runtime_context::ResolvedWorkspaceContext> {
@@ -426,6 +472,11 @@ impl RuntimeApiClient {
             return self.block_on(async move {
                 rocode_server::local_get_workspace_context(state).await
             });
+        }
+        if let Some(ref transport) = self.transport {
+            if let Ok(context) = self.block_on(transport.get_workspace_context()) {
+                return Ok(context);
+            }
         }
         self.block_on(self.client.get_workspace_context())
     }
@@ -473,6 +524,11 @@ impl RuntimeApiClient {
             let state = std::sync::Arc::clone(state);
             return self.block_on(async move { rocode_server::local_get_recent_models(state).await });
         }
+        if let Some(ref transport) = self.transport {
+            if let Ok(items) = self.block_on(transport.get_recent_models()) {
+                return Ok(items);
+            }
+        }
         self.block_on(self.client.get_recent_models())
     }
 
@@ -487,6 +543,11 @@ impl RuntimeApiClient {
                 rocode_server::local_put_recent_models(state, recent_models).await
             });
         }
+        if let Some(ref transport) = self.transport {
+            if let Ok(items) = self.block_on(transport.put_recent_models(recent_models)) {
+                return Ok(items);
+            }
+        }
         self.block_on(self.client.put_recent_models(recent_models))
     }
 
@@ -496,6 +557,11 @@ impl RuntimeApiClient {
             return self.block_on(async move {
                 rocode_server::local_get_all_providers(state).await
             });
+        }
+        if let Some(ref transport) = self.transport {
+            if let Ok(response) = self.block_on(transport.get_all_providers()) {
+                return Ok(response);
+            }
         }
         self.block_on(self.client.get_all_providers())
     }
@@ -560,7 +626,7 @@ pub struct ApiClient {
 }
 
 impl ApiClient {
-    pub fn new(base_url: String) -> Self {
+    pub fn new(base_url: String) -> anyhow::Result<Self> {
         Self::new_with_password(base_url, None, None)
     }
 
@@ -568,11 +634,21 @@ impl ApiClient {
     /// Uses OrchestrationCore<rocode_session::SessionManager> for unified
     /// session authority across all operations.
     pub fn new_local() -> Self {
+        Self::new_local_with_server(None)
+    }
+
+    pub fn new_local_with_server(
+        local_server: Option<std::sync::Arc<rocode_server::ServerState>>,
+    ) -> Self {
         let (jobs, receiver) = mpsc::channel::<ApiJob>();
         thread::Builder::new()
             .name("rocode-tui-api-gateway".to_string())
             .spawn(move || {
-                let client = RuntimeApiClient::new_local();
+                let client = if let Some(local_server) = local_server {
+                    RuntimeApiClient::new_local_with_server(local_server)
+                } else {
+                    RuntimeApiClient::new_local()
+                };
                 while let Ok(job) = receiver.recv() {
                     job(&client);
                 }
@@ -593,25 +669,24 @@ impl ApiClient {
         base_url: String,
         server_password: Option<String>,
         unix_socket_path: Option<String>,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
+        let bootstrap_client = RuntimeApiClient::new_with_password(
+            base_url.clone(),
+            server_password.clone(),
+            unix_socket_path.clone(),
+        )?;
         let (jobs, receiver) = mpsc::channel::<ApiJob>();
-        let thread_base_url = base_url.clone();
-        let thread_server_password = server_password.clone();
         thread::Builder::new()
             .name("rocode-tui-api-gateway".to_string())
             .spawn(move || {
-                let client = RuntimeApiClient::new_with_password(
-                    thread_base_url,
-                    thread_server_password,
-                    unix_socket_path,
-                );
+                let client = bootstrap_client;
                 while let Ok(job) = receiver.recv() {
                     job(&client);
                 }
             })
             .expect("failed to start TUI API gateway thread");
 
-        Self {
+        Ok(Self {
             priority_client: BlockingApiClient::new_with_password(
                 base_url.clone(),
                 server_password,
@@ -619,7 +694,7 @@ impl ApiClient {
             base_url,
             jobs,
             current_session: RwLock::new(None),
-        }
+        })
     }
 
     pub fn base_url(&self) -> &str {
@@ -808,6 +883,9 @@ impl ApiClient {
         reply: &str,
         message: Option<String>,
     ) -> anyhow::Result<()> {
+        if self.base_url == "direct://local" {
+            return self.reply_permission(permission_id, reply, message);
+        }
         self.priority_client
             .reply_permission(permission_id, reply, message)
     }
@@ -1813,6 +1891,27 @@ mod tests {
                     })
             }),
             "multipart prompt should round-trip through local server authority"
+        );
+    }
+
+    #[test]
+    fn local_runtime_lists_modes_and_agents_without_http() {
+        let paths = test_local_paths();
+        let _env = install_local_test_env(&paths.data_root);
+        let client = RuntimeApiClient::new_local_for_workspace(paths.workspace_root);
+
+        let modes = client
+            .list_execution_modes()
+            .expect("list local execution modes");
+        assert!(
+            !modes.is_empty(),
+            "local execution mode listing should use local server authority"
+        );
+
+        let agents = client.list_agents().expect("list local agents");
+        assert!(
+            !agents.is_empty(),
+            "local agent listing should use local server authority"
         );
     }
 }

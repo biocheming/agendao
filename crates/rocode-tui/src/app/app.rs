@@ -105,6 +105,7 @@ const ANSI_BOLD: &str = "\x1b[1m";
 
 pub struct App {
     context: Arc<AppContext>,
+    local_direct: bool,
     state: AppState,
     viewport_area: Rect,
     prompt: Prompt,
@@ -254,7 +255,7 @@ enum SessionSyncMode {
     Incremental,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct AppLaunchConfig {
     pub base_url: Option<String>,
     pub server_password: Option<String>,
@@ -269,6 +270,9 @@ pub struct AppLaunchConfig {
     /// The TUI constructs OrchestrationCore internally with
     /// unified session authority.
     pub local_direct: bool,
+    /// Optional shared in-process server authority for Direct mode so the
+    /// product shell can resolve sessions before launching the TUI.
+    pub local_server: Option<Arc<rocode_server::ServerState>>,
 }
 
 impl App {
@@ -291,13 +295,15 @@ impl App {
 
         let base_url = resolve_tui_base_url(config.base_url.as_deref());
         let api_client = if config.local_direct {
-            Arc::new(ApiClient::new_local())
+            Arc::new(ApiClient::new_local_with_server(
+                config.local_server.clone(),
+            ))
         } else {
             Arc::new(ApiClient::new_with_password(
                 base_url.clone(),
                 config.server_password.clone(),
                 config.unix_socket_path.clone(),
-            ))
+            )?)
         };
         context.set_api_client(api_client);
         let sse_session_filter: SessionFilter = Arc::new(std::sync::Mutex::new(None));
@@ -365,6 +371,7 @@ impl App {
         let now = Instant::now();
         let mut app = Self {
             context,
+            local_direct: config.local_direct,
             state: AppState::default(),
             viewport_area: Rect::default(),
             prompt,
@@ -485,13 +492,16 @@ impl App {
         self.state == AppState::Exiting
     }
 
-    pub(crate) fn spawn_server_event_listener_task(&self) -> tokio::task::JoinHandle<()> {
-        spawn_server_event_listener_task(
+    pub(crate) fn spawn_server_event_listener_task(&self) -> Option<tokio::task::JoinHandle<()>> {
+        if self.local_direct {
+            return None;
+        }
+        Some(spawn_server_event_listener_task(
             self.context.ui_bridge.clone(),
             self.server_event_base_url.clone(),
             self.server_password.clone(),
             self.sse_session_filter.clone(),
-        )
+        ))
     }
 
     pub(crate) fn set_viewport_area(&mut self, area: Rect) {
