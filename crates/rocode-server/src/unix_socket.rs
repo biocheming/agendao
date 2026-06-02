@@ -178,6 +178,25 @@ async fn handle_connection<S: SessionStore + Send + 'static>(
             }
         };
 
+        // Check for subscribe_events — enters streaming event mode.
+        if request.method == "subscribe_events" {
+            let session_id = request
+                .params
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let response = handle_request(request, &state, &core).await;
+            let response_json = serde_json::to_string(&response)?;
+            writer.write_all(response_json.as_bytes()).await?;
+            writer.write_all(b"\n").await?;
+            writer.flush().await?;
+
+            if let Some(sid) = session_id {
+                stream_direct_events_to_writer(&state, &sid, writer).await;
+            }
+            return Ok(());
+        }
+
         let response = handle_request(request, &state, &core).await;
         let response_json = serde_json::to_string(&response)?;
         writer.write_all(response_json.as_bytes()).await?;
@@ -205,6 +224,7 @@ async fn handle_request<S: SessionStore + Send + 'static>(
         "list_execution_modes" => handle_list_execution_modes(state).await,
         "list_agents" => handle_list_agents(state).await,
         "get_session" => handle_get_session(request.params, state).await,
+        "subscribe_events" => handle_subscribe_events(request.params, state).await,
         _ => Err(JsonRpcError {
             code: -32601,
             message: format!("Method not found: {}", request.method),
@@ -450,6 +470,48 @@ async fn handle_get_session(
             message: "Internal error".to_string(),
         }
     })
+}
+
+async fn handle_subscribe_events(
+    params: serde_json::Value,
+    _state: &Arc<ServerState>,
+) -> Result<serde_json::Value, JsonRpcError> {
+    let session_id = params
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| JsonRpcError {
+            code: -32602,
+            message: "Missing session_id".to_string(),
+        })?;
+    Ok(serde_json::json!({
+        "subscribed": true,
+        "session_id": session_id,
+    }))
+}
+
+async fn stream_direct_events_to_writer(
+    state: &Arc<ServerState>,
+    session_id: &str,
+    mut writer: impl tokio::io::AsyncWrite + Unpin,
+) {
+    use tokio::io::AsyncWriteExt;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let mut rx = crate::session_runtime::direct_bridge::spawn_direct_event_loop(
+        Arc::clone(state),
+        session_id.to_string(),
+        cancel,
+    );
+    while let Some(event) = rx.recv().await {
+        let Ok(line) = serde_json::to_string(&event) else {
+            break;
+        };
+        if writer.write_all(line.as_bytes()).await.is_err()
+            || writer.write_all(b"\n").await.is_err()
+            || writer.flush().await.is_err()
+        {
+            break;
+        }
+    }
 }
 
 fn to_rpc_internal_error(error: anyhow::Error) -> JsonRpcError {

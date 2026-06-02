@@ -39,7 +39,7 @@ pub(super) async fn run_chat_session(
         working_dir,
         runtime_context,
         local,
-        unix_socket,
+        unix_socket.clone(),
     )
     .await?;
 
@@ -89,6 +89,8 @@ pub(super) async fn run_chat_session(
         &runtime,
         local,
         &local_state,
+        &transport,
+        unix_socket.clone(),
     )
     .await;
 

@@ -123,6 +123,58 @@ impl UnixSocketTransport {
         self.send_request("list_agents", serde_json::json!({})).await
     }
 
+    /// Subscribe to server events for a session. Returns a channel receiver
+    /// that yields JSON event payloads (one per line). The connection is held
+    /// open in a spawned background task.
+    pub async fn subscribe_events(
+        &self,
+        session_id: &str,
+    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>> {
+        let mut stream = UnixStream::connect(&self.socket_path)
+            .await
+            .context("Failed to connect to Unix socket for event subscription")?;
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0",
+            method: "subscribe_events",
+            params: serde_json::json!({ "session_id": session_id }),
+            id: 0,
+        };
+        let mut request_line = serde_json::to_string(&request)?;
+        request_line.push('\n');
+        stream.write_all(request_line.as_bytes()).await?;
+        stream.flush().await?;
+
+        // Read the subscribe ack response.
+        let mut reader = BufReader::new(stream);
+        let mut ack_line = String::new();
+        reader.read_line(&mut ack_line).await?;
+        let ack: JsonRpcResponse<serde_json::Value> =
+            serde_json::from_str(&ack_line).context("Failed to parse subscribe_events ack")?;
+        if ack.error.is_some() {
+            anyhow::bail!("subscribe_events failed: {:?}", ack.error);
+        }
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line).await {
+                    Ok(0) => break, // EOF
+                    Ok(_) => {
+                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
+                            if tx.send(value).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        Ok(rx)
+    }
+
     pub async fn get_session(&self, session_id: &str) -> Result<SessionDetail> {
         let params = serde_json::json!({ "session_id": session_id });
         self.send_request("get_session", params).await

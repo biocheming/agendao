@@ -387,6 +387,8 @@ impl SessionMessage {
     ) -> Self {
         let mut metadata = HashMap::new();
         apply_message_source_metadata(&mut metadata, origin, surface);
+        let (admission, authority_class) = origin_to_admission_authority(origin);
+        apply_message_admission_metadata(&mut metadata, admission, authority_class);
         Self::user_inner(session_id, text, metadata)
     }
 
@@ -891,5 +893,106 @@ pub fn message_source_origin(metadata: &HashMap<String, serde_json::Value>) -> O
 pub fn message_source_surface(metadata: &HashMap<String, serde_json::Value>) -> Option<MessageSourceSurface> {
     metadata
         .get(MESSAGE_SOURCE_SURFACE_KEY)
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+}
+
+// ── Admission context & authority class ───────────────────────────────
+
+/// Metadata key: how was this message admitted (authenticated, anonymous, etc.).
+pub const MESSAGE_ADMISSION_CONTEXT_KEY: &str = "message_source.admission";
+/// Metadata key: what authority class does this message carry.
+pub const MESSAGE_AUTHORITY_CLASS_KEY: &str = "message_source.authority_class";
+
+/// How the message was admitted into the system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageAdmissionContext {
+    /// Authenticated user (password, API key, OAuth).
+    Authenticated,
+    /// Anonymous / unauthenticated.
+    Anonymous,
+    /// Internal system component (scheduler, runtime).
+    Internal,
+    /// External integration (webhook, adapter).
+    External,
+}
+
+/// Authority class carried by this message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageAuthorityClass {
+    /// Human user.
+    User,
+    /// System / runtime.
+    System,
+    /// Scheduler.
+    Scheduler,
+    /// External adapter.
+    ExternalAdapter,
+}
+
+/// Single authority: derive admission context + authority class from an origin.
+pub fn origin_to_admission_authority(
+    origin: MessageSourceOrigin,
+) -> (MessageAdmissionContext, MessageAuthorityClass) {
+    match origin {
+        MessageSourceOrigin::Operator => (
+            MessageAdmissionContext::Authenticated,
+            MessageAuthorityClass::User,
+        ),
+        MessageSourceOrigin::Scheduler => (
+            MessageAdmissionContext::Internal,
+            MessageAuthorityClass::Scheduler,
+        ),
+        MessageSourceOrigin::ExternalTrigger => (
+            MessageAdmissionContext::External,
+            MessageAuthorityClass::ExternalAdapter,
+        ),
+        MessageSourceOrigin::ChildHandoff => (
+            MessageAdmissionContext::Internal,
+            MessageAuthorityClass::System,
+        ),
+        MessageSourceOrigin::ImportedHistory => (
+            MessageAdmissionContext::Internal,
+            MessageAuthorityClass::System,
+        ),
+        MessageSourceOrigin::System => (
+            MessageAdmissionContext::Internal,
+            MessageAuthorityClass::System,
+        ),
+    }
+}
+
+/// Apply admission context and authority class to message metadata.
+pub fn apply_message_admission_metadata(
+    metadata: &mut HashMap<String, serde_json::Value>,
+    admission: MessageAdmissionContext,
+    authority_class: MessageAuthorityClass,
+) {
+    metadata.insert(
+        MESSAGE_ADMISSION_CONTEXT_KEY.to_string(),
+        serde_json::to_value(admission).unwrap_or_default(),
+    );
+    metadata.insert(
+        MESSAGE_AUTHORITY_CLASS_KEY.to_string(),
+        serde_json::to_value(authority_class).unwrap_or_default(),
+    );
+}
+
+/// Read admission context from metadata.
+pub fn message_admission_context(
+    metadata: &HashMap<String, serde_json::Value>,
+) -> Option<MessageAdmissionContext> {
+    metadata
+        .get(MESSAGE_ADMISSION_CONTEXT_KEY)
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+}
+
+/// Read authority class from metadata.
+pub fn message_authority_class(
+    metadata: &HashMap<String, serde_json::Value>,
+) -> Option<MessageAuthorityClass> {
+    metadata
+        .get(MESSAGE_AUTHORITY_CLASS_KEY)
         .and_then(|v| serde_json::from_value(v.clone()).ok())
 }

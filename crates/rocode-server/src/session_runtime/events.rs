@@ -129,6 +129,17 @@ pub struct DiffEntry {
     pub deletions: u64,
 }
 
+/// Canonical event contract for all frontend event consumption.
+///
+/// This is the single source of truth for server→frontend events.
+/// Direct (in-process) and Unix socket paths MUST emit events with
+/// the same semantic categories as HTTP `/event` SSE. Frontend-local
+/// event types (`StateChange`, `CliServerEvent`) are projections of
+/// this contract — they translate ServerEvent into internal dispatch
+/// but MUST NOT define independent event semantics.
+///
+/// See docs/frontend-transport-event-matrix-2026-05-28.md for the
+/// full transport × event coverage matrix.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ServerEvent {

@@ -1,4 +1,5 @@
-use rocode_session::{MessageRole, Session, SessionContextKind};
+use rocode_session::{MessageRole, Session, SessionContextKind, SessionManager, SessionForkSpec, SessionForkHistoryMode};
+use rocode_types;
 
 #[test]
 fn test_session_creation() {
@@ -75,6 +76,77 @@ fn test_session_forked_title() {
     session.set_title("My Session (fork #1)");
     let forked2 = session.get_forked_title();
     assert_eq!(forked2, "My Session (fork #2)");
+}
+
+#[test]
+fn test_fork_imported_history_messages_carry_imported_source_metadata() {
+    let mut manager = SessionManager::new();
+    let created = manager.create("test-project", "/test/dir");
+    let sid = created.record().id.clone();
+
+    // Add a user message to the source session so fork has something to import.
+    manager.get_mut(&sid).unwrap().add_user_message("hello");
+
+    // Fork with full history.
+    let forked = manager
+        .fork(
+            &sid,
+            SessionForkSpec {
+                message_id: None,
+                history_mode: SessionForkHistoryMode::All,
+                history_message_limit: None,
+            },
+        )
+        .expect("fork should succeed");
+
+    // The forked session should contain an imported history copy of the source message.
+    let imported_msg = forked
+        .messages
+        .iter()
+        .find(|m| {
+            m.metadata
+                .get("fork_imported_history")
+                .and_then(|v| v.as_bool())
+                == Some(true)
+        })
+        .expect("forked session should have an imported history message");
+
+    let origin = rocode_types::message_source_origin(&imported_msg.metadata);
+    let surface = rocode_types::message_source_surface(&imported_msg.metadata);
+    let admission = rocode_types::message_admission_context(&imported_msg.metadata);
+    let authority = rocode_types::message_authority_class(&imported_msg.metadata);
+
+    assert_eq!(origin, Some(rocode_types::MessageSourceOrigin::ImportedHistory));
+    assert_eq!(surface, Some(rocode_types::MessageSourceSurface::HttpApi));
+    assert_eq!(admission, Some(rocode_types::MessageAdmissionContext::Internal));
+    assert_eq!(authority, Some(rocode_types::MessageAuthorityClass::System));
+}
+
+#[test]
+fn test_system_message_carries_correct_admission_and_authority() {
+    // Simulate steering/system message creation via the authority contract.
+    let msg = rocode_session::SessionMessage::user_with_source(
+        "test-session",
+        "steering text",
+        rocode_types::MessageSourceOrigin::System,
+        rocode_types::MessageSourceSurface::HttpApi,
+    );
+
+    let origin = rocode_types::message_source_origin(&msg.metadata);
+    let surface = rocode_types::message_source_surface(&msg.metadata);
+    let admission = rocode_types::message_admission_context(&msg.metadata);
+    let authority = rocode_types::message_authority_class(&msg.metadata);
+
+    assert_eq!(origin, Some(rocode_types::MessageSourceOrigin::System));
+    assert_eq!(surface, Some(rocode_types::MessageSourceSurface::HttpApi));
+    assert_eq!(
+        admission,
+        Some(rocode_types::MessageAdmissionContext::Internal)
+    );
+    assert_eq!(
+        authority,
+        Some(rocode_types::MessageAuthorityClass::System)
+    );
 }
 
 #[test]

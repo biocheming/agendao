@@ -258,6 +258,15 @@ pub struct ServerState {
     pub(crate) proposal_repo: Option<Arc<rocode_storage::SkillEvolutionProposalRepository>>,
     pub(crate) category_registry: Arc<rocode_config::CategoryRegistry>,
     pub(crate) todo_manager: rocode_session::TodoManager,
+    /// Cancellation token for the background recheck/wake loop.
+    /// Cancelled on ServerState drop.
+    pub(crate) recheck_cancel: tokio_util::sync::CancellationToken,
+}
+
+impl Drop for ServerState {
+    fn drop(&mut self) {
+        self.recheck_cancel.cancel();
+    }
 }
 
 pub struct ApiPerfCounters {
@@ -344,6 +353,7 @@ impl ServerState {
             proposal_repo: None,
             category_registry: Arc::new(rocode_config::CategoryRegistry::empty()),
             todo_manager: rocode_session::TodoManager::new(),
+            recheck_cancel: tokio_util::sync::CancellationToken::new(),
         }
     }
 
@@ -503,6 +513,11 @@ impl ServerState {
         state.session_repo = Some(SessionRepository::new(pool.clone()));
         state.message_repo = Some(MessageRepository::new(pool));
         state.load_sessions_from_storage().await?;
+        // Spawn background recheck/wake loop, cancelled when ServerState is dropped.
+        crate::session_runtime::recheck_loop::spawn_recheck_wake_loop(
+            state.runtime_telemetry.clone(),
+            state.recheck_cancel.clone(),
+        );
         Ok(state)
     }
 
