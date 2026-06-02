@@ -16,7 +16,7 @@ pub(super) use super::*;
 
 mod bootstrap_shared;
 mod compact;
-mod compact_legacy_sse;
+mod compact_event_loop;
 mod prompt_shared;
 mod rich;
 mod stream_shared;

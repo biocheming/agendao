@@ -2,7 +2,7 @@
 name = "rocode-watcher"
 version.workspace = true
 edition = "2021"
-description = "File system watcher for rocode"
+description = "[EXPERIMENTAL] File system watcher — parked, no active consumer, not on production path"
 
 [dependencies]
 notify = { version = "7.0", features = ["serde"] }

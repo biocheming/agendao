@@ -1320,12 +1320,27 @@ pub struct ResolvedFrontendSubscription {
     pub capabilities: FrontendSubscriptionCapabilities,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tier: Option<FrontendSubscriptionTier>,
-    /// True when the client sent no capability / tier parameters at all.
+    /// True when the client sent no recognised `?tier=` value — the server
+    /// fell back to the legacy compatible default (full capabilities).
+    ///
+    /// P2 compat window: this field exists so observability can measure how
+    /// much traffic still arrives without a tier.  When all frontends send an
+    /// explicit tier, `legacy_default()` and this field can be retired.
     #[serde(default)]
     pub is_legacy_compat: bool,
 }
 
 impl ResolvedFrontendSubscription {
+    /// Legacy compatible default — full capabilities, no explicit tier.
+    ///
+    /// This is what the server uses when the client does not supply a
+    /// recognised `?tier=` query parameter.  It exists for backward
+    /// compatibility with clients that predate the P2-1 subscription model.
+    ///
+    /// P2 compat window: new code should prefer `from_tier()` with an
+    /// explicit tier.  The only remaining justified call site is the global
+    /// event stream (`/events` without a session filter), which has no
+    /// frontend context to derive a tier from.
     pub fn legacy_default() -> Self {
         Self {
             capabilities: FrontendSubscriptionCapabilities::default(),
@@ -1334,6 +1349,8 @@ impl ResolvedFrontendSubscription {
         }
     }
 
+    /// Canonical constructor — use this for all new code that knows which
+    /// tier the frontend belongs to.  Sets `is_legacy_compat = false`.
     pub fn from_tier(tier: FrontendSubscriptionTier) -> Self {
         Self {
             capabilities: tier.default_capabilities(),
@@ -1345,12 +1362,36 @@ impl ResolvedFrontendSubscription {
     /// Single wire-format entry point. Every call site that parses a tier
     /// query parameter MUST use this function. The mapping from wire string
     /// to tier+capabilities is defined exactly once.
+    ///
+    /// A **missing** tier (`None`) is expected from clients that predate P2-1
+    /// and is logged at `tracing::debug!` level.  An **unknown** tier string
+    /// is always a bug and is logged at `tracing::warn!` level.  Both fall
+    /// back to the legacy compatible default (full capabilities).
+    ///
+    /// P2 removal conditions for the fallback:
+    /// 1. All three frontends (TUI, CLI, Web) send an explicit `?tier=` query
+    ///    parameter on every SSE connection.
+    /// 2. The global event stream (`/events` without a session) has a defined
+    ///    tier or is handled separately.
+    /// 3. `is_legacy_compat` metric shows 0 over a monitoring window.
     pub fn from_wire_tier(wire: Option<&str>) -> Self {
         match wire {
             Some("tui") => Self::from_tier(FrontendSubscriptionTier::TuiHighFrequency),
             Some("web") => Self::from_tier(FrontendSubscriptionTier::WebMediumFrequency),
             Some("cli") => Self::from_tier(FrontendSubscriptionTier::CliLowFrequency),
-            _ => Self::legacy_default(),
+            Some(other) => {
+                tracing::warn!(
+                    tier = other,
+                    "unknown subscription tier — falling back to legacy compatible default"
+                );
+                Self::legacy_default()
+            }
+            None => {
+                tracing::debug!(
+                    "missing subscription tier — falling back to legacy compatible default"
+                );
+                Self::legacy_default()
+            }
         }
     }
 }
