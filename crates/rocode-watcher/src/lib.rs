@@ -1,3 +1,16 @@
+//! # rocode-watcher (EXPERIMENTAL — parked)
+//!
+//! This crate is parked as of 2026-06-02. It has no active consumer in the
+//! production path (TUI, CLI, server, web). The `WatcherConfig` schema entry
+//! in `rocode-config` is dormant.
+//!
+//! It is retained in the workspace as experimental infrastructure for future
+//! file-watching needs, but is **not guaranteed compatibility** and should
+//! not be treated as a production-maintained crate until a concrete consumer
+//! is integrated.
+//!
+//! See: `docs/rocode-33-crates-layered-cleanup-table-2026-06-02.md` § P0.
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;

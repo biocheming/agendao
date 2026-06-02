@@ -1,13 +1,36 @@
 // ── CLI interactive question handler ─────────────────────────────────
+//
+// P1-2: Converted from include!() to proper module.
+// This module lives under run::interaction — sibling to the still-included
+// session_projection and sse blocks.  Access to parent-scope items that are
+// not yet promoted to pub(super) flows through explicit super:: paths.
 
-async fn cli_ask_question(
-    questions: Vec<rocode_tool::QuestionDef>,
+use std::io::{self, Write};
+use std::sync::{Arc, Mutex};
+
+use rocode_command::cli_panel::display_width;
+use rocode_command::cli_prompt::PromptSession;
+use rocode_command::cli_select::{
+    interactive_multi_select, interactive_select, SelectOption, SelectResult,
+};
+use rocode_command::cli_spinner::SpinnerGuard;
+use rocode_command::cli_style::CliStyle;
+use rocode_tool::{QuestionDef, ToolError};
+
+use super::cli_frontend_set_phase;
+use super::frontend_state_projection::CliFrontendPhase;
+use super::frontend_state_surface::CliTerminalSurface;
+use super::frontend_state_topology::CliObservedExecutionTopology;
+use super::frontend_state_types::CliFrontendProjection;
+
+pub(super) async fn cli_ask_question(
+    questions: Vec<QuestionDef>,
     observed_topology: Arc<Mutex<CliObservedExecutionTopology>>,
     frontend_projection: Arc<Mutex<CliFrontendProjection>>,
     prompt_session_slot: Arc<std::sync::Mutex<Option<Arc<PromptSession>>>>,
     terminal_surface: Option<Arc<CliTerminalSurface>>,
     spinner_guard: SpinnerGuard,
-) -> Result<Vec<Vec<String>>, rocode_tool::ToolError> {
+) -> Result<Vec<Vec<String>>, ToolError> {
     spinner_guard.pause();
     let style = CliStyle::detect();
     let prompt_session = prompt_session_slot
@@ -17,7 +40,7 @@ async fn cli_ask_question(
     let suspended_by_surface = match terminal_surface.as_ref() {
         Some(surface) => surface
             .suspend_modal_prompt()
-            .map_err(|error| rocode_tool::ToolError::ExecutionError(error.to_string()))?,
+            .map_err(|error| ToolError::ExecutionError(error.to_string()))?,
         None => false,
     };
     let suspended_directly = !suspended_by_surface && prompt_session.is_some();
@@ -126,7 +149,7 @@ async fn cli_ask_question(
                     }
                 }
                 spinner_guard.resume();
-                return Err(rocode_tool::ToolError::ExecutionError(
+                return Err(ToolError::ExecutionError(
                     "User cancelled the question".to_string(),
                 ));
             }
@@ -147,7 +170,7 @@ async fn cli_ask_question(
                     }
                 }
                 spinner_guard.resume();
-                return Err(rocode_tool::ToolError::ExecutionError(
+                return Err(ToolError::ExecutionError(
                     format!("Interactive prompt error: {}", error),
                 ));
             }
@@ -173,7 +196,7 @@ async fn cli_ask_question(
     Ok(all_answers)
 }
 
-fn prompt_free_text(
+pub(super) fn prompt_free_text(
     question: &str,
     header: Option<&str>,
     style: &CliStyle,
@@ -202,7 +225,7 @@ fn prompt_free_text(
     let rows_to_clear = rendered_plain_rows
         .iter()
         .map(|row| {
-            let visible_width = rocode_command::cli_panel::display_width(row);
+            let visible_width = display_width(row);
             if visible_width == 0 {
                 1
             } else {

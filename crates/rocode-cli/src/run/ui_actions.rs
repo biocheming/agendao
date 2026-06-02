@@ -1,11 +1,28 @@
-fn cli_resolve_registry_ui_action(
+// P1-2: Converted from include!() to proper module.
+// This module lives under run::ui_actions — parsing layer.
+
+use std::io::{self, Write};
+use std::sync::Arc;
+
+use rocode_agent::AgentRegistry;
+use rocode_command::cli_select::{interactive_select, SelectOption, SelectResult};
+use rocode_command::cli_style::CliStyle;
+use rocode_command::{CommandRegistry, ResolvedUiCommand, UiActionId};
+use rocode_provider::ProviderRegistry;
+
+use crate::api_client::CliApiClient;
+use crate::util::parse_model_and_provider;
+
+use super::*;
+
+pub(super) fn cli_resolve_registry_ui_action(
     registry: &CommandRegistry,
     input: &str,
 ) -> Option<ResolvedUiCommand> {
     registry.resolve_ui_slash_input(input)
 }
 
-fn cli_normalize_model_ref(model_ref: &str) -> String {
+pub(super) fn cli_normalize_model_ref(model_ref: &str) -> String {
     let trimmed = model_ref.trim();
     let (provider, model_id) = parse_model_and_provider(Some(trimmed.to_string()));
     match (provider, model_id) {
@@ -16,7 +33,7 @@ fn cli_normalize_model_ref(model_ref: &str) -> String {
     }
 }
 
-fn cli_display_protocol_id(protocol: &str) -> &str {
+pub(super) fn cli_display_protocol_id(protocol: &str) -> &str {
     if protocol.eq_ignore_ascii_case("anthropic")
         || protocol.eq_ignore_ascii_case("anthropic-messages")
         || protocol.eq_ignore_ascii_case("messages")
@@ -27,7 +44,7 @@ fn cli_display_protocol_id(protocol: &str) -> &str {
     }
 }
 
-enum CliModelCommand {
+pub(super) enum CliModelCommand {
     List,
     Refresh,
     Select(String),
@@ -47,7 +64,7 @@ enum CliModelCommand {
     },
 }
 
-fn cli_split_provider_model_key(value: &str) -> anyhow::Result<(String, String)> {
+pub(super) fn cli_split_provider_model_key(value: &str) -> anyhow::Result<(String, String)> {
     let trimmed = value.trim();
     let Some((provider_id, model_key)) = trimmed.split_once('/') else {
         anyhow::bail!("Expected <provider>/<model-key>.");
@@ -60,7 +77,7 @@ fn cli_split_provider_model_key(value: &str) -> anyhow::Result<(String, String)>
     Ok((provider_id.to_string(), model_key.to_string()))
 }
 
-fn cli_model_optional_string(raw: &str) -> Option<String> {
+pub(super) fn cli_model_optional_string(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty()
         || trimmed.eq_ignore_ascii_case("null")
@@ -73,7 +90,7 @@ fn cli_model_optional_string(raw: &str) -> Option<String> {
     }
 }
 
-fn cli_model_optional_bool(raw: &str) -> anyhow::Result<Option<bool>> {
+pub(super) fn cli_model_optional_bool(raw: &str) -> anyhow::Result<Option<bool>> {
     let trimmed = raw.trim();
     if trimmed.is_empty()
         || trimmed.eq_ignore_ascii_case("null")
@@ -97,7 +114,7 @@ fn cli_model_optional_bool(raw: &str) -> anyhow::Result<Option<bool>> {
     anyhow::bail!("Invalid boolean value `{trimmed}`; use true/false.");
 }
 
-fn cli_apply_model_config_assignments(
+pub(super) fn cli_apply_model_config_assignments(
     config: &mut rocode_config::ModelConfig,
     assignments: &[&str],
 ) -> anyhow::Result<()> {
@@ -129,7 +146,7 @@ fn cli_apply_model_config_assignments(
     Ok(())
 }
 
-fn cli_parse_model_command(
+pub(super) fn cli_parse_model_command(
     argument: Option<&str>,
     current_config: Option<&rocode_config::Config>,
 ) -> anyhow::Result<CliModelCommand> {
@@ -200,7 +217,7 @@ fn cli_parse_model_command(
     }
 }
 
-async fn cli_prompt_action_select(
+pub(super) async fn cli_prompt_action_select(
     runtime: &CliExecutionRuntime,
     header: Option<&str>,
     question: &str,
@@ -256,7 +273,7 @@ async fn cli_prompt_action_select(
     }
 }
 
-async fn cli_prompt_action_text(
+pub(super) async fn cli_prompt_action_text(
     runtime: &CliExecutionRuntime,
     header: Option<&str>,
     question: &str,
@@ -309,7 +326,7 @@ async fn cli_prompt_action_text(
     }
 }
 
-async fn cli_capture_voice_prompt(
+pub(super) async fn cli_capture_voice_prompt(
     runtime: &mut CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
     sse_rx: &mut mpsc::UnboundedReceiver<CliServerEvent>,
@@ -499,7 +516,7 @@ async fn cli_capture_voice_prompt(
     result
 }
 
-async fn cli_execute_ui_action(
+pub(super) async fn cli_execute_ui_action(
     action_id: UiActionId,
     argument: Option<&str>,
     runtime: &mut CliExecutionRuntime,

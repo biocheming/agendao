@@ -3309,6 +3309,7 @@ dependencies = [
  "rocode-types",
  "serde",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]

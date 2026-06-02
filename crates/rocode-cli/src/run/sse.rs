@@ -1,4 +1,21 @@
-fn pending_command_from_session(
+// P1-2: Converted from include!() to proper module.
+// This module lives under run::sse — interaction layer.
+
+use std::io::{self, Write};
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
+
+use rocode_command::cli_spinner::SpinnerGuard;
+use rocode_command::cli_style::CliStyle;
+use rocode_command::output_blocks::{
+    render_cli_block_rich, MessageBlock, OutputBlock, StatusBlock,
+};
+
+use crate::api_client::CliApiClient;
+
+use super::*;
+
+pub(super) fn pending_command_from_session(
     session: &crate::api_client::SessionInfo,
     question_id: &str,
 ) -> Option<crate::api_client::PendingCommandInvocation> {
@@ -16,7 +33,7 @@ fn pending_command_from_session(
     Some(pending)
 }
 
-fn shell_quote_command_value(value: &str) -> String {
+pub(super) fn shell_quote_command_value(value: &str) -> String {
     if value.is_empty() {
         return "\"\"".to_string();
     }
@@ -29,7 +46,7 @@ fn shell_quote_command_value(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-fn split_repeatable_answer(answer: &str) -> Vec<String> {
+pub(super) fn split_repeatable_answer(answer: &str) -> Vec<String> {
     answer
         .split(|ch: char| matches!(ch, '\n' | ',' | '\t'))
         .flat_map(|segment| segment.split_whitespace())
@@ -39,32 +56,32 @@ fn split_repeatable_answer(answer: &str) -> Vec<String> {
         .collect()
 }
 
-fn permission_timestamp_now() -> String {
+pub(super) fn permission_timestamp_now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
-fn cli_summary_thinking_label() -> String {
+pub(super) fn cli_summary_thinking_label() -> String {
     "Thinking".to_string()
 }
 
-fn cli_summary_tool_label(tool_name: &str) -> String {
+pub(super) fn cli_summary_tool_label(tool_name: &str) -> String {
     let label =
         rocode_command::output_blocks::tool_cli_activity_label(&rocode_command::output_blocks::ToolBlock::start(tool_name));
     format!("Using {label}")
 }
 
-fn cli_summary_permission_label(tool_name: Option<&str>) -> String {
+pub(super) fn cli_summary_permission_label(tool_name: Option<&str>) -> String {
     match tool_name.map(str::trim).filter(|value| !value.is_empty()) {
         Some(tool_name) => format!("Awaiting permission · {}", cli_summary_tool_label(tool_name)),
         None => "Awaiting permission".to_string(),
     }
 }
 
-fn cli_summary_waiting_label() -> String {
+pub(super) fn cli_summary_waiting_label() -> String {
     "Awaiting user input".to_string()
 }
 
-fn cli_session_update_finishes_turn(source: Option<&str>) -> bool {
+pub(super) fn cli_session_update_finishes_turn(source: Option<&str>) -> bool {
     matches!(
         source,
         Some(
@@ -77,7 +94,7 @@ fn cli_session_update_finishes_turn(source: Option<&str>) -> bool {
     )
 }
 
-fn cli_restore_compact_summary(projection: &mut CliFrontendProjection) {
+pub(super) fn cli_restore_compact_summary(projection: &mut CliFrontendProjection) {
     projection.prompt_lanes.clear_non_error();
     projection.active_label =
         if projection.pending_permission_count > 0 || projection.submitting_permission_count > 0 {
@@ -91,7 +108,7 @@ fn cli_restore_compact_summary(projection: &mut CliFrontendProjection) {
         };
 }
 
-fn cli_push_runtime_aux_block(
+pub(super) fn cli_push_runtime_aux_block(
     runtime: &CliExecutionRuntime,
     block: OutputBlock,
 ) {
@@ -102,7 +119,7 @@ fn cli_push_runtime_aux_block(
     }
 }
 
-fn cli_output_block_updates_transcript_authority(
+pub(super) fn cli_output_block_updates_transcript_authority(
     block: &OutputBlock,
     live_identity: Option<&rocode_types::LiveMessagePartIdentity>,
 ) -> bool {
@@ -117,13 +134,13 @@ fn cli_output_block_updates_transcript_authority(
     }
 }
 
-fn cli_store_active_tool_label(runtime: &CliExecutionRuntime, tool_call_id: &str, tool_name: &str) {
+pub(super) fn cli_store_active_tool_label(runtime: &CliExecutionRuntime, tool_call_id: &str, tool_name: &str) {
     if let Ok(mut labels) = runtime.active_tool_labels.lock() {
         labels.insert(tool_call_id.to_string(), tool_name.to_string());
     }
 }
 
-fn cli_take_active_tool_label(runtime: &CliExecutionRuntime, tool_call_id: &str) -> Option<String> {
+pub(super) fn cli_take_active_tool_label(runtime: &CliExecutionRuntime, tool_call_id: &str) -> Option<String> {
     runtime
         .active_tool_labels
         .lock()
@@ -131,7 +148,7 @@ fn cli_take_active_tool_label(runtime: &CliExecutionRuntime, tool_call_id: &str)
         .and_then(|mut labels| labels.remove(tool_call_id))
 }
 
-fn ingress_stabilization_label(value: Option<&serde_json::Value>) -> Option<String> {
+pub(super) fn ingress_stabilization_label(value: Option<&serde_json::Value>) -> Option<String> {
     let value = value?.as_object()?;
     let source = value
         .get("source")
@@ -159,7 +176,7 @@ fn ingress_stabilization_label(value: Option<&serde_json::Value>) -> Option<Stri
     }
 }
 
-fn provider_diagnostic_label(
+pub(super) fn provider_diagnostic_label(
     summary: Option<&crate::api_client::ProviderDiagnosticSummary>,
 ) -> Option<String> {
     let summary = summary?;
@@ -170,7 +187,7 @@ fn provider_diagnostic_label(
     }
 }
 
-fn permission_class_label(value: &str) -> Option<String> {
+pub(super) fn permission_class_label(value: &str) -> Option<String> {
     match value {
         "inspect_read" => Some("Inspect read".to_string()),
         "workspace_write" => Some("Workspace write".to_string()),
@@ -180,7 +197,7 @@ fn permission_class_label(value: &str) -> Option<String> {
     }
 }
 
-fn default_permission_lifetimes(
+pub(super) fn default_permission_lifetimes(
     permission_class: Option<&str>,
 ) -> Vec<rocode_permission::PermissionLifetime> {
     match permission_class {
@@ -196,7 +213,7 @@ fn default_permission_lifetimes(
     }
 }
 
-fn merge_pending_command_arguments(
+pub(super) fn merge_pending_command_arguments(
     pending: &crate::api_client::PendingCommandInvocation,
     answers: &[Vec<String>],
 ) -> String {
@@ -234,7 +251,7 @@ fn merge_pending_command_arguments(
     parts.join(" ").trim().to_string()
 }
 
-fn question_defs_from_info(
+pub(super) fn question_defs_from_info(
     info: &crate::api_client::QuestionInfo,
 ) -> Vec<rocode_tool::QuestionDef> {
     if !info.items.is_empty() {
@@ -280,7 +297,7 @@ fn question_defs_from_info(
         .collect()
 }
 
-async fn resolve_prompt_submission(
+pub(super) async fn resolve_prompt_submission(
     runtime: &CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
     local_state: &Option<Arc<rocode_server::ServerState>>,
@@ -368,7 +385,7 @@ async fn resolve_prompt_submission(
     }
 }
 
-async fn run_server_prompt(
+pub(super) async fn run_server_prompt(
     runtime: &mut CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
     sse_rx: &mut mpsc::UnboundedReceiver<CliServerEvent>,
@@ -393,7 +410,7 @@ async fn run_server_prompt(
     .await
 }
 
-async fn run_server_prompt_with_parts(
+pub(super) async fn run_server_prompt_with_parts(
     runtime: &mut CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
     sse_rx: &mut mpsc::UnboundedReceiver<CliServerEvent>,
@@ -619,7 +636,7 @@ async fn run_server_prompt_with_parts(
     Ok(())
 }
 
-fn cli_prompt_agent_override(
+pub(super) fn cli_prompt_agent_override(
     resolved_agent_name: &str,
     scheduler_profile_name: Option<&str>,
 ) -> Option<String> {
@@ -630,7 +647,7 @@ fn cli_prompt_agent_override(
     }
 }
 
-async fn cli_handle_config_updated_from_sse(
+pub(super) async fn cli_handle_config_updated_from_sse(
     runtime: &CliExecutionRuntime,
     _api_client: &CliApiClient,
 ) {
@@ -639,7 +656,7 @@ async fn cli_handle_config_updated_from_sse(
 
 /// Handle an incoming SSE event from the server — update topology,
 /// frontend projection, and render output blocks.
-fn handle_sse_event(
+pub(super) fn handle_sse_event(
     runtime: &CliExecutionRuntime,
     event: CliServerEvent,
     style: &CliStyle,
@@ -1101,7 +1118,7 @@ fn handle_sse_event(
     }
 }
 
-async fn handle_question_from_sse(
+pub(super) async fn handle_question_from_sse(
     runtime: &CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
     local_state: &Option<Arc<rocode_server::ServerState>>,
@@ -1187,7 +1204,7 @@ async fn handle_question_from_sse(
     }
 }
 
-async fn handle_permission_from_sse(
+pub(super) async fn handle_permission_from_sse(
     runtime: &CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
     local_state: &Option<Arc<rocode_server::ServerState>>,
@@ -1456,7 +1473,7 @@ async fn handle_permission_from_sse(
     }
 }
 
-async fn cli_refresh_server_info(
+pub(super) async fn cli_refresh_server_info(
     api_client: &CliApiClient,
     projection: &Arc<Mutex<CliFrontendProjection>>,
     server_session_id: Option<&str>,
@@ -1515,7 +1532,7 @@ async fn cli_refresh_server_info(
     }
 }
 
-async fn cli_refresh_session_telemetry(
+pub(super) async fn cli_refresh_session_telemetry(
     api_client: &CliApiClient,
     projection: &Arc<Mutex<CliFrontendProjection>>,
     session_id: &str,
@@ -1573,7 +1590,7 @@ async fn cli_refresh_session_telemetry(
     }
 }
 
-fn cli_history_message_role(role: &str) -> Option<OutputMessageRole> {
+pub(super) fn cli_history_message_role(role: &str) -> Option<OutputMessageRole> {
     match role {
         "user" => Some(OutputMessageRole::User),
         "assistant" => Some(OutputMessageRole::Assistant),
@@ -1581,7 +1598,7 @@ fn cli_history_message_role(role: &str) -> Option<OutputMessageRole> {
     }
 }
 
-fn cli_append_history_text_block(
+pub(super) fn cli_append_history_text_block(
     transcript: &mut CliVisibleTranscript,
     role: Option<OutputMessageRole>,
     text: &mut String,
@@ -1602,7 +1619,7 @@ fn cli_append_history_text_block(
     transcript.append_committed(&rendered);
 }
 
-fn cli_append_history_tool_result_block(
+pub(super) fn cli_append_history_tool_result_block(
     transcript: &mut CliVisibleTranscript,
     tool_result: &crate::api_client::ToolResult,
     style: &CliStyle,
@@ -1632,7 +1649,7 @@ fn cli_append_history_tool_result_block(
     transcript.append_committed(&render_cli_block_rich(&block, style));
 }
 
-fn cli_append_history_reasoning_block(
+pub(super) fn cli_append_history_reasoning_block(
     transcript: &mut CliVisibleTranscript,
     text: &mut String,
     style: &CliStyle,
@@ -1648,7 +1665,7 @@ fn cli_append_history_reasoning_block(
     transcript.append_committed(&rendered);
 }
 
-fn cli_transcript_from_history(
+pub(super) fn cli_transcript_from_history(
     messages: &[crate::api_client::MessageInfo],
     style: &CliStyle,
 ) -> CliVisibleTranscript {
@@ -1694,7 +1711,7 @@ fn cli_transcript_from_history(
     transcript
 }
 
-async fn cli_refresh_session_transcript_from_history(
+pub(super) async fn cli_refresh_session_transcript_from_history(
     runtime: &CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
     local_state: &Option<Arc<rocode_server::ServerState>>,
@@ -1718,7 +1735,7 @@ async fn cli_refresh_session_transcript_from_history(
     }
 }
 
-async fn handle_session_updated_from_sse(
+pub(super) async fn handle_session_updated_from_sse(
     runtime: &CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
     local_state: &Option<Arc<rocode_server::ServerState>>,

@@ -114,7 +114,7 @@ pub(super) async fn run_chat_session(
                     let Some(dispatch_rx) = dispatch_rx.as_mut() else {
                         anyhow::bail!("interactive prompt receiver missing");
                     };
-                    match super::compact_legacy_sse::wait_for_rich_input(
+                    match super::compact_event_loop::wait_for_rich_input(
                         &mut runtime,
                         &config,
                         agent_registry_arc.as_ref(),
@@ -134,7 +134,7 @@ pub(super) async fn run_chat_session(
                     }
                 }
                 InteractiveCliMode::Compact => {
-                    super::compact_legacy_sse::drain_available_sse_events(
+                    super::compact_event_loop::drain_available_events(
                         &runtime,
                         &api_client,
                         &local_state,
@@ -565,7 +565,7 @@ pub(super) async fn run_chat_session(
         )
         .await?;
 
-        super::compact_legacy_sse::drain_available_sse_events(
+        super::compact_event_loop::drain_available_events(
             &runtime,
             &api_client,
             &local_state,
