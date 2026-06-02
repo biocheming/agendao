@@ -145,10 +145,12 @@ pub(crate) async fn stream_message(
     Json(req): Json<SendMessageRequest>,
 ) -> std::result::Result<Sse<impl Stream<Item = std::result::Result<Event, Infallible>>>, ApiError>
 {
-    // P2-1 note: subscription negotiation for the main SSE path lives in
-    // routes/mod.rs event_stream() which reads `?tier=` from EventStreamQuery.
-    // The session-specific stream endpoint inherits the legacy full-capability
-    // default until P2-2 adds per-connection subscription persistence.
+    // P2-1 note: the per-session `/event` SSE endpoint in routes/mod.rs
+    // negotiates subscription via `?tier=` → from_wire_tier().  This
+    // endpoint (`POST /session/:id/stream`) does not yet use the
+    // subscription model at all — it creates its own SSE response stream
+    // independently.  P2-2 will add per-connection subscription persistence
+    // so this path can also use an explicit tier.
 
     if req.agent.is_some() && req.scheduler_profile.is_some() {
         return Err(ApiError::BadRequest(
