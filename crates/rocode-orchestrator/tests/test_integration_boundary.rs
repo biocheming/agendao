@@ -298,6 +298,18 @@ async fn test_user_message_carries_canonical_source_metadata() {
     let surface = rocode_types::message_source_surface(&first_msg.metadata);
     assert_eq!(origin, Some(rocode_types::MessageSourceOrigin::Operator));
     assert_eq!(surface, Some(rocode_types::MessageSourceSurface::Tui));
+
+    // Admission/authority derived from origin.
+    let admission = rocode_types::message_admission_context(&first_msg.metadata);
+    let authority = rocode_types::message_authority_class(&first_msg.metadata);
+    assert_eq!(
+        admission,
+        Some(rocode_types::MessageAdmissionContext::Authenticated)
+    );
+    assert_eq!(
+        authority,
+        Some(rocode_types::MessageAuthorityClass::User)
+    );
 }
 
 // ── Direct Transport production-path consistency ──────────

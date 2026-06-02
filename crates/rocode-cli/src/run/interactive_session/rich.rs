@@ -445,7 +445,7 @@ pub(super) async fn run_chat_session_rich(
         working_dir,
         runtime_context,
         local,
-        unix_socket,
+        unix_socket.clone(),
     )
     .await?;
 
@@ -480,6 +480,8 @@ pub(super) async fn run_chat_session_rich(
         &runtime,
         local,
         &local_state,
+        &transport,
+        unix_socket.clone(),
     )
     .await;
 

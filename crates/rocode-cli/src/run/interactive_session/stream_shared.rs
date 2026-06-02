@@ -1,7 +1,5 @@
 use super::*;
-use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
 
 pub(super) struct InteractiveSessionStream {
     pub(super) sse_rx: mpsc::UnboundedReceiver<CliServerEvent>,
@@ -15,23 +13,45 @@ pub(super) async fn bootstrap_interactive_stream(
     runtime: &CliExecutionRuntime,
     local: bool,
     local_state: &Option<Arc<rocode_server::ServerState>>,
+    transport: &Option<Arc<rocode_client::FrontendTransport>>,
+    unix_socket_path: Option<String>,
 ) -> InteractiveSessionStream {
     let (sse_tx, sse_rx) = mpsc::unbounded_channel::<CliServerEvent>();
     let sse_cancel = CancellationToken::new();
 
     if local {
-        // Direct mode: no server, no SSE. Run a local poll loop that
-        // translates session state changes into frontend events.
+        // Direct mode: use the shared DirectEventBridge (rocode-server).
+        // A thin adapter converts DirectEvent → CliServerEvent.
         if let Some(state) = local_state {
-            let session_id = server_session_id.to_string();
-            let state = Arc::clone(state);
+            let direct_rx = rocode_server::spawn_direct_event_loop(
+                Arc::clone(state),
+                server_session_id.to_string(),
+                sse_cancel.clone(),
+            );
             let tx = sse_tx.clone();
-            let cancel = sse_cancel.clone();
             tokio::spawn(async move {
-                local_poll_loop(&state, &session_id, tx, cancel).await;
+                cli_direct_event_adapter(direct_rx, tx).await;
             });
         }
         return InteractiveSessionStream { sse_rx, sse_cancel };
+    }
+
+    // Unix socket: subscribe to events via JSON-RPC.
+    if let Some(rocode_client::FrontendTransport::Unix(_unix)) = transport.as_deref() {
+        let socket_path = unix_socket_path.clone().unwrap_or_default();
+        match _unix.subscribe_events(server_session_id).await {
+            Ok(json_rx) => {
+                let tx = sse_tx.clone();
+                let sid = server_session_id.to_string();
+                tokio::spawn(async move {
+                    cli_socket_event_loop(&socket_path, sid, json_rx, tx).await;
+                });
+                return InteractiveSessionStream { sse_rx, sse_cancel };
+            }
+            Err(e) => {
+                tracing::warn!(%e, "socket subscribe_events failed, falling back to SSE");
+            }
+        }
     }
 
     let _sse_handle = event_stream::spawn_sse_subscriber(
@@ -51,194 +71,82 @@ pub(super) async fn bootstrap_interactive_stream(
     InteractiveSessionStream { sse_rx, sse_cancel }
 }
 
-/// Poll local session state and emit synthetic SSE-compatible events.
-/// Uses message count for SessionUpdated; uses runtime run status
-/// (via RuntimeControlRegistry) to decide when the run is truly idle.
-async fn local_poll_loop(
-    state: &Arc<rocode_server::ServerState>,
-    session_id: &str,
-    tx: mpsc::UnboundedSender<CliServerEvent>,
-    cancel: CancellationToken,
+fn direct_event_to_cli_event(event: rocode_server::DirectEvent) -> Option<CliServerEvent> {
+    use rocode_server::DirectEvent;
+    Some(match event {
+        DirectEvent::SessionBusy { session_id } => CliServerEvent::SessionBusy { session_id },
+        DirectEvent::SessionIdle { session_id } => CliServerEvent::SessionIdle { session_id },
+        DirectEvent::SessionUpdated { session_id } => CliServerEvent::SessionUpdated {
+            session_id, source: Some("direct_bridge".to_string()),
+        },
+        DirectEvent::QuestionCreated { session_id, request_id, questions_json } => CliServerEvent::QuestionCreated {
+            session_id, request_id, questions_json: questions_json.unwrap_or(serde_json::Value::Null),
+        },
+        DirectEvent::QuestionResolved { request_id } => CliServerEvent::QuestionResolved { request_id },
+        DirectEvent::PermissionRequested { session_id, permission_id, info_json } => CliServerEvent::PermissionRequested {
+            session_id, permission_id, info_json: info_json.unwrap_or(serde_json::Value::Null),
+        },
+        DirectEvent::PermissionResolved { session_id, permission_id } => CliServerEvent::PermissionResolved {
+            session_id, permission_id,
+        },
+        DirectEvent::ToolCallStarted { session_id } => CliServerEvent::ToolCallStarted {
+            session_id, tool_call_id: String::new(), tool_name: String::new(),
+        },
+        DirectEvent::ToolCallCompleted { session_id } => CliServerEvent::ToolCallCompleted {
+            session_id, tool_call_id: String::new(),
+        },
+        DirectEvent::OutputBlock { session_id, block } => CliServerEvent::OutputBlock {
+            session_id, id: None, payload: block, live_identity: None,
+        },
+        DirectEvent::ConfigUpdated => CliServerEvent::ConfigUpdated,
+        DirectEvent::TopologyChanged { session_id } => CliServerEvent::SessionUpdated {
+            session_id, source: Some("direct_topology".to_string()),
+        },
+        DirectEvent::ControlInputTransition { .. }
+        | DirectEvent::DiffUpdated { .. }
+        | DirectEvent::SessionTreeChanged { .. } => return None,
+    })
+}
+
+/// Thin adapter: DirectEvent → CliServerEvent. Runs until the sender
+/// channel closes or the receiver is exhausted.
+async fn cli_socket_event_loop(
+    socket_path: &str,
+    session_id: String,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+    tx: tokio::sync::mpsc::UnboundedSender<CliServerEvent>,
 ) {
-    let mut last_message_count = 0usize;
-    let mut stale_ticks = 0u32;
-    let mut was_idle = false;
-    let mut pending_question_ids = HashSet::new();
-    let mut pending_permission_ids: HashMap<String, String> = HashMap::new();
-    let mut interval = tokio::time::interval(Duration::from_millis(300));
-
-    // Emit Busy upfront so the interactive loop shows a spinner.
-    let _ = tx.send(CliServerEvent::SessionBusy {
-        session_id: session_id.to_string(),
-    });
-
     loop {
-        tokio::select! {
-            _ = cancel.cancelled() => break,
-            _ = interval.tick() => {},
-        }
-
-        // Read messages for new-content detection.
-        let Ok(messages) = rocode_server::local_list_messages(
-            Arc::clone(state),
-            session_id,
-            None,
-            None,
-        )
-        .await
-        else {
-            break;
-        };
-
-        if let Ok(questions) = rocode_server::local_list_questions(Arc::clone(state)).await {
-            let mut current_question_ids = HashSet::new();
-            for question in questions
-                .into_iter()
-                .filter(|question| question.session_id == session_id)
-            {
-                current_question_ids.insert(question.id.clone());
-                if pending_question_ids.insert(question.id.clone()) {
-                    let questions_json = serde_json::to_value(local_question_defs_from_info(&question))
-                        .unwrap_or(serde_json::Value::Null);
-                    let _ = tx.send(CliServerEvent::QuestionCreated {
-                        request_id: question.id,
-                        session_id: question.session_id,
-                        questions_json,
-                    });
+        while let Some(json) = rx.recv().await {
+            if let Ok(direct) = serde_json::from_value::<rocode_server::DirectEvent>(json) {
+                if let Some(cli) = direct_event_to_cli_event(direct) {
+                    if tx.send(cli).is_err() {
+                        return;
+                    }
                 }
             }
-            for resolved_id in pending_question_ids
-                .iter()
-                .filter(|id| !current_question_ids.contains(*id))
-                .cloned()
-                .collect::<Vec<_>>()
-            {
-                pending_question_ids.remove(&resolved_id);
-                let _ = tx.send(CliServerEvent::QuestionResolved {
-                    request_id: resolved_id,
-                });
-            }
         }
-
-        if let Ok(permissions) = rocode_server::local_list_permissions(Arc::clone(state)).await {
-            let mut current_permission_ids = HashMap::new();
-            for permission in permissions
-                .into_iter()
-                .filter(|permission| permission.session_id == session_id)
-            {
-                current_permission_ids
-                    .insert(permission.id.clone(), permission.session_id.clone());
-                if !pending_permission_ids.contains_key(&permission.id) {
-                    let info_json =
-                        serde_json::to_value(&permission).unwrap_or(serde_json::Value::Null);
-                    let _ = tx.send(CliServerEvent::PermissionRequested {
-                        session_id: permission.session_id.clone(),
-                        permission_id: permission.id.clone(),
-                        info_json,
-                    });
-                }
+        // Stream ended — reconnect.
+        let transport = rocode_client::transport::UnixSocketTransport::new(socket_path.to_string());
+        match transport.subscribe_events(&session_id).await {
+            Ok(new_rx) => rx = new_rx,
+            Err(e) => {
+                tracing::warn!(%e, "socket subscribe_events reconnect failed");
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
-            for (resolved_id, resolved_session_id) in pending_permission_ids
-                .iter()
-                .filter(|(id, _)| !current_permission_ids.contains_key(*id))
-                .map(|(id, session_id)| (id.clone(), session_id.clone()))
-                .collect::<Vec<_>>()
-            {
-                let _ = tx.send(CliServerEvent::PermissionResolved {
-                    session_id: resolved_session_id,
-                    permission_id: resolved_id,
-                });
-            }
-            pending_permission_ids = current_permission_ids;
-        }
-
-        let count = messages.len();
-        if count > last_message_count {
-            last_message_count = count;
-            stale_ticks = 0;
-            was_idle = false;
-            let _ = tx.send(CliServerEvent::SessionUpdated {
-                session_id: session_id.to_string(),
-                source: Some("local_poll".to_string()),
-            });
-            continue;
-        }
-
-        // No new messages — check if the run is still in progress.
-        // A missing or non-terminal finish on the last assistant message
-        // means the run may be in a long tool call / thinking phase.
-        let has_terminal_finish = messages
-            .last()
-            .filter(|m| m.role == "assistant")
-            .and_then(|m| m.finish.as_deref())
-            .map(|f| f != "tool_calls" && f != "unknown")
-            .unwrap_or(false);
-
-        if !has_terminal_finish {
-            // Still running — long tool call or reasoning.
-            stale_ticks = 0;
-            if was_idle {
-                was_idle = false;
-                let _ = tx.send(CliServerEvent::SessionBusy {
-                    session_id: session_id.to_string(),
-                });
-            }
-            continue;
-        }
-
-        stale_ticks += 1;
-        // After ~3s of silence + terminal finish, emit Idle.
-        if stale_ticks >= 10 && !was_idle {
-            was_idle = true;
-            let _ = tx.send(CliServerEvent::SessionIdle {
-                session_id: session_id.to_string(),
-            });
         }
     }
 }
 
-fn local_question_defs_from_info(
-    info: &crate::api_client::QuestionInfo,
-) -> Vec<rocode_tool::QuestionDef> {
-    if !info.items.is_empty() {
-        return info
-            .items
-            .iter()
-            .map(|item| rocode_tool::QuestionDef {
-                question: item.question.clone(),
-                header: item.header.clone(),
-                options: item
-                    .options
-                    .iter()
-                    .map(|option| rocode_tool::QuestionOption {
-                        label: option.label.clone(),
-                        description: option.description.clone(),
-                    })
-                    .collect(),
-                multiple: item.multiple,
-            })
-            .collect();
+async fn cli_direct_event_adapter(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<rocode_server::DirectEvent>,
+    tx: tokio::sync::mpsc::UnboundedSender<CliServerEvent>,
+) {
+    while let Some(event) = rx.recv().await {
+        if let Some(cli_event) = direct_event_to_cli_event(event) {
+            if tx.send(cli_event).is_err() {
+                break;
+            }
+        }
     }
-
-    info.questions
-        .iter()
-        .enumerate()
-        .map(|(index, question)| rocode_tool::QuestionDef {
-            question: question.clone(),
-            header: None,
-            options: info
-                .options
-                .as_ref()
-                .and_then(|all| all.get(index))
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|label| rocode_tool::QuestionOption {
-                    label,
-                    description: None,
-                })
-                .collect(),
-            multiple: false,
-        })
-        .collect()
 }

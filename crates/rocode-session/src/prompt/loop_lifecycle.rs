@@ -2705,6 +2705,19 @@ impl SessionPrompt {
                             serde_json::json!(source),
                         );
                     }
+                    let (admission, authority) = rocode_types::origin_to_admission_authority(
+                        rocode_types::MessageSourceOrigin::System,
+                    );
+                    rocode_types::apply_message_source_metadata(
+                        &mut record.metadata,
+                        rocode_types::MessageSourceOrigin::System,
+                        rocode_types::MessageSourceSurface::HttpApi,
+                    );
+                    rocode_types::apply_message_admission_metadata(
+                        &mut record.metadata,
+                        admission,
+                        authority,
+                    );
                     session.push_message(record);
 
                     // Inject into the current request's chat messages.

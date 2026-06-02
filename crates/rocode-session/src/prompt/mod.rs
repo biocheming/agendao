@@ -2747,6 +2747,14 @@ impl SessionPrompt {
                 serde_json::to_value(surface).unwrap_or_default(),
             );
         }
+        if let Some(origin) = ingress.source_origin {
+            let (admission, authority_class) = rocode_types::origin_to_admission_authority(origin);
+            rocode_types::apply_message_admission_metadata(
+                &mut msg.metadata,
+                admission,
+                authority_class,
+            );
+        }
     }
 
     // --- file_parts methods moved to file_parts.rs ---

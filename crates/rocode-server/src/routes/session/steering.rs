@@ -121,6 +121,16 @@ pub async fn submit_session_steering(
                     serde_json::json!(source),
                 );
             }
+            // Stamp canonical source metadata (System origin).
+            let (admission, authority) = rocode_types::origin_to_admission_authority(
+                rocode_types::MessageSourceOrigin::System,
+            );
+            rocode_types::apply_message_source_metadata(
+                &mut notice.metadata,
+                rocode_types::MessageSourceOrigin::System,
+                rocode_types::MessageSourceSurface::HttpApi,
+            );
+            rocode_types::apply_message_admission_metadata(&mut notice.metadata, admission, authority);
             session.push_message(notice);
 
             // Line 2: the actual queued steering text.
@@ -152,6 +162,12 @@ pub async fn submit_session_steering(
                     serde_json::json!(source),
                 );
             }
+            rocode_types::apply_message_source_metadata(
+                &mut preview.metadata,
+                rocode_types::MessageSourceOrigin::System,
+                rocode_types::MessageSourceSurface::HttpApi,
+            );
+            rocode_types::apply_message_admission_metadata(&mut preview.metadata, admission, authority);
             session.push_message(preview);
         }
     }

@@ -31,6 +31,8 @@ import { useTerminalSessions } from "./hooks/useTerminalSessions";
 import { useTranscriptFeedState } from "./hooks/useTranscriptFeedState";
 import { useWebBootstrap } from "./hooks/useWebBootstrap";
 import { useResizableHeight, useResizableWidth } from "./hooks/useResizableWidth";
+import { useSidebarState } from "./hooks/useSidebarState";
+import { useWorkspaceSelection } from "./hooks/useWorkspaceSelection";
 import { useProviderConnectForm } from "./hooks/useProviderConnectForm";
 import { useExternalAdapterProvisioning } from "./hooks/useExternalAdapterProvisioning";
 import { useDiagnosticsFromTelemetry } from "./hooks/useDiagnosticsFromTelemetry";
@@ -519,11 +521,17 @@ export default function App() {
   const [currentWorkspacePath, setCurrentWorkspacePath] = useState<string | null>(null);
   const [workspaceRootPath, setWorkspaceRootPath] = useState("");
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
-  const [selectedWorkspacePath, setSelectedWorkspacePath] = useState<string | null>(null);
-  const [selectedWorkspaceType, setSelectedWorkspaceType] = useState<"file" | "directory">(
-    "directory",
-  );
-  const [workspacePanelTab, setWorkspacePanelTab] = useState<WorkspacePanelTab>("files");
+  const [ws, wsActions] = useWorkspaceSelection();
+  const workspacePanelTab = ws.panelTab;
+  const setWorkspacePanelTab = wsActions.setPanelTab;
+  const selectedWorkspacePath = ws.selectedPath;
+  const setSelectedWorkspacePath = wsActions.setSelectedPath;
+  const selectedWorkspaceType = ws.selectedType;
+  const setSelectedWorkspaceType = wsActions.setSelectedType;
+  const pendingWorkspaceSelection = ws.pendingSelection;
+  const setPendingWorkspaceSelection = wsActions.setPendingSelection;
+  const workspaceReloadToken = ws.reloadToken;
+  const setWorkspaceReloadToken = ws.triggerReload; // compatible: increment triggers reload
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [selectedFileContent, setSelectedFileContent] = useState("");
   const [savedFileContent, setSavedFileContent] = useState("");
@@ -531,11 +539,6 @@ export default function App() {
   const [fileSaving, setFileSaving] = useState(false);
   const [fileDeleting, setFileDeleting] = useState(false);
   const [fileUploading, setFileUploading] = useState(false);
-  const [workspaceReloadToken, setWorkspaceReloadToken] = useState(0);
-  const [pendingWorkspaceSelection, setPendingWorkspaceSelection] = useState<{
-    path: string;
-    type: "file" | "directory";
-  } | null>(null);
   const feedRef = useRef<HTMLDivElement | null>(null);
   const preferencesReadyRef = useRef(false);
   const routeSyncSourceRef = useRef<"app" | "browser">("app");

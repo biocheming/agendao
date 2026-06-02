@@ -55,4 +55,5 @@ reqwest = { workspace = true }
 reqwest-eventsource = { workspace = true }
 dirs = { workspace = true }
 base64 = { workspace = true }
+tokio-util = { workspace = true }
 pulldown-cmark = "0.13"

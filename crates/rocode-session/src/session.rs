@@ -667,6 +667,16 @@ impl Session {
             .metadata
             .entry(FORK_ORIGIN_MESSAGE_ID_METADATA_KEY.to_string())
             .or_insert_with(|| serde_json::json!(&source_message.id));
+        // Stamp canonical source metadata for imported history.
+        let (admission, authority) = rocode_types::origin_to_admission_authority(
+            rocode_types::MessageSourceOrigin::ImportedHistory,
+        );
+        rocode_types::apply_message_source_metadata(
+            &mut message.metadata,
+            rocode_types::MessageSourceOrigin::ImportedHistory,
+            rocode_types::MessageSourceSurface::HttpApi,
+        );
+        rocode_types::apply_message_admission_metadata(&mut message.metadata, admission, authority);
         message
     }
 

@@ -106,6 +106,7 @@ const ANSI_BOLD: &str = "\x1b[1m";
 pub struct App {
     context: Arc<AppContext>,
     local_direct: bool,
+    local_server: Option<Arc<rocode_server::ServerState>>,
     state: AppState,
     viewport_area: Rect,
     prompt: Prompt,
@@ -155,6 +156,8 @@ pub struct App {
     /// Updated when navigating to a different session so the listener
     /// reconnects with `?session={id}`.
     sse_session_filter: SessionFilter,
+    /// Unix socket path for event subscription (socket mode).
+    unix_socket_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -372,6 +375,7 @@ impl App {
         let mut app = Self {
             context,
             local_direct: config.local_direct,
+            local_server: config.local_server,
             state: AppState::default(),
             viewport_area: Rect::default(),
             prompt,
@@ -418,6 +422,7 @@ impl App {
             server_event_base_url: base_url,
             server_password: config.server_password,
             sse_session_filter,
+            unix_socket_path: config.unix_socket_path,
         };
 
         let _ = app.sync_config_from_server();
@@ -494,7 +499,18 @@ impl App {
 
     pub(crate) fn spawn_server_event_listener_task(&self) -> Option<tokio::task::JoinHandle<()>> {
         if self.local_direct {
-            return None;
+            return spawn_tui_direct_event_bridge(
+                self.local_server.clone(),
+                self.sse_session_filter.clone(),
+                self.context.ui_bridge.clone(),
+            );
+        }
+        if let Some(socket_path) = self.unix_socket_path.clone() {
+            let ui_bridge = self.context.ui_bridge.clone();
+            let filter = self.sse_session_filter.clone();
+            return Some(tokio::spawn(async move {
+                socket_event_subscriber(socket_path, filter, ui_bridge).await;
+            }));
         }
         Some(spawn_server_event_listener_task(
             self.context.ui_bridge.clone(),
@@ -1641,6 +1657,150 @@ impl App {
         );
         true
     }
+}
+
+fn spawn_tui_direct_event_bridge(
+    local_server: Option<Arc<rocode_server::ServerState>>,
+    session_filter: SessionFilter,
+    ui_bridge: crate::bridge::UiBridge,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let state = local_server?;
+    Some(tokio::spawn(async move {
+        let mut current_session: Option<String> = None;
+        loop {
+            let session_id = session_filter
+                .lock()
+                .ok()
+                .and_then(|g| g.clone())
+                .unwrap_or_default();
+            if session_id.is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                continue;
+            }
+            if current_session.as_deref() != Some(&session_id) {
+                current_session = Some(session_id.clone());
+            }
+            let sid = session_id.clone();
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let mut rx = rocode_server::spawn_direct_event_loop(
+                Arc::clone(&state),
+                session_id,
+                cancel.clone(),
+            );
+            loop {
+                let filter_id = session_filter
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.clone())
+                    .unwrap_or_default();
+                if filter_id != sid {
+                    cancel.cancel();
+                    break;
+                }
+                tokio::select! {
+                    event = rx.recv() => {
+                        match event {
+                            Some(direct) => {
+                                if let Some(change) = direct_event_to_state_change(direct) {
+                                    let _ = ui_bridge.emit(Event::Custom(Box::new(CustomEvent::StateChanged(change))));
+                                }
+                            }
+                            None => break,
+                        }
+                    }
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
+                    }
+                }
+            }
+        }
+    }))
+}
+
+async fn socket_event_subscriber(
+    socket_path: String,
+    session_filter: SessionFilter,
+    ui_bridge: crate::bridge::UiBridge,
+) {
+    let transport = rocode_client::transport::UnixSocketTransport::new(socket_path);
+    let mut current_session: Option<String> = None;
+    loop {
+        let session_id = session_filter
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .unwrap_or_default();
+        if session_id.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            continue;
+        }
+        if current_session.as_deref() != Some(&session_id) {
+            current_session = Some(session_id.clone());
+        }
+        let Ok(mut json_rx) = transport.subscribe_events(&session_id).await else {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            continue;
+        };
+        'inner: loop {
+            let filter_id = session_filter
+                .lock()
+                .ok()
+                .and_then(|g| g.clone())
+                .unwrap_or_default();
+            if filter_id != session_id {
+                break 'inner;
+            }
+            tokio::select! {
+                event = json_rx.recv() => {
+                    match event {
+                        Some(json) => {
+                            if let Ok(direct) = serde_json::from_value::<rocode_server::DirectEvent>(json) {
+                                if let Some(change) = direct_event_to_state_change(direct) {
+                                    let _ = ui_bridge.emit(Event::Custom(Box::new(CustomEvent::StateChanged(change))));
+                                }
+                            }
+                        }
+                        None => break 'inner,
+                    }
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
+                }
+            }
+        }
+    }
+}
+
+fn direct_event_to_state_change(event: rocode_server::DirectEvent) -> Option<StateChange> {
+    use rocode_server::DirectEvent;
+    Some(match event {
+        DirectEvent::SessionBusy { session_id } => StateChange::SessionStatusBusy(session_id),
+        DirectEvent::SessionIdle { session_id } => StateChange::SessionStatusIdle(session_id),
+        DirectEvent::SessionUpdated { session_id } => {
+            StateChange::SessionUpdated { session_id, source: Some("direct_bridge".to_string()) }
+        }
+        DirectEvent::OutputBlock { session_id, block: payload } => {
+            StateChange::OutputBlock { session_id, id: None, payload, live_identity: None }
+        }
+        DirectEvent::QuestionCreated { session_id, request_id, .. } => {
+            StateChange::QuestionCreated { session_id, request_id }
+        }
+        DirectEvent::ToolCallStarted { session_id } => {
+            StateChange::ToolCallStarted { session_id, tool_call_id: String::new(), tool_name: String::new() }
+        }
+        DirectEvent::ToolCallCompleted { session_id } => {
+            StateChange::ToolCallCompleted { session_id, tool_call_id: String::new() }
+        }
+        DirectEvent::ConfigUpdated => StateChange::ConfigUpdated,
+        DirectEvent::TopologyChanged { session_id } => StateChange::TopologyChanged { session_id },
+        // QuestionResolved / PermissionRequested / PermissionResolved:
+        // Handled by existing local sync (sync_question_requests /
+        // sync_permission_requests via the local API client), not via bridge.
+        DirectEvent::QuestionResolved { .. }
+        | DirectEvent::PermissionRequested { .. }
+        | DirectEvent::PermissionResolved { .. }
+        | DirectEvent::ControlInputTransition { .. }
+        | DirectEvent::DiffUpdated { .. }
+        | DirectEvent::SessionTreeChanged { .. } => return None,
+    })
 }
 
 #[cfg(test)]

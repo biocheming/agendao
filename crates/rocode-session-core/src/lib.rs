@@ -101,6 +101,8 @@ impl Session {
     ) -> String {
         let mut metadata = HashMap::new();
         rocode_types::apply_message_source_metadata(&mut metadata, origin, surface);
+        let (admission, authority_class) = rocode_types::origin_to_admission_authority(origin);
+        rocode_types::apply_message_admission_metadata(&mut metadata, admission, authority_class);
         self.add_user_message_inner(text, metadata)
     }
 
