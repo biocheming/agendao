@@ -1,17 +1,47 @@
-use frontend_state_types::{
-    CliFrontendProjection, CliMcpServerStatus, CliModelCatalogEntry, CliVisibleTranscript,
-    CliSessionTokenStats,
+// P1-2: Converted from include!() to proper module.
+// This module lives under run::frontend_state — sibling to the still-included
+// ui_actions and session_projection blocks.
+
+use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::path::Path;
+use std::str::FromStr;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
+
+use rocode_agent::{AgentInfo, AgentRegistry};
+use rocode_command::branding::logo_lines;
+use rocode_command::cli_prompt::PromptSession;
+use rocode_command::cli_spinner::SpinnerGuard;
+use rocode_command::cli_style::CliStyle;
+use rocode_config::Config;
+use rocode_orchestrator::{
+    scheduler_auto_profile_config, scheduler_plan_from_profile,
+    scheduler_request_defaults_from_plan, SchedulerConfig, SchedulerPresetKind,
+    SchedulerProfileConfig, SchedulerRequestDefaults, AUTO_SCHEDULER_PROFILE_NAME,
+};
+use tokio::sync::Mutex as AsyncMutex;
+
+use crate::api_client::{CliApiClient, SessionListItem};
+use crate::branding::{APP_SHORT_NAME, APP_TAGLINE, APP_VERSION_DATE};
+
+use super::{
+    cli_refresh_prompt, print_cli_list_on_surface, resolve_requested_agent_name, CliExecutionRuntime, CliRuntimeBuildInput,
+};
+pub(super) use super::frontend_state_topology::CliObservedExecutionTopology;
+pub(super) use super::frontend_state_types::{
+    CliFrontendProjection, CliMcpServerStatus, CliModelCatalogEntry, CliSessionTokenStats,
+    CliVisibleTranscript,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct CliRecentSessionInfo {
-    title: Option<String>,
-    model_label: Option<String>,
-    preset_label: Option<String>,
+pub(super) struct CliRecentSessionInfo {
+    pub(super) title: Option<String>,
+    pub(super) model_label: Option<String>,
+    pub(super) preset_label: Option<String>,
 }
 
 #[derive(Clone)]
-enum CliActiveAbortHandle {
+pub(super) enum CliActiveAbortHandle {
     /// Server-side execution — abort via HTTP POST.
     Server {
         api_client: Arc<CliApiClient>,
@@ -19,25 +49,25 @@ enum CliActiveAbortHandle {
     },
 }
 
-enum CliDispatchInput {
+pub(super) enum CliDispatchInput {
     Line(String),
     ModeCycle { reverse: bool },
     Eof,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum CliPromptModeEntry {
+pub(super) enum CliPromptModeEntry {
     Agent(String),
     Preset(String),
 }
 
 #[derive(Debug, Clone, Default)]
-struct CliSchedulerResolution {
+pub(super) struct CliSchedulerResolution {
     defaults: Option<SchedulerRequestDefaults>,
     profile_model: Option<(String, String)>,
 }
 
-fn resolve_scheduler_profile_config(
+pub(super) fn resolve_scheduler_profile_config(
     config: &Config,
     requested_scheduler_profile: Option<&str>,
 ) -> anyhow::Result<Option<(String, SchedulerProfileConfig)>> {
@@ -109,7 +139,7 @@ fn resolve_scheduler_profile_config(
     Ok(None)
 }
 
-fn resolve_scheduler_runtime(
+pub(super) fn resolve_scheduler_runtime(
     config: &Config,
     requested_scheduler_profile: Option<&str>,
 ) -> anyhow::Result<CliSchedulerResolution> {
@@ -152,7 +182,7 @@ fn resolve_scheduler_runtime(
     })
 }
 
-async fn build_cli_execution_runtime(
+pub(super) async fn build_cli_execution_runtime(
     input: CliRuntimeBuildInput<'_>,
 ) -> anyhow::Result<CliExecutionRuntime> {
     let CliRuntimeBuildInput {
@@ -252,7 +282,7 @@ async fn build_cli_execution_runtime(
     })
 }
 
-fn cli_available_presets(config: &Config) -> Vec<String> {
+pub(super) fn cli_available_presets(config: &Config) -> Vec<String> {
     let mut names = BTreeSet::new();
     names.insert(AUTO_SCHEDULER_PROFILE_NAME.to_string());
     for preset in SchedulerPresetKind::public_presets() {
@@ -275,7 +305,7 @@ fn cli_available_presets(config: &Config) -> Vec<String> {
     names.into_iter().collect()
 }
 
-fn cli_list_presets(
+pub(super) fn cli_list_presets(
     config: &Config,
     active_profile: Option<&str>,
     runtime: Option<&CliExecutionRuntime>,
@@ -295,14 +325,14 @@ fn cli_list_presets(
     let _ = print_cli_list_on_surface(runtime, "Available Presets", None, &lines, &style);
 }
 
-fn cli_mode_label(runtime: &CliExecutionRuntime) -> String {
+pub(super) fn cli_mode_label(runtime: &CliExecutionRuntime) -> String {
     match runtime.scheduler_profile_name.as_deref() {
         Some(profile) => format!("Preset {}", profile),
         None => format!("Agent {}", runtime.resolved_agent_name),
     }
 }
 
-fn cli_prompt_modes(config: &Config, agent_registry: &AgentRegistry) -> Vec<CliPromptModeEntry> {
+pub(super) fn cli_prompt_modes(config: &Config, agent_registry: &AgentRegistry) -> Vec<CliPromptModeEntry> {
     let mut modes = agent_registry
         .list()
         .into_iter()
@@ -316,7 +346,7 @@ fn cli_prompt_modes(config: &Config, agent_registry: &AgentRegistry) -> Vec<CliP
     modes
 }
 
-fn cli_cycle_prompt_mode(
+pub(super) fn cli_cycle_prompt_mode(
     runtime: &mut CliExecutionRuntime,
     config: &Config,
     agent_registry: &AgentRegistry,
@@ -357,8 +387,8 @@ fn cli_cycle_prompt_mode(
     cli_refresh_prompt(runtime);
 }
 
-fn cli_session_hint_string(
-    session: &crate::api_client::SessionListItem,
+pub(super) fn cli_session_hint_string(
+    session: &SessionListItem,
     key: &str,
 ) -> Option<String> {
     let hints = session.hints.as_ref()?;
@@ -379,8 +409,8 @@ fn cli_session_hint_string(
     }
 }
 
-fn cli_recent_session_info_for_directory(
-    sessions: &[crate::api_client::SessionListItem],
+pub(super) fn cli_recent_session_info_for_directory(
+    sessions: &[SessionListItem],
     current_dir: &Path,
 ) -> Option<CliRecentSessionInfo> {
     let current_dir = current_dir.display().to_string();
@@ -407,7 +437,7 @@ fn cli_recent_session_info_for_directory(
     })
 }
 
-async fn cli_load_recent_session_info(
+pub(super) async fn cli_load_recent_session_info(
     local_server: &Option<Arc<rocode_server::ServerState>>,
     transport: &Option<Arc<rocode_client::FrontendTransport>>,
     api_client: &CliApiClient,
@@ -425,7 +455,7 @@ async fn cli_load_recent_session_info(
     cli_recent_session_info_for_directory(&sessions, current_dir)
 }
 
-fn cli_render_startup_banner(style: &CliStyle, recent: Option<&CliRecentSessionInfo>) -> String {
+pub(super) fn cli_render_startup_banner(style: &CliStyle, recent: Option<&CliRecentSessionInfo>) -> String {
     let mut out = String::new();
     out.push_str("\r\n");
 
@@ -466,8 +496,9 @@ fn cli_render_startup_banner(style: &CliStyle, recent: Option<&CliRecentSessionI
 mod frontend_state_tests {
     use super::{
         build_cli_execution_runtime, cli_cycle_prompt_mode, cli_prompt_modes,
-        resolve_scheduler_runtime, CliPromptModeEntry, CliRunSelection, CliRuntimeBuildInput,
+        resolve_scheduler_runtime, CliPromptModeEntry, CliRuntimeBuildInput,
     };
+    use crate::run::CliRunSelection;
     use rocode_agent::AgentRegistry;
     use rocode_config::Config;
     use std::sync::Arc;

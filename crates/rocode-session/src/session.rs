@@ -47,31 +47,6 @@ pub const FORK_SOURCE_HISTORY_MESSAGE_COUNT_METADATA_KEY: &str =
     "fork_source_history_message_count";
 const LEGACY_STAGE_ATTACHED_SESSION_TITLE_PREFIX: &str = "Stage: ";
 
-const FORK_POLICY_METADATA_ALLOWLIST: &[&str] = &[
-    "agent",
-    "model_id",
-    "model_provider",
-    "model_variant",
-    "scheduler_applied",
-    "scheduler_profile",
-    "scheduler_root_agent",
-    "scheduler_selection_source",
-    "scheduler_selection_trace",
-    "scheduler_selection_warning",
-    "scheduler_skill_tree_applied",
-];
-
-const FORK_CACHE_STABILITY_METADATA_KEYS: &[&str] = &[
-    "agent",
-    "model_id",
-    "model_provider",
-    "model_variant",
-    "scheduler_applied",
-    "scheduler_profile",
-    "scheduler_root_agent",
-    "scheduler_skill_tree_applied",
-];
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionForkSpec<'a> {
     pub message_id: Option<&'a str>,
@@ -624,28 +599,15 @@ impl Session {
     }
 
     fn copy_fork_policy_metadata_from(source: &Session, target: &mut Session) {
-        for key in FORK_POLICY_METADATA_ALLOWLIST {
-            if let Some(value) = source.record().metadata.get(*key).cloned() {
-                target.insert_metadata((*key).to_string(), value);
-            }
-        }
-        target.insert_metadata(FORK_POLICY_FROZEN_METADATA_KEY, serde_json::json!(true));
+        crate::session_fork_metadata::copy_fork_policy_metadata_from(source, target);
     }
 
     fn fork_frozen_policy_keys(&self) -> Vec<String> {
-        FORK_POLICY_METADATA_ALLOWLIST
-            .iter()
-            .filter(|key| self.inner.metadata.contains_key(**key))
-            .map(|key| (*key).to_string())
-            .collect()
+        crate::session_fork_metadata::fork_frozen_policy_keys(self)
     }
 
     fn fork_cache_stability_keys(&self) -> Vec<String> {
-        FORK_CACHE_STABILITY_METADATA_KEYS
-            .iter()
-            .filter(|key| self.inner.metadata.contains_key(**key))
-            .map(|key| (*key).to_string())
-            .collect()
+        crate::session_fork_metadata::fork_cache_stability_keys(self)
     }
 
     fn imported_fork_history_message(
@@ -653,31 +615,11 @@ impl Session {
         target_session_id: &str,
         source_message: &SessionMessage,
     ) -> SessionMessage {
-        let mut message = source_message.clone();
-        message.session_id = target_session_id.to_string();
-        message.metadata.insert(
-            FORK_IMPORTED_HISTORY_METADATA_KEY.to_string(),
-            serde_json::json!(true),
-        );
-        message
-            .metadata
-            .entry(FORK_ORIGIN_SESSION_ID_METADATA_KEY.to_string())
-            .or_insert_with(|| serde_json::json!(source_session_id));
-        message
-            .metadata
-            .entry(FORK_ORIGIN_MESSAGE_ID_METADATA_KEY.to_string())
-            .or_insert_with(|| serde_json::json!(&source_message.id));
-        // Stamp canonical source metadata for imported history.
-        let (admission, authority) = rocode_types::origin_to_admission_authority(
-            rocode_types::MessageSourceOrigin::ImportedHistory,
-        );
-        rocode_types::apply_message_source_metadata(
-            &mut message.metadata,
-            rocode_types::MessageSourceOrigin::ImportedHistory,
-            rocode_types::MessageSourceSurface::HttpApi,
-        );
-        rocode_types::apply_message_admission_metadata(&mut message.metadata, admission, authority);
-        message
+        crate::session_fork_metadata::imported_fork_history_message(
+            source_session_id,
+            target_session_id,
+            source_message,
+        )
     }
 
     fn generate_slug() -> String {

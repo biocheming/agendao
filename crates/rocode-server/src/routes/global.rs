@@ -76,6 +76,15 @@ pub struct GlobalDiagnosticsResponse {}
 async fn global_event_stream(
     State(state): State<Arc<ServerState>>,
 ) -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
+    // P2 compat: the global event stream (`/events` without a session query
+    // parameter) has no session context and therefore no frontend to derive a
+    // subscription tier from.  It uses legacy_default() intentionally — this
+    // is the one remaining justified call site.
+    //
+    // The per-session SSE endpoint (`/event?session=X&tier=Y`) goes through
+    // from_wire_tier() in routes/mod.rs.  The session-specific response stream
+    // (`POST /session/:id/stream`) does not yet use the subscription model —
+    // see routes/stream.rs for the P2-2 plan.
     super::stream_server_events(
         state.event_bus.subscribe(),
         None,

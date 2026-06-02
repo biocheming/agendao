@@ -1,40 +1,31 @@
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use rocode_agent::{AgentInfo, AgentRegistry};
-#[cfg(test)]
-use rocode_command::cli_panel::{truncate_display, wrap_display_text};
+use rocode_agent::AgentRegistry;
 use rocode_command::cli_permission::{prompt_permission, PermissionDecision};
 use rocode_command::cli_prompt::{
     PromptCompletion, PromptFrame, PromptSession, PromptSessionEvent,
 };
-use rocode_command::cli_select::{
-    interactive_multi_select, interactive_select, SelectOption, SelectResult,
-};
+use rocode_command::live_semantic_consumer::LiveSemanticConsumer;
 use rocode_command::cli_spinner::SpinnerGuard;
 use rocode_command::cli_style::CliStyle;
 use rocode_command::interactive::{parse_interactive_command, InteractiveCommand};
 use rocode_command::output_blocks::{
     render_cli_block_rich, BlockTone, MessageBlock, MessagePhase, MessageRole as OutputMessageRole,
-    OutputBlock, QueueItemBlock, SchedulerStageBlock, StatusBlock,
+    OutputBlock, QueueItemBlock, ReasoningBlock, SchedulerStageBlock, StatusBlock, ToolPhase,
 };
 use rocode_command::terminal_presentation::{
     render_terminal_stream_block_semantic, TerminalSemanticStreamRenderState,
     TerminalStreamAccumulator,
 };
-use rocode_command::{CommandRegistry, ResolvedUiCommand, UiActionId};
+use rocode_command::CommandRegistry;
 use rocode_config::loader::load_config;
 use rocode_config::Config;
 use rocode_core::agent_task_registry::{global_task_registry, AgentTaskStatus};
-use rocode_orchestrator::{
-    scheduler_auto_profile_config, scheduler_plan_from_profile,
-    scheduler_request_defaults_from_plan, SchedulerConfig, SchedulerPresetKind,
-    SchedulerProfileConfig, SchedulerRequestDefaults, AUTO_SCHEDULER_PROFILE_NAME,
-};
+use rocode_orchestrator::SchedulerRequestDefaults;
 use rocode_provider::ProviderRegistry;
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
 use tokio_util::sync::CancellationToken;
@@ -42,7 +33,6 @@ use tokio_util::sync::CancellationToken;
 use crate::api_client::{
     CliApiClient, McpStatusInfo, SessionExecutionTopology, SessionRuntimeState,
 };
-use crate::branding::{APP_SHORT_NAME, APP_TAGLINE, APP_VERSION_DATE};
 use crate::cli::{InteractiveCliMode, RunOutputFormat};
 use crate::clipboard::Clipboard;
 use crate::event_stream::{self, CliServerEvent};
@@ -52,7 +42,6 @@ use crate::server_lifecycle::FrontendRuntimeContext;
 use crate::util::{
     append_cli_file_attachments, collect_run_input, parse_model_and_provider, truncate_text,
 };
-use rocode_command::branding::logo_lines;
 
 mod interactive_session;
 
@@ -525,7 +514,7 @@ pub(crate) struct RunNonInteractiveOptions {
 }
 
 #[derive(Debug, Clone, Default)]
-struct CliRunSelection {
+pub(super) struct CliRunSelection {
     model: Option<String>,
     provider: Option<String>,
     requested_agent: Option<String>,
@@ -533,7 +522,7 @@ struct CliRunSelection {
     show_thinking: bool,
 }
 
-struct CliExecutionRuntime {
+pub(super) struct CliExecutionRuntime {
     resolved_agent_name: String,
     scheduler_profile_name: Option<String>,
     resolved_model_label: String,
@@ -583,7 +572,7 @@ fn cli_session_directory(path: &Path) -> String {
         .to_string()
 }
 
-struct CliRuntimeBuildInput<'a> {
+pub(super) struct CliRuntimeBuildInput<'a> {
     config: &'a Config,
     agent_registry: Arc<AgentRegistry>,
     selection: &'a CliRunSelection,
@@ -601,7 +590,7 @@ struct CliInteractiveHandles {
     active_abort: Arc<AsyncMutex<Option<CliActiveAbortHandle>>>,
 }
 
-enum CliUiActionOutcome {
+pub(super) enum CliUiActionOutcome {
     Continue,
     Break,
 }
@@ -617,7 +606,9 @@ enum CliUiActionOutcome {
 // See also: run/rendering.rs (rendering layer contract).
 
 // ── Parsing layer ─────────────────────────────────────────────────────
-include!("run/ui_actions.rs");
+#[path = "run/ui_actions.rs"]
+pub(super) mod ui_actions;
+pub(in crate::run) use ui_actions::*;
 
 // ── Projection layer ──────────────────────────────────────────────────
 #[path = "run/frontend_state_projection.rs"]
@@ -628,17 +619,28 @@ mod frontend_state_topology;
 pub(crate) mod frontend_state_types;
 use frontend_state_projection::CliFrontendPhase;
 use frontend_state_topology::{cli_print_execution_topology, CliObservedExecutionTopology};
-include!("run/frontend_state.rs");
+#[path = "run/frontend_state.rs"]
+pub(super) mod frontend_state;
+pub(in crate::run) use frontend_state::*;
 
 #[path = "run/session_projection_events.rs"]
 mod session_projection_events;
+use session_projection_events::*;
 #[path = "run/session_projection_insights.rs"]
 mod session_projection_insights;
 #[path = "run/session_projection_layout.rs"]
 mod session_projection_layout;
+#[cfg(test)]
+use session_projection_layout::cli_render_retained_layout;
+#[path = "run/session_projection_shared.rs"]
+mod session_projection_shared;
 #[path = "run/session_projection_usage.rs"]
 mod session_projection_usage;
-include!("run/session_projection.rs");
+pub(crate) use session_projection_shared::*;
+use session_projection_usage::*;
+#[path = "run/session_projection.rs"]
+mod session_projection;
+pub(crate) use session_projection::*;
 
 // ── Rendering layer ───────────────────────────────────────────────────
 // Terminal surface, prompt chrome, and styled-output formatting.
@@ -656,7 +658,12 @@ use frontend_state_surface::{
 mod rendering;
 
 // ── Interaction layer ────────────────────────────────────────────────
-include!("run/sse.rs");
+#[path = "run/interaction.rs"]
+pub(super) mod interaction;
+pub(in crate::run) use interaction::{cli_ask_question, prompt_free_text};
+#[path = "run/sse.rs"]
+pub(super) mod sse;
+pub(in crate::run) use sse::*;
 
 #[derive(Debug, Clone)]
 struct CliRecoveryAction {
@@ -795,7 +802,6 @@ fn print_block_on_surface(
     }
     Ok(())
 }
-include!("run/interaction.rs");
 
 // ── CLI agent task handlers ──────────────────────────────────────────
 

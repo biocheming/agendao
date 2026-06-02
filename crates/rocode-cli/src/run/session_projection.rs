@@ -10,20 +10,19 @@
 //   strings belong in the rendering layer. They currently live here for
 //   historical reasons and will migrate as the split progresses.
 
+use super::*;
 use rocode_command::live_semantic_consumer::LiveSemanticConsumer;
 use rocode_command::output_blocks::{tool_cli_activity_label, ReasoningBlock, ToolPhase};
-use session_projection_usage::{cli_usage_snapshot_lines, format_token_count};
-use session_projection_insights::cli_session_insights_lines;
-#[cfg(test)]
-use session_projection_layout::cli_render_retained_layout;
-use session_projection_events::{
+use super::session_projection_insights::cli_session_insights_lines;
+use super::session_projection_events::{
     cli_default_events_query_input, cli_event_lines, cli_events_filter_label,
     cli_events_offset_for_page, cli_events_page_for_offset, cli_events_page_size,
     cli_events_query, cli_events_window_label, cli_parse_events_command_input,
     CliEventsBrowserState, CliEventsCommandInput,
 };
+use super::session_projection_usage::{cli_usage_snapshot_lines, format_token_count};
 
-fn cli_is_terminal_stage_status(status: Option<&str>) -> bool {
+pub(crate) fn cli_is_terminal_stage_status(status: Option<&str>) -> bool {
     matches!(status, Some("done" | "blocked" | "cancelled"))
 }
 
@@ -44,7 +43,7 @@ fn cli_is_terminal_stage_status(status: Option<&str>) -> bool {
 //   attached_session_transcripts: HashMap<String, CliVisibleTranscript>
 //     — Cached snapshots for non-root sessions. Never reverse-written to
 //       the root projection.
-fn cli_set_root_server_session(runtime: &mut CliExecutionRuntime, session_id: String) {
+pub(crate) fn cli_set_root_server_session(runtime: &mut CliExecutionRuntime, session_id: String) {
     runtime.server_session_id = Some(session_id.clone());
     if let Ok(mut related) = runtime.related_session_ids.lock() {
         related.clear();
@@ -83,7 +82,7 @@ fn cli_set_root_server_session(runtime: &mut CliExecutionRuntime, session_id: St
     cli_set_view_label(runtime, None);
 }
 
-fn cli_render_session_block(
+pub(crate) fn cli_render_session_block(
     runtime: &CliExecutionRuntime,
     session_id: &str,
     block_id: Option<&str>,
@@ -169,7 +168,7 @@ fn cli_render_session_block(
     )
 }
 
-fn cli_render_legacy_streaming_block(
+pub(crate) fn cli_render_legacy_streaming_block(
     accumulator: &TerminalStreamAccumulator,
     block_id: Option<&str>,
     block: &OutputBlock,
@@ -227,7 +226,7 @@ fn cli_render_legacy_streaming_block(
     }
 }
 
-fn cli_accumulator_part_text(
+pub(crate) fn cli_accumulator_part_text(
     message: &rocode_command::terminal_presentation::TerminalMessage,
     matches_part: impl Fn(&rocode_command::terminal_presentation::TerminalMessagePart) -> bool,
 ) -> String {
@@ -369,7 +368,7 @@ fn cli_apply_live_slot_update(
     }
 }
 
-fn cli_append_session_rendered_transcript(
+pub(crate) fn cli_append_session_rendered_transcript(
     runtime: &CliExecutionRuntime,
     session_id: &str,
     rendered: &str,
@@ -396,7 +395,7 @@ fn cli_append_session_rendered_transcript(
     }
 }
 
-fn cli_canonical_session_id(runtime: &CliExecutionRuntime, session_id: &str) -> String {
+pub(crate) fn cli_canonical_session_id(runtime: &CliExecutionRuntime, session_id: &str) -> String {
     if !session_id.is_empty() {
         return session_id.to_string();
     }
@@ -407,7 +406,7 @@ fn cli_canonical_session_id(runtime: &CliExecutionRuntime, session_id: &str) -> 
         .unwrap_or_else(|| "__root__".to_string())
 }
 
-fn cli_observe_terminal_stream_block(
+pub(crate) fn cli_observe_terminal_stream_block(
     runtime: &CliExecutionRuntime,
     session_id: &str,
     block_id: Option<&str>,
@@ -422,7 +421,7 @@ fn cli_observe_terminal_stream_block(
     }
 }
 
-fn cli_tracks_related_session(runtime: &CliExecutionRuntime, session_id: &str) -> bool {
+pub(crate) fn cli_tracks_related_session(runtime: &CliExecutionRuntime, session_id: &str) -> bool {
     if session_id.is_empty() {
         return true;
     }
@@ -433,7 +432,7 @@ fn cli_tracks_related_session(runtime: &CliExecutionRuntime, session_id: &str) -
         .unwrap_or(false)
 }
 
-fn cli_track_attached_session(
+pub(crate) fn cli_track_attached_session(
     runtime: &CliExecutionRuntime,
     parent_id: &str,
     attached_id: &str,
@@ -455,7 +454,7 @@ fn cli_track_attached_session(
     inserted
 }
 
-fn cli_untrack_attached_session(
+pub(crate) fn cli_untrack_attached_session(
     runtime: &CliExecutionRuntime,
     parent_id: &str,
     attached_id: &str,
@@ -470,7 +469,7 @@ fn cli_untrack_attached_session(
         .unwrap_or(false)
 }
 
-fn cli_replace_root_session_transcript(
+pub(crate) fn cli_replace_root_session_transcript(
     runtime: &CliExecutionRuntime,
     transcript: CliVisibleTranscript,
 ) {
@@ -479,7 +478,7 @@ fn cli_replace_root_session_transcript(
     }
 }
 
-fn cli_replace_root_history_transcript(
+pub(crate) fn cli_replace_root_history_transcript(
     runtime: &CliExecutionRuntime,
     transcript: CliVisibleTranscript,
 ) {
@@ -489,7 +488,7 @@ fn cli_replace_root_history_transcript(
 }
 
 #[cfg(test)]
-fn cli_sync_root_history_to_visible(runtime: &CliExecutionRuntime) -> CliVisibleTranscript {
+pub(crate) fn cli_sync_root_history_to_visible(runtime: &CliExecutionRuntime) -> CliVisibleTranscript {
     let transcript = runtime
         .root_history_transcript
         .lock()
@@ -517,7 +516,7 @@ pub(crate) fn cli_history_transcript_suffix(
         .filter(|suffix| !suffix.is_empty())
 }
 
-fn cli_capture_visible_root_history_transcript(runtime: &CliExecutionRuntime) {
+pub(crate) fn cli_capture_visible_root_history_transcript(runtime: &CliExecutionRuntime) {
     let snapshot = runtime
         .frontend_projection
         .lock()
@@ -528,7 +527,7 @@ fn cli_capture_visible_root_history_transcript(runtime: &CliExecutionRuntime) {
     }
 }
 
-fn cli_capture_visible_root_transcript(runtime: &CliExecutionRuntime) {
+pub(crate) fn cli_capture_visible_root_transcript(runtime: &CliExecutionRuntime) {
     let snapshot = runtime
         .frontend_projection
         .lock()
@@ -539,7 +538,7 @@ fn cli_capture_visible_root_transcript(runtime: &CliExecutionRuntime) {
     }
 }
 
-fn cli_focused_session_id(runtime: &CliExecutionRuntime) -> Option<String> {
+pub(crate) fn cli_focused_session_id(runtime: &CliExecutionRuntime) -> Option<String> {
     runtime
         .focused_session_id
         .lock()
@@ -547,11 +546,11 @@ fn cli_focused_session_id(runtime: &CliExecutionRuntime) -> Option<String> {
         .and_then(|focused| focused.clone())
 }
 
-fn cli_is_root_focused(runtime: &CliExecutionRuntime) -> bool {
+pub(crate) fn cli_is_root_focused(runtime: &CliExecutionRuntime) -> bool {
     cli_focused_session_id(runtime).is_none()
 }
 
-fn cli_sync_projection_transcript(
+pub(crate) fn cli_sync_projection_transcript(
     runtime: &CliExecutionRuntime,
     transcript: CliVisibleTranscript,
 ) {
@@ -562,59 +561,22 @@ fn cli_sync_projection_transcript(
     cli_refresh_prompt(runtime);
 }
 
-fn cli_short_session_id(session_id: &str) -> &str {
+pub(crate) fn cli_short_session_id(session_id: &str) -> &str {
     &session_id[..session_id.len().min(8)]
 }
 
-trait CliStageStatusLabel {
-    fn as_ref_label(&self) -> &'static str;
-}
-
-impl CliStageStatusLabel for rocode_command::stage_protocol::StageStatus {
-    fn as_ref_label(&self) -> &'static str {
-        match self {
-            rocode_command::stage_protocol::StageStatus::Running => "running",
-            rocode_command::stage_protocol::StageStatus::Waiting => "waiting",
-            rocode_command::stage_protocol::StageStatus::Done => "done",
-            rocode_command::stage_protocol::StageStatus::Cancelled => "cancelled",
-            rocode_command::stage_protocol::StageStatus::Cancelling => "cancelling",
-            rocode_command::stage_protocol::StageStatus::Blocked => "blocked",
-            rocode_command::stage_protocol::StageStatus::Retrying => "retrying",
-        }
-    }
-}
-
-trait CliRunStatusLabel {
-    fn as_ref_label(&self) -> &'static str;
-}
-
-impl CliRunStatusLabel for crate::api_client::SessionRunStatusKind {
-    fn as_ref_label(&self) -> &'static str {
-        match self {
-            crate::api_client::SessionRunStatusKind::Idle => "idle",
-            crate::api_client::SessionRunStatusKind::Running => "running",
-            crate::api_client::SessionRunStatusKind::Compacting => "compacting",
-            crate::api_client::SessionRunStatusKind::WaitingOnTool => "waiting_on_tool",
-            crate::api_client::SessionRunStatusKind::WaitingOnUser => "waiting_on_user",
-            crate::api_client::SessionRunStatusKind::Cancelling => "cancelling",
-            crate::api_client::SessionRunStatusKind::Blocked => "blocked",
-            crate::api_client::SessionRunStatusKind::Sleeping => "sleeping",
-        }
-    }
-}
-
-fn cli_current_observed_session_id(runtime: &CliExecutionRuntime) -> Option<String> {
+pub(crate) fn cli_current_observed_session_id(runtime: &CliExecutionRuntime) -> Option<String> {
     cli_focused_session_id(runtime).or_else(|| runtime.server_session_id.clone())
 }
 
-fn cli_set_view_label(runtime: &CliExecutionRuntime, label: Option<String>) {
+pub(crate) fn cli_set_view_label(runtime: &CliExecutionRuntime, label: Option<String>) {
     if let Ok(mut projection) = runtime.frontend_projection.lock() {
         projection.view_label = label;
     }
     cli_refresh_prompt(runtime);
 }
 
-fn cli_ordered_attached_session_ids(runtime: &CliExecutionRuntime) -> Vec<String> {
+pub(crate) fn cli_ordered_attached_session_ids(runtime: &CliExecutionRuntime) -> Vec<String> {
     let root_session_id = runtime.server_session_id.as_deref();
     let attached_ids = runtime
         .related_session_ids
@@ -640,7 +602,7 @@ fn cli_ordered_attached_session_ids(runtime: &CliExecutionRuntime) -> Vec<String
     child_ids.into_iter().collect()
 }
 
-fn cli_list_attached_sessions(runtime: &CliExecutionRuntime) {
+pub(crate) fn cli_list_attached_sessions(runtime: &CliExecutionRuntime) {
     let style = CliStyle::detect();
     let attached_ids = runtime
         .related_session_ids
@@ -709,7 +671,7 @@ fn cli_list_attached_sessions(runtime: &CliExecutionRuntime) {
 // shared with the parent run module scope but not accessible from
 // submodule rendering.rs.
 
-fn cli_format_stage_summary_brief(stage: &rocode_command::stage_protocol::StageSummary) -> String {
+pub(crate) fn cli_format_stage_summary_brief(stage: &rocode_command::stage_protocol::StageSummary) -> String {
     let mut parts = vec![format!(
         "{} [{}]",
         stage.stage_name,
@@ -727,7 +689,7 @@ fn cli_format_stage_summary_brief(stage: &rocode_command::stage_protocol::StageS
     parts.join(" · ")
 }
 
-fn cli_stage_runtime_line(stage: &rocode_command::stage_protocol::StageSummary) -> String {
+pub(crate) fn cli_stage_runtime_line(stage: &rocode_command::stage_protocol::StageSummary) -> String {
     let mut parts = vec![format!(
         "{} [{}]",
         stage.stage_name,
@@ -772,55 +734,7 @@ fn cli_stage_runtime_line(stage: &rocode_command::stage_protocol::StageSummary) 
     parts.join(" · ")
 }
 
-fn cli_stage_usage_line(stage: &rocode_command::stage_protocol::StageSummary) -> String {
-    let mut parts = vec![format!(
-        "{} [{}]",
-        stage.stage_name,
-        stage.status.as_ref_label()
-    )];
-    if let Some(prompt_tokens) = stage.prompt_tokens {
-        parts.push(format!("in {}", format_token_count(prompt_tokens)));
-    }
-    if let Some(completion_tokens) = stage.completion_tokens {
-        parts.push(format!("out {}", format_token_count(completion_tokens)));
-    }
-    if let Some(reasoning_tokens) = stage.reasoning_tokens.filter(|value| *value > 0) {
-        parts.push(format!("reason {}", format_token_count(reasoning_tokens)));
-    }
-    if let Some(cache_read_tokens) = stage.cache_read_tokens.filter(|value| *value > 0) {
-        parts.push(format!("cache-r {}", format_token_count(cache_read_tokens)));
-    }
-    if let Some(cache_miss_tokens) = stage.cache_miss_tokens.filter(|value| *value > 0) {
-        parts.push(format!("cache-m {}", format_token_count(cache_miss_tokens)));
-    }
-    if let Some(cache_write_tokens) = stage.cache_write_tokens.filter(|value| *value > 0) {
-        parts.push(format!(
-            "cache-w {}",
-            format_token_count(cache_write_tokens)
-        ));
-    }
-    if let Some(budget) = stage.skill_tree_budget {
-        let truncated = if stage.skill_tree_truncated.unwrap_or(false) {
-            " truncated"
-        } else {
-            ""
-        };
-        parts.push(format!(
-            "budget {}{}",
-            format_token_count(budget),
-            truncated
-        ));
-    }
-    if let Some(waiting_on) = stage.waiting_on.as_deref() {
-        parts.push(format!("waiting {}", waiting_on));
-    }
-    if let Some(retry_attempt) = stage.retry_attempt {
-        parts.push(format!("retry {}", retry_attempt));
-    }
-    parts.join(" · ")
-}
-
-fn cli_active_stage_summary<'a>(
+pub(crate) fn cli_active_stage_summary<'a>(
     telemetry: &'a crate::api_client::SessionTelemetrySnapshot,
 ) -> Option<&'a rocode_command::stage_protocol::StageSummary> {
     if let Some(active_stage_id) = telemetry.runtime.active_stage_id.as_deref() {
@@ -842,7 +756,7 @@ fn cli_active_stage_summary<'a>(
     })
 }
 
-fn cli_runtime_snapshot_lines(
+pub(crate) fn cli_runtime_snapshot_lines(
     session_id: &str,
     telemetry: &crate::api_client::SessionTelemetrySnapshot,
 ) -> Vec<String> {
@@ -1094,157 +1008,7 @@ fn cli_runtime_snapshot_lines(
     lines
 }
 
-fn cli_session_context_kind_label(kind: crate::api_client::SessionContextKind) -> &'static str {
-    kind.label()
-}
-
-fn cli_session_handoff_mode_label(mode: rocode_types::SessionHandoffMode) -> &'static str {
-    match mode {
-        rocode_types::SessionHandoffMode::SelfContinuity => "self continuity",
-        rocode_types::SessionHandoffMode::BoundedHandoff => "bounded handoff",
-        rocode_types::SessionHandoffMode::StageOutputSink => "stage output sink",
-        rocode_types::SessionHandoffMode::FullHistoryFork => "full-history fork",
-    }
-}
-
-fn cli_context_closure_prefix_status_label(
-    prefix: &rocode_types::SessionPrefixStabilityContract,
-) -> &'static str {
-    prefix.status_label()
-}
-
-fn cli_context_closure_boundary_status_label(
-    boundary: &rocode_types::SessionCompactionBoundaryContract,
-) -> &'static str {
-    boundary.status_label()
-}
-
-fn cli_context_closure_cache_status_label(
-    cache: &rocode_types::SessionCacheExplainabilityContract,
-) -> &'static str {
-    cache.status_label()
-}
-
-pub(crate) fn cli_context_closure_cache_diagnostic_label(
-    contract: Option<&rocode_types::SessionContextClosureContract>,
-) -> Option<String> {
-    contract?.coarse_diagnostic_label()
-}
-
-fn cli_context_closure_isolation_status_label(
-    isolation: &rocode_types::SessionChildHistoryIsolationContract,
-) -> &'static str {
-    isolation.status_label()
-}
-
-pub(crate) fn cli_cache_evidence_status_label(
-    summary: &rocode_provider::cache::CacheEvidenceSummary,
-) -> Option<String> {
-    if !summary.should_surface() {
-        return None;
-    }
-
-    let has_cause = summary
-        .primary_cause
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|value| !value.is_empty());
-    Some(
-        if has_cause {
-            rocode_types::SessionCacheExplainabilityContract {
-                issue_present: true,
-                explained: true,
-                source: rocode_types::SessionCacheExplainabilitySource::None,
-                severity: None,
-                explanation: None,
-            }
-            .status_label()
-        } else {
-            rocode_types::SessionCacheExplainabilityContract {
-                issue_present: true,
-                explained: false,
-                source: rocode_types::SessionCacheExplainabilitySource::None,
-                severity: None,
-                explanation: None,
-            }
-            .status_label()
-        }
-        .to_string(),
-    )
-}
-
-fn cli_context_closure_evidence_impact_label(
-    severity: rocode_types::SessionCacheSeverity,
-) -> &'static str {
-    severity.label()
-}
-
-fn cli_context_closure_evidence_source_label(
-    source: rocode_types::SessionCacheExplainabilitySource,
-) -> &'static str {
-    source.label()
-}
-
-fn cli_context_closure_evidence_detail_label(detail: &str) -> String {
-    let normalized = detail.trim();
-    if normalized.is_empty() {
-        return "--".to_string();
-    }
-
-    if normalized.contains("boundary recorded · prefix changed") {
-        return "boundary recorded · prefix changed".to_string();
-    }
-    if normalized.contains("prefix changed before the stable boundary") {
-        return "prefix changed before the stable boundary".to_string();
-    }
-    if normalized.contains("tool surface changed") {
-        return "tool surface changed".to_string();
-    }
-    if normalized.contains("request shape changed") {
-        return "request shape changed".to_string();
-    }
-    if normalized.contains("systemHash changed: system prompt changed") {
-        return "system prompt changed".to_string();
-    }
-    if normalized.contains("family changed: protocol family changed") {
-        return "request family changed".to_string();
-    }
-    if normalized.contains("surface changed:") {
-        let field = normalized
-            .split_once(':')
-            .map(|(_, suffix)| suffix.trim())
-            .filter(|value| !value.is_empty())
-            .unwrap_or("runtime fields");
-        return format!("surface changed · {}", field);
-    }
-
-    normalized.to_string()
-}
-
-fn cli_prompt_surface_evidence_label(fields: &[String]) -> String {
-    if fields.is_empty() {
-        "surface changed".to_string()
-    } else {
-        format!("surface {}", fields.join(", "))
-    }
-}
-
-fn cli_yes_no(value: bool) -> &'static str {
-    if value {
-        "yes"
-    } else {
-        "no"
-    }
-}
-
-fn cli_optional_generated_at(ts: Option<i64>) -> String {
-    ts.and_then(|value| chrono::DateTime::<chrono::Utc>::from_timestamp_millis(value))
-        .map(|value| value.with_timezone(&chrono::Local))
-        .map(|value| format!(" @ {}", value.format("%Y-%m-%d %H:%M:%S")))
-        .unwrap_or_default()
-}
-
-async fn cli_print_runtime_snapshot(
+pub(crate) async fn cli_print_runtime_snapshot(
     runtime: &CliExecutionRuntime,
     api_client: &CliApiClient,
     style: &CliStyle,
@@ -1286,7 +1050,7 @@ async fn cli_print_runtime_snapshot(
     }
 }
 
-async fn cli_print_usage_snapshot(
+pub(crate) async fn cli_print_usage_snapshot(
     runtime: &CliExecutionRuntime,
     api_client: &CliApiClient,
     style: &CliStyle,
@@ -1333,7 +1097,7 @@ async fn cli_print_usage_snapshot(
     }
 }
 
-async fn cli_print_session_insights(
+pub(crate) async fn cli_print_session_insights(
     runtime: &CliExecutionRuntime,
     api_client: &CliApiClient,
     style: &CliStyle,
@@ -1374,7 +1138,7 @@ async fn cli_print_session_insights(
     }
 }
 
-async fn cli_print_session_events(
+pub(crate) async fn cli_print_session_events(
     runtime: &CliExecutionRuntime,
     api_client: &CliApiClient,
     style: &CliStyle,
@@ -1542,7 +1306,7 @@ async fn cli_print_session_events(
     }
 }
 
-async fn cli_print_memory_list(
+pub(crate) async fn cli_print_memory_list(
     runtime: &CliExecutionRuntime,
     api_client: &CliApiClient,
     style: &CliStyle,
@@ -1626,7 +1390,7 @@ async fn cli_print_memory_list(
     }
 }
 
-async fn cli_print_memory_retrieval_preview(
+pub(crate) async fn cli_print_memory_retrieval_preview(
     runtime: &CliExecutionRuntime,
     api_client: &CliApiClient,
     style: &CliStyle,
@@ -1701,7 +1465,7 @@ async fn cli_print_memory_retrieval_preview(
     }
 }
 
-async fn cli_print_memory_detail(
+pub(crate) async fn cli_print_memory_detail(
     runtime: &CliExecutionRuntime,
     api_client: &CliApiClient,
     style: &CliStyle,
@@ -1781,7 +1545,7 @@ async fn cli_print_memory_detail(
     }
 }
 
-async fn cli_print_memory_validation_report(
+pub(crate) async fn cli_print_memory_validation_report(
     runtime: &CliExecutionRuntime,
     api_client: &CliApiClient,
     style: &CliStyle,
@@ -1828,7 +1592,7 @@ async fn cli_print_memory_validation_report(
     }
 }
 
-async fn cli_print_config_validation(
+pub(crate) async fn cli_print_config_validation(
     runtime: &CliExecutionRuntime,
     api_client: &CliApiClient,
     style: &CliStyle,
@@ -1857,7 +1621,7 @@ async fn cli_print_config_validation(
     }
 }
 
-async fn cli_print_memory_conflicts(
+pub(crate) async fn cli_print_memory_conflicts(
     runtime: &CliExecutionRuntime,
     api_client: &CliApiClient,
     style: &CliStyle,
@@ -1898,7 +1662,7 @@ async fn cli_print_memory_conflicts(
     }
 }
 
-async fn cli_print_memory_rule_packs(
+pub(crate) async fn cli_print_memory_rule_packs(
     runtime: &CliExecutionRuntime,
     api_client: &CliApiClient,
     style: &CliStyle,
@@ -1944,7 +1708,7 @@ async fn cli_print_memory_rule_packs(
     }
 }
 
-async fn cli_print_memory_rule_hits(
+pub(crate) async fn cli_print_memory_rule_hits(
     runtime: &CliExecutionRuntime,
     api_client: &CliApiClient,
     style: &CliStyle,
@@ -2011,7 +1775,7 @@ async fn cli_print_memory_rule_hits(
     }
 }
 
-async fn cli_print_memory_consolidation_runs(
+pub(crate) async fn cli_print_memory_consolidation_runs(
     runtime: &CliExecutionRuntime,
     api_client: &CliApiClient,
     style: &CliStyle,
@@ -2062,7 +1826,7 @@ async fn cli_print_memory_consolidation_runs(
     }
 }
 
-async fn cli_run_memory_consolidation(
+pub(crate) async fn cli_run_memory_consolidation(
     runtime: &CliExecutionRuntime,
     api_client: &CliApiClient,
     style: &CliStyle,
@@ -2134,7 +1898,7 @@ async fn cli_run_memory_consolidation(
     }
 }
 
-fn cli_focus_attached_session(
+pub(crate) fn cli_focus_attached_session(
     runtime: &CliExecutionRuntime,
     requested_id: &str,
 ) -> io::Result<bool> {
@@ -2212,7 +1976,7 @@ fn cli_focus_attached_session(
     Ok(true)
 }
 
-fn cli_cycle_attached_session(
+pub(crate) fn cli_cycle_attached_session(
     runtime: &CliExecutionRuntime,
     forward: bool,
 ) -> io::Result<Option<(String, usize, usize)>> {
@@ -2238,7 +2002,7 @@ fn cli_cycle_attached_session(
     Ok(Some((target_id, next_index + 1, child_ids.len())))
 }
 
-fn cli_focus_root_session(runtime: &CliExecutionRuntime) -> io::Result<bool> {
+pub(crate) fn cli_focus_root_session(runtime: &CliExecutionRuntime) -> io::Result<bool> {
     if cli_is_root_focused(runtime) {
         return Ok(false);
     }
@@ -2255,7 +2019,7 @@ fn cli_focus_root_session(runtime: &CliExecutionRuntime) -> io::Result<bool> {
     Ok(true)
 }
 
-fn cli_session_update_requires_refresh(source: Option<&str>) -> bool {
+pub(crate) fn cli_session_update_requires_refresh(source: Option<&str>) -> bool {
     // P1-2: server now emits typed ReconcileReason source strings.
     // Full refresh: turn finished, metadata changed, permission resolved.
     // Skipped: high-frequency topology stage deltas (handled via output blocks).
@@ -2330,86 +2094,7 @@ mod session_update_refresh_tests {
     }
 }
 
-#[cfg(test)]
-fn extend_wrapped_lines(out: &mut Vec<String>, text: &str, width: usize) {
-    if text.is_empty() {
-        out.push(String::new());
-        return;
-    }
-    let wrapped = wrap_display_text(text, width.max(1));
-    if wrapped.is_empty() {
-        out.push(String::new());
-    } else {
-        out.extend(wrapped);
-    }
-}
-
-#[cfg(test)]
-fn cli_active_stage_context_lines(
-    stage: Option<&SchedulerStageBlock>,
-    style: &CliStyle,
-) -> Vec<String> {
-    let Some(stage) = stage else {
-        return Vec::new();
-    };
-
-    let max_width = usize::from(style.width).saturating_sub(8).clamp(24, 96);
-    let header = if let (Some(index), Some(total)) = (stage.stage_index, stage.stage_total) {
-        format!("Stage: {} [{}/{}]", stage.title, index, total)
-    } else {
-        format!("Stage: {}", stage.title)
-    };
-
-    let mut summary = Vec::new();
-    if let Some(step) = stage.step {
-        summary.push(format!("step {step}"));
-    }
-    if let Some(status) = stage.status.as_deref().filter(|value| !value.is_empty()) {
-        summary.push(status.to_string());
-    }
-    if let Some(waiting_on) = stage
-        .waiting_on
-        .as_deref()
-        .filter(|value| !value.is_empty())
-    {
-        summary.push(format!("waiting on {waiting_on}"));
-    }
-    summary.push(format!(
-        "tokens {}/{}",
-        stage
-            .prompt_tokens
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "—".to_string()),
-        stage
-            .completion_tokens
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "—".to_string())
-    ));
-
-    let mut lines = vec![
-        truncate_display(&header, max_width),
-        truncate_display(&format!("Status: {}", summary.join(" · ")), max_width),
-    ];
-    if let Some(focus) = stage.focus.as_deref().filter(|value| !value.is_empty()) {
-        lines.push(truncate_display(&format!("Focus: {focus}"), max_width));
-    }
-    if let Some(last_event) = stage
-        .last_event
-        .as_deref()
-        .filter(|value| !value.is_empty())
-    {
-        lines.push(truncate_display(&format!("Last: {last_event}"), max_width));
-    }
-    if let Some(ref attached_id) = stage.attached_session_id {
-        lines.push(truncate_display(
-            &format!("Child: {attached_id}"),
-            max_width,
-        ));
-    }
-    lines
-}
-
-fn cli_attach_interactive_handles(
+pub(in crate::run) fn cli_attach_interactive_handles(
     runtime: &mut CliExecutionRuntime,
     handles: CliInteractiveHandles,
 ) {
@@ -2427,7 +2112,7 @@ fn cli_attach_interactive_handles(
     cli_refresh_prompt(runtime);
 }
 
-async fn cli_trigger_abort(handle: CliActiveAbortHandle) -> bool {
+pub(in crate::run) async fn cli_trigger_abort(handle: CliActiveAbortHandle) -> bool {
     match handle {
         CliActiveAbortHandle::Server {
             api_client,
@@ -2445,7 +2130,7 @@ async fn cli_trigger_abort(handle: CliActiveAbortHandle) -> bool {
     }
 }
 
-async fn cli_execute_new_session_action(
+pub(crate) async fn cli_execute_new_session_action(
     runtime: &mut CliExecutionRuntime,
     api_client: &CliApiClient,
     repl_style: &CliStyle,
@@ -2485,7 +2170,7 @@ async fn cli_execute_new_session_action(
     }
 }
 
-async fn cli_execute_fork_session_action(
+pub(crate) async fn cli_execute_fork_session_action(
     runtime: &mut CliExecutionRuntime,
     api_client: &CliApiClient,
     repl_style: &CliStyle,
@@ -2523,7 +2208,7 @@ async fn cli_execute_fork_session_action(
     }
 }
 
-async fn cli_execute_compact_session_action(
+pub(crate) async fn cli_execute_compact_session_action(
     runtime: &mut CliExecutionRuntime,
     api_client: &CliApiClient,
     repl_style: &CliStyle,
@@ -2584,7 +2269,7 @@ async fn cli_execute_compact_session_action(
     }
 }
 
-fn cli_frontend_set_phase(
+pub(in crate::run) fn cli_frontend_set_phase(
     frontend_projection: &Arc<Mutex<CliFrontendProjection>>,
     phase: CliFrontendPhase,
     active_label: Option<String>,
@@ -2597,7 +2282,7 @@ fn cli_frontend_set_phase(
     }
 }
 
-fn cli_frontend_clear(runtime: &CliExecutionRuntime) {
+pub(crate) fn cli_frontend_clear(runtime: &CliExecutionRuntime) {
     if let Ok(mut projection) = runtime.frontend_projection.lock() {
         projection.clear_runtime_activity();
         projection.active_stage = None;
@@ -2606,7 +2291,7 @@ fn cli_frontend_clear(runtime: &CliExecutionRuntime) {
     }
 }
 
-fn cli_frontend_observe_block(
+pub(in crate::run) fn cli_frontend_observe_block(
     frontend_projection: &Arc<Mutex<CliFrontendProjection>>,
     block: &OutputBlock,
 ) {
@@ -2654,13 +2339,13 @@ fn cli_frontend_observe_block(
     }
 }
 
-fn cli_reasoning_activity_label(_reasoning: &ReasoningBlock) -> String {
+pub(crate) fn cli_reasoning_activity_label(_reasoning: &ReasoningBlock) -> String {
     // The spinner is a status indicator, not a content area.
     // Thinking text is already shown in the block region below.
     "Thinking".to_string()
 }
 
-fn cli_stage_activity_label(stage: &SchedulerStageBlock) -> String {
+pub(crate) fn cli_stage_activity_label(stage: &SchedulerStageBlock) -> String {
     let mut parts = Vec::new();
     if let (Some(index), Some(total)) = (stage.stage_index, stage.stage_total) {
         parts.push(format!("stage {index}/{total}"));
@@ -2674,7 +2359,7 @@ fn cli_stage_activity_label(stage: &SchedulerStageBlock) -> String {
     parts.join(" · ")
 }
 
-fn cli_scheduler_stage_snapshot_key(stage: &SchedulerStageBlock) -> String {
+pub(crate) fn cli_scheduler_stage_snapshot_key(stage: &SchedulerStageBlock) -> String {
     let decision_title = stage
         .decision
         .as_ref()
@@ -2695,7 +2380,7 @@ fn cli_scheduler_stage_snapshot_key(stage: &SchedulerStageBlock) -> String {
     )
 }
 
-fn cli_should_emit_scheduler_stage_block(
+pub(crate) fn cli_should_emit_scheduler_stage_block(
     snapshots: &Arc<Mutex<HashMap<String, String>>>,
     stage: &SchedulerStageBlock,
 ) -> bool {

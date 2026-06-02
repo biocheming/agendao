@@ -2088,6 +2088,7 @@ mod tests {
             &config,
             agent_registry.as_ref(),
             &api_client,
+            &None,
             &mut state,
             &mut dispatch_rx,
             &mut sse_rx,

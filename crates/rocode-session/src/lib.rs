@@ -12,6 +12,7 @@ pub mod repair_query;
 pub mod retry;
 pub mod revert;
 pub mod session;
+mod session_fork_metadata;
 pub mod snapshot;
 pub mod status;
 #[cfg(feature = "orchestrator")]
