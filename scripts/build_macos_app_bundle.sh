@@ -125,7 +125,7 @@ else
   echo "Warning: ${WEB_DIST_DIR} not found; bundle will not contain AgenDao Web assets."
 fi
 cp "${ICNS_PATH}" "${RESOURCES_DIR}/agendao.icns"
-printf 'APPLROCD' > "${PKGINFO_PATH}"
+printf 'APPLAGND' > "${PKGINFO_PATH}"
 sed "s/__AGENDAO_VERSION__/${VERSION}/g" "${PLIST_TEMPLATE}" > "${PLIST_PATH}"
 
 echo "[4/4] Bundle ready:"

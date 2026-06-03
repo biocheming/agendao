@@ -2,7 +2,7 @@
   <img src="icons/logo.svg" alt="AgenDao" width="280" />
 </p>
 
-# RockyCode (AgenDao)
+# AgenDao
 
 一个真实的编码回合，往往不是从提问开始，也不是在回答出现时结束。  
 你会先读仓库，会怀疑自己的判断，会临时分叉，会回滚，会改计划，会隔一天再回来继续。到了那时，真正决定体验好坏的，往往已经不是“模型会不会回答”，而是这个系统还记不记得你们到底在做什么。
@@ -17,7 +17,7 @@ AgenDao 是一个面向本地仓库工作的 Rust 编码智能体系统。它提
 
 > AgenDao 想做的不是更会说话，而是更会记住、更会收束、更会把一件事做完。
 
-当前版本：`v2026.5.17`
+当前版本：`v2026.6.3`
 
 ## 它是从什么问题里长出来的
 
@@ -353,8 +353,8 @@ cargo check -p agendao -p agendao-cli -p agendao-server -p agendao-tui
 
 当前版本:
 
-- 软件名: `RockyCode` / `AgenDao`
-- 版本: `v2026.5.17`
+- 软件名: `AgenDao`
+- 版本: `v2026.6.3`
 - 可执行命令: `agendao`
 
 ## 你接下来可以去哪里

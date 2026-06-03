@@ -336,7 +336,7 @@ agendao uninstall --dry-run                   # 仅预览将删除的文件
 
 ```bash
 agendao upgrade
-agendao upgrade v2026.5.17           # 升级到指定版本
+agendao upgrade v2026.6.3           # 升级到指定版本
 agendao upgrade --method brew       # 显式指定包管理器方式
 ```
 
