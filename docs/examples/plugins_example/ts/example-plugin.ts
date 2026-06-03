@@ -1,5 +1,5 @@
 /**
- * Minimal TS plugin example for ROCode plugin-host.
+ * Minimal TS plugin example for AgenDao plugin-host.
  *
  * Hook coverage:
  * - chat.headers: injects a request header
@@ -15,7 +15,7 @@ export default async function ExamplePlugin() {
           ? { ...next.headers }
           : {};
 
-      headers["x-rocode-plugin"] = "example-plugin";
+      headers["x-agendao-plugin"] = "example-plugin";
       next.headers = headers;
       return next;
     },

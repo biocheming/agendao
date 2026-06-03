@@ -13,18 +13,18 @@
 ## 1) Skill (Markdown) 是提示词能力
 
 - 文件格式：`SKILL.md`
-- 典型放置目录：`.rocode/skills/<skill-name>/SKILL.md`
+- 典型放置目录：`.agendao/skills/<skill-name>/SKILL.md`
 - 特点：不改运行时代码，主要给模型注入流程和约束
 
 本目录示例：`./skill/SKILL.md`
 
 ## 2) TS Plugin 是运行时 Hook / Auth 扩展
 
-- 由 `rocode-plugin` 子进程桥接执行
-- 在 `rocode.jsonc` 的 `plugin` 字段中声明
+- 由 `agendao-plugin` 子进程桥接执行
+- 在 `agendao.jsonc` 的 `plugin` 字段中声明
 - 当前真实 hook 面是字符串键，例如 `chat.headers`、`tool.definition`
 
-推荐配置（项目根 `rocode.jsonc`）：
+推荐配置（项目根 `agendao.jsonc`）：
 
 ```json
 {
@@ -37,7 +37,7 @@
 }
 ```
 
-示例配置文件见：`./rocode.jsonc.example`
+示例配置文件见：`./agendao.jsonc.example`
 
 兼容列表写法仍然能读，但这里只保留当前推荐写法，不再继续扩散旧入口。
 

@@ -9,7 +9,7 @@
 
 核心目标：**TUI 启动时间从 500-1000ms 降低到 50-100ms（10x 提升）**
 
-## 架构原则（ROCode 宪法）
+## 架构原则（AgenDao 宪法）
 
 - **第一条**：唯一执行内核 - `OrchestrationCore` 是所有 LLM 循环的唯一驱动者
 - **第二条**：唯一配置真相 - `ConfigStore` 是配置的唯一权威
@@ -28,7 +28,7 @@
 - 提供配置访问接口
 
 **文件**:
-- `crates/rocode-orchestrator/src/core.rs`
+- `crates/agendao-orchestrator/src/core.rs`
 
 ### Phase 4.2: SessionManager ✅
 
@@ -36,25 +36,25 @@
 
 **挑战**: 循环依赖
 ```
-rocode-agent → rocode-orchestrator → rocode-session → rocode-memory → rocode-command → rocode-agent
+agendao-agent → agendao-orchestrator → agendao-session → agendao-memory → agendao-command → agendao-agent
 ```
 
-**解决方案**: 创建 `rocode-session-core`
+**解决方案**: 创建 `agendao-session-core`
 - 提取核心的 `Session` 和 `SessionManager` 类型
-- 不依赖 `rocode-orchestrator`
-- `rocode-orchestrator` 依赖 `rocode-session-core`
+- 不依赖 `agendao-orchestrator`
+- `agendao-orchestrator` 依赖 `agendao-session-core`
 - 打破循环依赖
 
 **实现**:
-- 创建 `crates/rocode-session-core/` crate
+- 创建 `crates/agendao-session-core/` crate
 - 实现简化的 `SessionManager`（无 Bus 事件）
 - 在 `OrchestrationCore` 中添加 `sessions: Arc<Mutex<SessionManager>>`
 - 实现 `list_sessions()` 和 `get_session()` 方法
 
 **文件**:
-- `crates/rocode-session-core/Cargo.toml`
-- `crates/rocode-session-core/src/lib.rs`
-- `crates/rocode-orchestrator/src/core.rs`
+- `crates/agendao-session-core/Cargo.toml`
+- `crates/agendao-session-core/src/lib.rs`
+- `crates/agendao-orchestrator/src/core.rs`
 
 **详细文档**: `docs/phase4.2-session-manager-extraction.md`
 
@@ -67,7 +67,7 @@ rocode-agent → rocode-orchestrator → rocode-session → rocode-memory → ro
 - 提供 `providers()` 访问器方法
 
 **文件**:
-- `crates/rocode-orchestrator/src/core.rs`
+- `crates/agendao-orchestrator/src/core.rs`
 
 ### Phase 4.4: execute_prompt 实现 ✅
 
@@ -80,8 +80,8 @@ rocode-agent → rocode-orchestrator → rocode-session → rocode-memory → ro
 - 返回完整的执行结果（包括 usage 信息）
 
 **文件**:
-- `crates/rocode-orchestrator/src/prompt_execution.rs`
-- `crates/rocode-orchestrator/src/lib.rs`
+- `crates/agendao-orchestrator/src/prompt_execution.rs`
+- `crates/agendao-orchestrator/src/lib.rs`
 
 **功能**:
 - ✅ 解析 model spec（provider/model）
@@ -100,7 +100,7 @@ rocode-agent → rocode-orchestrator → rocode-session → rocode-memory → ro
 **状态**: 基础实现完成，生产线路未接入统一 authority
 
 **实现**:
-- `crates/rocode-client/src/transport/direct.rs` 已正确实现
+- `crates/agendao-client/src/transport/direct.rs` 已正确实现
 - 默认构造 `DirectTransport::new(config)` 使用 `CoreSessionManager`
 - `DirectTransport::new_with_core()` 备用构造器就绪，可接受统一 authority 的 `OrchestrationCore<S>`
 - `FrontendTransport::direct(config)` 生产链路仍走默认 `CoreSessionManager`（TUI/CLI Direct 启动改造未完成）
@@ -121,10 +121,10 @@ rocode-agent → rocode-orchestrator → rocode-session → rocode-memory → ro
 - 为传输类型添加 Serialize/Deserialize 支持
 
 **文件**:
-- `crates/rocode-client/src/transport/unix.rs` - 客户端实现
-- `crates/rocode-server/src/unix_socket.rs` - 服务器端实现
-- `crates/rocode-client/src/transport/mod.rs` - 添加 Unix 变体
-- `crates/rocode-client/Cargo.toml` - 添加 tokio 依赖
+- `crates/agendao-client/src/transport/unix.rs` - 客户端实现
+- `crates/agendao-server/src/unix_socket.rs` - 服务器端实现
+- `crates/agendao-client/src/transport/mod.rs` - 添加 Unix 变体
+- `crates/agendao-client/Cargo.toml` - 添加 tokio 依赖
 
 **协议**:
 - JSON-RPC 2.0 over Unix socket
@@ -145,9 +145,9 @@ rocode-agent → rocode-orchestrator → rocode-session → rocode-memory → ro
 - 在 CLI 中添加 `--unix-socket` 参数支持
 
 **文件**:
-- `crates/rocode-server/src/server.rs` - 添加 `unix_socket_path` 字段和 `run_server_with_unix_socket` 函数
-- `crates/rocode-server/src/main.rs` - 添加 `--unix-socket` CLI 参数
-- `crates/rocode/src/host.rs` - 更新所有 `ServerRuntimeOptions` 初始化
+- `crates/agendao-server/src/server.rs` - 添加 `unix_socket_path` 字段和 `run_server_with_unix_socket` 函数
+- `crates/agendao-server/src/main.rs` - 添加 `--unix-socket` CLI 参数
+- `crates/agendao/src/host.rs` - 更新所有 `ServerRuntimeOptions` 初始化
 
 **架构**:
 ```
@@ -161,7 +161,7 @@ Unix Socket Server  ←→  OrchestrationCore
 **使用方式**:
 ```bash
 # 启动服务器，同时监听 HTTP 和 Unix Socket
-rocode-server --port 3000 --unix-socket /tmp/rocode.sock
+agendao-server --port 3000 --unix-socket /tmp/agendao.sock
 
 # 客户端可以选择使用 Unix Socket 连接
 # (需要在 Phase 5.3 中实现 TUI/CLI 集成)
@@ -175,20 +175,20 @@ rocode-server --port 3000 --unix-socket /tmp/rocode.sock
 - 创建 `TransportSelector` 自动选择传输模式
 - 优先尝试 Unix Socket，失败则回退到 HTTP
 - 支持自定义 Unix Socket 路径
-- 提供默认 Unix Socket 路径检测（`/tmp/rocode.sock`）
+- 提供默认 Unix Socket 路径检测（`/tmp/agendao.sock`）
 - 连接测试机制（通过 `list_sessions` 验证连接）
 
 **文件**:
-- `crates/rocode-client/src/transport/selector.rs` - 传输选择器实现
-- `crates/rocode-client/src/transport/mod.rs` - 导出 `TransportSelector`
+- `crates/agendao-client/src/transport/selector.rs` - 传输选择器实现
+- `crates/agendao-client/src/transport/mod.rs` - 导出 `TransportSelector`
 
 **使用方式**:
 ```rust
-use rocode_client::transport::TransportSelector;
+use agendao_client::transport::TransportSelector;
 
 // 创建选择器
 let selector = TransportSelector::new(
-    Some("/tmp/rocode.sock".to_string()),  // Unix Socket 路径
+    Some("/tmp/agendao.sock".to_string()),  // Unix Socket 路径
     "http://localhost:3000".to_string(),    // HTTP 回退
     None,                                    // 密码
 );
@@ -232,10 +232,10 @@ let sessions = transport.list_sessions().await?;
 - 添加集成测试验证功能
 
 **文件**:
-- `crates/rocode-session-core/src/lib.rs` - 扩展 SessionManager 和 Session
-- `crates/rocode-orchestrator/src/prompt_execution.rs` - 实现 execute_prompt_with_session
-- `crates/rocode-orchestrator/src/core.rs` - 更新 execute_prompt 调用
-- `crates/rocode-orchestrator/tests/test_execute_prompt_with_session.rs` - 集成测试
+- `crates/agendao-session-core/src/lib.rs` - 扩展 SessionManager 和 Session
+- `crates/agendao-orchestrator/src/prompt_execution.rs` - 实现 execute_prompt_with_session
+- `crates/agendao-orchestrator/src/core.rs` - 更新 execute_prompt 调用
+- `crates/agendao-orchestrator/tests/test_execute_prompt_with_session.rs` - 集成测试
 
 **功能**:
 - ✅ 从 SessionManager 加载/创建会话
@@ -269,10 +269,10 @@ let sessions = transport.list_sessions().await?;
 - 累积多轮对话的 usage 统计
 
 **文件**:
-- `crates/rocode-orchestrator/src/core.rs` - 添加 `tools` 字段和 `tools()` 访问器
-- `crates/rocode-orchestrator/Cargo.toml` - 添加 `rocode-tool` 依赖
-- `crates/rocode-orchestrator/src/prompt_execution.rs` - 实现工具调用循环
-- `crates/rocode-session-core/src/lib.rs` - 添加 `add_tool_result` 方法
+- `crates/agendao-orchestrator/src/core.rs` - 添加 `tools` 字段和 `tools()` 访问器
+- `crates/agendao-orchestrator/Cargo.toml` - 添加 `agendao-tool` 依赖
+- `crates/agendao-orchestrator/src/prompt_execution.rs` - 实现工具调用循环
+- `crates/agendao-session-core/src/lib.rs` - 添加 `add_tool_result` 方法
 
 **功能**:
 - ✅ 从 ToolRegistry 获取可用工具列表
@@ -309,9 +309,9 @@ let sessions = transport.list_sessions().await?;
 - 支持多轮工具调用循环（每轮都是流式）
 
 **文件**:
-- `crates/rocode-orchestrator/src/core.rs` - 添加 `execute_prompt_streaming` 方法
-- `crates/rocode-orchestrator/src/prompt_execution.rs` - 实现 `execute_prompt_streaming_with_session`
-- `crates/rocode-orchestrator/tests/test_streaming.rs` - 流式输出测试
+- `crates/agendao-orchestrator/src/core.rs` - 添加 `execute_prompt_streaming` 方法
+- `crates/agendao-orchestrator/src/prompt_execution.rs` - 实现 `execute_prompt_streaming_with_session`
+- `crates/agendao-orchestrator/tests/test_streaming.rs` - 流式输出测试
 
 **功能**:
 - ✅ 流式文本输出（TextDelta 事件）
@@ -346,7 +346,7 @@ let sessions = transport.list_sessions().await?;
 - 生成性能报告
 
 **文件**:
-- `crates/rocode-orchestrator/tests/test_performance.rs` - 性能测试套件
+- `crates/agendao-orchestrator/tests/test_performance.rs` - 性能测试套件
 - `docs/performance-report.md` - 性能测试报告
 
 **测试结果**:
@@ -387,11 +387,11 @@ let sessions = transport.list_sessions().await?;
 - 生成详细的集成测试报告
 
 **文件**:
-- `crates/rocode-orchestrator/tests/test_integration_e2e.rs` - 端到端对话测试（5 个测试）
-- `crates/rocode-orchestrator/tests/test_integration_tools.rs` - 工具集成测试（5 个测试）
-- `crates/rocode-orchestrator/tests/test_integration_streaming.rs` - 流式输出测试（5 个测试）
-- `crates/rocode-orchestrator/tests/test_integration_errors.rs` - 错误处理测试（6 个测试）
-- `crates/rocode-orchestrator/tests/test_integration_concurrent.rs` - 并发测试（5 个测试）
+- `crates/agendao-orchestrator/tests/test_integration_e2e.rs` - 端到端对话测试（5 个测试）
+- `crates/agendao-orchestrator/tests/test_integration_tools.rs` - 工具集成测试（5 个测试）
+- `crates/agendao-orchestrator/tests/test_integration_streaming.rs` - 流式输出测试（5 个测试）
+- `crates/agendao-orchestrator/tests/test_integration_errors.rs` - 错误处理测试（6 个测试）
+- `crates/agendao-orchestrator/tests/test_integration_concurrent.rs` - 并发测试（5 个测试）
 - `docs/integration-test-report.md` - 集成测试报告
 
 **功能**:
@@ -413,7 +413,7 @@ let sessions = transport.list_sessions().await?;
 ### ✅ 已完成
 
 - [x] Phase 4.1: ConfigStore 提取
-- [x] Phase 4.2: SessionManager 提取（通过 rocode-session-core）
+- [x] Phase 4.2: SessionManager 提取（通过 agendao-session-core）
 - [x] Phase 4.3: ProviderRegistry 提取
 - [x] Phase 4.4: execute_prompt 简化实现
 - [x] Phase 4.5: DirectTransport 基础实现（生产接入未完成）
@@ -468,7 +468,7 @@ let sessions = transport.list_sessions().await?;
         ┌───────────────────┴───────────────────┐
         │                                       │
 ┌───────▼──────────┐  ┌──────────────┐  ┌─────▼────────┐
-│ rocode-session-  │  │   rocode-    │  │   rocode-    │
+│ agendao-session-  │  │   agendao-    │  │   agendao-    │
 │      core        │  │   provider   │  │   config     │
 │  (Phase 4.2新增) │  │              │  │              │
 └──────────────────┘  └──────────────┘  └──────────────┘
@@ -476,11 +476,11 @@ let sessions = transport.list_sessions().await?;
 
 ## 关键成就
 
-1. **打破循环依赖**: 通过创建 `rocode-session-core`，成功解决了复杂的循环依赖问题
+1. **打破循环依赖**: 通过创建 `agendao-session-core`，成功解决了复杂的循环依赖问题
 2. **唯一执行内核**: `OrchestrationCore` 现在持有所有核心 Authority
 3. **架构清晰**: 分层明确，依赖关系单向
 4. **编译通过**: 整个 workspace 编译成功，无循环依赖错误
-5. **符合宪法**: 严格遵循 ROCode 宪法的架构原则
+5. **符合宪法**: 严格遵循 AgenDao 宪法的架构原则
 
 ## 2026-05-27: 审计修复 (4 Fixes)
 
@@ -496,7 +496,7 @@ let sessions = transport.list_sessions().await?;
 - `list_sessions` / `get_session` 在 HTTP 和 Unix socket **看到同一组会话**（读路径收敛）
 
 **第二修复 (P1 — 请求级 text-only 镜像)**:
-- `execute_prompt_with_session` 使用 `rocode_session_core::SessionManager`（独立的），与 HTTP 侧的 `rocode_session::SessionManager` **不是同一实例**
+- `execute_prompt_with_session` 使用 `agendao_session_core::SessionManager`（独立的），与 HTTP 侧的 `agendao_session::SessionManager` **不是同一实例**
 - 新增 `sync_text_messages_to_core()`: 调用 `execute_prompt` **前**，将 user/assistant 文本从 `ServerState.sessions` 复制到 core 的 `SessionManager`，使 LLM prompt 能感知 HTTP 侧已有的对话
 - 新增 `sync_text_messages_from_core()`: 执行**后**，将 core 新增的 user/assistant 文本复制回 `ServerState.sessions`，使 HTTP 侧可见本轮新增内容
 - 锁顺序统一为 `state.sessions` → `core.sessions()`
@@ -504,9 +504,9 @@ let sessions = transport.list_sessions().await?;
 **未达成 / 局限**:
 - **不是宪法第五条意义上的"唯一状态所有权"**：两个 `SessionManager` 依然是各自独立的实例，靠请求级镜像保持 text 子集一致
 - 仅覆盖 `User`/`Assistant` 角色的 `PartType::Text`；工具结果、结构化 part 不在镜像范围内
-- 真正共享 authority 需要 `rocode_session_core::SessionManager` → `rocode_session::SessionManager` 的类型统一（当前因循环依赖 blocked）
+- 真正共享 authority 需要 `agendao_session_core::SessionManager` → `agendao_session::SessionManager` 的类型统一（当前因循环依赖 blocked）
 
-**文件**: `crates/rocode-orchestrator/src/core.rs`, `crates/rocode-server/src/unix_socket.rs`, `crates/rocode-server/src/server.rs`
+**文件**: `crates/agendao-orchestrator/src/core.rs`, `crates/agendao-server/src/unix_socket.rs`, `crates/agendao-server/src/server.rs`
 
 ### Fix 2: TransportSelector 接入 TUI/CLI ✅
 
@@ -514,7 +514,7 @@ let sessions = transport.list_sessions().await?;
 
 **修复 (第一轮)**:
 - `HttpTransport` 修复了 TODO 占位符，正确委托给 `AsyncApiClient`
-- `FrontendTransport::list_sessions()` 现在返回 `rocode_api::SessionListItem`（与 HTTP API 一致的类型）
+- `FrontendTransport::list_sessions()` 现在返回 `agendao_api::SessionListItem`（与 HTTP API 一致的类型）
 - `RuntimeApiClient` 新增 `transport: Option<FrontendTransport>` 字段
 
 **第二修复 (P2a: 统一使用 TransportSelector)**:
@@ -530,7 +530,7 @@ let sessions = transport.list_sessions().await?;
 - CLI `resolve_requested_session` 使用 transport 进行会话列表查询
 - CLI `run_tui` 传递 `unix_socket_path` 给服务器和 TUI 配置
 
-**文件**: `crates/rocode-client/src/transport/http.rs`, `crates/rocode-client/src/transport/mod.rs`, `crates/rocode-client/src/transport/direct.rs`, `crates/rocode-client/src/transport/unix.rs`, `crates/rocode-tui/src/api.rs`, `crates/rocode-tui/src/app/app.rs`, `crates/rocode/src/host.rs`, `crates/rocode/src/product_cli.rs`
+**文件**: `crates/agendao-client/src/transport/http.rs`, `crates/agendao-client/src/transport/mod.rs`, `crates/agendao-client/src/transport/direct.rs`, `crates/agendao-client/src/transport/unix.rs`, `crates/agendao-tui/src/api.rs`, `crates/agendao-tui/src/app/app.rs`, `crates/agendao/src/host.rs`, `crates/agendao/src/product_cli.rs`
 
 ### Fix 3: port 0 禁用 HTTP ✅
 
@@ -541,7 +541,7 @@ let sessions = transport.list_sessions().await?;
 - 新增 `run_unix_socket_only()` 函数，独立启动 Unix socket server（无需 HTTP）
 - 当 `port == 0` 且无 Unix socket 时，保持原有行为（使用 3000）
 
-**文件**: `crates/rocode-server/src/server.rs`
+**文件**: `crates/agendao-server/src/server.rs`
 
 ### Fix 4: continue_last 字段接入 ✅
 
@@ -557,7 +557,7 @@ let sessions = transport.list_sessions().await?;
 - `execute_prompt_with_session` 在 `continue_last && text.is_empty()` 时跳过 `add_user_message`，仅确保 session 存在
 - `handle_prompt` 将 `req.continue_last` 传入 `PromptExecutionOptions`
 
-**文件**: `crates/rocode-orchestrator/src/core.rs`, `crates/rocode-orchestrator/src/prompt_execution.rs`, `crates/rocode-server/src/unix_socket.rs`
+**文件**: `crates/agendao-orchestrator/src/core.rs`, `crates/agendao-orchestrator/src/prompt_execution.rs`, `crates/agendao-server/src/unix_socket.rs`
 
 ## 下一步行动（按优先级）
 

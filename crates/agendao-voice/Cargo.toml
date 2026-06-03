@@ -1,0 +1,14 @@
+[package]
+name = "agendao-voice"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+agendao-config = { path = "../agendao-config" }
+anyhow = { workspace = true }
+base64 = { workspace = true }
+uuid = { workspace = true }
+which = { workspace = true }
+tracing = { workspace = true }

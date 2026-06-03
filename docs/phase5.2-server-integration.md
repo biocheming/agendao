@@ -2,13 +2,13 @@
 
 ## 目标
 
-在 `rocode-server` 中添加 Unix Socket 启动选项，支持同时监听 Unix Socket 和 HTTP。
+在 `agendao-server` 中添加 Unix Socket 启动选项，支持同时监听 Unix Socket 和 HTTP。
 
 ## 实现细节
 
 ### 1. ServerRuntimeOptions 扩展
 
-**文件**: `crates/rocode-server/src/server.rs`
+**文件**: `crates/agendao-server/src/server.rs`
 
 添加 `unix_socket_path` 字段：
 
@@ -30,7 +30,7 @@ pub struct ServerRuntimeOptions {
 
 ### 2. 新增 run_server_with_unix_socket 函数
 
-**文件**: `crates/rocode-server/src/server.rs`
+**文件**: `crates/agendao-server/src/server.rs`
 
 创建新函数支持同时启动 Unix Socket 和 HTTP 服务器，并向 `OrchestrationCore` 注入共享 authority：
 
@@ -53,11 +53,11 @@ pub async fn run_server_with_unix_socket(
     // Start Unix socket server if path is provided
     if let Some(socket_path) = unix_socket_path {
         let core = Arc::new(
-            rocode_orchestrator::OrchestrationCore::<rocode_session::SessionManager>::new_with_shared_authorities(
+            agendao_orchestrator::OrchestrationCore::<agendao_session::SessionManager>::new_with_shared_authorities(
                 Arc::clone(&state.config_store),
                 Arc::clone(&state.sessions),
                 Arc::clone(&state.providers),
-                Arc::new(tokio::sync::RwLock::new(rocode_tool::ToolRegistry::new())),
+                Arc::new(tokio::sync::RwLock::new(agendao_tool::ToolRegistry::new())),
             ),
         );
 
@@ -92,7 +92,7 @@ pub async fn run_server_with_unix_socket(
 
 ### 3. 修改 run_server_runtime
 
-**文件**: `crates/rocode-server/src/server.rs`
+**文件**: `crates/agendao-server/src/server.rs`
 
 更新 `run_server_runtime` 调用新函数：
 
@@ -106,7 +106,7 @@ pub async fn run_server_runtime(options: ServerRuntimeOptions) -> anyhow::Result
 
 ### 4. CLI 参数支持
 
-**文件**: `crates/rocode-server/src/main.rs`
+**文件**: `crates/agendao-server/src/main.rs`
 
 添加 `--unix-socket` 参数：
 
@@ -121,7 +121,7 @@ struct ServerCli {
     cwd: Option<std::path::PathBuf>,
     #[arg(long, default_value_t = false)]
     mdns: bool,
-    #[arg(long = "mdns-domain", default_value = "rocode.local")]
+    #[arg(long = "mdns-domain", default_value = "agendao.local")]
     mdns_domain: String,
     #[arg(long)]
     cors: Vec<String>,
@@ -132,7 +132,7 @@ struct ServerCli {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = ServerCli::parse();
-    rocode_server::run_server_runtime(rocode_server::ServerRuntimeOptions {
+    agendao_server::run_server_runtime(agendao_server::ServerRuntimeOptions {
         port: cli.port,
         hostname: cli.hostname,
         cwd: cli.cwd,
@@ -149,25 +149,25 @@ async fn main() -> anyhow::Result<()> {
 
 ### 5. 更新其他初始化点
 
-**文件**: `crates/rocode/src/host.rs`
+**文件**: `crates/agendao/src/host.rs`
 
 更新所有 `ServerRuntimeOptions` 初始化，添加 `unix_socket_path: None`：
 
 ```rust
 // run_server_command
-rocode_server::run_server_runtime(ServerRuntimeOptions {
+agendao_server::run_server_runtime(ServerRuntimeOptions {
     // ... 其他字段 ...
     unix_socket_path: None,
 })
 
 // run_web_command
-rocode_server::run_server_runtime(ServerRuntimeOptions {
+agendao_server::run_server_runtime(ServerRuntimeOptions {
     // ... 其他字段 ...
     unix_socket_path: None,
 })
 
 // run_tui (内部服务器)
-rocode_server::run_server_runtime(ServerRuntimeOptions {
+agendao_server::run_server_runtime(ServerRuntimeOptions {
     // ... 其他字段 ...
     unix_socket_path: None,
 })
@@ -179,7 +179,7 @@ rocode_server::run_server_runtime(ServerRuntimeOptions {
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    rocode-server                         │
+│                    agendao-server                         │
 │                                                          │
 │  ┌────────────────────┐      ┌────────────────────┐    │
 │  │  HTTP Server       │      │ Unix Socket Server │    │
@@ -204,11 +204,11 @@ rocode_server::run_server_runtime(ServerRuntimeOptions {
 
 ```rust
 let core = Arc::new(
-    rocode_orchestrator::OrchestrationCore::<rocode_session::SessionManager>::new_with_shared_authorities(
+    agendao_orchestrator::OrchestrationCore::<agendao_session::SessionManager>::new_with_shared_authorities(
         Arc::clone(&state.config_store),
         Arc::clone(&state.sessions),
         Arc::clone(&state.providers),
-        Arc::new(tokio::sync::RwLock::new(rocode_tool::ToolRegistry::new())),
+        Arc::new(tokio::sync::RwLock::new(agendao_tool::ToolRegistry::new())),
     ),
 );
 ```
@@ -231,22 +231,22 @@ let core = Arc::new(
 
 ```bash
 # 只启动 HTTP 服务器（默认）
-rocode-server --port 3000
+agendao-server --port 3000
 
 # 同时启动 HTTP 和 Unix Socket 服务器
-rocode-server --port 3000 --unix-socket /tmp/rocode.sock
+agendao-server --port 3000 --unix-socket /tmp/agendao.sock
 
 # 只启动 Unix Socket 服务器（端口设为 0 禁用 HTTP）
-rocode-server --port 0 --unix-socket /tmp/rocode.sock
+agendao-server --port 0 --unix-socket /tmp/agendao.sock
 ```
 
 ### 客户端连接
 
 ```rust
-use rocode_client::transport::FrontendTransport;
+use agendao_client::transport::FrontendTransport;
 
 // 连接到 Unix Socket
-let transport = FrontendTransport::unix("/tmp/rocode.sock".to_string());
+let transport = FrontendTransport::unix("/tmp/agendao.sock".to_string());
 
 // 发送请求
 let response = transport.prompt(
@@ -267,9 +267,9 @@ $ cargo check --workspace
 
 ### 修改的文件
 
-- ✅ `crates/rocode-server/src/server.rs` - 添加 `unix_socket_path` 字段和 `run_server_with_unix_socket` 函数
-- ✅ `crates/rocode-server/src/main.rs` - 添加 `--unix-socket` CLI 参数
-- ✅ `crates/rocode/src/host.rs` - 更新所有 `ServerRuntimeOptions` 初始化（3 处）
+- ✅ `crates/agendao-server/src/server.rs` - 添加 `unix_socket_path` 字段和 `run_server_with_unix_socket` 函数
+- ✅ `crates/agendao-server/src/main.rs` - 添加 `--unix-socket` CLI 参数
+- ✅ `crates/agendao/src/host.rs` - 更新所有 `ServerRuntimeOptions` 初始化（3 处）
 
 ### 新增功能
 
@@ -280,7 +280,7 @@ $ cargo check --workspace
 
 ## 架构影响
 
-### 符合 ROCode 宪法
+### 符合 AgenDao 宪法
 
 - **第一条（唯一执行内核）**：Unix Socket 服务器调用 `OrchestrationCore`，不自建循环
 - **第二条（唯一配置真相）**：从 `ServerState.config_store` 获取配置
@@ -312,7 +312,7 @@ Domain Services (ProviderRegistry, SessionManager, ConfigStore)
 
 ## 已知限制
 
-1. ~~**Session 不共享**~~ ✅ (已修复) — `OrchestrationCore<S: SessionStore>` 使用 `rocode_session::SessionManager`，通过 `Arc<Mutex<SessionManager>>` 与 ServerState 共享同一实例
+1. ~~**Session 不共享**~~ ✅ (已修复) — `OrchestrationCore<S: SessionStore>` 使用 `agendao_session::SessionManager`，通过 `Arc<Mutex<SessionManager>>` 与 ServerState 共享同一实例
 
 2. ~~**Provider 复制**~~ ✅ (已修复) — `OrchestrationCore::new_with_shared_authorities` 直接持有 `Arc<RwLock<ProviderRegistry>>`（与 ServerState 同一实例），运行时变更即刻生效
 
@@ -346,6 +346,6 @@ Phase 5.2 成功完成：
 ✅ 添加 `--unix-socket` CLI 参数  
 ✅ 更新所有 `ServerRuntimeOptions` 初始化点  
 ✅ 整个 workspace 编译通过  
-✅ 符合 ROCode 宪法的架构原则  
+✅ 符合 AgenDao 宪法的架构原则  
 
 关键成就：实现了双服务器模式，允许 HTTP 和 Unix Socket 同时运行，为本地高性能 IPC 和远程 HTTP 访问提供了灵活的选择。

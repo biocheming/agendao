@@ -1,0 +1,31 @@
+[package]
+name = "agendao-orchestrator"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+agendao-core = { path = "../agendao-core" }
+agendao-config = { path = "../agendao-config" }
+agendao-execution-types = { path = "../agendao-execution-types" }
+agendao-provider = { path = "../agendao-provider" }
+agendao-session-core = { path = "../agendao-session-core" }
+agendao-tool = { path = "../agendao-tool" }
+agendao-types = { path = "../agendao-types" }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+petgraph = { workspace = true }
+regex = { workspace = true }
+glob = { workspace = true }
+walkdir = { workspace = true }
+uuid = { workspace = true }
+jsonc-parser = { version = "0.29.0", features = ["serde"] }
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }

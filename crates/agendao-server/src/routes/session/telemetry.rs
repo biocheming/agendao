@@ -1,0 +1,3034 @@
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use axum::extract::{Path, State};
+use axum::Json;
+use agendao_command::stage_protocol::StageSummary;
+use agendao_multimodal::PersistedMultimodalExplain;
+use agendao_session::prompt::{explain_session_cache_semantics, explain_session_context};
+use agendao_session::{
+    aggregate_model_tool_repair_telemetry, build_session_repair_query_snapshot,
+    build_session_tool_repair_telemetry, build_session_tool_result_governance_summary,
+    load_session_telemetry_snapshot, persist_session_telemetry_snapshot,
+    session_last_run_status_label, session_telemetry_model_ref, Session, SessionUsage,
+};
+use agendao_types::message_continuity_packet;
+#[cfg(test)]
+use agendao_types::message_latest_compaction_summary;
+use agendao_types::{
+    ContextCompactionDecisionTrace, ContextCompactionLifecycleSummary, ContextCompactionSummary,
+    ContextPressureGovernanceSummary, ModelToolRepairTelemetrySummary,
+    PromptSurfaceEvidenceSummary, SessionCacheSemanticsSummary,
+    SessionCompactionContinuityInspection, SessionContextClosureContract, SessionContextExplain,
+    SessionDiagnosticsSidecar, SessionInsightsResponse, SessionMemoryTelemetrySummary,
+    SessionMultimodalAttachmentInfo, SessionMultimodalInsight, SessionOwnershipSummary,
+    SessionToolRepairTelemetrySummary, SessionUsageBooks, ToolResultGovernanceSummary,
+    ToolTrajectoryQualitySummary, WorkflowUsageSummary,
+};
+use serde::Serialize;
+
+use crate::runtime_control::SessionExecutionTopology;
+use crate::session_runtime::state::SessionRuntimeState;
+use crate::{Result, ServerState};
+
+use super::cancel::ensure_session_exists;
+use super::effective_policy::build_session_effective_policy;
+use super::executions::build_session_execution_topology_snapshot;
+use super::session_crud::runtime_snapshot_or_default;
+
+pub(crate) const PERMISSION_GRANTED_BY_TURN_COUNT_METADATA_KEY: &str =
+    "permission_granted_by_turn_count";
+pub(crate) const PERMISSION_GRANTED_BY_SESSION_COUNT_METADATA_KEY: &str =
+    "permission_granted_by_session_count";
+pub(crate) const PERMISSION_GRANTED_BY_MATCHER_KIND_METADATA_KEY: &str =
+    "permission_granted_by_matcher_kind";
+pub(crate) const LAST_PERMISSION_MATCHER_KIND_METADATA_KEY: &str = "last_permission_matcher_kind";
+pub(crate) const LAST_PERMISSION_GRANT_TARGET_METADATA_KEY: &str = "last_permission_grant_target";
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionTelemetrySnapshot {
+    pub runtime: SessionRuntimeState,
+    pub stages: Vec<StageSummary>,
+    pub topology: SessionExecutionTopology,
+    pub usage: SessionUsage,
+    pub usage_books: SessionUsageBooks,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_repair_summary: Option<SessionToolRepairTelemetrySummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_tool_repair_summary: Option<ModelToolRepairTelemetrySummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_query_snapshot: Option<agendao_types::SessionRepairQuerySnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_trajectory_quality: Option<ToolTrajectoryQualitySummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_result_governance: Option<ToolResultGovernanceSummary>,
+    #[serde(default)]
+    pub pending_permission_count: u64,
+    #[serde(default)]
+    pub pending_followup_count: u64,
+    #[serde(default)]
+    pub granted_by_turn_count: u64,
+    #[serde(default)]
+    pub granted_by_session_count: u64,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub granted_by_matcher_kind: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_permission_matcher_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_permission_grant_target: Option<String>,
+    #[serde(default)]
+    pub last_permission_miss_count: u64,
+    #[serde(default)]
+    pub pending_steering_count: u64,
+    #[serde(default)]
+    pub consumed_steering_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_steering_injected_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_steering_source_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<SessionMemoryTelemetrySummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_evidence: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_explain: Option<SessionContextExplain>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ownership: Option<SessionOwnershipSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_compaction_summary: Option<ContextCompactionSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_continuity: Option<SessionCompactionContinuityInspection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_compaction_lifecycle_summary: Option<ContextCompactionLifecycleSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_pressure_governance_summary: Option<ContextPressureGovernanceSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_trace: Option<ContextCompactionDecisionTrace>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_semantics: Option<SessionCacheSemanticsSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_closure_contract: Option<SessionContextClosureContract>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_surface_evidence: Option<PromptSurfaceEvidenceSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingress_stabilization: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_preflight_summary: Option<SessionExecutionPreflightSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_diagnostic_summary: Option<agendao_provider::ProviderDiagnosticSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_protocol: Option<SessionRuntimeProtocolSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_bus_telemetry: Option<agendao_api::EventBusTelemetrySummary>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptIngressDisposition {
+    AcceptNow,
+    QueueAsSteering,
+    BlockedOnQuestion,
+    BlockedOnPermission,
+    AwaitingInterrupt,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PermissionRuntimeSummary {
+    pub pending: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_permission_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_since_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_tool: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_pending_duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SteeringRuntimeSummary {
+    pub pending_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_enqueued_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_consumed_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_source_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_latency_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InterruptRuntimeSummary {
+    pub phase: crate::session_runtime::state::InterruptPhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<crate::session_runtime::state::InterruptTarget>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionRuntimeProtocolSummary {
+    pub prompt_ingress: PromptIngressDisposition,
+    pub permission: PermissionRuntimeSummary,
+    pub steering: SteeringRuntimeSummary,
+    pub interrupt: InterruptRuntimeSummary,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionExecutionPreflightSource {
+    ToolCallState,
+    ToolResultPart,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionExecutionPreflightSummary {
+    pub tool_call_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    pub source: SessionExecutionPreflightSource,
+    pub runner: String,
+    pub subject: String,
+    pub status: agendao_tool::ExecutionPreflightStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub issues: Vec<agendao_tool::ExecutionPreflightIssue>,
+    #[serde(default)]
+    pub attachment_count: usize,
+}
+
+fn session_metadata_u64(session: &Session, key: &str) -> u64 {
+    session
+        .record()
+        .metadata
+        .get(key)
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0)
+}
+
+fn session_metadata_string(session: &Session, key: &str) -> Option<String> {
+    session
+        .record()
+        .metadata
+        .get(key)
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned)
+}
+
+fn session_metadata_string_count_map(session: &Session, key: &str) -> BTreeMap<String, u64> {
+    session
+        .record()
+        .metadata
+        .get(key)
+        .and_then(|value| value.as_object())
+        .map(|object| {
+            object
+                .iter()
+                .filter_map(|(entry_key, value)| {
+                    value.as_u64().map(|count| (entry_key.clone(), count))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn session_metadata_optional_u64(session: &Session, key: &str) -> Option<u64> {
+    session
+        .record()
+        .metadata
+        .get(key)
+        .and_then(|value| value.as_u64())
+}
+
+fn build_runtime_protocol_summary(
+    runtime: &SessionRuntimeState,
+    session: &Session,
+) -> SessionRuntimeProtocolSummary {
+    let permission = PermissionRuntimeSummary {
+        pending: runtime.pending_permission.is_some(),
+        pending_permission_id: runtime
+            .pending_permission
+            .as_ref()
+            .map(|pending| pending.permission_id.clone()),
+        pending_since_ms: runtime
+            .pending_permission
+            .as_ref()
+            .map(|pending| pending.requested_at),
+        pending_tool: runtime
+            .pending_permission
+            .as_ref()
+            .and_then(|pending| pending.tool.clone()),
+        last_pending_duration_ms: session_metadata_optional_u64(
+            session,
+            "last_permission_pending_ms",
+        ),
+    };
+    let steering = SteeringRuntimeSummary {
+        pending_count: runtime.pending_steering.len() as u64,
+        last_enqueued_at_ms: runtime
+            .pending_steering
+            .last()
+            .map(|pending| pending.created_at),
+        last_consumed_at_ms: session
+            .record()
+            .metadata
+            .get("last_steering_injected_at")
+            .and_then(|value| value.as_i64()),
+        last_source_session_id: session
+            .record()
+            .metadata
+            .get("last_steering_source_session_id")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                runtime
+                    .pending_steering
+                    .iter()
+                    .rev()
+                    .find_map(|pending| pending.source_session_id.clone())
+            }),
+        last_latency_ms: session_metadata_optional_u64(session, "last_steering_latency_ms"),
+    };
+    let interrupt = InterruptRuntimeSummary {
+        phase: runtime.interrupt.phase,
+        requested_at_ms: runtime.interrupt.requested_at,
+        target: runtime.interrupt.target,
+    };
+    let prompt_ingress =
+        if interrupt.phase == crate::session_runtime::state::InterruptPhase::Requested {
+            PromptIngressDisposition::AwaitingInterrupt
+        } else if permission.pending {
+            PromptIngressDisposition::BlockedOnPermission
+        } else if runtime.pending_question.is_some() {
+            PromptIngressDisposition::BlockedOnQuestion
+        } else if matches!(
+            runtime.run_status,
+            crate::session_runtime::state::RunStatus::Idle
+        ) {
+            PromptIngressDisposition::AcceptNow
+        } else {
+            PromptIngressDisposition::QueueAsSteering
+        };
+
+    SessionRuntimeProtocolSummary {
+        prompt_ingress,
+        permission,
+        steering,
+        interrupt,
+    }
+}
+
+pub(super) async fn get_session_telemetry(
+    State(state): State<Arc<ServerState>>,
+    Path(session_id): Path<String>,
+) -> Result<Json<SessionTelemetrySnapshot>> {
+    ensure_session_exists(&state, &session_id).await?;
+    let session = {
+        let sessions = state.sessions.lock().await;
+        sessions
+            .get(&session_id)
+            .cloned()
+            .expect("session existence checked before telemetry load")
+    };
+
+    Ok(Json(
+        build_session_telemetry_snapshot(&state, &session_id, &session).await?,
+    ))
+}
+
+pub(super) async fn get_session_insights(
+    State(state): State<Arc<ServerState>>,
+    Path(session_id): Path<String>,
+) -> Result<Json<SessionInsightsResponse>> {
+    let session = {
+        let sessions = state.sessions.lock().await;
+        sessions
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(|| crate::ApiError::SessionNotFound(session_id.clone()))?
+    };
+
+    let session_record = session.record();
+    let memory = match state
+        .runtime_memory
+        .build_session_memory_insight(&session)
+        .await
+    {
+        Ok(memory) => memory,
+        Err(error) => {
+            tracing::warn!(
+                session_id = %session.id,
+                %error,
+                "failed to build session memory insight"
+            );
+            None
+        }
+    };
+    Ok(Json(SessionInsightsResponse {
+        id: session_record.id.clone(),
+        title: session_record.title.clone(),
+        directory: session_record.directory.clone(),
+        updated: session_record.time.updated,
+        telemetry: load_session_telemetry_snapshot(&session),
+        effective_policy: Some(
+            build_session_effective_policy(&state, &session, memory.as_ref()).await,
+        ),
+        memory,
+        multimodal: build_session_multimodal_insight(&session),
+    }))
+}
+
+pub(super) async fn build_session_telemetry_snapshot(
+    state: &Arc<ServerState>,
+    session_id: &str,
+    session: &Session,
+) -> Result<SessionTelemetrySnapshot> {
+    let mut runtime = runtime_snapshot_or_default(state, session_id).await?;
+    let mut usage = runtime.usage.clone().unwrap_or_else(|| session.get_usage());
+    let tree_observation = {
+        let sessions = state.sessions.lock().await;
+        session_tree_observation_for_session(&sessions, session_id)
+    };
+    let mut usage_books = SessionUsageBooks {
+        request_context_tokens: session.latest_request_context_tokens(),
+        live_context_tokens: usage.live_context_tokens(),
+        workflow_cumulative: tree_observation.workflow_cumulative.clone(),
+    };
+
+    let stages = state
+        .runtime_telemetry
+        .list_stage_summaries(session_id)
+        .await;
+    let topology = build_session_execution_topology_snapshot(state, session_id, session).await;
+    let tool_repair_summary = build_session_tool_repair_telemetry(session);
+    let model_tool_repair_summary = if let Some(model_ref) = session_telemetry_model_ref(session) {
+        let sessions = state.sessions.lock().await;
+        aggregate_model_tool_repair_telemetry(
+            sessions.list(),
+            &model_ref.provider_id,
+            &model_ref.model_id,
+        )
+    } else {
+        None
+    };
+    let repair_query_snapshot = build_session_repair_query_snapshot(session);
+    let tool_trajectory_quality = agendao_session::build_session_tool_trajectory_quality(session);
+    let tool_result_governance = build_session_tool_result_governance_summary(session);
+    let pending_permission_count = u64::from(runtime.pending_permission.is_some());
+    let pending_followup_count = runtime.pending_followup_count;
+    let granted_by_turn_count =
+        session_metadata_u64(session, PERMISSION_GRANTED_BY_TURN_COUNT_METADATA_KEY);
+    let granted_by_session_count =
+        session_metadata_u64(session, PERMISSION_GRANTED_BY_SESSION_COUNT_METADATA_KEY);
+    let granted_by_matcher_kind =
+        session_metadata_string_count_map(session, PERMISSION_GRANTED_BY_MATCHER_KIND_METADATA_KEY);
+    let last_permission_matcher_kind =
+        session_metadata_string(session, "last_permission_hit_matcher_kind").or_else(|| {
+            session_metadata_string(session, LAST_PERMISSION_MATCHER_KIND_METADATA_KEY)
+        });
+    let last_permission_grant_target =
+        session_metadata_string(session, LAST_PERMISSION_GRANT_TARGET_METADATA_KEY);
+    let last_permission_miss_count = session_metadata_u64(session, "last_permission_miss_count");
+    // Steering telemetry: runtime view reads live session metadata, not persisted snapshot,
+    // because steering can be consumed mid-turn before the next persist cycle.
+    let record = session.record();
+    let pending_steering_count = state
+        .runtime_telemetry
+        .runtime_state()
+        .get(&record.id)
+        .await
+        .map_or(0, |s| s.pending_steering.len() as u64);
+    let consumed_steering_count = record
+        .metadata
+        .get("consumed_steering_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let last_steering_injected_at = record
+        .metadata
+        .get("last_steering_injected_at")
+        .and_then(|v| v.as_i64());
+    let last_steering_source_session_id = record
+        .metadata
+        .get("last_steering_source_session_id")
+        .and_then(|v| v.as_str())
+        .map(ToOwned::to_owned);
+    let memory = build_session_memory_telemetry(state, session).await;
+    let diagnostics = SessionDiagnosticsSidecar::derive_from_session(session);
+    let cache_evidence = diagnostics
+        .as_ref()
+        .and_then(SessionDiagnosticsSidecar::latest_cache_evidence_value);
+    let typed_cache_evidence = cache_evidence.clone().and_then(|value| {
+        serde_json::from_value::<agendao_provider::cache::CacheEvidenceSummary>(value).ok()
+    });
+    let context_explain = Some(explain_session_context(
+        session,
+        Some(usage_books.workflow_cumulative.total_tokens()),
+    ));
+    if let Some(live_context_tokens) = context_explain
+        .as_ref()
+        .and_then(|explain| explain.live_context_tokens)
+    {
+        usage.context_tokens = live_context_tokens;
+        usage_books.live_context_tokens = Some(live_context_tokens);
+    }
+    runtime.usage = Some(usage.clone());
+    let ownership = Some(session.ownership_summary());
+    let context_compaction_summary = diagnostics
+        .as_ref()
+        .and_then(SessionDiagnosticsSidecar::latest_context_compaction_record_value)
+        .and_then(|value| serde_json::from_value(value).ok());
+    let compaction_continuity =
+        latest_compaction_continuity_inspection(session, context_compaction_summary.as_ref());
+    let context_compaction_lifecycle_summary = diagnostics
+        .as_ref()
+        .and_then(SessionDiagnosticsSidecar::context_compaction_lifecycle_summary_value)
+        .and_then(|value| serde_json::from_value(value).ok());
+    let context_pressure_governance_summary = diagnostics
+        .as_ref()
+        .and_then(SessionDiagnosticsSidecar::context_pressure_governance_summary_value)
+        .and_then(|value| serde_json::from_value(value).ok());
+    let decision_trace = diagnostics
+        .as_ref()
+        .and_then(SessionDiagnosticsSidecar::latest_context_compaction_decision_trace_value)
+        .and_then(|value| serde_json::from_value(value).ok())
+        .or_else(|| {
+            context_pressure_governance_summary.as_ref().and_then(
+                |summary: &ContextPressureGovernanceSummary| summary.decision_trace.clone(),
+            )
+        });
+    let prompt_surface_evidence = diagnostics
+        .as_ref()
+        .and_then(SessionDiagnosticsSidecar::latest_prompt_surface_evidence_value)
+        .and_then(|value| serde_json::from_value(value).ok());
+    let cache_semantics = context_explain.as_ref().map(|context_explain| {
+        explain_session_cache_semantics(
+            context_explain,
+            context_compaction_summary.as_ref(),
+            typed_cache_evidence.as_ref(),
+            prompt_surface_evidence.as_ref(),
+        )
+    });
+    let context_closure_contract = build_context_closure_contract(
+        context_explain.as_ref(),
+        &usage_books,
+        cache_semantics.as_ref(),
+        context_compaction_summary.as_ref(),
+        context_compaction_lifecycle_summary.as_ref(),
+        context_pressure_governance_summary.as_ref(),
+        tree_observation.attached_subtree_session_count,
+    );
+    let ingress_stabilization = diagnostics
+        .as_ref()
+        .and_then(SessionDiagnosticsSidecar::ingress_stabilization_value);
+    let execution_preflight_summary = diagnostics
+        .as_ref()
+        .and_then(latest_execution_preflight_summary_from_sidecar);
+    let provider_diagnostic_summary = diagnostics
+        .as_ref()
+        .and_then(SessionDiagnosticsSidecar::latest_provider_diagnostic_value)
+        .and_then(|value| serde_json::from_value(value).ok());
+    let runtime_protocol = Some(build_runtime_protocol_summary(&runtime, session));
+    let event_bus_telemetry = state
+        .event_bus_telemetry
+        .as_ref()
+        .map(|telemetry| telemetry.snapshot());
+
+    Ok(SessionTelemetrySnapshot {
+        runtime,
+        stages,
+        topology,
+        usage,
+        usage_books,
+        tool_repair_summary,
+        model_tool_repair_summary,
+        repair_query_snapshot,
+        tool_trajectory_quality,
+        tool_result_governance,
+        pending_permission_count,
+        pending_followup_count,
+        granted_by_turn_count,
+        granted_by_session_count,
+        granted_by_matcher_kind,
+        last_permission_matcher_kind,
+        last_permission_grant_target,
+        last_permission_miss_count,
+        pending_steering_count,
+        consumed_steering_count,
+        last_steering_injected_at,
+        last_steering_source_session_id,
+        memory,
+        cache_evidence,
+        context_explain,
+        ownership,
+        context_compaction_summary,
+        compaction_continuity,
+        context_compaction_lifecycle_summary,
+        context_pressure_governance_summary,
+        decision_trace,
+        cache_semantics,
+        context_closure_contract,
+        prompt_surface_evidence,
+        ingress_stabilization,
+        execution_preflight_summary,
+        provider_diagnostic_summary,
+        runtime_protocol,
+        event_bus_telemetry,
+    })
+}
+
+/// Patch 4: populate steering telemetry fields from session metadata and runtime state.
+async fn populate_steering_telemetry(
+    snapshot: &mut agendao_types::SessionTelemetrySnapshot,
+    session: &Session,
+    state: &ServerState,
+) {
+    let record = session.record();
+
+    // Read from session metadata (written by loop_lifecycle.rs on injection).
+    snapshot.consumed_steering_count = record
+        .metadata
+        .get("consumed_steering_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    snapshot.last_steering_injected_at = record
+        .metadata
+        .get("last_steering_injected_at")
+        .and_then(|v| v.as_i64());
+    snapshot.last_steering_source_session_id = record
+        .metadata
+        .get("last_steering_source_session_id")
+        .and_then(|v| v.as_str())
+        .map(ToOwned::to_owned);
+
+    // Read pending count from runtime state.
+    if let Some(runtime) = state
+        .runtime_telemetry
+        .runtime_state()
+        .get(&record.id)
+        .await
+    {
+        snapshot.pending_steering_count = runtime.pending_steering.len() as u64;
+    }
+}
+
+fn latest_compaction_continuity_inspection(
+    session: &Session,
+    raw_summary: Option<&ContextCompactionSummary>,
+) -> Option<SessionCompactionContinuityInspection> {
+    if let Some(packet) = session.record().messages.iter().rev().find_map(|message| {
+        if !matches!(message.role, agendao_types::MessageRole::Assistant) {
+            return None;
+        }
+        message_continuity_packet(&message.metadata)
+    }) {
+        return Some(SessionCompactionContinuityInspection::from_packet(&packet));
+    }
+
+    let (summary, message_id) = latest_context_compaction_summary_message(session, raw_summary)?;
+    SessionCompactionContinuityInspection::from_raw_summary(summary, Some(message_id))
+}
+
+fn latest_context_compaction_summary_message<'a>(
+    session: &'a Session,
+    raw_summary: Option<&'a ContextCompactionSummary>,
+) -> Option<(&'a ContextCompactionSummary, String)> {
+    let summary = raw_summary?;
+    let message_id = session
+        .record()
+        .messages
+        .iter()
+        .rev()
+        .find(|message| {
+            matches!(message.role, agendao_types::MessageRole::Assistant)
+                && message
+                    .metadata
+                    .contains_key(agendao_session::prompt::CONTEXT_COMPACTION_RECORD_METADATA_KEY)
+        })
+        .map(|message| message.id.clone())?;
+    Some((summary, message_id))
+}
+
+#[derive(Debug, Clone, Default)]
+struct SessionTreeObservation {
+    workflow_cumulative: WorkflowUsageSummary,
+    attached_subtree_session_count: usize,
+}
+
+fn session_tree_observation_for_session(
+    sessions: &agendao_session::SessionManager,
+    root_session_id: &str,
+) -> SessionTreeObservation {
+    let mut observation = SessionTreeObservation::default();
+    let mut pending = vec![(root_session_id.to_string(), true)];
+
+    while let Some((session_id, is_root)) = pending.pop() {
+        let Some(session) = sessions.get(&session_id) else {
+            continue;
+        };
+        observation
+            .workflow_cumulative
+            .accumulate_session_usage(&session.get_usage());
+        let attached_children = sessions
+            .attached_sessions(&session_id)
+            .into_iter()
+            .map(|child| child.record().id.clone())
+            .collect::<Vec<_>>();
+        if !is_root {
+            observation.attached_subtree_session_count += 1;
+        }
+        pending.extend(
+            attached_children
+                .into_iter()
+                .map(|child_id| (child_id, false)),
+        );
+    }
+
+    observation
+}
+
+fn pressure_percent(tokens: Option<u64>, limit_tokens: Option<u64>) -> Option<u64> {
+    let tokens = tokens?;
+    let limit = limit_tokens?;
+    (limit > 0).then_some(tokens.saturating_mul(100) / limit)
+}
+
+fn build_context_closure_contract(
+    context_explain: Option<&SessionContextExplain>,
+    usage_books: &SessionUsageBooks,
+    cache_semantics: Option<&SessionCacheSemanticsSummary>,
+    context_compaction_summary: Option<&ContextCompactionSummary>,
+    context_compaction_lifecycle_summary: Option<&ContextCompactionLifecycleSummary>,
+    context_pressure_governance_summary: Option<&ContextPressureGovernanceSummary>,
+    attached_subtree_session_count: usize,
+) -> Option<SessionContextClosureContract> {
+    let context_explain = context_explain?;
+    let cache_semantics = cache_semantics
+        .cloned()
+        .unwrap_or(SessionCacheSemanticsSummary {
+            basis: agendao_types::SessionCacheSemanticsBasis::ApiView,
+            api_view_messages: context_explain.api_view_messages,
+            trimmed_model_visible_messages: context_explain
+                .raw_model_visible_messages
+                .saturating_sub(context_explain.api_view_messages),
+            boundary: None,
+            cache_evidence: None,
+            prompt_surface_evidence: None,
+            label: None,
+        });
+
+    let prefix_change_detected = cache_semantics
+        .boundary
+        .as_ref()
+        .is_some_and(|boundary| boundary.likely_changed_prefix)
+        || cache_semantics
+            .cache_evidence
+            .as_ref()
+            .is_some_and(|summary| summary.severity > agendao_types::SessionCacheSeverity::Stable)
+        || cache_semantics
+            .prompt_surface_evidence
+            .as_ref()
+            .is_some_and(|summary| summary.severity > agendao_types::SessionCacheSeverity::Stable);
+
+    let installed_boundary =
+        context_compaction_lifecycle_summary.and_then(|summary| summary.installed.as_ref());
+    let (request_pressure_percent, live_pressure_percent) =
+        if let Some(summary) = context_pressure_governance_summary {
+            (
+                summary.request_pressure_percent.or_else(|| {
+                    pressure_percent(summary.request_context_tokens, summary.limit_tokens)
+                }),
+                summary.live_pressure_percent.or_else(|| {
+                    pressure_percent(summary.live_context_tokens, summary.limit_tokens)
+                }),
+            )
+        } else if let Some(installed) = installed_boundary {
+            let limit_tokens =
+                context_compaction_lifecycle_summary.and_then(|summary| summary.limit_tokens);
+            (
+                pressure_percent(installed.request_context_tokens, limit_tokens),
+                pressure_percent(installed.live_context_tokens, limit_tokens),
+            )
+        } else if let Some(summary) = context_compaction_summary {
+            (
+                pressure_percent(summary.request_context_tokens, summary.limit_tokens),
+                pressure_percent(summary.live_context_tokens, summary.limit_tokens),
+            )
+        } else {
+            (None, None)
+        };
+
+    let (cache_explainability_source, cache_explainability_severity, cache_explainability_text) =
+        if let Some(summary) = cache_semantics.cache_evidence.as_ref().filter(|summary| {
+            summary.severity > agendao_types::SessionCacheSeverity::Stable
+                && !matches!(summary.status.as_str(), "stable" | "cold_start")
+        }) {
+            (
+                agendao_types::SessionCacheExplainabilitySource::CacheEvidence,
+                Some(summary.severity),
+                cache_semantics
+                    .label
+                    .clone()
+                    .or_else(|| summary.primary_cause.clone()),
+            )
+        } else if let Some(summary) = cache_semantics
+            .prompt_surface_evidence
+            .as_ref()
+            .filter(|summary| summary.severity > agendao_types::SessionCacheSeverity::Stable)
+        {
+            (
+                agendao_types::SessionCacheExplainabilitySource::SurfaceEvidence,
+                Some(summary.severity),
+                cache_semantics
+                    .label
+                    .clone()
+                    .or_else(|| Some(summary.reason.clone())),
+            )
+        } else if cache_semantics
+            .boundary
+            .as_ref()
+            .is_some_and(|boundary| boundary.possible_cache_evidence)
+        {
+            (
+                agendao_types::SessionCacheExplainabilitySource::BoundaryEvidence,
+                Some(agendao_types::SessionCacheSeverity::MediumChange),
+                cache_semantics.label.clone().or_else(|| {
+                    cache_semantics
+                        .boundary
+                        .as_ref()
+                        .and_then(|boundary| boundary.reason.clone())
+                }),
+            )
+        } else {
+            (
+                agendao_types::SessionCacheExplainabilitySource::None,
+                None,
+                cache_semantics.label.clone(),
+            )
+        };
+    let cache_issue_present = !matches!(
+        cache_explainability_source,
+        agendao_types::SessionCacheExplainabilitySource::None
+    );
+    let owner_session_cumulative_tokens = context_explain.owner_session_cumulative_tokens;
+    let workflow_cumulative_tokens = usage_books.workflow_cumulative.total_tokens();
+    let attached_subtree_cumulative_tokens =
+        workflow_cumulative_tokens.saturating_sub(owner_session_cumulative_tokens);
+
+    Some(SessionContextClosureContract {
+        prefix_stability: agendao_types::SessionPrefixStabilityContract {
+            basis: cache_semantics.basis,
+            tracked_on_api_view: matches!(
+                cache_semantics.basis,
+                agendao_types::SessionCacheSemanticsBasis::ApiView
+            ),
+            api_view_messages: cache_semantics.api_view_messages,
+            trimmed_model_visible_messages: cache_semantics.trimmed_model_visible_messages,
+            prefix_change_detected,
+            explanation: cache_semantics.label.clone(),
+        },
+        compaction_boundary: agendao_types::SessionCompactionBoundaryContract {
+            boundary_recorded: context_compaction_summary.is_some()
+                || context_compaction_lifecycle_summary.is_some()
+                || context_pressure_governance_summary.is_some(),
+            phase: context_pressure_governance_summary
+                .map(|summary| summary.phase.clone())
+                .or_else(|| {
+                    context_compaction_lifecycle_summary.and_then(|summary| summary.phase.clone())
+                })
+                .or_else(|| context_compaction_summary.and_then(|summary| summary.phase.clone())),
+            trigger: context_pressure_governance_summary
+                .map(|summary| summary.trigger.clone())
+                .or_else(|| {
+                    context_compaction_lifecycle_summary.map(|summary| summary.trigger.clone())
+                })
+                .or_else(|| context_compaction_summary.map(|summary| summary.trigger.clone())),
+            reason: context_pressure_governance_summary
+                .and_then(|summary| summary.reason.clone())
+                .or_else(|| {
+                    context_compaction_lifecycle_summary.and_then(|summary| summary.reason.clone())
+                })
+                .or_else(|| context_compaction_summary.and_then(|summary| summary.reason.clone())),
+            lifecycle_status: context_compaction_lifecycle_summary.map(|summary| summary.status),
+            governance_status: context_pressure_governance_summary.map(|summary| summary.status),
+            request_pressure_percent,
+            live_pressure_percent,
+            compaction_attempted: context_pressure_governance_summary
+                .map(|summary| summary.compaction_attempted)
+                .unwrap_or_else(|| {
+                    context_compaction_lifecycle_summary.is_some()
+                        || context_compaction_summary.is_some()
+                }),
+            compaction_succeeded: context_pressure_governance_summary
+                .map(|summary| summary.compaction_succeeded)
+                .unwrap_or_else(|| {
+                    context_compaction_lifecycle_summary.is_some_and(|summary| {
+                        matches!(
+                            summary.status,
+                            agendao_types::ContextCompactionLifecycleStatus::Installed
+                        )
+                    }) || context_compaction_summary.is_some()
+                }),
+            blocking: context_pressure_governance_summary
+                .map(|summary| summary.blocking)
+                .unwrap_or(false),
+            installed: installed_boundary.cloned(),
+        },
+        cache_explainability: agendao_types::SessionCacheExplainabilityContract {
+            issue_present: cache_issue_present,
+            explained: !cache_issue_present || cache_explainability_text.is_some(),
+            source: cache_explainability_source,
+            severity: cache_explainability_severity,
+            explanation: cache_explainability_text,
+        },
+        child_history_isolation: agendao_types::SessionChildHistoryIsolationContract {
+            attached_subtree_session_count,
+            owner_session_cumulative_tokens,
+            workflow_cumulative_tokens,
+            attached_subtree_cumulative_tokens,
+            owner_live_context_tokens: usage_books.live_context_tokens,
+            owner_local_live_prefix: true,
+            child_history_in_live_prefix_detected: false,
+            explanation: if attached_subtree_session_count > 0 {
+                "Attached subtree usage contributes to workflow cumulative only; API view and live prefix remain owner-local."
+                    .to_string()
+            } else {
+                "No attached subtree sessions were observed; the live prefix remains owner-local."
+                    .to_string()
+            },
+        },
+    })
+}
+
+#[cfg(test)]
+fn latest_cache_evidence(session: &Session) -> Option<serde_json::Value> {
+    diagnostics_sidecar(session).and_then(|sidecar| sidecar.latest_cache_evidence_value())
+}
+
+#[cfg(test)]
+fn latest_context_compaction_summary(session: &Session) -> Option<ContextCompactionSummary> {
+    let mut summary = diagnostics_sidecar(session)
+        .and_then(|sidecar| sidecar.latest_context_compaction_record_value())
+        .and_then(|value| serde_json::from_value::<ContextCompactionSummary>(value).ok())?;
+    if let Some(packet_summary) = session.record().messages.iter().rev().find_map(|message| {
+        if !matches!(message.role, agendao_types::MessageRole::Assistant) {
+            return None;
+        }
+        message_latest_compaction_summary(
+            &message.metadata,
+            &message.id,
+            summary.summary.as_deref(),
+        )
+    }) {
+        summary.summary = Some(packet_summary.summary);
+    }
+    Some(summary)
+}
+
+#[cfg(test)]
+fn latest_context_compaction_lifecycle_summary(
+    session: &Session,
+) -> Option<ContextCompactionLifecycleSummary> {
+    diagnostics_sidecar(session)
+        .and_then(|sidecar| sidecar.context_compaction_lifecycle_summary_value())
+        .and_then(|value| serde_json::from_value(value).ok())
+}
+
+#[cfg(test)]
+fn latest_prompt_surface_evidence(session: &Session) -> Option<PromptSurfaceEvidenceSummary> {
+    diagnostics_sidecar(session)
+        .and_then(|sidecar| sidecar.latest_prompt_surface_evidence_value())
+        .and_then(|value| serde_json::from_value(value).ok())
+}
+
+#[cfg(test)]
+fn latest_provider_diagnostic_summary(
+    session: &Session,
+) -> Option<agendao_provider::ProviderDiagnosticSummary> {
+    diagnostics_sidecar(session)
+        .and_then(|sidecar| sidecar.latest_provider_diagnostic_value())
+        .and_then(|value| serde_json::from_value(value).ok())
+}
+
+#[cfg(test)]
+fn latest_execution_preflight_summary(
+    session: &Session,
+) -> Option<SessionExecutionPreflightSummary> {
+    diagnostics_sidecar(session)
+        .and_then(|sidecar| latest_execution_preflight_summary_from_sidecar(&sidecar))
+}
+
+#[cfg(test)]
+fn diagnostics_sidecar(session: &Session) -> Option<SessionDiagnosticsSidecar> {
+    SessionDiagnosticsSidecar::derive_from_session(session)
+}
+
+fn latest_execution_preflight_summary_from_sidecar(
+    sidecar: &SessionDiagnosticsSidecar,
+) -> Option<SessionExecutionPreflightSummary> {
+    let entry = sidecar.latest_execution_preflight_entry()?;
+    let preflight: agendao_tool::ExecutionPreflightMetadata = entry.decode_metadata()?;
+    Some(SessionExecutionPreflightSummary {
+        tool_call_id: entry.tool_call_id,
+        tool_name: entry.tool_name,
+        source: match entry.source {
+            agendao_types::SessionExecutionPreflightMetadataSource::ToolCallState => {
+                SessionExecutionPreflightSource::ToolCallState
+            }
+            agendao_types::SessionExecutionPreflightMetadataSource::ToolResultPart => {
+                SessionExecutionPreflightSource::ToolResultPart
+            }
+        },
+        runner: preflight.runner,
+        subject: preflight.subject,
+        status: preflight.status,
+        issues: preflight.issues,
+        attachment_count: preflight.attachment_count,
+    })
+}
+
+pub(super) async fn persist_session_telemetry_metadata(
+    state: &Arc<ServerState>,
+    session: &mut Session,
+) {
+    let usage = session.get_usage();
+    let last_run_status = session_last_run_status_label(session);
+    let session_id = session.record().id.clone();
+    let memory = build_session_memory_telemetry(state, session).await;
+    let tool_repair_summary = build_session_tool_repair_telemetry(session);
+    let Some(mut snapshot) = state
+        .runtime_telemetry
+        .build_persisted_snapshot(
+            &session_id,
+            usage,
+            last_run_status,
+            memory,
+            tool_repair_summary,
+        )
+        .await
+    else {
+        return;
+    };
+
+    let raw_summary = SessionDiagnosticsSidecar::derive_from_session(session)
+        .as_ref()
+        .and_then(SessionDiagnosticsSidecar::latest_context_compaction_record_value)
+        .and_then(|value| serde_json::from_value::<ContextCompactionSummary>(value).ok());
+    snapshot.compaction_continuity =
+        latest_compaction_continuity_inspection(session, raw_summary.as_ref());
+    snapshot.repair_query_snapshot = build_session_repair_query_snapshot(session);
+    snapshot.tool_trajectory_quality =
+        agendao_session::build_session_tool_trajectory_quality(session);
+    snapshot.tool_result_governance = build_session_tool_result_governance_summary(session);
+    snapshot.pending_permission_count = state
+        .runtime_telemetry
+        .runtime_state()
+        .get(&session_id)
+        .await
+        .map_or(0, |runtime| u64::from(runtime.pending_permission.is_some()));
+    snapshot.granted_by_turn_count =
+        session_metadata_u64(session, PERMISSION_GRANTED_BY_TURN_COUNT_METADATA_KEY);
+    snapshot.granted_by_session_count =
+        session_metadata_u64(session, PERMISSION_GRANTED_BY_SESSION_COUNT_METADATA_KEY);
+    snapshot.granted_by_matcher_kind =
+        session_metadata_string_count_map(session, PERMISSION_GRANTED_BY_MATCHER_KIND_METADATA_KEY);
+    snapshot.last_permission_matcher_kind =
+        session_metadata_string(session, "last_permission_hit_matcher_kind").or_else(|| {
+            session_metadata_string(session, LAST_PERMISSION_MATCHER_KIND_METADATA_KEY)
+        });
+    snapshot.last_permission_grant_target =
+        session_metadata_string(session, LAST_PERMISSION_GRANT_TARGET_METADATA_KEY);
+    snapshot.last_permission_miss_count =
+        session_metadata_u64(session, "last_permission_miss_count");
+    // Patch 4: steering telemetry — populate from session metadata and runtime state.
+    populate_steering_telemetry(&mut snapshot, session, &state).await;
+
+    if let Err(error) = persist_session_telemetry_snapshot(session, &snapshot) {
+        tracing::warn!(
+            session_id = %session.id,
+            %error,
+            "failed to persist telemetry snapshot into session metadata"
+        );
+        return;
+    }
+
+    state
+        .runtime_telemetry
+        .emit_telemetry_snapshot_updated_hook(&session_id, &snapshot)
+        .await;
+}
+
+async fn build_session_memory_telemetry(
+    state: &Arc<ServerState>,
+    session: &Session,
+) -> Option<SessionMemoryTelemetrySummary> {
+    match state
+        .runtime_memory
+        .build_session_memory_telemetry(session)
+        .await
+    {
+        Ok(memory) => memory,
+        Err(error) => {
+            tracing::warn!(
+                session_id = %session.id,
+                %error,
+                "failed to build session memory telemetry summary"
+            );
+            None
+        }
+    }
+}
+
+fn build_session_multimodal_insight(session: &Session) -> Option<SessionMultimodalInsight> {
+    let message = session
+        .record()
+        .messages
+        .iter()
+        .rev()
+        .find(|message| PersistedMultimodalExplain::has_message_signal(message))?;
+    let explain = PersistedMultimodalExplain::from_message(message)?;
+
+    Some(SessionMultimodalInsight {
+        user_message_id: message.id.clone(),
+        attachment_count: explain.attachment_count,
+        kinds: explain.kinds,
+        badges: explain.badges,
+        compact_label: explain.compact_label,
+        resolved_model: explain.resolved_model,
+        warnings: explain.warnings,
+        unsupported_parts: explain.unsupported_parts,
+        recommended_downgrade: explain.recommended_downgrade,
+        hard_block: explain.hard_block,
+        transport_replaced_parts: explain.transport_replaced_parts,
+        transport_warnings: explain.transport_warnings,
+        attachments: explain
+            .attachments
+            .into_iter()
+            .map(|attachment| SessionMultimodalAttachmentInfo {
+                filename: attachment.filename,
+                mime: attachment.mime,
+            })
+            .collect(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime_control::{SessionExecutionTopology, SessionRunStatus};
+    use crate::session_runtime::state::SessionRuntimeState;
+    use crate::session_runtime::{emit_scheduler_stage_message, SchedulerStageMessageInput};
+    use crate::ServerState;
+    use agendao_command::stage_protocol::{StageStatus, StageSummary};
+    use agendao_memory::PersistedMemorySnapshot;
+    use agendao_orchestrator::ExecutionContext;
+    use agendao_plugin::{global, Hook, HookEvent};
+    use agendao_session::{
+        load_session_telemetry_snapshot, persist_session_telemetry_snapshot, MessageUsage,
+        SessionTelemetrySnapshotVersion,
+    };
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+    use tokio::time::{timeout, Duration};
+
+    fn sample_execution_preflight_metadata(
+        status: agendao_tool::ExecutionPreflightStatus,
+        issues: Vec<agendao_tool::ExecutionPreflightIssue>,
+        attachment_count: usize,
+    ) -> HashMap<String, serde_json::Value> {
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            agendao_tool::EXECUTION_PREFLIGHT_METADATA_KEY.to_string(),
+            serde_json::to_value(agendao_tool::ExecutionPreflightMetadata {
+                runner: "read".to_string(),
+                subject: "/tmp/sample.pdf".to_string(),
+                status,
+                issues,
+                output: "PDF read successfully".to_string(),
+                metadata: HashMap::new(),
+                attachment_count,
+            })
+            .expect("execution preflight metadata should serialize"),
+        );
+        metadata
+    }
+
+    #[test]
+    fn telemetry_snapshot_syncs_runtime_usage_from_session_when_missing() {
+        let mut session = Session::new("session-1".to_string(), ".".to_string());
+        let assistant = session.add_assistant_message();
+        assistant.usage = Some(agendao_session::MessageUsage {
+            input_tokens: 12,
+            output_tokens: 8,
+            reasoning_tokens: 3,
+            cache_write_tokens: 2,
+            cache_read_tokens: 1,
+            cache_miss_tokens: 0,
+            context_tokens: 0,
+            total_cost: 0.42,
+        });
+
+        let mut runtime = SessionRuntimeState::new("session-1");
+        let usage = runtime.usage.clone().unwrap_or_else(|| session.get_usage());
+        runtime.usage = Some(usage.clone());
+
+        assert_eq!(usage.input_tokens, 12);
+        assert_eq!(usage.output_tokens, 8);
+        assert_eq!(runtime.usage.as_ref().map(|v| v.total_cost), Some(0.42));
+    }
+
+    async fn seed_permission_session(state: &ServerState) -> (String, Session) {
+        let mut session = {
+            let mut sessions = state.sessions.lock().await;
+            sessions.create("project", "/tmp/project")
+        };
+        let sid = session.id.clone();
+        session.insert_metadata(
+            PERMISSION_GRANTED_BY_TURN_COUNT_METADATA_KEY.to_string(),
+            serde_json::json!(2),
+        );
+        session.insert_metadata(
+            PERMISSION_GRANTED_BY_SESSION_COUNT_METADATA_KEY.to_string(),
+            serde_json::json!(3),
+        );
+        session.insert_metadata(
+            PERMISSION_GRANTED_BY_MATCHER_KIND_METADATA_KEY.to_string(),
+            serde_json::json!({"scope_only":4,"structured_family":1}),
+        );
+        session.insert_metadata(
+            LAST_PERMISSION_MATCHER_KIND_METADATA_KEY.to_string(),
+            serde_json::json!("scope_only"),
+        );
+        session.insert_metadata(
+            LAST_PERMISSION_GRANT_TARGET_METADATA_KEY.to_string(),
+            serde_json::json!("Task flow: create task"),
+        );
+        session.insert_metadata(
+            "last_permission_miss_count".to_string(),
+            serde_json::json!(5),
+        );
+        state
+            .runtime_telemetry
+            .permission_requested(&sid, "perm_1", serde_json::json!({"tool":"task_flow"}))
+            .await;
+        (sid, session)
+    }
+
+    #[test]
+    fn latest_cache_evidence_reads_assistant_metadata() {
+        let mut session = Session::new("session-1".to_string(), ".".to_string());
+        let assistant = session.add_assistant_message();
+        assistant.metadata.insert(
+            agendao_provider::cache::CACHE_EVIDENCE_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "status": "degraded",
+                "severity": "MediumChange",
+                "primary_cause": "prefix changed before the stable boundary",
+                "change_count": 1,
+            }),
+        );
+
+        let summary = latest_cache_evidence(&session).expect("summary");
+
+        assert_eq!(summary["status"], "degraded");
+        assert_eq!(summary["severity"], "MediumChange");
+    }
+
+    #[test]
+    fn latest_provider_diagnostic_summary_reads_assistant_metadata() {
+        let mut session = Session::new("session-1".to_string(), ".".to_string());
+        let assistant = session.add_assistant_message();
+        agendao_provider::ProviderDiagnosticSummary {
+            severity: agendao_provider::ProviderDiagnosticSeverity::HardFail,
+            source: agendao_provider::ProviderDiagnosticSource::RequestValidation,
+            code: "thinking_replay_missing".to_string(),
+            provider_id: "deepseek".to_string(),
+            model_id: Some("deepseek-reasoner".to_string()),
+            message: "missing replay".to_string(),
+        }
+        .attach_to_metadata(&mut assistant.metadata);
+
+        let summary = latest_provider_diagnostic_summary(&session).expect("summary");
+
+        assert_eq!(summary.code, "thinking_replay_missing");
+        assert_eq!(summary.provider_id, "deepseek");
+        assert_eq!(summary.model_id.as_deref(), Some("deepseek-reasoner"));
+    }
+
+    #[test]
+    fn latest_prompt_surface_evidence_reads_assistant_metadata() {
+        let mut session = Session::new("session-1".to_string(), ".".to_string());
+        let assistant = session.add_assistant_message();
+        assistant.metadata.insert(
+            agendao_session::prompt::PROMPT_SURFACE_EVIDENCE_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "severity": "MediumChange",
+                "reason": "surface changed: outputProjectionPolicyHash",
+                "changed_fields": ["outputProjectionPolicyHash"],
+            }),
+        );
+
+        let evidence = latest_prompt_surface_evidence(&session).expect("evidence");
+
+        assert_eq!(
+            evidence.severity,
+            agendao_types::SessionCacheSeverity::MediumChange
+        );
+        assert_eq!(
+            evidence.reason,
+            "surface changed: outputProjectionPolicyHash"
+        );
+        assert_eq!(
+            evidence.changed_fields,
+            vec!["outputProjectionPolicyHash".to_string()]
+        );
+    }
+
+    #[test]
+    fn latest_prompt_surface_evidence_falls_back_to_snapshot_payload() {
+        let mut session = Session::new("session-1".to_string(), ".".to_string());
+        session.insert_metadata(
+            agendao_session::prompt::PROMPT_SURFACE_STATE_SNAPSHOT_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "generation": 7,
+                "evidence": {
+                    "severity": "LowChange",
+                    "reason": "surface changed: ingressPolicyHash",
+                    "changed_fields": ["ingressPolicyHash"]
+                }
+            }),
+        );
+
+        let evidence = latest_prompt_surface_evidence(&session).expect("evidence");
+
+        assert_eq!(
+            evidence.severity,
+            agendao_types::SessionCacheSeverity::LowChange
+        );
+        assert_eq!(
+            evidence.changed_fields,
+            vec!["ingressPolicyHash".to_string()]
+        );
+    }
+
+    #[test]
+    fn context_closure_contract_tracks_compaction_and_cache_explainability() {
+        let usage_books = SessionUsageBooks {
+            request_context_tokens: Some(88_000),
+            live_context_tokens: Some(82_000),
+            workflow_cumulative: WorkflowUsageSummary {
+                input_tokens: 120_000,
+                output_tokens: 18_000,
+                reasoning_tokens: 5_000,
+                cache_write_tokens: 2_000,
+                cache_read_tokens: 34_000,
+                cache_miss_tokens: 7_000,
+                total_cost: 1.60,
+            },
+        };
+        let context_explain = SessionContextExplain {
+            resolved_model: Some("openai/gpt-4o".to_string()),
+            fork: None,
+            raw_history_messages: 18,
+            raw_model_visible_messages: 15,
+            api_view_messages: 8,
+            api_view_estimated_input_tokens: Some(92_000),
+            api_view_body_chars: Some(360_000),
+            live_context_tokens: Some(82_000),
+            last_request_context_tokens: Some(88_000),
+            owner_session_cumulative_tokens: 104_000,
+            workflow_cumulative_tokens: usage_books.workflow_cumulative.total_tokens(),
+        };
+        let context_compaction_summary = ContextCompactionSummary {
+            trigger: "auto_preflight".to_string(),
+            phase: Some("prompt.pre_request".to_string()),
+            reason: Some("request_view_threshold".to_string()),
+            forced: false,
+            request_context_tokens: Some(92_000),
+            live_context_tokens: Some(82_000),
+            limit_tokens: Some(100_000),
+            body_chars: Some(360_000),
+            message_count_before: Some(15),
+            compacted_message_count: Some(7),
+            kept_message_count: Some(8),
+            summary: Some("Compacted 7 messages.".to_string()),
+        };
+        let cache_semantics = SessionCacheSemanticsSummary {
+            basis: agendao_types::SessionCacheSemanticsBasis::ApiView,
+            api_view_messages: 8,
+            trimmed_model_visible_messages: 7,
+            boundary: Some(agendao_types::SessionCacheBoundarySummary {
+                kind: agendao_types::SessionCacheBoundaryKind::Compaction,
+                trigger: "auto_preflight".to_string(),
+                phase: Some("prompt.pre_request".to_string()),
+                reason: Some("request_view_threshold".to_string()),
+                message_count_before: Some(15),
+                compacted_message_count: Some(7),
+                kept_message_count: Some(8),
+                trimmed_model_visible_messages: 7,
+                likely_changed_prefix: true,
+                possible_cache_evidence: true,
+            }),
+            cache_evidence: Some(agendao_types::SessionCacheEvidenceExplain {
+                status: "degraded".to_string(),
+                severity: agendao_types::SessionCacheSeverity::MediumChange,
+                primary_cause: Some("prefix changed before the stable boundary".to_string()),
+                change_count: 1,
+            }),
+            prompt_surface_evidence: Some(PromptSurfaceEvidenceSummary {
+                severity: agendao_types::SessionCacheSeverity::LowChange,
+                reason: "surface changed: ingressPolicyHash".to_string(),
+                changed_fields: vec!["ingressPolicyHash".to_string()],
+            }),
+            label: Some("boundary recorded · prefix changed".to_string()),
+        };
+        let governance_summary = ContextPressureGovernanceSummary {
+            trigger: "step_checkpoint_gate".to_string(),
+            phase: "scheduler.step_checkpoint".to_string(),
+            status: agendao_types::ContextPressureGovernanceStatus::Compacted,
+            reason: Some("request view exceeded safe checkpoint limit".to_string()),
+            request_context_tokens: Some(95_000),
+            live_context_tokens: Some(82_000),
+            limit_tokens: Some(100_000),
+            body_chars: Some(360_000),
+            request_pressure_percent: Some(95),
+            live_pressure_percent: Some(82),
+            compaction_attempted: true,
+            compaction_succeeded: true,
+            blocking: false,
+            lightweight_trim: None,
+            decision_trace: None,
+        };
+        let lifecycle_summary = ContextCompactionLifecycleSummary {
+            trigger: "step_checkpoint_gate".to_string(),
+            phase: Some("scheduler.step_checkpoint".to_string()),
+            reason: Some("request view exceeded safe checkpoint limit".to_string()),
+            status: agendao_types::ContextCompactionLifecycleStatus::Installed,
+            forced: false,
+            request_context_tokens: Some(95_000),
+            live_context_tokens: Some(82_000),
+            limit_tokens: Some(100_000),
+            body_chars: Some(360_000),
+            installed: Some(agendao_types::ContextCompactionInstalledDiagnostics {
+                request_context_tokens: Some(64_000),
+                live_context_tokens: Some(61_000),
+                body_chars: Some(240_000),
+                cache_explanation: Some(
+                    "boundary recorded · session compacted before the next request".to_string(),
+                ),
+            }),
+        };
+
+        let contract = build_context_closure_contract(
+            Some(&context_explain),
+            &usage_books,
+            Some(&cache_semantics),
+            Some(&context_compaction_summary),
+            Some(&lifecycle_summary),
+            Some(&governance_summary),
+            2,
+        )
+        .expect("contract should build");
+
+        assert!(contract.prefix_stability.tracked_on_api_view);
+        assert!(contract.prefix_stability.prefix_change_detected);
+        assert_eq!(
+            contract.prefix_stability.explanation.as_deref(),
+            Some("boundary recorded · prefix changed")
+        );
+        assert!(contract.compaction_boundary.boundary_recorded);
+        assert_eq!(
+            contract.compaction_boundary.phase.as_deref(),
+            Some("scheduler.step_checkpoint")
+        );
+        assert_eq!(
+            contract.compaction_boundary.lifecycle_status,
+            Some(agendao_types::ContextCompactionLifecycleStatus::Installed)
+        );
+        assert_eq!(
+            contract
+                .compaction_boundary
+                .installed
+                .as_ref()
+                .and_then(|installed| installed.request_context_tokens),
+            Some(64_000)
+        );
+        assert_eq!(
+            contract
+                .compaction_boundary
+                .installed
+                .as_ref()
+                .and_then(|installed| installed.live_context_tokens),
+            Some(61_000)
+        );
+        assert_eq!(
+            contract.compaction_boundary.request_pressure_percent,
+            Some(95)
+        );
+        assert!(contract.compaction_boundary.compaction_attempted);
+        assert!(contract.compaction_boundary.compaction_succeeded);
+        assert!(!contract.compaction_boundary.blocking);
+        assert!(contract.cache_explainability.issue_present);
+        assert!(contract.cache_explainability.explained);
+        assert_eq!(
+            contract.cache_explainability.source,
+            agendao_types::SessionCacheExplainabilitySource::CacheEvidence
+        );
+        assert_eq!(
+            contract.cache_explainability.severity,
+            Some(agendao_types::SessionCacheSeverity::MediumChange)
+        );
+        assert_eq!(
+            contract
+                .child_history_isolation
+                .attached_subtree_session_count,
+            2
+        );
+        assert_eq!(
+            contract
+                .child_history_isolation
+                .attached_subtree_cumulative_tokens,
+            usage_books.workflow_cumulative.total_tokens()
+                - context_explain.owner_session_cumulative_tokens
+        );
+        assert!(contract.child_history_isolation.owner_local_live_prefix);
+        assert!(
+            !contract
+                .child_history_isolation
+                .child_history_in_live_prefix_detected
+        );
+    }
+
+    #[test]
+    fn context_closure_contract_prefers_installed_boundary_metrics_without_governance_summary() {
+        let usage_books = SessionUsageBooks {
+            request_context_tokens: Some(88_000),
+            live_context_tokens: Some(82_000),
+            workflow_cumulative: WorkflowUsageSummary::default(),
+        };
+        let context_explain = SessionContextExplain {
+            resolved_model: Some("openai/gpt-4o".to_string()),
+            fork: None,
+            raw_history_messages: 18,
+            raw_model_visible_messages: 15,
+            api_view_messages: 8,
+            api_view_estimated_input_tokens: Some(71_000),
+            api_view_body_chars: Some(250_000),
+            live_context_tokens: Some(68_000),
+            last_request_context_tokens: Some(88_000),
+            owner_session_cumulative_tokens: 104_000,
+            workflow_cumulative_tokens: 104_000,
+        };
+        let context_compaction_summary = ContextCompactionSummary {
+            trigger: "auto_preflight".to_string(),
+            phase: Some("prompt.pre_request".to_string()),
+            reason: Some("request_view_threshold".to_string()),
+            forced: false,
+            request_context_tokens: Some(92_000),
+            live_context_tokens: Some(82_000),
+            limit_tokens: Some(100_000),
+            body_chars: Some(360_000),
+            message_count_before: Some(15),
+            compacted_message_count: Some(7),
+            kept_message_count: Some(8),
+            summary: Some("Compacted 7 messages.".to_string()),
+        };
+        let lifecycle_summary = ContextCompactionLifecycleSummary {
+            trigger: "auto_preflight".to_string(),
+            phase: Some("prompt.pre_request".to_string()),
+            reason: Some("request_view_threshold".to_string()),
+            status: agendao_types::ContextCompactionLifecycleStatus::Installed,
+            forced: false,
+            request_context_tokens: Some(92_000),
+            live_context_tokens: Some(82_000),
+            limit_tokens: Some(100_000),
+            body_chars: Some(360_000),
+            installed: Some(agendao_types::ContextCompactionInstalledDiagnostics {
+                request_context_tokens: Some(71_000),
+                live_context_tokens: Some(68_000),
+                body_chars: Some(250_000),
+                cache_explanation: Some(
+                    "boundary recorded · 7 earlier messages trimmed from the API view".to_string(),
+                ),
+            }),
+        };
+
+        let contract = build_context_closure_contract(
+            Some(&context_explain),
+            &usage_books,
+            None,
+            Some(&context_compaction_summary),
+            Some(&lifecycle_summary),
+            None,
+            0,
+        )
+        .expect("contract should build");
+
+        assert_eq!(
+            contract.compaction_boundary.request_pressure_percent,
+            Some(71)
+        );
+        assert_eq!(contract.compaction_boundary.live_pressure_percent, Some(68));
+        assert_eq!(
+            contract
+                .compaction_boundary
+                .installed
+                .as_ref()
+                .and_then(|installed| installed.request_context_tokens),
+            Some(71_000)
+        );
+    }
+
+    #[test]
+    fn latest_context_compaction_summary_reads_assistant_metadata() {
+        let mut session = Session::new("session-1".to_string(), ".".to_string());
+        let assistant = session.add_assistant_message();
+        assistant.metadata.insert(
+            agendao_session::prompt::CONTEXT_COMPACTION_RECORD_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "trigger": "overflow_recovery",
+                "phase": "prompt.provider_overflow",
+                "reason": "provider_overflow",
+                "forced": true,
+                "request_context_tokens": 120000_u64,
+                "limit_tokens": 100000_u64,
+                "body_chars": 480000,
+                "message_count_before": 6,
+                "compacted_message_count": 3,
+                "kept_message_count": 3,
+                "summary": "Compacted 3 messages."
+            }),
+        );
+
+        let summary = latest_context_compaction_summary(&session).expect("summary");
+
+        assert_eq!(summary.trigger, "overflow_recovery");
+        assert_eq!(summary.phase.as_deref(), Some("prompt.provider_overflow"));
+        assert_eq!(summary.reason.as_deref(), Some("provider_overflow"));
+        assert!(summary.forced);
+        assert_eq!(summary.compacted_message_count, Some(3));
+        assert_eq!(summary.summary.as_deref(), Some("Compacted 3 messages."));
+    }
+
+    #[test]
+    fn latest_context_compaction_summary_prefers_packet_summary_text() {
+        let mut session = Session::new("session-1".to_string(), ".".to_string());
+        let assistant = session.add_assistant_message();
+        assistant.metadata.insert(
+            agendao_session::prompt::CONTEXT_COMPACTION_RECORD_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "trigger": "overflow_recovery",
+                "phase": "prompt.provider_overflow",
+                "reason": "provider_overflow",
+                "forced": true,
+                "summary": "Legacy summary text."
+            }),
+        );
+        assistant.metadata.insert(
+            agendao_session::prompt::CONTEXT_COMPACTION_CONTINUITY_PACKET_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "version": 1,
+                "latest_compaction_summary": {
+                    "message_id": assistant.id,
+                    "summary": "Packet-owned summary text."
+                }
+            }),
+        );
+
+        let summary = latest_context_compaction_summary(&session).expect("summary");
+        assert_eq!(summary.trigger, "overflow_recovery");
+        assert_eq!(
+            summary.summary.as_deref(),
+            Some("Packet-owned summary text.")
+        );
+    }
+
+    #[test]
+    fn latest_compaction_continuity_inspection_prefers_packet() {
+        let mut session = Session::new("session-1".to_string(), ".".to_string());
+        let assistant = session.add_assistant_message();
+        assistant.metadata.insert(
+            agendao_session::prompt::CONTEXT_COMPACTION_RECORD_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "trigger": "overflow_recovery",
+                "forced": true,
+                "summary": "Legacy summary text."
+            }),
+        );
+        assistant.metadata.insert(
+            agendao_session::prompt::CONTEXT_COMPACTION_CONTINUITY_PACKET_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "version": 1,
+                "eligible_message_count": 12,
+                "exact_recent_tail_count": 5,
+                "omitted_older_turns": 7,
+                "working_ledger": [{ "kind": "latest_user_turn", "text": "continue build" }],
+                "recall_policy": "recent_tail_plus_memory",
+                "latest_compaction_summary": {
+                    "message_id": assistant.id,
+                    "summary": "Packet-owned summary text."
+                }
+            }),
+        );
+
+        let raw_summary = latest_context_compaction_summary(&session).expect("summary");
+        let inspection = latest_compaction_continuity_inspection(&session, Some(&raw_summary))
+            .expect("inspection");
+
+        assert_eq!(
+            inspection.source,
+            agendao_types::SessionCompactionContinuityInspectionSource::ContinuityPacket
+        );
+        assert_eq!(
+            inspection.summary_text.as_deref(),
+            Some("Packet-owned summary text.")
+        );
+        assert_eq!(inspection.exact_recent_tail_count, Some(5));
+        assert_eq!(inspection.omitted_older_turns, Some(7));
+        assert!(inspection.has_working_ledger);
+        assert_eq!(
+            inspection.recall_policy.as_deref(),
+            Some("recent_tail_plus_memory")
+        );
+    }
+
+    #[test]
+    fn latest_context_compaction_lifecycle_summary_reads_session_metadata() {
+        let mut session = Session::new("session-1".to_string(), ".".to_string());
+        session.insert_metadata(
+            agendao_session::prompt::CONTEXT_COMPACTION_LIFECYCLE_SUMMARY_METADATA_KEY,
+            serde_json::json!({
+                "trigger": "auto_preflight",
+                "phase": "prompt.pre_request",
+                "reason": "request_view_threshold",
+                "status": "installed",
+                "forced": false,
+                "request_context_tokens": 92000_u64,
+                "live_context_tokens": 82000_u64,
+                "limit_tokens": 100000_u64,
+                "body_chars": 360000,
+                "installed": {
+                    "request_context_tokens": 71000_u64,
+                    "live_context_tokens": 68000_u64,
+                    "body_chars": 250000,
+                    "cache_explanation": "boundary recorded · 7 earlier messages trimmed from the API view"
+                }
+            }),
+        );
+
+        let summary = latest_context_compaction_lifecycle_summary(&session).expect("summary");
+
+        assert_eq!(summary.trigger, "auto_preflight");
+        assert_eq!(summary.phase.as_deref(), Some("prompt.pre_request"));
+        assert_eq!(summary.reason.as_deref(), Some("request_view_threshold"));
+        assert_eq!(
+            summary.status,
+            agendao_types::ContextCompactionLifecycleStatus::Installed
+        );
+        assert_eq!(summary.request_context_tokens, Some(92_000));
+        assert_eq!(
+            summary
+                .installed
+                .as_ref()
+                .and_then(|installed| installed.request_context_tokens),
+            Some(71_000)
+        );
+    }
+
+    #[test]
+    fn latest_execution_preflight_summary_prefers_tool_call_state_metadata() {
+        let mut session = Session::new("session-1".to_string(), ".".to_string());
+        let call_id = "call-1";
+
+        let mut assistant = agendao_session::SessionMessage::assistant(session.id.clone());
+        assistant.add_tool_call(
+            call_id,
+            "media_inspect",
+            serde_json::json!({ "file_path": "/tmp/sample.pdf" }),
+        );
+        if let Some(agendao_session::MessagePart {
+            part_type: agendao_session::PartType::ToolCall { status, state, .. },
+            ..
+        }) = assistant.parts.last_mut()
+        {
+            *status = agendao_session::ToolCallStatus::Completed;
+            *state = Some(agendao_session::ToolState::Completed {
+                input: serde_json::json!({ "file_path": "/tmp/sample.pdf" }),
+                output: "ok".to_string(),
+                title: "Media Inspect".to_string(),
+                metadata: sample_execution_preflight_metadata(
+                    agendao_tool::ExecutionPreflightStatus::Ready,
+                    Vec::new(),
+                    1,
+                ),
+                time: agendao_session::CompletedTime {
+                    start: 1,
+                    end: 2,
+                    compacted: None,
+                },
+                attachments: None,
+            });
+        }
+        session.push_message(assistant);
+
+        let mut tool = agendao_session::SessionMessage::tool(session.id.clone());
+        tool.add_tool_result(call_id, "delegated result", false);
+        if let Some(agendao_session::MessagePart {
+            part_type: agendao_session::PartType::ToolResult { metadata, .. },
+            ..
+        }) = tool.parts.last_mut()
+        {
+            *metadata = Some(sample_execution_preflight_metadata(
+                agendao_tool::ExecutionPreflightStatus::SoftWarn,
+                vec![agendao_tool::ExecutionPreflightIssue {
+                    severity: agendao_tool::ExecutionPreflightSeverity::SoftWarn,
+                    code: "attachment_missing".to_string(),
+                    message: "attachment payload missing".to_string(),
+                }],
+                0,
+            ));
+        }
+        session.push_message(tool);
+
+        let summary = latest_execution_preflight_summary(&session).expect("summary");
+
+        assert_eq!(summary.tool_call_id, call_id);
+        assert_eq!(summary.tool_name.as_deref(), Some("media_inspect"));
+        assert_eq!(
+            summary.source,
+            SessionExecutionPreflightSource::ToolCallState
+        );
+        assert_eq!(summary.status, agendao_tool::ExecutionPreflightStatus::Ready);
+        assert_eq!(summary.attachment_count, 1);
+        assert!(summary.issues.is_empty());
+    }
+
+    #[test]
+    fn latest_execution_preflight_summary_falls_back_to_tool_result_metadata() {
+        let mut session = Session::new("session-1".to_string(), ".".to_string());
+        let call_id = "call-2";
+
+        let mut assistant = agendao_session::SessionMessage::assistant(session.id.clone());
+        assistant.add_tool_call(
+            call_id,
+            "media_inspect",
+            serde_json::json!({ "file_path": "/tmp/sample.pdf" }),
+        );
+        session.push_message(assistant);
+
+        let mut tool = agendao_session::SessionMessage::tool(session.id.clone());
+        tool.add_tool_result(call_id, "delegated result", false);
+        if let Some(agendao_session::MessagePart {
+            part_type: agendao_session::PartType::ToolResult { metadata, .. },
+            ..
+        }) = tool.parts.last_mut()
+        {
+            *metadata = Some(sample_execution_preflight_metadata(
+                agendao_tool::ExecutionPreflightStatus::SoftWarn,
+                vec![agendao_tool::ExecutionPreflightIssue {
+                    severity: agendao_tool::ExecutionPreflightSeverity::SoftWarn,
+                    code: "attachment_missing".to_string(),
+                    message: "attachment payload missing".to_string(),
+                }],
+                0,
+            ));
+        }
+        session.push_message(tool);
+
+        let summary = latest_execution_preflight_summary(&session).expect("summary");
+
+        assert_eq!(summary.tool_call_id, call_id);
+        assert_eq!(summary.tool_name.as_deref(), Some("media_inspect"));
+        assert_eq!(
+            summary.source,
+            SessionExecutionPreflightSource::ToolResultPart
+        );
+        assert_eq!(
+            summary.status,
+            agendao_tool::ExecutionPreflightStatus::SoftWarn
+        );
+        assert_eq!(summary.issues.len(), 1);
+    }
+
+    #[test]
+    fn telemetry_snapshot_serializes_authority_contract_fields() {
+        let mut runtime = SessionRuntimeState::new("session-1");
+        runtime.active_stage_id = Some("stage-1".to_string());
+        runtime.active_stage_count = 1;
+        let runtime_usage = SessionUsage {
+            input_tokens: 10,
+            output_tokens: 20,
+            reasoning_tokens: 3,
+            cache_write_tokens: 4,
+            cache_read_tokens: 5,
+            cache_miss_tokens: 0,
+            context_tokens: 0,
+            total_cost: 0.12,
+        };
+        runtime.usage = Some(runtime_usage.clone());
+
+        let snapshot = SessionTelemetrySnapshot {
+            runtime,
+            stages: vec![StageSummary {
+                stage_id: "stage-1".to_string(),
+                stage_name: "Plan".to_string(),
+                index: Some(1),
+                total: Some(2),
+                step: Some(1),
+                step_total: Some(3),
+                status: StageStatus::Waiting,
+                prompt_tokens: Some(11),
+                context_tokens: None,
+                completion_tokens: Some(7),
+                reasoning_tokens: Some(5),
+                cache_read_tokens: Some(2),
+                cache_miss_tokens: Some(0),
+                cache_write_tokens: Some(1),
+                focus: Some("inspect scheduler".to_string()),
+                last_event: Some("scheduler.stage.waiting".to_string()),
+                waiting_on: Some("tool".to_string()),
+                activity: Some("Reading scheduler telemetry".to_string()),
+                estimated_context_tokens: Some(99),
+                skill_tree_budget: Some(512),
+                skill_tree_truncation_strategy: Some("head".to_string()),
+                skill_tree_truncated: Some(true),
+                retry_attempt: Some(2),
+                active_agent_count: 1,
+                active_tool_count: 2,
+                attached_session_count: 0,
+                primary_attached_session_id: None,
+            }],
+            topology: SessionExecutionTopology {
+                session_id: "session-1".to_string(),
+                active_count: 1,
+                done_count: 0,
+                running_count: 0,
+                waiting_count: 1,
+                cancelling_count: 0,
+                retry_count: 0,
+                updated_at: Some(123),
+                roots: Vec::new(),
+            },
+            usage: SessionUsage {
+                input_tokens: 10,
+                output_tokens: 20,
+                reasoning_tokens: 3,
+                cache_write_tokens: 4,
+                cache_read_tokens: 5,
+                cache_miss_tokens: 0,
+                context_tokens: 0,
+                total_cost: 0.12,
+            },
+            usage_books: SessionUsageBooks {
+                request_context_tokens: Some(10),
+                live_context_tokens: None,
+                workflow_cumulative: runtime_usage.workflow_usage_summary(),
+            },
+            tool_repair_summary: None,
+            model_tool_repair_summary: None,
+            repair_query_snapshot: None,
+            tool_trajectory_quality: None,
+            tool_result_governance: None,
+            pending_permission_count: 0,
+            pending_followup_count: 0,
+            granted_by_turn_count: 0,
+            granted_by_session_count: 0,
+            granted_by_matcher_kind: BTreeMap::new(),
+            last_permission_matcher_kind: None,
+            last_permission_grant_target: None,
+            last_permission_miss_count: 0,
+            pending_steering_count: 0,
+            consumed_steering_count: 0,
+            last_steering_injected_at: None,
+            last_steering_source_session_id: None,
+            memory: None,
+            cache_evidence: None,
+            context_explain: Some(SessionContextExplain {
+                resolved_model: Some("openai/gpt-4o".to_string()),
+                fork: None,
+                raw_history_messages: 18,
+                raw_model_visible_messages: 15,
+                api_view_messages: 8,
+                api_view_estimated_input_tokens: Some(92_000),
+                api_view_body_chars: Some(360_000),
+                live_context_tokens: None,
+                last_request_context_tokens: Some(10),
+                owner_session_cumulative_tokens: runtime_usage.session_cumulative_tokens(),
+                workflow_cumulative_tokens: runtime_usage.workflow_usage_summary().total_tokens(),
+            }),
+            ownership: Some(SessionOwnershipSummary {
+                context_kind: agendao_types::SessionContextKind::RootSessionContinuity,
+                handoff_mode: agendao_types::SessionHandoffMode::SelfContinuity,
+                owns_prompt_continuity: true,
+                compact_owner: true,
+                provider_model_role: agendao_types::SessionProviderModelRole::RequestShapeOnly,
+                workflow_usage_role: agendao_types::SessionWorkflowUsageRole::ObservationOnly,
+            }),
+            context_compaction_summary: Some(ContextCompactionSummary {
+                trigger: "auto_preflight".to_string(),
+                phase: Some("prompt.pre_request".to_string()),
+                reason: Some("request_view_threshold".to_string()),
+                forced: false,
+                request_context_tokens: Some(92_000),
+                live_context_tokens: None,
+                limit_tokens: Some(100_000),
+                body_chars: Some(360_000),
+                message_count_before: Some(14),
+                compacted_message_count: Some(7),
+                kept_message_count: Some(7),
+                summary: Some("Compacted 7 messages.".to_string()),
+            }),
+            compaction_continuity: None,
+            context_compaction_lifecycle_summary: Some(ContextCompactionLifecycleSummary {
+                trigger: "auto_preflight".to_string(),
+                phase: Some("prompt.pre_request".to_string()),
+                reason: Some("request_view_threshold".to_string()),
+                status: agendao_types::ContextCompactionLifecycleStatus::Installed,
+                forced: false,
+                request_context_tokens: Some(92_000),
+                live_context_tokens: None,
+                limit_tokens: Some(100_000),
+                body_chars: Some(360_000),
+                installed: Some(agendao_types::ContextCompactionInstalledDiagnostics {
+                    request_context_tokens: Some(71_000),
+                    live_context_tokens: Some(68_000),
+                    body_chars: Some(250_000),
+                    cache_explanation: Some(
+                        "boundary recorded · 7 earlier messages trimmed from the API view"
+                            .to_string(),
+                    ),
+                }),
+            }),
+            context_pressure_governance_summary: None,
+            decision_trace: None,
+            cache_semantics: Some(SessionCacheSemanticsSummary {
+                basis: agendao_types::SessionCacheSemanticsBasis::ApiView,
+                api_view_messages: 8,
+                trimmed_model_visible_messages: 7,
+                boundary: Some(agendao_types::SessionCacheBoundarySummary {
+                    kind: agendao_types::SessionCacheBoundaryKind::Compaction,
+                    trigger: "auto_preflight".to_string(),
+                    phase: Some("prompt.pre_request".to_string()),
+                    reason: Some("request_view_threshold".to_string()),
+                    message_count_before: Some(14),
+                    compacted_message_count: Some(7),
+                    kept_message_count: Some(7),
+                    trimmed_model_visible_messages: 7,
+                    likely_changed_prefix: true,
+                    possible_cache_evidence: true,
+                }),
+                cache_evidence: Some(agendao_types::SessionCacheEvidenceExplain {
+                    status: "degraded".to_string(),
+                    severity: agendao_types::SessionCacheSeverity::MediumChange,
+                    primary_cause: Some(
+                        "prefix changed before the stable boundary"
+                            .to_string(),
+                    ),
+                    change_count: 1,
+                }),
+                prompt_surface_evidence: Some(PromptSurfaceEvidenceSummary {
+                    severity: agendao_types::SessionCacheSeverity::HighChange,
+                    reason: "surface changed: toolSurfaceHash".to_string(),
+                    changed_fields: vec!["toolSurfaceHash".to_string()],
+                }),
+                label: Some(
+                    "boundary recorded · prefix changed"
+                        .to_string(),
+                ),
+            }),
+            context_closure_contract: Some(agendao_types::SessionContextClosureContract {
+                prefix_stability: agendao_types::SessionPrefixStabilityContract {
+                    basis: agendao_types::SessionCacheSemanticsBasis::ApiView,
+                    tracked_on_api_view: true,
+                    api_view_messages: 8,
+                    trimmed_model_visible_messages: 7,
+                    prefix_change_detected: true,
+                    explanation: Some(
+                        "boundary recorded · prefix changed"
+                            .to_string(),
+                    ),
+                },
+                compaction_boundary: agendao_types::SessionCompactionBoundaryContract {
+                    boundary_recorded: true,
+                    phase: Some("prompt.pre_request".to_string()),
+                    trigger: Some("auto_preflight".to_string()),
+                    reason: Some("request_view_threshold".to_string()),
+                    lifecycle_status: Some(
+                        agendao_types::ContextCompactionLifecycleStatus::Installed,
+                    ),
+                    governance_status: None,
+                    request_pressure_percent: Some(92),
+                    live_pressure_percent: None,
+                    compaction_attempted: true,
+                    compaction_succeeded: true,
+                    blocking: false,
+                    installed: Some(agendao_types::ContextCompactionInstalledDiagnostics {
+                        request_context_tokens: Some(71_000),
+                        live_context_tokens: Some(68_000),
+                        body_chars: Some(250_000),
+                        cache_explanation: Some(
+                            "boundary recorded · 7 earlier messages trimmed from the API view"
+                                .to_string(),
+                        ),
+                    }),
+                },
+                cache_explainability: agendao_types::SessionCacheExplainabilityContract {
+                    issue_present: true,
+                    explained: true,
+                    source: agendao_types::SessionCacheExplainabilitySource::CacheEvidence,
+                    severity: Some(agendao_types::SessionCacheSeverity::MediumChange),
+                    explanation: Some(
+                        "boundary recorded · prefix changed"
+                            .to_string(),
+                    ),
+                },
+                child_history_isolation: agendao_types::SessionChildHistoryIsolationContract {
+                    attached_subtree_session_count: 0,
+                    owner_session_cumulative_tokens: runtime_usage.session_cumulative_tokens(),
+                    workflow_cumulative_tokens: runtime_usage
+                        .workflow_usage_summary()
+                        .total_tokens(),
+                    attached_subtree_cumulative_tokens: 0,
+                    owner_live_context_tokens: None,
+                    owner_local_live_prefix: true,
+                    child_history_in_live_prefix_detected: false,
+                    explanation:
+                        "No attached subtree sessions were observed; the live prefix remains owner-local."
+                            .to_string(),
+                },
+            }),
+            prompt_surface_evidence: Some(PromptSurfaceEvidenceSummary {
+                severity: agendao_types::SessionCacheSeverity::HighChange,
+                reason: "surface changed: toolSurfaceHash".to_string(),
+                changed_fields: vec!["toolSurfaceHash".to_string()],
+            }),
+            ingress_stabilization: Some(serde_json::json!({
+                "source": "web",
+                "policy": agendao_session::prompt::INGRESS_POLICY_ENTRY_METADATA_ONLY,
+                "batch_count": 1,
+            })),
+            execution_preflight_summary: Some(SessionExecutionPreflightSummary {
+                tool_call_id: "call-1".to_string(),
+                tool_name: Some("media_inspect".to_string()),
+                source: SessionExecutionPreflightSource::ToolCallState,
+                runner: "read".to_string(),
+                subject: "/tmp/sample.pdf".to_string(),
+                status: agendao_tool::ExecutionPreflightStatus::Ready,
+                issues: Vec::new(),
+                attachment_count: 1,
+            }),
+            provider_diagnostic_summary: Some(agendao_provider::ProviderDiagnosticSummary {
+                severity: agendao_provider::ProviderDiagnosticSeverity::HardFail,
+                source: agendao_provider::ProviderDiagnosticSource::ApiErrorRewrite,
+                code: "thinking_replay_rejected".to_string(),
+                provider_id: "deepseek".to_string(),
+                model_id: Some("deepseek-reasoner".to_string()),
+                message: "rejected replay".to_string(),
+            }),
+            runtime_protocol: None,
+            event_bus_telemetry: None,
+        };
+
+        let value = serde_json::to_value(&snapshot).expect("snapshot should serialize");
+
+        assert!(value.get("runtime").is_some());
+        assert!(value.get("stages").is_some());
+        assert!(value.get("topology").is_some());
+        assert!(value.get("usage").is_some());
+        assert_eq!(value["runtime"]["active_stage_id"], "stage-1");
+        assert_eq!(value["stages"][0]["status"], "waiting");
+        assert_eq!(value["stages"][0]["skill_tree_truncated"], true);
+        assert_eq!(value["topology"]["waiting_count"], 1);
+        assert_eq!(value["usage"]["total_cost"], 0.12);
+        assert_eq!(value["context_explain"]["api_view_messages"], 8);
+        assert_eq!(
+            value["ownership"]["context_kind"],
+            "root_session_continuity"
+        );
+        assert_eq!(value["ownership"]["compact_owner"], true);
+        assert_eq!(
+            value["context_explain"]["workflow_cumulative_tokens"],
+            runtime_usage.workflow_usage_summary().total_tokens()
+        );
+        assert_eq!(
+            value["context_compaction_summary"]["reason"],
+            "request_view_threshold"
+        );
+        assert_eq!(
+            value["context_compaction_summary"]["compacted_message_count"],
+            7
+        );
+        assert_eq!(value["cache_semantics"]["basis"], "api_view");
+        assert_eq!(
+            value["cache_semantics"]["label"],
+            "boundary recorded · prefix changed"
+        );
+        assert_eq!(
+            value["context_closure_contract"]["prefix_stability"]["prefix_change_detected"],
+            true
+        );
+        assert_eq!(
+            value["context_closure_contract"]["compaction_boundary"]["request_pressure_percent"],
+            92
+        );
+        assert_eq!(
+            value["context_closure_contract"]["cache_explainability"]["source"],
+            "cache_evidence"
+        );
+        assert_eq!(
+            value["context_closure_contract"]["child_history_isolation"]["owner_local_live_prefix"],
+            true
+        );
+        assert_eq!(
+            value["prompt_surface_evidence"]["changed_fields"][0],
+            "toolSurfaceHash"
+        );
+        assert_eq!(
+            value["ingress_stabilization"]["policy"],
+            agendao_session::prompt::INGRESS_POLICY_ENTRY_METADATA_ONLY
+        );
+        assert_eq!(value["execution_preflight_summary"]["runner"], "read");
+        assert_eq!(
+            value["execution_preflight_summary"]["source"],
+            "tool_call_state"
+        );
+        assert_eq!(
+            value["provider_diagnostic_summary"]["code"],
+            "thinking_replay_rejected"
+        );
+        assert_eq!(
+            value["provider_diagnostic_summary"]["provider_id"],
+            "deepseek"
+        );
+    }
+
+    #[tokio::test]
+    async fn permission_telemetry_read_model_surfaces_runtime_and_persisted_fields() {
+        let state = Arc::new(ServerState::new());
+        let (session_id, mut session) = seed_permission_session(&state).await;
+
+        let runtime_snapshot = build_session_telemetry_snapshot(&state, &session_id, &session)
+            .await
+            .expect("runtime snapshot should build");
+        assert_eq!(runtime_snapshot.pending_permission_count, 1);
+        assert_eq!(runtime_snapshot.granted_by_turn_count, 2);
+        assert_eq!(runtime_snapshot.granted_by_session_count, 3);
+        assert_eq!(
+            runtime_snapshot.granted_by_matcher_kind.get("scope_only"),
+            Some(&4)
+        );
+        assert_eq!(
+            runtime_snapshot.last_permission_matcher_kind.as_deref(),
+            Some("scope_only")
+        );
+        assert_eq!(
+            runtime_snapshot.last_permission_grant_target.as_deref(),
+            Some("Task flow: create task")
+        );
+        assert_eq!(runtime_snapshot.last_permission_miss_count, 5);
+        let runtime_protocol = runtime_snapshot
+            .runtime_protocol
+            .as_ref()
+            .expect("runtime protocol summary should exist");
+        assert_eq!(
+            runtime_protocol.prompt_ingress,
+            PromptIngressDisposition::BlockedOnPermission
+        );
+        assert!(runtime_protocol.permission.pending);
+        assert_eq!(
+            runtime_protocol.permission.pending_permission_id.as_deref(),
+            Some("perm_1")
+        );
+        assert_eq!(
+            runtime_protocol.permission.pending_tool.as_deref(),
+            Some("task_flow")
+        );
+
+        persist_session_telemetry_metadata(&state, &mut session).await;
+
+        let persisted = load_session_telemetry_snapshot(&session)
+            .expect("persisted snapshot should round-trip");
+        assert_eq!(persisted.version, SessionTelemetrySnapshotVersion::V6);
+        assert_eq!(persisted.pending_permission_count, 1);
+        assert_eq!(persisted.granted_by_turn_count, 2);
+        assert_eq!(persisted.granted_by_session_count, 3);
+        assert_eq!(
+            persisted.granted_by_matcher_kind.get("scope_only"),
+            Some(&4)
+        );
+        assert_eq!(
+            persisted.last_permission_matcher_kind.as_deref(),
+            Some("scope_only")
+        );
+        assert_eq!(
+            persisted.last_permission_grant_target.as_deref(),
+            Some("Task flow: create task")
+        );
+        assert_eq!(persisted.last_permission_miss_count, 5);
+    }
+
+    #[tokio::test]
+    async fn runtime_protocol_summary_surfaces_interrupt_state() {
+        let state = Arc::new(ServerState::new());
+        let session = {
+            let mut sessions = state.sessions.lock().await;
+            let session = sessions.create("project", "/tmp/project");
+            let session_id = session.id.clone();
+            sessions
+                .get(&session_id)
+                .cloned()
+                .expect("session should exist")
+        };
+        state
+            .runtime_telemetry
+            .set_session_run_status(&session.id, SessionRunStatus::Busy)
+            .await;
+        state
+            .runtime_telemetry
+            .interrupt_requested(
+                &session.id,
+                crate::session_runtime::state::InterruptTarget::Run,
+            )
+            .await;
+
+        let snapshot = build_session_telemetry_snapshot(&state, &session.id, &session)
+            .await
+            .expect("runtime snapshot should build");
+        let runtime_protocol = snapshot
+            .runtime_protocol
+            .expect("runtime protocol summary should exist");
+        assert_eq!(
+            runtime_protocol.prompt_ingress,
+            PromptIngressDisposition::AwaitingInterrupt
+        );
+        assert_eq!(
+            runtime_protocol.interrupt.phase,
+            crate::session_runtime::state::InterruptPhase::Requested
+        );
+        assert_eq!(
+            runtime_protocol.interrupt.target,
+            Some(crate::session_runtime::state::InterruptTarget::Run)
+        );
+    }
+
+    #[test]
+    fn persisted_telemetry_snapshot_defaults_version_when_missing() {
+        let value = serde_json::json!({
+            "usage": {
+                "input_tokens": 1,
+                "output_tokens": 2,
+                "reasoning_tokens": 3,
+                "cache_write_tokens": 4,
+                "cache_read_tokens": 5,
+                "total_cost": 0.5
+            },
+            "stage_summaries": [],
+            "last_run_status": "completed",
+            "updated_at": 123
+        });
+
+        let parsed = serde_json::from_value::<agendao_session::SessionTelemetrySnapshot>(value)
+            .expect("snapshot should deserialize with default version");
+
+        assert_eq!(
+            parsed.version,
+            agendao_session::SessionTelemetrySnapshotVersion::V1
+        );
+    }
+
+    #[test]
+    fn session_insights_builds_multimodal_detail_from_last_user_message() {
+        let mut session = Session::new("session-1".to_string(), ".".to_string());
+        let user = session.add_user_message("[audio input]");
+        user.metadata
+            .insert("multimodal_kinds".to_string(), serde_json::json!(["audio"]));
+        user.metadata.insert(
+            "multimodal_badges".to_string(),
+            serde_json::json!(["audio"]),
+        );
+        user.metadata.insert(
+            "multimodal_compact_label".to_string(),
+            serde_json::json!("[audio input]"),
+        );
+        user.metadata.insert(
+            "multimodal_resolved_model".to_string(),
+            serde_json::json!("openai/gpt-audio"),
+        );
+        user.metadata.insert(
+            "multimodal_preflight".to_string(),
+            serde_json::json!({
+                "warnings": ["Audio accepted."],
+                "unsupported_parts": [],
+                "recommended_downgrade": null,
+                "hard_block": false
+            }),
+        );
+        user.metadata.insert(
+            "multimodal_transport".to_string(),
+            serde_json::json!({
+                "replaced_parts": ["voice.wav"],
+                "warnings": [
+                    "ERROR: Cannot read \"voice.wav\" (this model does not support audio input). Inform the user."
+                ]
+            }),
+        );
+        user.add_file(
+            "data:audio/wav;base64,UklGRg==".to_string(),
+            "voice.wav".to_string(),
+            "audio/wav".to_string(),
+        );
+        let user_id = user.id.clone();
+
+        let insight = build_session_multimodal_insight(&session).expect("multimodal insight");
+        assert_eq!(insight.user_message_id, user_id);
+        assert_eq!(insight.attachment_count, 1);
+        assert_eq!(insight.kinds, vec!["audio".to_string()]);
+        assert_eq!(insight.badges, vec!["audio".to_string()]);
+        assert_eq!(insight.resolved_model.as_deref(), Some("openai/gpt-audio"));
+        assert_eq!(insight.attachments.len(), 1);
+        assert_eq!(insight.attachments[0].filename, "voice.wav");
+        assert_eq!(insight.attachments[0].mime, "audio/wav");
+        assert_eq!(insight.warnings, vec!["Audio accepted.".to_string()]);
+        assert_eq!(
+            insight.transport_replaced_parts,
+            vec!["voice.wav".to_string()]
+        );
+        assert_eq!(insight.transport_warnings.len(), 1);
+        assert!(insight.transport_warnings[0].contains("does not support audio input"));
+        assert!(!insight.hard_block);
+    }
+
+    #[tokio::test]
+    async fn session_insights_returns_persisted_snapshot() {
+        let state = Arc::new(ServerState::new());
+        let session_id = {
+            let mut sessions = state.sessions.lock().await;
+            let mut session = sessions.create("project", "/tmp/project");
+            session.set_title("Telemetry Session");
+            let user = session.add_user_message("[audio input]");
+            user.metadata
+                .insert("multimodal_kinds".to_string(), serde_json::json!(["audio"]));
+            user.metadata.insert(
+                "multimodal_compact_label".to_string(),
+                serde_json::json!("[audio input]"),
+            );
+            user.metadata.insert(
+                "multimodal_resolved_model".to_string(),
+                serde_json::json!("openai/gpt-audio"),
+            );
+            user.metadata.insert(
+                "multimodal_preflight".to_string(),
+                serde_json::json!({
+                    "warnings": ["Audio accepted."],
+                    "unsupported_parts": [],
+                    "recommended_downgrade": null,
+                    "hard_block": false
+                }),
+            );
+            user.metadata.insert(
+                "multimodal_transport".to_string(),
+                serde_json::json!({
+                    "replaced_parts": ["voice.wav"],
+                    "warnings": [
+                        "ERROR: Cannot read \"voice.wav\" (this model does not support audio input). Inform the user."
+                    ]
+                }),
+            );
+            user.add_file(
+                "data:audio/wav;base64,UklGRg==".to_string(),
+                "voice.wav".to_string(),
+                "audio/wav".to_string(),
+            );
+            persist_session_telemetry_snapshot(
+                &mut session,
+                &agendao_session::SessionTelemetrySnapshot {
+                    version: SessionTelemetrySnapshotVersion::V1,
+                    tool_repair_summary: None,
+                    memory: None,
+                    compaction_continuity: Some(
+                        agendao_types::SessionCompactionContinuityInspection {
+                            source: agendao_types::SessionCompactionContinuityInspectionSource::ContinuityPacket,
+                            summary_message_id: Some("msg_compact".to_string()),
+                            summary_text: Some("Persisted packet-owned continuity summary.".to_string()),
+                            eligible_message_count: Some(12),
+                            exact_recent_tail_count: Some(5),
+                            omitted_older_turns: Some(7),
+                            has_working_ledger: true,
+                            has_memory_anchors: false,
+                            recall_policy: Some("recent_tail_plus_memory".to_string()),
+                        },
+                    ),
+                    usage: agendao_types::SessionUsage {
+                        input_tokens: 10,
+                        output_tokens: 20,
+                        reasoning_tokens: 3,
+                        cache_write_tokens: 4,
+                        cache_read_tokens: 5,
+                        cache_miss_tokens: 0,
+                        context_tokens: 0,
+                        total_cost: 0.25,
+                    },
+                    stage_summaries: vec![],
+                    repair_query_snapshot: None,
+                    tool_trajectory_quality: None,
+                    tool_result_governance: None,
+                    pending_permission_count: 0,
+                    pending_followup_count: 0,
+                    granted_by_turn_count: 0,
+                    granted_by_session_count: 0,
+                    granted_by_matcher_kind: BTreeMap::new(),
+                    last_permission_matcher_kind: None,
+                    last_permission_grant_target: None,
+            last_permission_miss_count: 0,
+                    pending_steering_count: 0,
+                    consumed_steering_count: 0,
+                    last_steering_injected_at: None,
+                    last_steering_source_session_id: None,
+                    last_steering_latency_ms: None,
+                    last_permission_pending_ms: None,
+                    last_run_status: "completed".to_string(),
+                    updated_at: 123,
+                },
+            )
+            .expect("snapshot should persist");
+            session.insert_metadata(
+                agendao_memory::MEMORY_FROZEN_SNAPSHOT_METADATA_KEY.to_string(),
+                serde_json::to_value(PersistedMemorySnapshot {
+                    packet: agendao_types::MemoryRetrievalPacket {
+                        generated_at: 200,
+                        snapshot: true,
+                        query: None,
+                        scopes: vec![agendao_types::MemoryScope::WorkspaceShared],
+                        items: vec![],
+                        note: Some("frozen".to_string()),
+                        budget_limit: Some(8),
+                    },
+                    rendered_block: Some("memory block".to_string()),
+                })
+                .expect("frozen memory snapshot should serialize"),
+            );
+            session.insert_metadata(
+                agendao_memory::MEMORY_LAST_PREFETCH_METADATA_KEY.to_string(),
+                serde_json::to_value(agendao_types::MemoryRetrievalPacket {
+                    generated_at: 250,
+                    snapshot: false,
+                    query: Some("latest prompt".to_string()),
+                    scopes: vec![agendao_types::MemoryScope::WorkspaceShared],
+                    items: vec![],
+                    note: Some("prefetch".to_string()),
+                    budget_limit: Some(6),
+                })
+                .expect("prefetch packet should serialize"),
+            );
+            let id = session.id.clone();
+            sessions.update(session);
+            id
+        };
+
+        let Json(response) = get_session_insights(State(state), Path(session_id.clone()))
+            .await
+            .expect("insights route should succeed");
+
+        assert_eq!(response.id, session_id);
+        assert_eq!(response.title, "Telemetry Session");
+        assert_eq!(response.directory, "/tmp/project");
+        assert_eq!(
+            response
+                .telemetry
+                .as_ref()
+                .map(|snapshot| snapshot.last_run_status.as_str()),
+            Some("completed")
+        );
+        assert_eq!(
+            response
+                .telemetry
+                .as_ref()
+                .and_then(|snapshot| snapshot.compaction_continuity.as_ref())
+                .and_then(|continuity| continuity.summary_text.as_deref()),
+            Some("Persisted packet-owned continuity summary.")
+        );
+        assert_eq!(
+            response
+                .memory
+                .as_ref()
+                .map(|memory| memory.summary.last_prefetch_query.as_deref()),
+            Some(Some("latest prompt"))
+        );
+        assert_eq!(
+            response
+                .multimodal
+                .as_ref()
+                .and_then(|multimodal| multimodal.resolved_model.as_deref()),
+            Some("openai/gpt-audio")
+        );
+        assert_eq!(
+            response
+                .multimodal
+                .as_ref()
+                .map(|multimodal| multimodal.attachment_count),
+            Some(1)
+        );
+        assert_eq!(
+            response
+                .multimodal
+                .as_ref()
+                .map(|multimodal| multimodal.transport_replaced_parts.clone()),
+            Some(vec!["voice.wav".to_string()])
+        );
+        assert!(response.effective_policy.is_some());
+        assert_eq!(
+            response
+                .effective_policy
+                .as_ref()
+                .map(|policy| policy.session_id.as_str()),
+            Some(session_id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_session_telemetry_metadata_emits_snapshot_hook() {
+        let state = Arc::new(ServerState::new());
+        let hook_name = format!(
+            "telemetry-snapshot-updated-{}",
+            uuid::Uuid::new_v4().simple()
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        global()
+            .register(Hook::new(
+                &hook_name,
+                HookEvent::TelemetrySnapshotUpdated,
+                move |ctx| {
+                    let tx = tx.clone();
+                    async move {
+                        let _ = tx.send(ctx);
+                        Ok(())
+                    }
+                },
+            ))
+            .await;
+
+        let mut session = {
+            let mut sessions = state.sessions.lock().await;
+            sessions.create("project", "/tmp/project")
+        };
+        let session_id = session.id.clone();
+        let assistant = session.add_assistant_message();
+        assistant.usage = Some(MessageUsage {
+            input_tokens: 10,
+            output_tokens: 20,
+            reasoning_tokens: 3,
+            cache_write_tokens: 4,
+            cache_read_tokens: 5,
+            cache_miss_tokens: 0,
+            context_tokens: 0,
+            total_cost: 0.25,
+        });
+        assistant.metadata.insert(
+            agendao_session::prompt::CONTEXT_COMPACTION_CONTINUITY_PACKET_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "version": 1,
+                "eligible_message_count": 12,
+                "exact_recent_tail_count": 5,
+                "omitted_older_turns": 7,
+                "working_ledger": [{ "kind": "latest_user_turn", "text": "continue build" }],
+                "recall_policy": "recent_tail_plus_memory",
+                "latest_compaction_summary": {
+                    "message_id": assistant.id.clone(),
+                    "summary": "Persisted continuity summary."
+                }
+            }),
+        );
+
+        let exec_ctx = ExecutionContext {
+            session_id: session_id.clone(),
+            workdir: "/tmp/project".to_string(),
+            agent_name: "test-agent".to_string(),
+            metadata: HashMap::new(),
+        };
+
+        emit_scheduler_stage_message(SchedulerStageMessageInput {
+            state: &state,
+            session_id: &session_id,
+            scheduler_profile: "prometheus",
+            stage_name: "plan",
+            stage_index: 1,
+            stage_total: 1,
+            content: "## Plan\n\n- summarize runtime",
+            exec_ctx: &exec_ctx,
+            output_hook: None,
+        })
+        .await;
+
+        state
+            .runtime_telemetry
+            .record_session_usage(
+                &session_id,
+                None,
+                SessionUsage {
+                    input_tokens: 10,
+                    output_tokens: 20,
+                    reasoning_tokens: 3,
+                    cache_write_tokens: 4,
+                    cache_read_tokens: 5,
+                    cache_miss_tokens: 0,
+                    context_tokens: 0,
+                    total_cost: 0.25,
+                },
+            )
+            .await;
+
+        persist_session_telemetry_metadata(&state, &mut session).await;
+
+        let hook_ctx = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("hook should fire")
+            .expect("hook payload should arrive");
+        assert_eq!(hook_ctx.session_id.as_deref(), Some(session_id.as_str()));
+        assert_eq!(
+            hook_ctx.get("sessionID"),
+            Some(&serde_json::json!(session_id))
+        );
+        assert_eq!(
+            hook_ctx
+                .get("snapshot")
+                .and_then(|value| value.get("usage"))
+                .and_then(|value| value.get("input_tokens")),
+            Some(&serde_json::json!(10))
+        );
+        assert_eq!(
+            hook_ctx
+                .get("snapshot")
+                .and_then(|value| value.get("stage_summaries"))
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            hook_ctx
+                .get("snapshot")
+                .and_then(|value| value.get("compaction_continuity"))
+                .and_then(|value| value.get("source")),
+            Some(&serde_json::json!("continuity_packet"))
+        );
+        assert_eq!(
+            hook_ctx
+                .get("snapshot")
+                .and_then(|value| value.get("compaction_continuity"))
+                .and_then(|value| value.get("summary_text")),
+            Some(&serde_json::json!("Persisted continuity summary."))
+        );
+
+        let _ = global()
+            .remove(&HookEvent::TelemetrySnapshotUpdated, &hook_name)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn telemetry_snapshot_usage_books_keep_owner_local_context_and_subtree_cumulative() {
+        let state = Arc::new(ServerState::new());
+
+        let (root_id, mut root_session, root_usage, child_usage) = {
+            let mut sessions = state.sessions.lock().await;
+
+            let mut root = sessions.create("project", "/tmp/project");
+            let root_usage = MessageUsage {
+                input_tokens: 120,
+                output_tokens: 30,
+                reasoning_tokens: 9,
+                cache_write_tokens: 7,
+                cache_read_tokens: 40,
+                cache_miss_tokens: 5,
+                context_tokens: 180,
+                total_cost: 0.75,
+            };
+            let assistant = root.add_assistant_message();
+            assistant.usage = Some(root_usage.clone());
+            sessions.update(root.clone());
+
+            let mut child = agendao_session::Session::attached_with_context_kind(
+                &root,
+                agendao_types::SessionContextKind::DelegatedSubsession,
+            );
+            let child_usage = MessageUsage {
+                input_tokens: 60,
+                output_tokens: 15,
+                reasoning_tokens: 4,
+                cache_write_tokens: 3,
+                cache_read_tokens: 12,
+                cache_miss_tokens: 2,
+                context_tokens: 90,
+                total_cost: 0.33,
+            };
+            let child_assistant = child.add_assistant_message();
+            child_assistant.usage = Some(child_usage.clone());
+            sessions.update(child);
+
+            (root.id.clone(), root, root_usage, child_usage)
+        };
+        root_session.insert_metadata(
+            agendao_session::prompt::CONTEXT_PRESSURE_GOVERNANCE_SUMMARY_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "trigger": "auto_preflight",
+                "phase": "prompt.pre_request",
+                "status": "compacted",
+                "reason": "lightweight_tool_result_trim",
+                "request_context_tokens": 120_u64,
+                "live_context_tokens": 96_u64,
+                "compaction_attempted": true,
+                "compaction_succeeded": true,
+                "blocking": false,
+                "decision_trace": {
+                    "path": "prompt.pre_request",
+                    "mode": "lightweight_trim",
+                    "reason": "lightweight_tool_result_trim",
+                    "lightweight_trim": {
+                        "trimmed_rounds": 1,
+                        "trimmed_tool_calls": 1,
+                        "trimmed_tool_results": 1,
+                        "trimmed_call_tokens": 240,
+                        "trimmed_result_tokens": 480,
+                        "used_round_grouping": true
+                    }
+                }
+            }),
+        );
+
+        let snapshot = build_session_telemetry_snapshot(&state, &root_id, &root_session)
+            .await
+            .expect("snapshot should build");
+
+        assert_eq!(
+            snapshot.usage_books.request_context_tokens,
+            root_usage.request_context_tokens()
+        );
+        assert_eq!(
+            snapshot.usage_books.live_context_tokens,
+            root_usage.live_context_tokens()
+        );
+        assert_eq!(
+            snapshot.usage_books.workflow_cumulative.input_tokens,
+            root_usage.input_tokens + child_usage.input_tokens
+        );
+        assert_eq!(
+            snapshot.usage_books.workflow_cumulative.output_tokens,
+            root_usage.output_tokens + child_usage.output_tokens
+        );
+        assert_eq!(
+            snapshot.usage_books.workflow_cumulative.reasoning_tokens,
+            root_usage.reasoning_tokens + child_usage.reasoning_tokens
+        );
+        assert_eq!(
+            snapshot.usage_books.workflow_cumulative.cache_read_tokens,
+            root_usage.cache_read_tokens + child_usage.cache_read_tokens
+        );
+        assert_eq!(
+            snapshot.usage_books.workflow_cumulative.cache_miss_tokens,
+            root_usage.cache_miss_tokens + child_usage.cache_miss_tokens
+        );
+        assert_eq!(
+            snapshot.usage_books.workflow_cumulative.total_tokens(),
+            root_usage.input_tokens
+                + root_usage.output_tokens
+                + root_usage.reasoning_tokens
+                + child_usage.input_tokens
+                + child_usage.output_tokens
+                + child_usage.reasoning_tokens
+        );
+        assert!(
+            (snapshot.usage_books.workflow_cumulative.total_cost
+                - (root_usage.total_cost + child_usage.total_cost))
+                .abs()
+                < f64::EPSILON
+        );
+        assert_eq!(
+            snapshot
+                .decision_trace
+                .as_ref()
+                .map(|trace| trace.mode.as_str()),
+            Some("lightweight_trim")
+        );
+        let explain = snapshot
+            .context_explain
+            .as_ref()
+            .expect("context explain should be present");
+        assert_eq!(explain.raw_history_messages, 1);
+        assert_eq!(explain.raw_model_visible_messages, 1);
+        assert_eq!(explain.api_view_messages, 0);
+        assert_eq!(explain.api_view_estimated_input_tokens, None);
+        assert_eq!(
+            explain.live_context_tokens,
+            root_usage.live_context_tokens()
+        );
+        assert_eq!(
+            explain.last_request_context_tokens,
+            root_usage.request_context_tokens()
+        );
+        assert_eq!(
+            explain.owner_session_cumulative_tokens,
+            root_usage.input_tokens + root_usage.output_tokens + root_usage.reasoning_tokens
+        );
+        assert_eq!(
+            explain.workflow_cumulative_tokens,
+            snapshot.usage_books.workflow_cumulative.total_tokens()
+        );
+        let contract = snapshot
+            .context_closure_contract
+            .as_ref()
+            .expect("context closure contract should be present");
+        assert_eq!(
+            contract
+                .child_history_isolation
+                .attached_subtree_session_count,
+            1
+        );
+        assert_eq!(
+            contract
+                .child_history_isolation
+                .attached_subtree_cumulative_tokens,
+            child_usage.input_tokens + child_usage.output_tokens + child_usage.reasoning_tokens
+        );
+        assert!(contract.child_history_isolation.owner_local_live_prefix);
+        assert!(
+            !contract
+                .child_history_isolation
+                .child_history_in_live_prefix_detected
+        );
+        assert!(!contract.prefix_stability.prefix_change_detected);
+    }
+
+    #[tokio::test]
+    async fn telemetry_snapshot_includes_session_and_model_tool_repair_summaries() {
+        let state = Arc::new(ServerState::new());
+
+        let (root_id, root_session) = {
+            let mut sessions = state.sessions.lock().await;
+
+            let mut root = sessions.create("project", "/tmp/project");
+            root.insert_metadata("model_provider".to_string(), serde_json::json!("deepseek"));
+            root.insert_metadata("model_id".to_string(), serde_json::json!("v4-flash"));
+            let assistant = root.add_assistant_message();
+            assistant.add_tool_call("call-1", "task_flow", serde_json::json!({}));
+            if let Some(agendao_session::MessagePart {
+                part_type: agendao_session::PartType::ToolCall { status, state, .. },
+                ..
+            }) = assistant.parts.last_mut()
+            {
+                *status = agendao_session::ToolCallStatus::Completed;
+                let mut metadata = agendao_tool::Metadata::new();
+                agendao_tool::append_tool_repair_event_map(
+                    &mut metadata,
+                    agendao_tool::tool_repair_event("alias_normalization", "tool", "task_flow"),
+                );
+                *state = Some(agendao_session::ToolState::Completed {
+                    input: serde_json::json!({}),
+                    output: "ok".to_string(),
+                    title: "Task".to_string(),
+                    metadata,
+                    time: agendao_session::CompletedTime {
+                        start: 1,
+                        end: 2,
+                        compacted: None,
+                    },
+                    attachments: None,
+                });
+            }
+            sessions.update(root.clone());
+
+            let mut sibling = sessions.create("project", "/tmp/project");
+            sibling.insert_metadata("model_provider".to_string(), serde_json::json!("deepseek"));
+            sibling.insert_metadata("model_id".to_string(), serde_json::json!("v4-flash"));
+            let sibling_assistant = sibling.add_assistant_message();
+            sibling_assistant.add_tool_call("call-2", "read", serde_json::json!({}));
+            if let Some(agendao_session::MessagePart {
+                part_type: agendao_session::PartType::ToolCall { status, state, .. },
+                ..
+            }) = sibling_assistant.parts.last_mut()
+            {
+                *status = agendao_session::ToolCallStatus::Completed;
+                *state = Some(agendao_session::ToolState::Completed {
+                    input: serde_json::json!({}),
+                    output: "ok".to_string(),
+                    title: "Read".to_string(),
+                    metadata: agendao_tool::Metadata::new(),
+                    time: agendao_session::CompletedTime {
+                        start: 3,
+                        end: 4,
+                        compacted: None,
+                    },
+                    attachments: None,
+                });
+            }
+            sessions.update(sibling);
+
+            let mut other_model = sessions.create("project", "/tmp/project");
+            other_model.insert_metadata("model_provider".to_string(), serde_json::json!("openai"));
+            other_model.insert_metadata("model_id".to_string(), serde_json::json!("gpt-4.1"));
+            let other_assistant = other_model.add_assistant_message();
+            other_assistant.add_tool_call("call-3", "task_flow", serde_json::json!({}));
+            if let Some(agendao_session::MessagePart {
+                part_type: agendao_session::PartType::ToolCall { status, state, .. },
+                ..
+            }) = other_assistant.parts.last_mut()
+            {
+                *status = agendao_session::ToolCallStatus::Completed;
+                let mut metadata = agendao_tool::Metadata::new();
+                agendao_tool::append_tool_repair_event_map(
+                    &mut metadata,
+                    agendao_tool::tool_repair_event("fallback", "tool", "task_flow"),
+                );
+                *state = Some(agendao_session::ToolState::Completed {
+                    input: serde_json::json!({}),
+                    output: "ok".to_string(),
+                    title: "Task".to_string(),
+                    metadata,
+                    time: agendao_session::CompletedTime {
+                        start: 5,
+                        end: 6,
+                        compacted: None,
+                    },
+                    attachments: None,
+                });
+            }
+            sessions.update(other_model);
+
+            (root.id.clone(), root)
+        };
+
+        let snapshot = build_session_telemetry_snapshot(&state, &root_id, &root_session)
+            .await
+            .expect("snapshot should build");
+
+        let session_summary = snapshot
+            .tool_repair_summary
+            .as_ref()
+            .expect("session summary should be present");
+        assert_eq!(session_summary.total_tool_calls, 1);
+        assert_eq!(session_summary.repaired_tool_call_count, 1);
+        assert_eq!(session_summary.error_tool_call_count, 0);
+        assert_eq!(session_summary.repair_event_count, 1);
+        assert!(session_summary
+            .tools
+            .iter()
+            .any(|tool| tool.tool_name == "task_flow" && tool.repaired_call_count == 1));
+
+        let model_summary = snapshot
+            .model_tool_repair_summary
+            .as_ref()
+            .expect("model summary should be present");
+        assert_eq!(model_summary.provider_id, "deepseek");
+        assert_eq!(model_summary.model_id, "v4-flash");
+        assert_eq!(model_summary.session_count, 2);
+        assert_eq!(model_summary.repaired_session_count, 1);
+        assert_eq!(model_summary.total_tool_calls, 2);
+        assert_eq!(model_summary.repaired_tool_call_count, 1);
+        assert_eq!(model_summary.repair_event_count, 1);
+        assert!(model_summary
+            .tools
+            .iter()
+            .any(|tool| tool.tool_name == "task_flow" && tool.repaired_call_count == 1));
+        assert!(model_summary
+            .tools
+            .iter()
+            .any(|tool| tool.tool_name == "read" && tool.call_count == 1));
+    }
+}

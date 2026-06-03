@@ -1,6 +1,6 @@
 # Scheduler Guide — Tutorial & User Reference
 
-本文档是 ROCode Scheduler 的完整使用指南，覆盖从基础概念到高级自定义拓扑的全部内容。
+本文档是 AgenDao Scheduler 的完整使用指南，覆盖从基础概念到高级自定义拓扑的全部内容。
 
 ## 目录
 
@@ -23,7 +23,7 @@
 
 ## 概述
 
-Scheduler 是 ROCode 的任务调度核心。它决定一个用户请求经过哪些阶段（stages）、
+Scheduler 是 AgenDao 的任务调度核心。它决定一个用户请求经过哪些阶段（stages）、
 每个阶段用什么策略执行、由哪些 agent 协作完成。
 
 Scheduler 不是一个固定的流水线——它是一个**可配置的调度框架**，通过 JSON/JSONC
@@ -176,7 +176,7 @@ reward，并通过 `score-job-matrix`、`pairwise-score-matrix`、
 
 ## Session Continuity 与 Hydration
 
-Scheduler stage 的输入由 stage composer 构建，不是把原始 `messages[]` 直通给模型。为了让 follow-up prompt 能可靠引用同一 session 的上一轮工作，ROCode 会构建 `SchedulerSessionContextPacket`：
+Scheduler stage 的输入由 stage composer 构建，不是把原始 `messages[]` 直通给模型。为了让 follow-up prompt 能可靠引用同一 session 的上一轮工作，AgenDao 会构建 `SchedulerSessionContextPacket`：
 
 - markdown projection：`Session Continuity Context`，包含 coverage、anchors、guidance、ledger、compaction summary 和 exact recent tail
 - structured contract：`scheduler_session_context_packet`，包含 `version`、message anchors、memory anchors、limits 和 recall policy
@@ -217,7 +217,7 @@ Scheduler 通过 JSON/JSONC 文件配置。JSONC 支持注释和尾逗号。
 
 ```jsonc
 {
-  "$schema": "https://rocode.dev/schemas/scheduler-profile.schema.json",
+  "$schema": "https://agendao.dev/schemas/scheduler-profile.schema.json",
   "version": "2026-05-17",
   "defaults": {
     "profile": "my-default"       // 默认激活的 profile 名
@@ -263,7 +263,7 @@ Scheduler 通过 JSON/JSONC 文件配置。JSONC 支持注释和尾逗号。
 
 ### 引用方式
 
-在 `rocode.json` / `rocode.jsonc` 中通过 `schedulerPath` 引用：
+在 `agendao.json` / `agendao.jsonc` 中通过 `schedulerPath` 引用：
 
 ```jsonc
 {

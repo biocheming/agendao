@@ -1,0 +1,21 @@
+[package]
+name = "agendao-launcher"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[features]
+default = []
+embedded-web = ["rust-embed"]
+
+[dependencies]
+anyhow = { workspace = true }
+dirs = { workspace = true }
+reqwest = { workspace = true }
+rust-embed = { version = "8", optional = true }
+tokio = { workspace = true }
+url = { workspace = true }
+which = { workspace = true }
+tracing = { workspace = true }

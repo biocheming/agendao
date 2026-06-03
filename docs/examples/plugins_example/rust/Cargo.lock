@@ -472,8 +472,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "rocode-core"
-version = "2026.5.25"
+name = "agendao-core"
+version = "2026.6.3"
 dependencies = [
  "chrono",
  "hex",
@@ -490,23 +490,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "rocode-native-dylib-plugin"
+name = "agendao-native-dylib-plugin"
 version = "0.1.0"
 dependencies = [
- "rocode-plugin",
+ "agendao-plugin",
  "serde_json",
 ]
 
 [[package]]
-name = "rocode-plugin"
-version = "2026.5.25"
+name = "agendao-plugin"
+version = "2026.6.3"
 dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
  "dirs",
  "libloading",
- "rocode-core",
+ "agendao-core",
  "serde",
  "serde_json",
  "thiserror",

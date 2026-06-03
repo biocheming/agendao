@@ -1,6 +1,6 @@
-# ROCode 工具参考
+# AgenDao 工具参考
 
-本文档是 ROCode 所有内置工具的完整参考。工具是模型与外部世界交互的机制 -- 读写文件、执行命令、搜索代码、管理任务等。
+本文档是 AgenDao 所有内置工具的完整参考。工具是模型与外部世界交互的机制 -- 读写文件、执行命令、搜索代码、管理任务等。
 
 ---
 
@@ -337,7 +337,7 @@
 
 ### skill_manage
 
-创建、编辑、删除工作区本地技能（`.rocode/skills/` 目录下）。
+创建、编辑、删除工作区本地技能（`.agendao/skills/` 目录下）。
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
@@ -400,7 +400,7 @@
 
 ### memory surfaces
 
-ROCode 当前把 memory 做成正式可观测能力，而不只是内部实验数据。常用入口包括：
+AgenDao 当前把 memory 做成正式可观测能力，而不只是内部实验数据。常用入口包括：
 
 - 交互命令：`/memory`、`/memory preview <query>`、`/memory show <id>`、`/memory validation <id>`、`/memory conflicts <id>`、`/memory rules`、`/memory hits ...`、`/memory runs`、`/memory consolidate ...`
 - HTTP 路由：`/memory/list`、`/memory/search`、`/memory/retrieval-preview`、`/memory/{id}`、`/memory/{id}/validation-report`、`/memory/{id}/conflicts`、`/memory/rule-packs`、`/memory/rule-hits`、`/memory/consolidation/runs`、`/memory/consolidate`

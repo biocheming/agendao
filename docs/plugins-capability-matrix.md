@@ -2,7 +2,7 @@
 
 这份表只回答一个问题：
 
-今天的 ROCode 代码里，哪些插件类型是**真实接通的运行面**，哪些只是 schema 里留了字段但还没有自动加载链路。
+今天的 AgenDao 代码里，哪些插件类型是**真实接通的运行面**，哪些只是 schema 里留了字段但还没有自动加载链路。
 
 不要把“配置里能写”误解成“运行时已经支持”。
 
@@ -82,7 +82,7 @@ export default async function MyPlugin() {
 
 - 进程内动态库加载
 - 用 Rust 实现
-- 直接对接 `rocode_plugin::Plugin` 和 `HookEvent`
+- 直接对接 `agendao_plugin::Plugin` 和 `HookEvent`
 - 适合高性能、强类型、深度 runtime 集成
 
 这条路径是真支持，但不适合作为普通用户的首选扩展方式。

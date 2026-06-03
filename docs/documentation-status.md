@@ -1,12 +1,12 @@
-# ROCode 文档状态总表
+# AgenDao 文档状态总表
 
 文档日期：`2026-05-17`
 
-本文不是发布日志，也不是今天改了什么的流水账。它的作用只有一个：把 `rocode/docs` 里哪些文档是当前真相、哪些是设计参考、哪些已经主要转为复盘材料，统一说清楚。
+本文不是发布日志，也不是今天改了什么的流水账。它的作用只有一个：把 `agendao/docs` 里哪些文档是当前真相、哪些是设计参考、哪些已经主要转为复盘材料，统一说清楚。
 
 ## 先看结论
 
-当前 `rocode/docs` 应按三类阅读：
+当前 `agendao/docs` 应按三类阅读：
 
 1. 稳定产品文档
    - 面向用户、集成方和日常开发。
@@ -77,8 +77,8 @@
 
 结论：
 
-- `rocode` 已是产品壳。
-- `rocode-cli` / `rocode-tui` / `rocode-web` / `rocode-server` 的角色划分已经清楚。
+- `agendao` 已是产品壳。
+- `agendao-cli` / `agendao-tui` / `agendao-web` / `agendao-server` 的角色划分已经清楚。
 - 这份蓝图文档现在更像边界守护参考，而不是高频执行清单。
 
 对应文档：
@@ -155,7 +155,7 @@
 - `examples/plugins_example/*`
 - `examples/scheduler/*`
 - `examples/tasks/*`
-- `rocode_config.schema.json`
+- `agendao_config.schema.json`
 
 它们的职责是：
 

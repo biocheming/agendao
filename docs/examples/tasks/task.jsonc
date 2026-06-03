@@ -1,5 +1,5 @@
 {
-  // ROCode Task Category Configuration
+  // AgenDao Task Category Configuration
   // Based on OMO's 8 builtin categories with domain-optimized model routing.
   //
   // Each category maps to a model + prompt_suffix. When the LLM invokes

@@ -1,12 +1,12 @@
-# ROCode Docs
+# AgenDao Docs
 
 文档基线：`v2026.5.17`（更新日期：`2026-05-17`）
 
-这里不是“今天改了什么”的补丁板，而是 ROCode 文档系统的正式入口。后续读 `rocode/docs` 时，先用这份文档判断每类文档的用途，再进入具体主题。
+这里不是“今天改了什么”的补丁板，而是 AgenDao 文档系统的正式入口。后续读 `agendao/docs` 时，先用这份文档判断每类文档的用途，再进入具体主题。
 
 ## 先看阅读规则
 
-`rocode/docs` 里的内容分三类：
+`agendao/docs` 里的内容分三类：
 
 1. 稳定产品文档
    - 解释当前已经对用户、集成方、前端或 CLI/TUI 开放的能力。
@@ -25,7 +25,7 @@
 
 ## 当前产品面
 
-如果你是来判断“ROCode 现在已经具备哪些正式能力”，优先抓下面几条：
+如果你是来判断“AgenDao 现在已经具备哪些正式能力”，优先抓下面几条：
 
 - **统一 authority 运行时**
   - CLI、TUI、Web、Server 共用同一套 session、provider、tool、scheduler、skill、memory、telemetry authority。
@@ -47,7 +47,7 @@
 - `documentation-status.md`
   - 每份核心文档与计划文档的当前定位、状态和使用边界
 - `installation.md`
-  - 单一 `rocode` 分发入口的安装、升级、卸载，以及默认内嵌 Web 资源与可选外部覆盖说明
+  - 单一 `agendao` 分发入口的安装、升级、卸载，以及默认内嵌 Web 资源与可选外部覆盖说明
 - `../CHANGELOG.md`
   - 发布记录，不替代产品总览文档
 - `../USER_GUIDE.md`
@@ -73,7 +73,7 @@
 
 - `examples/context_docs/`
   - Formal examples for `context_docs`
-  - Includes minimal `rocode.json` / `rocode.jsonc` config samples
+  - Includes minimal `agendao.json` / `agendao.jsonc` config samples
   - Includes `context-docs-registry` schema and example
   - Includes `context-docs-index` schema and example docs index
 - `examples/scheduler/`
@@ -112,15 +112,15 @@ The canonical entry for `context_docs` examples is:
 
 The canonical schema IDs are:
 
-- `https://rocode.dev/schemas/context-docs-registry.schema.json`
-- `https://rocode.dev/schemas/context-docs-index.schema.json`
+- `https://agendao.dev/schemas/context-docs-registry.schema.json`
+- `https://agendao.dev/schemas/context-docs-index.schema.json`
 
 Read-only validation entry:
 
 ```bash
-rocode debug docs validate
-rocode debug docs validate --registry ./docs/examples/context_docs/context-docs-registry.example.json
-rocode debug docs validate --index ./docs/examples/context_docs/react-router.docs-index.example.json
+agendao debug docs validate
+agendao debug docs validate --registry ./docs/examples/context_docs/context-docs-registry.example.json
+agendao debug docs validate --index ./docs/examples/context_docs/react-router.docs-index.example.json
 ```
 
 ## Scheduler Entry
@@ -135,7 +135,7 @@ The canonical scheduler example entry is:
   - `atlas.example.jsonc`
   - `hephaestus.example.jsonc`
 - `docs/examples/scheduler/verifier/README.md`
-  - Verifier preset 的完整上手指南：解决的问题、原算法、ROCode 实现路线、artifacts、fallback、cache 和调优建议
+  - Verifier preset 的完整上手指南：解决的问题、原算法、AgenDao 实现路线、artifacts、fallback、cache 和调优建议
 - `docs/examples/scheduler/verifier/minimal.example.jsonc`
   - Verifier preset 的最小上手配置：保留通过验证的候选，并用一个 criterion 选优
 - `docs/examples/scheduler/verifier/profile.example.jsonc`
@@ -154,17 +154,17 @@ The public scheduler presets are:
 
 The current schema IDs are:
 
-- `https://rocode.dev/schemas/scheduler-profile.schema.json`
+- `https://agendao.dev/schemas/scheduler-profile.schema.json`
 
 ## Web Frontend Entry
 
-当前默认 Web 前端源码目录是 `apps/rocode-web`（React 版本）：
+当前默认 Web 前端源码目录是 `apps/agendao-web`（React 版本）：
 
 - `/` 是正式 Web 入口
 - `/web/*` 是正式静态资源前缀
-- `rocode-server` 会把 `apps/rocode-web/dist` 内嵌进发布二进制
+- `agendao-server` 会把 `apps/agendao-web/dist` 内嵌进发布二进制
 - `build.rs` 只会在 Web 源码缺失或变更时增量触发 `npm run build`
-- `rocode web` 默认优先使用内嵌资源；仅在显式设置 `ROCODE_WEB_DIST` 或使用 `ROCODE_WEB_DEV_URL` 时走外部覆盖/开发路径
+- `agendao web` 默认优先使用内嵌资源；仅在显式设置 `AGENDAO_WEB_DIST` 或使用 `AGENDAO_WEB_DEV_URL` 时走外部覆盖/开发路径
 - 当前 Web 交互已包含可过滤 model picker、批量 session 删除确认和更高密度的消息阅读节奏
 
 ## Skill Hub CLI
@@ -172,31 +172,31 @@ The current schema IDs are:
 远程 skill distribution / artifact cache / managed lifecycle 的正式 CLI 入口现在是：
 
 ```bash
-rocode skill hub status
-rocode skill hub managed
-rocode skill hub usage
-rocode skill hub negative-entropy
-rocode skill hub semantic-conflicts
-rocode skill hub index
-rocode skill hub distributions
-rocode skill hub artifact-cache
-rocode skill hub policy
-rocode skill hub lifecycle
-rocode skill hub review-candidates-sync --session-id <session>
-rocode skill hub semantic-conflict-review-sync --session-id <session>
-rocode skill hub vitality-set --session-id <session> --skill-name <name> --state review-candidate --summary <text>
-rocode skill hub install-plan --source-id <id> --source-kind registry --locator <locator> --skill-name <name>
-rocode skill hub install-apply --session-id <session> --source-id <id> --source-kind registry --locator <locator> --skill-name <name>
-rocode skill hub update-apply --session-id <session> --source-id <id> --source-kind registry --locator <locator> --skill-name <name>
-rocode skill hub detach --session-id <session> --source-id <id> --source-kind registry --locator <locator> --skill-name <name>
-rocode skill hub remove --session-id <session> --source-id <id> --source-kind registry --locator <locator> --skill-name <name>
+agendao skill hub status
+agendao skill hub managed
+agendao skill hub usage
+agendao skill hub negative-entropy
+agendao skill hub semantic-conflicts
+agendao skill hub index
+agendao skill hub distributions
+agendao skill hub artifact-cache
+agendao skill hub policy
+agendao skill hub lifecycle
+agendao skill hub review-candidates-sync --session-id <session>
+agendao skill hub semantic-conflict-review-sync --session-id <session>
+agendao skill hub vitality-set --session-id <session> --skill-name <name> --state review-candidate --summary <text>
+agendao skill hub install-plan --source-id <id> --source-kind registry --locator <locator> --skill-name <name>
+agendao skill hub install-apply --session-id <session> --source-id <id> --source-kind registry --locator <locator> --skill-name <name>
+agendao skill hub update-apply --session-id <session> --source-id <id> --source-kind registry --locator <locator> --skill-name <name>
+agendao skill hub detach --session-id <session> --source-id <id> --source-kind registry --locator <locator> --skill-name <name>
+agendao skill hub remove --session-id <session> --source-id <id> --source-kind registry --locator <locator> --skill-name <name>
 ```
 
-所有读写命令都通过 `rocode-server` 的 `/skill/hub/*` 路由进入 authority，不在 CLI 侧直接执行副作用。
+所有读写命令都通过 `agendao-server` 的 `/skill/hub/*` 路由进入 authority，不在 CLI 侧直接执行副作用。
 
 ## Memory 与 Skill 自进化文档入口
 
-如果你要理解 ROCode 如何把会话经验沉淀为可复用能力，优先看：
+如果你要理解 AgenDao 如何把会话经验沉淀为可复用能力，优先看：
 
 - `../README.md`
   - 产品层能力总览，说明 memory 与 skill 自进化的正式定位
@@ -213,7 +213,7 @@ rocode skill hub remove --session-id <session> --source-id <id> --source-kind re
 
 第三卷 phase 7 的 artifact policy 通过唯一配置真相 `skills.hub` 提供，authority 会把当前生效值暴露到 `/skill/hub/policy`，CLI/TUI/Web 都应读取这一正式读面，而不是各端自己解析配置文件。
 
-`rocode.jsonc` 示例：
+`agendao.jsonc` 示例：
 
 ```jsonc
 {

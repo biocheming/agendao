@@ -102,7 +102,7 @@ StreamEvent::FinishStep {
 ### Step 1: 添加流式 API 到 OrchestrationCore
 
 ```rust
-// crates/rocode-orchestrator/src/core.rs
+// crates/agendao-orchestrator/src/core.rs
 impl OrchestrationCore {
     pub async fn execute_prompt_streaming(
         &self,
@@ -126,7 +126,7 @@ impl OrchestrationCore {
 ### Step 2: 实现 execute_prompt_streaming_with_session
 
 ```rust
-// crates/rocode-orchestrator/src/prompt_execution.rs
+// crates/agendao-orchestrator/src/prompt_execution.rs
 pub async fn execute_prompt_streaming_with_session(
     sessions: &Arc<tokio::sync::Mutex<SessionManager>>,
     providers: &Arc<tokio::sync::RwLock<ProviderRegistry>>,
@@ -220,6 +220,6 @@ struct StreamState {
 
 ## 参考
 
-- Provider 层流式实现：`crates/rocode-provider/src/stream.rs`
-- StreamEvent 定义：`crates/rocode-provider/src/stream.rs:9-98`
-- 现有流式使用示例：`crates/rocode-server/src/routes/session/scheduler.rs:693-743`
+- Provider 层流式实现：`crates/agendao-provider/src/stream.rs`
+- StreamEvent 定义：`crates/agendao-provider/src/stream.rs:9-98`
+- 现有流式使用示例：`crates/agendao-server/src/routes/session/scheduler.rs:693-743`

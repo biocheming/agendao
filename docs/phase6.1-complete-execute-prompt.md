@@ -89,7 +89,7 @@ pub async fn execute_prompt_with_session(
 
 ### 2. SessionManager 扩展
 
-**文件**: `crates/rocode-session-core/src/lib.rs`
+**文件**: `crates/agendao-session-core/src/lib.rs`
 
 需要添加的方法：
 
@@ -160,11 +160,11 @@ impl Session {
 
 ### 3. 消息转换
 
-**文件**: `crates/rocode-orchestrator/src/prompt_execution.rs`
+**文件**: `crates/agendao-orchestrator/src/prompt_execution.rs`
 
 ```rust
 /// Build messages from session history
-fn build_messages_from_session(session: &Session) -> Vec<rocode_provider::Message> {
+fn build_messages_from_session(session: &Session) -> Vec<agendao_provider::Message> {
     session
         .record()
         .messages
@@ -184,9 +184,9 @@ fn build_messages_from_session(session: &Session) -> Vec<rocode_provider::Messag
                 .join("");
             
             match msg.role {
-                MessageRole::User => rocode_provider::Message::user(&content),
-                MessageRole::Assistant => rocode_provider::Message::assistant(&content),
-                _ => rocode_provider::Message::user(&content), // Fallback
+                MessageRole::User => agendao_provider::Message::user(&content),
+                MessageRole::Assistant => agendao_provider::Message::assistant(&content),
+                _ => agendao_provider::Message::user(&content), // Fallback
             }
         })
         .collect()
@@ -195,7 +195,7 @@ fn build_messages_from_session(session: &Session) -> Vec<rocode_provider::Messag
 
 ## 架构影响
 
-### 符合 ROCode 宪法
+### 符合 AgenDao 宪法
 
 - **第一条（唯一执行内核）**：所有 LLM 循环由 `OrchestrationCore` 驱动
 - **第五条（唯一状态所有权）**：`SessionManager` 是会话状态的唯一所有者

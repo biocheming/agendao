@@ -1,6 +1,6 @@
 # Agent 系统完整参考
 
-ROCode 的 Agent 系统支持从单 agent 执行到多层 agent 树协调的完整谱系。Agent 通过 `AgentDescriptor` 定义身份与能力，通过 `AgentTreeNode` 组织为层级协作结构。
+AgenDao 的 Agent 系统支持从单 agent 执行到多层 agent 树协调的完整谱系。Agent 通过 `AgentDescriptor` 定义身份与能力，通过 `AgentTreeNode` 组织为层级协作结构。
 
 ---
 
@@ -285,7 +285,7 @@ Agent Tree 可以在三个层级配置，按优先级从高到低：
 
 ```
 project/
-  rocode.jsonc                  -- schedulerPath -> ./scheduler.jsonc
+  agendao.jsonc                  -- schedulerPath -> ./scheduler.jsonc
   scheduler.jsonc               -- 主调度配置
   trees/
     coordinator-tree.json       -- 可复用的协调 agent 树

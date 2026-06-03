@@ -1,0 +1,11 @@
+#!/usr/bin/env xdg-open
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=AgenDao
+Comment=Launch AgenDao Web and select a workspace when needed
+Exec=agendao web
+Icon=agendao
+Terminal=false
+Categories=Development;Utility;
+StartupNotify=true

@@ -1,0 +1,49 @@
+[package]
+name = "agendao-session"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+agendao-core = { path = "../agendao-core" }
+agendao-content = { path = "../agendao-content" }
+agendao-util = { path = "../agendao-util" }
+agendao-types = { path = "../agendao-types" }
+agendao-config = { path = "../agendao-config" }
+agendao-execution-types = { path = "../agendao-execution-types" }
+agendao-storage = { path = "../agendao-storage" }
+agendao-provider = { path = "../agendao-provider" }
+agendao-orchestrator = { path = "../agendao-orchestrator", optional = true }
+agendao-session-core = { path = "../agendao-session-core" }
+agendao-skill = { path = "../agendao-skill" }
+agendao-tool = { path = "../agendao-tool" }
+agendao-mcp = { path = "../agendao-mcp" }
+agendao-lsp = { path = "../agendao-lsp" }
+agendao-plugin = { path = "../agendao-plugin" }
+agendao-memory = { path = "../agendao-memory" }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+regex = { workspace = true }
+dirs = { workspace = true }
+glob = { workspace = true }
+reqwest = { workspace = true }
+sqlx = { workspace = true }
+url = { workspace = true }
+base64 = { workspace = true }
+
+[features]
+default = ["orchestrator"]
+orchestrator = ["dep:agendao-orchestrator"]
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,15 @@
+[package]
+name = "agendao-state"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+agendao-config = { path = "../agendao-config" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+dirs = { workspace = true }
+tracing = { workspace = true }

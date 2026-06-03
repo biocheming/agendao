@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rocode.dev/schemas/scheduler-profile.schema.json",
-  "title": "ROCode Scheduler Profile Configuration",
+  "$id": "https://agendao.dev/schemas/scheduler-profile.schema.json",
+  "title": "AgenDao Scheduler Profile Configuration",
   "type": "object",
   "additionalProperties": false,
   "properties": {

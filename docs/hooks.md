@@ -1,6 +1,6 @@
 # 生命周期钩子（Lifecycle Hooks）完整参考
 
-ROCode 的生命周期钩子系统允许在 orchestrator 执行流程的关键节点注入自定义逻辑。它通过 `LifecycleHook` trait 定义，被 scheduler、agent tree、skill graph 等执行引擎在运行时调用。
+AgenDao 的生命周期钩子系统允许在 orchestrator 执行流程的关键节点注入自定义逻辑。它通过 `LifecycleHook` trait 定义，被 scheduler、agent tree、skill graph 等执行引擎在运行时调用。
 
 ---
 
@@ -60,7 +60,7 @@ Scheduler Stage Loop
 
 ## LifecycleHook Trait
 
-`LifecycleHook` 是所有生命周期钩子的核心 trait，定义在 `rocode-orchestrator/src/traits.rs` 中。
+`LifecycleHook` 是所有生命周期钩子的核心 trait，定义在 `agendao-orchestrator/src/traits.rs` 中。
 
 ```rust
 #[async_trait]
@@ -537,7 +537,7 @@ pub struct OrchestratorContext {
 
 ### 集成点
 
-宿主应用（如 `rocode` 产品壳，或测试/工具宿主）在创建 `OrchestratorContext` 时注入具体的 `LifecycleHook` 实现。该实现可以：
+宿主应用（如 `agendao` 产品壳，或测试/工具宿主）在创建 `OrchestratorContext` 时注入具体的 `LifecycleHook` 实现。该实现可以：
 
 1. **直接实现 trait** -- 在宿主代码中写一个 struct 实现 `LifecycleHook`
 2. **组合多个钩子** -- 通过内部 `Vec<Arc<dyn LifecycleHook>>` 实现多播

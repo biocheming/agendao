@@ -1,5 +1,5 @@
 {
-  "$schema": "https://rocode.dev/schemas/scheduler-profile.schema.json",
+  "$schema": "https://agendao.dev/schemas/scheduler-profile.schema.json",
   "version": "2026-05-12",
 
   "defaults": {

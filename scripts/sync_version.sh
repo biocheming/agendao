@@ -31,24 +31,24 @@ replace_package_lock_root_versions() {
   ' "$file"
 }
 
-replace_rocode_lock_versions() {
+replace_agendao_lock_versions() {
   local file="$1"
   perl -0pi -e '
-    s/(\[\[package\]\]\nname = "rocode(?:-[^"]+)?\"\nversion = ")\d{4}\.\d{1,2}\.\d{1,2}(")/$1$ENV{VERSION}$2/g;
+    s/(\[\[package\]\]\nname = "agendao(?:-[^"]+)?\"\nversion = ")\d{4}\.\d{1,2}\.\d{1,2}(")/$1$ENV{VERSION}$2/g;
   ' "$file"
 }
 
 VERSION="$VERSION" replace_package_json_version \
-  "$ROOT_DIR/apps/rocode-web/package.json"
+  "$ROOT_DIR/apps/agendao-web/package.json"
 
 VERSION="$VERSION" replace_package_lock_root_versions \
-  "$ROOT_DIR/apps/rocode-web/package-lock.json"
+  "$ROOT_DIR/apps/agendao-web/package-lock.json"
 
 for file in \
   "$ROOT_DIR/Cargo.lock" \
   "$ROOT_DIR/docs/examples/plugins_example/rust/Cargo.lock"
 do
-  VERSION="$VERSION" replace_rocode_lock_versions "$file"
+  VERSION="$VERSION" replace_agendao_lock_versions "$file"
 done
 
 echo "Synced owned package versions to $VERSION_TAG"

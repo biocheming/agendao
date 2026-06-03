@@ -62,19 +62,19 @@
 
 ### Step 1: 基准测试框架
 
-创建 `crates/rocode-orchestrator/benches/` 目录，使用 Criterion.rs：
+创建 `crates/agendao-orchestrator/benches/` 目录，使用 Criterion.rs：
 
 ```rust
 // benches/startup_benchmark.rs
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use rocode_orchestrator::OrchestrationCore;
+use agendao_orchestrator::OrchestrationCore;
 
 fn benchmark_cold_start(c: &mut Criterion) {
     c.bench_function("cold_start", |b| {
         b.iter(|| {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
-                let config = rocode_config::Config::default();
+                let config = agendao_config::Config::default();
                 let core = OrchestrationCore::new(&config).await.unwrap();
                 black_box(core);
             });
