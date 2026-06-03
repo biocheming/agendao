@@ -6,13 +6,13 @@ use crate::MemoryRecord;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum MemoryArtifactVersion {
     #[serde(rename = "agendao-rust/memory/v1")]
-    RocodeRustMemoryV1,
+    AgendaoRustMemoryV1,
 }
 
 impl MemoryArtifactVersion {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::RocodeRustMemoryV1 => "agendao-rust/memory/v1",
+            Self::AgendaoRustMemoryV1 => "agendao-rust/memory/v1",
         }
     }
 }
@@ -27,7 +27,7 @@ pub struct MemoryArtifactBundle {
 impl MemoryArtifactBundle {
     pub fn new(exported_at: i64, records: Vec<MemoryRecord>) -> Self {
         Self {
-            version: MemoryArtifactVersion::RocodeRustMemoryV1,
+            version: MemoryArtifactVersion::AgendaoRustMemoryV1,
             exported_at,
             records,
         }
@@ -102,7 +102,7 @@ mod tests {
 
         assert_eq!(
             value["version"],
-            serde_json::json!(MemoryArtifactVersion::RocodeRustMemoryV1.as_str())
+            serde_json::json!(MemoryArtifactVersion::AgendaoRustMemoryV1.as_str())
         );
         assert_eq!(value["exported_at"], serde_json::json!(123));
         assert_eq!(value["records"].as_array().map(Vec::len), Some(1));

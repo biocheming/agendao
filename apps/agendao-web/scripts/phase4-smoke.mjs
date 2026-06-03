@@ -22,7 +22,7 @@ const trackerInitScript = `
     fetches: [],
     sockets: [],
   };
-  window.__rocodeTracker = state;
+  window.__agendaoTracker = state;
 
   const originalFetch = window.fetch.bind(window);
   window.fetch = async (...args) => {
@@ -412,7 +412,7 @@ async function maybeRunProviderSoak(client, record) {
   );
   await waitForExpression(
     client,
-    `(window.__rocodeTracker?.fetches ?? []).some((entry) =>
+    `(window.__agendaoTracker?.fetches ?? []).some((entry) =>
       entry.url.includes('/session/${sessionId}/stream') && entry.method === 'POST'
     )`,
     5000,
@@ -495,7 +495,7 @@ async function run() {
 
     const noInitialPtyFetch = await evaluate(
       client,
-      "!(window.__rocodeTracker?.fetches ?? []).some((entry) => entry.url.includes('/pty'))",
+      "!(window.__agendaoTracker?.fetches ?? []).some((entry) => entry.url.includes('/pty'))",
     );
     assert(noInitialPtyFetch, "terminal fetches started before expansion");
     record("terminal-deferred-fetch", "no /pty fetch before terminal expansion");
@@ -524,7 +524,7 @@ async function run() {
     await click(client, "[data-testid='session-new']");
     await waitForExpression(
       client,
-      "(window.__rocodeTracker?.fetches ?? []).some((entry) => entry.url.endsWith('/session') && entry.method === 'POST')",
+      "(window.__agendaoTracker?.fetches ?? []).some((entry) => entry.url.endsWith('/session') && entry.method === 'POST')",
     );
     record("session-create", "new session POST emitted from the new frontend");
     await waitForExpression(
@@ -543,18 +543,18 @@ async function run() {
     await waitForExpression(client, "Boolean(document.querySelector('[data-testid=\"terminal-panel\"]'))");
     await waitForExpression(
       client,
-      "(window.__rocodeTracker?.fetches ?? []).some((entry) => entry.url.includes('/pty'))",
+      "(window.__agendaoTracker?.fetches ?? []).some((entry) => entry.url.includes('/pty'))",
     );
     record("terminal-expand", "terminal panel expanded and PTY fetch started");
 
     await click(client, "[data-testid='terminal-create']");
     await waitForExpression(
       client,
-      "(window.__rocodeTracker?.fetches ?? []).some((entry) => /\\/pty(?:\\?|$)/.test(entry.url) && entry.method === 'POST')",
+      "(window.__agendaoTracker?.fetches ?? []).some((entry) => /\\/pty(?:\\?|$)/.test(entry.url) && entry.method === 'POST')",
     );
     await waitForExpression(
       client,
-      "(window.__rocodeTracker?.sockets ?? []).some((url) => url.includes('/pty/'))",
+      "(window.__agendaoTracker?.sockets ?? []).some((url) => url.includes('/pty/'))",
     );
     record("terminal-create", "PTY creation emitted POST /pty and opened PTY websocket");
 
@@ -571,7 +571,7 @@ async function run() {
     await click(client, "[data-testid='question-submit']");
     await waitForExpression(
       client,
-      "(window.__rocodeTracker?.fetches ?? []).some((entry) => /\\/question\\/.+\\/reply$/.test(entry.url) && entry.method === 'POST')",
+      "(window.__agendaoTracker?.fetches ?? []).some((entry) => /\\/question\\/.+\\/reply$/.test(entry.url) && entry.method === 'POST')",
     );
     await waitForExpression(client, "!document.querySelector('[data-testid=\"question-overlay\"]')");
     record("question-loop", "question overlay opened and submitted through the real reply route");
@@ -588,7 +588,7 @@ async function run() {
     await click(client, "[data-testid='permission-once']");
     await waitForExpression(
       client,
-      "(window.__rocodeTracker?.fetches ?? []).some((entry) => /\\/permission\\/.+\\/reply$/.test(entry.url) && entry.method === 'POST')",
+      "(window.__agendaoTracker?.fetches ?? []).some((entry) => /\\/permission\\/.+\\/reply$/.test(entry.url) && entry.method === 'POST')",
     );
     await waitForExpression(client, "!document.querySelector('[data-testid=\"permission-overlay\"]')");
     record("permission-loop", "permission overlay opened and replied through the real permission route");
@@ -597,7 +597,7 @@ async function run() {
     await click(client, "[data-testid='composer-send']");
     await waitForExpression(
       client,
-      `(window.__rocodeTracker?.fetches ?? []).some((entry) =>
+      `(window.__agendaoTracker?.fetches ?? []).some((entry) =>
         entry.url.includes('/session/${sessionId}/stream') && entry.method === 'POST'
       )`,
     );
@@ -729,7 +729,7 @@ async function run() {
             client,
             "document.body ? document.body.innerHTML.slice(0, 1200) : '(no body)'",
           ),
-          fetches: await evaluate(client, "window.__rocodeTracker?.fetches ?? []"),
+          fetches: await evaluate(client, "window.__agendaoTracker?.fetches ?? []"),
           resources: await evaluate(
             client,
             "performance.getEntriesByType('resource').map((entry) => entry.name)",

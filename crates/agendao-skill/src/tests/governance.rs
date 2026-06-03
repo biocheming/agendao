@@ -1398,7 +1398,7 @@ Review repository changes carefully and verify evidence before reporting.
                 frontmatter: Some(SkillFrontmatterPatch {
                     metadata: Some(SkillMetadataBlocks {
                         hermes: None,
-                        agendao: Some(SkillRocodeMetadata {
+                        agendao: Some(SkillAgendaoMetadata {
                             requires_tools: vec!["read".to_string(), "grep".to_string()],
                             fallback_for_tools: Vec::new(),
                             requires_toolsets: Vec::new(),

@@ -2,7 +2,7 @@ use crate::{
     write::parse_skill_frontmatter_lines, SkillDetailView,
     SkillFrontmatter as FormalSkillFrontmatter, SkillHermesMetadata, SkillMetadataBlocks,
     SkillPrerequisites, SkillReadinessStatus, SkillRequiredEnvironmentVariable,
-    SkillRocodeMetadata,
+    SkillAgendaoMetadata,
 };
 use serde::de::DeserializeOwned;
 use serde_yaml::Value as YamlValue;
@@ -320,7 +320,7 @@ fn parse_metadata_blocks(
         {
             None
         } else {
-            Some(SkillRocodeMetadata {
+            Some(SkillAgendaoMetadata {
                 requires_tools,
                 fallback_for_tools,
                 requires_toolsets,
@@ -849,7 +849,7 @@ metadata:
                     tags: vec!["chemistry".to_string(), "design".to_string()],
                     related_skills: vec!["molecule-report".to_string()],
                 }),
-                agendao: Some(SkillRocodeMetadata {
+                agendao: Some(SkillAgendaoMetadata {
                     requires_tools: vec!["skill_manage".to_string()],
                     fallback_for_tools: Vec::new(),
                     requires_toolsets: Vec::new(),

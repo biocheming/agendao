@@ -7,14 +7,14 @@ use crate::write::{
 };
 use crate::{
     SkillAuthority, SkillError, SkillFileRef, SkillFrontmatter, SkillHermesMetadata, SkillMeta,
-    SkillMetadataBlocks, SkillPrerequisites, SkillRequiredEnvironmentVariable, SkillRocodeMetadata,
+    SkillMetadataBlocks, SkillPrerequisites, SkillRequiredEnvironmentVariable, SkillAgendaoMetadata,
 };
 use agendao_types::{
     WorkspaceSkillArtifactBundle, WorkspaceSkillArtifactEntry, WorkspaceSkillArtifactFile,
     WorkspaceSkillArtifactFrontmatter, WorkspaceSkillArtifactHermesMetadata,
     WorkspaceSkillArtifactImportEnvelope, WorkspaceSkillArtifactLegacyPayload,
     WorkspaceSkillArtifactMetadataBlocks, WorkspaceSkillArtifactPrerequisites,
-    WorkspaceSkillArtifactRequiredEnvironmentVariable, WorkspaceSkillArtifactRocodeMetadata,
+    WorkspaceSkillArtifactRequiredEnvironmentVariable, WorkspaceSkillArtifactAgendaoMetadata,
 };
 use std::collections::HashSet;
 use std::fs;
@@ -312,7 +312,7 @@ fn artifact_frontmatter_from_skill(
                     }),
                 agendao: value
                     .agendao
-                    .map(|agendao| WorkspaceSkillArtifactRocodeMetadata {
+                    .map(|agendao| WorkspaceSkillArtifactAgendaoMetadata {
                         requires_tools: agendao.requires_tools,
                         fallback_for_tools: agendao.fallback_for_tools,
                         requires_toolsets: agendao.requires_toolsets,
@@ -362,7 +362,7 @@ fn skill_frontmatter_from_artifact(
                     tags: hermes.tags.clone(),
                     related_skills: hermes.related_skills.clone(),
                 }),
-                agendao: value.agendao.as_ref().map(|agendao| SkillRocodeMetadata {
+                agendao: value.agendao.as_ref().map(|agendao| SkillAgendaoMetadata {
                     requires_tools: agendao.requires_tools.clone(),
                     fallback_for_tools: agendao.fallback_for_tools.clone(),
                     requires_toolsets: agendao.requires_toolsets.clone(),

@@ -95,9 +95,9 @@ pub(super) fn collect_agendao_directories(project_dir: &Path) -> Vec<PathBuf> {
 
     // Home directory .agendao
     if let Some(home) = dirs::home_dir() {
-        let home_rocode = home.join(".agendao");
-        if home_rocode.exists() && !directories.contains(&home_rocode) {
-            directories.push(home_rocode);
+        let home_agendao = home.join(".agendao");
+        if home_agendao.exists() && !directories.contains(&home_agendao) {
+            directories.push(home_agendao);
         }
     }
 

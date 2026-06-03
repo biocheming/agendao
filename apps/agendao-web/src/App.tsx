@@ -1057,7 +1057,7 @@ export default function App() {
     const pendingVisible = selectedSessionId ? (pendingOutputBlocksRef.current[selectedSessionId] ?? []) : [];
     (
       window as Window & {
-        __rocodeWebDebug?: {
+        __agendaoWebDebug?: {
           selectedSessionId: string | null;
           showThinking: boolean;
           messages: Array<{ kind: string; id?: string; tool_call_id?: string; text?: string }>;
@@ -1065,7 +1065,7 @@ export default function App() {
           pendingVisible: Array<{ kind: string; id?: string; tool_call_id?: string; text?: string; detail?: string; part_key?: string; part_kind?: string }>;
         };
       }
-    ).__rocodeWebDebug = {
+    ).__agendaoWebDebug = {
       selectedSessionId,
       showThinking,
       messages: messages.map((message) => ({

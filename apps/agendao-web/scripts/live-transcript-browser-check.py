@@ -198,16 +198,16 @@ async def install_sse_probe(client: CdpClient):
             "source": """
 (() => {
   const originalFetch = window.fetch.bind(window);
-  window.__rocodeSseCapture = [];
+  window.__agendaoSseCapture = [];
 
   function pushCapture(entry) {
     try {
-      window.__rocodeSseCapture.push({
+      window.__agendaoSseCapture.push({
         at: Date.now(),
         ...entry,
       });
-      if (window.__rocodeSseCapture.length > 5000) {
-        window.__rocodeSseCapture.splice(0, window.__rocodeSseCapture.length - 5000);
+      if (window.__agendaoSseCapture.length > 5000) {
+        window.__agendaoSseCapture.splice(0, window.__agendaoSseCapture.length - 5000);
       }
     } catch {}
   }
@@ -380,14 +380,14 @@ async def collect_page_state(client: CdpClient):
 async def collect_sse_capture(client: CdpClient):
     return await evaluate(
         client,
-        """(() => Array.isArray(window.__rocodeSseCapture) ? window.__rocodeSseCapture : [])()""",
+        """(() => Array.isArray(window.__agendaoSseCapture) ? window.__agendaoSseCapture : [])()""",
     )
 
 
 async def collect_debug_state(client: CdpClient):
     return await evaluate(
         client,
-        """(() => window.__rocodeWebDebug ?? null)()""",
+        """(() => window.__agendaoWebDebug ?? null)()""",
     )
 
 

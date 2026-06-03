@@ -542,7 +542,7 @@ mod tests {
     use agendao_skill::{
         RuntimeSkillPromptBodyKind, RuntimeSkillPromptPacket, SkillConditions, SkillDetailView,
         SkillFileRef, SkillHermesMetadata, SkillMeta, SkillMetadataBlocks, SkillPrerequisites,
-        SkillReadinessStatus, SkillRequiredEnvironmentVariable, SkillRocodeMetadata,
+        SkillReadinessStatus, SkillRequiredEnvironmentVariable, SkillAgendaoMetadata,
     };
     use agendao_types::{
         SkillRetirementReason, SkillRetirementReasonKind, SkillRuntimeCompositionHint,
@@ -626,7 +626,7 @@ mod tests {
                         tags: vec!["chemistry".to_string(), "design".to_string()],
                         related_skills: vec!["molecule-report".to_string()],
                     }),
-                    agendao: Some(SkillRocodeMetadata {
+                    agendao: Some(SkillAgendaoMetadata {
                         requires_tools: vec!["skill_manage".to_string()],
                         fallback_for_tools: Vec::new(),
                         requires_toolsets: Vec::new(),

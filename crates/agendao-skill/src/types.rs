@@ -83,7 +83,7 @@ pub struct SkillHermesMetadata {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct SkillRocodeMetadata {
+pub struct SkillAgendaoMetadata {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires_tools: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -101,7 +101,7 @@ pub struct SkillMetadataBlocks {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hermes: Option<SkillHermesMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agendao: Option<SkillRocodeMetadata>,
+    pub agendao: Option<SkillAgendaoMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

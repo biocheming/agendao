@@ -4,13 +4,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WorkspaceSkillArtifactVersion {
     #[serde(rename = "agendao-rust/workspace-skill/v1")]
-    RocodeRustWorkspaceSkillV1,
+    AgendaoRustWorkspaceSkillV1,
 }
 
 impl WorkspaceSkillArtifactVersion {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::RocodeRustWorkspaceSkillV1 => "agendao-rust/workspace-skill/v1",
+            Self::AgendaoRustWorkspaceSkillV1 => "agendao-rust/workspace-skill/v1",
         }
     }
 }
@@ -40,7 +40,7 @@ pub struct WorkspaceSkillArtifactHermesMetadata {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(deny_unknown_fields)]
-pub struct WorkspaceSkillArtifactRocodeMetadata {
+pub struct WorkspaceSkillArtifactAgendaoMetadata {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires_tools: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -59,7 +59,7 @@ pub struct WorkspaceSkillArtifactMetadataBlocks {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hermes: Option<WorkspaceSkillArtifactHermesMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agendao: Option<WorkspaceSkillArtifactRocodeMetadata>,
+    pub agendao: Option<WorkspaceSkillArtifactAgendaoMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -126,7 +126,7 @@ pub struct WorkspaceSkillArtifactBundle {
 impl WorkspaceSkillArtifactBundle {
     pub fn new(exported_at: i64, skills: Vec<WorkspaceSkillArtifactEntry>) -> Self {
         Self {
-            version: WorkspaceSkillArtifactVersion::RocodeRustWorkspaceSkillV1,
+            version: WorkspaceSkillArtifactVersion::AgendaoRustWorkspaceSkillV1,
             exported_at,
             skills,
         }
@@ -186,7 +186,7 @@ mod tests {
 
         assert_eq!(
             value["version"],
-            serde_json::json!(WorkspaceSkillArtifactVersion::RocodeRustWorkspaceSkillV1.as_str())
+            serde_json::json!(WorkspaceSkillArtifactVersion::AgendaoRustWorkspaceSkillV1.as_str())
         );
         assert_eq!(value["exported_at"], serde_json::json!(123));
         assert_eq!(value["skills"].as_array().map(Vec::len), Some(1));

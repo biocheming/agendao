@@ -45,7 +45,7 @@ pub use types::{
     LoadedSkill, LoadedSkillFile, SkillCategoryView, SkillConditions, SkillDetailView,
     SkillFileRef, SkillFrontmatter, SkillFrontmatterPatch, SkillHermesMetadata, SkillMeta,
     SkillMetaView, SkillMetadataBlocks, SkillPrerequisites, SkillReadinessStatus,
-    SkillRequiredEnvironmentVariable, SkillRocodeMetadata, SkillSummary,
+    SkillRequiredEnvironmentVariable, SkillAgendaoMetadata, SkillSummary,
 };
 pub use workspace_artifact::{
     export_workspace_skill_artifact_bundle, import_workspace_skill_artifact_bundle,
