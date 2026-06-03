@@ -1,0 +1,12 @@
+[package]
+name = "agendao-execution-types"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+agendao-core = { path = "../agendao-core" }
+agendao-provider = { path = "../agendao-provider" }
+serde_json = { workspace = true }
+tracing = { workspace = true }

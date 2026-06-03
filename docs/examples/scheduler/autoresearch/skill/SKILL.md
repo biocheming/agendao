@@ -6,7 +6,7 @@ version: 1
 ---
 
 > Warning
-> This file is machine-parsed by ROCode for autoresearch.
+> This file is machine-parsed by AgenDao for autoresearch.
 > Do not rename section headings.
 > Do not reorder sections.
 > Do not replace YAML blocks with plain text.

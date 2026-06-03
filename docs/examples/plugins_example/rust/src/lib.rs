@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use rocode_plugin::{Hook, HookContext, HookEvent, HookOutput, Plugin, PluginSystem};
+use agendao_plugin::{Hook, HookContext, HookEvent, HookOutput, Plugin, PluginSystem};
 
 #[derive(Default)]
 pub struct NativeDylibDemoPlugin;
@@ -42,4 +42,4 @@ impl Plugin for NativeDylibDemoPlugin {
     }
 }
 
-rocode_plugin::declare_plugin!(NativeDylibDemoPlugin);
+agendao_plugin::declare_plugin!(NativeDylibDemoPlugin);

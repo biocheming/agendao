@@ -1,7 +1,0 @@
-{
-  // Keep only a path reference in rocode.json/jsonc.
-  // The registry content lives in a separate file.
-  "docs": {
-    "contextDocsRegistryPath": "./docs/examples/context_docs/context-docs-registry.example.json"
-  }
-}

@@ -1,0 +1,57 @@
+[package]
+name = "agendao-tool"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+default = []
+lsp = ["agendao-lsp", "lsp-types"]
+
+[dependencies]
+agendao-core = { path = "../agendao-core" }
+agendao-config = { path = "../agendao-config" }
+agendao-skill = { path = "../agendao-skill" }
+agendao-types = { path = "../agendao-types" }
+agendao-util = { path = "../agendao-util" }
+agendao-grep = { path = "../agendao-grep" }
+agendao-plugin = { path = "../agendao-plugin" }
+agendao-permission = { path = "../agendao-permission" }
+agendao-execution-types = { path = "../agendao-execution-types" }
+agendao-lsp = { path = "../agendao-lsp", optional = true }
+lsp-types = { version = "0.97", optional = true }
+tree-sitter = { workspace = true }
+tree-sitter-bash = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+regex = { workspace = true }
+glob = { workspace = true }
+ignore = "0.4"
+crossbeam-channel = "0.5"
+walkdir = { workspace = true }
+dirs = { workspace = true }
+chrono = { workspace = true }
+async-process = { workspace = true }
+which = { workspace = true }
+content_inspector = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
+url = { workspace = true }
+uuid = { workspace = true }
+ast-grep-core = { workspace = true }
+ast-grep-language = { workspace = true }
+ast-grep-config = { workspace = true }
+urlencoding = "2.1"
+html2md = "0.2"
+base64 = "0.22"
+portable-pty = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

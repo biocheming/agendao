@@ -1,23 +1,23 @@
-# ROCode 上下文缓存优化
+# AgenDao 上下文缓存优化
 
-ROCode 的上下文缓存优化核心原则是：维护一个长期稳定、可复现、可解释的 prompt prefix，而不是在每轮请求里临时拼接更多缓存字段。
+AgenDao 的上下文缓存优化核心原则是：维护一个长期稳定、可复现、可解释的 prompt prefix，而不是在每轮请求里临时拼接更多缓存字段。
 
-这份文档现在不只解释“怎么命中缓存”，也解释 ROCode 如何界定上下文所有权。缓存优化不能靠偷偷塞更多历史；它依赖的是对 prompt surface、child handoff、compaction boundary 和 request-view checkpoint 的统一治理。
+这份文档现在不只解释“怎么命中缓存”，也解释 AgenDao 如何界定上下文所有权。缓存优化不能靠偷偷塞更多历史；它依赖的是对 prompt surface、child handoff、compaction boundary 和 request-view checkpoint 的统一治理。
 
 ## 协议族边界
 
-ROCode 只把缓存策略按内部协议族分派：
+AgenDao 只把缓存策略按内部协议族分派：
 
-| 协议族 | ROCode 名称 | 缓存策略 |
+| 协议族 | AgenDao 名称 | 缓存策略 |
 |--------|-------------|----------|
-| closeai-compatible | `closeai` | 自动前缀缓存；ROCode 负责稳定 prefix，并在能力明确时附加 `prompt_cache_key` |
-| Ethnopic-compatible | `ethnopic` | 显式 cache breakpoint；ROCode 负责规划稳定边界并写入 `cache_control`。底层 wire path 仍可能是 `/messages`。 |
+| closeai-compatible | `closeai` | 自动前缀缓存；AgenDao 负责稳定 prefix，并在能力明确时附加 `prompt_cache_key` |
+| Ethnopic-compatible | `ethnopic` | 显式 cache breakpoint；AgenDao 负责规划稳定边界并写入 `cache_control`。底层 wire path 仍可能是 `/messages`。 |
 
 Provider 具体是谁不是主轴。厂商差异只作为 typed capability / usage parser override 后置处理，不能反过来驱动核心 prompt 结构。
 
 ## 三本账：请求、会话、工作流
 
-ROCode 现在把上下文与用量拆成三本账，而不是继续把它们折叠成一个“Current”数字：
+AgenDao 现在把上下文与用量拆成三本账，而不是继续把它们折叠成一个“Current”数字：
 
 - `request_context_tokens`
   - 下一次真正发给 provider 的 request-view 估算大小
@@ -42,11 +42,11 @@ CLI、TUI、Web 现在都能从 `context_closure_contract` 读到这三本账的
 
 ## 稳定提示面
 
-ROCode 会尽量把请求组织成三段：
+AgenDao 会尽量把请求组织成三段：
 
 1. **Stable Zone**
    - provider / model invariant system prompt
-   - ROCode developer policy
+   - AgenDao developer policy
    - canonicalized tool schemas
    - 稳定的项目摘要与会话摘要
 2. **Semi-Stable Zone**
@@ -63,7 +63,7 @@ ROCode 会尽量把请求组织成三段：
 
 ## Child / Fork 边界
 
-上下文稳定还依赖 child handoff 语义。ROCode 当前收口后的规则是：
+上下文稳定还依赖 child handoff 语义。AgenDao 当前收口后的规则是：
 
 - parent 只向 child 传显式 packet，而不是把 parent 的完整运行史隐式倒给 child
 - child 回来时，parent 只吸收 result / summary，不回收 child 内部全部历史
@@ -74,7 +74,7 @@ ROCode 会尽量把请求组织成三段：
 
 ## 输出投影
 
-缓存命中不仅取决于本轮请求，也取决于上一轮输出如何进入下一轮上下文。ROCode 对输出采用 cache-aware projection：
+缓存命中不仅取决于本轮请求，也取决于上一轮输出如何进入下一轮上下文。AgenDao 对输出采用 cache-aware projection：
 
 - 用户原始指令、约束、偏好和验收标准保持保真。
 - 大型 assistant final、tool output、scheduler stage detail 优先压缩成摘要、metadata 和 artifact reference。
@@ -85,7 +85,7 @@ ROCode 会尽量把请求组织成三段：
 
 ### Reasoning continuation
 
-模型返回的 thinking / reasoning 不是普通 assistant 文本，也不是可随意摘要的可见输出；它是协议级 continuation state。只要下一轮请求仍处于同一协议族和 thinking mode，ROCode 必须把它作为 typed reasoning part 保留到唯一提示面权威，再由 provider 序列化为对应 wire schema，例如 closeai-compatible 的 `reasoning_content` 或 Ethnopic-compatible thinking block。
+模型返回的 thinking / reasoning 不是普通 assistant 文本，也不是可随意摘要的可见输出；它是协议级 continuation state。只要下一轮请求仍处于同一协议族和 thinking mode，AgenDao 必须把它作为 typed reasoning part 保留到唯一提示面权威，再由 provider 序列化为对应 wire schema，例如 closeai-compatible 的 `reasoning_content` 或 Ethnopic-compatible thinking block。
 
 因此：
 
@@ -116,7 +116,7 @@ ROCode 会尽量把请求组织成三段：
 
 ## Tool Trajectory Quality
 
-ROCode 现在不只记录 cache 和 usage，也会记录工具轨迹质量。
+AgenDao 现在不只记录 cache 和 usage，也会记录工具轨迹质量。
 
 `tool_trajectory_quality` 的作用不是替代执行结果，而是解释：
 
@@ -149,7 +149,7 @@ CLI、TUI 和 Web 都会显示缓存相关 usage：
 
 如果 provider 没有返回某个字段，对应值可能为 `0`。例如 cache write 为 `0` 不一定表示缓存未工作；对只暴露 cached tokens 或 hit/miss 的协议族，写入成本可能没有单独字段。
 
-ROCode 还会为每轮请求记录 cache fingerprint，并在检测到明显前缀退化时通过前端显示 cache diagnostic，例如：
+AgenDao 还会为每轮请求记录 cache fingerprint，并在检测到明显前缀退化时通过前端显示 cache diagnostic，例如：
 
 ```text
 Cache high change · tool surface changed
@@ -166,7 +166,7 @@ Cache medium change · prefix changed before the stable boundary
 
 ## Context Closure Contract
 
-为了把“为什么没命中缓存”说清楚，ROCode 现在用一份统一的 `context_closure_contract` 来汇总四类事实：
+为了把“为什么没命中缓存”说清楚，AgenDao 现在用一份统一的 `context_closure_contract` 来汇总四类事实：
 
 - `prefix_stability`
   - prefix 是否在 API view 上保持稳定，是否发生了 stable boundary 之前的变化
@@ -196,7 +196,7 @@ Cache medium change · prefix changed before the stable boundary
 
 ## 开发约束
 
-上下文缓存优化受 ROCode 宪法第十条“唯一提示面权威”约束：
+上下文缓存优化受 AgenDao 宪法第十条“唯一提示面权威”约束：
 
 - 不能让 system builder、tool builder、scheduler、provider transform 多处独立修改最终 prompt surface。
 - tools 必须 canonicalize：built-in 在前，外部 / dynamic 工具后置，schema key 稳定排序。
@@ -206,12 +206,12 @@ Cache medium change · prefix changed before the stable boundary
 
 相关代码入口：
 
-- `crates/rocode-provider/src/cache.rs`
-- `crates/rocode-provider/src/transform/normalize.rs`
-- `crates/rocode-session/src/prompt/message_building.rs`
-- `crates/rocode-session/src/prompt/loop_lifecycle.rs`
-- `crates/rocode-orchestrator/src/runtime/policy.rs`
-- `crates/rocode-orchestrator/src/runtime/loop_impl.rs`
-- `crates/rocode-cli/src/run/session_projection.rs`
-- `crates/rocode-tui/src/components/sidebar.rs`
-- `apps/rocode-web/src/lib/cacheDiagnostics.ts`
+- `crates/agendao-provider/src/cache.rs`
+- `crates/agendao-provider/src/transform/normalize.rs`
+- `crates/agendao-session/src/prompt/message_building.rs`
+- `crates/agendao-session/src/prompt/loop_lifecycle.rs`
+- `crates/agendao-orchestrator/src/runtime/policy.rs`
+- `crates/agendao-orchestrator/src/runtime/loop_impl.rs`
+- `crates/agendao-cli/src/run/session_projection.rs`
+- `crates/agendao-tui/src/components/sidebar.rs`
+- `apps/agendao-web/src/lib/cacheDiagnostics.ts`

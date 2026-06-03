@@ -18,7 +18,7 @@ fi
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
-CONFIG_PATH="$TMP_DIR/rocode.json"
+CONFIG_PATH="$TMP_DIR/agendao.json"
 
 cat >"$CONFIG_PATH" <<EOF
 {
@@ -32,7 +32,7 @@ cat >"$CONFIG_PATH" <<EOF
 EOF
 
 echo "[3/4] Running native plugin verifier..."
-cargo run -p rocode-plugin --example "$VERIFY_EXAMPLE" -- "$CONFIG_PATH" >/dev/null
+cargo run -p agendao-plugin --example "$VERIFY_EXAMPLE" -- "$CONFIG_PATH" >/dev/null
 
 echo "[4/4] Success"
 echo "Native dylib plugin verified:"

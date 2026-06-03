@@ -1,0 +1,21 @@
+[package]
+name = "agendao-client"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+agendao-api = { path = "../agendao-api" }
+agendao-command = { path = "../agendao-command" }
+agendao-config = { path = "../agendao-config" }
+agendao-orchestrator = { path = "../agendao-orchestrator" }
+agendao-runtime-context = { path = "../agendao-runtime-context" }
+agendao-state = { path = "../agendao-state" }
+agendao-types = { path = "../agendao-types" }
+anyhow = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+urlencoding = "2.1"

@@ -1,0 +1,28 @@
+[package]
+name = "agendao"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "agendao"
+path = "src/main.rs"
+
+[dependencies]
+agendao-cli = { path = "../agendao-cli" }
+agendao-client = { path = "../agendao-client" }
+agendao-launcher = { path = "../agendao-launcher", features = ["embedded-web"] }
+agendao-server = { path = "../agendao-server" }
+agendao-tui = { path = "../agendao-tui" }
+agendao-core = { path = "../agendao-core" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+clap = { workspace = true }
+dirs = { workspace = true }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+which = { workspace = true }

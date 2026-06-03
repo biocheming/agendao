@@ -8,7 +8,7 @@
 
 ### 1. TransportSelector 实现
 
-**文件**: `crates/rocode-client/src/transport/selector.rs`
+**文件**: `crates/agendao-client/src/transport/selector.rs`
 
 创建传输选择器，实现智能传输模式选择：
 
@@ -73,8 +73,8 @@ impl TransportSelector {
         #[cfg(unix)]
         {
             let candidates = vec![
-                "/tmp/rocode.sock",
-                "/var/run/rocode.sock",
+                "/tmp/agendao.sock",
+                "/var/run/agendao.sock",
             ];
 
             for path in candidates {
@@ -83,7 +83,7 @@ impl TransportSelector {
                 }
             }
 
-            Some("/tmp/rocode.sock".to_string())
+            Some("/tmp/agendao.sock".to_string())
         }
 
         #[cfg(not(unix))]
@@ -96,7 +96,7 @@ impl TransportSelector {
 
 ### 2. 模块导出
 
-**文件**: `crates/rocode-client/src/transport/mod.rs`
+**文件**: `crates/agendao-client/src/transport/mod.rs`
 
 添加 selector 模块导出：
 
@@ -155,7 +155,7 @@ pub use selector::TransportSelector;
 #[cfg(unix)]
 {
     // Unix/Linux/macOS: 支持 Unix Socket
-    Some("/tmp/rocode.sock".to_string())
+    Some("/tmp/agendao.sock".to_string())
 }
 
 #[cfg(not(unix))]
@@ -170,11 +170,11 @@ pub use selector::TransportSelector;
 ### 基本用法
 
 ```rust
-use rocode_client::transport::TransportSelector;
+use agendao_client::transport::TransportSelector;
 
 // 创建选择器
 let selector = TransportSelector::new(
-    Some("/tmp/rocode.sock".to_string()),
+    Some("/tmp/agendao.sock".to_string()),
     "http://localhost:3000".to_string(),
     None,
 );
@@ -260,12 +260,12 @@ async fn test_selector_fallback_to_http() {
 ### 集成测试场景
 
 1. **Unix Socket 可用**
-   - 启动服务器：`rocode-server --unix-socket /tmp/rocode.sock`
+   - 启动服务器：`agendao-server --unix-socket /tmp/agendao.sock`
    - 启动 TUI：自动检测并使用 Unix Socket
    - 验证：检查日志输出 "Unix Socket connection successful"
 
 2. **Unix Socket 不可用**
-   - 启动服务器：`rocode-server --port 3000`（不启动 Unix Socket）
+   - 启动服务器：`agendao-server --port 3000`（不启动 Unix Socket）
    - 启动 TUI：自动回退到 HTTP
    - 验证：检查日志输出 "Using HTTP transport"
 
@@ -276,7 +276,7 @@ async fn test_selector_fallback_to_http() {
 
 ## 架构影响
 
-### 符合 ROCode 宪法
+### 符合 AgenDao 宪法
 
 - **第一条（唯一执行内核）**：所有传输模式最终都调用 `OrchestrationCore`
 - **第九条（副作用路径唯一）**：传输选择器只是路由层，不产生副作用
@@ -386,17 +386,17 @@ impl TransportSelector {
 ### 编译成功
 
 ```bash
-$ cargo check --package rocode-client
+$ cargo check --package agendao-client
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.72s
 ```
 
 ### 新增文件
 
-- ✅ `crates/rocode-client/src/transport/selector.rs` - 传输选择器实现
+- ✅ `crates/agendao-client/src/transport/selector.rs` - 传输选择器实现
 
 ### 修改文件
 
-- ✅ `crates/rocode-client/src/transport/mod.rs` - 导出 `TransportSelector`
+- ✅ `crates/agendao-client/src/transport/mod.rs` - 导出 `TransportSelector`
 
 ### 新增功能
 
@@ -416,7 +416,7 @@ Phase 5.3 成功完成：
 ✅ 支持平台适配（Unix/Windows）  
 ✅ 提供默认路径检测  
 ✅ 整个 workspace 编译通过  
-✅ 符合 ROCode 宪法的架构原则  
+✅ 符合 AgenDao 宪法的架构原则  
 
 关键成就：实现了智能传输选择，让 TUI/CLI 能够自动选择最佳传输方式，为用户提供透明的性能优化。Unix Socket 可用时自动使用（低延迟），不可用时自动回退到 HTTP（兼容性）。
 

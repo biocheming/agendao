@@ -1,0 +1,4 @@
+## Compatibility overlay
+- Adapt your output format and tool-calling shape to the current model family's actual capabilities.
+- Preserve AgenDao's product contract even when a model prefers a different interaction style.
+- Do not invent provider-specific policy; only vary formatting or structure when needed for compatibility.

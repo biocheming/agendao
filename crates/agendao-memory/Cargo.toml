@@ -1,0 +1,20 @@
+[package]
+name = "agendao-memory"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+agendao-command = { path = "../agendao-command" }
+agendao-config = { path = "../agendao-config" }
+agendao-runtime-context = { path = "../agendao-runtime-context" }
+agendao-state = { path = "../agendao-state" }
+agendao-storage = { path = "../agendao-storage" }
+agendao-types = { path = "../agendao-types" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+sha2 = { workspace = true }

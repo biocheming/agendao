@@ -1,5 +1,5 @@
 [package]
-name = "rocode-native-dylib-plugin"
+name = "agendao-native-dylib-plugin"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-rocode-plugin = { path = "../../crates/rocode-plugin" }
+agendao-plugin = { path = "../../crates/agendao-plugin" }
 serde_json = "1"
 
 [workspace]

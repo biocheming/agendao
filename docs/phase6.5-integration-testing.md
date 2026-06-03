@@ -82,7 +82,7 @@
 
 ### Step 1: 端到端对话测试
 
-创建 `crates/rocode-orchestrator/tests/test_integration_e2e.rs`：
+创建 `crates/agendao-orchestrator/tests/test_integration_e2e.rs`：
 
 ```rust
 #[tokio::test]
@@ -113,7 +113,7 @@ async fn test_e2e_session_management() {
 
 ### Step 2: 工具调用集成测试
 
-创建 `crates/rocode-orchestrator/tests/test_integration_tools.rs`：
+创建 `crates/agendao-orchestrator/tests/test_integration_tools.rs`：
 
 ```rust
 #[tokio::test]
@@ -145,7 +145,7 @@ async fn test_tool_execution_error() {
 
 ### Step 3: 流式输出集成测试
 
-创建 `crates/rocode-orchestrator/tests/test_integration_streaming.rs`：
+创建 `crates/agendao-orchestrator/tests/test_integration_streaming.rs`：
 
 ```rust
 #[tokio::test]
@@ -177,7 +177,7 @@ async fn test_streaming_multi_turn() {
 
 ### Step 4: 错误处理测试
 
-创建 `crates/rocode-orchestrator/tests/test_integration_errors.rs`：
+创建 `crates/agendao-orchestrator/tests/test_integration_errors.rs`：
 
 ```rust
 #[tokio::test]
@@ -203,7 +203,7 @@ async fn test_session_not_found() {
 
 ### Step 5: 并发测试
 
-创建 `crates/rocode-orchestrator/tests/test_integration_concurrent.rs`：
+创建 `crates/agendao-orchestrator/tests/test_integration_concurrent.rs`：
 
 ```rust
 #[tokio::test]

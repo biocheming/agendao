@@ -1,0 +1,16 @@
+[package]
+name = "agendao-api"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+agendao-command = { path = "../agendao-command" }
+tracing = { workspace = true }
+agendao-multimodal = { path = "../agendao-multimodal" }
+agendao-session = { path = "../agendao-session" }
+agendao-skill = { path = "../agendao-skill" }
+agendao-types = { path = "../agendao-types" }
+serde = { workspace = true }
+serde_json = { workspace = true }

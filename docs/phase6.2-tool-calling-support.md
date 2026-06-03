@@ -256,7 +256,7 @@ fn build_messages_with_tools(session: &Session) -> Vec<Message> {
 
 ## 架构影响
 
-### 符合 ROCode 宪法
+### 符合 AgenDao 宪法
 
 - **第一条（唯一执行内核）**：工具调用循环由 `OrchestrationCore` 驱动
 - **第四条（唯一工具调度）**：工具执行通过 `ToolRegistry` 统一调度

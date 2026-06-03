@@ -1,74 +1,74 @@
-# ROCode CLI 命令参考
+# AgenDao CLI 命令参考
 
-本文档是 ROCode 所有 CLI 子命令和交互式斜杠命令的完整参考。命令行通过 `rocode <subcommand>` 调用；交互式命令在 REPL 提示符下输入 `/command` 触发。
+本文档是 AgenDao 所有 CLI 子命令和交互式斜杠命令的完整参考。命令行通过 `agendao <subcommand>` 调用；交互式命令在 REPL 提示符下输入 `/command` 触发。
 
 ---
 
 ## 目录
 
 1. [命令系统概览](#命令系统概览)
-2. [rocode tui -- 交互式 TUI 会话](#rocode-tui----交互式-tui-会话)
-3. [rocode run -- 非交互式执行](#rocode-run----非交互式执行)
-4. [rocode attach -- 附加到远程服务器](#rocode-attach----附加到远程服务器)
-5. [rocode serve -- HTTP 服务器](#rocode-serve----http-服务器)
-6. [rocode web -- Web 界面](#rocode-web----web-界面)
-7. [rocode acp -- ACP 服务器](#rocode-acp----acp-服务器)
-8. [rocode models -- 模型列表](#rocode-models----模型列表)
-9. [rocode session -- 会话管理](#rocode-session----会话管理)
-10. [rocode memory -- Memory 权威工件](#rocode-memory----memory-权威工件)
-11. [rocode provider -- Provider 权威工件](#rocode-provider----provider-权威工件)
-12. [rocode skill -- 技能目录管理](#rocode-skill----技能目录管理)
-13. [rocode stats -- 用量统计](#rocode-stats----用量统计)
-14. [rocode db -- 数据库工具](#rocode-db----数据库工具)
-15. [rocode config -- 配置与 validation](#rocode-config----配置与-validation)
-16. [rocode auth -- 凭证管理](#rocode-auth----凭证管理)
-17. [rocode agent -- 智能体管理](#rocode-agent----智能体管理)
-18. [rocode debug -- 调试工具](#rocode-debug----调试工具)
-19. [rocode mcp -- MCP 服务器管理](#rocode-mcp----mcp-服务器管理)
-20. [rocode export / import -- 会话导入导出](#rocode-export--import----会话导入导出)
-21. [rocode github -- GitHub 智能体](#rocode-github----github-智能体)
-22. [rocode pr -- PR 检出](#rocode-pr----pr-检出)
-23. [rocode upgrade -- 升级](#rocode-upgrade----升级)
-24. [rocode uninstall -- 卸载](#rocode-uninstall----卸载)
-25. [rocode generate -- OpenAPI 生成](#rocode-generate----openapi-生成)
-26. [rocode version / info -- 版本信息](#rocode-version--info----版本信息)
+2. [agendao tui -- 交互式 TUI 会话](#agendao-tui----交互式-tui-会话)
+3. [agendao run -- 非交互式执行](#agendao-run----非交互式执行)
+4. [agendao attach -- 附加到远程服务器](#agendao-attach----附加到远程服务器)
+5. [agendao serve -- HTTP 服务器](#agendao-serve----http-服务器)
+6. [agendao web -- Web 界面](#agendao-web----web-界面)
+7. [agendao acp -- ACP 服务器](#agendao-acp----acp-服务器)
+8. [agendao models -- 模型列表](#agendao-models----模型列表)
+9. [agendao session -- 会话管理](#agendao-session----会话管理)
+10. [agendao memory -- Memory 权威工件](#agendao-memory----memory-权威工件)
+11. [agendao provider -- Provider 权威工件](#agendao-provider----provider-权威工件)
+12. [agendao skill -- 技能目录管理](#agendao-skill----技能目录管理)
+13. [agendao stats -- 用量统计](#agendao-stats----用量统计)
+14. [agendao db -- 数据库工具](#agendao-db----数据库工具)
+15. [agendao config -- 配置与 validation](#agendao-config----配置与-validation)
+16. [agendao auth -- 凭证管理](#agendao-auth----凭证管理)
+17. [agendao agent -- 智能体管理](#agendao-agent----智能体管理)
+18. [agendao debug -- 调试工具](#agendao-debug----调试工具)
+19. [agendao mcp -- MCP 服务器管理](#agendao-mcp----mcp-服务器管理)
+20. [agendao export / import -- 会话导入导出](#agendao-export--import----会话导入导出)
+21. [agendao github -- GitHub 智能体](#agendao-github----github-智能体)
+22. [agendao pr -- PR 检出](#agendao-pr----pr-检出)
+23. [agendao upgrade -- 升级](#agendao-upgrade----升级)
+24. [agendao uninstall -- 卸载](#agendao-uninstall----卸载)
+25. [agendao generate -- OpenAPI 生成](#agendao-generate----openapi-生成)
+26. [agendao version / info -- 版本信息](#agendao-version--info----版本信息)
 27. [交互式斜杠命令](#交互式斜杠命令)
 
 ---
 
 ## 命令系统概览
 
-ROCode 的命令分两层：
+AgenDao 的命令分两层：
 
-- **CLI 子命令**：通过 `rocode <subcommand>` 调用，例如 `rocode tui`、`rocode run`。
+- **CLI 子命令**：通过 `agendao <subcommand>` 调用，例如 `agendao tui`、`agendao run`。
 - **交互式斜杠命令**：在 TUI 或 CLI REPL 内输入 `/command` 触发。
 
 全局入口：
 
 ```
-rocode [subcommand] [options]
+agendao [subcommand] [options]
 ```
 
 不带子命令时，默认进入 `tui` 模式。
 
 默认传输策略：
 
-- `rocode tui` 默认 Direct（in-process）
-- `rocode run` / `rocode cli` 默认 Direct（in-process）
+- `agendao tui` 默认 Direct（in-process）
+- `agendao run` / `agendao cli` 默认 Direct（in-process）
 - `--socket` 显式覆盖为 Unix socket
 - `--attach-url` / `--attach` 显式覆盖为 HTTP
-- `rocode web` 保持 HTTP-first
+- `agendao web` 保持 HTTP-first
 
 ---
 
-## rocode tui -- 交互式 TUI 会话
+## agendao tui -- 交互式 TUI 会话
 
-启动交互式终端用户界面 (TUI) 会话。这是 ROCode 的主要使用模式。
+启动交互式终端用户界面 (TUI) 会话。这是 AgenDao 的主要使用模式。
 
 ### 用法
 
 ```
-rocode tui [PROJECT] [选项]
+agendao tui [PROJECT] [选项]
 ```
 
 ### 参数
@@ -87,7 +87,7 @@ rocode tui [PROJECT] [选项]
 | `--port` | u16 | 0 | HTTP 服务端口（0 = 自动） |
 | `--hostname` | string | 127.0.0.1 | 绑定地址 |
 | `--mdns` | flag | false | 启用 mDNS 服务发现 |
-| `--mdns-domain` | string | rocode.local | mDNS 域名 |
+| `--mdns-domain` | string | agendao.local | mDNS 域名 |
 | `--cors` | string[] | [] | CORS 允许源列表 |
 | `--local` | flag | false | 强制 Direct；当前只是显式声明默认行为 |
 
@@ -95,35 +95,35 @@ rocode tui [PROJECT] [选项]
 
 ```bash
 # 在当前目录启动 TUI
-rocode tui
+agendao tui
 
 # 显式改走 Unix socket
-rocode tui --socket
+agendao tui --socket
 
 # 显式改走 HTTP
-rocode tui --attach-url http://127.0.0.1:3000
+agendao tui --attach-url http://127.0.0.1:3000
 
 # 指定模型和项目
-rocode tui ./my-project -m zhipuai/glm-5.1
+agendao tui ./my-project -m zhipuai/glm-5.1
 
 # 恢复上次会话
-rocode tui -c
+agendao tui -c
 
 # 分叉一个已有会话
-rocode tui -s abc123 --fork
+agendao tui -s abc123 --fork
 ```
 
 ---
 
-## rocode run -- 非交互式执行
+## agendao run -- 非交互式执行
 
-向 ROCode 发送单条消息或命令，以非交互方式运行。不传消息时进入交互式 CLI REPL。
+向 AgenDao 发送单条消息或命令，以非交互方式运行。不传消息时进入交互式 CLI REPL。
 
 ### 用法
 
 ```
-rocode run [MESSAGE...] [选项]
-rocode run --command <command> [选项]
+agendao run [MESSAGE...] [选项]
+agendao run --command <command> [选项]
 ```
 
 ### 参数
@@ -155,37 +155,37 @@ rocode run --command <command> [选项]
 
 ```bash
 # 发送单条消息
-rocode run "解释这段代码的作用"
+agendao run "解释这段代码的作用"
 
 # 显式走 Unix socket
-rocode run --socket "继续当前任务"
+agendao run --socket "继续当前任务"
 
 # 显式走 HTTP
-rocode run --attach http://127.0.0.1:3000 "继续当前任务"
+agendao run --attach http://127.0.0.1:3000 "继续当前任务"
 
 # 使用特定模型
-rocode run -m alibaba-cn/qwen3.6-plus "写一个排序算法"
+agendao run -m alibaba-cn/qwen3.6-plus "写一个排序算法"
 
 # 恢复上次会话并继续
-rocode run -c "继续上次的任务"
+agendao run -c "继续上次的任务"
 
 # 以 JSON 格式输出
-rocode run --format json "列出 TODO"
+agendao run --format json "列出 TODO"
 
 # 执行斜杠命令
-rocode run --command /status
+agendao run --command /status
 ```
 
 ---
 
-## rocode attach -- 附加到远程服务器
+## agendao attach -- 附加到远程服务器
 
-将 TUI 客户端附加到一个正在运行的 ROCode 服务。默认按给定 URL 走 HTTP；如果额外提供 `--socket`，则显式要求走标准本地 Unix socket，并仅把 URL 作为同一服务的基准地址。
+将 TUI 客户端附加到一个正在运行的 AgenDao 服务。默认按给定 URL 走 HTTP；如果额外提供 `--socket`，则显式要求走标准本地 Unix socket，并仅把 URL 作为同一服务的基准地址。
 
 ### 用法
 
 ```
-rocode attach <URL> [选项]
+agendao attach <URL> [选项]
 ```
 
 ### 参数
@@ -201,20 +201,20 @@ rocode attach <URL> [选项]
 ### 示例
 
 ```bash
-rocode attach http://192.168.1.100:3000
-rocode attach http://localhost:3000 -s abc123
+agendao attach http://192.168.1.100:3000
+agendao attach http://localhost:3000 -s abc123
 ```
 
 ---
 
-## rocode serve -- HTTP 服务器
+## agendao serve -- HTTP 服务器
 
 启动后台 HTTP 服务器，接收 API 请求处理会话。
 
 ### 用法
 
 ```
-rocode serve [选项]
+agendao serve [选项]
 ```
 
 ### 参数
@@ -224,48 +224,48 @@ rocode serve [选项]
 | `--port` | u16 | 0 | 端口（0 = 自动） |
 | `--hostname` | string | 127.0.0.1 | 绑定地址 |
 | `--mdns` | flag | false | 启用 mDNS |
-| `--mdns-domain` | string | rocode.local | mDNS 域名 |
+| `--mdns-domain` | string | agendao.local | mDNS 域名 |
 | `--cors` | string[] | [] | CORS 允许源 |
 | `--socket` | flag | false | 同时监听标准本地 Unix socket |
 
 ---
 
-## rocode web -- Web 界面
+## agendao web -- Web 界面
 
 启动后台服务器并打开 Web 浏览器界面。
 
 当前默认行为是：
 
-- `rocode web` / `rocode serve` 优先使用编译进 `rocode` 二进制的内嵌 Web 资源
-- 如果显式设置 `ROCODE_WEB_DIST`，server 会改为使用该外部 `dist/` 目录作为运行时覆盖
-- 已安装布局中的 `share/rocode/web`、macOS bundle 中的 `Contents/Resources/web` 仍可作为兼容性外部资源来源
+- `agendao web` / `agendao serve` 优先使用编译进 `agendao` 二进制的内嵌 Web 资源
+- 如果显式设置 `AGENDAO_WEB_DIST`，server 会改为使用该外部 `dist/` 目录作为运行时覆盖
+- 已安装布局中的 `share/agendao/web`、macOS bundle 中的 `Contents/Resources/web` 仍可作为兼容性外部资源来源
 
-从源码构建时，`rocode-server` 的 `build.rs` 会自动检查 `apps/rocode-web/dist` 是否缺失或过期；只有 Web 源码变更时才会增量触发一次 `npm run build`。
+从源码构建时，`agendao-server` 的 `build.rs` 会自动检查 `apps/agendao-web/dist` 是否缺失或过期；只有 Web 源码变更时才会增量触发一次 `npm run build`。
 
 开发态也支持独立 Web dev server：
 
-- 设置 `ROCODE_WEB_DEV_URL=http://127.0.0.1:5173` 后，`rocode web` 会只拉起后端，并把浏览器打开到该 dev server。
+- 设置 `AGENDAO_WEB_DEV_URL=http://127.0.0.1:5173` 后，`agendao web` 会只拉起后端，并把浏览器打开到该 dev server。
 - launcher 会自动把后端地址追加为 `?api_base_url=http://127.0.0.1:3000`，前端的 HTTP / SSE / WebSocket / 文件下载请求都会改为走这个显式后端地址。
 - 对于本机 `localhost` / `127.0.0.1` 开发地址通常不需要额外 CORS 配置；若使用其他 origin，launcher 会把该 origin 一并加入后端白名单。
 
 ### 用法
 
 ```
-rocode web [选项]
+agendao web [选项]
 ```
 
-参数与 `rocode serve` 相同。
+参数与 `agendao serve` 相同。
 
 ---
 
-## rocode acp -- ACP 服务器
+## agendao acp -- ACP 服务器
 
 启动 Agent Client Protocol (ACP) 服务器，用于外部客户端集成。
 
 ### 用法
 
 ```
-rocode acp [选项]
+agendao acp [选项]
 ```
 
 ### 参数
@@ -278,14 +278,14 @@ rocode acp [选项]
 
 ---
 
-## rocode models -- 模型列表
+## agendao models -- 模型列表
 
 列出所有可用的 AI 模型。
 
 ### 用法
 
 ```
-rocode models [PROVIDER] [选项]
+agendao models [PROVIDER] [选项]
 ```
 
 ### 参数
@@ -299,19 +299,19 @@ rocode models [PROVIDER] [选项]
 ### 示例
 
 ```bash
-rocode models
-rocode models zhipuai --verbose
-rocode models --refresh
+agendao models
+agendao models zhipuai --verbose
+agendao models --refresh
 ```
 
 说明：
 
-- `rocode models --refresh` 会主动请求 `https://models.dev/api.json` 并更新本地 provider/model catalog
+- `agendao models --refresh` 会主动请求 `https://models.dev/api.json` 并更新本地 provider/model catalog
 - 在交互式会话里，对应的斜杠命令是 `/models refresh`
 
 ---
 
-## rocode session -- 会话管理
+## agendao session -- 会话管理
 
 管理会话的创建、列表、查看和删除。
 
@@ -320,7 +320,7 @@ rocode models --refresh
 #### session list
 
 ```
-rocode session list [选项]
+agendao session list [选项]
 ```
 
 | 参数 | 类型 | 默认值 | 说明 |
@@ -332,7 +332,7 @@ rocode session list [选项]
 #### session show
 
 ```
-rocode session show <SESSION_ID>
+agendao session show <SESSION_ID>
 ```
 
 说明：
@@ -343,13 +343,13 @@ rocode session show <SESSION_ID>
 #### session delete
 
 ```
-rocode session delete <SESSION_ID>
+agendao session delete <SESSION_ID>
 ```
 
 #### session provision-external-adapter
 
 ```
-rocode session provision-external-adapter --adapter-id <ID> --actor-id <ID> [选项]
+agendao session provision-external-adapter --adapter-id <ID> --actor-id <ID> [选项]
 ```
 
 | 参数 | 类型 | 说明 |
@@ -371,7 +371,7 @@ rocode session provision-external-adapter --adapter-id <ID> --actor-id <ID> [选
 
 ---
 
-## rocode memory -- Memory 权威工件
+## agendao memory -- Memory 权威工件
 
 导出或导入 memory authority 持久化工件。
 
@@ -385,13 +385,13 @@ rocode session provision-external-adapter --adapter-id <ID> --actor-id <ID> [选
 ### 用法
 
 ```bash
-rocode memory export --output memory.json
-rocode memory import ./memory.json
+agendao memory export --output memory.json
+agendao memory import ./memory.json
 ```
 
 ---
 
-## rocode provider -- Provider 权威工件
+## agendao provider -- Provider 权威工件
 
 导出或导入 provider authority 持久化工件。
 
@@ -405,20 +405,20 @@ rocode memory import ./memory.json
 ### 用法
 
 ```bash
-rocode provider export --output provider.json
-rocode provider import ./provider.json
+agendao provider export --output provider.json
+agendao provider import ./provider.json
 ```
 
 ---
 
-## rocode skill -- 技能目录管理
+## agendao skill -- 技能目录管理
 
 管理技能目录和远程 Hub 操作。
 
 ### 子命令
 
 ```
-rocode skill hub <action> [选项]
+agendao skill hub <action> [选项]
 ```
 
 #### Hub 子命令
@@ -465,14 +465,14 @@ rocode skill hub <action> [选项]
 
 ---
 
-## rocode stats -- 用量统计
+## agendao stats -- 用量统计
 
 显示令牌使用和成本统计。
 
 ### 用法
 
 ```
-rocode stats [选项]
+agendao stats [选项]
 ```
 
 | 参数 | 类型 | 说明 |
@@ -484,15 +484,15 @@ rocode stats [选项]
 
 ---
 
-## rocode db -- 数据库工具
+## agendao db -- 数据库工具
 
 访问本地 SQLite 数据库。
 
 ### 用法
 
 ```
-rocode db [QUERY] [选项]
-rocode db path
+agendao db [QUERY] [选项]
+agendao db path
 ```
 
 | 参数 | 类型 | 默认值 | 说明 |
@@ -502,16 +502,16 @@ rocode db path
 
 ---
 
-## rocode config -- 配置与 validation
+## agendao config -- 配置与 validation
 
 显示当前已解析配置，或读取 authority-backed validation snapshot。
 
 ### 用法
 
 ```bash
-rocode config
-rocode config validation
-rocode config validation --format json
+agendao config
+agendao config validation
+agendao config validation --format json
 ```
 
 ### 子命令
@@ -522,12 +522,12 @@ rocode config validation --format json
 
 说明：
 
-- `rocode config` 侧重“当前解析结果”。
-- `rocode config validation` 侧重 provider / external adapter / scheduler skill tree 等 owner-local validation 结果。
+- `agendao config` 侧重“当前解析结果”。
+- `agendao config validation` 侧重 provider / external adapter / scheduler skill tree 等 owner-local validation 结果。
 
 ---
 
-## rocode auth -- 凭证管理
+## agendao auth -- 凭证管理
 
 管理 AI 提供商认证凭证。
 
@@ -549,14 +549,14 @@ rocode config validation --format json
 ### 示例
 
 ```bash
-rocode auth list
-rocode auth login zhipuai --token zhipu-xxx
-rocode auth logout zhipuai
+agendao auth list
+agendao auth login zhipuai --token zhipu-xxx
+agendao auth logout zhipuai
 ```
 
 ---
 
-## rocode agent -- 智能体管理
+## agendao agent -- 智能体管理
 
 管理智能体定义。
 
@@ -580,7 +580,7 @@ rocode auth logout zhipuai
 
 ---
 
-## rocode debug -- 调试工具
+## agendao debug -- 调试工具
 
 调试和故障排查工具集。
 
@@ -605,7 +605,7 @@ rocode auth logout zhipuai
 #### debug agent
 
 ```
-rocode debug agent <NAME> [--tool <tool>] [--params <params>]
+agendao debug agent <NAME> [--tool <tool>] [--params <params>]
 ```
 
 #### debug file 子命令
@@ -685,14 +685,14 @@ rocode debug agent <NAME> [--tool <tool>] [--params <params>]
 
 ---
 
-## rocode mcp -- MCP 服务器管理
+## agendao mcp -- MCP 服务器管理
 
 管理 Model Context Protocol 服务器。详见 [mcp.md](./mcp.md)。
 
 ### 用法
 
 ```
-rocode mcp [选项] <action> [参数]
+agendao mcp [选项] <action> [参数]
 ```
 
 | 全局参数 | 默认值 | 说明 |
@@ -726,32 +726,32 @@ rocode mcp [选项] <action> [参数]
 
 ```bash
 # 列出所有 MCP 服务器
-rocode mcp list
+agendao mcp list
 
 # 添加远程 MCP 服务器
-rocode mcp add my-server --url https://mcp.example.com/sse
+agendao mcp add my-server --url https://mcp.example.com/sse
 
 # 添加本地 MCP 服务器
-rocode mcp add filesystem --command npx --arg -y --arg @modelcontextprotocol/server-filesystem
+agendao mcp add filesystem --command npx --arg -y --arg @modelcontextprotocol/server-filesystem
 
 # 连接/断开
-rocode mcp connect my-server
-rocode mcp disconnect my-server
+agendao mcp connect my-server
+agendao mcp disconnect my-server
 
 # OAuth 认证
-rocode mcp auth my-server --authenticate
+agendao mcp auth my-server --authenticate
 ```
 
 ---
 
-## rocode export / import -- 会话导入导出
+## agendao export / import -- 会话导入导出
 
 ### export
 
 将会话数据导出为 JSON。
 
 ```
-rocode export [SESSION_ID] [-o, --output <PATH>]
+agendao export [SESSION_ID] [-o, --output <PATH>]
 ```
 
 ### import
@@ -759,12 +759,12 @@ rocode export [SESSION_ID] [-o, --output <PATH>]
 从 JSON 文件或共享 URL 导入会话数据。
 
 ```
-rocode import <FILE_OR_URL>
+agendao import <FILE_OR_URL>
 ```
 
 ---
 
-## rocode github -- GitHub 智能体
+## agendao github -- GitHub 智能体
 
 管理 GitHub 智能体集成。
 
@@ -785,25 +785,25 @@ rocode import <FILE_OR_URL>
 
 ---
 
-## rocode pr -- PR 检出
+## agendao pr -- PR 检出
 
-拉取并检出 GitHub PR 分支，然后启动 ROCode。
+拉取并检出 GitHub PR 分支，然后启动 AgenDao。
 
 ```
-rocode pr <NUMBER>
+agendao pr <NUMBER>
 ```
 
 ---
 
-## rocode upgrade -- 升级
+## agendao upgrade -- 升级
 
-升级 ROCode 到最新或指定版本。
+升级 AgenDao 到最新或指定版本。
 
 ```
-rocode upgrade [TARGET] [-m, --method <METHOD>]
+agendao upgrade [TARGET] [-m, --method <METHOD>]
 ```
 
-`rocode upgrade` 适合由安装器或包管理器维护的安装方式。对于源码 / 本地单文件安装，请重新安装完整的 `rocode` 分发物，而不是手工替换旧二进制：
+`agendao upgrade` 适合由安装器或包管理器维护的安装方式。对于源码 / 本地单文件安装，请重新安装完整的 `agendao` 分发物，而不是手工替换旧二进制：
 
 ```bash
 ./scripts/install-local.sh release ~/.local
@@ -811,12 +811,12 @@ rocode upgrade [TARGET] [-m, --method <METHOD>]
 
 ---
 
-## rocode uninstall -- 卸载
+## agendao uninstall -- 卸载
 
-卸载 ROCode 及相关文件。
+卸载 AgenDao 及相关文件。
 
 ```
-rocode uninstall [选项]
+agendao uninstall [选项]
 ```
 
 | 参数 | 说明 |
@@ -826,26 +826,26 @@ rocode uninstall [选项]
 | `--dry-run` | 只显示将要执行的操作 |
 | `-f, --force` | 强制卸载 |
 
-当 `rocode` 以本地单文件布局安装时，卸载会删除 `rocode` 以及对应的 Web 资源目录。
+当 `agendao` 以本地单文件布局安装时，卸载会删除 `agendao` 以及对应的 Web 资源目录。
 
 ---
 
-## rocode generate -- OpenAPI 生成
+## agendao generate -- OpenAPI 生成
 
 生成 OpenAPI 规范 JSON 文件。
 
 ```
-rocode generate
+agendao generate
 ```
 
 ---
 
-## rocode version / info -- 版本信息
+## agendao version / info -- 版本信息
 
 | 命令 | 说明 |
 |------|------|
-| `rocode version` | 显示版本号 |
-| `rocode info` | 显示构建和环境信息（编译器、目标平台、profile） |
+| `agendao version` | 显示版本号 |
+| `agendao info` | 显示构建和环境信息（编译器、目标平台、profile） |
 
 ---
 

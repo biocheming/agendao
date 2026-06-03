@@ -1,7 +1,7 @@
 # Verifier Preset Guide
 
 这份指南面向第一次接触 `verifier` 的读者：先解释它要解决什么问题，再解释
-LLM-as-a-Verifier 的核心原理和公式，最后说明 ROCode 现在如何把它落到工程实现、
+LLM-as-a-Verifier 的核心原理和公式，最后说明 AgenDao 现在如何把它落到工程实现、
 示例配置、产物和前端展示里。
 
 ## Verifier 要解决什么问题
@@ -17,7 +17,7 @@ LLM-as-a-Verifier 的核心原理和公式，最后说明 ROCode 现在如何把
 - 改动更多，维护风险更高；
 - 只是在局部验证中成功，并不代表它是多个候选里最优的。
 
-`verifier` 的目标是把“生成候选”和“选择候选”分开。ROCode 仍然用原有
+`verifier` 的目标是把“生成候选”和“选择候选”分开。AgenDao 仍然用原有
 autonomous workflow 生成、执行和验证候选；当有多个可接受候选时，再让 verifier
 judge 基于轨迹证据进行显式比较，选出最终结果。
 
@@ -40,7 +40,7 @@ judge 基于轨迹证据进行显式比较，选出最终结果。
 
 Verifier mode 有两个职责边界：
 
-- **候选生成**：由 ROCode 已有 autonomous workflow 完成，包括执行、验证、guard、
+- **候选生成**：由 AgenDao 已有 autonomous workflow 完成，包括执行、验证、guard、
   metric、artifact 记录等。
 - **候选选择**：由 verifier judge 对保留下来的候选进行比较，使用明确 criterion
   和候选轨迹 `tau` 作为证据。
@@ -72,19 +72,19 @@ R(t, tau) =
   score token `v_g` 的概率；
 - `phi(v_g)`：把 score token 映射为数值奖励。
 
-ROCode 使用 `A` 到 `T` 作为 score token：
+AgenDao 使用 `A` 到 `T` 作为 score token：
 
 - `A` 表示最高分；
 - `T` 表示最低分；
 - token 会映射到 `[0, 1]` 区间的 reward；
 - `granularity: 20` 对应 `A..T` 这 20 个 score token。
 
-直观地说，judge 不只是输出“我觉得是 A 档”。ROCode 会读取模型在 score token
+直观地说，judge 不只是输出“我觉得是 A 档”。AgenDao 会读取模型在 score token
 位置上的 top-logprobs，把每个候选的分数看作概率分布上的期望值。
 
 ## Score Job 分解
 
-ROCode 的 canonical verifier path 把一次候选比较拆成多个 score job：
+AgenDao 的 canonical verifier path 把一次候选比较拆成多个 score job：
 
 ```text
 ScoreJob = task objective + candidate pair + criterion + repetition
@@ -99,8 +99,8 @@ Judge prompt 要求模型为两个候选分别输出固定标签：
 <score_B>A</score_B>
 ```
 
-如果 provider 返回 score token 位置的 top-logprobs，ROCode 就按概率计算两个候选
-的 expected reward。如果 provider 没有返回可用 logprobs，ROCode 会退回到解析
+如果 provider 返回 score token 位置的 top-logprobs，AgenDao 就按概率计算两个候选
+的 expected reward。如果 provider 没有返回可用 logprobs，AgenDao 会退回到解析
 文本标签，并在 artifact 里记录 fallback 原因。
 
 pairwise 结果由该候选对下所有 score jobs 聚合得到：
@@ -114,9 +114,9 @@ pair_score(candidate) = mean(expected_reward over criteria and repetitions)
 - `round-robin`：所有候选两两比较，每个 pair 产生一个胜者，按胜场选择最终候选；
 - `tournament`：候选按路径逐轮淘汰，保留 champion。
 
-## ROCode 的实现路线
+## AgenDao 的实现路线
 
-ROCode 没有为 verifier 另造一套执行系统，而是把它实现为 scheduler preset 加
+AgenDao 没有为 verifier 另造一套执行系统，而是把它实现为 scheduler preset 加
 workflow mode：
 
 ```text
@@ -128,7 +128,7 @@ trajectory projection: verifier_trace.rs
 artifact authority: WorkflowArtifactWriter
 ```
 
-这个结构符合 ROCode 宪法里的几个关键约束：
+这个结构符合 AgenDao 宪法里的几个关键约束：
 
 - **单一执行内核**：verifier 复用已有 autonomous workflow，不绕过主执行路径；
 - **单一配置真源**：scheduler profile 和 workflow config 是配置入口；
@@ -144,7 +144,7 @@ provider 的特殊分支。
 
 一次 verifier run 的典型流程如下：
 
-1. ROCode 运行正常 autonomous execution loop。
+1. AgenDao 运行正常 autonomous execution loop。
 2. 每个满足保留条件的 iteration 被记录为候选。
 3. workflow 从 session telemetry 中投影出候选轨迹 `tau`。
 4. 当候选数至少为 2 时，进入 verifier selection。
@@ -160,7 +160,7 @@ provider 的特殊分支。
 
 ## Candidate Trajectory Evidence
 
-原算法中的 `tau` 是候选轨迹。ROCode 会把已有 workflow/session 证据投影为稳定、
+原算法中的 `tau` 是候选轨迹。AgenDao 会把已有 workflow/session 证据投影为稳定、
 可缓存、可展示的 trace。
 
 一个 verifier trace 通常包含：
@@ -248,12 +248,12 @@ provider 的特殊分支。
 - “代码是否优雅？”
 - “感觉哪个更对？”
 
-ROCode 还支持 criterion metadata：
+AgenDao 还支持 criterion metadata：
 
 - `weight`
 - `aggregation = "score-margin" | "winner-vote"`
 
-原始公式默认对 criteria 做均匀平均。ROCode 保留权重和 aggregation 是为了兼容工程
+原始公式默认对 criteria 做均匀平均。AgenDao 保留权重和 aggregation 是为了兼容工程
 策略表达，尤其是 `useLogprobs=false` 的 JSON judge path。canonical score-job path
 仍然以 expected reward 和 score job matrix 为核心。
 
@@ -365,10 +365,10 @@ score_jobs = 18
 
 ## Fallback 行为
 
-`useLogprobs=true` 表示 ROCode 会请求 logprobs，但 provider 不一定真的返回可用
+`useLogprobs=true` 表示 AgenDao 会请求 logprobs，但 provider 不一定真的返回可用
 logprobs。
 
-ROCode 的处理方式是显式降级：
+AgenDao 的处理方式是显式降级：
 
 - logprobs 可用：使用 expected reward；
 - logprobs 不可用但文本标签可解析：解析 `<score_A>` / `<score_B>`；
@@ -380,7 +380,7 @@ ROCode 的处理方式是显式降级：
 
 ## JSON Judge 兼容路径
 
-当 `useLogprobs=false` 时，ROCode 使用 JSON pairwise judge path。judge 直接返回
+当 `useLogprobs=false` 时，AgenDao 使用 JSON pairwise judge path。judge 直接返回
 winner 和可选 criterion scores。
 
 这条路径适合：
@@ -480,9 +480,9 @@ verifier.useLogprobs: true
 - 需要 judge 看到更完整工具输出；
 - 候选差异主要体现在执行过程而不是最终回答。
 
-## ROCode Verifier 的特色
+## AgenDao Verifier 的特色
 
-ROCode 的 verifier 不是一个 prompt 模板，而是一套可观察的 runtime 能力：
+AgenDao 的 verifier 不是一个 prompt 模板，而是一套可观察的 runtime 能力：
 
 - score job 是显式运行时记录；
 - logprob 可用时按 score-token probability 计算 expected reward；
@@ -492,7 +492,7 @@ ROCode 的 verifier 不是一个 prompt 模板，而是一套可观察的 runtim
 - lifecycle 和 cancellation 走 scheduler authority；
 - artifacts 暴露完整 scoring surface；
 - CLI、TUI、Web 只展示事实，不拥有选择算法；
-- 实现路线符合 ROCode 单内核、单配置、单状态所有权的架构约束。
+- 实现路线符合 AgenDao 单内核、单配置、单状态所有权的架构约束。
 
 最终效果是：verifier 不只回答“选了谁”，还回答“基于哪些候选证据、哪些 criteria、
 哪些 score jobs、是否真正使用 logprobs、有没有 fallback、成本是多少”。

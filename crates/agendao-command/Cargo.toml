@@ -1,0 +1,26 @@
+[package]
+name = "agendao-command"
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+agendao-content = { path = "../agendao-content" }
+agendao-agent = { path = "../agendao-agent" }
+agendao-plugin = { path = "../agendao-plugin" }
+agendao-tool = { path = "../agendao-tool" }
+agendao-types = { path = "../agendao-types" }
+agendao-permission = { path = "../agendao-permission" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+async-trait = "0.1"
+anyhow = "1.0"
+regex = "1.10"
+tracing = "0.1"
+glob = "0.3"
+pulldown-cmark = "0.13"
+crossterm = "0.27"
+unicode-width = "0.1"
+
+chrono = { workspace = true }
+uuid = { workspace = true }

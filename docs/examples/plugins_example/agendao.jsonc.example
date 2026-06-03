@@ -1,0 +1,13 @@
+{
+  "plugin": {
+    "example-plugin": {
+      "type": "file",
+      "path": "./docs/examples/plugins_example/ts/example-plugin.ts"
+    }
+  },
+  "skills": {
+    "paths": [
+      "./.agendao/skills"
+    ]
+  }
+}

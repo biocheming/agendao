@@ -1,0 +1,59 @@
+[package]
+name = "agendao-tui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Workspace dependencies
+agendao-client = { path = "../agendao-client" }
+agendao-core = { path = "../agendao-core" }
+agendao-orchestrator = { path = "../agendao-orchestrator" }
+agendao-util = { path = "../agendao-util" }
+agendao-config = { path = "../agendao-config" }
+agendao-multimodal = { path = "../agendao-multimodal" }
+agendao-voice = { path = "../agendao-voice" }
+agendao-provider = { path = "../agendao-provider" }
+agendao-server = { path = "../agendao-server" }
+agendao-session = { path = "../agendao-session" }
+agendao-skill = { path = "../agendao-skill" }
+agendao-agent = { path = "../agendao-agent" }
+agendao-tool = { path = "../agendao-tool" }
+agendao-mcp = { path = "../agendao-mcp" }
+agendao-command = { path = "../agendao-command" }
+agendao-runtime-context = { path = "../agendao-runtime-context" }
+agendao-state = { path = "../agendao-state" }
+agendao-types = { path = "../agendao-types" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+parking_lot = { workspace = true }
+chrono = { workspace = true }
+once_cell = { workspace = true }
+walkdir = { workspace = true }
+syntect = { workspace = true }
+
+# TUI dependencies
+reratui = "1.1.0"
+ratatui = { version = "0.30.0", default-features = false, features = ["crossterm", "underline-color", "macros"] }
+crossterm = { version = "0.29.0", features = ["event-stream"] }
+atty = "0.2"
+nucleo-matcher = { workspace = true }
+similar = { workspace = true }
+
+# Additional dependencies
+tokio-stream = { workspace = true }
+futures = { workspace = true }
+unicode-width = "0.1"
+uuid = { workspace = true }
+reqwest = { workspace = true }
+reqwest-eventsource = { workspace = true }
+dirs = { workspace = true }
+base64 = { workspace = true }
+tokio-util = { workspace = true }
+pulldown-cmark = "0.13"

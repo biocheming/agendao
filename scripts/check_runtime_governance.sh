@@ -8,9 +8,9 @@ FAILED=0
 
 # Gate A: Prevent LoopEvent leakage into provider/runtime/pipeline
 echo "1. Checking Gate A: LoopEvent isolation..."
-if rg -t rust "LoopEvent" crates/rocode-provider/src/runtime/pipeline/ 2>/dev/null; then
+if rg -t rust "LoopEvent" crates/agendao-provider/src/runtime/pipeline/ 2>/dev/null; then
     echo "❌ FAIL: LoopEvent found in provider/runtime/pipeline (Gate A violation)"
-    echo "   LoopEvent must only exist in rocode-orchestrator/src/runtime/"
+    echo "   LoopEvent must only exist in agendao-orchestrator/src/runtime/"
     FAILED=1
 else
     echo "✅ PASS: No LoopEvent in provider/runtime/pipeline"
@@ -23,11 +23,11 @@ VIOLATIONS=$(rg -t rust "match.*StreamEvent::" \
     --glob '!**/normalizer.rs' \
     --glob '!**/*_test.rs' \
     --glob '!**/tests/**' \
-    crates/rocode-orchestrator/src/ \
-    crates/rocode-agent/src/ \
-    crates/rocode-session/src/ \
-    crates/rocode-cli/src/ \
-    crates/rocode-server/src/ \
+    crates/agendao-orchestrator/src/ \
+    crates/agendao-agent/src/ \
+    crates/agendao-session/src/ \
+    crates/agendao-cli/src/ \
+    crates/agendao-server/src/ \
     2>/dev/null || true)
 
 if [ -n "$VIOLATIONS" ]; then

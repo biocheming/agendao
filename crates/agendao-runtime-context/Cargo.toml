@@ -1,0 +1,13 @@
+[package]
+name = "agendao-runtime-context"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+agendao-config = { path = "../agendao-config" }
+agendao-state = { path = "../agendao-state" }
+serde = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }

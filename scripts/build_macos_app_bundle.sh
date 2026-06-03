@@ -10,11 +10,11 @@ if [[ "${PROFILE}" != "release" && "${PROFILE}" != "debug" ]]; then
   exit 2
 fi
 
-APP_NAME="ROCode"
-CLI_BINARY_NAME="rocode"
+APP_NAME="AgenDao"
+CLI_BINARY_NAME="agendao"
 BUNDLE_NAME="${APP_NAME}.app"
 TARGET_DIR="${REPO_ROOT}/../target"
-WEB_DIST_DIR="${REPO_ROOT}/apps/rocode-web/dist"
+WEB_DIST_DIR="${REPO_ROOT}/apps/agendao-web/dist"
 PROFILE_DIR="${PROFILE}"
 if [[ "${PROFILE}" == "debug" ]]; then
   PROFILE_DIR="debug"
@@ -26,12 +26,12 @@ APP_DIR="${DIST_DIR}/${BUNDLE_NAME}"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
-ICONSET_DIR="${REPO_ROOT}/packaging/macos/ROCode.iconset"
-ICNS_PATH="${REPO_ROOT}/icons/rocode.icns"
+ICONSET_DIR="${REPO_ROOT}/packaging/macos/AgenDao.iconset"
+ICNS_PATH="${REPO_ROOT}/icons/agendao.icns"
 PLIST_TEMPLATE="${REPO_ROOT}/packaging/macos/Info.plist.template"
 PLIST_PATH="${CONTENTS_DIR}/Info.plist"
 PKGINFO_PATH="${CONTENTS_DIR}/PkgInfo"
-SOURCE_ICON="${REPO_ROOT}/icons/rocode.png"
+SOURCE_ICON="${REPO_ROOT}/icons/agendao.png"
 
 if [[ ! -f "${SOURCE_ICON}" ]]; then
   echo "missing source icon: ${SOURCE_ICON}" >&2
@@ -77,9 +77,9 @@ generate_iconset() {
 
 echo "[1/4] Building ${CLI_BINARY_NAME} (${PROFILE})..."
 if [[ "${PROFILE}" == "release" ]]; then
-  cargo build -p rocode --release
+  cargo build -p agendao --release
 else
-  cargo build -p rocode
+  cargo build -p agendao
 fi
 
 for path in "${CLI_BINARY_PATH}"; do
@@ -92,7 +92,7 @@ done
 generate_iconset
 
 if [[ "$(uname -s)" == "Darwin" ]] && command -v iconutil >/dev/null 2>&1; then
-  echo "[2/4] Regenerating rocode.icns from iconset..."
+  echo "[2/4] Regenerating agendao.icns from iconset..."
   iconutil -c icns "${ICONSET_DIR}" -o "${ICNS_PATH}"
 fi
 
@@ -122,11 +122,11 @@ cp "${CLI_BINARY_PATH}" "${MACOS_DIR}/${APP_NAME}"
 if [[ -d "${WEB_DIST_DIR}" ]]; then
   cp -R "${WEB_DIST_DIR}" "${RESOURCES_DIR}/web"
 else
-  echo "Warning: ${WEB_DIST_DIR} not found; bundle will not contain ROCode Web assets."
+  echo "Warning: ${WEB_DIST_DIR} not found; bundle will not contain AgenDao Web assets."
 fi
-cp "${ICNS_PATH}" "${RESOURCES_DIR}/rocode.icns"
+cp "${ICNS_PATH}" "${RESOURCES_DIR}/agendao.icns"
 printf 'APPLROCD' > "${PKGINFO_PATH}"
-sed "s/__ROCODE_VERSION__/${VERSION}/g" "${PLIST_TEMPLATE}" > "${PLIST_PATH}"
+sed "s/__AGENDAO_VERSION__/${VERSION}/g" "${PLIST_TEMPLATE}" > "${PLIST_PATH}"
 
 echo "[4/4] Bundle ready:"
 echo "  ${APP_DIR}"

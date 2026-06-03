@@ -16,9 +16,9 @@ from pathlib import Path
 
 ANSWERS = {
     "goal": "Exercise the /autoresearch command preflight and reply loop.",
-    "scope": "crates/rocode/**, crates/rocode-cli/**, crates/rocode-server/**, crates/rocode-tui/**, apps/rocode-web/**",
+    "scope": "crates/agendao/**, crates/agendao-cli/**, crates/agendao-server/**, crates/agendao-tui/**, apps/agendao-web/**",
     "metric": "The command resubmits with all missing fields populated.",
-    "verify": "cargo build -p rocode && npm --prefix apps/rocode-web run build",
+    "verify": "cargo build -p agendao && npm --prefix apps/agendao-web run build",
 }
 
 
@@ -211,13 +211,13 @@ def run_protocol_smoke(base_url):
     return session["id"]
 
 
-def drive_cli_smoke(base_url, repo_root, rocode_bin):
+def drive_cli_smoke(base_url, repo_root, agendao_bin):
     seen = {question["id"] for question in list_questions(base_url)}
     env = os.environ.copy()
-    env["ROCODE_SERVER_URL"] = base_url
+    env["AGENDAO_SERVER_URL"] = base_url
     env.setdefault("OPENAI_API_KEY", "smoke-test-key")
     cli = PtyProcess(
-        [str(rocode_bin), "run", "--interactive-mode", "compact"],
+        [str(agendao_bin), "run", "--interactive-mode", "compact"],
         cwd=repo_root,
         env=env,
     )
@@ -252,12 +252,12 @@ def drive_cli_smoke(base_url, repo_root, rocode_bin):
         cli.terminate()
 
 
-def drive_tui_smoke(base_url, repo_root, rocode_bin):
+def drive_tui_smoke(base_url, repo_root, agendao_bin):
     seen = {question["id"] for question in list_questions(base_url)}
     env = os.environ.copy()
-    env["ROCODE_TUI_PROMPT"] = "/autoresearch"
+    env["AGENDAO_TUI_PROMPT"] = "/autoresearch"
     tui = PtyProcess(
-        [str(rocode_bin), "attach", base_url, "--dir", str(repo_root)],
+        [str(agendao_bin), "attach", base_url, "--dir", str(repo_root)],
         cwd=repo_root,
         env=env,
     )
@@ -298,12 +298,12 @@ def drive_tui_smoke(base_url, repo_root, rocode_bin):
 
 
 def run_web_smoke(base_url, repo_root):
-    script = repo_root / "apps" / "rocode-web" / "scripts" / "autoresearch-smoke.mjs"
+    script = repo_root / "apps" / "agendao-web" / "scripts" / "autoresearch-smoke.mjs"
     env = os.environ.copy()
-    env["ROCODE_BASE_URL"] = base_url
+    env["AGENDAO_BASE_URL"] = base_url
     completed = subprocess.run(
         ["node", str(script)],
-        cwd=str(repo_root / "apps" / "rocode-web"),
+        cwd=str(repo_root / "apps" / "agendao-web"),
         env=env,
         capture_output=True,
         text=True,
@@ -316,14 +316,14 @@ def run_web_smoke(base_url, repo_root):
     return completed.stdout.strip()
 
 
-def maybe_start_server(base_url, rocode_bin):
+def maybe_start_server(base_url, agendao_bin):
     port = urllib.parse.urlparse(base_url).port
     if port is None:
         raise SmokeFailure(f"base url must include a port: {base_url}")
     env = os.environ.copy()
-    env["ROCODE_FRONTEND_SMOKE_SKIP_EXECUTION"] = "1"
+    env["AGENDAO_FRONTEND_SMOKE_SKIP_EXECUTION"] = "1"
     server = subprocess.Popen(
-        [str(rocode_bin), "serve", "--port", str(port)],
+        [str(agendao_bin), "serve", "--port", str(port)],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -355,19 +355,19 @@ def main():
     parser.add_argument("--base-url", default="http://127.0.0.1:4100")
     parser.add_argument("--start-server", action="store_true")
     parser.add_argument(
-        "--rocode-bin",
-        default=str(repo_root.parent / "target" / "debug" / "rocode"),
+        "--agendao-bin",
+        default=str(repo_root.parent / "target" / "debug" / "agendao"),
     )
     parser.add_argument("--skip-web", action="store_true")
     parser.add_argument("--skip-cli", action="store_true")
     parser.add_argument("--skip-tui", action="store_true")
     args = parser.parse_args()
 
-    rocode_bin = Path(args.rocode_bin)
-    if not rocode_bin.exists():
-        raise SmokeFailure(f"rocode binary not found: {rocode_bin}")
+    agendao_bin = Path(args.agendao_bin)
+    if not agendao_bin.exists():
+        raise SmokeFailure(f"agendao binary not found: {agendao_bin}")
 
-    server = maybe_start_server(args.base_url, rocode_bin) if args.start_server else None
+    server = maybe_start_server(args.base_url, agendao_bin) if args.start_server else None
     try:
         wait_for_health(args.base_url, timeout=30)
         summary = []
@@ -376,11 +376,11 @@ def main():
         summary.append(f"protocol: session {protocol_session_id}")
         if not args.skip_cli:
             print("Running CLI smoke...", flush=True)
-            cli_result = drive_cli_smoke(args.base_url, repo_root, rocode_bin)
+            cli_result = drive_cli_smoke(args.base_url, repo_root, agendao_bin)
             summary.append(f"cli: session {cli_result['session_id']}")
         if not args.skip_tui:
             print("Running TUI smoke...", flush=True)
-            tui_result = drive_tui_smoke(args.base_url, repo_root, rocode_bin)
+            tui_result = drive_tui_smoke(args.base_url, repo_root, agendao_bin)
             summary.append(f"tui: session {tui_result['session_id']}")
         if not args.skip_web:
             print("Running Web smoke...", flush=True)

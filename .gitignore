@@ -1,6 +1,6 @@
-#rocode example
-rocode.jsonc
-.rocode/
+#agendao example
+agendao.jsonc
+.agendao/
 scripts/verify-autoresearch.sh
 .serena/
 # vibe coding part
@@ -16,10 +16,10 @@ docs/plans/*
 .cargo/config.toml
 
 # Web build artifacts and local dependencies
-apps/rocode-web/node_modules/
-apps/rocode-web/dist/
-apps/rocode-web/.build-cache/
-apps/rocode-web/.vite/
+apps/agendao-web/node_modules/
+apps/agendao-web/dist/
+apps/agendao-web/.build-cache/
+apps/agendao-web/.vite/
 
 # Python cache
 __pycache__/

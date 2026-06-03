@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Scan legacy OpenCode / legacy CLI tool directories and config files, then print a
-rocode.jsonc-compatible fragment for initial migration.
+agendao.jsonc-compatible fragment for initial migration.
 """
 
 from __future__ import annotations
@@ -521,7 +521,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Scan OpenCode and other legacy CLI tool directories and config files, then emit a "
-            "rocode.jsonc fragment for plugin_paths/skill_paths/model/mcp."
+            "agendao.jsonc fragment for plugin_paths/skill_paths/model/mcp."
         )
     )
     parser.add_argument(
@@ -593,12 +593,12 @@ def main() -> int:
     for hit in hits:
         print(f"  - {to_user_path(hit.path, home)} ({', '.join(hit.keys)})")
 
-    print("\nSuggested rocode.jsonc fragment:\n")
+    print("\nSuggested agendao.jsonc fragment:\n")
     print(fragment_text)
 
     if not fragment:
         print(
-            "\nNo legacy entries were detected. You can still keep rocode defaults and add paths manually.",
+            "\nNo legacy entries were detected. You can still keep agendao defaults and add paths manually.",
             file=sys.stderr,
         )
 

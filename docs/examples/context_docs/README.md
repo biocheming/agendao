@@ -4,8 +4,8 @@ Files in this directory are the formal Phase 1 examples for the `context_docs` c
 
 ## Files
 
-- `rocode.json.example`: minimal JSON config example
-- `rocode.jsonc.example`: minimal JSONC config example
+- `agendao.json.example`: minimal JSON config example
+- `agendao.jsonc.example`: minimal JSONC config example
 - `context-docs-registry.schema.json`: registry schema
 - `context-docs-registry.example.json`: registry example
 - `context-docs-index.schema.json`: docs index schema
@@ -14,7 +14,7 @@ Files in this directory are the formal Phase 1 examples for the `context_docs` c
 
 ## Minimal config
 
-Point ROCode config at an external registry file:
+Point AgenDao config at an external registry file:
 
 ```jsonc
 {
@@ -26,21 +26,21 @@ Point ROCode config at an external registry file:
 
 ## Schema IDs
 
-- Registry schema: `https://rocode.dev/schemas/context-docs-registry.schema.json`
-- Docs index schema: `https://rocode.dev/schemas/context-docs-index.schema.json`
+- Registry schema: `https://agendao.dev/schemas/context-docs-registry.schema.json`
+- Docs index schema: `https://agendao.dev/schemas/context-docs-index.schema.json`
 
 ## Validation
 
 Use the built-in read-only validator to verify the registry or a single docs index:
 
 ```bash
-rocode debug docs validate
-rocode debug docs validate --registry ./docs/examples/context_docs/context-docs-registry.example.json
-rocode debug docs validate --index ./docs/examples/context_docs/react-router.docs-index.example.json
+agendao debug docs validate
+agendao debug docs validate --registry ./docs/examples/context_docs/context-docs-registry.example.json
+agendao debug docs validate --index ./docs/examples/context_docs/react-router.docs-index.example.json
 ```
 
 ## Notes
 
-- Keep `rocode.json` or `rocode.jsonc` minimal; only store the registry path there.
+- Keep `agendao.json` or `agendao.jsonc` minimal; only store the registry path there.
 - Keep the actual registry in a separate file.
 - `indexPath` may be relative to the registry file or absolute.

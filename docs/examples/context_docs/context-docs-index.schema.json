@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rocode.dev/schemas/context-docs-index.schema.json",
-  "title": "ROCode Context Docs Index",
+  "$id": "https://agendao.dev/schemas/context-docs-index.schema.json",
+  "title": "AgenDao Context Docs Index",
   "description": "Docs index file consumed by the context_docs tool for query_docs and get_page.",
   "type": "object",
   "additionalProperties": false,

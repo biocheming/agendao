@@ -25,7 +25,7 @@
 
 ### 1. 客户端：UnixSocketTransport
 
-**文件**: `crates/rocode-client/src/transport/unix.rs`
+**文件**: `crates/agendao-client/src/transport/unix.rs`
 
 **协议**: JSON-RPC 2.0 over Unix socket
 - 每个请求/响应是一行 JSON，以 `\n` 结尾
@@ -68,7 +68,7 @@ impl UnixSocketTransport {
 
 ### 2. 服务器端：UnixSocketServer
 
-**文件**: `crates/rocode-server/src/unix_socket.rs`
+**文件**: `crates/agendao-server/src/unix_socket.rs`
 
 **核心实现**:
 ```rust
@@ -119,7 +119,7 @@ async fn handle_connection(stream: UnixStream, core: Arc<OrchestrationCore>) -> 
 
 ### 3. 传输层集成
 
-**文件**: `crates/rocode-client/src/transport/mod.rs`
+**文件**: `crates/agendao-client/src/transport/mod.rs`
 
 **更新的 FrontendTransport 枚举**:
 ```rust
@@ -232,12 +232,12 @@ pub struct SessionDetail { ... }
 ### 启动服务器
 
 ```rust
-use rocode_orchestrator::OrchestrationCore;
-use rocode_server::UnixSocketServer;
+use agendao_orchestrator::OrchestrationCore;
+use agendao_server::UnixSocketServer;
 
-let config = rocode_config::Config::load()?;
+let config = agendao_config::Config::load()?;
 let core = Arc::new(OrchestrationCore::new(&config).await?);
-let server = UnixSocketServer::new(core, "/tmp/rocode.sock".to_string());
+let server = UnixSocketServer::new(core, "/tmp/agendao.sock".to_string());
 
 // 启动服务器（阻塞）
 server.serve().await?;
@@ -246,10 +246,10 @@ server.serve().await?;
 ### 客户端连接
 
 ```rust
-use rocode_client::transport::{FrontendTransport, PromptOptions};
+use agendao_client::transport::{FrontendTransport, PromptOptions};
 
 // 创建 Unix Socket 传输
-let transport = FrontendTransport::unix("/tmp/rocode.sock".to_string());
+let transport = FrontendTransport::unix("/tmp/agendao.sock".to_string());
 
 // 发送请求
 let response = transport.prompt(
@@ -272,18 +272,18 @@ $ cargo check --workspace
 
 ### 新增文件
 
-- ✅ `crates/rocode-client/src/transport/unix.rs` - 客户端实现
-- ✅ `crates/rocode-server/src/unix_socket.rs` - 服务器端实现
+- ✅ `crates/agendao-client/src/transport/unix.rs` - 客户端实现
+- ✅ `crates/agendao-server/src/unix_socket.rs` - 服务器端实现
 
 ### 修改文件
 
-- ✅ `crates/rocode-client/src/transport/mod.rs` - 添加 Unix 变体
-- ✅ `crates/rocode-client/Cargo.toml` - 添加 tokio 依赖
-- ✅ `crates/rocode-server/src/lib.rs` - 导出 unix_socket 模块
+- ✅ `crates/agendao-client/src/transport/mod.rs` - 添加 Unix 变体
+- ✅ `crates/agendao-client/Cargo.toml` - 添加 tokio 依赖
+- ✅ `crates/agendao-server/src/lib.rs` - 导出 unix_socket 模块
 
 ## 架构影响
 
-### 符合 ROCode 宪法
+### 符合 AgenDao 宪法
 
 - **第一条（唯一执行内核）**：所有传输模式都调用同一个 `OrchestrationCore`
 - **第九条（副作用路径唯一）**：Unix Socket 服务器只是传输层，不直接操作领域服务
@@ -304,7 +304,7 @@ $ cargo check --workspace
                       │
         ┌─────────────▼─────────────┐
         │   UnixSocketServer         │
-        │   (rocode-server)          │
+        │   (agendao-server)          │
         └─────────────┬─────────────┘
                       │
         ┌─────────────▼─────────────┐
@@ -360,7 +360,7 @@ $ cargo check --workspace
    - 实现传输模式自动选择
 
 2. **服务器启动集成**
-   - 在 `rocode-server` 中添加 Unix Socket 启动选项
+   - 在 `agendao-server` 中添加 Unix Socket 启动选项
    - 支持同时监听 Unix Socket 和 HTTP
 
 3. **测试**
@@ -382,6 +382,6 @@ Phase 5.1 成功完成：
 ✅ 集成到 FrontendTransport 枚举  
 ✅ 添加了 Serialize/Deserialize 支持  
 ✅ 整个 workspace 编译通过  
-✅ 符合 ROCode 宪法的架构原则  
+✅ 符合 AgenDao 宪法的架构原则  
 
 关键成就：提供了第三种传输模式，在性能和灵活性之间取得平衡，为本地多进程场景提供了高效的 IPC 方案。

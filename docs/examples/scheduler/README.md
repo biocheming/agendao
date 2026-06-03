@@ -59,7 +59,7 @@ docs/examples/scheduler/
 
 ### `presets/`
 
-放的是 ROCode 公开内置 preset 的正式外部配置示例。
+放的是 AgenDao 公开内置 preset 的正式外部配置示例。
 
 - `sisyphus`：执行优先
 - `prometheus`：规划优先
@@ -126,7 +126,7 @@ docs/examples/scheduler/
 
 它们共享同一个 schema：
 
-- `https://rocode.dev/schemas/scheduler-profile.schema.json`
+- `https://agendao.dev/schemas/scheduler-profile.schema.json`
 
 ## 一个最直接的入口
 

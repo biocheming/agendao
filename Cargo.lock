@@ -9,6 +9,748 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "agendao"
+version = "2026.6.3"
+dependencies = [
+ "agendao-cli",
+ "agendao-client",
+ "agendao-core",
+ "agendao-launcher",
+ "agendao-server",
+ "agendao-tui",
+ "anyhow",
+ "async-trait",
+ "clap",
+ "dirs",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "which",
+]
+
+[[package]]
+name = "agendao-agent"
+version = "2026.6.3"
+dependencies = [
+ "agendao-config",
+ "agendao-core",
+ "agendao-execution-types",
+ "agendao-orchestrator",
+ "agendao-permission",
+ "agendao-plugin",
+ "agendao-provider",
+ "agendao-tool",
+ "agendao-types",
+ "anyhow",
+ "async-trait",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "agendao-api"
+version = "2026.6.3"
+dependencies = [
+ "agendao-command",
+ "agendao-multimodal",
+ "agendao-session",
+ "agendao-skill",
+ "agendao-types",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
+name = "agendao-cli"
+version = "2026.6.3"
+dependencies = [
+ "agendao-agent",
+ "agendao-client",
+ "agendao-command",
+ "agendao-config",
+ "agendao-core",
+ "agendao-grep",
+ "agendao-launcher",
+ "agendao-lsp",
+ "agendao-memory",
+ "agendao-multimodal",
+ "agendao-orchestrator",
+ "agendao-permission",
+ "agendao-plugin",
+ "agendao-provider",
+ "agendao-runtime-context",
+ "agendao-server",
+ "agendao-session",
+ "agendao-skill",
+ "agendao-state",
+ "agendao-storage",
+ "agendao-tool",
+ "agendao-types",
+ "agendao-util",
+ "agendao-voice",
+ "anyhow",
+ "async-trait",
+ "base64",
+ "chrono",
+ "clap",
+ "crossterm 0.27.0",
+ "dirs",
+ "futures",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "which",
+]
+
+[[package]]
+name = "agendao-client"
+version = "2026.6.3"
+dependencies = [
+ "agendao-api",
+ "agendao-command",
+ "agendao-config",
+ "agendao-orchestrator",
+ "agendao-runtime-context",
+ "agendao-state",
+ "agendao-types",
+ "anyhow",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "urlencoding",
+]
+
+[[package]]
+name = "agendao-command"
+version = "2026.6.3"
+dependencies = [
+ "agendao-agent",
+ "agendao-content",
+ "agendao-permission",
+ "agendao-plugin",
+ "agendao-tool",
+ "agendao-types",
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "crossterm 0.27.0",
+ "glob",
+ "pulldown-cmark",
+ "regex",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "unicode-width 0.1.14",
+ "uuid",
+]
+
+[[package]]
+name = "agendao-config"
+version = "2026.6.3"
+dependencies = [
+ "agendao-core",
+ "agendao-types",
+ "anyhow",
+ "arc-swap",
+ "dirs",
+ "jsonc-parser",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "agendao-content"
+version = "2026.6.3"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "agendao-core"
+version = "2026.6.3"
+dependencies = [
+ "chrono",
+ "hex",
+ "libc",
+ "once_cell",
+ "parking_lot",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "agendao-execution-types"
+version = "2026.6.3"
+dependencies = [
+ "agendao-core",
+ "agendao-provider",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
+name = "agendao-grep"
+version = "2026.6.3"
+dependencies = [
+ "agendao-core",
+ "anyhow",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "walkdir",
+]
+
+[[package]]
+name = "agendao-launcher"
+version = "2026.6.3"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "reqwest",
+ "rust-embed",
+ "tokio",
+ "tracing",
+ "url",
+ "which",
+]
+
+[[package]]
+name = "agendao-lsp"
+version = "2026.6.3"
+dependencies = [
+ "agendao-core",
+ "async-trait",
+ "futures",
+ "lsp-types",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "agendao-mcp"
+version = "2026.6.3"
+dependencies = [
+ "agendao-core",
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64",
+ "chrono",
+ "dirs",
+ "futures",
+ "hex",
+ "oauth2",
+ "rand 0.8.5",
+ "reqwest",
+ "reqwest-eventsource",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "agendao-memory"
+version = "2026.6.3"
+dependencies = [
+ "agendao-command",
+ "agendao-config",
+ "agendao-runtime-context",
+ "agendao-state",
+ "agendao-storage",
+ "agendao-types",
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+]
+
+[[package]]
+name = "agendao-multimodal"
+version = "2026.6.3"
+dependencies = [
+ "agendao-config",
+ "agendao-provider",
+ "agendao-session",
+ "chrono",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "agendao-orchestrator"
+version = "2026.6.3"
+dependencies = [
+ "agendao-config",
+ "agendao-core",
+ "agendao-execution-types",
+ "agendao-provider",
+ "agendao-session-core",
+ "agendao-tool",
+ "agendao-types",
+ "async-trait",
+ "chrono",
+ "futures",
+ "glob",
+ "jsonc-parser",
+ "petgraph",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
+name = "agendao-permission"
+version = "2026.6.3"
+dependencies = [
+ "agendao-core",
+ "agendao-plugin",
+ "anyhow",
+ "dirs",
+ "glob",
+ "lazy_static",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "agendao-plugin"
+version = "2026.6.3"
+dependencies = [
+ "agendao-config",
+ "agendao-core",
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "dirs",
+ "libloading",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "which",
+]
+
+[[package]]
+name = "agendao-provider"
+version = "2026.6.3"
+dependencies = [
+ "agendao-core",
+ "agendao-types",
+ "agendao-util",
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "dirs",
+ "futures",
+ "hex",
+ "hmac",
+ "once_cell",
+ "pin-project-lite",
+ "regex",
+ "reqwest",
+ "reqwest-eventsource",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "urlencoding",
+ "uuid",
+]
+
+[[package]]
+name = "agendao-runtime-context"
+version = "2026.6.3"
+dependencies = [
+ "agendao-config",
+ "agendao-state",
+ "anyhow",
+ "serde",
+ "tokio",
+]
+
+[[package]]
+name = "agendao-server"
+version = "2026.6.3"
+dependencies = [
+ "agendao-agent",
+ "agendao-api",
+ "agendao-command",
+ "agendao-config",
+ "agendao-core",
+ "agendao-execution-types",
+ "agendao-mcp",
+ "agendao-memory",
+ "agendao-multimodal",
+ "agendao-orchestrator",
+ "agendao-permission",
+ "agendao-plugin",
+ "agendao-provider",
+ "agendao-runtime-context",
+ "agendao-session",
+ "agendao-session-core",
+ "agendao-skill",
+ "agendao-state",
+ "agendao-storage",
+ "agendao-tool",
+ "agendao-types",
+ "anyhow",
+ "async-trait",
+ "axum",
+ "axum-extra",
+ "base64",
+ "chrono",
+ "clap",
+ "dirs",
+ "futures",
+ "hex",
+ "hmac",
+ "libc",
+ "once_cell",
+ "portable-pty",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tokio-tungstenite 0.26.2",
+ "tokio-util",
+ "tower",
+ "tower-http",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "agendao-session"
+version = "2026.6.3"
+dependencies = [
+ "agendao-config",
+ "agendao-content",
+ "agendao-core",
+ "agendao-execution-types",
+ "agendao-lsp",
+ "agendao-mcp",
+ "agendao-memory",
+ "agendao-orchestrator",
+ "agendao-plugin",
+ "agendao-provider",
+ "agendao-session-core",
+ "agendao-skill",
+ "agendao-storage",
+ "agendao-tool",
+ "agendao-types",
+ "agendao-util",
+ "anyhow",
+ "async-trait",
+ "base64",
+ "chrono",
+ "dirs",
+ "futures",
+ "glob",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "agendao-session-core"
+version = "2026.6.3"
+dependencies = [
+ "agendao-types",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "agendao-skill"
+version = "2026.6.3"
+dependencies = [
+ "agendao-config",
+ "agendao-types",
+ "dirs",
+ "flate2",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+ "walkdir",
+ "which",
+]
+
+[[package]]
+name = "agendao-state"
+version = "2026.6.3"
+dependencies = [
+ "agendao-config",
+ "anyhow",
+ "dirs",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "agendao-storage"
+version = "2026.6.3"
+dependencies = [
+ "agendao-core",
+ "agendao-types",
+ "agendao-util",
+ "anyhow",
+ "chrono",
+ "dirs",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "agendao-tool"
+version = "2026.6.3"
+dependencies = [
+ "agendao-config",
+ "agendao-core",
+ "agendao-execution-types",
+ "agendao-grep",
+ "agendao-lsp",
+ "agendao-permission",
+ "agendao-plugin",
+ "agendao-skill",
+ "agendao-types",
+ "agendao-util",
+ "anyhow",
+ "ast-grep-config",
+ "ast-grep-core",
+ "ast-grep-language",
+ "async-process",
+ "async-trait",
+ "base64",
+ "chrono",
+ "content_inspector",
+ "crossbeam-channel",
+ "dirs",
+ "futures",
+ "glob",
+ "html2md",
+ "ignore",
+ "lsp-types",
+ "portable-pty",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tree-sitter",
+ "tree-sitter-bash 0.23.3",
+ "url",
+ "urlencoding",
+ "uuid",
+ "walkdir",
+ "which",
+]
+
+[[package]]
+name = "agendao-tui"
+version = "2026.6.3"
+dependencies = [
+ "agendao-agent",
+ "agendao-client",
+ "agendao-command",
+ "agendao-config",
+ "agendao-core",
+ "agendao-mcp",
+ "agendao-multimodal",
+ "agendao-orchestrator",
+ "agendao-provider",
+ "agendao-runtime-context",
+ "agendao-server",
+ "agendao-session",
+ "agendao-skill",
+ "agendao-state",
+ "agendao-tool",
+ "agendao-types",
+ "agendao-util",
+ "agendao-voice",
+ "anyhow",
+ "async-trait",
+ "atty",
+ "base64",
+ "chrono",
+ "crossterm 0.29.0",
+ "dirs",
+ "futures",
+ "nucleo-matcher",
+ "once_cell",
+ "parking_lot",
+ "pulldown-cmark",
+ "ratatui",
+ "reqwest",
+ "reqwest-eventsource",
+ "reratui",
+ "serde",
+ "serde_json",
+ "similar",
+ "syntect",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+ "unicode-width 0.1.14",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
+name = "agendao-types"
+version = "2026.6.3"
+dependencies = [
+ "agendao-content",
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "agendao-util"
+version = "2026.6.3"
+dependencies = [
+ "agendao-core",
+ "anyhow",
+ "chrono",
+ "glob",
+ "notify",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "walkdir",
+]
+
+[[package]]
+name = "agendao-voice"
+version = "2026.6.3"
+dependencies = [
+ "agendao-config",
+ "anyhow",
+ "base64",
+ "tracing",
+ "uuid",
+ "which",
+]
+
+[[package]]
+name = "agendao-watcher"
+version = "2026.6.3"
+dependencies = [
+ "dashmap",
+ "glob",
+ "notify",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3249,748 +3991,6 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "rocode"
-version = "2026.5.25"
-dependencies = [
- "anyhow",
- "async-trait",
- "clap",
- "dirs",
- "reqwest",
- "rocode-cli",
- "rocode-client",
- "rocode-core",
- "rocode-launcher",
- "rocode-server",
- "rocode-tui",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "which",
-]
-
-[[package]]
-name = "rocode-agent"
-version = "2026.5.25"
-dependencies = [
- "anyhow",
- "async-trait",
- "futures",
- "rocode-config",
- "rocode-core",
- "rocode-execution-types",
- "rocode-orchestrator",
- "rocode-permission",
- "rocode-plugin",
- "rocode-provider",
- "rocode-tool",
- "rocode-types",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "rocode-api"
-version = "2026.5.25"
-dependencies = [
- "rocode-command",
- "rocode-multimodal",
- "rocode-session",
- "rocode-skill",
- "rocode-types",
- "serde",
- "serde_json",
- "tracing",
-]
-
-[[package]]
-name = "rocode-cli"
-version = "2026.5.25"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64",
- "chrono",
- "clap",
- "crossterm 0.27.0",
- "dirs",
- "futures",
- "reqwest",
- "rocode-agent",
- "rocode-client",
- "rocode-command",
- "rocode-config",
- "rocode-core",
- "rocode-grep",
- "rocode-launcher",
- "rocode-lsp",
- "rocode-memory",
- "rocode-multimodal",
- "rocode-orchestrator",
- "rocode-permission",
- "rocode-plugin",
- "rocode-provider",
- "rocode-runtime-context",
- "rocode-server",
- "rocode-session",
- "rocode-skill",
- "rocode-state",
- "rocode-storage",
- "rocode-tool",
- "rocode-types",
- "rocode-util",
- "rocode-voice",
- "serde",
- "serde_json",
- "sqlx",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "url",
- "which",
-]
-
-[[package]]
-name = "rocode-client"
-version = "2026.5.25"
-dependencies = [
- "anyhow",
- "reqwest",
- "rocode-api",
- "rocode-command",
- "rocode-config",
- "rocode-orchestrator",
- "rocode-runtime-context",
- "rocode-state",
- "rocode-types",
- "serde",
- "serde_json",
- "tokio",
- "urlencoding",
-]
-
-[[package]]
-name = "rocode-command"
-version = "2026.5.25"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "crossterm 0.27.0",
- "glob",
- "pulldown-cmark",
- "regex",
- "rocode-agent",
- "rocode-content",
- "rocode-permission",
- "rocode-plugin",
- "rocode-tool",
- "rocode-types",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "unicode-width 0.1.14",
- "uuid",
-]
-
-[[package]]
-name = "rocode-config"
-version = "2026.5.25"
-dependencies = [
- "anyhow",
- "arc-swap",
- "dirs",
- "jsonc-parser",
- "regex",
- "reqwest",
- "rocode-core",
- "rocode-types",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "toml",
- "tracing",
-]
-
-[[package]]
-name = "rocode-content"
-version = "2026.5.25"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
-name = "rocode-core"
-version = "2026.5.25"
-dependencies = [
- "chrono",
- "hex",
- "libc",
- "once_cell",
- "parking_lot",
- "rand 0.8.5",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "rocode-execution-types"
-version = "2026.5.25"
-dependencies = [
- "rocode-core",
- "rocode-provider",
- "serde_json",
- "tracing",
-]
-
-[[package]]
-name = "rocode-grep"
-version = "2026.5.25"
-dependencies = [
- "anyhow",
- "regex",
- "rocode-core",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "walkdir",
-]
-
-[[package]]
-name = "rocode-launcher"
-version = "2026.5.25"
-dependencies = [
- "anyhow",
- "dirs",
- "reqwest",
- "rust-embed",
- "tokio",
- "tracing",
- "url",
- "which",
-]
-
-[[package]]
-name = "rocode-lsp"
-version = "2026.5.25"
-dependencies = [
- "async-trait",
- "futures",
- "lsp-types",
- "rocode-core",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-stream",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "rocode-mcp"
-version = "2026.5.25"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "base64",
- "chrono",
- "dirs",
- "futures",
- "hex",
- "oauth2",
- "rand 0.8.5",
- "reqwest",
- "reqwest-eventsource",
- "rocode-core",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "tokio",
- "tokio-stream",
- "tracing",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "rocode-memory"
-version = "2026.5.25"
-dependencies = [
- "anyhow",
- "chrono",
- "rocode-command",
- "rocode-config",
- "rocode-runtime-context",
- "rocode-state",
- "rocode-storage",
- "rocode-types",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
-]
-
-[[package]]
-name = "rocode-multimodal"
-version = "2026.5.25"
-dependencies = [
- "chrono",
- "rocode-config",
- "rocode-provider",
- "rocode-session",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "rocode-orchestrator"
-version = "2026.5.25"
-dependencies = [
- "async-trait",
- "chrono",
- "futures",
- "glob",
- "jsonc-parser",
- "petgraph",
- "regex",
- "rocode-config",
- "rocode-core",
- "rocode-execution-types",
- "rocode-provider",
- "rocode-session-core",
- "rocode-tool",
- "rocode-types",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
- "walkdir",
-]
-
-[[package]]
-name = "rocode-permission"
-version = "2026.5.25"
-dependencies = [
- "anyhow",
- "dirs",
- "glob",
- "lazy_static",
- "rocode-core",
- "rocode-plugin",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "rocode-plugin"
-version = "2026.5.25"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "dirs",
- "libloading",
- "rocode-config",
- "rocode-core",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "which",
-]
-
-[[package]]
-name = "rocode-provider"
-version = "2026.5.25"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytes",
- "chrono",
- "dirs",
- "futures",
- "hex",
- "hmac",
- "once_cell",
- "pin-project-lite",
- "regex",
- "reqwest",
- "reqwest-eventsource",
- "rocode-core",
- "rocode-types",
- "rocode-util",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "tokio",
- "tokio-stream",
- "tracing",
- "urlencoding",
- "uuid",
-]
-
-[[package]]
-name = "rocode-runtime-context"
-version = "2026.5.25"
-dependencies = [
- "anyhow",
- "rocode-config",
- "rocode-state",
- "serde",
- "tokio",
-]
-
-[[package]]
-name = "rocode-server"
-version = "2026.5.25"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "axum-extra",
- "base64",
- "chrono",
- "clap",
- "dirs",
- "futures",
- "hex",
- "hmac",
- "libc",
- "once_cell",
- "portable-pty",
- "rocode-agent",
- "rocode-api",
- "rocode-command",
- "rocode-config",
- "rocode-core",
- "rocode-execution-types",
- "rocode-mcp",
- "rocode-memory",
- "rocode-multimodal",
- "rocode-orchestrator",
- "rocode-permission",
- "rocode-plugin",
- "rocode-provider",
- "rocode-runtime-context",
- "rocode-session",
- "rocode-session-core",
- "rocode-skill",
- "rocode-state",
- "rocode-storage",
- "rocode-tool",
- "rocode-types",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-stream",
- "tokio-tungstenite 0.26.2",
- "tokio-util",
- "tower",
- "tower-http",
- "tracing",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "rocode-session"
-version = "2026.5.25"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64",
- "chrono",
- "dirs",
- "futures",
- "glob",
- "regex",
- "reqwest",
- "rocode-config",
- "rocode-content",
- "rocode-core",
- "rocode-execution-types",
- "rocode-lsp",
- "rocode-mcp",
- "rocode-memory",
- "rocode-orchestrator",
- "rocode-plugin",
- "rocode-provider",
- "rocode-session-core",
- "rocode-skill",
- "rocode-storage",
- "rocode-tool",
- "rocode-types",
- "rocode-util",
- "serde",
- "serde_json",
- "sqlx",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "rocode-session-core"
-version = "2026.5.25"
-dependencies = [
- "chrono",
- "rocode-types",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "uuid",
-]
-
-[[package]]
-name = "rocode-skill"
-version = "2026.5.25"
-dependencies = [
- "dirs",
- "flate2",
- "reqwest",
- "rocode-config",
- "rocode-types",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
- "tempfile",
- "thiserror 2.0.18",
- "tracing",
- "walkdir",
- "which",
-]
-
-[[package]]
-name = "rocode-state"
-version = "2026.5.25"
-dependencies = [
- "anyhow",
- "dirs",
- "rocode-config",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "rocode-storage"
-version = "2026.5.25"
-dependencies = [
- "anyhow",
- "chrono",
- "dirs",
- "rocode-core",
- "rocode-types",
- "rocode-util",
- "serde",
- "serde_json",
- "sqlx",
- "thiserror 2.0.18",
- "tokio",
- "tokio-test",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "rocode-tool"
-version = "2026.5.25"
-dependencies = [
- "anyhow",
- "ast-grep-config",
- "ast-grep-core",
- "ast-grep-language",
- "async-process",
- "async-trait",
- "base64",
- "chrono",
- "content_inspector",
- "crossbeam-channel",
- "dirs",
- "futures",
- "glob",
- "html2md",
- "ignore",
- "lsp-types",
- "portable-pty",
- "regex",
- "reqwest",
- "rocode-config",
- "rocode-core",
- "rocode-execution-types",
- "rocode-grep",
- "rocode-lsp",
- "rocode-permission",
- "rocode-plugin",
- "rocode-skill",
- "rocode-types",
- "rocode-util",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "tree-sitter",
- "tree-sitter-bash 0.23.3",
- "url",
- "urlencoding",
- "uuid",
- "walkdir",
- "which",
-]
-
-[[package]]
-name = "rocode-tui"
-version = "2026.5.25"
-dependencies = [
- "anyhow",
- "async-trait",
- "atty",
- "base64",
- "chrono",
- "crossterm 0.29.0",
- "dirs",
- "futures",
- "nucleo-matcher",
- "once_cell",
- "parking_lot",
- "pulldown-cmark",
- "ratatui",
- "reqwest",
- "reqwest-eventsource",
- "reratui",
- "rocode-agent",
- "rocode-client",
- "rocode-command",
- "rocode-config",
- "rocode-core",
- "rocode-mcp",
- "rocode-multimodal",
- "rocode-orchestrator",
- "rocode-provider",
- "rocode-runtime-context",
- "rocode-server",
- "rocode-session",
- "rocode-skill",
- "rocode-state",
- "rocode-tool",
- "rocode-types",
- "rocode-util",
- "rocode-voice",
- "serde",
- "serde_json",
- "similar",
- "syntect",
- "thiserror 2.0.18",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tracing",
- "unicode-width 0.1.14",
- "uuid",
- "walkdir",
-]
-
-[[package]]
-name = "rocode-types"
-version = "2026.5.25"
-dependencies = [
- "anyhow",
- "chrono",
- "rocode-content",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "uuid",
-]
-
-[[package]]
-name = "rocode-util"
-version = "2026.5.25"
-dependencies = [
- "anyhow",
- "chrono",
- "glob",
- "notify",
- "regex",
- "rocode-core",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "walkdir",
-]
-
-[[package]]
-name = "rocode-voice"
-version = "2026.5.25"
-dependencies = [
- "anyhow",
- "base64",
- "rocode-config",
- "tracing",
- "uuid",
- "which",
-]
-
-[[package]]
-name = "rocode-watcher"
-version = "2026.5.25"
-dependencies = [
- "dashmap",
- "glob",
- "notify",
- "parking_lot",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
 ]
 
 [[package]]

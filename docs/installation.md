@@ -1,6 +1,6 @@
-# ROCode 安装指南
+# AgenDao 安装指南
 
-本文档介绍 ROCode 的系统要求、构建安装方式以及首次运行配置。
+本文档介绍 AgenDao 的系统要求、构建安装方式以及首次运行配置。
 
 ---
 
@@ -36,14 +36,14 @@ cargo --version
 
 ### 方式一：从源码构建（推荐）
 
-ROCode 目前以源码形式分发。克隆仓库并构建：
+AgenDao 目前以源码形式分发。克隆仓库并构建：
 
 ```bash
 git clone <repo-url>
-cd rocode
+cd agendao
 
 # 首次构建前安装 Web 前端依赖
-npm --prefix apps/rocode-web install
+npm --prefix apps/agendao-web install
 
 # 推荐：构建并安装单一分发入口
 ./scripts/install-local.sh release ~/.local
@@ -52,28 +52,28 @@ npm --prefix apps/rocode-web install
 安装后固定布局为：
 
 ```
-~/.local/bin/rocode
-~/.local/share/rocode/web
+~/.local/bin/agendao
+~/.local/share/agendao/web
 ```
 
-默认运行时会优先使用内嵌进 `rocode` 二进制的 Web 资源。`share/rocode/web` 仍会被安装，用作显式外部覆盖与兼容性回退。
+默认运行时会优先使用内嵌进 `agendao` 二进制的 Web 资源。`share/agendao/web` 仍会被安装，用作显式外部覆盖与兼容性回退。
 
 如果只想构建、不立即安装：
 
 ```bash
-cargo build --release -p rocode
+cargo build --release -p agendao
 ```
 
 说明：
 
-- `crates/rocode-server/build.rs` 会自动检查 `apps/rocode-web/dist` 是否缺失或过期
-- 只有当前端源码变化时，才会增量触发 `npm --prefix apps/rocode-web run build`
+- `crates/agendao-server/build.rs` 会自动检查 `apps/agendao-web/dist` 是否缺失或过期
+- 只有当前端源码变化时，才会增量触发 `npm --prefix apps/agendao-web run build`
 - 如果 Web 没有变化，不会在每次 release 构建时重复打包前端
 
 ### 方式二：cargo install
 
 ```bash
-cargo install --path crates/rocode --bin rocode --root ~/.local
+cargo install --path crates/agendao --bin agendao --root ~/.local
 ```
 
 ### 方式三：生成 release 分发包
@@ -85,9 +85,9 @@ cargo install --path crates/rocode --bin rocode --root ~/.local
 该脚本会生成固定布局的发布目录和压缩包：
 
 ```
-dist/release/rocode-<version>-<target>/bin/rocode
-dist/release/rocode-<version>-<target>/share/rocode/web
-dist/release/rocode-<version>-<target>.tar.gz
+dist/release/agendao-<version>-<target>/bin/agendao
+dist/release/agendao-<version>-<target>/share/agendao/web
+dist/release/agendao-<version>-<target>.tar.gz
 ```
 
 ### 版本同步脚本
@@ -107,8 +107,8 @@ dist/release/rocode-<version>-<target>.tar.gz
 `sync_version.sh` 会同步受管版本文件，包括：
 
 - `Cargo.lock`
-- `apps/rocode-web/package.json`
-- `apps/rocode-web/package-lock.json`
+- `apps/agendao-web/package.json`
+- `apps/agendao-web/package-lock.json`
 - `docs/examples/plugins_example/rust/Cargo.lock`
 
 README、安装指南、文档首页和示例文档中的展示版本需要作为发布说明的一部分同步更新。
@@ -135,26 +135,26 @@ sudo pacman -S base-devel openssl
 ## 验证安装
 
 ```bash
-rocode version
-which rocode
+agendao version
+which agendao
 ```
 
 成功安装后输出类似：
 
 ```
-ROCode 2026.5.17
+AgenDao 2026.5.17
 ```
 
 查看完整构建信息：
 
 ```bash
-rocode info
+agendao info
 ```
 
 输出包括编译器版本、目标平台、构建配置和数据路径：
 
 ```
-ROCode 2026.5.17
+AgenDao 2026.5.17
 
 Build Info:
   Compiler:   rustc 1.xx.x
@@ -164,16 +164,16 @@ Build Info:
   Built at:   2026-05-17T...
 
 Paths:
-  Data:       ~/.local/share/rocode
-  Config:     ~/.config/rocode
-  Cache:      ~/.cache/rocode
+  Data:       ~/.local/share/agendao
+  Config:     ~/.config/agendao
+  Cache:      ~/.cache/agendao
 ```
 
 确认二进制文件位置：
 
 ```bash
-which rocode          # Linux / macOS
-where rocode          # Windows (Command Prompt)
+which agendao          # Linux / macOS
+where agendao          # Windows (Command Prompt)
 ```
 
 ---
@@ -182,7 +182,7 @@ where rocode          # Windows (Command Prompt)
 
 ### 1. 设置 API 密钥
 
-ROCode 需要至少一个 LLM Provider 的凭证才能工作。最简单的方式是设置环境变量：
+AgenDao 需要至少一个 LLM Provider 的凭证才能工作。最简单的方式是设置环境变量：
 
 ```bash
 # 智谱 BigModel（推荐）
@@ -211,20 +211,20 @@ source ~/.bashrc
 
 ### 2. 创建配置文件（可选）
 
-ROCode 在首次运行时会自动使用默认配置。如需自定义，创建项目级或全局配置文件：
+AgenDao 在首次运行时会自动使用默认配置。如需自定义，创建项目级或全局配置文件：
 
 **项目级配置**（推荐）：
 
 ```bash
 # 在项目根目录创建
-touch rocode.jsonc   # 或 rocode.json
+touch agendao.jsonc   # 或 agendao.json
 ```
 
 **全局配置**：
 
 ```bash
-mkdir -p ~/.config/rocode
-touch ~/.config/rocode/rocode.jsonc   # 或 ~/.config/rocode/rocode.json
+mkdir -p ~/.config/agendao
+touch ~/.config/agendao/agendao.jsonc   # 或 ~/.config/agendao/agendao.json
 ```
 
 最小配置示例：
@@ -251,32 +251,32 @@ touch ~/.config/rocode/rocode.jsonc   # 或 ~/.config/rocode/rocode.json
 
 更稳妥的做法是把对应示例复制到你的项目里，再让 `schedulerPath` 指向项目内副本，这样示例里的 `workflowPath`、`agentTree` 和 `trees/` 相对路径不会丢。
 
-### 3. 启动 ROCode
+### 3. 启动 AgenDao
 
 ```bash
 # 在项目目录中启动 TUI
 cd my-project
-rocode
+agendao
 
 # 或直接执行单次任务
-rocode run "explain the project structure"
+agendao run "explain the project structure"
 ```
 
 ---
 
 ## 重要目录
 
-ROCode 使用以下标准目录（遵循 XDG 规范）：
+AgenDao 使用以下标准目录（遵循 XDG 规范）：
 
 | 目录 | 路径 | 用途 |
 |------|------|------|
-| 数据目录 | `~/.local/share/rocode` | 日志、数据库、认证信息 |
-| 配置目录 | `~/.config/rocode` | 全局配置 |
-| 缓存目录 | `~/.cache/rocode` | 模型目录缓存、其他缓存 |
-| 项目配置 | `<project>/.rocode/` | 项目级配置、agent、command |
-| 项目根配置 | `<project>/rocode.jsonc` / `<project>/rocode.json` | 项目根配置文件 |
+| 数据目录 | `~/.local/share/agendao` | 日志、数据库、认证信息 |
+| 配置目录 | `~/.config/agendao` | 全局配置 |
+| 缓存目录 | `~/.cache/agendao` | 模型目录缓存、其他缓存 |
+| 项目配置 | `<project>/.agendao/` | 项目级配置、agent、command |
+| 项目根配置 | `<project>/agendao.jsonc` / `<project>/agendao.json` | 项目根配置文件 |
 
-使用 `rocode debug paths` 查看当前系统中的实际路径。
+使用 `agendao debug paths` 查看当前系统中的实际路径。
 
 ---
 
@@ -286,7 +286,7 @@ ROCode 使用以下标准目录（遵循 XDG 规范）：
 |------|------|
 | 默认 | 核心功能集 |
 
-如需调整产品装配层或发布入口，检查 `crates/rocode/Cargo.toml`；如需调整命令前端行为，检查 `crates/rocode-cli/Cargo.toml`。
+如需调整产品装配层或发布入口，检查 `crates/agendao/Cargo.toml`；如需调整命令前端行为，检查 `crates/agendao-cli/Cargo.toml`。
 
 ---
 
@@ -297,10 +297,10 @@ ROCode 使用以下标准目录（遵循 XDG 规范）：
 | `ZHIPUAI_API_KEY` | 智谱 BigModel API 密钥 |
 | `ALIBABA_CN_API_KEY` | 阿里云百炼 API 密钥 |
 | `KIMI_FOR_CODING_API_KEY` | Moonshot Kimi API 密钥 |
-| `ROCODE_SERVER_URL` | 服务器 URL（默认 `http://127.0.0.1:3000`） |
-| `ROCODE_WEB_DIST` | 显式覆盖默认内嵌 Web 资源，改为加载外部 `dist/` 目录 |
-| `ROCODE_CONFIG_DIR` | 覆盖配置目录路径 |
-| `RUST_LOG` | 日志级别过滤（如 `debug`、`rocode_provider=trace`） |
+| `AGENDAO_SERVER_URL` | 服务器 URL（默认 `http://127.0.0.1:3000`） |
+| `AGENDAO_WEB_DIST` | 显式覆盖默认内嵌 Web 资源，改为加载外部 `dist/` 目录 |
+| `AGENDAO_CONFIG_DIR` | 覆盖配置目录路径 |
+| `RUST_LOG` | 日志级别过滤（如 `debug`、`agendao_provider=trace`） |
 
 完整的 Provider 环境变量列表参见 [认证](auth)。
 
@@ -310,24 +310,24 @@ ROCode 使用以下标准目录（遵循 XDG 规范）：
 
 ```bash
 # 移除单一分发入口
-rm ~/.local/bin/rocode
-rm -rf ~/.local/share/rocode/web
+rm ~/.local/bin/agendao
+rm -rf ~/.local/share/agendao/web
 # 或
-sudo rm /usr/local/bin/rocode
-sudo rm -rf /usr/local/share/rocode/web
+sudo rm /usr/local/bin/agendao
+sudo rm -rf /usr/local/share/agendao/web
 
 # 移除配置和数据（可选）
-rm -rf ~/.config/rocode
-rm -rf ~/.local/share/rocode
-rm -rf ~/.cache/rocode
+rm -rf ~/.config/agendao
+rm -rf ~/.local/share/agendao
+rm -rf ~/.cache/agendao
 ```
 
 或使用内置卸载命令：
 
 ```bash
-rocode uninstall
-rocode uninstall --keep-config --keep-data   # 保留配置和数据
-rocode uninstall --dry-run                   # 仅预览将删除的文件
+agendao uninstall
+agendao uninstall --keep-config --keep-data   # 保留配置和数据
+agendao uninstall --dry-run                   # 仅预览将删除的文件
 ```
 
 ---
@@ -335,17 +335,17 @@ rocode uninstall --dry-run                   # 仅预览将删除的文件
 ## 升级
 
 ```bash
-rocode upgrade
-rocode upgrade v2026.5.17           # 升级到指定版本
-rocode upgrade --method brew       # 显式指定包管理器方式
+agendao upgrade
+agendao upgrade v2026.5.17           # 升级到指定版本
+agendao upgrade --method brew       # 显式指定包管理器方式
 ```
 
-如果你是从源码 / 本地安装脚本安装的，推荐整体重装；`rocode` 会自动决定是否需要重新构建内嵌 Web：
+如果你是从源码 / 本地安装脚本安装的，推荐整体重装；`agendao` 会自动决定是否需要重新构建内嵌 Web：
 
 ```bash
-cd rocode
+cd agendao
 git pull
-npm --prefix apps/rocode-web install
+npm --prefix apps/agendao-web install
 ./scripts/install-local.sh release ~/.local
 ```
 
@@ -359,12 +359,12 @@ npm --prefix apps/rocode-web install
 
 ### 首次运行无响应
 
-首次运行时 ROCode 需要从 `models.dev` 获取模型目录。如果网络超时（10 秒限制），Provider 列表可能不完整。设置环境变量 `RUST_LOG=debug` 查看详细日志。
+首次运行时 AgenDao 需要从 `models.dev` 获取模型目录。如果网络超时（10 秒限制），Provider 列表可能不完整。设置环境变量 `RUST_LOG=debug` 查看详细日志。
 
 ### macOS Gatekeeper 警告
 
 从源码构建的二进制可能触发 macOS 安全警告。右键点击二进制并选择"打开"，或运行：
 
 ```bash
-xattr -dr com.apple.quarantine /usr/local/bin/rocode
+xattr -dr com.apple.quarantine /usr/local/bin/agendao
 ```

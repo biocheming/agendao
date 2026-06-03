@@ -1,4 +1,4 @@
-# ROCode 插件系统
+# AgenDao 插件系统
 
 这份文档只描述当前代码里真实存在的插件加载面。历史兼容字段会标出来，但不再把它们包装成主路径。
 
@@ -8,7 +8,7 @@
 
 ## 先钉死边界
 
-今天的 ROCode 里，`plugin` 和 `skills` 不是一回事：
+今天的 AgenDao 里，`plugin` 和 `skills` 不是一回事：
 
 - `plugin`：代码插件，走运行时加载器
 - `skills`：提示与流程扩展，走独立的 skill 系统
@@ -101,7 +101,7 @@
 {
   "pluginPaths": {
     "workspace": "./plugins",
-    "shared": "~/.rocode/plugins"
+    "shared": "~/.agendao/plugins"
   }
 }
 ```
@@ -127,7 +127,7 @@
 2. `deno`
 3. `node`（要求 `>= 22.6`，因为要用 `--experimental-strip-types`）
 
-也可以用 `ROCODE_PLUGIN_RUNTIME` 强制指定。
+也可以用 `AGENDAO_PLUGIN_RUNTIME` 强制指定。
 
 ### 安装行为
 
@@ -153,7 +153,7 @@ export default async function ExamplePlugin() {
   return {
     async "chat.headers"(_input: unknown, output: Record<string, unknown> = {}) {
       const headers = (output.headers ?? {}) as Record<string, string>;
-      headers["x-rocode-plugin"] = "example";
+      headers["x-agendao-plugin"] = "example";
       return { ...output, headers };
     },
 
@@ -286,12 +286,12 @@ export default async function AuthPlugin() {
 ```rust
 struct MyPlugin;
 
-impl rocode_plugin::Plugin for MyPlugin {
+impl agendao_plugin::Plugin for MyPlugin {
     fn name(&self) -> &str { "my-plugin" }
     fn version(&self) -> &str { "1.0.0" }
 }
 
-rocode_plugin::declare_plugin!(MyPlugin);
+agendao_plugin::declare_plugin!(MyPlugin);
 ```
 
 配置示例：

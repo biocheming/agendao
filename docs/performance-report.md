@@ -5,7 +5,7 @@
 - **平台**: Linux 6.8.0-117-generic
 - **测试日期**: 2026-05-27
 - **Provider**: Mock（无真实 LLM 调用，数字仅反映框架开销）
-- **测试文件**: `crates/rocode-orchestrator/tests/test_performance.rs`
+- **测试文件**: `crates/agendao-orchestrator/tests/test_performance.rs`
 - **测试数**: 10
 
 > **重要**: 所有数据为 **mock provider** 下的框架开销，不含网络延迟和模型推理时间。

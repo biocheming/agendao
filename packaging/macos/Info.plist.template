@@ -5,23 +5,23 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleDisplayName</key>
-    <string>ROCode</string>
+    <string>AgenDao</string>
     <key>CFBundleExecutable</key>
-    <string>ROCode</string>
+    <string>AgenDao</string>
     <key>CFBundleIconFile</key>
-    <string>rocode</string>
+    <string>agendao</string>
     <key>CFBundleIdentifier</key>
-    <string>com.biocheming.rocode</string>
+    <string>com.biocheming.agendao</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>ROCode</string>
+    <string>AgenDao</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>__ROCODE_VERSION__</string>
+    <string>__AGENDAO_VERSION__</string>
     <key>CFBundleVersion</key>
-    <string>__ROCODE_VERSION__</string>
+    <string>__AGENDAO_VERSION__</string>
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
     <key>NSHighResolutionCapable</key>
