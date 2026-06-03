@@ -282,7 +282,7 @@ fn test_isolated_workspace_with_local_agendao_config_cuts_off_global_config() {
 }
 
 #[test]
-fn test_workspace_mode_ignores_ancestor_dot_rocode() {
+fn test_workspace_mode_ignores_ancestor_dot_agendao() {
     let temp = TestDir::new("agendao_workspace_ancestor_dotdir");
     let root = temp.path.join("repo");
     let child = root.join("service");

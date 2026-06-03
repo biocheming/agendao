@@ -434,8 +434,8 @@ fn derive_name_from_path(path: &Path, base_dir: &Path, strip_prefixes: &[&str]) 
             name = stripped;
             break;
         }
-        let with_rocode = format!(".agendao/{}/", prefix);
-        if let Some(stripped) = name.strip_prefix(&with_rocode) {
+        let with_agendao = format!(".agendao/{}/", prefix);
+        if let Some(stripped) = name.strip_prefix(&with_agendao) {
             name = stripped;
             break;
         }

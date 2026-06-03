@@ -4,13 +4,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ProviderArtifactVersion {
     #[serde(rename = "agendao-rust/provider/v1")]
-    RocodeRustProviderV1,
+    AgendaoRustProviderV1,
 }
 
 impl ProviderArtifactVersion {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::RocodeRustProviderV1 => "agendao-rust/provider/v1",
+            Self::AgendaoRustProviderV1 => "agendao-rust/provider/v1",
         }
     }
 }
@@ -139,7 +139,7 @@ pub struct ProviderArtifactBundle {
 impl ProviderArtifactBundle {
     pub fn new(exported_at: i64, providers: Vec<ProviderArtifactEntry>) -> Self {
         Self {
-            version: ProviderArtifactVersion::RocodeRustProviderV1,
+            version: ProviderArtifactVersion::AgendaoRustProviderV1,
             exported_at,
             providers,
         }
@@ -200,7 +200,7 @@ mod tests {
 
         assert_eq!(
             value["version"],
-            serde_json::json!(ProviderArtifactVersion::RocodeRustProviderV1.as_str())
+            serde_json::json!(ProviderArtifactVersion::AgendaoRustProviderV1.as_str())
         );
         assert_eq!(value["exported_at"], serde_json::json!(123));
         assert_eq!(value["providers"].as_array().map(Vec::len), Some(1));

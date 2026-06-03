@@ -104,13 +104,13 @@ const MESSAGE_SANCTIONED_METADATA_PREFIXES: &[&str] = &[
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SessionArtifactVersion {
     #[serde(rename = "agendao-rust/v1")]
-    RocodeRustV1,
+    AgendaoRustV1,
 }
 
 impl SessionArtifactVersion {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::RocodeRustV1 => "agendao-rust/v1",
+            Self::AgendaoRustV1 => "agendao-rust/v1",
         }
     }
 }
@@ -186,13 +186,13 @@ impl SessionArtifactMetadataAuthority {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SessionDiagnosticsSidecarVersion {
     #[serde(rename = "agendao-rust/diagnostics/v1")]
-    RocodeRustDiagnosticsV1,
+    AgendaoRustDiagnosticsV1,
 }
 
 impl SessionDiagnosticsSidecarVersion {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::RocodeRustDiagnosticsV1 => "agendao-rust/diagnostics/v1",
+            Self::AgendaoRustDiagnosticsV1 => "agendao-rust/diagnostics/v1",
         }
     }
 }
@@ -477,7 +477,7 @@ impl SessionDiagnosticsSidecar {
             .collect::<Vec<_>>();
 
         let sidecar = Self {
-            version: SessionDiagnosticsSidecarVersion::RocodeRustDiagnosticsV1,
+            version: SessionDiagnosticsSidecarVersion::AgendaoRustDiagnosticsV1,
             telemetry,
             prompt_surface_state_snapshot,
             context_compaction_lifecycle_summary,
@@ -546,7 +546,7 @@ pub struct SessionArtifactBundle {
 impl SessionArtifactBundle {
     pub fn new(exported_at: i64, sessions: Vec<SessionArtifactEntry>) -> Self {
         Self {
-            version: SessionArtifactVersion::RocodeRustV1,
+            version: SessionArtifactVersion::AgendaoRustV1,
             exported_at,
             sessions,
         }
@@ -926,7 +926,7 @@ mod tests {
 
         assert_eq!(
             value["version"],
-            SessionArtifactVersion::RocodeRustV1.as_str()
+            SessionArtifactVersion::AgendaoRustV1.as_str()
         );
         assert!(value["sessions"][0].get("info").is_some());
         assert!(value["sessions"][0].get("session").is_none());

@@ -11,7 +11,7 @@ const TIMEOUT_MS = Number.parseInt(process.env.AGENDAO_SMOKE_TIMEOUT_MS ?? "3000
 const trackerInitScript = `
 (() => {
   const state = { fetches: [] };
-  window.__rocodeTracker = state;
+  window.__agendaoTracker = state;
   const originalFetch = window.fetch.bind(window);
   window.fetch = async (...args) => {
     const input = args[0];
@@ -299,7 +299,7 @@ async function run() {
     await click(client, "[data-testid='composer-form'] button[type='submit']");
     await waitForExpression(
       client,
-      `(window.__rocodeTracker?.fetches ?? []).filter((entry) =>
+      `(window.__agendaoTracker?.fetches ?? []).filter((entry) =>
         entry.url.includes('/session/${sessionId}/prompt') && entry.method === 'POST'
       ).length >= 1`,
     );
@@ -313,11 +313,11 @@ async function run() {
 
     await waitForExpression(
       client,
-      "(window.__rocodeTracker?.fetches ?? []).some((entry) => /\\/question\\/.+\\/reply$/.test(entry.url) && entry.method === 'POST')",
+      "(window.__agendaoTracker?.fetches ?? []).some((entry) => /\\/question\\/.+\\/reply$/.test(entry.url) && entry.method === 'POST')",
     );
     await waitForExpression(
       client,
-      `(window.__rocodeTracker?.fetches ?? []).filter((entry) =>
+      `(window.__agendaoTracker?.fetches ?? []).filter((entry) =>
         entry.url.includes('/session/${sessionId}/prompt') && entry.method === 'POST'
       ).length >= 2`,
     );
@@ -343,7 +343,7 @@ async function run() {
             client,
             "document.body ? document.body.innerHTML.slice(0, 1200) : '(no body)'",
           ),
-          fetches: await evaluate(client, "window.__rocodeTracker?.fetches ?? []"),
+          fetches: await evaluate(client, "window.__agendaoTracker?.fetches ?? []"),
         };
         console.error("Web smoke debug snapshot:", JSON.stringify(snapshot, null, 2));
       } catch {

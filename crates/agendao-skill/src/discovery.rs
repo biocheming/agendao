@@ -283,7 +283,7 @@ fn parse_scoped_frontmatter_list(frontmatter: &str, key: &str) -> Vec<String> {
     let lines = frontmatter.lines().collect::<Vec<_>>();
     let mut in_metadata = false;
     let mut metadata_indent = 0usize;
-    let mut in_rocode = false;
+    let mut in_agendao = false;
     let mut agendao_indent = 0usize;
 
     let mut index = 0usize;
@@ -297,30 +297,30 @@ fn parse_scoped_frontmatter_list(frontmatter: &str, key: &str) -> Vec<String> {
             continue;
         }
 
-        if in_rocode && indent <= agendao_indent && !trimmed.starts_with('-') {
-            in_rocode = false;
+        if in_agendao && indent <= agendao_indent && !trimmed.starts_with('-') {
+            in_agendao = false;
         }
         if in_metadata && indent <= metadata_indent && !trimmed.starts_with("metadata:") {
             in_metadata = false;
-            in_rocode = false;
+            in_agendao = false;
         }
 
         if trimmed == "metadata:" {
             in_metadata = true;
             metadata_indent = indent;
-            in_rocode = false;
+            in_agendao = false;
             index += 1;
             continue;
         }
 
         if in_metadata && trimmed == "agendao:" {
-            in_rocode = true;
+            in_agendao = true;
             agendao_indent = indent;
             index += 1;
             continue;
         }
 
-        if in_rocode {
+        if in_agendao {
             let prefix = format!("{key}:");
             if let Some(value) = trimmed.strip_prefix(&prefix) {
                 let key_indent = indent;
