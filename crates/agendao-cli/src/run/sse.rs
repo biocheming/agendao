@@ -1467,6 +1467,8 @@ pub(super) async fn handle_permission_from_sse(
         );
     } else {
         if let Ok(mut projection) = runtime.frontend_projection.lock() {
+            projection.submitting_permission_count = 0;
+            projection.last_permission_submit_error = None;
             projection.permission_submit_completed_at = Some(permission_timestamp_now());
         }
         cli_refresh_prompt(runtime);
