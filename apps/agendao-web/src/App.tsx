@@ -1647,6 +1647,8 @@ export default function App() {
         method: "POST",
         body: JSON.stringify({ reply }),
       });
+      setPermission(null);
+      setPermissionSubmitting(false);
       setPermissionSubmitCompletedAt(new Date().toISOString());
     } catch (error) {
       const message = formatError(error);

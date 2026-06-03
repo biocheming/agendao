@@ -1360,6 +1360,9 @@ impl App {
                     match outcome {
                         crate::event::PermissionReplyOutcome::Succeeded => {
                             self.permission_runtime.last_submit_error = None;
+                            self.clear_permission_request(&permission_id);
+                            self.context
+                                .set_pending_permissions(self.permission_prompt.pending_count());
                             self.toast.show(
                                 crate::components::ToastVariant::Success,
                                 "Permission reply sent",
