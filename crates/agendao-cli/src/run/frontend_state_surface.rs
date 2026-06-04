@@ -2,8 +2,8 @@ use super::{
     cli_focused_session_id, cli_prompt_aux_line, CliExecutionRuntime, CliFrontendProjection,
     CliPromptChrome, CliStyle,
 };
-use agendao_command::cli_prompt::PromptSession;
-use agendao_command::output_blocks::{render_cli_block_rich, OutputBlock};
+use agendao_command_render::output_blocks::{render_cli_block_rich, OutputBlock};
+use agendao_command_runtime::cli_prompt::PromptSession;
 use std::io::{self, Write};
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
@@ -520,7 +520,7 @@ mod tests {
 
         let applied = surface
             .apply_prompt_aux_block(&OutputBlock::Status(
-                agendao_command::output_blocks::StatusBlock::warning("retry scheduled"),
+                agendao_command_render::output_blocks::StatusBlock::warning("retry scheduled"),
             ))
             .expect("apply prompt aux");
 

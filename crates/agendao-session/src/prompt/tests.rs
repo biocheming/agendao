@@ -10,8 +10,6 @@ use crate::tool_result_governance::{
     SINGLE_TOOL_RESULT_MAX_CHARS,
 };
 use crate::SessionMessage;
-use async_trait::async_trait;
-use futures::stream;
 use agendao_config::ConfigStore;
 use agendao_execution_types::CompiledExecutionRequest;
 use agendao_provider::{
@@ -21,13 +19,14 @@ use agendao_skill::{RuntimeInstructionSource, SkillGovernanceAuthority};
 use agendao_storage::{Database, SkillEvolutionProposalRepository};
 use agendao_tool::{Tool, ToolContext, ToolError, ToolResult};
 use agendao_types::{
-    message_source_origin, message_source_surface,
-    ContextPressureGovernanceStatus, LightweightTrimSummary, MemoryEvidenceRef, MemoryKind,
-    MemoryRecord, MemoryRecordId, MemoryScope, MemoryStatus, MemoryValidationStatus,
-    MessageSourceOrigin, MessageSourceSurface, ProposalStatus, SkillCapabilityGroupKind,
-    SkillCapabilityMember, SkillCapabilityMemberRole, SkillRetirementReason,
-    SkillRetirementReasonKind, SkillVitalityState,
+    message_source_origin, message_source_surface, ContextPressureGovernanceStatus,
+    LightweightTrimSummary, MemoryEvidenceRef, MemoryKind, MemoryRecord, MemoryRecordId,
+    MemoryScope, MemoryStatus, MemoryValidationStatus, MessageSourceOrigin, MessageSourceSurface,
+    ProposalStatus, SkillCapabilityGroupKind, SkillCapabilityMember, SkillCapabilityMemberRole,
+    SkillRetirementReason, SkillRetirementReasonKind, SkillVitalityState,
 };
+use async_trait::async_trait;
+use futures::stream;
 use std::fs;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -1623,7 +1622,10 @@ async fn annotate_ingress_writes_origin_even_without_surface() {
     let origin = message_source_origin(&user_msg.metadata);
     let surface = message_source_surface(&user_msg.metadata);
     assert_eq!(origin, Some(MessageSourceOrigin::Scheduler));
-    assert_eq!(surface, None, "surface should be absent when ingress has no surface");
+    assert_eq!(
+        surface, None,
+        "surface should be absent when ingress has no surface"
+    );
 }
 
 #[tokio::test]

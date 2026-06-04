@@ -5,55 +5,67 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+default = ["remote-stream", "voice", "multimodal"]
+syntax-highlight = ["dep:syntect"]
+remote-stream = ["dep:reqwest", "dep:reqwest-eventsource"]
+voice = ["dep:agendao-voice"]
+multimodal = ["dep:agendao-multimodal"]
+local-server = ["dep:agendao-server-local"]
+
 [dependencies]
 # Workspace dependencies
 agendao-client = { path = "../agendao-client" }
-agendao-core = { path = "../agendao-core" }
+agendao-command = { path = "../agendao-command", default-features = false }
+agendao-command-render = { path = "../agendao-command-render" }
+agendao-command-runtime = { path = "../agendao-command-runtime" }
+agendao-core = { path = "../agendao-core", features = ["process-registry", "agent-task-registry"] }
 agendao-orchestrator = { path = "../agendao-orchestrator" }
 agendao-util = { path = "../agendao-util" }
 agendao-config = { path = "../agendao-config" }
-agendao-multimodal = { path = "../agendao-multimodal" }
-agendao-voice = { path = "../agendao-voice" }
-agendao-provider = { path = "../agendao-provider" }
-agendao-server = { path = "../agendao-server" }
-agendao-session = { path = "../agendao-session" }
+agendao-multimodal = { path = "../agendao-multimodal", optional = true }
+agendao-voice = { path = "../agendao-voice", optional = true }
+agendao-provider = { path = "../agendao-provider", default-features = false }
+agendao-server-local = { path = "../agendao-server-local", optional = true }
 agendao-skill = { path = "../agendao-skill" }
 agendao-agent = { path = "../agendao-agent" }
-agendao-tool = { path = "../agendao-tool" }
-agendao-mcp = { path = "../agendao-mcp" }
-agendao-command = { path = "../agendao-command" }
+agendao-output-blocks = { path = "../agendao-output-blocks" }
+agendao-stage-protocol = { path = "../agendao-stage-protocol" }
 agendao-runtime-context = { path = "../agendao-runtime-context" }
 agendao-state = { path = "../agendao-state" }
+agendao-tui-core = { path = "../agendao-tui-core" }
 agendao-types = { path = "../agendao-types" }
-tokio = { workspace = true }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
-parking_lot = { workspace = true }
+parking_lot = "0.12"
 chrono = { workspace = true }
-once_cell = { workspace = true }
-walkdir = { workspace = true }
-syntect = { workspace = true }
+walkdir = "2"
+syntect = { version = "=5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "regex-onig"], optional = true }
 
 # TUI dependencies
 reratui = "1.1.0"
 ratatui = { version = "0.30.0", default-features = false, features = ["crossterm", "underline-color", "macros"] }
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 atty = "0.2"
-nucleo-matcher = { workspace = true }
-similar = { workspace = true }
+nucleo-matcher = "=0.3.1"
+similar = "=2.7.0"
 
 # Additional dependencies
-tokio-stream = { workspace = true }
+tokio-stream = { version = "0.1", default-features = false }
 futures = { workspace = true }
 unicode-width = "0.1"
 uuid = { workspace = true }
-reqwest = { workspace = true }
-reqwest-eventsource = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["charset", "http2", "rustls-tls-webpki-roots", "stream", "system-proxy"], optional = true }
+reqwest-eventsource = { version = "0.6", optional = true }
 dirs = { workspace = true }
 base64 = { workspace = true }
-tokio-util = { workspace = true }
+tokio-util = { version = "0.7", features = ["rt"] }
 pulldown-cmark = "0.13"
+
+[dev-dependencies]
+once_cell = { workspace = true }

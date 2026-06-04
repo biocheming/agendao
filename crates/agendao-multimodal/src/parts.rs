@@ -1,6 +1,6 @@
 use crate::{CapturedAssetKind, CapturedAssetSource, ModalityKind, PreflightInputPart};
 use agendao_provider::{mime_to_modality, Modality};
-use agendao_session::prompt::PartInput;
+use agendao_types::PromptPart;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MultimodalPart {
@@ -43,11 +43,11 @@ impl MultimodalPart {
 pub struct SessionPartAdapter;
 
 impl SessionPartAdapter {
-    pub fn to_session_parts(parts: &[MultimodalPart]) -> Vec<PartInput> {
+    pub fn to_session_parts(parts: &[MultimodalPart]) -> Vec<PromptPart> {
         parts.iter().map(Self::to_session_part).collect()
     }
 
-    pub fn from_session_parts(parts: &[PartInput]) -> Vec<MultimodalPart> {
+    pub fn from_session_parts(parts: &[PromptPart]) -> Vec<MultimodalPart> {
         parts.iter().filter_map(Self::from_session_part).collect()
     }
 
@@ -71,18 +71,18 @@ impl SessionPartAdapter {
             .collect()
     }
 
-    pub fn preflight_parts_from_session_parts(parts: &[PartInput]) -> Vec<PreflightInputPart> {
+    pub fn preflight_parts_from_session_parts(parts: &[PromptPart]) -> Vec<PreflightInputPart> {
         Self::to_preflight_parts(&Self::from_session_parts(parts))
     }
 
-    fn to_session_part(part: &MultimodalPart) -> PartInput {
+    fn to_session_part(part: &MultimodalPart) -> PromptPart {
         match part {
             MultimodalPart::File {
                 url,
                 filename,
                 mime,
                 ..
-            } => PartInput::File {
+            } => PromptPart::File {
                 url: url.clone(),
                 filename: filename.clone(),
                 mime: mime.clone(),
@@ -90,9 +90,9 @@ impl SessionPartAdapter {
         }
     }
 
-    fn from_session_part(part: &PartInput) -> Option<MultimodalPart> {
+    fn from_session_part(part: &PromptPart) -> Option<MultimodalPart> {
         match part {
-            PartInput::File {
+            PromptPart::File {
                 url,
                 filename,
                 mime,

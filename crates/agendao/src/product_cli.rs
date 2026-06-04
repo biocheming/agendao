@@ -3,8 +3,8 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
-use clap::{Args, Parser, Subcommand};
 use agendao_client::transport::TransportSelector;
+use clap::{Args, Parser, Subcommand};
 
 use crate::host::{
     run_acp_command, run_server_command, run_tui, run_web_command, AcpCommandRequest,
@@ -198,9 +198,9 @@ fn resolve_socket_path(enabled: bool) -> anyhow::Result<Option<String>> {
         return Ok(None);
     }
 
-    TransportSelector::default_unix_socket_path().map(Some).ok_or_else(|| {
-        anyhow::anyhow!("--socket is not supported on this platform")
-    })
+    TransportSelector::default_unix_socket_path()
+        .map(Some)
+        .ok_or_else(|| anyhow::anyhow!("--socket is not supported on this platform"))
 }
 
 impl InstallMethod {
@@ -461,10 +461,21 @@ mod tests {
 
 fn default_tui_request() -> TuiCommandRequest {
     TuiCommandRequest {
-        project: None, model: None, continue_last: false, session: None, fork: false,
-        prompt: None, agent: None, port: 0, hostname: "127.0.0.1".to_string(),
-        mdns: false, mdns_domain: "agendao.local".to_string(), cors: vec![],
-        attach_url: None, password: None, unix_socket_path: None,
+        project: None,
+        model: None,
+        continue_last: false,
+        session: None,
+        fork: false,
+        prompt: None,
+        agent: None,
+        port: 0,
+        hostname: "127.0.0.1".to_string(),
+        mdns: false,
+        mdns_domain: "agendao.local".to_string(),
+        cors: vec![],
+        attach_url: None,
+        password: None,
+        unix_socket_path: None,
     }
 }
 
@@ -563,7 +574,12 @@ fn detect_install_method() -> InstallMethod {
             &["list", "--limit-output", "agendao"],
             "agendao",
         ),
-        (InstallMethod::Scoop, "scoop", &["list", "agendao"], "agendao"),
+        (
+            InstallMethod::Scoop,
+            "scoop",
+            &["list", "agendao"],
+            "agendao",
+        ),
     ];
 
     for (method, program, args, marker) in checks {

@@ -1,0 +1,11 @@
+[package]
+name = "agendao-output-blocks"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+agendao-stage-protocol = { path = "../agendao-stage-protocol" }
+serde = { workspace = true }
+serde_json = { workspace = true }

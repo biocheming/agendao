@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
 use agendao_core::bus::{Bus, BusEventDef};
 use agendao_memory::{MemoryAuthority, ToolMemoryObservation};
 use agendao_orchestrator::compaction_request;
@@ -10,6 +9,7 @@ use agendao_orchestrator::runtime::events::LoopRequest;
 use agendao_orchestrator::runtime::traits::ModelCaller;
 use agendao_orchestrator::runtime::{SimpleModelCaller, SimpleModelCallerConfig};
 use agendao_plugin::{HookContext, HookEvent};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::message_v2::{
@@ -1248,11 +1248,11 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use async_trait::async_trait;
-    use futures::stream;
     use agendao_provider::{
         ChatRequest, ChatResponse, ModelInfo, ProviderError, StreamEvent, StreamResult,
     };
+    use async_trait::async_trait;
+    use futures::stream;
     use tokio::sync::Mutex;
 
     #[derive(Clone)]
@@ -1648,10 +1648,12 @@ mod tests {
             "default prompt".to_string(),
             Some("custom prompt".to_string()),
             Some(vec!["input ctx".to_string()]),
-            vec![agendao_plugin::HookOutput::with_payload(serde_json::json!({
-                "prompt": "hook prompt",
-                "context": ["hook ctx"]
-            }))],
+            vec![agendao_plugin::HookOutput::with_payload(
+                serde_json::json!({
+                    "prompt": "hook prompt",
+                    "context": ["hook ctx"]
+                }),
+            )],
         );
 
         assert_eq!(prompt, "hook prompt");
@@ -1663,9 +1665,11 @@ mod tests {
             "default prompt".to_string(),
             None,
             Some(vec!["input ctx".to_string()]),
-            vec![agendao_plugin::HookOutput::with_payload(serde_json::json!({
-                "context": ["hook ctx 1", "hook ctx 2"]
-            }))],
+            vec![agendao_plugin::HookOutput::with_payload(
+                serde_json::json!({
+                    "context": ["hook ctx 1", "hook ctx 2"]
+                }),
+            )],
         );
 
         assert!(prompt.contains("default prompt"));

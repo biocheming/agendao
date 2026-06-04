@@ -59,6 +59,19 @@ impl fmt::Display for ProviderRuntimeAdapter {
     }
 }
 
+#[cfg(feature = "http-transport")]
+pub type ProviderHttpClient = reqwest::Client;
+
+#[cfg(not(feature = "http-transport"))]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ProviderHttpClient;
+
+#[cfg(feature = "http-transport")]
+pub type ProviderHttpStreamError = reqwest::Error;
+
+#[cfg(not(feature = "http-transport"))]
+pub type ProviderHttpStreamError = std::io::Error;
+
 /// Configuration for a provider instance.
 /// Passed to ProviderAdapter methods for request construction.
 #[derive(Debug, Clone)]
@@ -148,7 +161,7 @@ pub trait ProviderAdapter: Send + Sync {
     /// Send a non-streaming chat request.
     async fn chat(
         &self,
-        client: &reqwest::Client,
+        client: &ProviderHttpClient,
         config: &ProviderConfig,
         request: ChatRequest,
     ) -> Result<ChatResponse, ProviderError>;
@@ -157,7 +170,7 @@ pub trait ProviderAdapter: Send + Sync {
     /// Returns a stream of StreamEvent items.
     async fn chat_stream(
         &self,
-        client: &reqwest::Client,
+        client: &ProviderHttpClient,
         config: &ProviderConfig,
         request: ChatRequest,
     ) -> Result<StreamResult, ProviderError>;

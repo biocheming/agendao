@@ -1,19 +1,19 @@
 use std::collections::HashMap;
 
-use ratatui::{
-    style::{Modifier, Style},
-    text::{Line, Span},
-};
-use agendao_command::terminal_presentation::{TerminalToolResultInfo, TerminalToolState};
-use agendao_command::terminal_segment_display::{
+use agendao_command_render::terminal_presentation::{TerminalToolResultInfo, TerminalToolState};
+use agendao_command_render::terminal_segment_display::{
     format_preview_line, is_denied_result, normalize_tool_name, tool_argument_preview, tool_glyph,
     TerminalSegmentTone,
 };
-use agendao_command::terminal_tool_block_display::{
+use agendao_command_render::terminal_tool_block_display::{
     build_batch_result_items, build_display_hint_items, build_edit_result_items,
     build_patch_result_items, build_question_result_items, build_task_result_items,
     build_task_running_items, build_todowrite_result_items, build_write_result_items,
     summarize_block_items_inline, TerminalToolBlockItem, ToolWriteSummary,
+};
+use ratatui::{
+    style::{Modifier, Style},
+    text::{Line, Span},
 };
 
 use super::markdown::MarkdownRenderer;
@@ -935,7 +935,7 @@ fn styles_for_state(
 }
 
 fn parse_write_summary(result_text: &str) -> Option<WriteSummary> {
-    agendao_command::terminal_tool_block_display::parse_write_summary(result_text)
+    agendao_command_render::terminal_tool_block_display::parse_write_summary(result_text)
 }
 
 fn parse_read_summary(result_text: &str) -> ReadSummary {
@@ -1068,7 +1068,9 @@ mod tests {
     #[test]
     fn render_edit_result_block_shows_diff_when_metadata_has_diff() {
         use super::render_tool_call;
-        use agendao_command::terminal_presentation::{TerminalToolResultInfo, TerminalToolState};
+        use agendao_command_render::terminal_presentation::{
+            TerminalToolResultInfo, TerminalToolState,
+        };
         use std::collections::HashMap;
 
         let theme = crate::theme::Theme::dark();
@@ -1117,7 +1119,9 @@ mod tests {
     #[test]
     fn render_patch_result_block_shows_per_file_diffs() {
         use super::render_tool_call;
-        use agendao_command::terminal_presentation::{TerminalToolResultInfo, TerminalToolState};
+        use agendao_command_render::terminal_presentation::{
+            TerminalToolResultInfo, TerminalToolState,
+        };
         use std::collections::HashMap;
 
         let theme = crate::theme::Theme::dark();
@@ -1180,7 +1184,9 @@ mod tests {
     #[test]
     fn render_write_result_block_shows_diff_from_metadata() {
         use super::render_tool_call;
-        use agendao_command::terminal_presentation::{TerminalToolResultInfo, TerminalToolState};
+        use agendao_command_render::terminal_presentation::{
+            TerminalToolResultInfo, TerminalToolState,
+        };
         use std::collections::HashMap;
 
         let theme = crate::theme::Theme::dark();
@@ -1220,7 +1226,9 @@ mod tests {
     #[test]
     fn inline_tool_prefers_result_title_as_summary() {
         use super::render_tool_call;
-        use agendao_command::terminal_presentation::{TerminalToolResultInfo, TerminalToolState};
+        use agendao_command_render::terminal_presentation::{
+            TerminalToolResultInfo, TerminalToolState,
+        };
 
         let theme = crate::theme::Theme::dark();
         let result = TerminalToolResultInfo {
@@ -1250,7 +1258,9 @@ mod tests {
     #[test]
     fn block_tool_details_show_result_title_line() {
         use super::render_tool_call;
-        use agendao_command::terminal_presentation::{TerminalToolResultInfo, TerminalToolState};
+        use agendao_command_render::terminal_presentation::{
+            TerminalToolResultInfo, TerminalToolState,
+        };
 
         let theme = crate::theme::Theme::dark();
         let result = TerminalToolResultInfo {
@@ -1281,7 +1291,7 @@ mod tests {
     #[test]
     fn running_bash_without_output_stays_inline() {
         use super::render_tool_call;
-        use agendao_command::terminal_presentation::TerminalToolState;
+        use agendao_command_render::terminal_presentation::TerminalToolState;
 
         let theme = crate::theme::Theme::dark();
         let lines = render_tool_call(
@@ -1304,7 +1314,7 @@ mod tests {
     #[test]
     fn pending_apply_patch_stays_inline() {
         use super::render_tool_call;
-        use agendao_command::terminal_presentation::TerminalToolState;
+        use agendao_command_render::terminal_presentation::TerminalToolState;
 
         let theme = crate::theme::Theme::dark();
         let lines = render_tool_call(
@@ -1327,7 +1337,9 @@ mod tests {
     #[test]
     fn question_result_uses_structured_q_and_a_over_display_hints() {
         use super::render_tool_call;
-        use agendao_command::terminal_presentation::{TerminalToolResultInfo, TerminalToolState};
+        use agendao_command_render::terminal_presentation::{
+            TerminalToolResultInfo, TerminalToolState,
+        };
 
         let theme = crate::theme::Theme::dark();
         let mut metadata = HashMap::new();
@@ -1366,7 +1378,7 @@ mod tests {
     #[test]
     fn pending_question_stays_inline_with_status_summary() {
         use super::render_tool_call;
-        use agendao_command::terminal_presentation::TerminalToolState;
+        use agendao_command_render::terminal_presentation::TerminalToolState;
 
         let theme = crate::theme::Theme::dark();
         let lines = render_tool_call(
@@ -1390,7 +1402,9 @@ mod tests {
     #[test]
     fn completed_question_without_details_stays_visible_inline() {
         use super::render_tool_call;
-        use agendao_command::terminal_presentation::{TerminalToolResultInfo, TerminalToolState};
+        use agendao_command_render::terminal_presentation::{
+            TerminalToolResultInfo, TerminalToolState,
+        };
 
         let theme = crate::theme::Theme::dark();
         let mut metadata = HashMap::new();
@@ -1425,7 +1439,7 @@ mod tests {
     #[test]
     fn pending_todowrite_stays_inline_with_status_summary() {
         use super::render_tool_call;
-        use agendao_command::terminal_presentation::TerminalToolState;
+        use agendao_command_render::terminal_presentation::TerminalToolState;
 
         let theme = crate::theme::Theme::dark();
         let lines = render_tool_call(
@@ -1449,7 +1463,9 @@ mod tests {
     #[test]
     fn task_result_without_details_stays_visible_inline() {
         use super::render_tool_call;
-        use agendao_command::terminal_presentation::{TerminalToolResultInfo, TerminalToolState};
+        use agendao_command_render::terminal_presentation::{
+            TerminalToolResultInfo, TerminalToolState,
+        };
 
         let theme = crate::theme::Theme::dark();
         let mut metadata = HashMap::new();
@@ -1486,7 +1502,9 @@ mod tests {
     #[test]
     fn task_result_with_details_uses_structured_block_body() {
         use super::render_tool_call;
-        use agendao_command::terminal_presentation::{TerminalToolResultInfo, TerminalToolState};
+        use agendao_command_render::terminal_presentation::{
+            TerminalToolResultInfo, TerminalToolState,
+        };
 
         let theme = crate::theme::Theme::dark();
         let mut metadata = HashMap::new();
@@ -1525,7 +1543,9 @@ mod tests {
     #[test]
     fn completed_batch_without_details_stays_visible_inline() {
         use super::render_tool_call;
-        use agendao_command::terminal_presentation::{TerminalToolResultInfo, TerminalToolState};
+        use agendao_command_render::terminal_presentation::{
+            TerminalToolResultInfo, TerminalToolState,
+        };
 
         let theme = crate::theme::Theme::dark();
         let result = TerminalToolResultInfo {
@@ -1559,7 +1579,9 @@ mod tests {
     #[test]
     fn completed_apply_patch_without_details_stays_visible_inline() {
         use super::render_tool_call;
-        use agendao_command::terminal_presentation::{TerminalToolResultInfo, TerminalToolState};
+        use agendao_command_render::terminal_presentation::{
+            TerminalToolResultInfo, TerminalToolState,
+        };
 
         let theme = crate::theme::Theme::dark();
         let mut metadata = HashMap::new();

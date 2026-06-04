@@ -1,3 +1,4 @@
+use agendao_config::ModelConfig;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::Style,
@@ -7,7 +8,6 @@ use ratatui::{
         ScrollbarState, Wrap,
     },
 };
-use agendao_config::ModelConfig;
 use std::collections::HashSet;
 
 use crate::api::{

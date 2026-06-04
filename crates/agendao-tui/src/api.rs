@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use std::sync::{mpsc, RwLock};
 use std::thread;
 
+use agendao_stage_protocol::StageEvent;
+
 pub use agendao_client::*;
 
 type ApiJob = Box<dyn FnOnce(&RuntimeApiClient) + Send + 'static>;
@@ -29,7 +31,7 @@ struct RuntimeApiClient {
     /// In-process server runtime for `--local`. This is the authoritative
     /// local execution path because it reuses the server's prompt/session
     /// ingress pipeline instead of the older text-only DirectTransport.
-    local_server: Option<std::sync::Arc<agendao_server::ServerState>>,
+    local_server: Option<std::sync::Arc<crate::local_server_bridge::LocalServerState>>,
 }
 
 impl RuntimeApiClient {
@@ -52,7 +54,8 @@ impl RuntimeApiClient {
             let session_id = session_id.to_string();
             let after = after.map(str::to_string);
             return self.block_on(async move {
-                agendao_server::local_list_messages(state, &session_id, after, limit).await
+                crate::local_server_bridge::local_list_messages(state, &session_id, after, limit)
+                    .await
             });
         }
         self.block_on(self.client.get_messages_after(session_id, after, limit))
@@ -65,17 +68,13 @@ impl RuntimeApiClient {
     fn new_local_for_workspace(workspace_root: PathBuf) -> Self {
         let runtime = Self::build_runtime();
 
-        let local_server = Some(std::sync::Arc::new(
+        let local_server = Some(
             runtime
                 .block_on(async {
-                    agendao_server::ServerState::new_with_storage_for_url_in_workspace(
-                        "http://127.0.0.1:0".to_string(),
-                        workspace_root,
-                    )
-                    .await
+                    crate::local_server_bridge::new_local_server_for_workspace(workspace_root).await
                 })
                 .expect("failed to initialize in-process server state for --local"),
-        ));
+        );
 
         let client = agendao_client::AsyncApiClient::new_with_password(
             "http://127.0.0.1:0".to_string(),
@@ -90,7 +89,9 @@ impl RuntimeApiClient {
         }
     }
 
-    fn new_local_with_server(local_server: std::sync::Arc<agendao_server::ServerState>) -> Self {
+    fn new_local_with_server(
+        local_server: std::sync::Arc<crate::local_server_bridge::LocalServerState>,
+    ) -> Self {
         let runtime = Self::build_runtime();
         let client = agendao_client::AsyncApiClient::new_with_password(
             "http://127.0.0.1:0".to_string(),
@@ -149,7 +150,7 @@ impl RuntimeApiClient {
         if let Some(ref state) = self.local_server {
             let state = std::sync::Arc::clone(state);
             return self.block_on(async move {
-                agendao_server::local_create_session(
+                crate::local_server_bridge::local_create_session(
                     state,
                     CreateSessionRequest {
                         scheduler_profile,
@@ -169,7 +170,7 @@ impl RuntimeApiClient {
             let state = std::sync::Arc::clone(state);
             let session_id = session_id.to_string();
             return self.block_on(async move {
-                agendao_server::local_get_session(state, &session_id).await
+                crate::local_server_bridge::local_get_session(state, &session_id).await
             });
         }
         self.block_on(self.client.get_session(session_id))
@@ -193,7 +194,7 @@ impl RuntimeApiClient {
             let state = std::sync::Arc::clone(state);
             let session_id = session_id.to_string();
             return self.block_on(async move {
-                agendao_server::local_prompt(
+                crate::local_server_bridge::local_prompt(
                     state,
                     &session_id,
                     PromptRequest {
@@ -245,7 +246,7 @@ impl RuntimeApiClient {
             let state = std::sync::Arc::clone(state);
             let session_id = session_id.to_string();
             return self.block_on(async move {
-                agendao_server::local_prompt(
+                crate::local_server_bridge::local_prompt(
                     state,
                     &session_id,
                     PromptRequest {
@@ -283,7 +284,7 @@ impl RuntimeApiClient {
         if let Some(ref state) = self.local_server {
             let state = std::sync::Arc::clone(state);
             return self.block_on(async move {
-                agendao_server::local_list_sessions(state, None, None).await
+                crate::local_server_bridge::local_list_sessions(state, None, None).await
             });
         }
         // Unix socket / HTTP fallback via FrontendTransport.
@@ -304,7 +305,7 @@ impl RuntimeApiClient {
             let state = std::sync::Arc::clone(state);
             let search = search.map(str::to_string);
             return self.block_on(async move {
-                agendao_server::local_list_sessions(state, search, limit).await
+                crate::local_server_bridge::local_list_sessions(state, search, limit).await
             });
         }
         if search.is_none() {
@@ -322,7 +323,7 @@ impl RuntimeApiClient {
             let state = std::sync::Arc::clone(state);
             let request = request.clone();
             return self.block_on(async move {
-                agendao_server::local_connect_provider(state, request).await
+                crate::local_server_bridge::local_connect_provider(state, request).await
             });
         }
         self.block_on(self.client.connect_provider(
@@ -345,7 +346,7 @@ impl RuntimeApiClient {
             let state = std::sync::Arc::clone(state);
             let provider_id = provider_id.to_string();
             return self.block_on(async move {
-                agendao_server::local_get_provider_descriptor(state, &provider_id).await
+                crate::local_server_bridge::local_get_provider_descriptor(state, &provider_id).await
             });
         }
         self.block_on(self.client.get_provider_descriptor(provider_id))
@@ -354,7 +355,9 @@ impl RuntimeApiClient {
     fn list_questions(&self) -> anyhow::Result<Vec<QuestionInfo>> {
         if let Some(ref state) = self.local_server {
             let state = std::sync::Arc::clone(state);
-            return self.block_on(async move { agendao_server::local_list_questions(state).await });
+            return self.block_on(async move {
+                crate::local_server_bridge::local_list_questions(state).await
+            });
         }
         self.block_on(self.client.list_questions())
     }
@@ -364,7 +367,7 @@ impl RuntimeApiClient {
             let state = std::sync::Arc::clone(state);
             let question_id = question_id.to_string();
             return self.block_on(async move {
-                agendao_server::local_reply_question(state, &question_id, answers).await
+                crate::local_server_bridge::local_reply_question(state, &question_id, answers).await
             });
         }
         self.block_on(self.client.reply_question(question_id, answers))
@@ -375,7 +378,7 @@ impl RuntimeApiClient {
             let state = std::sync::Arc::clone(state);
             let question_id = question_id.to_string();
             return self.block_on(async move {
-                agendao_server::local_reject_question(state, &question_id).await
+                crate::local_server_bridge::local_reject_question(state, &question_id).await
             });
         }
         self.block_on(self.client.reject_question(question_id))
@@ -384,8 +387,9 @@ impl RuntimeApiClient {
     fn list_permissions(&self) -> anyhow::Result<Vec<PermissionRequestInfo>> {
         if let Some(ref state) = self.local_server {
             let state = std::sync::Arc::clone(state);
-            return self
-                .block_on(async move { agendao_server::local_list_permissions(state).await });
+            return self.block_on(async move {
+                crate::local_server_bridge::local_list_permissions(state).await
+            });
         }
         self.block_on(self.client.list_permissions())
     }
@@ -401,7 +405,13 @@ impl RuntimeApiClient {
             let permission_id = permission_id.to_string();
             let reply = reply.to_string();
             return self.block_on(async move {
-                agendao_server::local_reply_permission(state, &permission_id, reply, message).await
+                crate::local_server_bridge::local_reply_permission(
+                    state,
+                    &permission_id,
+                    reply,
+                    message,
+                )
+                .await
             });
         }
         self.block_on(self.client.reply_permission(permission_id, reply, message))
@@ -421,7 +431,7 @@ impl RuntimeApiClient {
         fn get_session_runtime(&self, session_id: &str) -> SessionRuntimeState;
         fn get_session_telemetry(&self, session_id: &str) -> SessionTelemetrySnapshot;
         fn get_session_insights(&self, session_id: &str) -> SessionInsightsResponse;
-        fn get_session_events(&self, session_id: &str, query: &SessionEventsQuery) -> Vec<agendao_command::stage_protocol::StageEvent>;
+        fn get_session_events(&self, session_id: &str, query: &SessionEventsQuery) -> Vec<StageEvent>;
         fn get_session_todos(&self, session_id: &str) -> Vec<ApiTodoItem>;
         fn get_session_diff(&self, session_id: &str) -> Vec<ApiDiffEntry>;
         fn get_session_recovery(&self, session_id: &str) -> SessionRecoveryProtocol;
@@ -486,8 +496,9 @@ impl RuntimeApiClient {
     fn get_config_providers(&self) -> anyhow::Result<ProviderListResponse> {
         if let Some(ref state) = self.local_server {
             let state = std::sync::Arc::clone(state);
-            return self
-                .block_on(async move { agendao_server::local_get_config_providers(state).await });
+            return self.block_on(async move {
+                crate::local_server_bridge::local_get_config_providers(state).await
+            });
         }
         self.block_on(self.client.get_config_providers())
     }
@@ -495,7 +506,9 @@ impl RuntimeApiClient {
     fn get_config(&self) -> anyhow::Result<agendao_config::Config> {
         if let Some(ref state) = self.local_server {
             let state = std::sync::Arc::clone(state);
-            return self.block_on(async move { agendao_server::local_get_config(state).await });
+            return self.block_on(async move {
+                crate::local_server_bridge::local_get_config(state).await
+            });
         }
         self.block_on(self.client.get_config())
     }
@@ -503,8 +516,9 @@ impl RuntimeApiClient {
     fn get_config_validation(&self) -> anyhow::Result<ConfigPolicyValidationSnapshot> {
         if let Some(ref state) = self.local_server {
             let state = std::sync::Arc::clone(state);
-            return self
-                .block_on(async move { agendao_server::local_get_config_validation(state).await });
+            return self.block_on(async move {
+                crate::local_server_bridge::local_get_config_validation(state).await
+            });
         }
         self.block_on(self.client.get_config_validation())
     }
@@ -512,7 +526,9 @@ impl RuntimeApiClient {
     fn list_agents(&self) -> anyhow::Result<Vec<AgentInfo>> {
         if let Some(ref state) = self.local_server {
             let state = std::sync::Arc::clone(state);
-            return self.block_on(async move { agendao_server::local_list_agents(state).await });
+            return self.block_on(async move {
+                crate::local_server_bridge::local_list_agents(state).await
+            });
         }
         if let Some(ref transport) = self.transport {
             if let Ok(items) = self.block_on(transport.list_agents()) {
@@ -525,8 +541,9 @@ impl RuntimeApiClient {
     fn list_execution_modes(&self) -> anyhow::Result<Vec<ExecutionModeInfo>> {
         if let Some(ref state) = self.local_server {
             let state = std::sync::Arc::clone(state);
-            return self
-                .block_on(async move { agendao_server::local_list_execution_modes(state).await });
+            return self.block_on(async move {
+                crate::local_server_bridge::local_list_execution_modes(state).await
+            });
         }
         if let Some(ref transport) = self.transport {
             if let Ok(items) = self.block_on(transport.list_execution_modes()) {
@@ -541,8 +558,9 @@ impl RuntimeApiClient {
     ) -> anyhow::Result<agendao_runtime_context::ResolvedWorkspaceContext> {
         if let Some(ref state) = self.local_server {
             let state = std::sync::Arc::clone(state);
-            return self
-                .block_on(async move { agendao_server::local_get_workspace_context(state).await });
+            return self.block_on(async move {
+                crate::local_server_bridge::local_get_workspace_context(state).await
+            });
         }
         if let Some(ref transport) = self.transport {
             if let Ok(context) = self.block_on(transport.get_workspace_context()) {
@@ -555,8 +573,9 @@ impl RuntimeApiClient {
     fn get_multimodal_policy(&self) -> anyhow::Result<MultimodalPolicyResponse> {
         if let Some(ref state) = self.local_server {
             let state = std::sync::Arc::clone(state);
-            return self
-                .block_on(async move { agendao_server::local_get_multimodal_policy(state).await });
+            return self.block_on(async move {
+                crate::local_server_bridge::local_get_multimodal_policy(state).await
+            });
         }
         self.block_on(self.client.get_multimodal_policy())
     }
@@ -569,7 +588,7 @@ impl RuntimeApiClient {
             let state = std::sync::Arc::clone(state);
             let model = model.map(str::to_string);
             return self.block_on(async move {
-                agendao_server::local_get_multimodal_capabilities(state, model).await
+                crate::local_server_bridge::local_get_multimodal_capabilities(state, model).await
             });
         }
         self.block_on(self.client.get_multimodal_capabilities(model))
@@ -583,7 +602,7 @@ impl RuntimeApiClient {
             let state = std::sync::Arc::clone(state);
             let request = request.clone();
             return self.block_on(async move {
-                agendao_server::local_preflight_multimodal(state, request).await
+                crate::local_server_bridge::local_preflight_multimodal(state, request).await
             });
         }
         self.block_on(self.client.preflight_multimodal(request))
@@ -592,8 +611,9 @@ impl RuntimeApiClient {
     fn get_recent_models(&self) -> anyhow::Result<Vec<agendao_state::RecentModelEntry>> {
         if let Some(ref state) = self.local_server {
             let state = std::sync::Arc::clone(state);
-            return self
-                .block_on(async move { agendao_server::local_get_recent_models(state).await });
+            return self.block_on(async move {
+                crate::local_server_bridge::local_get_recent_models(state).await
+            });
         }
         if let Some(ref transport) = self.transport {
             if let Ok(items) = self.block_on(transport.get_recent_models()) {
@@ -611,7 +631,7 @@ impl RuntimeApiClient {
             let state = std::sync::Arc::clone(state);
             let recent_models = recent_models.to_vec();
             return self.block_on(async move {
-                agendao_server::local_put_recent_models(state, recent_models).await
+                crate::local_server_bridge::local_put_recent_models(state, recent_models).await
             });
         }
         if let Some(ref transport) = self.transport {
@@ -625,8 +645,9 @@ impl RuntimeApiClient {
     fn get_all_providers(&self) -> anyhow::Result<FullProviderListResponse> {
         if let Some(ref state) = self.local_server {
             let state = std::sync::Arc::clone(state);
-            return self
-                .block_on(async move { agendao_server::local_get_all_providers(state).await });
+            return self.block_on(async move {
+                crate::local_server_bridge::local_get_all_providers(state).await
+            });
         }
         if let Some(ref transport) = self.transport {
             if let Ok(response) = self.block_on(transport.get_all_providers()) {
@@ -639,8 +660,9 @@ impl RuntimeApiClient {
     fn get_known_providers(&self) -> anyhow::Result<KnownProvidersResponse> {
         if let Some(ref state) = self.local_server {
             let state = std::sync::Arc::clone(state);
-            return self
-                .block_on(async move { agendao_server::local_get_known_providers(state).await });
+            return self.block_on(async move {
+                crate::local_server_bridge::local_get_known_providers(state).await
+            });
         }
         self.block_on(self.client.get_known_providers())
     }
@@ -649,7 +671,7 @@ impl RuntimeApiClient {
         if let Some(ref state) = self.local_server {
             let state = std::sync::Arc::clone(state);
             return self.block_on(async move {
-                agendao_server::local_get_provider_connect_schema(state).await
+                crate::local_server_bridge::local_get_provider_connect_schema(state).await
             });
         }
         self.block_on(self.client.get_provider_connect_schema())
@@ -663,7 +685,7 @@ impl RuntimeApiClient {
             let state = std::sync::Arc::clone(state);
             let query = query.to_string();
             return self.block_on(async move {
-                agendao_server::local_resolve_provider_connect(state, query).await
+                crate::local_server_bridge::local_resolve_provider_connect(state, query).await
             });
         }
         self.block_on(self.client.resolve_provider_connect(query))
@@ -673,7 +695,7 @@ impl RuntimeApiClient {
         if let Some(ref state) = self.local_server {
             let state = std::sync::Arc::clone(state);
             return self.block_on(async move {
-                agendao_server::local_refresh_provider_catalog(state).await
+                crate::local_server_bridge::local_refresh_provider_catalog(state).await
             });
         }
         self.block_on(self.client.refresh_provider_catalog())
@@ -707,7 +729,7 @@ impl ApiClient {
     }
 
     pub fn new_local_with_server(
-        local_server: Option<std::sync::Arc<agendao_server::ServerState>>,
+        local_server: Option<std::sync::Arc<crate::local_server_bridge::LocalServerState>>,
     ) -> Self {
         let (jobs, receiver) = mpsc::channel::<ApiJob>();
         thread::Builder::new()
@@ -862,7 +884,7 @@ impl ApiClient {
         &self,
         session_id: &str,
         query: &SessionEventsQuery,
-    ) -> anyhow::Result<Vec<agendao_command::stage_protocol::StageEvent>> {
+    ) -> anyhow::Result<Vec<StageEvent>> {
         let session_id = session_id.to_string();
         let query = query.clone();
         self.call("get session events", move |client| {
@@ -910,8 +932,9 @@ impl ApiClient {
         self.call("list questions", |client| {
             if let Some(ref state) = client.local_server {
                 let state = std::sync::Arc::clone(state);
-                return client
-                    .block_on(async move { agendao_server::local_list_questions(state).await });
+                return client.block_on(async move {
+                    crate::local_server_bridge::local_list_questions(state).await
+                });
             }
             client.list_questions()
         })
@@ -927,7 +950,8 @@ impl ApiClient {
             if let Some(ref state) = client.local_server {
                 let state = std::sync::Arc::clone(state);
                 return client.block_on(async move {
-                    agendao_server::local_reply_question(state, &question_id, answers).await
+                    crate::local_server_bridge::local_reply_question(state, &question_id, answers)
+                        .await
                 });
             }
             client.reply_question(&question_id, answers)
@@ -940,7 +964,7 @@ impl ApiClient {
             if let Some(ref state) = client.local_server {
                 let state = std::sync::Arc::clone(state);
                 return client.block_on(async move {
-                    agendao_server::local_reject_question(state, &question_id).await
+                    crate::local_server_bridge::local_reject_question(state, &question_id).await
                 });
             }
             client.reject_question(&question_id)
@@ -951,8 +975,9 @@ impl ApiClient {
         self.call("list permissions", |client| {
             if let Some(ref state) = client.local_server {
                 let state = std::sync::Arc::clone(state);
-                return client
-                    .block_on(async move { agendao_server::local_list_permissions(state).await });
+                return client.block_on(async move {
+                    crate::local_server_bridge::local_list_permissions(state).await
+                });
             }
             client.list_permissions()
         })
@@ -970,8 +995,13 @@ impl ApiClient {
             if let Some(ref state) = client.local_server {
                 let state = std::sync::Arc::clone(state);
                 return client.block_on(async move {
-                    agendao_server::local_reply_permission(state, &permission_id, reply, message)
-                        .await
+                    crate::local_server_bridge::local_reply_permission(
+                        state,
+                        &permission_id,
+                        reply,
+                        message,
+                    )
+                    .await
                 });
             }
             client.reply_permission(&permission_id, &reply, message)
@@ -1161,7 +1191,10 @@ impl ApiClient {
         })
     }
 
-    pub fn patch_config(&self, patch: &serde_json::Value) -> anyhow::Result<agendao_config::Config> {
+    pub fn patch_config(
+        &self,
+        patch: &serde_json::Value,
+    ) -> anyhow::Result<agendao_config::Config> {
         let patch = patch.clone();
         self.call("patch config", move |client| client.patch_config(&patch))
     }
@@ -1869,8 +1902,11 @@ mod tests {
         let state = Arc::clone(client.local_server.as_ref().expect("local server state"));
         client
             .block_on(async {
-                agendao_server::local_register_provider(&state, Arc::new(MockLocalProvider::new()))
-                    .await;
+                crate::local_server_bridge::local_register_provider(
+                    &state,
+                    Arc::new(MockLocalProvider::new()),
+                )
+                .await;
                 Ok::<(), anyhow::Error>(())
             })
             .expect("register mock local provider");
@@ -1941,8 +1977,11 @@ mod tests {
         let state = Arc::clone(client.local_server.as_ref().expect("local server state"));
         client
             .block_on(async {
-                agendao_server::local_register_provider(&state, Arc::new(MockLocalProvider::new()))
-                    .await;
+                crate::local_server_bridge::local_register_provider(
+                    &state,
+                    Arc::new(MockLocalProvider::new()),
+                )
+                .await;
                 Ok::<(), anyhow::Error>(())
             })
             .expect("register mock local provider");

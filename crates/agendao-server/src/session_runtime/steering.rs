@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use crate::session_runtime::state::PendingSteeringMessageSummary;
+use agendao_server_core::runtime_state::PendingSteeringMessageSummary;
 
 /// Full steering message — the internal type held in the queue.
 #[derive(Debug, Clone)]

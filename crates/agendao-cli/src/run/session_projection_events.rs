@@ -1,8 +1,10 @@
 use super::CliStyle;
 use crate::util::truncate_text;
+use agendao_stage_protocol::StageEvent;
 
-pub(super) type CliEventsQueryInput = agendao_command::interactive::InteractiveEventsQuery;
-pub(super) type CliEventsCommandInput = agendao_command::interactive::InteractiveEventsCommand;
+pub(super) type CliEventsQueryInput = agendao_command_runtime::interactive::InteractiveEventsQuery;
+pub(super) type CliEventsCommandInput =
+    agendao_command_runtime::interactive::InteractiveEventsCommand;
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct CliEventsBrowserState {
@@ -13,19 +15,19 @@ pub(super) struct CliEventsBrowserState {
 
 #[cfg(test)]
 pub(super) const CLI_EVENTS_DEFAULT_PAGE_SIZE: usize =
-    agendao_command::interactive::EVENTS_BROWSER_DEFAULT_PAGE_SIZE;
+    agendao_command_runtime::interactive::EVENTS_BROWSER_DEFAULT_PAGE_SIZE;
 
 pub(super) fn cli_default_events_query_input() -> CliEventsQueryInput {
-    agendao_command::interactive::default_events_browser_query()
+    agendao_command_runtime::interactive::default_events_browser_query()
 }
 
 pub(super) fn cli_parse_events_command_input(raw: Option<&str>) -> CliEventsCommandInput {
-    agendao_command::interactive::parse_events_browser_command(raw)
+    agendao_command_runtime::interactive::parse_events_browser_command(raw)
 }
 
 #[cfg(test)]
 pub(super) fn cli_parse_events_query_input(raw: Option<&str>) -> CliEventsQueryInput {
-    agendao_command::interactive::parse_events_browser_query(raw)
+    agendao_command_runtime::interactive::parse_events_browser_query(raw)
 }
 
 pub(super) fn cli_events_query(
@@ -43,15 +45,15 @@ pub(super) fn cli_events_query(
 }
 
 pub(super) fn cli_events_page_size(input: &CliEventsQueryInput) -> usize {
-    agendao_command::interactive::events_browser_page_size(input)
+    agendao_command_runtime::interactive::events_browser_page_size(input)
 }
 
 pub(super) fn cli_events_offset_for_page(input: &CliEventsQueryInput, page: usize) -> usize {
-    agendao_command::interactive::events_browser_offset_for_page(input, page)
+    agendao_command_runtime::interactive::events_browser_offset_for_page(input, page)
 }
 
 pub(super) fn cli_events_page_for_offset(input: &CliEventsQueryInput, offset: usize) -> usize {
-    agendao_command::interactive::events_browser_page_for_offset(input, offset)
+    agendao_command_runtime::interactive::events_browser_page_for_offset(input, offset)
 }
 
 pub(super) fn cli_events_filter_label(input: &CliEventsQueryInput) -> String {
@@ -89,10 +91,7 @@ fn cli_event_payload_summary(payload: &serde_json::Value) -> Option<String> {
     .map(|text| truncate_text(&text.replace('\n', " "), 120))
 }
 
-pub(super) fn cli_event_lines(
-    events: &[agendao_command::stage_protocol::StageEvent],
-    style: &CliStyle,
-) -> Vec<String> {
+pub(super) fn cli_event_lines(events: &[StageEvent], style: &CliStyle) -> Vec<String> {
     if events.is_empty() {
         return vec![style.dim("no matching events")];
     }

@@ -1,10 +1,14 @@
 use crate::api_client::{
     CliApiClient, ProvisionExternalAdapterSessionRequest, ProvisionExternalAdapterSessionResponse,
 };
-use agendao_storage::{Database, MessageRepository, SessionRepository};
 
-use crate::cli::{SessionCommands, SessionListFormat, SessionProvisionFormat};
+#[cfg(feature = "session-db")]
+use crate::cli::SessionListFormat;
+use crate::cli::{SessionCommands, SessionProvisionFormat};
+#[cfg(feature = "session-db")]
+use crate::cli_local_data;
 use crate::server_lifecycle::FrontendRuntimeContext;
+#[cfg(feature = "session-db")]
 use crate::util::truncate_text;
 
 pub(crate) async fn handle_session_command(
@@ -44,101 +48,105 @@ pub(crate) async fn handle_session_command(
             format,
             project,
         } => {
-            let db = Database::new()
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to open session database: {}", e))?;
-            let session_repo = SessionRepository::new(db.pool().clone());
-            let limit = max_count.unwrap_or(50).max(1);
-            let sessions = session_repo
-                .list(project.as_deref(), limit)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to list sessions: {}", e))?;
+            #[cfg(feature = "session-db")]
+            {
+                let limit = max_count.unwrap_or(50).max(1);
+                let sessions = cli_local_data::list_sessions(project.as_deref(), limit)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to list sessions: {}", e))?;
 
-            if sessions.is_empty() {
-                return Ok(());
-            }
-
-            match format {
-                SessionListFormat::Json => {
-                    let rows: Vec<_> = sessions
-                        .into_iter()
-                        .filter(|s| s.parent_id.is_none())
-                        .map(|s| {
-                            serde_json::json!({
-                                "id": s.id,
-                                "title": s.title,
-                                "updated": s.time.updated,
-                                "created": s.time.created,
-                                "projectId": s.project_id,
-                                "directory": s.directory
-                            })
-                        })
-                        .collect();
-                    println!("{}", serde_json::to_string_pretty(&rows)?);
+                if sessions.is_empty() {
+                    return Ok(());
                 }
-                SessionListFormat::Table => {
-                    println!("Session ID                      Title                      Updated");
-                    println!(
+
+                match format {
+                    SessionListFormat::Json => {
+                        let rows: Vec<_> = sessions
+                            .into_iter()
+                            .filter(|s| s.parent_id.is_none())
+                            .map(|s| {
+                                serde_json::json!({
+                                    "id": s.id,
+                                    "title": s.title,
+                                    "updated": s.time.updated,
+                                    "created": s.time.created,
+                                    "projectId": s.project_id,
+                                    "directory": s.directory
+                                })
+                            })
+                            .collect();
+                        println!("{}", serde_json::to_string_pretty(&rows)?);
+                        Ok(())
+                    }
+                    SessionListFormat::Table => {
+                        println!(
+                            "Session ID                      Title                      Updated"
+                        );
+                        println!(
                         "-----------------------------------------------------------------------"
                     );
-                    for session in sessions.into_iter().filter(|s| s.parent_id.is_none()) {
-                        println!(
-                            "{:<30} {:<25} {}",
-                            session.id,
-                            truncate_text(&session.title, 25),
-                            session.time.updated
-                        );
+                        for session in sessions.into_iter().filter(|s| s.parent_id.is_none()) {
+                            println!(
+                                "{:<30} {:<25} {}",
+                                session.id,
+                                truncate_text(&session.title, 25),
+                                session.time.updated
+                            );
+                        }
+                        Ok(())
                     }
                 }
             }
+            #[cfg(not(feature = "session-db"))]
+            {
+                let _ = (max_count, format, project);
+                anyhow::bail!("session list requires the `session-db` CLI feature");
+            }
         }
         SessionCommands::Show { session_id } => {
-            let db = Database::new()
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to open session database: {}", e))?;
-            let session_repo = SessionRepository::new(db.pool().clone());
-            let message_repo = MessageRepository::new(db.pool().clone());
-            let Some(session) = session_repo
-                .get(&session_id)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to load session: {}", e))?
-            else {
-                println!("Session not found: {}", session_id);
-                return Ok(());
-            };
+            #[cfg(feature = "session-db")]
+            {
+                let Some(detail) = cli_local_data::get_session_detail(&session_id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to load session: {}", e))?
+                else {
+                    println!("Session not found: {}", session_id);
+                    return Ok(());
+                };
+                let session = detail.session;
 
-            let messages = message_repo
-                .list_for_session(&session_id)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to load session messages: {}", e))?;
-
-            println!("\nSession: {}", session.id);
-            println!("  Title: {}", session.title);
-            println!("  Project: {}", session.project_id);
-            println!("  Directory: {}", session.directory);
-            println!("  Status: {:?}", session.status);
-            println!("  Created: {}", session.time.created);
-            println!("  Updated: {}", session.time.updated);
-            println!("  Messages: {}", messages.len());
+                println!("\nSession: {}", session.id);
+                println!("  Title: {}", session.title);
+                println!("  Project: {}", session.project_id);
+                println!("  Directory: {}", session.directory);
+                println!("  Status: {:?}", session.status);
+                println!("  Created: {}", session.time.created);
+                println!("  Updated: {}", session.time.updated);
+                println!("  Messages: {}", detail.message_count);
+                Ok(())
+            }
+            #[cfg(not(feature = "session-db"))]
+            {
+                let _ = session_id;
+                anyhow::bail!("session show requires the `session-db` CLI feature");
+            }
         }
         SessionCommands::Delete { session_id } => {
-            let db = Database::new()
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to open session database: {}", e))?;
-            let session_repo = SessionRepository::new(db.pool().clone());
-            let message_repo = MessageRepository::new(db.pool().clone());
-            message_repo
-                .delete_for_session(&session_id)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to delete session messages: {}", e))?;
-            session_repo
-                .delete(&session_id)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to delete session: {}", e))?;
-            println!("Session {} deleted.", session_id);
+            #[cfg(feature = "session-db")]
+            {
+                cli_local_data::delete_session(&session_id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to delete session: {}", e))?;
+                println!("Session {} deleted.", session_id);
+                Ok(())
+            }
+            #[cfg(not(feature = "session-db"))]
+            {
+                let _ = session_id;
+                anyhow::bail!("session delete requires the `session-db` CLI feature");
+            }
         }
     }
-    Ok(())
 }
 
 async fn session_client(runtime_context: &FrontendRuntimeContext) -> anyhow::Result<CliApiClient> {

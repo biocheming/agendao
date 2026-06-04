@@ -8,7 +8,7 @@ pub(super) async fn wait_for_rich_input(
     config: &Config,
     agent_registry: &AgentRegistry,
     api_client: &Arc<CliApiClient>,
-    local_state: &Option<Arc<agendao_server::ServerState>>,
+    local_state: &Option<Arc<crate::local_server_bridge::CliLocalServerState>>,
     dispatch_rx: &mut mpsc::UnboundedReceiver<CliDispatchInput>,
     sse_rx: &mut mpsc::UnboundedReceiver<CliServerEvent>,
     repl_style: &CliStyle,
@@ -36,7 +36,7 @@ pub(super) async fn wait_for_rich_input(
 pub(super) async fn drain_available_events(
     runtime: &CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
-    local_state: &Option<Arc<agendao_server::ServerState>>,
+    local_state: &Option<Arc<crate::local_server_bridge::CliLocalServerState>>,
     sse_rx: &mut mpsc::UnboundedReceiver<CliServerEvent>,
     repl_style: &CliStyle,
 ) {
@@ -49,7 +49,7 @@ pub(super) async fn drain_available_events(
 async fn handle_interactive_event(
     runtime: &CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
-    local_state: &Option<Arc<agendao_server::ServerState>>,
+    local_state: &Option<Arc<crate::local_server_bridge::CliLocalServerState>>,
     event: CliServerEvent,
     repl_style: &CliStyle,
 ) {
@@ -62,7 +62,14 @@ async fn handle_interactive_event(
             session_id: _,
             questions_json,
         } => {
-            handle_question_from_sse(runtime, api_client, local_state, &request_id, &questions_json).await;
+            handle_question_from_sse(
+                runtime,
+                api_client,
+                local_state,
+                &request_id,
+                &questions_json,
+            )
+            .await;
         }
         CliServerEvent::PermissionRequested {
             session_id,
@@ -70,7 +77,14 @@ async fn handle_interactive_event(
             info_json,
         } => {
             if cli_tracks_related_session(runtime, &session_id) {
-                handle_permission_from_sse(runtime, api_client, local_state, &permission_id, &info_json).await;
+                handle_permission_from_sse(
+                    runtime,
+                    api_client,
+                    local_state,
+                    &permission_id,
+                    &info_json,
+                )
+                .await;
             }
         }
         other => {

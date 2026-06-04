@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
+use agendao_orchestrator::parse_execution_gate_decision;
+use agendao_output_blocks::SchedulerStageBlock;
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
-use agendao_command::output_blocks::SchedulerStageBlock;
-use agendao_orchestrator::parse_execution_gate_decision;
 use serde_json::Value;
 
 use super::markdown::MarkdownRenderer;
@@ -1314,8 +1314,8 @@ fn strip_think_tags(text: &str) -> String {
 mod tests {
     use super::*;
     use crate::context::{MessageRole, TokenUsage};
+    use agendao_command_render::governance_fixtures::canonical_scheduler_stage_fixture;
     use chrono::Utc;
-    use agendao_command::governance_fixtures::canonical_scheduler_stage_fixture;
     use serde_json::json;
 
     struct StageRuntimeMeta<'a> {

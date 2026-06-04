@@ -1,5 +1,5 @@
+use agendao_stage_protocol::{StageStatus, StageSummary};
 use chrono::{DateTime, Utc};
-use agendao_content::stage_protocol::StageStatus;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
@@ -1963,8 +1963,8 @@ pub struct PersistedStageTelemetrySummary {
     pub primary_attached_session_id: Option<String>,
 }
 
-impl From<agendao_content::stage_protocol::StageSummary> for PersistedStageTelemetrySummary {
-    fn from(value: agendao_content::stage_protocol::StageSummary) -> Self {
+impl From<StageSummary> for PersistedStageTelemetrySummary {
+    fn from(value: StageSummary) -> Self {
         Self {
             stage_id: value.stage_id,
             stage_name: value.stage_name,

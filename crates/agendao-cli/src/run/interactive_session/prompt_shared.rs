@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 pub(super) async fn fetch_server_model_list(
     api_client: &Arc<CliApiClient>,
-    local_state: &Option<Arc<agendao_server::ServerState>>,
+    local_state: &Option<Arc<crate::local_server_bridge::CliLocalServerState>>,
     transport: &Option<Arc<agendao_client::FrontendTransport>>,
 ) -> Option<Vec<String>> {
     let response = crate::local_dispatch::get_all_providers(local_state, transport, api_client)

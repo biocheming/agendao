@@ -5,7 +5,7 @@ use crate::{
     ModalityPreflightResult, ModalityTransportResult, MultimodalDisplaySummary,
     PreflightCapabilityView,
 };
-use agendao_session::{MessageRole, PartType, SessionMessage};
+use agendao_types::{MessageRole, PartType, SessionMessage};
 use serde::{Deserialize, Serialize};
 
 const RESOLVED_MODEL_KEY: &str = "multimodal_resolved_model";
@@ -301,7 +301,7 @@ mod tests {
     fn persisted_explain_reads_message_metadata_and_attachment_fallbacks() {
         let mut message = SessionMessage::user("session-1", "");
         message.parts.clear();
-        message.parts.push(agendao_session::MessagePart {
+        message.parts.push(agendao_types::MessagePart {
             id: "part-1".to_string(),
             part_type: PartType::File {
                 url: "data:audio/wav;base64,UklGRg==".to_string(),

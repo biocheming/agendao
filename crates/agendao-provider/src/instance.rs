@@ -1,12 +1,12 @@
+use crate::cache::ProviderProfileFingerprint;
+use crate::protocol::{ProviderAdapter, ProviderConfig};
+use crate::provider::{ModelInfo as RuntimeModelInfo, Provider, ProviderError};
+use crate::runtime::ProviderRuntime;
+use crate::{ChatRequest, ChatResponse, StreamResult};
 use async_trait::async_trait;
 use reqwest::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
-
-use crate::{
-    cache::ProviderProfileFingerprint, runtime::ProviderRuntime, ChatRequest, ChatResponse,
-    ModelInfo, Provider, ProviderAdapter, ProviderConfig, ProviderError, StreamResult,
-};
 
 /// Runtime provider instance combining provider adapter + config + models.
 pub struct ProviderInstance {
@@ -15,7 +15,7 @@ pub struct ProviderInstance {
     config: ProviderConfig,
     adapter: Arc<dyn ProviderAdapter>,
     client: Client,
-    models: HashMap<String, ModelInfo>,
+    models: HashMap<String, RuntimeModelInfo>,
     runtime: Option<ProviderRuntime>,
     provider_profile_fingerprint: Option<ProviderProfileFingerprint>,
 }
@@ -26,7 +26,7 @@ impl ProviderInstance {
         name: String,
         config: ProviderConfig,
         adapter: Arc<dyn ProviderAdapter>,
-        models: HashMap<String, ModelInfo>,
+        models: HashMap<String, RuntimeModelInfo>,
     ) -> Self {
         Self {
             id,
@@ -57,11 +57,11 @@ impl ProviderInstance {
         self.runtime.as_ref()
     }
 
-    pub fn get_model(&self, id: &str) -> Option<&ModelInfo> {
+    pub fn get_model(&self, id: &str) -> Option<&RuntimeModelInfo> {
         self.models.get(id)
     }
 
-    pub fn models(&self) -> Vec<ModelInfo> {
+    pub fn models(&self) -> Vec<RuntimeModelInfo> {
         self.models.values().cloned().collect()
     }
 }
@@ -80,11 +80,11 @@ impl Provider for ProviderInstance {
         self.provider_profile_fingerprint.clone()
     }
 
-    fn models(&self) -> Vec<ModelInfo> {
+    fn models(&self) -> Vec<RuntimeModelInfo> {
         self.models.values().cloned().collect()
     }
 
-    fn get_model(&self, id: &str) -> Option<&ModelInfo> {
+    fn get_model(&self, id: &str) -> Option<&RuntimeModelInfo> {
         self.models.get(id)
     }
 

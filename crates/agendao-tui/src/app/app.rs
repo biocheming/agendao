@@ -14,6 +14,7 @@ mod permissions;
 mod prompt_flow;
 #[path = "questions.rs"]
 mod questions;
+#[cfg(feature = "remote-stream")]
 #[path = "server_events.rs"]
 mod server_events;
 #[path = "session_actions.rs"]
@@ -33,24 +34,36 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use agendao_command::{CommandRegistry, UiActionId};
+use agendao_command_render::output_blocks::{BlockTone, StatusBlock};
+use agendao_command_runtime::interactive::{parse_interactive_command, InteractiveCommand};
+use agendao_core::agent_task_registry::{global_task_registry, AgentTaskStatus};
 use chrono::{TimeZone, Utc};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{buffer::Buffer, layout::Rect, style::Style, widgets::Block};
-use agendao_command::interactive::{parse_interactive_command, InteractiveCommand};
-use agendao_command::output_blocks::{BlockTone, StatusBlock};
-use agendao_command::{CommandRegistry, UiActionId};
-use agendao_core::agent_task_registry::{global_task_registry, AgentTaskStatus};
 
-use crate::api::{
-    ApiClient, ExecutionModeInfo, ExecutionStatus as ApiExecutionStatus, McpStatusInfo,
-    MemoryConflictResponse, MemoryDetailView, MemoryListQuery, MemoryRetrievalPreviewResponse,
-    MemoryRetrievalQuery, MemoryValidationReportResponse, MessageInfo, PermissionRequestInfo,
-    QuestionInfo, RecoveryActionKind as ApiRecoveryActionKind,
+use crate::app::state::AppState;
+use crate::client::{
+    spawn_direct_event_loop, ApiClient, ExecutionModeInfo, ExecutionStatus as ApiExecutionStatus,
+    LocalServerEvent, LocalServerState, McpStatusInfo, MemoryConflictResponse, MemoryDetailView,
+    MemoryListQuery, MemoryRetrievalPreviewResponse, MemoryRetrievalQuery,
+    MemoryValidationReportResponse, MessageInfo, PermissionRequestInfo, QuestionInfo,
+    RecoveryActionKind as ApiRecoveryActionKind,
     RecoveryProtocolStatus as ApiRecoveryProtocolStatus, SessionExecutionNode, SessionInfo,
     SessionRecoveryProtocol, SessionRevertInfo,
 };
-use crate::app::state::AppState;
-use crate::components::{
+use crate::core::{
+    collect_attached_sessions, is_primary_key_event, normalize_key_event, AppContext, CustomEvent,
+    Event, LeaderKeyState, McpConnectionStatus, McpServerStatus, Message, MessageRole, RevertInfo,
+    Route, Session, SessionStatus, StateChange, StatusDialogView, TokenUsage,
+    TuiEventsBrowserState, TuiMemoryConsolidationState, TuiMemoryDetailState, TuiMemoryListState,
+    TuiMemoryPreviewState, TuiMemoryRuleHitsState,
+};
+use crate::render::{
+    apply_selection_highlight, capture_screen_lines, strip_session_gutter, truncate, BufferSurface,
+    Clipboard, RenderSurface, Selection,
+};
+use crate::render::{
     exit_logo_lines, Agent, AgentSelectDialog, AlertDialog, CommandPalette, ForkDialog, ForkEntry,
     HelpDialog, HomeView, McpDialog, McpItem, ModeKind, Model, ModelSelectDialog, PendingSubmit,
     PermissionPrompt, Prompt, PromptStashDialog, ProviderDialog, QuestionOption, QuestionPrompt,
@@ -61,25 +74,14 @@ use crate::components::{
     TimelineEntry, Toast, ToastVariant, ToolCallCancelDialog, ToolCallItem, OTHER_OPTION_ID,
     OTHER_OPTION_LABEL,
 };
-use crate::context::keybind::{is_primary_key_event, normalize_key_event, LeaderKeyState};
-use crate::context::{
-    collect_attached_sessions, AppContext, McpConnectionStatus, McpServerStatus, Message,
-    MessagePart as ContextMessagePart, MessageRole, RevertInfo, Session, SessionStatus,
-    StatusDialogView, TokenUsage, TuiEventsBrowserState, TuiMemoryConsolidationState,
-    TuiMemoryDetailState, TuiMemoryListState, TuiMemoryPreviewState, TuiMemoryRuleHitsState,
-};
-use crate::event::{CustomEvent, Event, StateChange};
-use crate::router::Route;
-use crate::ui::{
-    apply_selection_highlight, capture_screen_lines, strip_session_gutter, truncate, BufferSurface,
-    Clipboard, RenderSurface, Selection,
-};
+use crate::state::MessagePart as ContextMessagePart;
 
 use self::mappers::{
     agent_color_from_name, apply_incremental_session_sync, infer_task_kind_from_message,
     map_api_diff, map_api_message, map_api_revert, map_api_run_status, map_api_session,
     map_api_todo, map_mcp_status, provider_from_model,
 };
+#[cfg(feature = "remote-stream")]
 use self::server_events::{
     env_var, env_var_enabled, resolve_tui_base_url, spawn_server_event_listener_task, SessionFilter,
 };
@@ -89,6 +91,28 @@ use self::support::{
     recovery_action_items, recovery_status_blocks_from_protocol, resolve_command_execution_mode,
     resolve_recovery_action_selection, selected_execution_mode, status_line_from_block,
 };
+
+#[cfg(not(feature = "remote-stream"))]
+type SessionFilter = Arc<std::sync::Mutex<Option<String>>>;
+
+#[cfg(not(feature = "remote-stream"))]
+fn env_var_enabled(_name: &str) -> bool {
+    false
+}
+
+#[cfg(not(feature = "remote-stream"))]
+fn env_var(_name: &str) -> Option<String> {
+    None
+}
+
+#[cfg(not(feature = "remote-stream"))]
+fn resolve_tui_base_url(base_url_override: Option<&str>) -> String {
+    base_url_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("http://localhost:3000")
+        .to_string()
+}
 
 const SESSION_SYNC_DEBOUNCE_MS: u64 = 180;
 const SESSION_TELEMETRY_SYNC_DEBOUNCE_MS: u64 = 120;
@@ -106,7 +130,7 @@ const ANSI_BOLD: &str = "\x1b[1m";
 pub struct App {
     context: Arc<AppContext>,
     local_direct: bool,
-    local_server: Option<Arc<agendao_server::ServerState>>,
+    local_server: Option<Arc<LocalServerState>>,
     state: AppState,
     viewport_area: Rect,
     prompt: Prompt,
@@ -275,7 +299,7 @@ pub struct AppLaunchConfig {
     pub local_direct: bool,
     /// Optional shared in-process server authority for Direct mode so the
     /// product shell can resolve sessions before launching the TUI.
-    pub local_server: Option<Arc<agendao_server::ServerState>>,
+    pub local_server: Option<Arc<LocalServerState>>,
 }
 
 impl App {
@@ -512,12 +536,20 @@ impl App {
                 socket_event_subscriber(socket_path, filter, ui_bridge).await;
             }));
         }
-        Some(spawn_server_event_listener_task(
-            self.context.ui_bridge.clone(),
-            self.server_event_base_url.clone(),
-            self.server_password.clone(),
-            self.sse_session_filter.clone(),
-        ))
+        #[cfg(feature = "remote-stream")]
+        {
+            return Some(spawn_server_event_listener_task(
+                self.context.ui_bridge.clone(),
+                self.server_event_base_url.clone(),
+                self.server_password.clone(),
+                self.sse_session_filter.clone(),
+            ));
+        }
+
+        #[cfg(not(feature = "remote-stream"))]
+        {
+            None
+        }
     }
 
     pub(crate) fn set_viewport_area(&mut self, area: Rect) {
@@ -1668,7 +1700,7 @@ impl App {
 }
 
 fn spawn_tui_direct_event_bridge(
-    local_server: Option<Arc<agendao_server::ServerState>>,
+    local_server: Option<Arc<LocalServerState>>,
     session_filter: SessionFilter,
     ui_bridge: crate::bridge::UiBridge,
 ) -> Option<tokio::task::JoinHandle<()>> {
@@ -1690,11 +1722,7 @@ fn spawn_tui_direct_event_bridge(
             }
             let sid = session_id.clone();
             let cancel = tokio_util::sync::CancellationToken::new();
-            let mut rx = agendao_server::spawn_direct_event_loop(
-                Arc::clone(&state),
-                session_id,
-                cancel.clone(),
-            );
+            let mut rx = spawn_direct_event_loop(Arc::clone(&state), session_id, cancel.clone());
             loop {
                 let filter_id = session_filter
                     .lock()
@@ -1761,7 +1789,7 @@ async fn socket_event_subscriber(
                 event = json_rx.recv() => {
                     match event {
                         Some(json) => {
-                            if let Ok(direct) = serde_json::from_value::<agendao_server::DirectEvent>(json) {
+                            if let Ok(direct) = serde_json::from_value::<LocalServerEvent>(json) {
                                 if let Some(change) = direct_event_to_state_change(direct) {
                                     let _ = ui_bridge.emit(Event::Custom(Box::new(CustomEvent::StateChanged(change))));
                                 }
@@ -1777,16 +1805,16 @@ async fn socket_event_subscriber(
     }
 }
 
-fn direct_event_to_state_change(event: agendao_server::DirectEvent) -> Option<StateChange> {
-    use agendao_server::DirectEvent;
+fn direct_event_to_state_change(event: LocalServerEvent) -> Option<StateChange> {
+    use crate::client::LocalServerEvent;
     Some(match event {
-        DirectEvent::SessionBusy { session_id } => StateChange::SessionStatusBusy(session_id),
-        DirectEvent::SessionIdle { session_id } => StateChange::SessionStatusIdle(session_id),
-        DirectEvent::SessionUpdated { session_id } => StateChange::SessionUpdated {
+        LocalServerEvent::SessionBusy { session_id } => StateChange::SessionStatusBusy(session_id),
+        LocalServerEvent::SessionIdle { session_id } => StateChange::SessionStatusIdle(session_id),
+        LocalServerEvent::SessionUpdated { session_id } => StateChange::SessionUpdated {
             session_id,
             source: Some("direct_bridge".to_string()),
         },
-        DirectEvent::OutputBlock {
+        LocalServerEvent::OutputBlock {
             session_id,
             block: payload,
         } => StateChange::OutputBlock {
@@ -1795,7 +1823,7 @@ fn direct_event_to_state_change(event: agendao_server::DirectEvent) -> Option<St
             payload,
             live_identity: None,
         },
-        DirectEvent::QuestionCreated {
+        LocalServerEvent::QuestionCreated {
             session_id,
             request_id,
             ..
@@ -1803,26 +1831,28 @@ fn direct_event_to_state_change(event: agendao_server::DirectEvent) -> Option<St
             session_id,
             request_id,
         },
-        DirectEvent::ToolCallStarted { session_id } => StateChange::ToolCallStarted {
+        LocalServerEvent::ToolCallStarted { session_id } => StateChange::ToolCallStarted {
             session_id,
             tool_call_id: String::new(),
             tool_name: String::new(),
         },
-        DirectEvent::ToolCallCompleted { session_id } => StateChange::ToolCallCompleted {
+        LocalServerEvent::ToolCallCompleted { session_id } => StateChange::ToolCallCompleted {
             session_id,
             tool_call_id: String::new(),
         },
-        DirectEvent::ConfigUpdated => StateChange::ConfigUpdated,
-        DirectEvent::TopologyChanged { session_id } => StateChange::TopologyChanged { session_id },
+        LocalServerEvent::ConfigUpdated => StateChange::ConfigUpdated,
+        LocalServerEvent::TopologyChanged { session_id } => {
+            StateChange::TopologyChanged { session_id }
+        }
         // QuestionResolved / PermissionRequested / PermissionResolved:
         // Handled by existing local sync (sync_question_requests /
         // sync_permission_requests via the local API client), not via bridge.
-        DirectEvent::QuestionResolved { .. }
-        | DirectEvent::PermissionRequested { .. }
-        | DirectEvent::PermissionResolved { .. }
-        | DirectEvent::ControlInputTransition { .. }
-        | DirectEvent::DiffUpdated { .. }
-        | DirectEvent::SessionTreeChanged { .. } => return None,
+        LocalServerEvent::QuestionResolved { .. }
+        | LocalServerEvent::PermissionRequested { .. }
+        | LocalServerEvent::PermissionResolved { .. }
+        | LocalServerEvent::ControlInputTransition { .. }
+        | LocalServerEvent::DiffUpdated { .. }
+        | LocalServerEvent::SessionTreeChanged { .. } => return None,
     })
 }
 
@@ -1833,9 +1863,8 @@ mod tests {
         MessageTokensInfo, SessionExecutionTopology, SessionRunStatusKind,
         SessionTelemetrySnapshot, SessionTimeInfo,
     };
+    use agendao_types::{SessionUsage, SessionUsageBooks};
     use chrono::Utc;
-    use agendao_session::SessionUsage;
-    use agendao_types::SessionUsageBooks;
 
     #[test]
     fn session_update_requires_sync_for_prompt_final_sources() {

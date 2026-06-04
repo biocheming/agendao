@@ -6,7 +6,6 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use agendao_content::output_blocks::{OutputBlock, StatusBlock};
 use agendao_execution_types::{session_runtime_request_defaults, CompiledExecutionRequest};
 use agendao_orchestrator::runtime::events::{
     CancelToken as RuntimeCancelToken, LoopError as RuntimeLoopError,
@@ -14,6 +13,7 @@ use agendao_orchestrator::runtime::events::{
 use agendao_orchestrator::runtime::policy::{LoopPolicy, ToolDedupScope};
 use agendao_orchestrator::runtime::run_loop;
 use agendao_orchestrator::runtime::{SimpleModelCaller, SimpleModelCallerConfig};
+use agendao_output_blocks::{OutputBlock, StatusBlock};
 use agendao_plugin::{HookContext, HookEvent};
 use agendao_provider::cache::{
     inspect_cache_fingerprint_change, CacheEvidenceSummary, CacheProtocolFamily,
@@ -606,7 +606,8 @@ mod cache_fingerprint_tests {
     fn prompt_surface_state_snapshot_ignores_dynamic_system_tail_for_generation() {
         let compiled = CompiledExecutionRequest::default();
         let session = Session::new("project", "/tmp");
-        let first_system = "You are AgenDao.\n\n## Exact Recent Tail\n- user `m1`:\nprevious output";
+        let first_system =
+            "You are AgenDao.\n\n## Exact Recent Tail\n- user `m1`:\nprevious output";
         let second_system = "You are AgenDao.\n\n## Exact Recent Tail\n- user `m2`:\nlatest output";
         let first_fingerprint =
             test_cache_fingerprint("system-full-a", "tools-a", "messages-a", "params-a");
@@ -2113,8 +2114,9 @@ impl SessionPrompt {
             provider_options?,
             PromptSurfaceProviderOptionGroup::ToolPolicy,
         );
-        (!relevant.is_empty())
-            .then(|| agendao_provider::cache::json_fingerprint(&serde_json::Value::Object(relevant)))
+        (!relevant.is_empty()).then(|| {
+            agendao_provider::cache::json_fingerprint(&serde_json::Value::Object(relevant))
+        })
     }
 
     fn output_projection_policy_hash(prompt_messages: &[SessionMessage]) -> String {

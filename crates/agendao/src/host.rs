@@ -217,13 +217,8 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
     if use_direct {
         eprintln!("Starting TUI in Direct (in-process) mode");
         let local_server = create_local_server_state(working_dir.clone()).await?;
-        let selected_session = resolve_requested_session_local(
-            &local_server,
-            continue_last,
-            session,
-            fork,
-        )
-        .await?;
+        let selected_session =
+            resolve_requested_session_local(&local_server, continue_last, session, fork).await?;
         let run_result = tokio::task::spawn_blocking(move || {
             agendao_tui::run_tui_with_config(AppLaunchConfig {
                 base_url: None,
@@ -292,19 +287,19 @@ pub async fn run_tui(request: TuiCommandRequest) -> anyhow::Result<()> {
     // Run it on a blocking thread so we do not try to nest runtimes inside
     // the product shell's async runtime.
     let run_result = tokio::task::spawn_blocking(move || {
-            agendao_tui::run_tui_with_config(AppLaunchConfig {
-                base_url: Some(base_url),
-                server_password,
-                model,
-                initial_prompt: prompt,
-                agent_name: agent,
-                session_id: selected_session,
-                working_dir,
-                unix_socket_path,
-                local_direct: false,
-                local_server: None,
-            })
+        agendao_tui::run_tui_with_config(AppLaunchConfig {
+            base_url: Some(base_url),
+            server_password,
+            model,
+            initial_prompt: prompt,
+            agent_name: agent,
+            session_id: selected_session,
+            working_dir,
+            unix_socket_path,
+            local_direct: false,
+            local_server: None,
         })
+    })
     .await
     .map_err(|error| anyhow::anyhow!("agendao-tui task failed to join: {}", error))?;
 
@@ -360,8 +355,7 @@ async fn resolve_requested_session_local(
         );
     };
 
-    let forked =
-        agendao_server::local_fork_session(Arc::clone(state), &session_id, None).await?;
+    let forked = agendao_server::local_fork_session(Arc::clone(state), &session_id, None).await?;
     eprintln!("Forked session {} -> {}", session_id, forked.id);
     Ok(Some(forked.id))
 }

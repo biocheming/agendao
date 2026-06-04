@@ -11,8 +11,8 @@ use agendao_types::Session as SessionRecord;
 pub use agendao_types::{
     FileDiff, MessageSourceOrigin, MessageSourceSurface, PermissionRuleset, SessionContextKind,
     SessionForkExplain, SessionForkHistoryMode, SessionForkLifecycleExplain,
-    SessionForkLifecycleScope, SessionOwnershipSummary, SessionRevert, SessionShare,
-    SessionStatus, SessionSummary, SessionTime, SessionUsage, SessionUsageBooks,
+    SessionForkLifecycleScope, SessionOwnershipSummary, SessionRevert, SessionShare, SessionStatus,
+    SessionSummary, SessionTime, SessionUsage, SessionUsageBooks,
 };
 
 #[cfg(test)]
@@ -741,12 +741,7 @@ impl Session {
     /// Add a tool result message (for orchestrator LLM loop compatibility).
     /// Uses `PartType::ToolResult` so downstream prompt building, telemetry,
     /// compaction, and governance logic correctly identify it as a tool result.
-    pub fn add_tool_result(
-        &mut self,
-        tool_call_id: &str,
-        content: &str,
-        is_error: bool,
-    ) -> String {
+    pub fn add_tool_result(&mut self, tool_call_id: &str, content: &str, is_error: bool) -> String {
         let id = format!("msg_{}", uuid::Uuid::new_v4());
         let now = chrono::Utc::now();
         let msg = SessionMessage {
@@ -1149,7 +1144,9 @@ impl agendao_session_core::SessionAccess for Session {
         origin: MessageSourceOrigin,
         surface: MessageSourceSurface,
     ) -> String {
-        self.add_user_message_with_source(text, origin, surface).id.clone()
+        self.add_user_message_with_source(text, origin, surface)
+            .id
+            .clone()
     }
 
     fn add_assistant_message(&mut self, text: &str) -> String {

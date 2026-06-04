@@ -7,8 +7,7 @@
 ///
 /// Generic over `S: SessionStore` — default is `agendao_session_core::SessionManager`;
 /// `agendao_session::SessionManager` can be injected for unified session authority.
-
-use crate::prompt_execution::{execute_prompt_with_session, execute_prompt_streaming_with_session};
+use crate::prompt_execution::{execute_prompt_streaming_with_session, execute_prompt_with_session};
 use crate::OrchestratorError;
 use agendao_session_core::{SessionAccess, SessionManager, SessionStore};
 use std::sync::Arc;
@@ -17,11 +16,6 @@ use std::sync::Arc;
 ///
 /// Phase 4: Extract authorities from ServerState
 pub struct OrchestrationCore<S: SessionStore = SessionManager> {
-    // Phase 4.1: ConfigStore shared authority.
-    // Kept on the core so prompt execution can grow config-aware behavior
-    // without re-threading another authority through every adapter path.
-    #[allow(dead_code)]
-    config_store: Arc<agendao_config::ConfigStore>,
     // Phase 4.2: SessionManager (generic over SessionStore impl)
     sessions: Arc<tokio::sync::Mutex<S>>,
     // Phase 4.3: ProviderRegistry
@@ -44,17 +38,15 @@ impl<S: SessionStore> OrchestrationCore<S> {
     /// Creates standalone ConfigStore, ProviderRegistry, and ToolRegistry.
     /// For shared authorities use `new_with_shared_authorities`.
     pub async fn new_with_sessions(
-        config: &agendao_config::Config,
+        _config: &agendao_config::Config,
         sessions: Arc<tokio::sync::Mutex<S>>,
     ) -> Result<Self, OrchestratorError> {
-        let config_store = Arc::new(agendao_config::ConfigStore::new(config.clone()));
         let providers = Arc::new(tokio::sync::RwLock::new(
             agendao_provider::ProviderRegistry::new(),
         ));
         let tools = Arc::new(tokio::sync::RwLock::new(agendao_tool::ToolRegistry::new()));
 
         Ok(Self {
-            config_store,
             sessions,
             providers,
             tools,
@@ -66,13 +58,12 @@ impl<S: SessionStore> OrchestrationCore<S> {
     /// Provider and config changes made through HTTP routes are
     /// immediately visible to the Unix socket prompt path — no restart needed.
     pub fn new_with_shared_authorities(
-        config_store: Arc<agendao_config::ConfigStore>,
+        _config_store: Arc<agendao_config::ConfigStore>,
         sessions: Arc<tokio::sync::Mutex<S>>,
         providers: Arc<tokio::sync::RwLock<agendao_provider::ProviderRegistry>>,
         tools: Arc<tokio::sync::RwLock<agendao_tool::ToolRegistry>>,
     ) -> Self {
         Self {
-            config_store,
             sessions,
             providers,
             tools,
@@ -162,10 +153,7 @@ impl<S: SessionStore> OrchestrationCore<S> {
     }
 
     /// Get session detail
-    pub async fn get_session(
-        &self,
-        session_id: &str,
-    ) -> Result<SessionDetail, OrchestratorError> {
+    pub async fn get_session(&self, session_id: &str) -> Result<SessionDetail, OrchestratorError> {
         let sessions = self.sessions.lock().await;
         let session = sessions.get(session_id).ok_or_else(|| {
             OrchestratorError::Other(format!("Session not found: {}", session_id))

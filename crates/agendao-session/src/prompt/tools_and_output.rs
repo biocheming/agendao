@@ -846,12 +846,12 @@ pub async fn generate_session_title_llm(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
-    use futures::stream;
     use agendao_provider::{
         ChatRequest, ChatResponse, Choice, Message as ProviderMessage, ModelInfo, ProviderError,
         StreamResult,
     };
+    use async_trait::async_trait;
+    use futures::stream;
     use std::sync::{Arc, Mutex};
 
     #[derive(Debug)]

@@ -1,5 +1,5 @@
 use super::*;
-use agendao_command::terminal_tool_block_display::{
+use agendao_command_render::terminal_tool_block_display::{
     build_file_items, build_image_items, summarize_block_items_inline,
 };
 use agendao_types::tool_call_observable_arguments;
@@ -89,7 +89,16 @@ pub(super) fn map_api_message(message: &MessageInfo) -> Message {
             cache_write: message.tokens.cache_write,
         },
         metadata: message.metadata.clone(),
-        multimodal: message.multimodal.clone(),
+        multimodal: {
+            #[cfg(feature = "multimodal")]
+            {
+                message.multimodal.clone()
+            }
+            #[cfg(not(feature = "multimodal"))]
+            {
+                None
+            }
+        },
         parts,
     }
 }

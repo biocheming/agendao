@@ -619,6 +619,20 @@ mod tests {
                 status: "running".to_string(),
                 detail: Some("Current stage: Research".to_string()),
             }),
+            current_model_label: Some("openai/gpt-5".to_string()),
+            model_catalog: std::iter::once((
+                "openai/gpt-5".to_string(),
+                crate::run::frontend_state_types::CliModelCatalogEntry::from_provider_model(
+                    Some(200_000),
+                    None,
+                    None,
+                ),
+            ))
+            .collect(),
+            token_stats: crate::run::frontend_state_types::CliSessionTokenStats {
+                context_tokens: 52_830,
+                ..crate::run::frontend_state_types::CliSessionTokenStats::default()
+            },
             ..CliFrontendProjection::default()
         };
 
@@ -626,6 +640,10 @@ mod tests {
         let screen_lines = cli_prompt_screen_lines_with_budget(&projection, 72, 8);
 
         assert_eq!(screen_lines, lane_lines);
+        assert!(
+            strip_ansi(&screen_lines[0]).contains("Usage: ctx 52.8K/200K"),
+            "{screen_lines:?}"
+        );
     }
 
     #[test]

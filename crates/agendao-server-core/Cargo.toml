@@ -1,0 +1,24 @@
+[package]
+name = "agendao-server-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+agendao-api = { path = "../agendao-api" }
+agendao-command-render = { path = "../agendao-command-render" }
+agendao-stage-protocol = { path = "../agendao-stage-protocol" }
+agendao-session = { path = "../agendao-session" }
+agendao-tool = { path = "../agendao-tool" }
+agendao-types = { path = "../agendao-types" }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { version = "1", features = ["sync"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "sync"] }

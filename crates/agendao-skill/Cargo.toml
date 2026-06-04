@@ -10,15 +10,15 @@ agendao-config = { path = "../agendao-config" }
 agendao-types = { path = "../agendao-types" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
+serde_yaml = "0.9"
 thiserror = { workspace = true }
 tracing = { workspace = true }
-walkdir = { workspace = true }
+walkdir = "2"
 dirs = { workspace = true }
 sha2 = { workspace = true }
-reqwest = { workspace = true, features = ["blocking"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "charset", "http2", "rustls-tls-webpki-roots", "system-proxy"] }
 flate2 = "1"
-which = { workspace = true }
+which = "7"
 
 [dev-dependencies]
 tempfile = "3"

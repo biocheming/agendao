@@ -1,0 +1,18 @@
+[package]
+name = "agendao-server-local"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+agendao-client = { path = "../agendao-client" }
+agendao-config = { path = "../agendao-config" }
+agendao-provider = { path = "../agendao-provider" }
+agendao-runtime-context = { path = "../agendao-runtime-context" }
+agendao-server = { path = "../agendao-server", default-features = false, features = ["http"] }
+agendao-state = { path = "../agendao-state" }
+agendao-types = { path = "../agendao-types" }
+tokio = { version = "1", features = ["sync"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+anyhow = { workspace = true }

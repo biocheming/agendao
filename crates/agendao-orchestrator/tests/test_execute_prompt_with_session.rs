@@ -1,7 +1,6 @@
 /// Integration tests for execute_prompt_with_session
 ///
 /// Phase 6.1: Test multi-turn conversation support
-
 use agendao_orchestrator::{OrchestrationCore, PromptExecutionOptions};
 use std::sync::Arc;
 
@@ -20,7 +19,9 @@ async fn test_multi_turn_conversation() {
     let options = PromptExecutionOptions::default();
 
     // First turn
-    let result1 = core.execute_prompt(session_id, "Hello", options.clone()).await;
+    let result1 = core
+        .execute_prompt(session_id, "Hello", options.clone())
+        .await;
 
     // Without a provider, this will fail, but the structure is correct
     // In a real test, we would:
@@ -32,7 +33,9 @@ async fn test_multi_turn_conversation() {
     match result1 {
         Ok(_) => {
             // Second turn
-            let result2 = core.execute_prompt(session_id, "How are you?", options.clone()).await;
+            let result2 = core
+                .execute_prompt(session_id, "How are you?", options.clone())
+                .await;
 
             if let Ok(_) = result2 {
                 // Verify session has correct number of messages
@@ -62,11 +65,13 @@ async fn test_session_creation() {
     assert!(!sessions_before.iter().any(|s| s.id == session_id));
 
     // Execute prompt (will fail without provider, but session should be created)
-    let _ = core.execute_prompt(
-        session_id,
-        "Test message",
-        PromptExecutionOptions::default(),
-    ).await;
+    let _ = core
+        .execute_prompt(
+            session_id,
+            "Test message",
+            PromptExecutionOptions::default(),
+        )
+        .await;
 
     // Session should exist now
     let sessions_after = core.list_sessions().await.unwrap();
@@ -86,17 +91,21 @@ async fn test_usage_accumulation() {
     // 2. Send second message, verify usage is accumulated
     // 3. Check that session.usage.input_tokens and output_tokens increase
 
-    let _ = core.execute_prompt(
-        session_id,
-        "First message",
-        PromptExecutionOptions::default(),
-    ).await;
+    let _ = core
+        .execute_prompt(
+            session_id,
+            "First message",
+            PromptExecutionOptions::default(),
+        )
+        .await;
 
-    let _ = core.execute_prompt(
-        session_id,
-        "Second message",
-        PromptExecutionOptions::default(),
-    ).await;
+    let _ = core
+        .execute_prompt(
+            session_id,
+            "Second message",
+            PromptExecutionOptions::default(),
+        )
+        .await;
 
     // Verify session exists
     let session_detail = core.get_session(session_id).await.unwrap();

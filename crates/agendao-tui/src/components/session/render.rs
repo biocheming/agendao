@@ -1142,7 +1142,7 @@ fn resolve_running_tool_call<'a>(
     msg: &'a Message,
     idx: usize,
     last_assistant_idx: Option<usize>,
-    tool_results: &HashMap<String, agendao_command::terminal_presentation::TerminalToolResultInfo>,
+    tool_results: &HashMap<String, agendao_command_render::terminal_presentation::TerminalToolResultInfo>,
 ) -> Option<&'a str> {
     let is_active_assistant =
         last_assistant_idx == Some(idx) && msg.finish.is_none() && msg.error.is_none();
@@ -1771,6 +1771,6 @@ fn format_context_usage_meter(used: u64, limit: Option<u64>) -> Option<(String, 
     Some((label, percent))
 }
 
-fn total_session_tokens(usage: &agendao_session::SessionUsage) -> u64 {
+fn total_session_tokens(usage: &agendao_types::SessionUsage) -> u64 {
     usage.input_tokens + usage.output_tokens + usage.reasoning_tokens
 }

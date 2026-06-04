@@ -1,15 +1,16 @@
 //! Steering API: submit a mid-run steering message to the owner session.
 //! Constitution §9: TUI/CLI/Web submit; runtime consumes at tool boundary.
 
+use agendao_types::SessionMessage;
 use axum::extract::{Path, State};
 use axum::Json;
-use agendao_types::SessionMessage;
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::session_runtime::events::{broadcast_session_reconcile, ReconcileReason};
+use crate::session_runtime::events::broadcast_session_reconcile;
 use crate::session_runtime::steering::PendingSteeringMessage;
 use crate::{ApiError, Result, ServerState};
+use agendao_server_core::runtime_events::ReconcileReason;
 
 #[derive(Debug, Deserialize)]
 pub struct SubmitSteeringRequest {
@@ -243,10 +244,10 @@ async fn resolve_steering_owner_session_id(
 mod tests {
     use super::*;
     use crate::ServerState;
-    use axum::extract::{Path, State};
-    use axum::Json;
     use agendao_session::Session;
     use agendao_types::SessionContextKind;
+    use axum::extract::{Path, State};
+    use axum::Json;
     use std::sync::Arc;
 
     #[test]

@@ -1,6 +1,6 @@
-use axum::{extract::State, routing::get, Json, Router};
 use agendao_runtime_context::ResolvedWorkspaceContext;
 use agendao_state::RecentModelEntry;
+use axum::{extract::State, routing::get, Json, Router};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 

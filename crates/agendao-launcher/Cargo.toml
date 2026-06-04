@@ -13,9 +13,9 @@ embedded-web = ["rust-embed"]
 [dependencies]
 anyhow = { workspace = true }
 dirs = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["charset", "http2", "rustls-tls-webpki-roots", "system-proxy"] }
 rust-embed = { version = "8", optional = true }
-tokio = { workspace = true }
+tokio = { version = "1", features = ["process", "rt", "time"] }
 url = { workspace = true }
-which = { workspace = true }
+which = "7"
 tracing = { workspace = true }

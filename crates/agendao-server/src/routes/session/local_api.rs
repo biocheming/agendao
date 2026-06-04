@@ -170,13 +170,44 @@ pub async fn local_prompt(
     session_id: &str,
     request: agendao_api::PromptRequest,
 ) -> anyhow::Result<agendao_api::PromptResponse> {
+    let parts = request.parts.map(|parts| {
+        parts.into_iter()
+            .map(|part| match part {
+                agendao_api::PromptPart::Text { text } => {
+                    agendao_session::prompt::PartInput::Text { text }
+                }
+                agendao_api::PromptPart::File {
+                    url,
+                    filename,
+                    mime,
+                } => agendao_session::prompt::PartInput::File {
+                    url,
+                    filename,
+                    mime,
+                },
+                agendao_api::PromptPart::Agent { name } => {
+                    agendao_session::prompt::PartInput::Agent { name }
+                }
+                agendao_api::PromptPart::Subtask {
+                    prompt,
+                    description,
+                    agent,
+                } => agendao_session::prompt::PartInput::Subtask {
+                    prompt,
+                    description,
+                    agent,
+                },
+            })
+            .collect()
+    });
+
     let Json(value) = super::prompt::session_prompt(
         State(state.clone()),
         HeaderMap::new(),
         Path(session_id.to_string()),
         Json(SessionPromptRequest {
             message: request.message,
-            parts: request.parts,
+            parts,
             idempotency_key: request.idempotency_key,
             ingress_source: request.ingress_source,
             source_origin: request.source_origin,

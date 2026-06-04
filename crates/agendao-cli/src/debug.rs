@@ -1,3 +1,4 @@
+#[cfg(feature = "session-db")]
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,10 +20,11 @@ use agendao_config::{LspConfig, LspServerConfig as ConfigLspServerConfig};
 use agendao_grep::{FileSearchOptions, Ripgrep};
 use agendao_lsp::{LspClient, LspServerConfig};
 use agendao_session::snapshot::Snapshot;
-use agendao_storage::{Database, SessionRepository};
 use agendao_tool::{registry::create_default_registry, ToolContext};
 
 use crate::cli::*;
+#[cfg(feature = "session-db")]
+use crate::cli_local_data;
 use crate::server_lifecycle::FrontendRuntimeContext;
 
 fn resolve_document_input_to_path(input: &str) -> anyhow::Result<PathBuf> {
@@ -975,17 +977,22 @@ pub(crate) async fn handle_debug_command(
             }
         },
         DebugCommands::Scrap => {
-            let db = Database::new().await?;
-            let session_repo = SessionRepository::new(db.pool().clone());
-            let sessions = session_repo.list(None, 10_000).await?;
-            let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
-            for session in sessions {
-                grouped
-                    .entry(session.project_id)
-                    .or_default()
-                    .push(session.directory);
+            #[cfg(feature = "session-db")]
+            {
+                let sessions = cli_local_data::list_sessions(None, 10_000).await?;
+                let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                for session in sessions {
+                    grouped
+                        .entry(session.project_id)
+                        .or_default()
+                        .push(session.directory);
+                }
+                println!("{}", serde_json::to_string_pretty(&grouped)?);
             }
-            println!("{}", serde_json::to_string_pretty(&grouped)?);
+            #[cfg(not(feature = "session-db"))]
+            {
+                anyhow::bail!("debug scrap requires the `session-db` CLI feature");
+            }
         }
         DebugCommands::Wait => loop {
             tokio::time::sleep(Duration::from_secs(24 * 60 * 60)).await;
@@ -1155,18 +1162,14 @@ pub(crate) async fn handle_debug_command(
             DebugDocsCommands::Validate { registry, index } => {
                 let output = if let Some(index_path) = index {
                     let index_path = resolve_debug_path(index_path)?;
-                    serde_json::to_value(agendao_tool::context_docs::validate_docs_index_file(
-                        &index_path,
-                    )?)?
+                    serde_json::to_value(agendao_tool::validate_docs_index_file(&index_path)?)?
                 } else {
                     let registry_path = if let Some(registry_path) = registry {
                         resolve_debug_path(registry_path)?
                     } else {
                         resolve_context_docs_registry_path_from_config()?
                     };
-                    serde_json::to_value(agendao_tool::context_docs::validate_registry_file(
-                        &registry_path,
-                    )?)?
+                    serde_json::to_value(agendao_tool::validate_registry_file(&registry_path)?)?
                 };
                 println!("{}", serde_json::to_string_pretty(&output)?);
             }

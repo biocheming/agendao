@@ -6043,10 +6043,9 @@ where
                 });
             }
             canonical_skill_name = None;
-            if resolved_members
-                .iter()
-                .any(|member| member.role != agendao_types::SkillCapabilityMemberRole::Complementary)
-            {
+            if resolved_members.iter().any(|member| {
+                member.role != agendao_types::SkillCapabilityMemberRole::Complementary
+            }) {
                 return Err(SkillError::InvalidSkillContent {
                     message: "complementary_bundle members must all use complementary role"
                         .to_string(),

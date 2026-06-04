@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use anyhow::Result;
 use agendao_storage::{MemoryConflictRecord, MemoryRepository, MemoryRepositoryFilter};
 use agendao_types::{
     MemoryKind, MemoryRecord, MemoryRecordId, MemoryScope, MemoryStatus, MemoryValidationReport,
     MemoryValidationStatus,
 };
+use anyhow::Result;
 use sha2::{Digest, Sha256};
 
 use crate::authority::ResolvedMemoryContext;

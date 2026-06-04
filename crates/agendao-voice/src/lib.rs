@@ -3,10 +3,10 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
+use agendao_config::{VoiceCommandConfig, VoiceConfig};
 use anyhow::{anyhow, Context, Result};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
-use agendao_config::{VoiceCommandConfig, VoiceConfig};
 
 #[derive(Debug, Clone)]
 pub struct VoiceCaptureOptions {

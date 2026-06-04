@@ -9,6 +9,7 @@
 //! - Provider options schema
 
 mod helpers;
+#[cfg(feature = "streaming")]
 mod runtime;
 mod types;
 mod validation;

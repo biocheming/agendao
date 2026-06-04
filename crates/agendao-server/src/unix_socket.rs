@@ -1,3 +1,4 @@
+use agendao_orchestrator::OrchestrationCore;
 /// Unix Socket Server - Listens on Unix domain socket and dispatches to OrchestrationCore.
 ///
 /// This server implements the JSON-RPC protocol over Unix sockets,
@@ -8,7 +9,6 @@
 /// `ServerState.sessions`), so `prompt`, `list_sessions`, and `get_session`
 /// all read/write the same session data — no text mirror needed.
 use anyhow::{Context, Result};
-use agendao_orchestrator::OrchestrationCore;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
@@ -531,8 +531,8 @@ fn to_rpc_serde_error(error: serde_json::Error) -> JsonRpcError {
 
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
-    #[allow(dead_code)]
-    jsonrpc: String,
+    #[serde(rename = "jsonrpc")]
+    _jsonrpc: String,
     method: String,
     params: serde_json::Value,
     id: u64,

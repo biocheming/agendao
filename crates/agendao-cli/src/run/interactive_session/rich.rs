@@ -456,8 +456,7 @@ pub(super) async fn run_chat_session_rich(
     );
 
     let server_models =
-        super::prompt_shared::fetch_server_model_list(&api_client, &local_state, &transport)
-            .await;
+        super::prompt_shared::fetch_server_model_list(&api_client, &local_state, &transport).await;
 
     let mut dispatch_rx = Some(super::attach_rich_prompt(
         &mut runtime,
@@ -936,7 +935,7 @@ async fn run_server_prompt_rich(
     state: &mut CliInteractiveRichState,
     api_client: &Arc<CliApiClient>,
     sse_rx: &mut mpsc::UnboundedReceiver<CliServerEvent>,
-    local_state: &Option<Arc<agendao_server::ServerState>>,
+    local_state: &Option<Arc<crate::local_server_bridge::CliLocalServerState>>,
     transport: &Option<Arc<agendao_client::FrontendTransport>>,
     input: &str,
     style: &CliStyle,
@@ -996,22 +995,22 @@ async fn run_server_prompt_rich(
         local_state,
         transport,
         api_client,
-            &root_session_id,
-            input.to_string(),
-            None,
-            prompt_agent,
-            runtime.scheduler_profile_name.clone(),
-            (runtime.resolved_model_label != "auto").then(|| runtime.resolved_model_label.clone()),
-            None,
-            Some("cli".to_string()),
-            Some(format!(
-                "cli_{}",
-                agendao_core::id::create(agendao_core::id::Prefix::User, true, None)
-            )),
-            Some(agendao_types::MessageSourceOrigin::Operator),
-            Some(agendao_types::MessageSourceSurface::Cli),
-        )
-        .await
+        &root_session_id,
+        input.to_string(),
+        None,
+        prompt_agent,
+        runtime.scheduler_profile_name.clone(),
+        (runtime.resolved_model_label != "auto").then(|| runtime.resolved_model_label.clone()),
+        None,
+        Some("cli".to_string()),
+        Some(format!(
+            "cli_{}",
+            agendao_core::id::create(agendao_core::id::Prefix::User, true, None)
+        )),
+        Some(agendao_types::MessageSourceOrigin::Operator),
+        Some(agendao_types::MessageSourceSurface::Cli),
+    )
+    .await
     {
         Ok(response) => response,
         Err(error) => {
@@ -1118,7 +1117,6 @@ async fn run_server_prompt_rich(
                 if let Ok(mut topology) = runtime.observed_topology.lock() {
                     topology.finish_run(Some("Completed".to_string()));
                 }
-                cli_frontend_clear(runtime);
                 let _ = print_block(
                     Some(runtime),
                     OutputBlock::Status(StatusBlock::success("Done.")),
@@ -1143,7 +1141,7 @@ async fn wait_for_rich_input_rich(
     config: &Config,
     agent_registry: &AgentRegistry,
     api_client: &Arc<CliApiClient>,
-    local_state: &Option<Arc<agendao_server::ServerState>>,
+    local_state: &Option<Arc<crate::local_server_bridge::CliLocalServerState>>,
     state: &mut CliInteractiveRichState,
     dispatch_rx: &mut mpsc::UnboundedReceiver<CliDispatchInput>,
     sse_rx: &mut mpsc::UnboundedReceiver<CliServerEvent>,
@@ -1174,7 +1172,7 @@ async fn handle_async_sse_event_rich(
     runtime: &CliExecutionRuntime,
     state: &mut CliInteractiveRichState,
     api_client: &Arc<CliApiClient>,
-    local_state: &Option<Arc<agendao_server::ServerState>>,
+    local_state: &Option<Arc<crate::local_server_bridge::CliLocalServerState>>,
     event: CliServerEvent,
     style: &CliStyle,
 ) {

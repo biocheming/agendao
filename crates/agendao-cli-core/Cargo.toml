@@ -1,0 +1,12 @@
+[package]
+name = "agendao-cli-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+agendao-client = { path = "../agendao-client" }
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+futures = { workspace = true }

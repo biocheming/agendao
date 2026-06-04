@@ -540,9 +540,10 @@ pub(crate) fn attach_skill_runtime_preflight(
 mod tests {
     use super::*;
     use agendao_skill::{
-        RuntimeSkillPromptBodyKind, RuntimeSkillPromptPacket, SkillConditions, SkillDetailView,
-        SkillFileRef, SkillHermesMetadata, SkillMeta, SkillMetadataBlocks, SkillPrerequisites,
-        SkillReadinessStatus, SkillRequiredEnvironmentVariable, SkillAgendaoMetadata,
+        RuntimeSkillPromptBodyKind, RuntimeSkillPromptPacket, SkillAgendaoMetadata,
+        SkillConditions, SkillDetailView, SkillFileRef, SkillHermesMetadata, SkillMeta,
+        SkillMetadataBlocks, SkillPrerequisites, SkillReadinessStatus,
+        SkillRequiredEnvironmentVariable,
     };
     use agendao_types::{
         SkillRetirementReason, SkillRetirementReasonKind, SkillRuntimeCompositionHint,

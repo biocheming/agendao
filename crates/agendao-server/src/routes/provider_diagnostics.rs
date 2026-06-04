@@ -1,5 +1,5 @@
-use anyhow::Error;
 use agendao_session::SessionMessage;
+use anyhow::Error;
 
 pub(super) fn attach_provider_diagnostic_from_error(
     assistant: &mut SessionMessage,

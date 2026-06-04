@@ -188,7 +188,7 @@ fn default_limit() -> usize {
     DEFAULT_LIMIT
 }
 
-pub struct ContextDocsTool;
+pub(crate) struct ContextDocsTool;
 
 impl ContextDocsTool {
     pub fn new() -> Self {

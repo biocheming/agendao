@@ -272,6 +272,30 @@ pub struct SessionMessage {
     pub finish: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum PromptPart {
+    Text {
+        text: String,
+    },
+    File {
+        url: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        filename: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mime: Option<String>,
+    },
+    Agent {
+        name: String,
+    },
+    Subtask {
+        prompt: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        agent: String,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum MessageRole {
     User,
@@ -883,14 +907,18 @@ pub fn apply_message_source_metadata(
 }
 
 /// Read source origin from metadata (best-effort; returns None if key missing).
-pub fn message_source_origin(metadata: &HashMap<String, serde_json::Value>) -> Option<MessageSourceOrigin> {
+pub fn message_source_origin(
+    metadata: &HashMap<String, serde_json::Value>,
+) -> Option<MessageSourceOrigin> {
     metadata
         .get(MESSAGE_SOURCE_ORIGIN_KEY)
         .and_then(|v| serde_json::from_value(v.clone()).ok())
 }
 
 /// Read source surface from metadata (best-effort).
-pub fn message_source_surface(metadata: &HashMap<String, serde_json::Value>) -> Option<MessageSourceSurface> {
+pub fn message_source_surface(
+    metadata: &HashMap<String, serde_json::Value>,
+) -> Option<MessageSourceSurface> {
     metadata
         .get(MESSAGE_SOURCE_SURFACE_KEY)
         .and_then(|v| serde_json::from_value(v.clone()).ok())

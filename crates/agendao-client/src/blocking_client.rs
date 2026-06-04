@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-use reqwest::blocking::{Client, Response};
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
-use agendao_command::stage_protocol::StageEvent;
 use agendao_config::{Config as AppConfig, ModelConfig};
 use agendao_runtime_context::ResolvedWorkspaceContext;
+use agendao_stage_protocol::StageEvent;
 use agendao_state::RecentModelEntry;
+use reqwest::blocking::{Client, Response};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde::Serialize;
 
 use crate::common::{
@@ -362,8 +362,10 @@ impl BlockingApiClient {
             scheduler_profile,
             model,
             variant,
-            command: None, arguments: None,
-            source_origin, source_surface,
+            command: None,
+            arguments: None,
+            source_origin,
+            source_surface,
         };
         self.post_json(
             &format!("/session/{}/prompt", session_id),
@@ -391,9 +393,12 @@ impl BlockingApiClient {
             ingress_source,
             agent: None,
             scheduler_profile: None,
-            model, variant,
-            command: Some(command), arguments,
-            source_origin, source_surface,
+            model,
+            variant,
+            command: Some(command),
+            arguments,
+            source_origin,
+            source_surface,
         };
         self.post_json(
             &format!("/session/{}/prompt", session_id),

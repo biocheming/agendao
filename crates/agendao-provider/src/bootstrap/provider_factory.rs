@@ -1,21 +1,32 @@
-use crate::catalog::load_default_catalog_data_sync;
-use crate::instance::ProviderInstance;
 use crate::models::ModelsData;
-use crate::profile::{resolve_npm_for_provider, ProviderProfile, ProviderProfileResolver};
+use crate::profile::ProviderProfile;
 use crate::protocol::{ProviderConfig, ProviderRuntimeAdapter};
-use crate::protocol_loader::{ProtocolLoader, ProtocolManifest};
-use crate::protocol_validator::ProtocolValidator;
-use crate::protocols::create_provider_adapter_for_profile;
 use crate::provider::{
     ModelInfo as RuntimeModelInfo, Provider as RuntimeProvider, ProviderRegistry,
 };
-use crate::runtime::{Pipeline, ProtocolSource, ProviderRuntime, RuntimeConfig, RuntimeContext};
+use crate::runtime::RuntimeConfig;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
 
 use super::{ProviderModel, ProviderState};
+
+#[cfg(feature = "http-transport")]
+use crate::catalog::load_default_catalog_data_sync;
+#[cfg(feature = "http-transport")]
+use crate::instance::ProviderInstance;
+#[cfg(feature = "http-transport")]
+use crate::profile::{resolve_npm_for_provider, ProviderProfileResolver};
+#[cfg(feature = "http-transport")]
+use crate::protocol_loader::{ProtocolLoader, ProtocolManifest};
+#[cfg(feature = "http-transport")]
+use crate::protocol_validator::ProtocolValidator;
+#[cfg(feature = "http-transport")]
+use crate::protocols::create_provider_adapter_for_profile;
+#[cfg(feature = "http-transport")]
+use crate::runtime::{Pipeline, ProtocolSource, ProviderRuntime, RuntimeContext};
+#[cfg(feature = "http-transport")]
+use std::time::Instant;
 
 pub(super) fn env_any(keys: &[&str]) -> Option<String> {
     for key in keys {
@@ -432,6 +443,7 @@ fn provider_config_for_adapter(
     })
 }
 
+#[cfg(feature = "http-transport")]
 fn create_protocol_provider(
     provider_id: &str,
     provider: &ProviderState,
@@ -565,6 +577,14 @@ fn create_protocol_provider(
     Some(Arc::new(instance))
 }
 
+#[cfg(not(feature = "http-transport"))]
+fn create_protocol_provider(
+    _provider_id: &str,
+    _provider: &ProviderState,
+) -> Option<Arc<dyn RuntimeProvider>> {
+    None
+}
+
 pub(super) fn create_concrete_provider(
     provider_id: &str,
     provider: &ProviderState,
@@ -688,10 +708,17 @@ pub(super) fn wrap_provider_for_state(
     ))
 }
 
+#[cfg(feature = "http-transport")]
 pub(super) fn load_models_dev_cache() -> ModelsData {
     load_default_catalog_data_sync()
 }
 
+#[cfg(not(feature = "http-transport"))]
+pub(super) fn load_models_dev_cache() -> ModelsData {
+    HashMap::new()
+}
+
+#[cfg(feature = "http-transport")]
 pub(super) fn register_fallback_env_providers(registry: &mut ProviderRegistry) {
     let fallback: Vec<(&str, Vec<&str>)> = vec![
         ("ethnopic", vec!["ANTHROPIC_API_KEY"]),
@@ -743,6 +770,9 @@ pub(super) fn register_fallback_env_providers(registry: &mut ProviderRegistry) {
         }
     }
 }
+
+#[cfg(not(feature = "http-transport"))]
+pub(super) fn register_fallback_env_providers(_registry: &mut ProviderRegistry) {}
 
 #[cfg(test)]
 mod tests {

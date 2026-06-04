@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-agendao-core = { path = "../agendao-core" }
+agendao-core = { path = "../agendao-core", features = ["process-registry", "agent-task-registry"] }
 agendao-provider = { path = "../agendao-provider" }
 serde_json = { workspace = true }
 tracing = { workspace = true }

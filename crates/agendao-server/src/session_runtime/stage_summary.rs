@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use agendao_command::stage_protocol::StageSummary;
+use agendao_stage_protocol::StageSummary;
 use tokio::sync::RwLock;
 
 #[derive(Debug, Default)]
@@ -58,7 +58,7 @@ impl StageSummaryStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agendao_command::stage_protocol::StageStatus;
+    use agendao_stage_protocol::StageStatus;
 
     fn summary(stage_id: &str, index: Option<u64>) -> StageSummary {
         StageSummary {

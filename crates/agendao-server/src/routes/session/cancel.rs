@@ -6,9 +6,9 @@ use axum::{
 };
 
 use crate::session_runtime::request_active_scheduler_stage_abort;
-use crate::session_runtime::state::InterruptTarget;
 use crate::{ApiError, Result, ServerState};
 use agendao_orchestrator::OrchestratorError;
+use agendao_server_core::runtime_state::InterruptTarget;
 
 use super::super::tui::cancel_questions_for_session;
 

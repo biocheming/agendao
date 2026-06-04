@@ -1,9 +1,9 @@
+use agendao_command_render::terminal_segment_display::TerminalSegmentTone;
+use agendao_command_render::terminal_tool_block_display::TerminalBlockItem;
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
-use agendao_command::terminal_segment_display::TerminalSegmentTone;
-use agendao_command::terminal_tool_block_display::TerminalBlockItem;
 
 use crate::theme::Theme;
 

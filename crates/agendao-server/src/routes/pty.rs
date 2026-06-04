@@ -14,9 +14,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 
-use crate::pty::{PtyManager, PtySession as PtySessionStruct, PtySubscription};
 use crate::routes::permission::request_permission;
 use crate::{ApiError, Result, ServerState};
+use agendao_server_pty::{PtyManager, PtySession as PtySessionStruct, PtyStatus, PtySubscription};
 
 pub(crate) fn pty_routes() -> Router<Arc<ServerState>> {
     Router::new()
@@ -41,9 +41,9 @@ impl From<PtySessionStruct> for PtyInfo {
             command: session.command,
             cwd: session.cwd,
             status: match session.status {
-                crate::pty::PtyStatus::Running => "running".to_string(),
-                crate::pty::PtyStatus::Exited => "exited".to_string(),
-                crate::pty::PtyStatus::Error => "error".to_string(),
+                PtyStatus::Running => "running".to_string(),
+                PtyStatus::Exited => "exited".to_string(),
+                PtyStatus::Error => "error".to_string(),
             },
         }
     }

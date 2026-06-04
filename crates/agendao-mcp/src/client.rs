@@ -1,5 +1,5 @@
-use chrono::Utc;
 use agendao_core::bus::{Bus, BusEventDef};
+use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

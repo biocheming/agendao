@@ -1,0 +1,29 @@
+[package]
+name = "agendao-tool-web"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+agendao-config = { path = "../agendao-config" }
+agendao-tool-core = { path = "../agendao-tool-core" }
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["charset", "http2", "json", "rustls-tls-webpki-roots", "system-proxy"] }
+url = { workspace = true }
+regex = { workspace = true }
+html2md = "0.2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+dirs = { workspace = true }
+urlencoding = "2.1"
+uuid = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+which = "7"
+
+[dev-dependencies]
+tempfile = "3"

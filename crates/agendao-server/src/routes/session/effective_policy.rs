@@ -560,7 +560,6 @@ fn metadata_string(metadata: &HashMap<String, serde_json::Value>, key: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
     use agendao_config::{
         CompactionConfig as AppCompactionConfig, CompositionConfig, Config, ConfigStore,
         ProviderConfig, SkillTreeConfig, SkillTreeNodeConfig,
@@ -570,6 +569,7 @@ mod tests {
         StreamResult,
     };
     use agendao_session::Session;
+    use async_trait::async_trait;
 
     struct MockProvider {
         id: String,

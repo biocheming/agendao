@@ -62,7 +62,9 @@ impl ModelContextLimits {
     pub fn heuristic_for_model_id(model_id: &str) -> Self {
         let (default_max_output_tokens, _) = agendao_provider::models::default_model_limits();
         Self {
-            context_window_tokens: Some(agendao_provider::models::get_model_context_limit(model_id)),
+            context_window_tokens: Some(agendao_provider::models::get_model_context_limit(
+                model_id,
+            )),
             max_input_tokens: None,
             max_output_tokens: Some(default_max_output_tokens),
         }

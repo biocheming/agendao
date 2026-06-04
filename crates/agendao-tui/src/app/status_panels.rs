@@ -89,7 +89,8 @@ impl App {
             return false;
         };
 
-        let command = agendao_command::interactive::parse_events_browser_command(raw_filter);
+        let command =
+            agendao_command_runtime::interactive::parse_events_browser_command(raw_filter);
         let remembered = match self.context.status_dialog_view() {
             StatusDialogView::Events(state) if state.session_id == session_id => {
                 Some(state.clone())
@@ -98,19 +99,19 @@ impl App {
         };
 
         let (filter, offset, preserve_previous_state, empty_page_message) = match command {
-            agendao_command::interactive::InteractiveEventsCommand::ShowCurrent => {
+            agendao_command_runtime::interactive::InteractiveEventsCommand::ShowCurrent => {
                 if let Some(state) = remembered.as_ref() {
                     (state.filter.clone(), state.offset, false, None)
                 } else {
-                    (agendao_command::interactive::default_events_browser_query(), 0, false, None)
+                    (agendao_command_runtime::interactive::default_events_browser_query(), 0, false, None)
                 }
             }
-            agendao_command::interactive::InteractiveEventsCommand::ShowFiltered {
+            agendao_command_runtime::interactive::InteractiveEventsCommand::ShowFiltered {
                 filter,
                 page,
             } => (
                 filter.clone(),
-                agendao_command::interactive::events_browser_offset_for_page(&filter, page),
+                agendao_command_runtime::interactive::events_browser_offset_for_page(&filter, page),
                 false,
                 (page > 1).then(|| {
                     format!(
@@ -119,14 +120,14 @@ impl App {
                     )
                 }),
             ),
-            agendao_command::interactive::InteractiveEventsCommand::JumpPage(page) => {
+            agendao_command_runtime::interactive::InteractiveEventsCommand::JumpPage(page) => {
                 let filter = remembered
                     .as_ref()
                     .map(|state| state.filter.clone())
-                    .unwrap_or_else(agendao_command::interactive::default_events_browser_query);
+                    .unwrap_or_else(agendao_command_runtime::interactive::default_events_browser_query);
                 (
                     filter.clone(),
-                    agendao_command::interactive::events_browser_offset_for_page(&filter, page),
+                    agendao_command_runtime::interactive::events_browser_offset_for_page(&filter, page),
                     false,
                     (page > 1).then(|| {
                         format!(
@@ -136,24 +137,24 @@ impl App {
                     }),
                 )
             }
-            agendao_command::interactive::InteractiveEventsCommand::NextPage => {
+            agendao_command_runtime::interactive::InteractiveEventsCommand::NextPage => {
                 if let Some(state) = remembered.as_ref() {
                     (
                         state.filter.clone(),
                         state.offset.saturating_add(
-                            agendao_command::interactive::events_browser_page_size(&state.filter),
+                            agendao_command_runtime::interactive::events_browser_page_size(&state.filter),
                         ),
                         true,
                         None,
                     )
                 } else {
-                    (agendao_command::interactive::default_events_browser_query(), 0, false, None)
+                    (agendao_command_runtime::interactive::default_events_browser_query(), 0, false, None)
                 }
             }
-            agendao_command::interactive::InteractiveEventsCommand::PreviousPage => {
+            agendao_command_runtime::interactive::InteractiveEventsCommand::PreviousPage => {
                 if let Some(state) = remembered.as_ref() {
                     let step =
-                        agendao_command::interactive::events_browser_page_size(&state.filter);
+                        agendao_command_runtime::interactive::events_browser_page_size(&state.filter);
                     (
                         state.filter.clone(),
                         state.offset.saturating_sub(step),
@@ -161,18 +162,18 @@ impl App {
                         None,
                     )
                 } else {
-                    (agendao_command::interactive::default_events_browser_query(), 0, false, None)
+                    (agendao_command_runtime::interactive::default_events_browser_query(), 0, false, None)
                 }
             }
-            agendao_command::interactive::InteractiveEventsCommand::FirstPage => {
+            agendao_command_runtime::interactive::InteractiveEventsCommand::FirstPage => {
                 if let Some(state) = remembered.as_ref() {
                     (state.filter.clone(), 0, false, None)
                 } else {
-                    (agendao_command::interactive::default_events_browser_query(), 0, false, None)
+                    (agendao_command_runtime::interactive::default_events_browser_query(), 0, false, None)
                 }
             }
-            agendao_command::interactive::InteractiveEventsCommand::Clear => {
-                (agendao_command::interactive::default_events_browser_query(), 0, false, None)
+            agendao_command_runtime::interactive::InteractiveEventsCommand::Clear => {
+                (agendao_command_runtime::interactive::default_events_browser_query(), 0, false, None)
             }
         };
 
@@ -196,9 +197,12 @@ impl App {
                     return false;
                 }
 
-                let page_size = agendao_command::interactive::events_browser_page_size(&filter);
+                let page_size =
+                    agendao_command_runtime::interactive::events_browser_page_size(&filter);
                 let page_index =
-                    agendao_command::interactive::events_browser_page_for_offset(&filter, offset);
+                    agendao_command_runtime::interactive::events_browser_page_for_offset(
+                        &filter, offset,
+                    );
                 let can_go_prev = offset > 0;
                 let can_go_next = events.len() >= page_size;
                 let mut lines = vec![
@@ -494,7 +498,7 @@ impl App {
             return false;
         };
 
-        let parsed = agendao_command::interactive::parse_memory_rule_hit_query(raw_query);
+        let parsed = agendao_command_runtime::interactive::parse_memory_rule_hit_query(raw_query);
         let query = crate::api::MemoryRuleHitQuery {
             run_id: parsed.run_id,
             memory_id: parsed.record_id.map(agendao_types::MemoryRecordId),
@@ -581,7 +585,8 @@ impl App {
             return false;
         };
 
-        let parsed = agendao_command::interactive::parse_memory_consolidation_request(raw_request);
+        let parsed =
+            agendao_command_runtime::interactive::parse_memory_consolidation_request(raw_request);
         let request = crate::api::MemoryConsolidationRequest {
             limit: parsed.limit.map(|value| value as u32),
             include_candidates: parsed.include_candidates,
@@ -3541,7 +3546,7 @@ mod tests {
                 updated_at: None,
                 roots: Vec::new(),
             },
-            usage: agendao_session::SessionUsage {
+            usage: agendao_types::SessionUsage {
                 input_tokens: 90_000,
                 output_tokens: 10_000,
                 reasoning_tokens: 4_000,
@@ -3981,7 +3986,7 @@ mod tests {
                 updated_at: None,
                 roots: Vec::new(),
             },
-            usage: agendao_session::SessionUsage::default(),
+            usage: agendao_types::SessionUsage::default(),
             usage_books: SessionUsageBooks::default(),
             tool_repair_summary: None,
             model_tool_repair_summary: None,
@@ -4049,7 +4054,7 @@ mod tests {
                 updated_at: None,
                 roots: Vec::new(),
             },
-            usage: agendao_session::SessionUsage::default(),
+            usage: agendao_types::SessionUsage::default(),
             usage_books: SessionUsageBooks::default(),
             tool_repair_summary: None,
             model_tool_repair_summary: None,
@@ -4106,7 +4111,7 @@ mod tests {
 }
 
 fn tui_events_query(
-    input: &agendao_command::interactive::InteractiveEventsQuery,
+    input: &agendao_command_runtime::interactive::InteractiveEventsQuery,
     offset: usize,
 ) -> crate::api::SessionEventsQuery {
     crate::api::SessionEventsQuery {
@@ -4133,7 +4138,9 @@ fn tui_optional_generated_at(ts: Option<i64>) -> String {
         .unwrap_or_default()
 }
 
-fn tui_events_filter_label(input: &agendao_command::interactive::InteractiveEventsQuery) -> String {
+fn tui_events_filter_label(
+    input: &agendao_command_runtime::interactive::InteractiveEventsQuery,
+) -> String {
     let mut parts = Vec::new();
     if let Some(stage_id) = input.stage_id.as_deref() {
         parts.push(format!("stage={stage_id}"));
@@ -4149,7 +4156,7 @@ fn tui_events_filter_label(input: &agendao_command::interactive::InteractiveEven
     }
     parts.push(format!(
         "limit={}",
-        agendao_command::interactive::events_browser_page_size(input)
+        agendao_command_runtime::interactive::events_browser_page_size(input)
     ));
     parts.join(" · ")
 }
@@ -4179,9 +4186,7 @@ fn tui_event_payload_summary(payload: &serde_json::Value) -> Option<String> {
     })
 }
 
-fn tui_event_status_lines(
-    events: &[agendao_command::stage_protocol::StageEvent],
-) -> Vec<StatusLine> {
+fn tui_event_status_lines(events: &[agendao_stage_protocol::StageEvent]) -> Vec<StatusLine> {
     let mut lines = Vec::new();
     for event in events {
         let ts = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(event.ts)
@@ -4203,19 +4208,19 @@ fn tui_event_status_lines(
     lines
 }
 
-fn format_stage_status(status: agendao_command::stage_protocol::StageStatus) -> &'static str {
+fn format_stage_status(status: agendao_stage_protocol::StageStatus) -> &'static str {
     match status {
-        agendao_command::stage_protocol::StageStatus::Running => "running",
-        agendao_command::stage_protocol::StageStatus::Waiting => "waiting",
-        agendao_command::stage_protocol::StageStatus::Done => "done",
-        agendao_command::stage_protocol::StageStatus::Cancelled => "cancelled",
-        agendao_command::stage_protocol::StageStatus::Cancelling => "cancelling",
-        agendao_command::stage_protocol::StageStatus::Blocked => "blocked",
-        agendao_command::stage_protocol::StageStatus::Retrying => "retrying",
+        agendao_stage_protocol::StageStatus::Running => "running",
+        agendao_stage_protocol::StageStatus::Waiting => "waiting",
+        agendao_stage_protocol::StageStatus::Done => "done",
+        agendao_stage_protocol::StageStatus::Cancelled => "cancelled",
+        agendao_stage_protocol::StageStatus::Cancelling => "cancelling",
+        agendao_stage_protocol::StageStatus::Blocked => "blocked",
+        agendao_stage_protocol::StageStatus::Retrying => "retrying",
     }
 }
 
-fn format_stage_summary_line(stage: &agendao_command::stage_protocol::StageSummary) -> String {
+fn format_stage_summary_line(stage: &agendao_stage_protocol::StageSummary) -> String {
     let mut suffix = Vec::new();
     if let (Some(index), Some(total)) = (stage.index, stage.total) {
         suffix.push(format!("{}/{}", index, total));
@@ -4239,7 +4244,7 @@ fn format_stage_summary_line(stage: &agendao_command::stage_protocol::StageSumma
     )
 }
 
-fn format_stage_runtime_line(stage: &agendao_command::stage_protocol::StageSummary) -> String {
+fn format_stage_runtime_line(stage: &agendao_stage_protocol::StageSummary) -> String {
     let mut parts = vec![format!(
         "- {} ({})",
         stage.stage_name,
@@ -4283,7 +4288,7 @@ fn format_stage_runtime_line(stage: &agendao_command::stage_protocol::StageSumma
     parts.join(" · ")
 }
 
-fn format_stage_usage_summary_line(stage: &agendao_command::stage_protocol::StageSummary) -> String {
+fn format_stage_usage_summary_line(stage: &agendao_stage_protocol::StageSummary) -> String {
     let mut parts = vec![format!(
         "- {} ({})",
         stage.stage_name,
@@ -4339,7 +4344,7 @@ fn format_stage_usage_summary_line(stage: &agendao_command::stage_protocol::Stag
     parts.join(" · ")
 }
 
-fn tui_total_session_tokens(usage: &agendao_session::SessionUsage) -> u64 {
+fn tui_total_session_tokens(usage: &agendao_types::SessionUsage) -> u64 {
     usage.input_tokens + usage.output_tokens + usage.reasoning_tokens
 }
 
@@ -4457,9 +4462,7 @@ fn tui_format_token_count(value: u64) -> String {
     value.to_string()
 }
 
-fn active_stage_status_blocks(
-    stage: &agendao_command::stage_protocol::StageSummary,
-) -> Vec<StatusBlock> {
+fn active_stage_status_blocks(stage: &agendao_stage_protocol::StageSummary) -> Vec<StatusBlock> {
     let mut blocks = vec![StatusBlock::title(format!(
         "Active Stage Detail ({})",
         stage.stage_name

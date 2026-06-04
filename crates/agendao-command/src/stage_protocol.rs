@@ -1,1 +1,1 @@
-pub use agendao_content::stage_protocol::*;
+pub use agendao_stage_protocol::*;

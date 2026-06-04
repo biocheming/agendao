@@ -1,10 +1,10 @@
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::message::Message;
+use crate::protocol::ProviderHttpClient;
 use crate::tools::{InputTool, InputToolChoice};
 
 use super::types::{
@@ -174,7 +174,7 @@ pub struct OpenAIResponsesConfig {
     pub provider: String,
     pub url: UrlBuilder,
     pub headers: HeadersBuilder,
-    pub client: Option<Client>,
+    pub client: Option<ProviderHttpClient>,
     pub file_id_prefixes: Option<Vec<String>>,
     pub generate_id: Option<IdGenerator>,
     pub metadata_extractor: Option<Arc<dyn MetadataExtractor>>,

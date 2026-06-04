@@ -1,7 +1,6 @@
 /// Integration tests for streaming output (Phase 6.5)
 ///
 /// Tests the complete streaming flow including multi-turn dialogues.
-
 use agendao_orchestrator::{OrchestrationCore, PromptExecutionOptions};
 use std::sync::Arc;
 
@@ -91,8 +90,8 @@ impl agendao_provider::Provider for MockStreamingProvider {
         &self,
         _request: agendao_provider::ChatRequest,
     ) -> Result<agendao_provider::StreamResult, agendao_provider::ProviderError> {
-        use futures::stream;
         use agendao_provider::StreamEvent;
+        use futures::stream;
 
         let chunks = self.next_response();
         let mut events = vec![Ok(StreamEvent::Start)];
@@ -307,7 +306,10 @@ async fn test_streaming_vs_non_streaming_consistency() {
     let session_stream = core.get_session("consistency-stream").await.unwrap();
 
     assert_eq!(result_non_stream.text, "Consistent response");
-    assert_eq!(session_non_stream.messages[1].content, "Consistent response");
+    assert_eq!(
+        session_non_stream.messages[1].content,
+        "Consistent response"
+    );
     assert_eq!(session_stream.messages[1].content, "Consistent response");
 }
 
@@ -319,7 +321,7 @@ async fn test_streaming_event_order() {
     {
         let mut providers = core.providers().write().await;
         providers.register_arc(Arc::new(MockStreamingProvider::new(vec![vec![
-            "Test".to_string(),
+            "Test".to_string()
         ]])));
     }
 

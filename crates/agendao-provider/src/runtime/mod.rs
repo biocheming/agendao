@@ -2,24 +2,28 @@ pub mod circuit_breaker;
 pub mod config;
 pub mod context;
 pub mod pipeline;
+#[cfg(feature = "http-transport")]
 pub mod preflight;
 pub mod rate_limiter;
 
 pub use config::{runtime_pipeline_enabled, RuntimeConfig};
 pub use context::{ProtocolSource, RuntimeContext};
 pub use pipeline::Pipeline;
+#[cfg(feature = "http-transport")]
 pub use preflight::PreflightGuard;
 use std::sync::Arc;
 
 pub struct ProviderRuntime {
     pub config: RuntimeConfig,
     pub context: RuntimeContext,
+    #[cfg(feature = "http-transport")]
     pub preflight: Option<PreflightGuard>,
     pub pipeline: Option<Arc<Pipeline>>,
 }
 
 impl ProviderRuntime {
     pub fn new(config: RuntimeConfig, context: RuntimeContext) -> Self {
+        #[cfg(feature = "http-transport")]
         let preflight = if config.enabled && config.preflight_enabled {
             Some(PreflightGuard::from_config(&config))
         } else {
@@ -28,6 +32,7 @@ impl ProviderRuntime {
         Self {
             config,
             context,
+            #[cfg(feature = "http-transport")]
             preflight,
             pipeline: None,
         }
@@ -53,7 +58,14 @@ impl ProviderRuntime {
     }
 
     pub fn is_preflight_enabled(&self) -> bool {
-        self.config.enabled && self.config.preflight_enabled
+        #[cfg(feature = "http-transport")]
+        {
+            self.config.enabled && self.config.preflight_enabled
+        }
+        #[cfg(not(feature = "http-transport"))]
+        {
+            false
+        }
     }
 
     pub fn set_pipeline(&mut self, pipeline: Arc<Pipeline>) {

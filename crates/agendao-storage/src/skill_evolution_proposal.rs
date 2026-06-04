@@ -3,11 +3,11 @@
 //! Stores and queries `SkillEvolutionProposal` records generated from
 //! methodology candidates after memory consolidation.
 
-use anyhow::Result;
 use agendao_types::{
     ProposalStatus, SkillEvolutionProposal, SkillEvolutionProposalGenerationSummary,
     SkillEvolutionProposalKind, SuggestedSkillChange,
 };
+use anyhow::Result;
 use sqlx::SqlitePool;
 
 pub struct SkillEvolutionProposalRepository {

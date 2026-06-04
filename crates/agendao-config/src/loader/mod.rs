@@ -18,15 +18,15 @@ use std::path::{Path, PathBuf};
 
 pub(crate) use discovery::resolve_configured_path;
 pub use transforms::{
-    deduplicate_plugins, get_plugin_name, load_config, load_config_with_remote, update_config,
-    update_global_config, write_config,
+    deduplicate_plugins, get_plugin_name, load_config, update_config, update_global_config,
+    write_config,
 };
 pub use workspace::{
     ConfigAuthority, ResolvedConfig, ResolvedConfigInputs, WorkspaceIdentity, WorkspaceMode,
 };
 
 use discovery::{
-    collect_plugin_roots, collect_agendao_directories, detect_worktree_stop, find_up,
+    collect_agendao_directories, collect_plugin_roots, detect_worktree_stop, find_up,
     get_managed_config_dir, load_agents_from_dir, load_commands_from_dir, load_modes_from_dir,
     load_plugins_from_path, normalize_existing_path,
 };
@@ -254,23 +254,6 @@ impl ConfigLoader {
         apply_post_load_transforms(&mut self.config);
 
         Ok(self.config.clone())
-    }
-
-    /// Loads all config sources including remote `.well-known/opencode` endpoints.
-    /// Merge order (low -> high precedence):
-    /// 1. Remote .well-known/opencode (org defaults) -- lowest priority
-    /// 2. Global config (~/.config/agendao/agendao.json{,c})
-    /// 3. Custom config (AGENDAO_CONFIG)
-    /// 4. Project config (agendao json{,c})
-    /// 5. .agendao directories + plugin_paths plugin dirs
-    /// 6. Inline config (AGENDAO_CONFIG_CONTENT)
-    /// 7. Managed config directory (enterprise, highest priority)
-    pub async fn load_all_with_remote<P: AsRef<Path>>(&mut self, project_dir: P) -> Result<Config> {
-        let wellknown_config = crate::wellknown::load_wellknown().await;
-        self.config.merge(wellknown_config);
-
-        // Delegate to load_all which handles everything else
-        self.load_all(project_dir)
     }
 
     /// Load managed config files from enterprise directory (highest priority).

@@ -10,17 +10,19 @@
 //   strings belong in the rendering layer. They currently live here for
 //   historical reasons and will migrate as the split progresses.
 
-use super::*;
-use agendao_command::live_semantic_consumer::LiveSemanticConsumer;
-use agendao_command::output_blocks::{tool_cli_activity_label, ReasoningBlock, ToolPhase};
-use super::session_projection_insights::cli_session_insights_lines;
 use super::session_projection_events::{
     cli_default_events_query_input, cli_event_lines, cli_events_filter_label,
-    cli_events_offset_for_page, cli_events_page_for_offset, cli_events_page_size,
-    cli_events_query, cli_events_window_label, cli_parse_events_command_input,
-    CliEventsBrowserState, CliEventsCommandInput,
+    cli_events_offset_for_page, cli_events_page_for_offset, cli_events_page_size, cli_events_query,
+    cli_events_window_label, cli_parse_events_command_input, CliEventsBrowserState,
+    CliEventsCommandInput,
 };
+use super::session_projection_insights::cli_session_insights_lines;
 use super::session_projection_usage::{cli_usage_snapshot_lines, format_token_count};
+use super::*;
+use agendao_command_render::live_semantic_consumer::LiveSemanticConsumer;
+use agendao_command_render::output_blocks::{tool_cli_activity_label, ReasoningBlock, ToolPhase};
+use agendao_command_render::terminal_presentation::{TerminalMessage, TerminalMessagePart};
+use agendao_stage_protocol::{StageStatus, StageSummary};
 
 pub(crate) fn cli_is_terminal_stage_status(status: Option<&str>) -> bool {
     matches!(status, Some("done" | "blocked" | "cancelled"))
@@ -92,9 +94,8 @@ pub(crate) fn cli_render_session_block(
 ) -> String {
     let key = cli_canonical_session_id(runtime, session_id);
     let show_thinking = runtime.show_thinking.load(Ordering::SeqCst);
-    let transcript_identity = live_identity.filter(|identity| {
-        LiveSemanticConsumer::is_transcript_bearing_kind(&identity.part_kind)
-    });
+    let transcript_identity = live_identity
+        .filter(|identity| LiveSemanticConsumer::is_transcript_bearing_kind(&identity.part_kind));
     let default_accumulator = TerminalStreamAccumulator::new();
     let accumulator = match runtime.stream_accumulators.lock() {
         Ok(accumulators) => {
@@ -184,10 +185,9 @@ pub(crate) fn cli_render_legacy_streaming_block(
             let rendered_text = if matches!(message.phase, MessagePhase::Full) {
                 message.text.clone()
             } else {
-                cli_accumulator_part_text(
-                    accumulator.message(block_id)?,
-                    |part| matches!(part, agendao_command::terminal_presentation::TerminalMessagePart::Text { .. }),
-                )
+                cli_accumulator_part_text(accumulator.message(block_id)?, |part| {
+                    matches!(part, TerminalMessagePart::Text { .. })
+                })
             };
             (!rendered_text.trim().is_empty()).then(|| {
                 render_cli_block_rich(
@@ -205,15 +205,9 @@ pub(crate) fn cli_render_legacy_streaming_block(
             let rendered_text = if matches!(reasoning.phase, MessagePhase::Full) {
                 reasoning.text.clone()
             } else {
-                cli_accumulator_part_text(
-                    accumulator.message(block_id)?,
-                    |part| {
-                        matches!(
-                            part,
-                            agendao_command::terminal_presentation::TerminalMessagePart::Reasoning { .. }
-                        )
-                    },
-                )
+                cli_accumulator_part_text(accumulator.message(block_id)?, |part| {
+                    matches!(part, TerminalMessagePart::Reasoning { .. })
+                })
             };
             (!rendered_text.trim().is_empty()).then(|| {
                 render_cli_block_rich(
@@ -227,20 +221,16 @@ pub(crate) fn cli_render_legacy_streaming_block(
 }
 
 pub(crate) fn cli_accumulator_part_text(
-    message: &agendao_command::terminal_presentation::TerminalMessage,
-    matches_part: impl Fn(&agendao_command::terminal_presentation::TerminalMessagePart) -> bool,
+    message: &TerminalMessage,
+    matches_part: impl Fn(&TerminalMessagePart) -> bool,
 ) -> String {
     let mut text = String::new();
     for part in &message.parts {
         match part {
-            agendao_command::terminal_presentation::TerminalMessagePart::Text { text: part_text }
-                if matches_part(part) =>
-            {
+            TerminalMessagePart::Text { text: part_text } if matches_part(part) => {
                 text.push_str(part_text);
             }
-            agendao_command::terminal_presentation::TerminalMessagePart::Reasoning { text: part_text }
-                if matches_part(part) =>
-            {
+            TerminalMessagePart::Reasoning { text: part_text } if matches_part(part) => {
                 text.push_str(part_text);
             }
             _ => {}
@@ -265,7 +255,7 @@ pub(crate) fn cli_render_live_slot_snapshot(
                 let full_rendered = render_cli_block_rich(block, style);
                 let end_suffix = render_cli_block_rich(
                     &OutputBlock::Message(MessageBlock::end(
-                        agendao_command::output_blocks::MessageRole::Assistant,
+                        agendao_command_render::output_blocks::MessageRole::Assistant,
                     )),
                     style,
                 );
@@ -299,7 +289,7 @@ pub(crate) fn cli_live_slot_commit_suffix(
     match live_identity.part_kind {
         agendao_types::LiveMessagePartKind::AssistantText => render_cli_block_rich(
             &OutputBlock::Message(MessageBlock::end(
-                agendao_command::output_blocks::MessageRole::Assistant,
+                agendao_command_render::output_blocks::MessageRole::Assistant,
             )),
             style,
         ),
@@ -318,9 +308,7 @@ pub(crate) fn cli_live_slot_has_visible_content(block: &OutputBlock) -> bool {
         },
         OutputBlock::Reasoning(reasoning) => match reasoning.phase {
             MessagePhase::Start | MessagePhase::End => false,
-            MessagePhase::Delta | MessagePhase::Full => {
-                !reasoning.text.trim().is_empty()
-            }
+            MessagePhase::Delta | MessagePhase::Full => !reasoning.text.trim().is_empty(),
         },
         OutputBlock::Tool(tool) => match tool.phase {
             ToolPhase::Start => true,
@@ -335,12 +323,7 @@ pub(crate) fn cli_live_slot_has_visible_content(block: &OutputBlock) -> bool {
     }
 }
 
-pub(crate) // ── Projection reducers (state mutators — authority stay here) ──
-// These functions mutate CliVisibleTranscript, frontend_projection,
-// or runtime.* state. They are the canonical projection authority and
-// MUST NOT be moved to rendering.rs.
-
-fn cli_apply_live_slot_update(
+pub(crate) fn cli_apply_live_slot_update(
     transcript: &mut CliVisibleTranscript,
     block: &OutputBlock,
     live_identity: &agendao_types::LiveMessagePartIdentity,
@@ -488,7 +471,9 @@ pub(crate) fn cli_replace_root_history_transcript(
 }
 
 #[cfg(test)]
-pub(crate) fn cli_sync_root_history_to_visible(runtime: &CliExecutionRuntime) -> CliVisibleTranscript {
+pub(crate) fn cli_sync_root_history_to_visible(
+    runtime: &CliExecutionRuntime,
+) -> CliVisibleTranscript {
     let transcript = runtime
         .root_history_transcript
         .lock()
@@ -671,7 +656,7 @@ pub(crate) fn cli_list_attached_sessions(runtime: &CliExecutionRuntime) {
 // shared with the parent run module scope but not accessible from
 // submodule rendering.rs.
 
-pub(crate) fn cli_format_stage_summary_brief(stage: &agendao_command::stage_protocol::StageSummary) -> String {
+pub(crate) fn cli_format_stage_summary_brief(stage: &StageSummary) -> String {
     let mut parts = vec![format!(
         "{} [{}]",
         stage.stage_name,
@@ -689,7 +674,7 @@ pub(crate) fn cli_format_stage_summary_brief(stage: &agendao_command::stage_prot
     parts.join(" · ")
 }
 
-pub(crate) fn cli_stage_runtime_line(stage: &agendao_command::stage_protocol::StageSummary) -> String {
+pub(crate) fn cli_stage_runtime_line(stage: &StageSummary) -> String {
     let mut parts = vec![format!(
         "{} [{}]",
         stage.stage_name,
@@ -736,7 +721,7 @@ pub(crate) fn cli_stage_runtime_line(stage: &agendao_command::stage_protocol::St
 
 pub(crate) fn cli_active_stage_summary<'a>(
     telemetry: &'a crate::api_client::SessionTelemetrySnapshot,
-) -> Option<&'a agendao_command::stage_protocol::StageSummary> {
+) -> Option<&'a StageSummary> {
     if let Some(active_stage_id) = telemetry.runtime.active_stage_id.as_deref() {
         return telemetry
             .stages
@@ -747,11 +732,11 @@ pub(crate) fn cli_active_stage_summary<'a>(
     telemetry.stages.iter().find(|stage| {
         matches!(
             stage.status,
-            agendao_command::stage_protocol::StageStatus::Running
-                | agendao_command::stage_protocol::StageStatus::Waiting
-                | agendao_command::stage_protocol::StageStatus::Retrying
-                | agendao_command::stage_protocol::StageStatus::Blocked
-                | agendao_command::stage_protocol::StageStatus::Cancelling
+            StageStatus::Running
+                | StageStatus::Waiting
+                | StageStatus::Retrying
+                | StageStatus::Blocked
+                | StageStatus::Cancelling
         )
     })
 }
@@ -821,10 +806,7 @@ pub(crate) fn cli_runtime_snapshot_lines(
                 lines.push(format!("    last-event {}", last_event));
             }
             if let Some(activity) = stage.activity.as_deref().filter(|value| !value.is_empty()) {
-                lines.push(format!(
-                    "    activity {}",
-                    activity.replace('\n', " · ")
-                ));
+                lines.push(format!("    activity {}", activity.replace('\n', " · ")));
             }
             if let Some(focus) = stage.focus.as_deref() {
                 lines.push(format!("    focus {}", focus));
@@ -850,15 +832,11 @@ pub(crate) fn cli_runtime_snapshot_lines(
         let ingress = match protocol.prompt_ingress {
             crate::api_client::PromptIngressDisposition::AcceptNow => "accept_now",
             crate::api_client::PromptIngressDisposition::QueueAsSteering => "queue_as_steering",
-            crate::api_client::PromptIngressDisposition::BlockedOnQuestion => {
-                "blocked_on_question"
-            }
+            crate::api_client::PromptIngressDisposition::BlockedOnQuestion => "blocked_on_question",
             crate::api_client::PromptIngressDisposition::BlockedOnPermission => {
                 "blocked_on_permission"
             }
-            crate::api_client::PromptIngressDisposition::AwaitingInterrupt => {
-                "awaiting_interrupt"
-            }
+            crate::api_client::PromptIngressDisposition::AwaitingInterrupt => "awaiting_interrupt",
         };
         lines.push(format!("Runtime ingress: {ingress}"));
         if protocol.permission.pending {
@@ -1714,7 +1692,7 @@ pub(crate) async fn cli_print_memory_rule_hits(
     style: &CliStyle,
     raw_query: Option<&str>,
 ) {
-    let parsed = agendao_command::interactive::parse_memory_rule_hit_query(raw_query);
+    let parsed = agendao_command_runtime::interactive::parse_memory_rule_hit_query(raw_query);
     let query = crate::api_client::MemoryRuleHitQuery {
         run_id: parsed.run_id.clone(),
         memory_id: parsed.record_id.map(agendao_types::MemoryRecordId),
@@ -1832,7 +1810,8 @@ pub(crate) async fn cli_run_memory_consolidation(
     style: &CliStyle,
     raw_request: Option<&str>,
 ) {
-    let parsed = agendao_command::interactive::parse_memory_consolidation_request(raw_request);
+    let parsed =
+        agendao_command_runtime::interactive::parse_memory_consolidation_request(raw_request);
     let request = crate::api_client::MemoryConsolidationRequest {
         limit: parsed.limit.map(|value| value as u32),
         include_candidates: parsed.include_candidates,
@@ -2027,11 +2006,7 @@ pub(crate) fn cli_session_update_requires_refresh(source: Option<&str>) -> bool 
         source,
         Some(
             // New ReconcileReason-based sources (P1-2):
-            "turn.final"
-                | "metadata.change"
-                | "permission"
-                | "steering"
-                | "status.change"
+            "turn.final" | "metadata.change" | "permission" | "steering" | "status.change"
         ) | Some(
             // Legacy sources still emitted by unmigrated paths:
             "prompt.final"
@@ -2309,10 +2284,8 @@ pub(in crate::run) fn cli_frontend_observe_block(
             projection.set_runtime_activity(phase, Some(cli_stage_activity_label(stage)));
         }
         OutputBlock::Tool(tool) => {
-            projection.set_runtime_activity(
-                CliFrontendPhase::Busy,
-                Some(tool_cli_activity_label(tool)),
-            );
+            projection
+                .set_runtime_activity(CliFrontendPhase::Busy, Some(tool_cli_activity_label(tool)));
         }
         OutputBlock::Reasoning(reasoning) => {
             projection.set_runtime_activity(
@@ -2321,10 +2294,8 @@ pub(in crate::run) fn cli_frontend_observe_block(
             );
         }
         OutputBlock::SessionEvent(event) if event.event == "question" => {
-            projection.set_runtime_activity(
-                CliFrontendPhase::Waiting,
-                Some("question".to_string()),
-            );
+            projection
+                .set_runtime_activity(CliFrontendPhase::Waiting, Some("question".to_string()));
         }
         OutputBlock::Message(message)
             if message.role == OutputMessageRole::Assistant
@@ -2556,5 +2527,4 @@ mod session_projection_tests {
             Some("● Final answer\n")
         );
     }
-
 }

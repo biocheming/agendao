@@ -88,13 +88,13 @@ mod tests {
         export_memory_artifact_bundle, import_memory_artifact_bundle,
         import_memory_artifact_bundle_with_legacy_adapter, MemoryArtifactLegacyAdapter,
     };
-    use anyhow::Result;
     use agendao_storage::{Database, MemoryRepository};
     use agendao_types::{
         MemoryArtifactBundle, MemoryArtifactImportEnvelope, MemoryArtifactLegacyPayload,
         MemoryEvidenceRef, MemoryKind, MemoryRecord, MemoryRecordId, MemoryScope, MemoryStatus,
         MemoryValidationStatus,
     };
+    use anyhow::Result;
 
     struct AlphaLegacyAdapter;
 

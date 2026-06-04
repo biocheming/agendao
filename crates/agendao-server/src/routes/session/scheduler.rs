@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 use agendao_agent::{AgentInfo, AgentMode, AgentRegistry};
-use agendao_command::output_blocks::{MessageBlock, MessageRole as OutputMessageRole, OutputBlock};
 use agendao_config::{Config as AppConfig, SkillTreeNodeConfig};
 use agendao_execution_types::{CompiledExecutionRequest, ExecutionRequestContext};
 use agendao_orchestrator::output_metadata::output_usage;
@@ -21,14 +20,13 @@ use agendao_orchestrator::{
     ToolExecError as OrchestratorToolExecError, ToolExecutor as OrchestratorToolExecutor,
     ToolOutput as OrchestratorToolOutput, ToolRunner, AUTO_SCHEDULER_PROFILE_NAME,
 };
+use agendao_output_blocks::{MessageBlock, MessageRole as OutputMessageRole, OutputBlock};
 use tokio_util::sync::CancellationToken;
 
 use crate::request_options::{resolve_compiled_execution_request, ExecutionResolutionContext};
 use crate::routes::skill_catalog::enrich_scheduler_plan_skills;
-use crate::runtime_control::SessionRunStatus;
 use crate::session_runtime::events::{
     broadcast_session_reconcile, emit_output_block_via_hook, server_output_block_hook,
-    ReconcileReason,
 };
 use crate::session_runtime::{
     assistant_visible_text, ensure_default_session_title,
@@ -38,6 +36,8 @@ use crate::session_runtime::{
 };
 use crate::{ApiError, Result, ServerState};
 use agendao_provider::transform::{apply_caching, ProviderType};
+use agendao_server_core::runtime_control::SessionRunStatus;
+use agendao_server_core::runtime_events::ReconcileReason;
 use agendao_session::prompt::{
     assistant_text_live_identity, auto_compact_session_with_focus_if_needed,
     govern_pre_dispatch_session_context, ContextPressureGovernanceOutcome, OutputBlockEvent,
@@ -941,7 +941,7 @@ impl SessionSchedulerToolExecutor {
                         let task_id = properties["task_id"].as_str().unwrap_or_default();
                         let agent_name = properties["agent_name"].as_str().unwrap_or_default();
                         let parent_tool_call_id = properties["parent_tool_call_id"].as_str().map(
-                            crate::runtime_control::RuntimeControlRegistry::tool_call_execution_id,
+                            agendao_server_core::runtime_control::RuntimeControlRegistry::tool_call_execution_id,
                         );
                         // Resolve stage_id from the parent execution's record.
                         let stage_id = if let Some(ref pid) = parent_tool_call_id {
@@ -968,7 +968,7 @@ impl SessionSchedulerToolExecutor {
                         let task_id = properties["task_id"].as_str().unwrap_or_default();
                         // Resolve stage_id before finishing (record still exists).
                         let exec_id =
-                            crate::runtime_control::RuntimeControlRegistry::agent_task_execution_id(
+                            agendao_server_core::runtime_control::RuntimeControlRegistry::agent_task_execution_id(
                                 task_id,
                             );
                         let stage_id = state.runtime_telemetry.resolve_stage_id(&exec_id).await;

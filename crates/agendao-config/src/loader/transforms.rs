@@ -10,7 +10,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::file_ops::{get_global_config_paths, parse_jsonc};
-use super::ConfigLoader;
 
 fn project_config_write_path(project_dir: &Path) -> PathBuf {
     [
@@ -241,13 +240,6 @@ pub(super) fn apply_post_load_transforms(config: &mut Config) {
 /// Loads config synchronously (without remote wellknown fetching).
 pub fn load_config<P: AsRef<Path>>(project_dir: P) -> Result<Config> {
     super::ConfigAuthority::resolve(project_dir.as_ref()).map(|resolved| resolved.config)
-}
-
-/// Loads config including remote `.well-known/agendao` endpoints.
-/// Use this in async contexts where you want the full config with remote sources.
-pub async fn load_config_with_remote<P: AsRef<Path>>(project_dir: P) -> Result<Config> {
-    let mut loader = ConfigLoader::new();
-    loader.load_all_with_remote(project_dir).await
 }
 
 /// Update project-level config by merging a patch.

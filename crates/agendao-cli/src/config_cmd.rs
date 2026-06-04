@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use chrono::{Local, TimeZone};
 use agendao_config::loader::load_config;
+use chrono::{Local, TimeZone};
 
 use crate::api_client::{
     CliApiClient, ConfigPolicyValidationEffect, ConfigPolicyValidationItem,

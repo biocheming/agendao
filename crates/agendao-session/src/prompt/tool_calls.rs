@@ -528,7 +528,8 @@ impl SessionPrompt {
                     }
                     // Also try raw from PartType even if state_raw was empty.
                     if let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) {
-                        if let Some(parsed) = agendao_util::json::try_parse_json_object_robust(raw) {
+                        if let Some(parsed) = agendao_util::json::try_parse_json_object_robust(raw)
+                        {
                             tracing::debug!(
                                 "tool_call_input_for_execution: recovered args from raw field"
                             );

@@ -1,0 +1,11 @@
+[package]
+name = "agendao-cli-admin"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+agendao-cli-core = { path = "../agendao-cli-core" }
+anyhow = { workspace = true }
+async-trait = { workspace = true }

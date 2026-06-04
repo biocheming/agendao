@@ -69,14 +69,15 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
-use agendao_content::output_blocks::OutputBlock;
 use agendao_execution_types::CompiledExecutionRequest;
+use agendao_output_blocks::OutputBlock;
 use agendao_provider::{cache::CacheEvidenceSummary, Provider, ToolDefinition};
-use agendao_skill::{infer_runtime_skill_names, RuntimeInstructionSource, SkillGovernanceAuthority};
+use agendao_skill::{
+    infer_runtime_skill_names, RuntimeInstructionSource, SkillGovernanceAuthority,
+};
 use agendao_types::SkillRuntimeCompositionHintKind;
 use agendao_types::{
-    context_usage_percent, message_latest_compaction_summary,
-    tool_call_replay_text,
+    context_usage_percent, message_latest_compaction_summary, tool_call_replay_text,
     ContextCompactionAssessmentSummary, ContextCompactionBackoffSummary,
     ContextCompactionDecisionTrace, ContextCompactionInstalledDiagnostics,
     ContextCompactionLifecycleStatus, ContextCompactionLifecycleSummary, ContextCompactionSummary,
@@ -308,9 +309,9 @@ pub type AskQuestionHook = Arc<
     dyn Fn(
             String,
             Vec<agendao_tool::QuestionDef>,
-        )
-            -> Pin<Box<dyn Future<Output = Result<Vec<Vec<String>>, agendao_tool::ToolError>> + Send>>
-        + Send
+        ) -> Pin<
+            Box<dyn Future<Output = Result<Vec<Vec<String>>, agendao_tool::ToolError>> + Send>,
+        > + Send
         + Sync
         + 'static,
 >;
@@ -1521,7 +1522,9 @@ fn session_cache_severity_from_provider(
 ) -> SessionCacheSeverity {
     match value {
         agendao_provider::cache::CacheEvidenceSeverity::Stable => SessionCacheSeverity::Stable,
-        agendao_provider::cache::CacheEvidenceSeverity::LowChange => SessionCacheSeverity::LowChange,
+        agendao_provider::cache::CacheEvidenceSeverity::LowChange => {
+            SessionCacheSeverity::LowChange
+        }
         agendao_provider::cache::CacheEvidenceSeverity::MediumChange => {
             SessionCacheSeverity::MediumChange
         }
@@ -3049,9 +3052,9 @@ impl PromptError {
             Self::ProviderFailure(
                 agendao_orchestrator::runtime::events::ModelFailure::Provider(summary),
             ) => Some(PromptProviderFailure::TypedSummary(summary.clone())),
-            Self::ProviderFailure(agendao_orchestrator::runtime::events::ModelFailure::Message(
-                message,
-            ))
+            Self::ProviderFailure(
+                agendao_orchestrator::runtime::events::ModelFailure::Message(message),
+            )
             | Self::Provider(message) => {
                 Some(PromptProviderFailure::UntypedMessage(message.clone()))
             }

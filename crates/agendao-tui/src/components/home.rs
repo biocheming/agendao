@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
+use agendao_command_render::branding::logo_height;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::Style,
     text::{Line, Span},
     widgets::Paragraph,
 };
-use agendao_command::branding::logo_height;
 
 use crate::branding::{APP_SHORT_NAME, APP_TAGLINE, APP_VERSION_DATE};
 use crate::components::{Logo, Prompt};

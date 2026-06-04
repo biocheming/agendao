@@ -341,7 +341,10 @@ mod tests {
         });
 
         event.validate().unwrap();
-        assert_eq!(event.attachments[0].uri, "agendao://external/generic/file_1");
+        assert_eq!(
+            event.attachments[0].uri,
+            "agendao://external/generic/file_1"
+        );
     }
 
     #[test]

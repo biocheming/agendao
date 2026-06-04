@@ -6,7 +6,6 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-agendao-core = { path = "../agendao-core" }
 agendao-config = { path = "../agendao-config" }
 agendao-execution-types = { path = "../agendao-execution-types" }
 agendao-provider = { path = "../agendao-provider" }
@@ -18,14 +17,14 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
-tokio = { workspace = true }
+tokio = { version = "1", features = ["sync", "time"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-petgraph = { workspace = true }
+petgraph = "0.8"
 regex = { workspace = true }
 glob = { workspace = true }
-walkdir = { workspace = true }
+walkdir = "2"
 uuid = { workspace = true }
 jsonc-parser = { version = "0.29.0", features = ["serde"] }
 [dev-dependencies]
-tokio = { workspace = true, features = ["full", "test-util"] }
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }

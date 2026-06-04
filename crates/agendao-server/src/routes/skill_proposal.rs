@@ -5,12 +5,12 @@
 
 use std::sync::Arc;
 
+use agendao_types::{ProposalStatus, SkillEvolutionProposal};
 use axum::{
     extract::{Path, Query, State},
     routing::{get, post},
     Json, Router,
 };
-use agendao_types::{ProposalStatus, SkillEvolutionProposal};
 use serde::Deserialize;
 
 use crate::{ApiError, Result, ServerState};

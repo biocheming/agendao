@@ -4,10 +4,10 @@ version.workspace = true
 edition = "2021"
 
 [dependencies]
-agendao-core = { path = "../agendao-core" }
+agendao-core = { path = "../agendao-core", features = ["subprocess-runtime", "process-registry"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.0", features = ["full"] }
+tokio = { version = "1.0", features = ["fs", "io-util", "process", "rt", "sync", "time"] }
 async-trait = "0.1"
 anyhow = "1.0"
 thiserror = "2"

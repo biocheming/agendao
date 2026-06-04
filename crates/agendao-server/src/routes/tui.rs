@@ -10,10 +10,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, Notify};
 
-pub(crate) use crate::runtime_control::QuestionInfo;
-use crate::runtime_control::QuestionReply;
-use crate::session_runtime::events::ServerEvent;
 use crate::{ApiError, Result, ServerState};
+pub(crate) use agendao_server_core::runtime_control::QuestionInfo;
+use agendao_server_core::runtime_control::QuestionReply;
+use agendao_server_core::runtime_events::ServerEvent;
 
 pub(crate) fn question_routes() -> Router<Arc<ServerState>> {
     Router::new()

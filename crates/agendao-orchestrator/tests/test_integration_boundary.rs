@@ -7,7 +7,6 @@
 ///   3. same-session concurrent request history consistency
 ///   4. provider hot-reload visibility
 ///   5. session state consistency across prompt rounds
-
 use agendao_orchestrator::{OrchestrationCore, PromptExecutionOptions, SessionStore};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -21,14 +20,21 @@ struct MockBoundaryProvider {
 
 impl MockBoundaryProvider {
     fn new(responses: Vec<String>) -> Self {
-        Self { responses, call_count: AtomicUsize::new(0) }
+        Self {
+            responses,
+            call_count: AtomicUsize::new(0),
+        }
     }
 }
 
 #[async_trait::async_trait]
 impl agendao_provider::Provider for MockBoundaryProvider {
-    fn id(&self) -> &str { "mock-boundary" }
-    fn name(&self) -> &str { "Mock Boundary Provider" }
+    fn id(&self) -> &str {
+        "mock-boundary"
+    }
+    fn name(&self) -> &str {
+        "Mock Boundary Provider"
+    }
 
     fn models(&self) -> Vec<agendao_provider::ModelInfo> {
         vec![agendao_provider::ModelInfo {
@@ -47,14 +53,18 @@ impl agendao_provider::Provider for MockBoundaryProvider {
         }]
     }
 
-    fn get_model(&self, _id: &str) -> Option<&agendao_provider::ModelInfo> { None }
+    fn get_model(&self, _id: &str) -> Option<&agendao_provider::ModelInfo> {
+        None
+    }
 
     async fn chat(
         &self,
         _request: agendao_provider::ChatRequest,
     ) -> Result<agendao_provider::ChatResponse, agendao_provider::ProviderError> {
         let i = self.call_count.fetch_add(1, Ordering::SeqCst);
-        let text = self.responses.get(i % self.responses.len())
+        let text = self
+            .responses
+            .get(i % self.responses.len())
             .cloned()
             .unwrap_or_else(|| "Default".to_string());
         Ok(agendao_provider::ChatResponse {
@@ -66,7 +76,9 @@ impl agendao_provider::Provider for MockBoundaryProvider {
                 finish_reason: Some("stop".to_string()),
             }],
             usage: Some(agendao_provider::Usage {
-                prompt_tokens: 10, completion_tokens: 5, total_tokens: 15,
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
                 cache_read_input_tokens: Some(0),
                 cache_miss_input_tokens: Some(0),
                 cache_creation_input_tokens: Some(0),
@@ -78,7 +90,9 @@ impl agendao_provider::Provider for MockBoundaryProvider {
         &self,
         _request: agendao_provider::ChatRequest,
     ) -> Result<agendao_provider::StreamResult, agendao_provider::ProviderError> {
-        Err(agendao_provider::ProviderError::ApiError("streaming not implemented".into()))
+        Err(agendao_provider::ProviderError::ApiError(
+            "streaming not implemented".into(),
+        ))
     }
 }
 
@@ -112,7 +126,10 @@ async fn test_continue_last_empty_text_pure_continue() {
     let sid = "boundary-continue-last";
 
     // First turn: normal prompt.
-    let r1 = core.execute_prompt(sid, "Hi", default_options()).await.unwrap();
+    let r1 = core
+        .execute_prompt(sid, "Hi", default_options())
+        .await
+        .unwrap();
     assert_eq!(r1.text, "Hello!");
 
     // Second turn: continue_last + empty text — must NOT add a user message,
@@ -128,9 +145,13 @@ async fn test_continue_last_empty_text_pure_continue() {
     // The session must have exactly 3 messages: user "Hi", assistant "Hello!", assistant "How can I help?"
     // (no empty user message inserted by continue_last).
     let detail = core.get_session(sid).await.unwrap();
-    assert_eq!(detail.messages.len(), 3,
+    assert_eq!(
+        detail.messages.len(),
+        3,
         "Expected 3 messages (user + assistant + assistant), got {}: {:?}",
-        detail.messages.len(), detail.messages);
+        detail.messages.len(),
+        detail.messages
+    );
 }
 
 // ── Test 2: tool result visibility after unified authority ─
@@ -151,14 +172,19 @@ async fn test_tool_result_visible_in_session() {
 
     // list_sessions should see the session.
     let sessions = core.list_sessions().await.unwrap();
-    assert!(sessions.iter().any(|s| s.id == sid), "Session not visible in list");
+    assert!(
+        sessions.iter().any(|s| s.id == sid),
+        "Session not visible in list"
+    );
 
     // get_session should see the messages.
     let detail = core.get_session(sid).await.unwrap();
     assert_eq!(detail.messages.len(), 2, "Expected 2 messages");
     assert_eq!(detail.messages[0].role, "User");
-    assert!(detail.messages[1].role.contains("Tool") || detail.messages[1].role == "Tool",
-        "Second message should be Tool role");
+    assert!(
+        detail.messages[1].role.contains("Tool") || detail.messages[1].role == "Tool",
+        "Second message should be Tool role"
+    );
 }
 
 // ── Test 3: concurrent requests on same session, history consistency ─
@@ -192,8 +218,12 @@ async fn test_concurrent_same_session_history_consistency() {
     // After all complete, the session must have a consistent message count.
     // 3 user messages + 3 assistant responses = 6 messages.
     let detail = core.get_session(sid).await.unwrap();
-    assert_eq!(detail.messages.len(), 6,
-        "Expected 6 messages (3 user + 3 assistant), got {}", detail.messages.len());
+    assert_eq!(
+        detail.messages.len(),
+        6,
+        "Expected 6 messages (3 user + 3 assistant), got {}",
+        detail.messages.len()
+    );
 }
 
 // ── Test 4: session state consistency across rounds (multi-turn) ─
@@ -204,22 +234,33 @@ async fn test_session_state_consistent_across_rounds() {
     let sid = "boundary-consistency-rounds";
 
     // Round 1
-    let _ = core.execute_prompt(sid, "first", default_options()).await.unwrap();
+    let _ = core
+        .execute_prompt(sid, "first", default_options())
+        .await
+        .unwrap();
     let d1 = core.get_session(sid).await.unwrap();
     assert_eq!(d1.messages.len(), 2); // user + assistant
 
     // Round 2
-    let _ = core.execute_prompt(sid, "second", default_options()).await.unwrap();
+    let _ = core
+        .execute_prompt(sid, "second", default_options())
+        .await
+        .unwrap();
     let d2 = core.get_session(sid).await.unwrap();
     assert_eq!(d2.messages.len(), 4); // +2
 
     // Round 3
-    let _ = core.execute_prompt(sid, "third", default_options()).await.unwrap();
+    let _ = core
+        .execute_prompt(sid, "third", default_options())
+        .await
+        .unwrap();
     let d3 = core.get_session(sid).await.unwrap();
     assert_eq!(d3.messages.len(), 6);
 
     // All user messages must appear in order.
-    let user_texts: Vec<String> = d3.messages.iter()
+    let user_texts: Vec<String> = d3
+        .messages
+        .iter()
         .filter(|m| m.role == "User")
         .map(|m| m.content.clone())
         .collect();
@@ -238,9 +279,7 @@ async fn test_provider_hot_reload_visible_to_prompt() {
     let providers = Arc::new(tokio::sync::RwLock::new(
         agendao_provider::ProviderRegistry::new(),
     ));
-    let tools = Arc::new(tokio::sync::RwLock::new(
-        agendao_tool::ToolRegistry::new(),
-    ));
+    let tools = Arc::new(tokio::sync::RwLock::new(agendao_tool::ToolRegistry::new()));
 
     let core = agendao_orchestrator::OrchestrationCore::<
         agendao_session_core::SessionManager,
@@ -256,18 +295,29 @@ async fn test_provider_hot_reload_visible_to_prompt() {
         model: Some("mock-boundary:mock-model".to_string()),
         ..Default::default()
     };
-    let result = core.execute_prompt("test-hot-reload", "ping", opts.clone()).await;
-    assert!(result.is_err(), "Expected error before provider registration");
+    let result = core
+        .execute_prompt("test-hot-reload", "ping", opts.clone())
+        .await;
+    assert!(
+        result.is_err(),
+        "Expected error before provider registration"
+    );
 
     // Register provider via the shared Arc.
     {
         let mut p = providers.write().await;
-        p.register_arc(Arc::new(MockBoundaryProvider::new(vec!["Hot-reload works!".into()])));
+        p.register_arc(Arc::new(MockBoundaryProvider::new(vec![
+            "Hot-reload works!".into(),
+        ])));
     }
 
     // After registration — prompt must succeed without restart.
     let result = core.execute_prompt("test-hot-reload", "ping", opts).await;
-    assert!(result.is_ok(), "Expected success after hot-reload, got: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Expected success after hot-reload, got: {:?}",
+        result.err()
+    );
     assert_eq!(result.unwrap().text, "Hot-reload works!");
 }
 
@@ -306,10 +356,7 @@ async fn test_user_message_carries_canonical_source_metadata() {
         admission,
         Some(agendao_types::MessageAdmissionContext::Authenticated)
     );
-    assert_eq!(
-        authority,
-        Some(agendao_types::MessageAuthorityClass::User)
-    );
+    assert_eq!(authority, Some(agendao_types::MessageAuthorityClass::User));
 }
 
 // ── Direct Transport production-path consistency ──────────
@@ -323,10 +370,16 @@ async fn test_unified_authority_multi_turn_consistency_direct() {
     let core = build_core().await;
     let sid = "direct-authority-multi-turn";
 
-    let r1 = core.execute_prompt(sid, "hello", default_options()).await.unwrap();
+    let r1 = core
+        .execute_prompt(sid, "hello", default_options())
+        .await
+        .unwrap();
     assert_eq!(r1.text, "Hello!");
 
-    let r2 = core.execute_prompt(sid, "again", default_options()).await.unwrap();
+    let r2 = core
+        .execute_prompt(sid, "again", default_options())
+        .await
+        .unwrap();
     assert_eq!(r2.text, "How can I help?");
 
     // Verify shared session visibility.
@@ -339,7 +392,9 @@ async fn test_unified_authority_continue_last_direct() {
     let core = build_core().await;
     let sid = "direct-authority-continue";
 
-    core.execute_prompt(sid, "hi", default_options()).await.unwrap();
+    core.execute_prompt(sid, "hi", default_options())
+        .await
+        .unwrap();
 
     let opts = PromptExecutionOptions {
         model: Some("mock-boundary:mock-model".to_string()),
@@ -351,5 +406,10 @@ async fn test_unified_authority_continue_last_direct() {
 
     // No empty user message inserted by continue_last.
     let detail = core.get_session(sid).await.unwrap();
-    assert_eq!(detail.messages.len(), 3, "Expected 1 user + 2 asst, got {}", detail.messages.len());
+    assert_eq!(
+        detail.messages.len(),
+        3,
+        "Expected 1 user + 2 asst, got {}",
+        detail.messages.len()
+    );
 }

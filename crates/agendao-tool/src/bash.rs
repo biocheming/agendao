@@ -482,11 +482,7 @@ impl Tool for BashTool {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tree-sitter based bash command parsing
-// ---------------------------------------------------------------------------
-
-/// Result of parsing a bash command with tree-sitter.
+/// Result of parsing a bash command with lightweight shell tokenization.
 pub(crate) struct ParsedCommand {
     /// Full command text for each individual command (for permission patterns).
     patterns: HashSet<String>,
@@ -496,6 +492,7 @@ pub(crate) struct ParsedCommand {
     directories: Vec<String>,
 }
 
+#[cfg(feature = "terminal-tools")]
 pub(crate) fn command_family_scope_key(command: &str) -> Option<String> {
     parse_bash_command(command).command_family_scope_key()
 }
@@ -535,112 +532,130 @@ pub(crate) fn parse_bash_command(command: &str) -> ParsedCommand {
         always: HashSet::new(),
         directories: Vec::new(),
     };
+    for segment in split_shell_segments(command) {
+        let tokens = split_shell_words(segment);
+        if tokens.is_empty() {
+            continue;
+        }
 
-    let mut parser = tree_sitter::Parser::new();
-    let language = tree_sitter_bash::LANGUAGE;
-    if parser.set_language(&language.into()).is_err() {
-        // Fallback: treat entire command as a single pattern
-        let tokens: Vec<String> = command.split_whitespace().map(String::from).collect();
-        result.patterns.insert(command.to_string());
-        let prefix = BashArity::prefix(&tokens);
-        result.always.insert(format!("{} *", prefix.join(" ")));
-        return result;
+        if PATH_COMMANDS.contains(&tokens[0].as_str()) {
+            for arg in &tokens[1..] {
+                if arg.starts_with('-') || (tokens[0] == "chmod" && arg.starts_with('+')) {
+                    continue;
+                }
+                let path = if std::path::Path::new(arg).is_absolute() {
+                    arg.clone()
+                } else if arg.starts_with('~') {
+                    if let Ok(home) = std::env::var("HOME") {
+                        arg.replacen('~', &home, 1)
+                    } else {
+                        arg.clone()
+                    }
+                } else {
+                    arg.clone()
+                };
+                result.directories.push(path);
+            }
+        }
+
+        if tokens[0] != "cd" {
+            result.patterns.insert(segment.trim().to_string());
+            let prefix = BashArity::prefix(&tokens);
+            result.always.insert(format!("{} *", prefix.join(" ")));
+        }
     }
 
-    let Some(tree) = parser.parse(command, None) else {
-        let tokens: Vec<String> = command.split_whitespace().map(String::from).collect();
-        result.patterns.insert(command.to_string());
-        let prefix = BashArity::prefix(&tokens);
-        result.always.insert(format!("{} *", prefix.join(" ")));
-        return result;
-    };
-
-    let root = tree.root_node();
-    collect_commands(root, command.as_bytes(), &mut result);
-
-    // If tree-sitter found no commands (e.g. variable assignment only), use full command
     if result.patterns.is_empty() && !command.trim().is_empty() {
-        let tokens: Vec<String> = command.split_whitespace().map(String::from).collect();
-        result.patterns.insert(command.to_string());
-        let prefix = BashArity::prefix(&tokens);
-        result.always.insert(format!("{} *", prefix.join(" ")));
+        let tokens = split_shell_words(command);
+        if !tokens.is_empty() {
+            result.patterns.insert(command.trim().to_string());
+            let prefix = BashArity::prefix(&tokens);
+            result.always.insert(format!("{} *", prefix.join(" ")));
+        }
     }
 
     result
 }
 
-fn collect_commands(node: tree_sitter::Node, source: &[u8], result: &mut ParsedCommand) {
-    if node.kind() == "command" {
-        process_command_node(node, source, result);
-        return;
-    }
+fn split_shell_segments(command: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut start = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    let chars: Vec<(usize, char)> = command.char_indices().collect();
+    let mut i = 0usize;
 
-    // Recurse into children to find command nodes inside pipelines, lists, etc.
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_commands(child, source, result);
-    }
-}
-
-fn process_command_node(node: tree_sitter::Node, source: &[u8], result: &mut ParsedCommand) {
-    // Get full command text, including redirects if parent is redirected_statement
-    let command_text = if node.parent().map(|p| p.kind()) == Some("redirected_statement") {
-        node.parent()
-            .unwrap()
-            .utf8_text(source)
-            .unwrap_or_default()
-            .to_string()
-    } else {
-        node.utf8_text(source).unwrap_or_default().to_string()
-    };
-
-    // Extract tokens: command_name + word/string/raw_string/concatenation children
-    let mut tokens: Vec<String> = Vec::new();
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        match child.kind() {
-            "command_name" | "word" | "string" | "raw_string" | "concatenation" => {
-                let text = child.utf8_text(source).unwrap_or_default().to_string();
-                tokens.push(text);
+    while i < chars.len() {
+        let (idx, ch) = chars[i];
+        match ch {
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            ';' | '|' | '&' if !in_single && !in_double => {
+                let is_double = matches!(ch, '|' | '&')
+                    && chars.get(i + 1).is_some_and(|(_, next)| *next == ch);
+                let end = idx;
+                if start < end {
+                    segments.push(command[start..end].trim());
+                }
+                start = if is_double {
+                    chars
+                        .get(i + 1)
+                        .map(|(next_idx, next)| next_idx + next.len_utf8())
+                        .unwrap_or(command.len())
+                } else {
+                    idx + ch.len_utf8()
+                };
+                if is_double {
+                    i += 1;
+                }
             }
             _ => {}
         }
+        i += 1;
     }
 
-    if tokens.is_empty() {
-        return;
+    if start < command.len() {
+        segments.push(command[start..].trim());
     }
 
-    // Check for path-manipulating commands and extract external paths
-    if PATH_COMMANDS.contains(&tokens[0].as_str()) {
-        for arg in &tokens[1..] {
-            if arg.starts_with('-') || (tokens[0] == "chmod" && arg.starts_with('+')) {
-                continue;
-            }
-            // Resolve path
-            let path = if std::path::Path::new(arg).is_absolute() {
-                arg.clone()
-            } else if arg.starts_with('~') {
-                if let Ok(home) = std::env::var("HOME") {
-                    arg.replacen('~', &home, 1)
-                } else {
-                    arg.clone()
+    segments
+        .into_iter()
+        .filter(|segment| !segment.is_empty())
+        .collect()
+}
+
+fn split_shell_words(command: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+
+    for ch in command.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+
+        match ch {
+            '\\' if !in_single => escaped = true,
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            c if c.is_whitespace() && !in_single && !in_double => {
+                if !current.is_empty() {
+                    words.push(std::mem::take(&mut current));
                 }
-            } else {
-                // Relative path — can't resolve without cwd context here,
-                // but the caller checks is_external_path which handles this
-                arg.clone()
-            };
-            result.directories.push(path);
+            }
+            _ => current.push(ch),
         }
     }
 
-    // Skip "cd" from patterns (covered by directory check above)
-    if tokens[0] != "cd" {
-        result.patterns.insert(command_text);
-        let prefix = BashArity::prefix(&tokens);
-        result.always.insert(format!("{} *", prefix.join(" ")));
+    if !current.is_empty() {
+        words.push(current);
     }
+
+    words
 }
 
 #[cfg(test)]

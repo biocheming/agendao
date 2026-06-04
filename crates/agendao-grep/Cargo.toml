@@ -6,10 +6,9 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-agendao-core = { path = "../agendao-core" }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
-walkdir = { workspace = true }
+walkdir = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 regex = { workspace = true }

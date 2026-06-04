@@ -8,7 +8,7 @@ use crate::run::session_projection_usage::format_token_count;
 #[cfg(test)]
 use crate::util::truncate_text;
 #[cfg(test)]
-use agendao_command::cli_panel::{display_width, pad_right_display, truncate_display};
+use agendao_command_render::cli_panel::{display_width, pad_right_display, truncate_display};
 
 #[cfg(test)]
 pub(super) fn cli_fit_lines(

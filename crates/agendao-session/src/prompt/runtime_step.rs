@@ -7,14 +7,14 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use agendao_content::output_blocks::{
-    MessageBlock, MessageRole as OutputMessageRole, OutputBlock, ReasoningBlock, ToolBlock,
-};
 use agendao_orchestrator::runtime::events::{
     LoopError as RuntimeLoopError, LoopEvent, StepBoundary, ToolCallReady as RuntimeToolCallReady,
     ToolResult as RuntimeToolResult,
 };
 use agendao_orchestrator::runtime::traits::{LoopSink, ToolDispatcher};
+use agendao_output_blocks::{
+    MessageBlock, MessageRole as OutputMessageRole, OutputBlock, ReasoningBlock, ToolBlock,
+};
 use agendao_provider::{Provider, ToolDefinition};
 
 use crate::tool_result_governance::{
@@ -346,18 +346,16 @@ impl<'a> SessionStepSink<'a> {
             OutputBlock::Message(message) if message.role == OutputMessageRole::Assistant => {
                 let message_id = id?;
                 let phase = match message.phase {
-                    agendao_content::output_blocks::MessagePhase::Start => {
+                    agendao_output_blocks::MessagePhase::Start => {
                         agendao_types::LivePartPhase::Start
                     }
-                    agendao_content::output_blocks::MessagePhase::Delta => {
+                    agendao_output_blocks::MessagePhase::Delta => {
                         agendao_types::LivePartPhase::Append
                     }
-                    agendao_content::output_blocks::MessagePhase::Full => {
+                    agendao_output_blocks::MessagePhase::Full => {
                         agendao_types::LivePartPhase::Snapshot
                     }
-                    agendao_content::output_blocks::MessagePhase::End => {
-                        agendao_types::LivePartPhase::End
-                    }
+                    agendao_output_blocks::MessagePhase::End => agendao_types::LivePartPhase::End,
                 };
                 Some(assistant_text_live_identity(
                     message_id,
@@ -368,18 +366,16 @@ impl<'a> SessionStepSink<'a> {
             OutputBlock::Reasoning(reasoning) => {
                 let message_id = id?;
                 let phase = match reasoning.phase {
-                    agendao_content::output_blocks::MessagePhase::Start => {
+                    agendao_output_blocks::MessagePhase::Start => {
                         agendao_types::LivePartPhase::Start
                     }
-                    agendao_content::output_blocks::MessagePhase::Delta => {
+                    agendao_output_blocks::MessagePhase::Delta => {
                         agendao_types::LivePartPhase::Append
                     }
-                    agendao_content::output_blocks::MessagePhase::Full => {
+                    agendao_output_blocks::MessagePhase::Full => {
                         agendao_types::LivePartPhase::Snapshot
                     }
-                    agendao_content::output_blocks::MessagePhase::End => {
-                        agendao_types::LivePartPhase::End
-                    }
+                    agendao_output_blocks::MessagePhase::End => agendao_types::LivePartPhase::End,
                 };
                 Some(assistant_reasoning_live_identity(
                     message_id,
@@ -391,16 +387,16 @@ impl<'a> SessionStepSink<'a> {
                 let tool_call_id = id?;
                 let message_id = self.assistant_message_id()?;
                 let identity = match tool.phase {
-                    agendao_content::output_blocks::ToolPhase::Running => {
+                    agendao_output_blocks::ToolPhase::Running => {
                         let phase = agendao_types::LivePartPhase::Append;
                         tool_call_live_identity(&message_id, tool_call_id, phase)
                     }
-                    agendao_content::output_blocks::ToolPhase::Done
-                    | agendao_content::output_blocks::ToolPhase::Error => {
+                    agendao_output_blocks::ToolPhase::Done
+                    | agendao_output_blocks::ToolPhase::Error => {
                         let phase = agendao_types::LivePartPhase::End;
                         tool_result_live_identity(&message_id, tool_call_id, phase)
                     }
-                    agendao_content::output_blocks::ToolPhase::Start => {
+                    agendao_output_blocks::ToolPhase::Start => {
                         let phase = agendao_types::LivePartPhase::Start;
                         tool_call_live_identity(&message_id, tool_call_id, phase)
                     }

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use agendao_stage_protocol::StageEvent;
 use axum::{
     extract::{Path, Query, State},
     Json,
@@ -38,8 +39,8 @@ pub(super) async fn get_session_events(
     State(state): State<Arc<ServerState>>,
     Path(session_id): Path<String>,
     Query(query): Query<EventsQuery>,
-) -> Result<Json<Vec<agendao_command::stage_protocol::StageEvent>>> {
-    let filter = crate::stage_event_log::EventFilter {
+) -> Result<Json<Vec<StageEvent>>> {
+    let filter = agendao_server_core::stage_event_log::EventFilter {
         stage_id: query.stage_id,
         execution_id: query.execution_id,
         event_type: query.event_type,

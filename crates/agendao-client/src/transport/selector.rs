@@ -1,5 +1,4 @@
 /// Transport selector - choose Unix socket explicitly or fall back to HTTP.
-
 use super::FrontendTransport;
 use anyhow::Result;
 use std::path::Path;
@@ -52,7 +51,10 @@ impl TransportSelector {
                     }
                 }
             } else {
-                eprintln!("Unix Socket path does not exist: {}, using HTTP", socket_path);
+                eprintln!(
+                    "Unix Socket path does not exist: {}, using HTTP",
+                    socket_path
+                );
             }
         }
 
@@ -90,10 +92,7 @@ impl TransportSelector {
     pub fn default_unix_socket_path() -> Option<String> {
         #[cfg(unix)]
         {
-            let candidates = vec![
-                "/tmp/agendao.sock",
-                "/var/run/agendao.sock",
-            ];
+            let candidates = vec!["/tmp/agendao.sock", "/var/run/agendao.sock"];
 
             for path in candidates {
                 if Path::new(path).exists() {
@@ -171,7 +170,10 @@ mod tests {
             None,
         );
 
-        let error = selector.select_unix_required().await.unwrap_err();
+        let error = match selector.select_unix_required().await {
+            Ok(_) => panic!("expected Unix socket selection to fail"),
+            Err(error) => error,
+        };
         assert!(
             error
                 .to_string()

@@ -2,6 +2,7 @@ use bytes::Bytes;
 use futures::{stream, Stream, StreamExt};
 use std::pin::Pin;
 
+use crate::protocol::ProviderHttpStreamError;
 use crate::protocol_loader::DecoderConfig;
 use crate::ProviderError;
 
@@ -38,7 +39,7 @@ impl SseDecoder {
 
     pub fn decode_stream(
         &self,
-        input: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
+        input: Pin<Box<dyn Stream<Item = Result<Bytes, ProviderHttpStreamError>> + Send>>,
     ) -> Pin<Box<dyn Stream<Item = Result<serde_json::Value, ProviderError>> + Send>> {
         let delimiter = self.delimiter.clone();
         let prefix = self.prefix.clone();

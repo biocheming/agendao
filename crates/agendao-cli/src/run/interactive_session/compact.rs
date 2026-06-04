@@ -1,5 +1,5 @@
 use super::*;
-use agendao_command::cli_prompt::{read_inline_prompt_line, PromptHistory, PromptResult};
+use agendao_command_runtime::cli_prompt::{read_inline_prompt_line, PromptHistory, PromptResult};
 
 pub(super) async fn run_chat_session(
     model: Option<String>,
@@ -52,9 +52,12 @@ pub(super) async fn run_chat_session(
 
     let mut dispatch_rx = match interactive_mode {
         InteractiveCliMode::Rich => {
-            let server_models =
-                super::prompt_shared::fetch_server_model_list(&api_client, &local_state, &transport)
-                    .await;
+            let server_models = super::prompt_shared::fetch_server_model_list(
+                &api_client,
+                &local_state,
+                &transport,
+            )
+            .await;
             Some(attach_rich_prompt(
                 &mut runtime,
                 &repl_style,

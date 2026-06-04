@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use agendao_command::cli_style::CliStyle;
+#[cfg(feature = "interactive")]
+use agendao_command_render::cli_style::CliStyle;
 use agendao_plugin::init_global;
 use agendao_plugin::subprocess::{PluginContext, PluginLoader};
 use agendao_provider::{
@@ -209,13 +210,12 @@ fn model_to_bootstrap(id: &str, model: &agendao_config::ModelConfig) -> Bootstra
                 npm: p.npm.clone(),
             })
             .or_else(|| {
-                model
-                    .base_url
-                    .as_ref()
-                    .map(|url| agendao_provider::bootstrap::ConfigModelProvider {
+                model.base_url.as_ref().map(|url| {
+                    agendao_provider::bootstrap::ConfigModelProvider {
                         api: Some(url.clone()),
                         npm: None,
-                    })
+                    }
+                })
             }),
         options: (!options.is_empty()).then_some(options),
         variants,
@@ -351,6 +351,7 @@ fn resolve_native_plugin_path(cwd: &Path, raw_path: &str) -> PathBuf {
     }
 }
 
+#[cfg(feature = "interactive")]
 pub(crate) fn render_help(style: &CliStyle) -> String {
     let pad = 17; // column width for command names
 

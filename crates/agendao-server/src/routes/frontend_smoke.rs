@@ -5,8 +5,9 @@ use serde::Deserialize;
 
 use super::permission::request_permission;
 use super::tui::request_question_answers;
-use crate::session_runtime::events::{broadcast_server_event, ServerEvent};
+use crate::session_runtime::events::broadcast_server_event;
 use crate::ServerState;
+use agendao_server_core::runtime_events::ServerEvent;
 
 pub(crate) fn frontend_smoke_routes() -> Router<Arc<ServerState>> {
     Router::new()

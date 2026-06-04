@@ -7,6 +7,7 @@ use std::pin::Pin;
 
 use crate::driver::StreamingEvent;
 use crate::profile::{ProviderApiFamily, ProviderProfile};
+use crate::protocol::ProviderHttpStreamError;
 use crate::protocol_loader::ProtocolManifest;
 use crate::runtime::pipeline::decode::SseDecoder;
 use crate::runtime::pipeline::event_map::PathEventMapper;
@@ -95,7 +96,7 @@ impl Pipeline {
 
     pub fn process_stream(
         &self,
-        input: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
+        input: Pin<Box<dyn Stream<Item = Result<Bytes, ProviderHttpStreamError>> + Send>>,
     ) -> Pin<Box<dyn Stream<Item = Result<StreamingEvent, ProviderError>> + Send>> {
         let decoded = self.decoder.decode_stream(input);
         let mapper = self.mapper.clone();

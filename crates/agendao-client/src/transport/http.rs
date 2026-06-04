@@ -1,10 +1,8 @@
 use super::{PromptOptions, PromptResponse, SessionDetail};
-use anyhow::Result;
-use agendao_api::{
-    AgentInfo, ExecutionModeInfo, FullProviderListResponse, SessionListItem,
-};
+use agendao_api::{AgentInfo, ExecutionModeInfo, FullProviderListResponse, SessionListItem};
 use agendao_runtime_context::ResolvedWorkspaceContext;
 use agendao_state::RecentModelEntry;
+use anyhow::Result;
 
 /// HTTP transport - wraps existing AsyncApiClient
 pub struct HttpTransport {

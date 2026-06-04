@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::attachment_metadata::{
     collect_attachments_from_metadata, strip_attachments_from_metadata,
 };
-use crate::{Metadata, ToolContext, ToolError, ToolRegistry, ToolResult};
+use crate::{Metadata, ToolContext, ToolError, ToolRegistryAccess, ToolResult};
 
 pub const EXECUTION_PREFLIGHT_METADATA_KEY: &str = "preflight";
 
@@ -170,7 +170,7 @@ pub trait ExecutionPreflightRunner {
 }
 
 pub async fn execute_registry_tool_execution_preflight(
-    registry: &ToolRegistry,
+    registry: &dyn ToolRegistryAccess,
     tool_id: &str,
     args: serde_json::Value,
     ctx: &ToolContext,

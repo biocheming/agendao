@@ -12,9 +12,10 @@ use crate::{ApiError, Result, ServerState};
 use agendao_config::ModelConfig;
 use agendao_provider::{
     provider_connection_descriptor_candidate_from_config_provider, AuthInfo, AuthMethodType,
-    CatalogRefreshStatus, CatalogSnapshot, ConfigProvider, ModelsData, ModelsDevInfo,
-    ProviderConnectionDescriptorCandidate, ProviderDescriptorError, ProviderProfileError,
+    ConfigProvider, ProviderConnectionDescriptorCandidate, ProviderDescriptorError,
+    ProviderProfileError,
 };
+use agendao_provider::{CatalogRefreshStatus, CatalogSnapshot, ModelsData, ModelsDevInfo};
 use agendao_types::{
     ConfigPolicyValidationEffect, ConfigPolicyValidationItem, ConfigPolicyValidationOwner,
     ConfigPolicyValidationScope, ConfigPolicyValidationScopeKind, ConfigPolicyValidationSeverity,
@@ -251,7 +252,9 @@ fn capability_info_from_catalog(model: &ModelsDevInfo) -> Option<ModelCapability
     (!capability.is_empty()).then_some(capability)
 }
 
-fn capability_info_from_runtime(model: &agendao_provider::ModelInfo) -> Option<ModelCapabilityInfo> {
+fn capability_info_from_runtime(
+    model: &agendao_provider::ModelInfo,
+) -> Option<ModelCapabilityInfo> {
     let capability = ModelCapabilityInfo {
         tool_call: Some(model.supports_tools),
         input: ModelModalityInfo {

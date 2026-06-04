@@ -5,11 +5,11 @@ use std::io::{self, Write};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
-use agendao_command::cli_spinner::SpinnerGuard;
-use agendao_command::cli_style::CliStyle;
-use agendao_command::output_blocks::{
+use agendao_command_render::cli_style::CliStyle;
+use agendao_command_render::output_blocks::{
     render_cli_block_rich, MessageBlock, OutputBlock, StatusBlock,
 };
+use agendao_command_runtime::cli_spinner::SpinnerGuard;
 
 use crate::api_client::CliApiClient;
 
@@ -65,14 +65,18 @@ pub(super) fn cli_summary_thinking_label() -> String {
 }
 
 pub(super) fn cli_summary_tool_label(tool_name: &str) -> String {
-    let label =
-        agendao_command::output_blocks::tool_cli_activity_label(&agendao_command::output_blocks::ToolBlock::start(tool_name));
+    let label = agendao_command_render::output_blocks::tool_cli_activity_label(
+        &agendao_command_render::output_blocks::ToolBlock::start(tool_name),
+    );
     format!("Using {label}")
 }
 
 pub(super) fn cli_summary_permission_label(tool_name: Option<&str>) -> String {
     match tool_name.map(str::trim).filter(|value| !value.is_empty()) {
-        Some(tool_name) => format!("Awaiting permission · {}", cli_summary_tool_label(tool_name)),
+        Some(tool_name) => format!(
+            "Awaiting permission · {}",
+            cli_summary_tool_label(tool_name)
+        ),
         None => "Awaiting permission".to_string(),
     }
 }
@@ -84,14 +88,25 @@ pub(super) fn cli_summary_waiting_label() -> String {
 pub(super) fn cli_session_update_finishes_turn(source: Option<&str>) -> bool {
     matches!(
         source,
-        Some(
-            "turn.final"
-                | "prompt.final"
-                | "stream.final"
-                | "prompt.completed"
-                | "prompt.done"
-        )
+        Some("turn.final" | "prompt.final" | "stream.final" | "prompt.completed" | "prompt.done")
     )
+}
+
+fn cli_should_adopt_history_transcript(
+    previous_visible: Option<&CliVisibleTranscript>,
+    refreshed: &CliVisibleTranscript,
+) -> bool {
+    let Some(previous_visible) = previous_visible else {
+        return true;
+    };
+
+    let previous_text = previous_visible.rendered_text();
+    if previous_text.is_empty() {
+        return true;
+    }
+
+    let refreshed_text = refreshed.rendered_text();
+    refreshed_text == previous_text || refreshed_text.starts_with(&previous_text)
 }
 
 pub(super) fn cli_restore_compact_summary(projection: &mut CliFrontendProjection) {
@@ -108,10 +123,7 @@ pub(super) fn cli_restore_compact_summary(projection: &mut CliFrontendProjection
         };
 }
 
-pub(super) fn cli_push_runtime_aux_block(
-    runtime: &CliExecutionRuntime,
-    block: OutputBlock,
-) {
+pub(super) fn cli_push_runtime_aux_block(runtime: &CliExecutionRuntime, block: OutputBlock) {
     if let Some(line) = cli_prompt_aux_line(&block) {
         if let Ok(mut projection) = runtime.frontend_projection.lock() {
             projection.prompt_lanes.push_aux_line(line.lane, &line.text);
@@ -134,13 +146,20 @@ pub(super) fn cli_output_block_updates_transcript_authority(
     }
 }
 
-pub(super) fn cli_store_active_tool_label(runtime: &CliExecutionRuntime, tool_call_id: &str, tool_name: &str) {
+pub(super) fn cli_store_active_tool_label(
+    runtime: &CliExecutionRuntime,
+    tool_call_id: &str,
+    tool_name: &str,
+) {
     if let Ok(mut labels) = runtime.active_tool_labels.lock() {
         labels.insert(tool_call_id.to_string(), tool_name.to_string());
     }
 }
 
-pub(super) fn cli_take_active_tool_label(runtime: &CliExecutionRuntime, tool_call_id: &str) -> Option<String> {
+pub(super) fn cli_take_active_tool_label(
+    runtime: &CliExecutionRuntime,
+    tool_call_id: &str,
+) -> Option<String> {
     runtime
         .active_tool_labels
         .lock()
@@ -300,7 +319,7 @@ pub(super) fn question_defs_from_info(
 pub(super) async fn resolve_prompt_submission(
     runtime: &CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
-    local_state: &Option<Arc<agendao_server::ServerState>>,
+    local_state: &Option<Arc<crate::local_server_bridge::CliLocalServerState>>,
     session_id: &str,
     style: &CliStyle,
     prompt_response: crate::api_client::PromptResponse,
@@ -356,10 +375,16 @@ pub(super) async fn resolve_prompt_submission(
         )
         .await
         .map_err(|error| anyhow::anyhow!("command question failed: {}", error))?;
-        crate::local_dispatch::reply_question(local_state, api_client, &question_id, answers.clone())
-            .await?;
+        crate::local_dispatch::reply_question(
+            local_state,
+            api_client,
+            &question_id,
+            answers.clone(),
+        )
+        .await?;
 
-        let session = crate::local_dispatch::get_session(local_state, api_client, session_id).await?;
+        let session =
+            crate::local_dispatch::get_session(local_state, api_client, session_id).await?;
         let Some(pending) = pending_command_from_session(&session, &question_id) else {
             return Ok((response, ignored_question_ids));
         };
@@ -367,21 +392,20 @@ pub(super) async fn resolve_prompt_submission(
         response = crate::local_dispatch::send_command_prompt(
             local_state,
             api_client,
-                session_id,
-                pending.command.clone(),
-                (!arguments.trim().is_empty()).then_some(arguments),
-                (runtime.resolved_model_label != "auto")
-                    .then(|| runtime.resolved_model_label.clone()),
-                None,
-                Some("cli".to_string()),
-                Some(format!(
-                    "cli_command_{}",
-                    agendao_core::id::create(agendao_core::id::Prefix::User, true, None)
-                )),
-                Some(agendao_types::MessageSourceOrigin::Operator),
-                Some(agendao_types::MessageSourceSurface::Cli),
-            )
-            .await?;
+            session_id,
+            pending.command.clone(),
+            (!arguments.trim().is_empty()).then_some(arguments),
+            (runtime.resolved_model_label != "auto").then(|| runtime.resolved_model_label.clone()),
+            None,
+            Some("cli".to_string()),
+            Some(format!(
+                "cli_command_{}",
+                agendao_core::id::create(agendao_core::id::Prefix::User, true, None)
+            )),
+            Some(agendao_types::MessageSourceOrigin::Operator),
+            Some(agendao_types::MessageSourceSurface::Cli),
+        )
+        .await?;
     }
 }
 
@@ -389,7 +413,7 @@ pub(super) async fn run_server_prompt(
     runtime: &mut CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
     sse_rx: &mut mpsc::UnboundedReceiver<CliServerEvent>,
-    local_state: &Option<Arc<agendao_server::ServerState>>,
+    local_state: &Option<Arc<crate::local_server_bridge::CliLocalServerState>>,
     transport: &Option<Arc<agendao_client::FrontendTransport>>,
     input: &str,
     style: &CliStyle,
@@ -414,7 +438,7 @@ pub(super) async fn run_server_prompt_with_parts(
     runtime: &mut CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
     sse_rx: &mut mpsc::UnboundedReceiver<CliServerEvent>,
-    local_state: &Option<Arc<agendao_server::ServerState>>,
+    local_state: &Option<Arc<crate::local_server_bridge::CliLocalServerState>>,
     transport: &Option<Arc<agendao_client::FrontendTransport>>,
     input: &str,
     display_input: &str,
@@ -474,22 +498,22 @@ pub(super) async fn run_server_prompt_with_parts(
         local_state,
         transport,
         api_client,
-            &session_id,
-            input.to_string(),
-            parts,
-            prompt_agent,
-            runtime.scheduler_profile_name.clone(),
-            (runtime.resolved_model_label != "auto").then(|| runtime.resolved_model_label.clone()),
-            None,
-            Some("cli".to_string()),
-            Some(format!(
-                "cli_{}",
-                agendao_core::id::create(agendao_core::id::Prefix::User, true, None)
-            )),
-            Some(agendao_types::MessageSourceOrigin::Operator),
-            Some(agendao_types::MessageSourceSurface::Cli),
-        )
-        .await
+        &session_id,
+        input.to_string(),
+        parts,
+        prompt_agent,
+        runtime.scheduler_profile_name.clone(),
+        (runtime.resolved_model_label != "auto").then(|| runtime.resolved_model_label.clone()),
+        None,
+        Some("cli".to_string()),
+        Some(format!(
+            "cli_{}",
+            agendao_core::id::create(agendao_core::id::Prefix::User, true, None)
+        )),
+        Some(agendao_types::MessageSourceOrigin::Operator),
+        Some(agendao_types::MessageSourceSurface::Cli),
+    )
+    .await
     {
         Ok(response) => response,
         Err(error) => {
@@ -513,16 +537,15 @@ pub(super) async fn run_server_prompt_with_parts(
         }
     };
 
-    let (_accepted_response, ignored_question_ids) =
-        resolve_prompt_submission(
-            runtime,
-            api_client,
-            local_state,
-            &session_id,
-            style,
-            prompt_response,
-        )
-        .await?;
+    let (_accepted_response, ignored_question_ids) = resolve_prompt_submission(
+        runtime,
+        api_client,
+        local_state,
+        &session_id,
+        style,
+        prompt_response,
+    )
+    .await?;
 
     loop {
         match sse_rx.recv().await {
@@ -614,7 +637,6 @@ pub(super) async fn run_server_prompt_with_parts(
                 if let Ok(mut topology) = runtime.observed_topology.lock() {
                     topology.finish_run(Some("Completed".to_string()));
                 }
-                cli_frontend_clear(runtime);
                 let _ = print_block(
                     Some(runtime),
                     OutputBlock::Status(StatusBlock::success("Done.")),
@@ -674,10 +696,7 @@ pub(super) fn handle_sse_event(
             if let Ok(mut projection) = runtime.frontend_projection.lock() {
                 projection.run_tail = Some(crate::run::frontend_state_types::CliRunTailState {
                     status: "reconnecting".to_string(),
-                    detail: Some(format!(
-                        "retrying in {}s",
-                        ((delay_ms + 999) / 1000).max(1)
-                    )),
+                    detail: Some(format!("retrying in {}s", ((delay_ms + 999) / 1000).max(1))),
                 });
             }
             cli_refresh_prompt(runtime);
@@ -730,11 +749,10 @@ pub(super) fn handle_sse_event(
                 return;
             }
             if let Ok(mut projection) = runtime.frontend_projection.lock() {
-                projection.run_tail =
-                    Some(crate::run::frontend_state_types::CliRunTailState {
-                        status: "retrying".to_string(),
-                        detail: Some("Waiting for automatic retry.".to_string()),
-                    });
+                projection.run_tail = Some(crate::run::frontend_state_types::CliRunTailState {
+                    status: "retrying".to_string(),
+                    detail: Some("Waiting for automatic retry.".to_string()),
+                });
             }
             cli_push_runtime_aux_block(
                 runtime,
@@ -1010,15 +1028,14 @@ pub(super) fn handle_sse_event(
                         }
                         return;
                     }
-                    let rendered =
-                        cli_render_session_block(
-                            runtime,
-                            "",
-                            id.as_deref(),
-                            &block,
-                            live_identity.as_ref(),
-                            style,
-                        );
+                    let rendered = cli_render_session_block(
+                        runtime,
+                        "",
+                        id.as_deref(),
+                        &block,
+                        live_identity.as_ref(),
+                        style,
+                    );
                     if block_updates_authority && transcript_bearing_identity.is_none() {
                         cli_append_session_rendered_transcript(runtime, "", &rendered);
                     }
@@ -1058,17 +1075,22 @@ pub(super) fn handle_sse_event(
                 return;
             }
             if !is_root_session(&session_id) {
-                tracing::error!(session_id, error, ?message_id, ?done, "attached session error");
+                tracing::error!(
+                    session_id,
+                    error,
+                    ?message_id,
+                    ?done,
+                    "attached session error"
+                );
                 return;
             }
             tracing::error!(error, ?message_id, ?done, "server error");
             if let Ok(mut projection) = runtime.frontend_projection.lock() {
                 projection.set_runtime_activity(CliFrontendPhase::Failed, None);
-                projection.run_tail =
-                    Some(crate::run::frontend_state_types::CliRunTailState {
+                projection.run_tail = Some(crate::run::frontend_state_types::CliRunTailState {
                     status: "error".to_string(),
                     detail: Some(error),
-                    });
+                });
             }
             cli_refresh_prompt(runtime);
         }
@@ -1099,15 +1121,14 @@ pub(super) fn handle_sse_event(
             }
             if prompt_tokens > 0 || completion_tokens > 0 {
                 if let Ok(mut projection) = runtime.frontend_projection.lock() {
-                    projection.run_tail =
-                        Some(crate::run::frontend_state_types::CliRunTailState {
+                    projection.run_tail = Some(crate::run::frontend_state_types::CliRunTailState {
                         status: "complete".to_string(),
                         detail: Some(format!(
                             "input {} · output {}",
                             format_token_count(prompt_tokens),
                             format_token_count(completion_tokens)
                         )),
-                        });
+                    });
                 }
                 cli_refresh_prompt(runtime);
             }
@@ -1121,15 +1142,13 @@ pub(super) fn handle_sse_event(
 pub(super) async fn handle_question_from_sse(
     runtime: &CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
-    local_state: &Option<Arc<agendao_server::ServerState>>,
+    local_state: &Option<Arc<crate::local_server_bridge::CliLocalServerState>>,
     request_id: &str,
     questions_json: &serde_json::Value,
 ) {
     if let Ok(mut projection) = runtime.frontend_projection.lock() {
-        projection.set_runtime_activity(
-            CliFrontendPhase::Waiting,
-            Some(cli_summary_waiting_label()),
-        );
+        projection
+            .set_runtime_activity(CliFrontendPhase::Waiting, Some(cli_summary_waiting_label()));
     }
     cli_push_runtime_aux_block(
         runtime,
@@ -1207,7 +1226,7 @@ pub(super) async fn handle_question_from_sse(
 pub(super) async fn handle_permission_from_sse(
     runtime: &CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
-    local_state: &Option<Arc<agendao_server::ServerState>>,
+    local_state: &Option<Arc<crate::local_server_bridge::CliLocalServerState>>,
     permission_id: &str,
     info_json: &serde_json::Value,
 ) {
@@ -1270,7 +1289,10 @@ pub(super) async fn handle_permission_from_sse(
                 .collect::<HashMap<_, _>>()
         })
         .unwrap_or_default();
-    let permission_class = info.permission_class.as_deref().and_then(permission_class_label);
+    let permission_class = info
+        .permission_class
+        .as_deref()
+        .and_then(permission_class_label);
     let scope_key = info.scope_key.clone();
     let scope_label = info.scope_label.clone();
     let lifetimes = info
@@ -1279,7 +1301,8 @@ pub(super) async fn handle_permission_from_sse(
         .map(String::as_str)
         .collect::<Vec<_>>();
     let lifetimes = if lifetimes.is_empty() {
-        input.get("supported_lifetimes")
+        input
+            .get("supported_lifetimes")
             .and_then(|value| value.as_array())
             .map(|values| {
                 values
@@ -1433,9 +1456,7 @@ pub(super) async fn handle_permission_from_sse(
     let (reply, message) = match decision {
         PermissionDecision::Allow => ("once", Some("approved".to_string())),
         PermissionDecision::AllowTurn => ("turn", Some("approved for turn".to_string())),
-        PermissionDecision::AllowSession => {
-            ("session", Some("approved for session".to_string()))
-        }
+        PermissionDecision::AllowSession => ("session", Some("approved for session".to_string())),
         PermissionDecision::Deny => ("reject", Some("rejected".to_string())),
     };
 
@@ -1549,11 +1570,10 @@ pub(super) async fn cli_refresh_session_telemetry(
                     telemetry.runtime.run_status,
                     crate::api_client::SessionRunStatusKind::Compacting
                 ) {
-                    projection.run_tail =
-                        Some(crate::run::frontend_state_types::CliRunTailState {
-                            status: "compacting".to_string(),
-                            detail: Some("Preparing a smaller context window.".to_string()),
-                        });
+                    projection.run_tail = Some(crate::run::frontend_state_types::CliRunTailState {
+                        status: "compacting".to_string(),
+                        detail: Some("Preparing a smaller context window.".to_string()),
+                    });
                 } else if projection
                     .run_tail
                     .as_ref()
@@ -1562,24 +1582,23 @@ pub(super) async fn cli_refresh_session_telemetry(
                     projection.run_tail = None;
                 }
                 projection.sync_usage_from_snapshot(&telemetry.usage, Some(&telemetry.usage_books));
-                projection.cache_diagnostic =
-                    cli_context_closure_cache_diagnostic_label(
-                        telemetry.context_closure_contract.as_ref(),
-                    )
-                    .or_else(|| {
-                        telemetry
-                            .cache_evidence
-                            .as_ref()
-                            .cloned()
-                            .and_then(|value| serde_json::from_value(value).ok())
-                            .and_then(|summary| cli_cache_evidence_status_label(&summary))
-                    })
-                    .or_else(|| {
-                        telemetry
-                            .cache_semantics
-                            .as_ref()
-                            .and_then(|summary| summary.label.clone())
-                    });
+                projection.cache_diagnostic = cli_context_closure_cache_diagnostic_label(
+                    telemetry.context_closure_contract.as_ref(),
+                )
+                .or_else(|| {
+                    telemetry
+                        .cache_evidence
+                        .as_ref()
+                        .cloned()
+                        .and_then(|value| serde_json::from_value(value).ok())
+                        .and_then(|summary| cli_cache_evidence_status_label(&summary))
+                })
+                .or_else(|| {
+                    telemetry
+                        .cache_semantics
+                        .as_ref()
+                        .and_then(|summary| summary.label.clone())
+                });
                 projection.ingress_diagnostic =
                     ingress_stabilization_label(telemetry.ingress_stabilization.as_ref());
                 projection.provider_diagnostic =
@@ -1641,12 +1660,14 @@ pub(super) fn cli_append_history_tool_result_block(
         .and_then(|_| None)
         .or_else(|| Some(tool_result.content.clone()));
     let block = if tool_result.is_error {
-        OutputBlock::Tool(agendao_command::output_blocks::ToolBlock::error(
+        OutputBlock::Tool(agendao_command_render::output_blocks::ToolBlock::error(
             tool_name,
             detail.unwrap_or_else(|| "tool failed".to_string()),
         ))
     } else {
-        OutputBlock::Tool(agendao_command::output_blocks::ToolBlock::done(tool_name, detail))
+        OutputBlock::Tool(agendao_command_render::output_blocks::ToolBlock::done(
+            tool_name, detail,
+        ))
     };
     transcript.append_committed(&render_cli_block_rich(&block, style));
 }
@@ -1716,7 +1737,7 @@ pub(super) fn cli_transcript_from_history(
 pub(super) async fn cli_refresh_session_transcript_from_history(
     runtime: &CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
-    local_state: &Option<Arc<agendao_server::ServerState>>,
+    local_state: &Option<Arc<crate::local_server_bridge::CliLocalServerState>>,
     session_id: &str,
     style: &CliStyle,
 ) -> Option<CliVisibleTranscript> {
@@ -1740,7 +1761,7 @@ pub(super) async fn cli_refresh_session_transcript_from_history(
 pub(super) async fn handle_session_updated_from_sse(
     runtime: &CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
-    local_state: &Option<Arc<agendao_server::ServerState>>,
+    local_state: &Option<Arc<crate::local_server_bridge::CliLocalServerState>>,
     session_id: &str,
     source: Option<&str>,
     style: &CliStyle,
@@ -1785,23 +1806,33 @@ pub(super) async fn handle_session_updated_from_sse(
     )
     .await;
     if let Some(transcript) = refreshed_history.clone() {
-        cli_replace_root_session_transcript(runtime, transcript.clone());
-        if cli_is_root_focused(runtime) {
-            if cli_session_update_finishes_turn(source) {
-                if let Some(previous_visible_transcript) = previous_visible_transcript.as_ref() {
-                    if let Some(suffix) =
-                        cli_history_transcript_suffix(previous_visible_transcript, &transcript)
+        let adopt_history =
+            cli_should_adopt_history_transcript(previous_visible_transcript.as_ref(), &transcript);
+        if adopt_history {
+            cli_replace_root_session_transcript(runtime, transcript.clone());
+            if cli_is_root_focused(runtime) {
+                if cli_session_update_finishes_turn(source) {
+                    if let Some(previous_visible_transcript) = previous_visible_transcript.as_ref()
                     {
-                        if let Some(surface) = runtime.terminal_surface.as_ref() {
-                            let _ = surface.print_rendered_stream(&suffix);
-                        } else if !suffix.is_empty() {
-                            print!("{suffix}");
-                            let _ = io::stdout().flush();
+                        if let Some(suffix) =
+                            cli_history_transcript_suffix(previous_visible_transcript, &transcript)
+                        {
+                            if let Some(surface) = runtime.terminal_surface.as_ref() {
+                                let _ = surface.print_rendered_stream(&suffix);
+                            } else if !suffix.is_empty() {
+                                print!("{suffix}");
+                                let _ = io::stdout().flush();
+                            }
                         }
                     }
                 }
+                cli_sync_projection_transcript(runtime, transcript);
             }
-            cli_sync_projection_transcript(runtime, transcript);
+        } else {
+            tracing::debug!(
+                source = ?source,
+                "skipping history transcript replacement because persisted history is behind visible transcript"
+            );
         }
     }
     if cli_session_update_finishes_turn(source) {
@@ -1813,9 +1844,10 @@ pub(super) async fn handle_session_updated_from_sse(
 
 #[cfg(test)]
 mod cli_history_transcript_tests {
-    use super::cli_transcript_from_history;
+    use super::{cli_should_adopt_history_transcript, cli_transcript_from_history};
     use crate::api_client::{MessageInfo, MessagePart, MessageTokensInfo, ToolResult};
-    use agendao_command::cli_style::CliStyle;
+    use crate::run::frontend_state_types::CliVisibleTranscript;
+    use agendao_command_render::cli_style::CliStyle;
 
     fn text_part(id: &str, text: &str) -> MessagePart {
         MessagePart {
@@ -1890,6 +1922,12 @@ mod cli_history_transcript_tests {
         }
     }
 
+    fn visible_transcript(text: &str) -> CliVisibleTranscript {
+        let mut transcript = CliVisibleTranscript::new(false);
+        transcript.append_rendered(text);
+        transcript
+    }
+
     #[test]
     fn history_transcript_rebuilds_final_user_assistant_and_tool_result_blocks() {
         let style = CliStyle::plain();
@@ -1902,7 +1940,11 @@ mod cli_history_transcript_tests {
                     vec![
                         reasoning_part("r1", "Thinking about the result.\n"),
                         text_part("a1", "Found two papers.\n"),
-                        tool_result_part("tr1", "SkillsList", "Available skills: <available_skills>"),
+                        tool_result_part(
+                            "tr1",
+                            "SkillsList",
+                            "Available skills: <available_skills>",
+                        ),
                         ignored_text_part("a2", "internal-only"),
                         text_part("a3", "Next I will summarize them."),
                     ],
@@ -1919,5 +1961,38 @@ mod cli_history_transcript_tests {
         assert!(rendered.contains("Available skills: <available_skills>"));
         assert!(rendered.contains("Next I will summarize them."));
         assert!(!rendered.contains("internal-only"));
+    }
+
+    #[test]
+    fn history_transcript_is_adopted_when_equal_to_visible_transcript() {
+        let previous = visible_transcript("● root line\n");
+        let refreshed = visible_transcript("● root line\n");
+
+        assert!(cli_should_adopt_history_transcript(
+            Some(&previous),
+            &refreshed
+        ));
+    }
+
+    #[test]
+    fn history_transcript_is_adopted_when_it_extends_visible_transcript() {
+        let previous = visible_transcript("● root line\n");
+        let refreshed = visible_transcript("● root line\n[thinking] details\n");
+
+        assert!(cli_should_adopt_history_transcript(
+            Some(&previous),
+            &refreshed
+        ));
+    }
+
+    #[test]
+    fn history_transcript_is_not_adopted_when_it_falls_behind_visible_transcript() {
+        let previous = visible_transcript("● root line\n[thinking] details\n");
+        let refreshed = visible_transcript("● root line\n");
+
+        assert!(!cli_should_adopt_history_transcript(
+            Some(&previous),
+            &refreshed
+        ));
     }
 }

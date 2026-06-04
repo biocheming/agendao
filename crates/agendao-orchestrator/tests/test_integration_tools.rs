@@ -5,7 +5,6 @@
 /// Note: These tests are simplified to focus on the orchestration layer.
 /// Full tool calling integration requires complex provider mocking that
 /// matches the actual Message/Content structure used by agendao-provider.
-
 use agendao_orchestrator::{OrchestrationCore, PromptExecutionOptions};
 use agendao_tool::{Tool, ToolContext, ToolError, ToolResult};
 use std::sync::Arc;
@@ -84,7 +83,9 @@ impl Tool for MockFailingTool {
         _arguments: serde_json::Value,
         _context: ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        Err(ToolError::ExecutionError("Tool execution failed".to_string()))
+        Err(ToolError::ExecutionError(
+            "Tool execution failed".to_string(),
+        ))
     }
 }
 
@@ -149,8 +150,8 @@ impl agendao_provider::Provider for MockSimpleProvider {
         &self,
         _request: agendao_provider::ChatRequest,
     ) -> Result<agendao_provider::StreamResult, agendao_provider::ProviderError> {
-        use futures::stream;
         use agendao_provider::StreamEvent;
+        use futures::stream;
 
         let events = vec![
             Ok(StreamEvent::Start),
@@ -170,7 +171,7 @@ async fn test_tool_registry_integration() {
 
     // Register tools
     {
-        let mut tools = core.tools().write().await;
+        let tools = core.tools().write().await;
         tools.register(MockCalculatorTool).await;
         tools.register(MockFailingTool).await;
     }
@@ -195,7 +196,7 @@ async fn test_tool_definitions_passed_to_provider() {
     }
 
     {
-        let mut tools = core.tools().write().await;
+        let tools = core.tools().write().await;
         tools.register(MockCalculatorTool).await;
     }
 
@@ -220,7 +221,7 @@ async fn test_multiple_tools_registration() {
 
     // Register multiple tools
     {
-        let mut tools = core.tools().write().await;
+        let tools = core.tools().write().await;
         tools.register(MockCalculatorTool).await;
         tools.register(MockFailingTool).await;
     }
@@ -243,7 +244,7 @@ async fn test_tool_parameters_schema() {
     let core = OrchestrationCore::new(&config).await.unwrap();
 
     {
-        let mut tools = core.tools().write().await;
+        let tools = core.tools().write().await;
         tools.register(MockCalculatorTool).await;
     }
 
@@ -272,7 +273,7 @@ async fn test_tool_isolation_between_sessions() {
     }
 
     {
-        let mut tools = core.tools().write().await;
+        let tools = core.tools().write().await;
         tools.register(MockCalculatorTool).await;
     }
 

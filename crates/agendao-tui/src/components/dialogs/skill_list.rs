@@ -1,12 +1,12 @@
+use agendao_skill::{
+    extract_methodology_template_from_markdown, render_methodology_skill_body,
+    SkillMethodologyReference, SkillMethodologyStep, SkillMethodologyTemplate,
+};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
-};
-use agendao_skill::{
-    extract_methodology_template_from_markdown, render_methodology_skill_body,
-    SkillMethodologyReference, SkillMethodologyStep, SkillMethodologyTemplate,
 };
 
 use crate::api::{

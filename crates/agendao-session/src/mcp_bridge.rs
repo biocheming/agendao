@@ -1,6 +1,6 @@
-use async_trait::async_trait;
 use agendao_mcp::{McpClientRegistry, McpTool};
 use agendao_tool::{Tool, ToolContext, ToolError, ToolResult, ToolSchemaSourceKind};
+use async_trait::async_trait;
 use std::sync::Arc;
 
 /// A bridge tool that wraps an MCP tool and makes it executable through the

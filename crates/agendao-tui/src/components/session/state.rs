@@ -1,4 +1,4 @@
-use agendao_command::run_status_labels::canonical_run_status_badge;
+use agendao_command_render::run_status_labels::canonical_run_status_badge;
 
 const SIDEBAR_WIDTH: u16 = 42;
 const HEADER_NARROW_THRESHOLD: u16 = 80;
@@ -871,8 +871,8 @@ struct AssistantThinkingItem {
 struct AssistantToolBlockItem {
     name: String,
     arguments: String,
-    state: agendao_command::terminal_presentation::TerminalToolState,
-    result: Option<agendao_command::terminal_presentation::TerminalToolResultInfo>,
+    state: agendao_command_render::terminal_presentation::TerminalToolState,
+    result: Option<agendao_command_render::terminal_presentation::TerminalToolResultInfo>,
 }
 
 #[derive(Clone)]

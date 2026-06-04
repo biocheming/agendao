@@ -3,9 +3,13 @@ use super::{
     SessionExecutionTopology, SessionRuntimeState,
 };
 use crate::run::session_projection_usage::{cli_format_context_meter, format_token_count};
-use agendao_command::cli_style::CliStyle;
-use agendao_command::output_blocks::SchedulerStageBlock;
-use agendao_command::run_status_labels::{canonical_run_status_labels, canonical_run_status_title};
+use agendao_command_render::cli_panel;
+use agendao_command_render::cli_style::CliStyle;
+use agendao_command_render::output_blocks::SchedulerStageBlock;
+use agendao_command_render::run_status_labels::{
+    canonical_run_status_labels, canonical_run_status_title,
+};
+use agendao_stage_protocol::StageSummary;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const CLI_TRANSCRIPT_MAX_LINES: usize = 1200;
@@ -221,7 +225,7 @@ impl CliVisibleTranscript {
         };
         let mut rows = Vec::new();
         for line in text.lines() {
-            let wrapped = agendao_command::cli_panel::wrap_display_text(line, width.max(1));
+            let wrapped = cli_panel::wrap_display_text(line, width.max(1));
             if wrapped.is_empty() {
                 rows.push(String::new());
             } else {
@@ -474,7 +478,7 @@ pub(super) struct CliFrontendProjection {
     pub(super) run_tail: Option<CliRunTailState>,
     pub(super) active_stage: Option<SchedulerStageBlock>,
     pub(super) session_runtime: Option<SessionRuntimeState>,
-    pub(super) stage_summaries: Vec<agendao_command::stage_protocol::StageSummary>,
+    pub(super) stage_summaries: Vec<StageSummary>,
     pub(super) telemetry_topology: Option<SessionExecutionTopology>,
     pub(super) events_browser: Option<CliEventsBrowserState>,
     pub(super) transcript: CliVisibleTranscript,
@@ -756,6 +760,11 @@ impl CliFrontendProjection {
         if stable_rows == 0 {
             return Vec::new();
         }
+        let usage_lines = self
+            .prompt_usage_lines()
+            .into_iter()
+            .take(1)
+            .collect::<Vec<_>>();
         let progress_lines = self
             .prompt_progress_lines()
             .into_iter()
@@ -766,21 +775,16 @@ impl CliFrontendProjection {
             .into_iter()
             .take(3)
             .collect::<Vec<_>>();
-        let usage_lines = self
-            .prompt_usage_lines()
-            .into_iter()
-            .take(1)
-            .collect::<Vec<_>>();
 
         let mut lines = Vec::new();
+        if !usage_lines.is_empty() {
+            lines.extend(usage_lines);
+        }
         if !progress_lines.is_empty() {
             lines.extend(progress_lines);
         }
         if !status_lines.is_empty() {
             lines.extend(status_lines);
-        }
-        if !usage_lines.is_empty() {
-            lines.extend(usage_lines);
         }
 
         trim_prompt_lane_tail(lines, stable_rows)
@@ -957,8 +961,8 @@ mod tests {
         CliSessionTokenStats, CliVisibleTranscript,
     };
     use crate::run::{cli_apply_live_slot_update, CliFrontendPhase};
-    use agendao_command::cli_style::CliStyle;
-    use agendao_command::output_blocks::{OutputBlock, SchedulerStageBlock, ToolBlock};
+    use agendao_command_render::cli_style::CliStyle;
+    use agendao_command_render::output_blocks::{OutputBlock, SchedulerStageBlock, ToolBlock};
     use agendao_session::SessionUsage;
     use agendao_types::{
         LiveMessagePartIdentity, LiveMessagePartKind, LivePartPhase, SessionUsageBooks,
@@ -1225,9 +1229,16 @@ mod tests {
                 detail: Some("Current stage: Research".to_string()),
             }),
             token_stats: CliSessionTokenStats {
+                context_tokens: 52_830,
                 input_tokens: 12_000,
                 ..CliSessionTokenStats::default()
             },
+            current_model_label: Some("openai/gpt-5".to_string()),
+            model_catalog: std::iter::once((
+                "openai/gpt-5".to_string(),
+                super::CliModelCatalogEntry::from_provider_model(Some(200_000), None, None),
+            ))
+            .collect(),
             ..CliFrontendProjection::default()
         };
 
@@ -1239,19 +1250,21 @@ mod tests {
 
         assert_eq!(plain_lines.len(), 3, "{plain_lines:?}");
         assert!(
+            plain_lines.first().is_some_and(|line| {
+                line.contains("Usage: ctx 52.8K/200K") && line.contains("in 12K")
+            }),
+            "{plain_lines:?}"
+        );
+        assert!(
             plain_lines
-                .first()
-                .is_some_and(|line| line.contains("Skill SkillsList")),
+                .iter()
+                .any(|line| line.contains("Skill SkillsList")),
             "{plain_lines:?}"
         );
         assert!(
             plain_lines
                 .iter()
                 .any(|line| line == "Running: Current stage: Research"),
-            "{plain_lines:?}"
-        );
-        assert!(
-            plain_lines.iter().any(|line| line == "Usage: in 12K"),
             "{plain_lines:?}"
         );
     }
@@ -1436,16 +1449,16 @@ mod tests {
 
         cli_apply_live_slot_update(
             &mut transcript,
-            &OutputBlock::Message(agendao_command::output_blocks::MessageBlock::start(
-                agendao_command::output_blocks::MessageRole::Assistant,
+            &OutputBlock::Message(agendao_command_render::output_blocks::MessageBlock::start(
+                agendao_command_render::output_blocks::MessageRole::Assistant,
             )),
             &start_identity,
             &style,
         );
         cli_apply_live_slot_update(
             &mut transcript,
-            &OutputBlock::Message(agendao_command::output_blocks::MessageBlock::end(
-                agendao_command::output_blocks::MessageRole::Assistant,
+            &OutputBlock::Message(agendao_command_render::output_blocks::MessageBlock::end(
+                agendao_command_render::output_blocks::MessageRole::Assistant,
             )),
             &end_identity,
             &style,
@@ -1472,13 +1485,13 @@ mod tests {
 
         cli_apply_live_slot_update(
             &mut transcript,
-            &OutputBlock::Reasoning(agendao_command::output_blocks::ReasoningBlock::start()),
+            &OutputBlock::Reasoning(agendao_command_render::output_blocks::ReasoningBlock::start()),
             &start_identity,
             &style,
         );
         cli_apply_live_slot_update(
             &mut transcript,
-            &OutputBlock::Reasoning(agendao_command::output_blocks::ReasoningBlock::end()),
+            &OutputBlock::Reasoning(agendao_command_render::output_blocks::ReasoningBlock::end()),
             &end_identity,
             &style,
         );
@@ -1517,28 +1530,28 @@ mod tests {
 
         cli_apply_live_slot_update(
             &mut transcript,
-            &OutputBlock::Message(agendao_command::output_blocks::MessageBlock::start(
-                agendao_command::output_blocks::MessageRole::Assistant,
+            &OutputBlock::Message(agendao_command_render::output_blocks::MessageBlock::start(
+                agendao_command_render::output_blocks::MessageRole::Assistant,
             )),
             &assistant_start,
             &style,
         );
         cli_apply_live_slot_update(
             &mut transcript,
-            &OutputBlock::Reasoning(agendao_command::output_blocks::ReasoningBlock::start()),
+            &OutputBlock::Reasoning(agendao_command_render::output_blocks::ReasoningBlock::start()),
             &reasoning_start,
             &style,
         );
         cli_apply_live_slot_update(
             &mut transcript,
-            &OutputBlock::Reasoning(agendao_command::output_blocks::ReasoningBlock::end()),
+            &OutputBlock::Reasoning(agendao_command_render::output_blocks::ReasoningBlock::end()),
             &reasoning_end,
             &style,
         );
         cli_apply_live_slot_update(
             &mut transcript,
-            &OutputBlock::Message(agendao_command::output_blocks::MessageBlock::end(
-                agendao_command::output_blocks::MessageRole::Assistant,
+            &OutputBlock::Message(agendao_command_render::output_blocks::MessageBlock::end(
+                agendao_command_render::output_blocks::MessageRole::Assistant,
             )),
             &assistant_end,
             &style,
@@ -1583,7 +1596,7 @@ mod tests {
 
         cli_apply_live_slot_update(
             &mut transcript,
-            &OutputBlock::Reasoning(agendao_command::output_blocks::ReasoningBlock::full(
+            &OutputBlock::Reasoning(agendao_command_render::output_blocks::ReasoningBlock::full(
                 "Thinking first".to_string(),
             )),
             &identity,
@@ -1591,7 +1604,7 @@ mod tests {
         );
         cli_apply_live_slot_update(
             &mut transcript,
-            &OutputBlock::Reasoning(agendao_command::output_blocks::ReasoningBlock::full(
+            &OutputBlock::Reasoning(agendao_command_render::output_blocks::ReasoningBlock::full(
                 "Thinking first second".to_string(),
             )),
             &identity,

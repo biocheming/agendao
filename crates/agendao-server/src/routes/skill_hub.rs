@@ -1,10 +1,5 @@
 use super::permission::request_permission;
 use crate::{ApiError, Result, ServerState};
-use axum::{
-    extract::{Query, State},
-    routing::{get, post},
-    Json, Router,
-};
 use agendao_skill::{SkillError, SkillGovernanceAuthority};
 use agendao_tool::{PermissionRequest, ToolError};
 use agendao_types::{
@@ -25,6 +20,11 @@ use agendao_types::{
     SkillHubSyncPlanResponse, SkillHubTimelineQuery, SkillHubTimelineResponse,
     SkillHubUsageLedgerResponse, SkillHubVitalityUpdateRequest, SkillHubVitalityUpdateResponse,
     SkillRemoteInstallPlan, SkillRemoteInstallResponse, SkillRetirementReason,
+};
+use axum::{
+    extract::{Query, State},
+    routing::{get, post},
+    Json, Router,
 };
 use std::sync::Arc;
 
@@ -1510,13 +1510,15 @@ Review code changes carefully and verify evidence before reporting.
 
         let Json(response) = accept_composition_relationship(
             State(state.clone()),
-            Json(agendao_types::SkillHubCompositionRelationshipAcceptRequest {
-                session_id: session_id.to_string(),
-                left_skill_name: "code-review".to_string(),
-                right_skill_name: "repo-review".to_string(),
-                relation_kind: agendao_types::SkillRelationshipKind::RedundantOverlap,
-                preferred_skill_name: Some("repo-review".to_string()),
-            }),
+            Json(
+                agendao_types::SkillHubCompositionRelationshipAcceptRequest {
+                    session_id: session_id.to_string(),
+                    left_skill_name: "code-review".to_string(),
+                    right_skill_name: "repo-review".to_string(),
+                    relation_kind: agendao_types::SkillRelationshipKind::RedundantOverlap,
+                    preferred_skill_name: Some("repo-review".to_string()),
+                },
+            ),
         )
         .await
         .expect("accept relationship should succeed");
@@ -1545,7 +1547,8 @@ Review code changes carefully and verify evidence before reporting.
         .await
         .expect("timeline should succeed");
         assert!(timeline.entries.iter().any(|entry| {
-            entry.kind == agendao_types::SkillGovernanceTimelineKind::CompositionRelationshipAccepted
+            entry.kind
+                == agendao_types::SkillGovernanceTimelineKind::CompositionRelationshipAccepted
         }));
         PERMISSION_ENGINE.lock().await.clear_session(session_id);
     }
@@ -1680,7 +1683,10 @@ Review security-sensitive code changes with evidence collection.
             .iter()
             .find(|group| group.capability_id == "cap_review_family")
             .expect("active group should be present");
-        assert_eq!(group.state, agendao_types::SkillCapabilityGroupState::Active);
+        assert_eq!(
+            group.state,
+            agendao_types::SkillCapabilityGroupState::Active
+        );
         assert!(group.members.iter().any(|member| {
             member.skill_name == "repo-review"
                 && member.role == agendao_types::SkillCapabilityMemberRole::Canonical

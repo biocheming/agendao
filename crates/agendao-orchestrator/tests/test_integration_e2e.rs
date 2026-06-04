@@ -1,7 +1,6 @@
 /// Integration tests for end-to-end dialogue flow (Phase 6.5)
 ///
 /// Tests the complete dialogue flow from session creation to response handling.
-
 use agendao_orchestrator::{OrchestrationCore, PromptExecutionOptions};
 use std::sync::Arc;
 
@@ -90,8 +89,8 @@ impl agendao_provider::Provider for MockDialogueProvider {
         &self,
         _request: agendao_provider::ChatRequest,
     ) -> Result<agendao_provider::StreamResult, agendao_provider::ProviderError> {
-        use futures::stream;
         use agendao_provider::StreamEvent;
+        use futures::stream;
 
         let response_text = self.next_response();
 

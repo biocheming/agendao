@@ -11,11 +11,12 @@ agendao-command = { path = "../agendao-command" }
 agendao-config = { path = "../agendao-config" }
 agendao-orchestrator = { path = "../agendao-orchestrator" }
 agendao-runtime-context = { path = "../agendao-runtime-context" }
+agendao-stage-protocol = { path = "../agendao-stage-protocol" }
 agendao-state = { path = "../agendao-state" }
 agendao-types = { path = "../agendao-types" }
 anyhow = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "charset", "http2", "json", "rustls-tls-webpki-roots", "system-proxy"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync"] }
 urlencoding = "2.1"

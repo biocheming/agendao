@@ -420,11 +420,11 @@ fn mergeable_live_text_mode(event: &ServerEvent) -> Option<MergeableLiveTextMode
     }
 }
 
-fn is_mergeable_output_delta(event: &ServerEvent) -> bool {
+pub(super) fn is_mergeable_output_delta(event: &ServerEvent) -> bool {
     mergeable_live_text_mode(event).is_some()
 }
 
-fn merge_output_block_delta(current: &mut ServerEvent, next: &ServerEvent) -> bool {
+pub(super) fn merge_output_block_delta(current: &mut ServerEvent, next: &ServerEvent) -> bool {
     let Some(current_mode) = mergeable_live_text_mode(current) else {
         return false;
     };

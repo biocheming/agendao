@@ -1,14 +1,14 @@
+use agendao_permission::{
+    AskOutcome, Pattern, PermissionEngine, PermissionInfo, PermissionLifetime,
+    PermissionMatcherKind, Response, TimeInfo,
+};
+use agendao_tool::default_supported_lifetimes_for_class;
 use axum::{
     extract::{Path, State},
     routing::{get, post},
     Json, Router,
 };
 use once_cell::sync::Lazy;
-use agendao_permission::{
-    AskOutcome, Pattern, PermissionEngine, PermissionInfo, PermissionLifetime,
-    PermissionMatcherKind, Response, TimeInfo,
-};
-use agendao_tool::default_supported_lifetimes_for_class;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -239,7 +239,10 @@ fn increment_session_metadata_map_counter(
     session.insert_metadata(key.to_string(), serde_json::Value::Object(object));
 }
 
-fn record_permission_pending_duration(session: &mut agendao_session::Session, requested_at_ms: u64) {
+fn record_permission_pending_duration(
+    session: &mut agendao_session::Session,
+    requested_at_ms: u64,
+) {
     let now = chrono::Utc::now().timestamp_millis().max(0) as u64;
     session.insert_metadata(
         "last_permission_pending_ms".to_string(),
