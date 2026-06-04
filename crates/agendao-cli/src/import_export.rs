@@ -71,6 +71,7 @@ pub(crate) fn export_skill_data(output: Option<PathBuf>) -> anyhow::Result<()> {
     export_workspace_skill_data_from_dir(&current_dir, output)
 }
 
+#[cfg(feature = "session-db")]
 fn parse_share_slug(url: &str) -> Option<String> {
     let trimmed = url.trim_end_matches('/');
     if let Some(idx) = trimmed.rfind("/share/") {
