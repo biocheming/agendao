@@ -2524,10 +2524,10 @@ impl PartRepository {
 mod tests {
     use super::*;
     use crate::Database;
-    use chrono::Utc;
     use agendao_types::{
         MessageRole, PartType, Session, SessionMessage, SessionStatus, SessionTime,
     };
+    use chrono::Utc;
     use std::collections::HashMap;
 
     fn make_session(id: &str) -> Session {

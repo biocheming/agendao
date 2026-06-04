@@ -1,13 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-use anyhow::Result;
 use agendao_storage::{MemoryRepository, MemoryRepositoryFilter};
 use agendao_types::{
     MemoryConsolidationRequest, MemoryConsolidationResponse, MemoryConsolidationRun,
     MemoryConsolidationRunQuery, MemoryKind, MemoryRecord, MemoryRecordId, MemoryRuleHit,
     MemoryRuleHitQuery, MemoryRulePack, MemoryScope, MemoryStatus, MemoryValidationStatus,
 };
+use anyhow::Result;
 use sha2::{Digest, Sha256};
 
 use crate::authority::ResolvedMemoryContext;
@@ -1030,13 +1030,15 @@ mod tests {
             "ws:test",
             10,
         );
-        pattern.evidence_refs.push(agendao_types::MemoryEvidenceRef {
-            session_id: Some("ses_2".to_string()),
-            message_id: Some("msg_2".to_string()),
-            tool_call_id: Some("call_2".to_string()),
-            stage_id: Some("stage_2".to_string()),
-            note: Some("fixture2".to_string()),
-        });
+        pattern
+            .evidence_refs
+            .push(agendao_types::MemoryEvidenceRef {
+                session_id: Some("ses_2".to_string()),
+                message_id: Some("msg_2".to_string()),
+                tool_call_id: Some("call_2".to_string()),
+                stage_id: Some("stage_2".to_string()),
+                note: Some("fixture2".to_string()),
+            });
 
         assert!(methodology_ready(&pattern));
     }

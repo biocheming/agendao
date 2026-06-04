@@ -1,7 +1,6 @@
 /// Integration tests for error handling (Phase 6.5)
 ///
 /// Tests error propagation and recovery across the orchestration layer.
-
 use agendao_orchestrator::{OrchestrationCore, PromptExecutionOptions};
 use std::sync::Arc;
 
@@ -119,8 +118,8 @@ impl agendao_provider::Provider for MockSuccessProvider {
         &self,
         _request: agendao_provider::ChatRequest,
     ) -> Result<agendao_provider::StreamResult, agendao_provider::ProviderError> {
-        use futures::stream;
         use agendao_provider::StreamEvent;
+        use futures::stream;
 
         let events = vec![
             Ok(StreamEvent::Start),
@@ -161,9 +160,7 @@ async fn test_provider_error_handling() {
     };
 
     // Execute dialogue - should fail
-    let result = core
-        .execute_prompt("error-test", "Test", options)
-        .await;
+    let result = core.execute_prompt("error-test", "Test", options).await;
 
     // Verify error is returned
     assert!(result.is_err());
@@ -270,9 +267,7 @@ async fn test_session_state_consistency_after_error() {
         ..Default::default()
     };
 
-    let result2 = core
-        .execute_prompt(session_id, "Turn 2", options2)
-        .await;
+    let result2 = core.execute_prompt(session_id, "Turn 2", options2).await;
 
     assert!(result2.is_err());
 
@@ -315,9 +310,7 @@ async fn test_error_recovery() {
         ..Default::default()
     };
 
-    let _ = core
-        .execute_prompt(session_id, "Turn 2", options2)
-        .await;
+    let _ = core.execute_prompt(session_id, "Turn 2", options2).await;
 
     // Turn 3 - recovery (success again)
     let options3 = PromptExecutionOptions {

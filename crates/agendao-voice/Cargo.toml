@@ -10,5 +10,5 @@ agendao-config = { path = "../agendao-config" }
 anyhow = { workspace = true }
 base64 = { workspace = true }
 uuid = { workspace = true }
-which = { workspace = true }
+which = "7"
 tracing = { workspace = true }

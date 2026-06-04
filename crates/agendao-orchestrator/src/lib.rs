@@ -25,10 +25,10 @@ mod workflow_artifacts;
 mod workflow_mode;
 mod workflow_workspace;
 
+pub use agendao_session_core::{SessionAccess, SessionManager as CoreSessionManager, SessionStore};
 pub use agent_tree::*;
 pub use conversation::*;
 pub use core::*; // Phase 2: Export OrchestrationCore
-pub use agendao_session_core::{SessionAccess, SessionManager as CoreSessionManager, SessionStore};
 pub use error::*;
 pub use error_cause::*;
 pub use execution_resolver::*;

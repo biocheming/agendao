@@ -1,9 +1,9 @@
-use bytes::Bytes;
-use futures::StreamExt;
 use agendao_provider::{
     assemble_tool_calls, parse_ethnopic_value, parse_openai_value, pipeline_to_stream_result,
     runtime::pipeline::Pipeline, ProviderError, StreamEvent, StreamResult,
 };
+use bytes::Bytes;
+use futures::StreamExt;
 
 fn json_events_signature(events: Vec<StreamEvent>) -> Vec<String> {
     let mut non_usage = Vec::new();

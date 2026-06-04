@@ -2333,7 +2333,8 @@ impl SnapshotEngine {
     ) -> Result<WorkspaceCheckpoint, OrchestratorError> {
         self.git_repo_root()?;
         let checkpoint_id = format!("iter-{iteration}-{}", now_nanos());
-        let snapshot_message = format!("agendao-autoresearch/{}/{}", self.session_id, checkpoint_id);
+        let snapshot_message =
+            format!("agendao-autoresearch/{}/{}", self.session_id, checkpoint_id);
         let scoped_paths = self.current_scoped_files()?;
         let (root, entries) = self.create_file_backups(&checkpoint_id, &scoped_paths)?;
         let stash_commit = self.capture_stash_snapshot(&snapshot_message, &scoped_paths)?;

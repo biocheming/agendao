@@ -1,5 +1,4 @@
-use agendao_command::stage_protocol::StageSummary;
-use agendao_session::SessionUsage;
+use agendao_stage_protocol::StageSummary;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -9,12 +8,10 @@ pub use agendao_multimodal::{
     MultimodalPolicyResponse, MultimodalPreflightRequest, MultimodalPreflightResponse,
     PreflightCapabilityView, PreflightInputPart,
 };
-pub use agendao_session::{
-    PermissionRulesetInfo, SessionInfo, SessionListContract, SessionListHints, SessionListItem,
-    SessionListResponse, SessionListTime, SessionRevertInfo, SessionShareInfo, SessionSummaryInfo,
-    SessionTimeInfo,
-};
 pub use agendao_types::{
+    PermissionRulesetInfo, SessionInfo, SessionListContract, SessionListHints, SessionListItem,
+    SessionListResponse, SessionRevertInfo, SessionShareInfo, SessionSummaryInfo,
+    SessionTimeInfo, SessionUsage,
     ConfigPolicyValidationEffect, ConfigPolicyValidationItem, ConfigPolicyValidationOwner,
     ConfigPolicyValidationScope, ConfigPolicyValidationScopeKind, ConfigPolicyValidationSeverity,
     ConfigPolicyValidationSnapshot, ContextCompactionLifecycleSummary, ContextCompactionSummary,
@@ -24,8 +21,9 @@ pub use agendao_types::{
     MemoryDetailView, MemoryListQuery, MemoryListResponse, MemoryRetrievalPreviewResponse,
     MemoryRetrievalQuery, MemoryRuleHitListResponse, MemoryRuleHitQuery,
     MemoryRulePackListResponse, MemoryScope, MemoryValidationReportResponse,
-    ModelRepairQuerySummary, ModelToolRepairTelemetrySummary, PromptSurfaceEvidenceSummary,
-    ProposalStatus, ProviderConnectionDescriptorCandidate, ProviderProfileDescriptorView,
+    ModelRepairQuerySummary, ModelToolRepairTelemetrySummary, PromptPart,
+    PromptSurfaceEvidenceSummary, ProposalStatus, ProviderConnectionDescriptorCandidate,
+    ProviderProfileDescriptorView,
     RepairAggregateRow, RepairKind, RepairOutcomeKind, RepairQuery, RepairQueryResponse,
     RepairSample, SessionCacheSemanticsSummary, SessionCompactionContinuityInspection,
     SessionContextClosureContract, SessionContextExplain, SessionContextKind,
@@ -35,8 +33,8 @@ pub use agendao_types::{
     SessionEffectiveSchedulerTraceStep, SessionEffectiveSchedulerTraceStepKind,
     SessionEffectiveSkillTreePolicy, SessionForkExplain, SessionForkHistoryMode,
     SessionInsightsResponse, SessionMemoryTelemetrySummary, SessionOwnershipSummary,
-    SessionRepairQuerySnapshot, SessionRepairQuerySummary, SessionStatusInfo,
-    SessionToolRepairTelemetrySummary, SessionUsageBooks, SkillArtifactCacheEntry, SkillAuditEvent,
+    SessionRepairQuerySnapshot, SessionRepairQuerySummary, SessionToolRepairTelemetrySummary,
+    SessionUsageBooks, SkillArtifactCacheEntry, SkillAuditEvent,
     SkillDistributionRecord, SkillEvolutionProposal, SkillEvolutionProposalKind,
     SkillGovernanceDiagnosticSeverity, SkillGovernanceTimelineEntry, SkillGovernanceTimelineStatus,
     SkillGovernanceWriteResult, SkillGuardReport, SkillGuardStatus, SkillHubArtifactCacheResponse,
@@ -61,7 +59,22 @@ pub use agendao_types::{
     ToolTrajectoryQualitySummary,
 };
 
-pub type PromptPart = agendao_session::prompt::PartInput;
+pub type SessionListTime = agendao_types::SessionTime;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SessionStatusInfo {
+    pub status: String,
+    #[serde(default)]
+    pub idle: bool,
+    #[serde(default)]
+    pub busy: bool,
+    #[serde(default)]
+    pub attempt: Option<u32>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub next: Option<i64>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SkillCatalogEntry {

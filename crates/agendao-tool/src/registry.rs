@@ -4,7 +4,7 @@ use tokio::sync::RwLock;
 
 use crate::repair_telemetry::ToolArgumentNormalizationTelemetry;
 use crate::tool_access;
-use crate::{Tool, ToolContext, ToolError, ToolResult};
+use crate::{Tool, ToolContext, ToolError, ToolRegistryAccess, ToolResult, ToolSchema};
 use agendao_plugin::{HookContext, HookEvent};
 
 /// Tools that should not appear in suggestion lists when a tool is not found.
@@ -609,12 +609,28 @@ impl Default for ToolRegistry {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct ToolSchema {
-    pub name: String,
-    pub description: String,
-    pub parameters: serde_json::Value,
-    pub source_kind: crate::ToolSchemaSourceKind,
+#[async_trait::async_trait]
+impl ToolRegistryAccess for ToolRegistry {
+    async fn get(&self, id: &str) -> Option<Arc<dyn Tool>> {
+        Self::get(self, id).await
+    }
+
+    async fn list_ids(&self) -> Vec<String> {
+        Self::list_ids(self).await
+    }
+
+    async fn suggest_tools(&self, requested: &str) -> Vec<String> {
+        Self::suggest_tools(self, requested).await
+    }
+
+    async fn execute(
+        &self,
+        tool_id: &str,
+        args: serde_json::Value,
+        ctx: ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        Self::execute(self, tool_id, args, ctx).await
+    }
 }
 
 pub async fn create_default_registry() -> ToolRegistry {
@@ -628,13 +644,14 @@ pub async fn create_default_registry_with_config(
     config: Option<&agendao_config::Config>,
 ) -> ToolRegistry {
     let registry = ToolRegistry::new();
-
-    let web_search_config = config.and_then(|c| c.web_search.as_ref());
+    #[cfg(not(feature = "web-tools"))]
+    let _ = config;
 
     registry.register(crate::read::ReadTool::new()).await;
     registry.register(crate::write::WriteTool::new()).await;
     registry.register(crate::edit::EditTool::new()).await;
     registry.register(crate::bash::BashTool::new()).await;
+    #[cfg(feature = "terminal-tools")]
     registry
         .register(crate::shell_session::ShellSessionTool::new())
         .await;
@@ -648,13 +665,25 @@ pub async fn create_default_registry_with_config(
     registry
         .register(crate::question::QuestionTool::new())
         .await;
+    #[cfg(feature = "web-tools")]
     registry
-        .register(crate::webfetch::WebFetchTool::new())
+        .register(agendao_tool_web::WebFetchTool::new())
         .await;
+    #[cfg(feature = "web-tools")]
     registry
-        .register(crate::websearch::WebSearchTool::from_config(
-            web_search_config,
+        .register(agendao_tool_web::WebSearchTool::from_config(
+            config.and_then(|c| c.web_search.as_ref()),
         ))
+        .await;
+    #[cfg(feature = "web-tools")]
+    registry.register(agendao_tool_web::CodeSearchTool).await;
+    #[cfg(feature = "web-tools")]
+    registry
+        .register(agendao_tool_web::GitHubResearchTool::new())
+        .await;
+    #[cfg(feature = "web-tools")]
+    registry
+        .register(agendao_tool_web::BrowserSessionTool::new())
         .await;
     registry.register(crate::todo::TodoReadTool).await;
     registry.register(crate::todo::TodoWriteTool).await;
@@ -672,12 +701,8 @@ pub async fn create_default_registry_with_config(
         .await;
     registry.register(crate::lsp_tool::LspTool).await;
     registry.register(crate::batch::BatchTool).await;
-    registry.register(crate::codesearch::CodeSearchTool).await;
     registry
         .register(crate::context_docs::ContextDocsTool::new())
-        .await;
-    registry
-        .register(crate::github_research::GitHubResearchTool::new())
         .await;
     registry
         .register(crate::repo_history::RepoHistoryTool::new())
@@ -685,12 +710,11 @@ pub async fn create_default_registry_with_config(
     registry
         .register(crate::media_inspect::MediaInspectTool::new())
         .await;
-    registry
-        .register(crate::browser_session::BrowserSessionTool::new())
-        .await;
+    #[cfg(feature = "code-intel")]
     registry
         .register(crate::ast_grep_search::AstGrepSearchTool::new())
         .await;
+    #[cfg(feature = "code-intel")]
     registry
         .register(crate::ast_grep_replace::AstGrepReplaceTool::new())
         .await;
@@ -1067,10 +1091,13 @@ mod task_flow_registry_tests {
         let registry = super::create_default_registry().await;
         let ids = registry.list_ids().await;
         assert!(ids.iter().any(|id| id == "context_docs"));
+        #[cfg(feature = "code-intel")]
         assert!(ids.iter().any(|id| id == "ast_grep_replace"));
         assert!(ids.iter().any(|id| id == "repo_history"));
         assert!(ids.iter().any(|id| id == "media_inspect"));
+        #[cfg(feature = "terminal-tools")]
         assert!(ids.iter().any(|id| id == "shell_session"));
+        #[cfg(feature = "web-tools")]
         assert!(ids.iter().any(|id| id == "browser_session"));
     }
 }

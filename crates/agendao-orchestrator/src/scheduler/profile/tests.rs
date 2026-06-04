@@ -2164,7 +2164,9 @@ fn stream_from_text(text: &str) -> agendao_provider::StreamResult {
     ]))
 }
 
-fn stream_from_events(events: Vec<agendao_provider::StreamEvent>) -> agendao_provider::StreamResult {
+fn stream_from_events(
+    events: Vec<agendao_provider::StreamEvent>,
+) -> agendao_provider::StreamResult {
     Box::pin(stream::iter(
         events
             .into_iter()

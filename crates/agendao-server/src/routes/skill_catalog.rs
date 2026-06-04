@@ -1,9 +1,5 @@
 use super::permission::request_permission;
 use crate::{ApiError, Result, ServerState};
-use axum::{
-    extract::{Query, State},
-    Json,
-};
 use agendao_orchestrator::{
     stage_policy_available_tools, stage_policy_from_label, SchedulerProfilePlan, SchedulerSkillRef,
     SchedulerStageKind, SchedulerStageOverride, StageToolPolicy,
@@ -18,6 +14,10 @@ use agendao_skill::{
     WriteSkillFileRequest,
 };
 use agendao_types::SkillGuardReport;
+use axum::{
+    extract::{Query, State},
+    Json,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -1061,7 +1061,9 @@ mod tests {
         );
         assert!(response.guard_report.is_none());
 
-        let skill_path = dir.path().join(".agendao/skills/http/server-skill/SKILL.md");
+        let skill_path = dir
+            .path()
+            .join(".agendao/skills/http/server-skill/SKILL.md");
         assert!(skill_path.exists());
 
         let permission = seen_permission

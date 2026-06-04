@@ -6,9 +6,9 @@
 //! 3. StageEvent builder produces unique IDs
 //! 4. Clearing a session and re-recording starts from a fresh state
 
-use agendao_command::governance_fixtures::multi_agent_replay_fixture;
-use agendao_command::stage_protocol::*;
+use agendao_command_render::governance_fixtures::multi_agent_replay_fixture;
 use agendao_server::stage_event_log::{EventFilter, StageEventLog};
+use agendao_stage_protocol::*;
 use std::collections::HashSet;
 use std::sync::Arc;
 

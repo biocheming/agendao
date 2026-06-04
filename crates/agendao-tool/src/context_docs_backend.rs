@@ -1,8 +1,5 @@
 use std::fs;
 use std::path::Path;
-use std::time::Duration;
-
-use reqwest::blocking::Client;
 use walkdir::WalkDir;
 
 use crate::context_docs::{
@@ -11,14 +8,18 @@ use crate::context_docs::{
 };
 use crate::ToolError;
 
+#[cfg(feature = "blocking-http")]
 const REMOTE_DOCS_INDEX_TIMEOUT_SECS: u64 = 20;
+#[cfg(feature = "blocking-http")]
 const MAX_REMOTE_DOCS_INDEX_BYTES: usize = 2 * 1024 * 1024;
+#[cfg(feature = "blocking-http")]
 const DOCS_FETCH_USER_AGENT: &str = "AgenDao context_docs/2026.3.4";
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ContextDocsBackendKind {
     DocsIndex,
     MarkdownBundle,
+    #[cfg(feature = "blocking-http")]
     RemoteDocsIndex,
 }
 
@@ -27,6 +28,7 @@ impl ContextDocsBackendKind {
         match self {
             Self::DocsIndex => "docs_index",
             Self::MarkdownBundle => "markdown_bundle",
+            #[cfg(feature = "blocking-http")]
             Self::RemoteDocsIndex => "remote_docs_index",
         }
     }
@@ -44,8 +46,13 @@ pub(crate) fn load_registered_docs_source(
     ToolError,
 > {
     if is_remote_docs_index(&entry.index_path) {
+        #[cfg(feature = "blocking-http")]
         return load_remote_docs_index(&entry.index_path, &entry.library_id)
             .map(|(index, summary)| (index, summary, ContextDocsBackendKind::RemoteDocsIndex));
+        #[cfg(not(feature = "blocking-http"))]
+        return Err(ToolError::ExecutionError(
+            "remote docs index support requires the `blocking-http` feature".to_string(),
+        ));
     }
 
     let source_path = resolve_registry_index_path(registry_path, &entry.index_path);
@@ -70,10 +77,14 @@ pub(crate) fn resolve_registered_docs_source_display(
     }
 }
 
+#[cfg(feature = "blocking-http")]
 fn load_remote_docs_index(
     url: &str,
     expected_library_id: &str,
 ) -> Result<(DocsIndex, ContextDocsIndexValidationSummary), ToolError> {
+    use reqwest::blocking::Client;
+    use std::time::Duration;
+
     let client = Client::builder()
         .user_agent(DOCS_FETCH_USER_AGENT)
         .timeout(Duration::from_secs(REMOTE_DOCS_INDEX_TIMEOUT_SECS))
@@ -104,6 +115,7 @@ fn load_remote_docs_index(
     parse_remote_docs_index_bytes(url, &bytes, expected_library_id)
 }
 
+#[cfg(feature = "blocking-http")]
 fn parse_remote_docs_index_bytes(
     source_label: &str,
     bytes: &[u8],

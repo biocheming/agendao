@@ -1,9 +1,9 @@
 use super::*;
-use futures::stream;
 use agendao_provider::{
     ChatRequest, ChatResponse, Choice, Content, Message, ModelInfo, Provider, ProviderError, Role,
     StreamResult,
 };
+use futures::stream;
 use std::collections::HashMap;
 use std::sync::Mutex as StdMutex;
 
@@ -298,7 +298,7 @@ async fn emit_scheduler_stage_message_appends_assistant_stage_message() {
     assert_eq!(summaries[0].stage_name, "plan");
     assert_eq!(
         summaries[0].status,
-        agendao_command::stage_protocol::StageStatus::Done
+        agendao_stage_protocol::StageStatus::Done
     );
 }
 
@@ -567,7 +567,7 @@ async fn lifecycle_hook_updates_stage_runtime_metadata() {
     assert_eq!(summaries[0].step, Some(1));
     assert_eq!(
         summaries[0].status,
-        agendao_command::stage_protocol::StageStatus::Done
+        agendao_stage_protocol::StageStatus::Done
     );
     assert_eq!(summaries[0].active_tool_count, 0);
 }
@@ -1621,16 +1621,16 @@ async fn lifecycle_hook_emits_scheduler_stage_and_reasoning_blocks_for_non_attac
         .iter()
         .map(|block| match block {
             OutputBlock::Message(message) => match message.phase {
-                agendao_command::output_blocks::MessagePhase::Start => "message:start",
-                agendao_command::output_blocks::MessagePhase::Delta => "message:delta",
-                agendao_command::output_blocks::MessagePhase::End => "message:end",
-                agendao_command::output_blocks::MessagePhase::Full => "message:full",
+                agendao_output_blocks::MessagePhase::Start => "message:start",
+                agendao_output_blocks::MessagePhase::Delta => "message:delta",
+                agendao_output_blocks::MessagePhase::End => "message:end",
+                agendao_output_blocks::MessagePhase::Full => "message:full",
             },
             OutputBlock::Reasoning(reasoning) => match reasoning.phase {
-                agendao_command::output_blocks::MessagePhase::Start => "reasoning:start",
-                agendao_command::output_blocks::MessagePhase::Delta => "reasoning:delta",
-                agendao_command::output_blocks::MessagePhase::End => "reasoning:end",
-                agendao_command::output_blocks::MessagePhase::Full => "reasoning:full",
+                agendao_output_blocks::MessagePhase::Start => "reasoning:start",
+                agendao_output_blocks::MessagePhase::Delta => "reasoning:delta",
+                agendao_output_blocks::MessagePhase::End => "reasoning:end",
+                agendao_output_blocks::MessagePhase::Full => "reasoning:full",
             },
             OutputBlock::SchedulerStage(_) => "scheduler_stage",
             _ => "other",

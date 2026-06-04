@@ -1,5 +1,5 @@
-use crossterm::event::{KeyEvent, MouseEvent};
 use agendao_types::{ControlInputKind, ControlInputPhase};
+use crossterm::event::{KeyEvent, MouseEvent};
 
 #[derive(Clone, Debug)]
 pub enum PermissionReplyOutcome {

@@ -41,6 +41,34 @@ fn strip_delivery_summary_heading(content: &str) -> &str {
         .unwrap_or_else(|| content.trim())
 }
 
+fn strip_leading_summary_line(content: &str) -> String {
+    let body = strip_delivery_summary_heading(content);
+    if let Some(nested_start) = body.find("\n## Delivery Summary") {
+        let nested = &body[nested_start + 1..];
+        return strip_delivery_summary_heading(nested).trim().to_string();
+    }
+    let mut seen_first_non_empty = false;
+    let mut lines = Vec::new();
+
+    for line in body.lines() {
+        if !seen_first_non_empty {
+            if line.trim().is_empty() {
+                continue;
+            }
+            seen_first_non_empty = true;
+            continue;
+        }
+        lines.push(line);
+    }
+
+    let joined = lines.join("\n").trim().to_string();
+    if joined.is_empty() {
+        body.trim().to_string()
+    } else {
+        joined
+    }
+}
+
 pub fn normalize_sisyphus_final_output(output: &str) -> String {
     let normalized_input = normalize_embedded_delivery_summary(output);
     let trimmed = normalized_input.trim();
@@ -59,13 +87,14 @@ pub fn normalize_sisyphus_final_output(output: &str) -> String {
         && trimmed.contains("**Verification**")
     {
         let summary = first_body_line_after_delivery_summary(trimmed);
+        let legacy_body = strip_leading_summary_line(trimmed);
         return [
             format!("## Delivery Summary\n{summary}"),
             structured_section(
                 "Delegation Path",
                 "- Preserve the actual Sisyphus routing decision: delegate by default, direct execution only when the task was genuinely trivial.",
             ),
-            strip_delivery_summary_heading(trimmed).to_string(),
+            legacy_body,
         ]
         .join("\n\n");
     }
@@ -137,6 +166,26 @@ Done.
         assert!(normalized.contains("**Execution Outcome**"));
         assert!(normalized.contains("**Verification**"));
         assert_eq!(normalized.matches("## Delivery Summary").count(), 1);
+    }
+
+    #[test]
+    fn sisyphus_final_output_normalization_does_not_nest_delivery_summary_inside_execution_outcome()
+    {
+        let legacy = "## Delivery Summary
+以下是通过 PubMed 数据库检索到的结果。
+
+**Execution Outcome**
+## Delivery Summary
+以下是通过 PubMed 数据库检索到的 徐锡明 于 2021-2026 年间发表的论文综合结果。
+
+**Verification**
+- Checked.";
+
+        let normalized = normalize_sisyphus_final_output(legacy);
+
+        assert_eq!(normalized.matches("## Delivery Summary").count(), 1);
+        assert!(normalized.contains("以下是通过 PubMed 数据库检索到的 徐锡明"));
+        assert!(!normalized.contains("**Execution Outcome**\n## Delivery Summary"));
     }
 
     #[test]

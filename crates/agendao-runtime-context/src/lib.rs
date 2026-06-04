@@ -1,8 +1,12 @@
-use anyhow::Result;
+mod wellknown;
+
 use agendao_config::{Config, ConfigStore, WorkspaceIdentity, WorkspaceMode};
 use agendao_state::{RecentModelEntry, UserStateAuthority};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+
+pub use wellknown::{clear_wellknown_cache, load_config_with_remote, load_wellknown};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedWorkspaceContext {

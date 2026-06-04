@@ -9,7 +9,6 @@
 ///   - `Instant::now()` for single-operation timing
 ///   - Repeated samples (warm-up + measurement rounds)
 ///   - Soft assertions (verify no catastrophic regression, not specific µs targets)
-
 use agendao_orchestrator::{OrchestrationCore, PromptExecutionOptions};
 use std::sync::Arc;
 use std::time::Instant;
@@ -19,8 +18,12 @@ struct MockProvider;
 
 #[async_trait::async_trait]
 impl agendao_provider::Provider for MockProvider {
-    fn id(&self) -> &str { "mock" }
-    fn name(&self) -> &str { "Mock Provider" }
+    fn id(&self) -> &str {
+        "mock"
+    }
+    fn name(&self) -> &str {
+        "Mock Provider"
+    }
 
     fn models(&self) -> Vec<agendao_provider::ModelInfo> {
         vec![agendao_provider::ModelInfo {
@@ -39,7 +42,9 @@ impl agendao_provider::Provider for MockProvider {
         }]
     }
 
-    fn get_model(&self, _id: &str) -> Option<&agendao_provider::ModelInfo> { None }
+    fn get_model(&self, _id: &str) -> Option<&agendao_provider::ModelInfo> {
+        None
+    }
 
     async fn chat(
         &self,
@@ -68,16 +73,20 @@ impl agendao_provider::Provider for MockProvider {
         &self,
         _request: agendao_provider::ChatRequest,
     ) -> Result<agendao_provider::StreamResult, agendao_provider::ProviderError> {
-        use futures::stream;
         use agendao_provider::StreamEvent;
+        use futures::stream;
         let events = vec![
             Ok(StreamEvent::Start),
             Ok(StreamEvent::TextDelta("Test".to_string())),
             Ok(StreamEvent::FinishStep {
                 finish_reason: Some("stop".to_string()),
                 usage: agendao_provider::StreamUsage {
-                    prompt_tokens: 10, completion_tokens: 1, context_tokens: 10,
-                    reasoning_tokens: 0, cache_read_tokens: 0, cache_miss_tokens: 0,
+                    prompt_tokens: 10,
+                    completion_tokens: 1,
+                    context_tokens: 10,
+                    reasoning_tokens: 0,
+                    cache_read_tokens: 0,
+                    cache_miss_tokens: 0,
                     cache_write_tokens: 0,
                 },
                 provider_metadata: None,
@@ -93,8 +102,12 @@ struct MockEchoTool;
 
 #[async_trait::async_trait]
 impl agendao_tool::Tool for MockEchoTool {
-    fn id(&self) -> &str { "echo" }
-    fn description(&self) -> &str { "Echo tool for perf testing" }
+    fn id(&self) -> &str {
+        "echo"
+    }
+    fn description(&self) -> &str {
+        "Echo tool for perf testing"
+    }
 
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
@@ -121,15 +134,21 @@ impl agendao_tool::Tool for MockEchoTool {
 
 fn measure(label: &str, samples: u32, mut f: impl FnMut() -> std::time::Duration) {
     // Warm-up
-    for _ in 0..3 { f(); }
+    for _ in 0..3 {
+        f();
+    }
     let mut total = std::time::Duration::ZERO;
     let mut min = std::time::Duration::MAX;
     let mut max = std::time::Duration::ZERO;
     for _ in 0..samples {
         let d = f();
         total += d;
-        if d < min { min = d; }
-        if d > max { max = d; }
+        if d < min {
+            min = d;
+        }
+        if d > max {
+            max = d;
+        }
     }
     let avg = total / samples;
     println!("{label}: avg={avg:?} min={min:?} max={max:?} (n={samples})");
@@ -148,9 +167,7 @@ async fn test_cold_start_with_shared_authorities() {
     let providers = Arc::new(tokio::sync::RwLock::new(
         agendao_provider::ProviderRegistry::new(),
     ));
-    let tools = Arc::new(tokio::sync::RwLock::new(
-        agendao_tool::ToolRegistry::new(),
-    ));
+    let tools = Arc::new(tokio::sync::RwLock::new(agendao_tool::ToolRegistry::new()));
 
     measure("shared-authority cold start", 10, || {
         let start = Instant::now();
@@ -183,7 +200,11 @@ async fn test_tool_registration_overhead() {
 
     println!("Tool registration (1 tool): {:?}", duration);
     assert!(core.tools().read().await.get("echo").await.is_some());
-    assert!(duration.as_millis() < 100, "Tool registration too slow: {:?}", duration);
+    assert!(
+        duration.as_millis() < 100,
+        "Tool registration too slow: {:?}",
+        duration
+    );
 }
 
 #[tokio::test]
@@ -227,7 +248,10 @@ async fn test_concurrent_session_creation() {
 
     // Verify sessions are visible.
     let sessions = core.list_sessions().await.unwrap();
-    println!("  list_sessions after creation: {} sessions", sessions.len());
+    println!(
+        "  list_sessions after creation: {} sessions",
+        sessions.len()
+    );
 
     assert!(created > 0, "At least some sessions should succeed");
 }
@@ -244,9 +268,7 @@ async fn test_provider_hot_reload_visibility() {
     let providers = Arc::new(tokio::sync::RwLock::new(
         agendao_provider::ProviderRegistry::new(),
     ));
-    let tools = Arc::new(tokio::sync::RwLock::new(
-        agendao_tool::ToolRegistry::new(),
-    ));
+    let tools = Arc::new(tokio::sync::RwLock::new(agendao_tool::ToolRegistry::new()));
 
     let core = agendao_orchestrator::OrchestrationCore::<
         agendao_session_core::SessionManager,
@@ -260,7 +282,10 @@ async fn test_provider_hot_reload_visibility() {
     // Before registration — mock should not be visible.
     {
         let p = core.providers().read().await;
-        assert!(p.get("mock").is_none(), "mock provider should NOT be visible yet");
+        assert!(
+            p.get("mock").is_none(),
+            "mock provider should NOT be visible yet"
+        );
     }
 
     // Register via shared Arc — must be visible immediately.
@@ -271,7 +296,10 @@ async fn test_provider_hot_reload_visibility() {
 
     {
         let p = core.providers().read().await;
-        assert!(p.get("mock").is_some(), "mock provider MUST be visible after registration");
+        assert!(
+            p.get("mock").is_some(),
+            "mock provider MUST be visible after registration"
+        );
     }
 
     println!("Provider hot-reload visibility: OK (no restart needed)");

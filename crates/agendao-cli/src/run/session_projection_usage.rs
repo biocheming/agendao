@@ -589,7 +589,7 @@ mod tests {
         cli_context_usage_bar, cli_current_context_tokens, cli_format_context_meter,
         cli_usage_snapshot_lines,
     };
-    use agendao_command::stage_protocol::{StageStatus, StageSummary};
+    use agendao_stage_protocol::{StageStatus, StageSummary};
     use agendao_types::{SessionContextExplain, SessionUsageBooks, WorkflowUsageSummary};
 
     #[test]

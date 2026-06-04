@@ -2,10 +2,6 @@ use std::collections::HashMap;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 
-use axum::{
-    extract::{Path, Query, State},
-    Json,
-};
 use agendao_api::CompactResponse;
 use agendao_session::{load_session_telemetry_snapshot, SessionForkError, SessionForkSpec};
 use agendao_types::{
@@ -13,11 +9,16 @@ use agendao_types::{
     SessionListHints, SessionListItem, SessionListResponse, SessionListSummary, SessionRevertInfo,
     SessionShareInfo, SessionStatusInfo, SessionSummaryInfo, SessionTimeInfo, SessionTodoInfo,
 };
+use axum::{
+    extract::{Path, Query, State},
+    Json,
+};
 use serde::Deserialize;
 
-use crate::runtime_control::SessionRunStatus;
-use crate::session_runtime::events::{broadcast_session_reconcile, ReconcileReason};
+use crate::session_runtime::events::broadcast_session_reconcile;
 use crate::{ApiError, Result, ServerState};
+use agendao_server_core::runtime_control::SessionRunStatus;
+use agendao_server_core::runtime_events::ReconcileReason;
 
 use super::scheduler::resolve_scheduler_request_defaults_validated;
 
@@ -731,14 +732,14 @@ pub(super) async fn delete_session(
 pub(super) async fn get_session_runtime(
     State(state): State<Arc<ServerState>>,
     Path(id): Path<String>,
-) -> Result<Json<crate::session_runtime::state::SessionRuntimeState>> {
+) -> Result<Json<agendao_server_core::runtime_state::SessionRuntimeState>> {
     Ok(Json(runtime_snapshot_or_default(&state, &id).await?))
 }
 
 pub(super) async fn runtime_snapshot_or_default(
     state: &Arc<ServerState>,
     session_id: &str,
-) -> Result<crate::session_runtime::state::SessionRuntimeState> {
+) -> Result<agendao_server_core::runtime_state::SessionRuntimeState> {
     match state
         .runtime_telemetry
         .get_runtime_snapshot(session_id)
@@ -749,9 +750,11 @@ pub(super) async fn runtime_snapshot_or_default(
             let sessions = state.sessions.lock().await;
             if sessions.get(session_id).is_some() {
                 drop(sessions);
-                Ok(crate::session_runtime::state::SessionRuntimeState::new(
-                    session_id.to_string(),
-                ))
+                Ok(
+                    agendao_server_core::runtime_state::SessionRuntimeState::new(
+                        session_id.to_string(),
+                    ),
+                )
             } else {
                 Err(ApiError::SessionNotFound(session_id.to_string()))
             }
@@ -939,17 +942,17 @@ mod tests {
     };
     use crate::ApiError;
     use crate::ServerState;
-    use axum::{
-        extract::{Path, Query, State},
-        Json,
-    };
-    use agendao_command::stage_protocol::StageStatus;
     use agendao_session::{
         persist_session_telemetry_snapshot, MessageRole, PartType, PersistedStageTelemetrySummary,
         Session, SessionForkSpec, SessionMessage, SessionTelemetrySnapshot,
         SessionTelemetrySnapshotVersion,
     };
+    use agendao_stage_protocol::StageStatus;
     use agendao_types::SessionForkHistoryMode;
+    use axum::{
+        extract::{Path, Query, State},
+        Json,
+    };
     use std::sync::Arc;
 
     #[test]
@@ -1771,7 +1774,8 @@ pub(super) async fn cancel_tool_call(
     }
 
     // Look up the plugin request mapping from global tracking
-    if let Some(tracking) = agendao_plugin::subprocess::get_tool_call_tracking(&tool_call_id).await {
+    if let Some(tracking) = agendao_plugin::subprocess::get_tool_call_tracking(&tool_call_id).await
+    {
         // Get the plugin loader and cancel the request
         if let Some(loader) = super::super::get_plugin_loader() {
             let clients = loader.clients().await;

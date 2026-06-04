@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
+use agendao_stage_protocol::StageSummary;
 use axum::extract::{Path, State};
 use axum::Json;
-use agendao_command::stage_protocol::StageSummary;
 
 use crate::{Result, ServerState};
 

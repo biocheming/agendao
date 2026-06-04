@@ -6,13 +6,15 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-agendao-core = { path = "../agendao-core" }
-agendao-content = { path = "../agendao-content" }
+agendao-core = { path = "../agendao-core", features = ["event-bus"] }
+agendao-output-blocks = { path = "../agendao-output-blocks" }
 agendao-util = { path = "../agendao-util" }
 agendao-types = { path = "../agendao-types" }
+agendao-stage-protocol = { path = "../agendao-stage-protocol" }
 agendao-config = { path = "../agendao-config" }
 agendao-execution-types = { path = "../agendao-execution-types" }
-agendao-storage = { path = "../agendao-storage" }
+agendao-storage = { path = "../agendao-storage", default-features = false, features = ["sqlite"] }
+agendao-storage-core = { path = "../agendao-storage-core" }
 agendao-provider = { path = "../agendao-provider" }
 agendao-orchestrator = { path = "../agendao-orchestrator", optional = true }
 agendao-session-core = { path = "../agendao-session-core" }
@@ -22,8 +24,8 @@ agendao-mcp = { path = "../agendao-mcp" }
 agendao-lsp = { path = "../agendao-lsp" }
 agendao-plugin = { path = "../agendao-plugin" }
 agendao-memory = { path = "../agendao-memory" }
-tokio = { workspace = true }
-tokio-util = { workspace = true }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
@@ -36,8 +38,8 @@ async-trait = { workspace = true }
 regex = { workspace = true }
 dirs = { workspace = true }
 glob = { workspace = true }
-reqwest = { workspace = true }
-sqlx = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["charset", "http2", "rustls-tls-webpki-roots", "system-proxy"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 url = { workspace = true }
 base64 = { workspace = true }
 

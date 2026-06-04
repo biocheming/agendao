@@ -2,22 +2,21 @@ use crate::run::frontend_state_types::CliVisibleTranscript;
 use crate::run::{
     cli_apply_live_slot_update, cli_live_slot_commit_suffix, cli_live_slot_has_visible_content,
 };
-use futures::StreamExt;
-use agendao_command::cli_style::CliStyle;
-use agendao_command::live_semantic_consumer::LiveSemanticConsumer;
-use agendao_command::output_blocks::{
+use agendao_command_render::cli_style::CliStyle;
+use agendao_command_render::live_semantic_consumer::LiveSemanticConsumer;
+use agendao_command_render::output_blocks::{
     render_cli_block_rich, BlockTone, MessageBlock, MessagePhase, MessageRole, OutputBlock,
     QueueItemBlock, ReasoningBlock, SchedulerDecisionBlock, SchedulerDecisionField,
     SchedulerDecisionRenderSpec, SchedulerDecisionSection, SchedulerStageBlock, SessionEventBlock,
     SessionEventField, StatusBlock, ToolBlock, ToolPhase,
 };
-use agendao_command::terminal_presentation::{
+use agendao_command_render::terminal_presentation::{
     render_terminal_stream_block_semantic, TerminalSemanticStreamRenderState,
     TerminalStreamAccumulator,
 };
 use agendao_config::schema::ShareMode;
 use agendao_runtime_context::ResolvedWorkspaceContext;
-use agendao_server;
+use futures::StreamExt;
 use serde::Deserialize;
 use std::io::IsTerminal;
 use std::io::{self, Write};
@@ -153,9 +152,6 @@ pub(crate) struct RemoteAttachOptions {
     pub title: Option<String>,
     pub directory: Option<String>,
     pub show_thinking: bool,
-    // Staged for local attach dispatch; consumed in the next wiring pass.
-    #[allow(dead_code)]
-    pub local_server: Option<Arc<agendao_server::ServerState>>,
 }
 
 fn remote_show_thinking_from_context(context: &ResolvedWorkspaceContext) -> Option<bool> {
@@ -789,7 +785,6 @@ pub(crate) async fn run_non_interactive_attach(options: RemoteAttachOptions) -> 
         title,
         directory,
         show_thinking,
-        local_server: _,
     } = options;
     let client = reqwest::Client::new();
     let show_thinking = Arc::new(AtomicBool::new(show_thinking));
@@ -851,13 +846,13 @@ mod tests {
     use super::{parse_output_block, remote_apply_output_block, RemoteSemanticRenderState};
     use crate::run::cli_apply_live_slot_update;
     use crate::run::frontend_state_types::CliVisibleTranscript;
-    use agendao_command::cli_style::CliStyle;
-    use agendao_command::governance_fixtures::canonical_scheduler_stage_fixture;
-    use agendao_command::output_blocks::{
+    use agendao_command_render::cli_style::CliStyle;
+    use agendao_command_render::governance_fixtures::canonical_scheduler_stage_fixture;
+    use agendao_command_render::output_blocks::{
         MessageBlock, MessagePhase, MessageRole, OutputBlock, QueueItemBlock, SchedulerStageBlock,
         StatusBlock,
     };
-    use agendao_command::terminal_presentation::render_terminal_stream_block_semantic;
+    use agendao_command_render::terminal_presentation::render_terminal_stream_block_semantic;
 
     #[test]
     fn parses_canonical_scheduler_stage_payload() {

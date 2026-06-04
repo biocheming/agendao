@@ -3,23 +3,23 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use crate::runtime_control::{
+use agendao_plugin::{HookContext, HookEvent};
+use agendao_server_core::runtime_control::{
     build_session_execution_topology, ExecutionKind, ExecutionRecord, QuestionInfo, QuestionReply,
     RuntimeControlRegistry, SessionExecutionTopology, SessionRunStatus, TopologyChangeContext,
 };
-use crate::session_runtime::events::{
+use agendao_server_core::runtime_events::{
     DiffEntry, EventBusTelemetry, QuestionResolutionKind, ServerEvent,
 };
-use crate::session_runtime::stage_summary::StageSummaryStore;
-use crate::session_runtime::state::{
+use agendao_server_core::runtime_state::{
     InterruptTarget, RuntimeProtocolUpdate, RuntimeStateStore, SessionRuntimeState,
 };
-use crate::stage_event_log::{EventFilter, StageEventLog};
-use agendao_command::stage_protocol::{telemetry_event_names, EventScope, StageEvent, StageSummary};
-use agendao_plugin::{HookContext, HookEvent};
+use agendao_server_core::stage_event_log::{EventFilter, StageEventLog};
+use agendao_server_core::stage_summary_store::StageSummaryStore;
 use agendao_session::{
     SessionMessage, SessionTelemetrySnapshot, SessionTelemetrySnapshotVersion, SessionUsage,
 };
+use agendao_stage_protocol::{telemetry_event_names, EventScope, StageEvent, StageSummary};
 use agendao_types::{ControlInputKind, ControlInputPhase};
 use agendao_types::{SessionMemoryTelemetrySummary, SessionToolRepairTelemetrySummary};
 
@@ -637,7 +637,7 @@ impl RuntimeTelemetryAuthority {
     pub(crate) async fn steering_enqueued(
         &self,
         owner_session_id: &str,
-        summary: crate::session_runtime::state::PendingSteeringMessageSummary,
+        summary: agendao_server_core::runtime_state::PendingSteeringMessageSummary,
     ) {
         self.runtime_state
             .steering_enqueued(owner_session_id, summary)
@@ -781,7 +781,7 @@ impl RuntimeTelemetryAuthority {
         &self,
         session_id: &str,
         filter: &EventFilter,
-    ) -> Vec<agendao_command::stage_protocol::StageEvent> {
+    ) -> Vec<StageEvent> {
         self.stage_event_log.query(session_id, filter).await
     }
 
@@ -1205,7 +1205,7 @@ mod tests {
                 .await
                 .expect("state should exist")
                 .run_status,
-            crate::session_runtime::state::RunStatus::Blocked
+            agendao_server_core::runtime_state::RunStatus::Blocked
         );
 
         // Recheck via telemetry authority — goes through the bridge.
@@ -1225,7 +1225,7 @@ mod tests {
                 .await
                 .expect("state should still exist")
                 .run_status,
-            crate::session_runtime::state::RunStatus::Idle,
+            agendao_server_core::runtime_state::RunStatus::Idle,
             "RuntimeStateStore must be updated via the telemetry bridge"
         );
     }
@@ -1280,7 +1280,7 @@ mod tests {
                 .await
                 .expect("state should exist")
                 .run_status,
-            crate::session_runtime::state::RunStatus::Sleeping
+            agendao_server_core::runtime_state::RunStatus::Sleeping
         );
 
         let result = telemetry.wake_session(sid).await;
@@ -1301,7 +1301,7 @@ mod tests {
                 .await
                 .expect("state should still exist")
                 .run_status,
-            crate::session_runtime::state::RunStatus::Idle,
+            agendao_server_core::runtime_state::RunStatus::Idle,
             "RuntimeStateStore must be updated via the telemetry bridge on wake"
         );
     }

@@ -1,6 +1,8 @@
 use super::*;
+#[cfg(feature = "voice")]
 use crate::app::terminal;
 use agendao_command::ResolvedUiCommand;
+#[cfg(feature = "voice")]
 use std::io::{self, Write};
 
 fn mode_matches_action_argument(mode: &Agent, action_id: UiActionId, value: &str) -> bool {
@@ -466,6 +468,7 @@ impl App {
         Ok(())
     }
 
+    #[cfg(feature = "voice")]
     fn capture_voice_prompt(&mut self) -> anyhow::Result<()> {
         let Some(client) = self.context.get_api_client() else {
             self.toast
@@ -523,7 +526,13 @@ impl App {
         };
 
         let mut multimodal_parts = Vec::new();
+        let mut prompt_parts = Vec::new();
         if let Some(attachment) = capture.attachment {
+            prompt_parts.push(crate::api::PromptPart::File {
+                url: attachment.data_url.clone(),
+                filename: Some(attachment.filename.clone()),
+                mime: Some(attachment.mime.clone()),
+            });
             multimodal_parts.push(multimodal.voice_part_from_data_url(
                 attachment.data_url,
                 attachment.filename,
@@ -579,8 +588,18 @@ impl App {
             } else {
                 summary.compact_label
             },
-            (!parts.is_empty()).then_some(parts),
+            (!prompt_parts.is_empty()).then_some(prompt_parts),
         )
+    }
+
+    #[cfg(not(feature = "voice"))]
+    fn capture_voice_prompt(&mut self) -> anyhow::Result<()> {
+        self.toast.show(
+            ToastVariant::Warning,
+            "Voice input is unavailable in this build.",
+            2200,
+        );
+        Ok(())
     }
 
     pub(super) fn execute_typed_interactive_command(

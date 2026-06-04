@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::runtime_control::{
+use agendao_server_core::runtime_control::{
     ExecutionKind, ExecutionStatus, SessionExecutionNode, SessionExecutionTopology,
 };
 
@@ -629,7 +629,7 @@ pub(crate) fn compose_subtask_recovery_prompt(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime_control::SessionExecutionTopology;
+    use agendao_server_core::runtime_control::SessionExecutionTopology;
     use agendao_session::{SessionForkHistoryMode, SessionForkSpec, SessionManager};
 
     fn empty_topology(session_id: &str) -> SessionExecutionTopology {

@@ -1,0 +1,15 @@
+[package]
+name = "agendao-server-pty"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio = { version = "1", features = ["rt", "sync", "time"] }
+serde = { workspace = true }
+chrono = { workspace = true }
+portable-pty = "0.8"
+uuid = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }

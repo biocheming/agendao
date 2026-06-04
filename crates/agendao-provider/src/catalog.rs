@@ -1,4 +1,4 @@
-use crate::models::{ModelsData, MODELS_DEV_URL};
+use crate::models::{ModelsData, ProviderInfo as ModelsProviderInfo, MODELS_DEV_URL};
 use once_cell::sync::Lazy;
 use reqwest::header::{CACHE_CONTROL, ETAG, IF_NONE_MATCH, PRAGMA};
 use serde::{Deserialize, Serialize};
@@ -363,7 +363,7 @@ fn parse_models_data(raw: &str) -> Option<ModelsData> {
 
     let mut data = HashMap::new();
     for (provider_id, provider_value) in map {
-        match serde_json::from_value::<crate::models::ProviderInfo>(provider_value.clone()) {
+        match serde_json::from_value::<ModelsProviderInfo>(provider_value.clone()) {
             Ok(mut provider) => {
                 if provider.id.trim().is_empty() {
                     provider.id = provider_id.clone();

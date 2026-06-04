@@ -14,8 +14,8 @@ use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::runtime_control::SessionRunStatus;
 use crate::ServerState;
+use agendao_server_core::runtime_control::SessionRunStatus;
 
 use std::sync::Arc;
 use std::time::Duration;

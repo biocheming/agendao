@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use agendao_config::{Config as AppConfig, ModelConfig};
 use agendao_runtime_context::ResolvedWorkspaceContext;
 use agendao_state::RecentModelEntry;
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde::Serialize;
 
 use crate::common::{
@@ -208,10 +208,17 @@ impl AsyncApiClient {
         let url = server_url(&self.base_url, &format!("/session/{}/prompt", session_id));
         let req = PromptRequest {
             message: (!content.trim().is_empty()).then_some(content),
-            parts, idempotency_key, ingress_source,
-            agent, scheduler_profile, model, variant,
-            command: None, arguments: None,
-            source_origin, source_surface,
+            parts,
+            idempotency_key,
+            ingress_source,
+            agent,
+            scheduler_profile,
+            model,
+            variant,
+            command: None,
+            arguments: None,
+            source_origin,
+            source_surface,
         };
         let resp = self.client.post(&url).json(&req).send().await?;
         Self::json_ok(resp, "send prompt").await
@@ -231,12 +238,18 @@ impl AsyncApiClient {
     ) -> anyhow::Result<PromptResponse> {
         let url = server_url(&self.base_url, &format!("/session/{}/prompt", session_id));
         let req = PromptRequest {
-            message: None, parts: None,
-            idempotency_key, ingress_source,
-            agent: None, scheduler_profile: None,
-            model, variant,
-            command: Some(command), arguments,
-            source_origin, source_surface,
+            message: None,
+            parts: None,
+            idempotency_key,
+            ingress_source,
+            agent: None,
+            scheduler_profile: None,
+            model,
+            variant,
+            command: Some(command),
+            arguments,
+            source_origin,
+            source_surface,
         };
         let resp = self.client.post(&url).json(&req).send().await?;
         Self::json_ok(resp, "send command prompt").await
@@ -349,7 +362,7 @@ impl AsyncApiClient {
         &self,
         session_id: &str,
         query: &SessionEventsQuery,
-    ) -> anyhow::Result<Vec<agendao_command::stage_protocol::StageEvent>> {
+    ) -> anyhow::Result<Vec<agendao_stage_protocol::StageEvent>> {
         let url = server_url(&self.base_url, &format!("/session/{}/events", session_id));
         let resp = self.client.get(&url).query(query).send().await?;
         Self::json_ok(resp, "get session events").await

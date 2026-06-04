@@ -621,10 +621,9 @@ impl App {
             );
         }
         if payload.get("kind").and_then(|value| value.as_str()) == Some("scheduler_stage") {
-            if let Ok(block) = serde_json::from_value::<
-                agendao_command::output_blocks::SchedulerStageBlock,
-            >(payload.clone())
-            {
+            if let Ok(block) = serde_json::from_value::<agendao_output_blocks::SchedulerStageBlock>(
+                payload.clone(),
+            ) {
                 self.context
                     .apply_scheduler_stage_summary(session_id, &block);
             }

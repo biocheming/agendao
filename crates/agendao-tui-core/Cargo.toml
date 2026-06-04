@@ -1,0 +1,13 @@
+[package]
+name = "agendao-tui-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+once_cell = { workspace = true }
+ratatui = { version = "0.30.0", default-features = false, features = ["crossterm", "underline-color", "macros"] }
+crossterm = "0.29.0"

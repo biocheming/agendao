@@ -1,9 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
-use axum::Json;
-use agendao_command::stage_protocol::StageSummary;
 use agendao_multimodal::PersistedMultimodalExplain;
 use agendao_session::prompt::{explain_session_cache_semantics, explain_session_context};
 use agendao_session::{
@@ -12,6 +9,7 @@ use agendao_session::{
     load_session_telemetry_snapshot, persist_session_telemetry_snapshot,
     session_last_run_status_label, session_telemetry_model_ref, Session, SessionUsage,
 };
+use agendao_stage_protocol::StageSummary;
 use agendao_types::message_continuity_packet;
 #[cfg(test)]
 use agendao_types::message_latest_compaction_summary;
@@ -25,11 +23,13 @@ use agendao_types::{
     SessionToolRepairTelemetrySummary, SessionUsageBooks, ToolResultGovernanceSummary,
     ToolTrajectoryQualitySummary, WorkflowUsageSummary,
 };
+use axum::extract::{Path, State};
+use axum::Json;
 use serde::Serialize;
 
-use crate::runtime_control::SessionExecutionTopology;
-use crate::session_runtime::state::SessionRuntimeState;
 use crate::{Result, ServerState};
+use agendao_server_core::runtime_control::SessionExecutionTopology;
+use agendao_server_core::runtime_state::SessionRuntimeState;
 
 use super::cancel::ensure_session_exists;
 use super::effective_policy::build_session_effective_policy;
@@ -160,11 +160,11 @@ pub struct SteeringRuntimeSummary {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct InterruptRuntimeSummary {
-    pub phase: crate::session_runtime::state::InterruptPhase,
+    pub phase: agendao_server_core::runtime_state::InterruptPhase,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_at_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target: Option<crate::session_runtime::state::InterruptTarget>,
+    pub target: Option<agendao_server_core::runtime_state::InterruptTarget>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -295,7 +295,7 @@ fn build_runtime_protocol_summary(
         target: runtime.interrupt.target,
     };
     let prompt_ingress =
-        if interrupt.phase == crate::session_runtime::state::InterruptPhase::Requested {
+        if interrupt.phase == agendao_server_core::runtime_state::InterruptPhase::Requested {
             PromptIngressDisposition::AwaitingInterrupt
         } else if permission.pending {
             PromptIngressDisposition::BlockedOnPermission
@@ -303,7 +303,7 @@ fn build_runtime_protocol_summary(
             PromptIngressDisposition::BlockedOnQuestion
         } else if matches!(
             runtime.run_status,
-            crate::session_runtime::state::RunStatus::Idle
+            agendao_server_core::runtime_state::RunStatus::Idle
         ) {
             PromptIngressDisposition::AcceptNow
         } else {
@@ -1114,18 +1114,18 @@ fn build_session_multimodal_insight(session: &Session) -> Option<SessionMultimod
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime_control::{SessionExecutionTopology, SessionRunStatus};
-    use crate::session_runtime::state::SessionRuntimeState;
     use crate::session_runtime::{emit_scheduler_stage_message, SchedulerStageMessageInput};
     use crate::ServerState;
-    use agendao_command::stage_protocol::{StageStatus, StageSummary};
     use agendao_memory::PersistedMemorySnapshot;
     use agendao_orchestrator::ExecutionContext;
     use agendao_plugin::{global, Hook, HookEvent};
+    use agendao_server_core::runtime_control::{SessionExecutionTopology, SessionRunStatus};
+    use agendao_server_core::runtime_state::SessionRuntimeState;
     use agendao_session::{
         load_session_telemetry_snapshot, persist_session_telemetry_snapshot, MessageUsage,
         SessionTelemetrySnapshotVersion,
     };
+    use agendao_stage_protocol::{StageStatus, StageSummary};
     use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::sync::mpsc;
@@ -1798,7 +1798,10 @@ mod tests {
             summary.source,
             SessionExecutionPreflightSource::ToolCallState
         );
-        assert_eq!(summary.status, agendao_tool::ExecutionPreflightStatus::Ready);
+        assert_eq!(
+            summary.status,
+            agendao_tool::ExecutionPreflightStatus::Ready
+        );
         assert_eq!(summary.attachment_count, 1);
         assert!(summary.issues.is_empty());
     }
@@ -2287,7 +2290,7 @@ mod tests {
             .runtime_telemetry
             .interrupt_requested(
                 &session.id,
-                crate::session_runtime::state::InterruptTarget::Run,
+                agendao_server_core::runtime_state::InterruptTarget::Run,
             )
             .await;
 
@@ -2303,11 +2306,11 @@ mod tests {
         );
         assert_eq!(
             runtime_protocol.interrupt.phase,
-            crate::session_runtime::state::InterruptPhase::Requested
+            agendao_server_core::runtime_state::InterruptPhase::Requested
         );
         assert_eq!(
             runtime_protocol.interrupt.target,
-            Some(crate::session_runtime::state::InterruptTarget::Run)
+            Some(agendao_server_core::runtime_state::InterruptTarget::Run)
         );
     }
 

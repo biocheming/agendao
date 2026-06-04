@@ -1,20 +1,21 @@
 #[cfg(test)]
 use super::{CliStyle, SchedulerStageBlock};
+use agendao_stage_protocol::{StageStatus, StageSummary};
 
 pub(in crate::run) trait CliStageStatusLabel {
     fn as_ref_label(&self) -> &'static str;
 }
 
-impl CliStageStatusLabel for agendao_command::stage_protocol::StageStatus {
+impl CliStageStatusLabel for StageStatus {
     fn as_ref_label(&self) -> &'static str {
         match self {
-            agendao_command::stage_protocol::StageStatus::Running => "running",
-            agendao_command::stage_protocol::StageStatus::Waiting => "waiting",
-            agendao_command::stage_protocol::StageStatus::Done => "done",
-            agendao_command::stage_protocol::StageStatus::Cancelled => "cancelled",
-            agendao_command::stage_protocol::StageStatus::Cancelling => "cancelling",
-            agendao_command::stage_protocol::StageStatus::Blocked => "blocked",
-            agendao_command::stage_protocol::StageStatus::Retrying => "retrying",
+            StageStatus::Running => "running",
+            StageStatus::Waiting => "waiting",
+            StageStatus::Done => "done",
+            StageStatus::Cancelled => "cancelled",
+            StageStatus::Cancelling => "cancelling",
+            StageStatus::Blocked => "blocked",
+            StageStatus::Retrying => "retrying",
         }
     }
 }
@@ -192,9 +193,7 @@ pub(in crate::run) fn cli_optional_generated_at(ts: Option<i64>) -> String {
         .unwrap_or_default()
 }
 
-pub(in crate::run) fn cli_stage_usage_line(
-    stage: &agendao_command::stage_protocol::StageSummary,
-) -> String {
+pub(in crate::run) fn cli_stage_usage_line(stage: &StageSummary) -> String {
     let mut parts = vec![format!(
         "{} [{}]",
         stage.stage_name,
@@ -263,7 +262,7 @@ pub(in crate::run) fn extend_wrapped_lines(out: &mut Vec<String>, text: &str, wi
         out.push(String::new());
         return;
     }
-    let wrapped = agendao_command::cli_panel::wrap_display_text(text, width.max(1));
+    let wrapped = agendao_command_render::cli_panel::wrap_display_text(text, width.max(1));
     if wrapped.is_empty() {
         out.push(String::new());
     } else {
@@ -314,14 +313,14 @@ pub(in crate::run) fn cli_active_stage_context_lines(
     ));
 
     let mut lines = vec![
-        agendao_command::cli_panel::truncate_display(&header, max_width),
-        agendao_command::cli_panel::truncate_display(
+        agendao_command_render::cli_panel::truncate_display(&header, max_width),
+        agendao_command_render::cli_panel::truncate_display(
             &format!("Status: {}", summary.join(" · ")),
             max_width,
         ),
     ];
     if let Some(focus) = stage.focus.as_deref().filter(|value| !value.is_empty()) {
-        lines.push(agendao_command::cli_panel::truncate_display(
+        lines.push(agendao_command_render::cli_panel::truncate_display(
             &format!("Focus: {focus}"),
             max_width,
         ));
@@ -331,13 +330,13 @@ pub(in crate::run) fn cli_active_stage_context_lines(
         .as_deref()
         .filter(|value| !value.is_empty())
     {
-        lines.push(agendao_command::cli_panel::truncate_display(
+        lines.push(agendao_command_render::cli_panel::truncate_display(
             &format!("Last: {last_event}"),
             max_width,
         ));
     }
     if let Some(ref attached_id) = stage.attached_session_id {
-        lines.push(agendao_command::cli_panel::truncate_display(
+        lines.push(agendao_command_render::cli_panel::truncate_display(
             &format!("Child: {attached_id}"),
             max_width,
         ));

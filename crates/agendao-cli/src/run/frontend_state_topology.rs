@@ -1,5 +1,7 @@
 use super::{print_cli_list_on_surface, CliExecutionRuntime, CliStyle, OutputBlock};
-use agendao_command::output_blocks::tool_cli_activity_label;
+use agendao_command_render::output_blocks::{
+    tool_cli_activity_label, SchedulerStageBlock, ToolBlock, ToolPhase,
+};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -66,10 +68,7 @@ impl CliObservedExecutionTopology {
         }
     }
 
-    fn observe_scheduler_stage(
-        &mut self,
-        stage: &agendao_command::output_blocks::SchedulerStageBlock,
-    ) {
+    fn observe_scheduler_stage(&mut self, stage: &SchedulerStageBlock) {
         let stage_id = stage.stage_id.clone().unwrap_or_else(|| {
             format!(
                 "stage:{}:{}",
@@ -125,7 +124,7 @@ impl CliObservedExecutionTopology {
         }
     }
 
-    fn observe_tool(&mut self, tool: &agendao_command::output_blocks::ToolBlock) {
+    fn observe_tool(&mut self, tool: &ToolBlock) {
         let parent_id = self
             .active_stage_id
             .clone()
@@ -134,10 +133,9 @@ impl CliObservedExecutionTopology {
             .unwrap_or_else(|| "prompt".to_string());
         let tool_id = format!("tool:{}:{}", parent_id, tool.name);
         let status = match tool.phase {
-            agendao_command::output_blocks::ToolPhase::Start
-            | agendao_command::output_blocks::ToolPhase::Running => "running",
-            agendao_command::output_blocks::ToolPhase::Done => "done",
-            agendao_command::output_blocks::ToolPhase::Error => "error",
+            ToolPhase::Start | ToolPhase::Running => "running",
+            ToolPhase::Done => "done",
+            ToolPhase::Error => "error",
         }
         .to_string();
         let node = self
@@ -153,7 +151,7 @@ impl CliObservedExecutionTopology {
             });
         node.label = tool_cli_activity_label(tool);
         node.status = status.clone();
-        node.waiting_on = if matches!(tool.phase, agendao_command::output_blocks::ToolPhase::Done) {
+        node.waiting_on = if matches!(tool.phase, ToolPhase::Done) {
             None
         } else {
             Some("tool".to_string())

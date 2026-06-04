@@ -1,9 +1,10 @@
 #[cfg(test)]
 use crate::output_blocks::SchedulerStageBlock;
 use crate::output_blocks::{
-    tool_web_fields, tool_web_header, tool_web_preview, tool_web_summary, BlockTone, MessageBlock,
-    MessagePhase, MessageRole, OutputBlock, QueueItemBlock, ReasoningBlock, SessionEventBlock,
-    SessionEventField, StatusBlock, ToolBlock, ToolPhase, ToolStructuredDetail,
+    classify_tool_result_display, format_tool_header, BlockTone, MessageBlock, MessagePhase,
+    MessageRole, OutputBlock, QueueItemBlock, ReasoningBlock, SessionEventBlock,
+    SessionEventField, StatusBlock, ToolBlock, ToolPhase, ToolStructuredDetail, ToolWebField,
+    ToolWebPreview,
 };
 use agendao_agent::{AgentRenderEvent, AgentRenderOutcome, AgentToolOutput};
 use agendao_types::tool_call_observable_arguments;
@@ -122,6 +123,122 @@ pub fn map_render_event_to_block(
             }
         }
         AgentRenderEvent::ReasoningEnd => Some(OutputBlock::Reasoning(ReasoningBlock::end())),
+    }
+}
+
+fn tool_summary_for_web(tool: &ToolBlock) -> Option<String> {
+    match tool.phase {
+        ToolPhase::Start | ToolPhase::Running => tool
+            .detail
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+            .cloned(),
+        ToolPhase::Error => Some(
+            tool.detail
+                .as_ref()
+                .filter(|value| !value.trim().is_empty())
+                .cloned()
+                .unwrap_or_else(|| "unknown error".to_string()),
+        ),
+        ToolPhase::Done => classify_tool_result_display(tool)
+            .and_then(|display| display.summary)
+            .or_else(|| {
+                tool.detail
+                    .as_ref()
+                    .filter(|value| !value.trim().is_empty())
+                    .cloned()
+            })
+            .or_else(|| Some("Done".to_string())),
+    }
+}
+
+fn tool_fields_for_web(tool: &ToolBlock) -> Vec<ToolWebField> {
+    if matches!(tool.phase, ToolPhase::Done) {
+        if let Some(display) = classify_tool_result_display(tool) {
+            if !display.fields.is_empty() {
+                return display.fields;
+            }
+        }
+    }
+
+    let mut fields = Vec::new();
+    if let Some(ref structured) = tool.structured {
+        match structured {
+            ToolStructuredDetail::FileEdit { file_path, .. }
+            | ToolStructuredDetail::FileWrite { file_path, .. }
+            | ToolStructuredDetail::FileRead { file_path, .. } => {
+                fields.push(ToolWebField {
+                    label: "File".to_string(),
+                    value: file_path.clone(),
+                });
+            }
+            ToolStructuredDetail::BashExec {
+                command_preview,
+                exit_code,
+                ..
+            } => {
+                fields.push(ToolWebField {
+                    label: "Command".to_string(),
+                    value: command_preview.clone(),
+                });
+                if let Some(exit_code) = exit_code {
+                    fields.push(ToolWebField {
+                        label: "Exit".to_string(),
+                        value: exit_code.to_string(),
+                    });
+                }
+            }
+            ToolStructuredDetail::Search {
+                pattern, matches, ..
+            } => {
+                if !pattern.is_empty() {
+                    fields.push(ToolWebField {
+                        label: "Pattern".to_string(),
+                        value: pattern.clone(),
+                    });
+                }
+                if let Some(matches) = matches {
+                    fields.push(ToolWebField {
+                        label: "Matches".to_string(),
+                        value: matches.to_string(),
+                    });
+                }
+            }
+            ToolStructuredDetail::Generic => {}
+        }
+    }
+    fields
+}
+
+fn tool_preview_for_web(tool: &ToolBlock) -> Option<ToolWebPreview> {
+    if matches!(tool.phase, ToolPhase::Done) {
+        if let Some(display) = classify_tool_result_display(tool) {
+            if display.preview.is_some() {
+                return display.preview;
+            }
+        }
+    }
+
+    let structured = tool.structured.as_ref()?;
+    match structured {
+        ToolStructuredDetail::FileEdit { diff_preview, .. }
+        | ToolStructuredDetail::FileWrite { diff_preview, .. } => {
+            diff_preview.as_ref().map(|diff| ToolWebPreview {
+                kind: "diff".to_string(),
+                text: diff.clone(),
+                truncated: false,
+            })
+        }
+        ToolStructuredDetail::BashExec {
+            output_preview,
+            truncated,
+            ..
+        } => output_preview.as_ref().map(|preview| ToolWebPreview {
+            kind: "code".to_string(),
+            text: preview.clone(),
+            truncated: *truncated,
+        }),
+        _ => None,
     }
 }
 
@@ -682,13 +799,13 @@ pub fn output_block_to_web(block: &OutputBlock) -> serde_json::Value {
                 "phase": tool_phase_to_web(phase),
                 "detail": detail,
                 "display": {
-                    "header": tool_web_header(&tool),
-                    "summary": tool_web_summary(&tool),
-                    "fields": tool_web_fields(&tool).into_iter().map(|field| json!({
+                    "header": format_tool_header(&tool),
+                    "summary": tool_summary_for_web(&tool),
+                    "fields": tool_fields_for_web(&tool).into_iter().map(|field| json!({
                         "label": field.label,
                         "value": field.value,
                     })).collect::<Vec<_>>(),
-                    "preview": tool_web_preview(&tool).map(|preview| json!({
+                    "preview": tool_preview_for_web(&tool).map(|preview| json!({
                         "kind": preview.kind,
                         "text": preview.text,
                         "truncated": preview.truncated,

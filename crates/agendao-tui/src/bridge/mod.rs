@@ -20,10 +20,7 @@ use tokio::sync::Notify;
 use tokio_stream::StreamExt;
 
 use crate::app::{App, RunOutcome};
-use crate::context::keybind::is_primary_key_event;
-use crate::context::AppContext;
-use crate::event::{CustomEvent, Event, StateChange};
-use crate::router::Route;
+use crate::core::{is_primary_key_event, AppContext, CustomEvent, Event, Route, StateChange};
 use crate::ui::BufferSurface;
 
 #[derive(Clone, Debug)]
@@ -92,7 +89,7 @@ impl UiBridge {
         true
     }
 
-    pub fn emit_custom(&self, event: crate::event::CustomEvent) -> bool {
+    pub fn emit_custom(&self, event: crate::core::CustomEvent) -> bool {
         self.emit(Event::Custom(Box::new(event)))
     }
 

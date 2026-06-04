@@ -1,7 +1,6 @@
-use axum::{extract::State, http::HeaderMap, routing::post, Json, Router};
-use chrono::Utc;
-use hmac::{Hmac, Mac};
-use agendao_api::{ProvisionExternalAdapterSessionRequest, ProvisionExternalAdapterSessionResponse};
+use agendao_api::{
+    ProvisionExternalAdapterSessionRequest, ProvisionExternalAdapterSessionResponse,
+};
 use agendao_config::{Config, ExternalAdapterEntryConfig};
 use agendao_provider::AuthManager;
 use agendao_session::prompt::{
@@ -18,6 +17,9 @@ use agendao_types::{
     ExternalAdapterEvent, ExternalAdapterResolvedBinding, ExternalAdapterSource,
     ExternalAdapterValidationError,
 };
+use axum::{extract::State, http::HeaderMap, routing::post, Json, Router};
+use chrono::Utc;
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -404,7 +406,8 @@ async fn verify_generic_webhook_request(
 
     response.replay_guard.verified = true;
     response.replay_guard.status = "verified_recorded".to_string();
-    response.authority.replay_store = "agendao-storage.external_adapter_replay:recorded".to_string();
+    response.authority.replay_store =
+        "agendao-storage.external_adapter_replay:recorded".to_string();
     response.warnings = vec![
         "generic webhook verified and recorded replay state".to_string(),
         "generic webhook verify gate did not enqueue a session turn".to_string(),

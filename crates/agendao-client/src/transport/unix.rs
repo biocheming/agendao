@@ -1,10 +1,8 @@
 use super::{PromptOptions, PromptResponse, SessionDetail};
-use anyhow::{Context, Result};
-use agendao_api::{
-    AgentInfo, ExecutionModeInfo, FullProviderListResponse, SessionListItem,
-};
+use agendao_api::{AgentInfo, ExecutionModeInfo, FullProviderListResponse, SessionListItem};
 use agendao_runtime_context::ResolvedWorkspaceContext;
 use agendao_state::RecentModelEntry;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -52,8 +50,8 @@ impl UnixSocketTransport {
         reader.read_line(&mut response_line).await?;
 
         // Parse JSON-RPC response
-        let response: JsonRpcResponse<R> = serde_json::from_str(&response_line)
-            .context("Failed to parse JSON-RPC response")?;
+        let response: JsonRpcResponse<R> =
+            serde_json::from_str(&response_line).context("Failed to parse JSON-RPC response")?;
 
         if let Some(error) = response.error {
             anyhow::bail!("RPC error {}: {}", error.code, error.message);
@@ -120,7 +118,8 @@ impl UnixSocketTransport {
     }
 
     pub async fn list_agents(&self) -> Result<Vec<AgentInfo>> {
-        self.send_request("list_agents", serde_json::json!({})).await
+        self.send_request("list_agents", serde_json::json!({}))
+            .await
     }
 
     /// Subscribe to server events for a session. Returns a channel receiver

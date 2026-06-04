@@ -1,12 +1,12 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
+use agendao_command_render::terminal_tool_block_display::{build_file_items, build_image_items};
 use ratatui::{
     style::Color,
     style::{Modifier, Style},
     text::{Line, Span},
 };
-use agendao_command::terminal_tool_block_display::{build_file_items, build_image_items};
 
 use super::markdown::MarkdownRenderer;
 use super::shared_block_items::render_shared_message_block_items;

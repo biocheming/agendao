@@ -5,11 +5,15 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+default = ["sqlite"]
+sqlite = ["dep:agendao-storage-sqlite"]
+
 [dependencies]
-agendao-core = { path = "../agendao-core" }
+agendao-storage-core = { path = "../agendao-storage-core" }
+agendao-storage-sqlite = { path = "../agendao-storage-sqlite", optional = true }
 agendao-types = { path = "../agendao-types" }
 agendao-util = { path = "../agendao-util" }
-tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
@@ -21,4 +25,5 @@ sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 dirs = { workspace = true }
 
 [dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
 tokio-test = "0.4"

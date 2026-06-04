@@ -1,6 +1,6 @@
 use super::*;
 use crate::context::MessagePart;
-use agendao_command::terminal_tool_block_display::{
+use agendao_command_render::terminal_tool_block_display::{
     build_file_items, build_image_items, summarize_block_items_inline,
 };
 

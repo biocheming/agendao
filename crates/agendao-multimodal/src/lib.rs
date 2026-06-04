@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn session_part_adapter_classifies_audio_files_for_preflight() {
-        let session_parts = vec![agendao_session::prompt::PartInput::File {
+        let session_parts = vec![agendao_types::PromptPart::File {
             url: "data:audio/wav;base64,UklGRg==".to_string(),
             filename: Some("voice.wav".to_string()),
             mime: Some("audio/wav".to_string()),
@@ -317,7 +317,7 @@ mod tests {
         let capability = authority
             .capability_authority()
             .capability_view("openai", &model);
-        let session_parts = vec![agendao_session::prompt::PartInput::File {
+        let session_parts = vec![agendao_types::PromptPart::File {
             url: "data:audio/wav;base64,UklGRg==".to_string(),
             filename: Some("voice.wav".to_string()),
             mime: Some("audio/wav".to_string()),

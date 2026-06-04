@@ -12,7 +12,7 @@ pub(super) async fn bootstrap_interactive_stream(
     api_client: &Arc<CliApiClient>,
     runtime: &CliExecutionRuntime,
     local: bool,
-    local_state: &Option<Arc<agendao_server::ServerState>>,
+    local_state: &Option<Arc<crate::local_server_bridge::CliLocalServerState>>,
     transport: &Option<Arc<agendao_client::FrontendTransport>>,
     unix_socket_path: Option<String>,
 ) -> InteractiveSessionStream {
@@ -23,7 +23,7 @@ pub(super) async fn bootstrap_interactive_stream(
         // Direct mode: use the shared DirectEventBridge (agendao-server).
         // A thin adapter converts DirectEvent → CliServerEvent.
         if let Some(state) = local_state {
-            let direct_rx = agendao_server::spawn_direct_event_loop(
+            let direct_rx = crate::local_server_bridge::spawn_direct_event_loop(
                 Arc::clone(state),
                 server_session_id.to_string(),
                 sse_cancel.clone(),
@@ -71,36 +71,64 @@ pub(super) async fn bootstrap_interactive_stream(
     InteractiveSessionStream { sse_rx, sse_cancel }
 }
 
-fn direct_event_to_cli_event(event: agendao_server::DirectEvent) -> Option<CliServerEvent> {
-    use agendao_server::DirectEvent;
+fn direct_event_to_cli_event(
+    event: crate::local_server_bridge::CliDirectEvent,
+) -> Option<CliServerEvent> {
+    use crate::local_server_bridge::CliDirectEvent as DirectEvent;
     Some(match event {
         DirectEvent::SessionBusy { session_id } => CliServerEvent::SessionBusy { session_id },
         DirectEvent::SessionIdle { session_id } => CliServerEvent::SessionIdle { session_id },
         DirectEvent::SessionUpdated { session_id } => CliServerEvent::SessionUpdated {
-            session_id, source: Some("direct_bridge".to_string()),
+            session_id,
+            source: Some("direct_bridge".to_string()),
         },
-        DirectEvent::QuestionCreated { session_id, request_id, questions_json } => CliServerEvent::QuestionCreated {
-            session_id, request_id, questions_json: questions_json.unwrap_or(serde_json::Value::Null),
+        DirectEvent::QuestionCreated {
+            session_id,
+            request_id,
+            questions_json,
+        } => CliServerEvent::QuestionCreated {
+            session_id,
+            request_id,
+            questions_json: questions_json.unwrap_or(serde_json::Value::Null),
         },
-        DirectEvent::QuestionResolved { request_id } => CliServerEvent::QuestionResolved { request_id },
-        DirectEvent::PermissionRequested { session_id, permission_id, info_json } => CliServerEvent::PermissionRequested {
-            session_id, permission_id, info_json: info_json.unwrap_or(serde_json::Value::Null),
+        DirectEvent::QuestionResolved { request_id } => {
+            CliServerEvent::QuestionResolved { request_id }
+        }
+        DirectEvent::PermissionRequested {
+            session_id,
+            permission_id,
+            info_json,
+        } => CliServerEvent::PermissionRequested {
+            session_id,
+            permission_id,
+            info_json: info_json.unwrap_or(serde_json::Value::Null),
         },
-        DirectEvent::PermissionResolved { session_id, permission_id } => CliServerEvent::PermissionResolved {
-            session_id, permission_id,
+        DirectEvent::PermissionResolved {
+            session_id,
+            permission_id,
+        } => CliServerEvent::PermissionResolved {
+            session_id,
+            permission_id,
         },
         DirectEvent::ToolCallStarted { session_id } => CliServerEvent::ToolCallStarted {
-            session_id, tool_call_id: String::new(), tool_name: String::new(),
+            session_id,
+            tool_call_id: String::new(),
+            tool_name: String::new(),
         },
         DirectEvent::ToolCallCompleted { session_id } => CliServerEvent::ToolCallCompleted {
-            session_id, tool_call_id: String::new(),
+            session_id,
+            tool_call_id: String::new(),
         },
         DirectEvent::OutputBlock { session_id, block } => CliServerEvent::OutputBlock {
-            session_id, id: None, payload: block, live_identity: None,
+            session_id,
+            id: None,
+            payload: block,
+            live_identity: None,
         },
         DirectEvent::ConfigUpdated => CliServerEvent::ConfigUpdated,
         DirectEvent::TopologyChanged { session_id } => CliServerEvent::SessionUpdated {
-            session_id, source: Some("direct_topology".to_string()),
+            session_id,
+            source: Some("direct_topology".to_string()),
         },
         DirectEvent::ControlInputTransition { .. }
         | DirectEvent::DiffUpdated { .. }
@@ -118,7 +146,9 @@ async fn cli_socket_event_loop(
 ) {
     loop {
         while let Some(json) = rx.recv().await {
-            if let Ok(direct) = serde_json::from_value::<agendao_server::DirectEvent>(json) {
+            if let Ok(direct) =
+                serde_json::from_value::<crate::local_server_bridge::CliDirectEvent>(json)
+            {
                 if let Some(cli) = direct_event_to_cli_event(direct) {
                     if tx.send(cli).is_err() {
                         return;
@@ -127,7 +157,8 @@ async fn cli_socket_event_loop(
             }
         }
         // Stream ended — reconnect.
-        let transport = agendao_client::transport::UnixSocketTransport::new(socket_path.to_string());
+        let transport =
+            agendao_client::transport::UnixSocketTransport::new(socket_path.to_string());
         match transport.subscribe_events(&session_id).await {
             Ok(new_rx) => rx = new_rx,
             Err(e) => {
@@ -139,7 +170,7 @@ async fn cli_socket_event_loop(
 }
 
 async fn cli_direct_event_adapter(
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<agendao_server::DirectEvent>,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<crate::local_server_bridge::CliDirectEvent>,
     tx: tokio::sync::mpsc::UnboundedSender<CliServerEvent>,
 ) {
     while let Some(event) = rx.recv().await {

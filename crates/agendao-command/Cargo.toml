@@ -3,24 +3,32 @@ name = "agendao-command"
 version.workspace = true
 edition = "2021"
 
+[features]
+default = ["terminal-ui", "runtime-hooks", "agent-presenter"]
+terminal-ui = ["dep:tokio", "dep:crossterm", "dep:pulldown-cmark"]
+runtime-hooks = [
+    "terminal-ui",
+    "dep:agendao-permission",
+    "dep:agendao-plugin",
+    "dep:agendao-tool",
+]
+agent-presenter = ["terminal-ui", "dep:agendao-agent"]
+
 [dependencies]
-agendao-content = { path = "../agendao-content" }
-agendao-agent = { path = "../agendao-agent" }
-agendao-plugin = { path = "../agendao-plugin" }
-agendao-tool = { path = "../agendao-tool" }
+agendao-output-blocks = { path = "../agendao-output-blocks" }
+agendao-stage-protocol = { path = "../agendao-stage-protocol" }
+agendao-agent = { path = "../agendao-agent", optional = true }
+agendao-plugin = { path = "../agendao-plugin", optional = true }
+agendao-tool = { path = "../agendao-tool", optional = true }
 agendao-types = { path = "../agendao-types" }
-agendao-permission = { path = "../agendao-permission" }
+agendao-permission = { path = "../agendao-permission", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.0", features = ["full"] }
-async-trait = "0.1"
+tokio = { version = "1.0", features = ["macros", "rt", "sync", "time"], optional = true }
 anyhow = "1.0"
-regex = "1.10"
 tracing = "0.1"
-glob = "0.3"
-pulldown-cmark = "0.13"
-crossterm = "0.27"
+pulldown-cmark = { version = "0.13", optional = true }
+crossterm = { version = "0.29", optional = true }
 unicode-width = "0.1"
 
 chrono = { workspace = true }
-uuid = { workspace = true }

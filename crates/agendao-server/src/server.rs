@@ -24,12 +24,13 @@ use agendao_plugin::init_global;
 use agendao_plugin::subprocess::{
     PluginAuthBridge, PluginContext, PluginFetchRequest, PluginLoader,
 };
+use agendao_provider::ModelCatalogAuthority;
 use agendao_provider::{
     bootstrap_config_from_raw, create_registry_from_bootstrap_config, register_custom_fetch_proxy,
     unregister_custom_fetch_proxy, AuthInfo, AuthManager, BootstrapConfig,
     ConfigModel as BootstrapConfigModel, ConfigProvider as BootstrapConfigProvider,
     CustomFetchProxy, CustomFetchRequest, CustomFetchResponse, CustomFetchStreamResponse,
-    ModelCatalogAuthority, ProviderError, ProviderRegistry,
+    ProviderError, ProviderRegistry,
 };
 use agendao_runtime_context::{ResolvedWorkspaceContext, ResolvedWorkspaceContextAuthority};
 use agendao_session::{SessionManager, SessionPrompt, SessionStateManager};
@@ -37,11 +38,11 @@ use agendao_state::UserStateAuthority;
 use agendao_storage::{Database, MemoryRepository, MessageRepository, SessionRepository};
 
 use crate::routes;
-use crate::runtime_control::RuntimeControlRegistry;
-use crate::session_runtime::events::EventBusTelemetry;
 use crate::session_runtime::memory::RuntimeMemoryAuthority;
 use crate::session_runtime::steering::SessionSteeringQueueStore;
 use crate::session_runtime::telemetry::RuntimeTelemetryAuthority;
+use agendao_server_core::runtime_control::RuntimeControlRegistry;
+use agendao_server_core::runtime_events::EventBusTelemetry;
 
 const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:3000";
 

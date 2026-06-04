@@ -1,5 +1,5 @@
-use chrono::Utc;
 use agendao_mcp::client::{McpClientRegistry, McpServerConfig as McpClientConfig};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -5,7 +5,7 @@ mod common;
 // Phase 1: New transport abstraction
 pub mod transport;
 
+pub use agendao_api::*;
 pub use async_client::AsyncApiClient;
 pub use blocking_client::BlockingApiClient;
-pub use agendao_api::*;
 pub use transport::FrontendTransport;

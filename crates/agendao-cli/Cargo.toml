@@ -6,8 +6,25 @@ authors.workspace = true
 license.workspace = true
 autobins = false
 
+[features]
+default = ["interactive", "local-server", "db", "lsp", "memory"]
+interactive = [
+    "dep:agendao-command",
+    "dep:agendao-command-render",
+    "dep:agendao-command-runtime",
+]
+local-server = ["dep:agendao-server"]
+db = ["session-db", "proposal-db", "memory-db"]
+session-db = ["dep:agendao-storage", "dep:sqlx"]
+proposal-db = ["dep:agendao-storage", "dep:sqlx"]
+memory-db = ["dep:agendao-storage", "dep:sqlx"]
+lsp = ["dep:agendao-lsp"]
+memory = ["dep:agendao-memory"]
+
 [dependencies]
-agendao-core = { path = "../agendao-core" }
+agendao-core = { path = "../agendao-core", features = ["process-registry", "agent-task-registry"] }
+agendao-cli-core = { path = "../agendao-cli-core" }
+agendao-cli-admin = { path = "../agendao-cli-admin" }
 agendao-orchestrator = { path = "../agendao-orchestrator" }
 agendao-util = { path = "../agendao-util" }
 agendao-config = { path = "../agendao-config" }
@@ -18,34 +35,35 @@ agendao-permission = { path = "../agendao-permission" }
 agendao-agent = { path = "../agendao-agent" }
 agendao-launcher = { path = "../agendao-launcher" }
 agendao-client = { path = "../agendao-client" }
-agendao-server = { path = "../agendao-server" }
-agendao-memory = { path = "../agendao-memory" }
+agendao-server = { path = "../agendao-server", optional = true }
+agendao-memory = { path = "../agendao-memory", optional = true }
 agendao-provider = { path = "../agendao-provider" }
 agendao-plugin = { path = "../agendao-plugin" }
 agendao-runtime-context = { path = "../agendao-runtime-context" }
 agendao-session = { path = "../agendao-session" }
 agendao-skill = { path = "../agendao-skill" }
-agendao-storage = { path = "../agendao-storage" }
+agendao-storage = { path = "../agendao-storage", optional = true, default-features = false, features = ["sqlite"] }
 agendao-state = { path = "../agendao-state" }
 agendao-tool = { path = "../agendao-tool" }
 agendao-types = { path = "../agendao-types" }
-agendao-command = { path = "../agendao-command" }
-agendao-lsp = { path = "../agendao-lsp" }
-clap = { workspace = true }
-tokio = { workspace = true }
-tokio-util = { workspace = true }
+agendao-command = { path = "../agendao-command", optional = true, default-features = false }
+agendao-command-render = { path = "../agendao-command-render", optional = true }
+agendao-command-runtime = { path = "../agendao-command-runtime", optional = true }
+agendao-stage-protocol = { path = "../agendao-stage-protocol" }
+agendao-lsp = { path = "../agendao-lsp", optional = true }
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["charset", "http2", "json", "rustls-tls-webpki-roots", "system-proxy"] }
 chrono = { workspace = true }
 dirs = { workspace = true }
-sqlx = { workspace = true }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"], optional = true }
 url = { workspace = true }
-which = { workspace = true }
+which = "7"
 crossterm = "0.27"
 base64 = { workspace = true }

@@ -1,9 +1,9 @@
 use super::{PromptOptions, PromptResponse, SessionDetail};
-use anyhow::{Context, Result};
 use agendao_api::{AgentInfo, ExecutionModeInfo, FullProviderListResponse, SessionListItem};
 use agendao_orchestrator::{CoreSessionManager, OrchestrationCore, SessionStore};
 use agendao_runtime_context::ResolvedWorkspaceContext;
 use agendao_state::RecentModelEntry;
+use anyhow::{Context, Result};
 use std::sync::Arc;
 
 /// Direct transport - calls OrchestrationCore in-process.

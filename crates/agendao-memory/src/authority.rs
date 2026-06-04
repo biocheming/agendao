@@ -1,10 +1,9 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use anyhow::Result;
-use agendao_command::stage_protocol::StageSummary;
 use agendao_config::WorkspaceMode;
 use agendao_runtime_context::ResolvedWorkspaceContextAuthority;
+use agendao_stage_protocol::StageSummary;
 use agendao_state::UserStateAuthority;
 use agendao_storage::{MemoryRepository, MemoryRepositoryFilter, MemoryRetrievalLogEntry};
 use agendao_types::{
@@ -17,6 +16,7 @@ use agendao_types::{
     MemoryValidationReportResponse, MemoryValidationStatus, MessageRole, Session,
     SessionMemoryInsight, SessionMemoryTelemetrySummary, SkillGuardReport, SkillGuardStatus,
 };
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -713,8 +713,8 @@ impl MemoryAuthority {
             id: hashed_record_id("mem_stage", &[session_id, &stage.stage_id, status_label]),
             kind: if matches!(
                 stage.status,
-                agendao_command::stage_protocol::StageStatus::Blocked
-                    | agendao_command::stage_protocol::StageStatus::Retrying
+                agendao_stage_protocol::StageStatus::Blocked
+                    | agendao_stage_protocol::StageStatus::Retrying
             ) {
                 MemoryKind::Lesson
             } else {
@@ -1169,15 +1169,15 @@ fn scope_label(scope: &MemoryScope) -> &'static str {
     }
 }
 
-fn stage_status_label(status: &agendao_command::stage_protocol::StageStatus) -> &'static str {
+fn stage_status_label(status: &agendao_stage_protocol::StageStatus) -> &'static str {
     match status {
-        agendao_command::stage_protocol::StageStatus::Running => "running",
-        agendao_command::stage_protocol::StageStatus::Waiting => "waiting",
-        agendao_command::stage_protocol::StageStatus::Done => "done",
-        agendao_command::stage_protocol::StageStatus::Cancelled => "cancelled",
-        agendao_command::stage_protocol::StageStatus::Cancelling => "cancelling",
-        agendao_command::stage_protocol::StageStatus::Blocked => "blocked",
-        agendao_command::stage_protocol::StageStatus::Retrying => "retrying",
+        agendao_stage_protocol::StageStatus::Running => "running",
+        agendao_stage_protocol::StageStatus::Waiting => "waiting",
+        agendao_stage_protocol::StageStatus::Done => "done",
+        agendao_stage_protocol::StageStatus::Cancelled => "cancelled",
+        agendao_stage_protocol::StageStatus::Cancelling => "cancelling",
+        agendao_stage_protocol::StageStatus::Blocked => "blocked",
+        agendao_stage_protocol::StageStatus::Retrying => "retrying",
     }
 }
 
@@ -2294,7 +2294,9 @@ mod tests {
         );
 
         let runs = authority
-            .list_consolidation_runs(&agendao_types::MemoryConsolidationRunQuery { limit: Some(10) })
+            .list_consolidation_runs(&agendao_types::MemoryConsolidationRunQuery {
+                limit: Some(10),
+            })
             .await
             .expect("runs should load");
         assert_eq!(runs.items.len(), 1);

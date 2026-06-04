@@ -1,7 +1,6 @@
 /// Integration tests for concurrent scenarios (Phase 6.5)
 ///
 /// Tests concurrent access patterns and session isolation.
-
 use agendao_orchestrator::{OrchestrationCore, PromptExecutionOptions};
 use std::sync::Arc;
 
@@ -90,8 +89,8 @@ impl agendao_provider::Provider for MockConcurrentProvider {
         &self,
         request: agendao_provider::ChatRequest,
     ) -> Result<agendao_provider::StreamResult, agendao_provider::ProviderError> {
-        use futures::stream;
         use agendao_provider::StreamEvent;
+        use futures::stream;
 
         let user_msg = request
             .messages
@@ -234,11 +233,7 @@ async fn test_concurrent_requests_same_session() {
     assert_eq!(session.messages.len(), 10); // 5 user + 5 assistant
 
     // Count user and assistant messages
-    let user_count = session
-        .messages
-        .iter()
-        .filter(|m| m.role == "User")
-        .count();
+    let user_count = session.messages.iter().filter(|m| m.role == "User").count();
     let assistant_count = session
         .messages
         .iter()

@@ -1,11 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
-
-use crate::catalog::{
-    default_model_catalog_authority, metadata_path_for_snapshot, ModelCatalogAuthority,
-};
 
 pub const MODELS_DEV_URL: &str = "https://models.dev";
 
@@ -127,63 +121,6 @@ pub struct ProviderInfo {
 }
 
 pub type ModelsData = HashMap<String, ProviderInfo>;
-
-pub struct ModelsRegistry {
-    authority: Arc<ModelCatalogAuthority>,
-}
-
-impl ModelsRegistry {
-    pub fn new(cache_path: PathBuf) -> Self {
-        Self {
-            authority: Arc::new(ModelCatalogAuthority::new(
-                cache_path.clone(),
-                metadata_path_for_snapshot(&cache_path),
-            )),
-        }
-    }
-
-    pub async fn get(&self) -> ModelsData {
-        self.authority.data().await
-    }
-
-    pub async fn refresh(&self) {
-        let _ = self.authority.refresh(true).await;
-    }
-
-    pub async fn get_provider(&self, provider_id: &str) -> Option<ProviderInfo> {
-        let data = self.get().await;
-        data.get(provider_id).cloned()
-    }
-
-    pub async fn get_model(&self, provider_id: &str, model_id: &str) -> Option<ModelInfo> {
-        let data = self.get().await;
-        data.get(provider_id)
-            .and_then(|p| p.models.get(model_id).cloned())
-    }
-
-    pub async fn list_models_for_provider(&self, provider_id: &str) -> Vec<ModelInfo> {
-        let data = self.get().await;
-        data.get(provider_id)
-            .map(|p| p.models.values().cloned().collect())
-            .unwrap_or_default()
-    }
-
-    /// Apply custom loaders and filtering to the loaded models data
-    pub async fn get_with_customization(&self, enable_experimental: bool) -> ModelsData {
-        let mut data = self.get().await;
-        crate::bootstrap::apply_custom_loaders(&mut data);
-        crate::bootstrap::filter_models_by_status(&mut data, enable_experimental);
-        data
-    }
-}
-
-impl Default for ModelsRegistry {
-    fn default() -> Self {
-        Self {
-            authority: default_model_catalog_authority(),
-        }
-    }
-}
 
 pub fn default_model_limits() -> (u64, u64) {
     (4096, 128000)

@@ -1,8 +1,8 @@
 //! Session repair query handlers (P1.3).
 
+use agendao_api::SessionRepairSummaryResponse;
 use axum::extract::{Path, Query, State};
 use axum::Json;
-use agendao_api::SessionRepairSummaryResponse;
 use serde::Deserialize;
 use std::sync::Arc;
 

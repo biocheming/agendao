@@ -1,4 +1,6 @@
-use crate::{ProviderConfig, ProviderError, ProviderTransportKind};
+use crate::profile::ProviderTransportKind;
+use crate::protocol::ProviderConfig;
+use crate::provider::ProviderError;
 
 pub const HEADER_ACCEPT: &str = "Accept";
 pub const HEADER_AUTHORIZATION: &str = "Authorization";

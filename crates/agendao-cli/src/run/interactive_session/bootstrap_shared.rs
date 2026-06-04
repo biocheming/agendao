@@ -13,7 +13,7 @@ pub(super) struct InteractiveSessionBootstrap {
     pub(super) repl_style: CliStyle,
     pub(super) server_url: String,
     pub(super) server_session_id: String,
-    pub(super) local_state: Option<Arc<agendao_server::ServerState>>,
+    pub(super) local_state: Option<Arc<crate::local_server_bridge::CliLocalServerState>>,
     pub(super) transport: Option<Arc<agendao_client::FrontendTransport>>,
 }
 
@@ -33,21 +33,23 @@ pub(super) async fn bootstrap_interactive_session(
     let config = load_config(&working_dir)?;
     let command_registry = CommandRegistry::new();
 
-    let local_state: Option<Arc<agendao_server::ServerState>> = if local {
+    let local_enabled = local && crate::local_server_bridge::direct_mode_available();
+    let local_state: Option<Arc<crate::local_server_bridge::CliLocalServerState>> = if local_enabled
+    {
         eprintln!("Starting CLI interactive session in Direct (in-process) mode");
-        Some(Arc::new(
-            agendao_server::ServerState::new_with_storage_for_url_in_workspace(
+        Some(
+            crate::local_server_bridge::create_local_server_state(
                 "http://127.0.0.1:0".to_string(),
                 working_dir.clone(),
             )
             .await?,
-        ))
+        )
     } else {
         None
     };
 
     let discovery_socket_path = unix_socket.clone();
-    let server_discovery_handle = if local {
+    let server_discovery_handle = if local_enabled {
         None
     } else {
         let ctx = runtime_context.clone();
@@ -94,7 +96,7 @@ pub(super) async fn bootstrap_interactive_session(
         "http://127.0.0.1:0".to_string()
     };
     let api_client = Arc::new(CliApiClient::new(server_url.clone()));
-    let transport = if local {
+    let transport = if local_enabled {
         None
     } else if let Some(socket_path) = unix_socket.as_deref() {
         agendao_client::transport::TransportSelector::new(
@@ -175,7 +177,7 @@ pub(super) async fn bootstrap_interactive_session(
     let repl_style = CliStyle::detect();
 
     let session_info = if let Some(ref state) = local_state {
-        agendao_server::local_create_session(
+        crate::local_server_bridge::local_create_session(
             Arc::clone(state),
             agendao_client::CreateSessionRequest {
                 scheduler_profile: selection.requested_scheduler_profile.clone(),

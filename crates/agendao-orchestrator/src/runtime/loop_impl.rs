@@ -6,8 +6,8 @@ use crate::runtime::events::{
 use crate::runtime::normalizer;
 use crate::runtime::policy::{LoopPolicy, ModelContextLimits, ToolDedupScope, ToolErrorStrategy};
 use crate::runtime::traits::{LoopSink, ModelCaller, ToolDispatcher};
-use futures::StreamExt;
 use agendao_provider::is_retryable_stream_error_message;
+use futures::StreamExt;
 use std::collections::HashSet;
 use tracing::Instrument;
 

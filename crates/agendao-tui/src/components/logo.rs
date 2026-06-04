@@ -5,7 +5,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use agendao_command::branding::{logo_lines, LOGO};
+use agendao_command_render::branding::{logo_lines, LOGO};
 
 use crate::ui::RenderSurface;
 

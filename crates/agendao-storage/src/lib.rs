@@ -1,3 +1,12 @@
+pub mod core {
+    pub use agendao_storage_core::*;
+}
+
+#[cfg(feature = "sqlite")]
+pub mod sqlite {
+    pub use agendao_storage_sqlite::*;
+}
+
 pub mod database;
 pub mod repository;
 pub mod schema;

@@ -9,10 +9,10 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use agendao_agent::{AgentInfo, AgentRegistry};
-use agendao_command::branding::logo_lines;
-use agendao_command::cli_prompt::PromptSession;
-use agendao_command::cli_spinner::SpinnerGuard;
-use agendao_command::cli_style::CliStyle;
+use agendao_command_render::branding::logo_lines;
+use agendao_command_render::cli_style::CliStyle;
+use agendao_command_runtime::cli_prompt::PromptSession;
+use agendao_command_runtime::cli_spinner::SpinnerGuard;
 use agendao_config::Config;
 use agendao_orchestrator::{
     scheduler_auto_profile_config, scheduler_plan_from_profile,
@@ -24,13 +24,14 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::api_client::{CliApiClient, SessionListItem};
 use crate::branding::{APP_SHORT_NAME, APP_TAGLINE, APP_VERSION_DATE};
 
-use super::{
-    cli_refresh_prompt, print_cli_list_on_surface, resolve_requested_agent_name, CliExecutionRuntime, CliRuntimeBuildInput,
-};
 pub(super) use super::frontend_state_topology::CliObservedExecutionTopology;
 pub(super) use super::frontend_state_types::{
     CliFrontendProjection, CliMcpServerStatus, CliModelCatalogEntry, CliSessionTokenStats,
     CliVisibleTranscript,
+};
+use super::{
+    cli_refresh_prompt, print_cli_list_on_surface, resolve_requested_agent_name,
+    CliExecutionRuntime, CliRuntimeBuildInput,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -332,7 +333,10 @@ pub(super) fn cli_mode_label(runtime: &CliExecutionRuntime) -> String {
     }
 }
 
-pub(super) fn cli_prompt_modes(config: &Config, agent_registry: &AgentRegistry) -> Vec<CliPromptModeEntry> {
+pub(super) fn cli_prompt_modes(
+    config: &Config,
+    agent_registry: &AgentRegistry,
+) -> Vec<CliPromptModeEntry> {
     let mut modes = agent_registry
         .list()
         .into_iter()
@@ -387,10 +391,7 @@ pub(super) fn cli_cycle_prompt_mode(
     cli_refresh_prompt(runtime);
 }
 
-pub(super) fn cli_session_hint_string(
-    session: &SessionListItem,
-    key: &str,
-) -> Option<String> {
+pub(super) fn cli_session_hint_string(session: &SessionListItem, key: &str) -> Option<String> {
     let hints = session.hints.as_ref()?;
     let value = match key {
         "current_model" => hints.current_model.as_deref(),
@@ -438,24 +439,22 @@ pub(super) fn cli_recent_session_info_for_directory(
 }
 
 pub(super) async fn cli_load_recent_session_info(
-    local_server: &Option<Arc<agendao_server::ServerState>>,
+    local_server: &Option<Arc<crate::local_server_bridge::CliLocalServerState>>,
     transport: &Option<Arc<agendao_client::FrontendTransport>>,
     api_client: &CliApiClient,
     current_dir: &Path,
 ) -> Option<CliRecentSessionInfo> {
-    let sessions = crate::local_dispatch::list_sessions(
-        local_server,
-        transport,
-        api_client,
-        None,
-        Some(20),
-    )
-    .await
-    .ok()?;
+    let sessions =
+        crate::local_dispatch::list_sessions(local_server, transport, api_client, None, Some(20))
+            .await
+            .ok()?;
     cli_recent_session_info_for_directory(&sessions, current_dir)
 }
 
-pub(super) fn cli_render_startup_banner(style: &CliStyle, recent: Option<&CliRecentSessionInfo>) -> String {
+pub(super) fn cli_render_startup_banner(
+    style: &CliStyle,
+    recent: Option<&CliRecentSessionInfo>,
+) -> String {
     let mut out = String::new();
     out.push_str("\r\n");
 
@@ -578,7 +577,10 @@ mod frontend_state_tests {
                 assert!(runtime.scheduler_profile_name.is_none());
             }
             CliPromptModeEntry::Preset(profile) => {
-                assert_eq!(runtime.scheduler_profile_name.as_deref(), Some(profile.as_str()));
+                assert_eq!(
+                    runtime.scheduler_profile_name.as_deref(),
+                    Some(profile.as_str())
+                );
             }
         }
 
@@ -589,7 +591,10 @@ mod frontend_state_tests {
                 assert!(runtime.scheduler_profile_name.is_none());
             }
             CliPromptModeEntry::Preset(profile) => {
-                assert_eq!(runtime.scheduler_profile_name.as_deref(), Some(profile.as_str()));
+                assert_eq!(
+                    runtime.scheduler_profile_name.as_deref(),
+                    Some(profile.as_str())
+                );
             }
         }
     }

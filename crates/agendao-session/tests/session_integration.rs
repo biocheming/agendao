@@ -1,4 +1,7 @@
-use agendao_session::{MessageRole, Session, SessionContextKind, SessionManager, SessionForkSpec, SessionForkHistoryMode};
+use agendao_session::{
+    MessageRole, Session, SessionContextKind, SessionForkHistoryMode, SessionForkSpec,
+    SessionManager,
+};
 use agendao_types;
 
 #[test]
@@ -116,10 +119,19 @@ fn test_fork_imported_history_messages_carry_imported_source_metadata() {
     let admission = agendao_types::message_admission_context(&imported_msg.metadata);
     let authority = agendao_types::message_authority_class(&imported_msg.metadata);
 
-    assert_eq!(origin, Some(agendao_types::MessageSourceOrigin::ImportedHistory));
+    assert_eq!(
+        origin,
+        Some(agendao_types::MessageSourceOrigin::ImportedHistory)
+    );
     assert_eq!(surface, Some(agendao_types::MessageSourceSurface::HttpApi));
-    assert_eq!(admission, Some(agendao_types::MessageAdmissionContext::Internal));
-    assert_eq!(authority, Some(agendao_types::MessageAuthorityClass::System));
+    assert_eq!(
+        admission,
+        Some(agendao_types::MessageAdmissionContext::Internal)
+    );
+    assert_eq!(
+        authority,
+        Some(agendao_types::MessageAuthorityClass::System)
+    );
 }
 
 #[test]

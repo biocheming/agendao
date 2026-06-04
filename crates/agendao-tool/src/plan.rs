@@ -236,5 +236,7 @@ impl Tool for PlanExitTool {
 }
 
 fn get_plan_path(ctx: &ToolContext) -> PathBuf {
-    PathBuf::from(&ctx.worktree).join(".agendao").join(PLAN_FILE)
+    PathBuf::from(&ctx.worktree)
+        .join(".agendao")
+        .join(PLAN_FILE)
 }

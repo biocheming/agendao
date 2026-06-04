@@ -3,7 +3,7 @@ use agendao_provider::{
     bootstrap::ProviderModel, mime_to_modality, transform_messages, Content, ContentPart, ImageUrl,
     Message, Modality, ProviderType, Role,
 };
-use agendao_session::prompt::PartInput;
+use agendao_types::PromptPart;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -92,7 +92,7 @@ pub struct MultimodalPreflightRequest {
     #[serde(default)]
     pub parts: Vec<PreflightInputPart>,
     #[serde(default)]
-    pub session_parts: Vec<PartInput>,
+    pub session_parts: Vec<PromptPart>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -254,7 +254,7 @@ impl<'a> MultimodalCapabilityAuthority<'a> {
         &self,
         capability: &PreflightCapabilityView,
         model: &ProviderModel,
-        parts: &[PartInput],
+        parts: &[PromptPart],
     ) -> ModalityTransportResult {
         let original_parts = build_transport_message_parts(parts);
         if original_parts.is_empty() {
@@ -304,16 +304,16 @@ impl<'a> MultimodalCapabilityAuthority<'a> {
     }
 }
 
-fn build_transport_message_parts(parts: &[PartInput]) -> Vec<ContentPart> {
+fn build_transport_message_parts(parts: &[PromptPart]) -> Vec<ContentPart> {
     parts
         .iter()
         .filter_map(|part| match part {
-            PartInput::Text { text } => Some(ContentPart {
+            PromptPart::Text { text } => Some(ContentPart {
                 content_type: "text".to_string(),
                 text: Some(text.clone()),
                 ..Default::default()
             }),
-            PartInput::File {
+            PromptPart::File {
                 url,
                 filename,
                 mime,
@@ -324,7 +324,7 @@ fn build_transport_message_parts(parts: &[PartInput]) -> Vec<ContentPart> {
                 filename: filename.clone(),
                 ..Default::default()
             }),
-            PartInput::Agent { .. } | PartInput::Subtask { .. } => None,
+            PromptPart::Agent { .. } | PromptPart::Subtask { .. } => None,
         })
         .collect()
 }

@@ -8,13 +8,13 @@
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 
-use agendao_command::cli_panel::display_width;
-use agendao_command::cli_prompt::PromptSession;
-use agendao_command::cli_select::{
+use agendao_command_render::cli_panel::display_width;
+use agendao_command_render::cli_style::CliStyle;
+use agendao_command_runtime::cli_prompt::PromptSession;
+use agendao_command_runtime::cli_select::{
     interactive_multi_select, interactive_select, SelectOption, SelectResult,
 };
-use agendao_command::cli_spinner::SpinnerGuard;
-use agendao_command::cli_style::CliStyle;
+use agendao_command_runtime::cli_spinner::SpinnerGuard;
 use agendao_tool::{QuestionDef, ToolError};
 
 use super::cli_frontend_set_phase;
@@ -113,7 +113,12 @@ pub(super) async fn cli_ask_question(
             }
         })
         .await
-        .unwrap_or_else(|error| Err(io::Error::other(format!("Selector task panicked: {}", error))));
+        .unwrap_or_else(|error| {
+            Err(io::Error::other(format!(
+                "Selector task panicked: {}",
+                error
+            )))
+        });
 
         match result {
             Ok(SelectResult::Selected(choices)) => {
@@ -170,9 +175,10 @@ pub(super) async fn cli_ask_question(
                     }
                 }
                 spinner_guard.resume();
-                return Err(ToolError::ExecutionError(
-                    format!("Interactive prompt error: {}", error),
-                ));
+                return Err(ToolError::ExecutionError(format!(
+                    "Interactive prompt error: {}",
+                    error
+                )));
             }
         }
     }
@@ -203,7 +209,11 @@ pub(super) fn prompt_free_text(
 ) -> io::Result<SelectResult> {
     let mut rendered_plain_rows = Vec::new();
     if let Some(header) = header {
-        println!("  {} {}", style.bold_cyan(style.bullet()), style.bold(header));
+        println!(
+            "  {} {}",
+            style.bold_cyan(style.bullet()),
+            style.bold(header)
+        );
         rendered_plain_rows.push(format!("  {} {}", style.bullet(), header));
     }
     println!("  {}", question);
@@ -214,10 +224,7 @@ pub(super) fn prompt_free_text(
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
     let answer = input.trim().to_string();
-    rendered_plain_rows.push(format!(
-        "  › {}",
-        input.trim_end_matches(['\n', '\r'])
-    ));
+    rendered_plain_rows.push(format!("  › {}", input.trim_end_matches(['\n', '\r'])));
     let mut stdout = io::stdout();
     let width = crossterm::terminal::size()
         .map(|(width, _)| usize::from(width).max(1))

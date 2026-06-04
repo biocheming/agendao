@@ -408,11 +408,11 @@ mod tests {
         session.push_message(assistant);
 
         let records = vec![
-            crate::runtime_control::ExecutionRecord {
+            agendao_server_core::runtime_control::ExecutionRecord {
                 id: format!("prompt:{session_id}"),
                 session_id: session_id.clone(),
-                kind: crate::runtime_control::ExecutionKind::PromptRun,
-                status: crate::runtime_control::ExecutionStatus::Running,
+                kind: agendao_server_core::runtime_control::ExecutionKind::PromptRun,
+                status: agendao_server_core::runtime_control::ExecutionStatus::Running,
                 label: Some("Prompt run".to_string()),
                 parent_id: None,
                 stage_id: None,
@@ -422,11 +422,11 @@ mod tests {
                 updated_at: 1,
                 metadata: None,
             },
-            crate::runtime_control::ExecutionRecord {
+            agendao_server_core::runtime_control::ExecutionRecord {
                 id: format!("scheduler:{session_id}"),
                 session_id: session_id.clone(),
-                kind: crate::runtime_control::ExecutionKind::SchedulerRun,
-                status: crate::runtime_control::ExecutionStatus::Running,
+                kind: agendao_server_core::runtime_control::ExecutionKind::SchedulerRun,
+                status: agendao_server_core::runtime_control::ExecutionStatus::Running,
                 label: Some("Scheduler run".to_string()),
                 parent_id: Some(format!("prompt:{session_id}")),
                 stage_id: None,
@@ -436,11 +436,11 @@ mod tests {
                 updated_at: 2,
                 metadata: None,
             },
-            crate::runtime_control::ExecutionRecord {
+            agendao_server_core::runtime_control::ExecutionRecord {
                 id: "msg_stage_1".to_string(),
                 session_id: session.id.clone(),
-                kind: crate::runtime_control::ExecutionKind::SchedulerStage,
-                status: crate::runtime_control::ExecutionStatus::Running,
+                kind: agendao_server_core::runtime_control::ExecutionKind::SchedulerStage,
+                status: agendao_server_core::runtime_control::ExecutionStatus::Running,
                 label: Some("Plan".to_string()),
                 parent_id: Some("scheduler:ses_tools".to_string()),
                 stage_id: Some("msg_stage_1".to_string()),
@@ -457,7 +457,7 @@ mod tests {
         let tool = &tool_records[0];
         assert!(matches!(
             tool.kind,
-            crate::runtime_control::ExecutionKind::ToolCall
+            agendao_server_core::runtime_control::ExecutionKind::ToolCall
         ));
         assert_eq!(tool.parent_id.as_deref(), Some("msg_stage_1"));
         assert_eq!(tool.label.as_deref(), Some("Tool: bash"));
@@ -481,11 +481,11 @@ mod tests {
             Arc::new(|| {}),
         );
 
-        let records = vec![crate::runtime_control::ExecutionRecord {
+        let records = vec![agendao_server_core::runtime_control::ExecutionRecord {
             id: format!("prompt:{session_id}"),
             session_id: session_id.to_string(),
-            kind: crate::runtime_control::ExecutionKind::PromptRun,
-            status: crate::runtime_control::ExecutionStatus::Running,
+            kind: agendao_server_core::runtime_control::ExecutionKind::PromptRun,
+            status: agendao_server_core::runtime_control::ExecutionStatus::Running,
             label: Some("Prompt run".to_string()),
             parent_id: None,
             stage_id: None,
@@ -501,7 +501,7 @@ mod tests {
         let task = &task_records[0];
         assert!(matches!(
             task.kind,
-            crate::runtime_control::ExecutionKind::AgentTask
+            agendao_server_core::runtime_control::ExecutionKind::AgentTask
         ));
         assert_eq!(
             task.parent_id.as_deref(),
@@ -523,9 +523,9 @@ mod tests {
 
     #[tokio::test]
     async fn event_query_filters_by_stage_id_via_stage_event_log() {
-        use agendao_command::stage_protocol::{EventScope, StageEvent};
+        use agendao_stage_protocol::{EventScope, StageEvent};
 
-        let log = crate::stage_event_log::StageEventLog::new();
+        let log = agendao_server_core::stage_event_log::StageEventLog::new();
         let session_id = "ses_event_test";
 
         log.record(
@@ -569,7 +569,7 @@ mod tests {
         .await;
 
         // Filter by stage_id
-        let filter_stage = crate::stage_event_log::EventFilter {
+        let filter_stage = agendao_server_core::stage_event_log::EventFilter {
             stage_id: Some("stg_alpha".into()),
             ..Default::default()
         };
@@ -580,7 +580,7 @@ mod tests {
             .all(|e| e.stage_id.as_deref() == Some("stg_alpha")));
 
         // Filter by stage_id + event_type
-        let filter_combined = crate::stage_event_log::EventFilter {
+        let filter_combined = agendao_server_core::stage_event_log::EventFilter {
             stage_id: Some("stg_alpha".into()),
             event_type: Some("agent.started".into()),
             ..Default::default()

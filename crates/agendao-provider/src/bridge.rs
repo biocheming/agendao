@@ -13,17 +13,25 @@
 //! closeai-compatible or ethnopic-compatible providers.
 
 use crate::driver::{
-    ApiStyle, AudioSource, ContentBlock, DriverMessage, DriverMessageContent, DriverMessageRole,
-    DriverResponse, ProviderDriver, StreamingEvent,
+    AudioSource, ContentBlock, DriverMessage, DriverMessageContent, DriverMessageRole,
+    DriverResponse, StreamingEvent,
 };
 use crate::message::{ChatResponse, Choice, Message, Usage};
-use crate::protocol::{ProviderAdapter, ProviderConfig};
 use crate::provider::ProviderError;
 use crate::stream::{StreamEvent, StreamResult, StreamUsage};
-use async_trait::async_trait;
 use futures::{Stream, StreamExt};
 use std::pin::Pin;
 
+#[cfg(feature = "http-transport")]
+use crate::driver::{ApiStyle, ProviderDriver};
+#[cfg(feature = "http-transport")]
+use crate::protocol::{
+    ProviderAdapter, ProviderConfig, ProviderHttpClient, ProviderHttpStreamError,
+};
+#[cfg(feature = "http-transport")]
+use async_trait::async_trait;
+
+#[cfg(feature = "http-transport")]
 fn uses_x_api_key_auth(api_style: ApiStyle) -> bool {
     matches!(api_style, ApiStyle::EthnopicMessages)
 }
@@ -245,10 +253,12 @@ pub fn driver_response_to_chat_response(resp: DriverResponse) -> ChatResponse {
 /// // Implement ProviderDriver for your provider, then:
 /// let adapter = DriverBasedAdapter::new(driver);
 /// ```
+#[cfg(feature = "http-transport")]
 pub struct DriverBasedAdapter {
     driver: std::sync::Arc<dyn ProviderDriver>,
 }
 
+#[cfg(feature = "http-transport")]
 impl DriverBasedAdapter {
     pub fn new(driver: Box<dyn ProviderDriver>) -> Self {
         Self {
@@ -257,11 +267,12 @@ impl DriverBasedAdapter {
     }
 }
 
+#[cfg(feature = "http-transport")]
 #[async_trait]
 impl ProviderAdapter for DriverBasedAdapter {
     async fn chat(
         &self,
-        client: &reqwest::Client,
+        client: &ProviderHttpClient,
         config: &ProviderConfig,
         request: crate::ChatRequest,
     ) -> Result<ChatResponse, ProviderError> {
@@ -342,7 +353,7 @@ impl ProviderAdapter for DriverBasedAdapter {
 
     async fn chat_stream(
         &self,
-        client: &reqwest::Client,
+        client: &ProviderHttpClient,
         config: &ProviderConfig,
         request: crate::ChatRequest,
     ) -> Result<StreamResult, ProviderError> {
@@ -408,7 +419,10 @@ impl ProviderAdapter for DriverBasedAdapter {
         }
 
         // SSE decode → JSON values (Phase 1 infrastructure)
-        let json_stream = crate::stream::decode_sse_stream(response.bytes_stream()).await?;
+        let bytes_stream = response
+            .bytes_stream()
+            .map(|result| result.map_err(|err| -> ProviderHttpStreamError { err }));
+        let json_stream = crate::stream::decode_sse_stream(bytes_stream).await?;
 
         // Use driver to parse JSON → StreamingEvent, then bridge → StreamEvent.
         // NOTE: driver.parse_stream_event() takes &str, so we serialize the Value.

@@ -1,3 +1,4 @@
+use crate::protocol::ProviderHttpStreamError;
 use crate::provider::ProviderError;
 use bytes::Bytes;
 use futures::{stream, Stream, StreamExt};
@@ -540,12 +541,12 @@ pub(crate) struct EthnopicUsage {
 /// - SSE comment lines (`:` prefix)
 /// - JSON parsing of SSE payloads
 pub async fn decode_sse_stream(
-    bytes_stream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
+    bytes_stream: impl Stream<Item = Result<Bytes, ProviderHttpStreamError>> + Send + 'static,
 ) -> Result<
     Pin<Box<dyn Stream<Item = Result<serde_json::Value, ProviderError>> + Send>>,
     ProviderError,
 > {
-    let input: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>> =
+    let input: Pin<Box<dyn Stream<Item = Result<Bytes, ProviderHttpStreamError>> + Send>> =
         Box::pin(bytes_stream);
 
     let delimiter = "\n\n";

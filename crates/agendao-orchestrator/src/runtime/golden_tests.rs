@@ -4,9 +4,9 @@ mod tests {
     use crate::runtime::policy::*;
     use crate::runtime::run_loop as raw_run_loop;
     use crate::runtime::traits::*;
+    use agendao_provider::{ProviderError, StreamEvent, StreamResult, ToolDefinition};
     use async_trait::async_trait;
     use futures::{stream, StreamExt};
-    use agendao_provider::{ProviderError, StreamEvent, StreamResult, ToolDefinition};
     use serde_json::json;
     use std::sync::{Arc, Mutex};
 

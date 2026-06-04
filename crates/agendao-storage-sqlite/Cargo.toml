@@ -1,0 +1,12 @@
+[package]
+name = "agendao-storage-sqlite"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+agendao-storage-core = { path = "../agendao-storage-core" }
+async-trait = { workspace = true }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+tracing = { workspace = true }

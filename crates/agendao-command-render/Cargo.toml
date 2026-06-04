@@ -1,0 +1,21 @@
+[package]
+name = "agendao-command-render"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+default = ["terminal-ui", "agent-presenter"]
+terminal-ui = ["agendao-command/terminal-ui", "dep:crossterm"]
+runtime-hooks = ["terminal-ui", "agendao-command/runtime-hooks"]
+agent-presenter = ["terminal-ui", "agendao-command/agent-presenter"]
+
+[dependencies]
+agendao-command = { path = "../agendao-command", default-features = false }
+agendao-output-blocks = { path = "../agendao-output-blocks" }
+agendao-types = { path = "../agendao-types" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+unicode-width = "0.1"
+crossterm = { version = "0.29", optional = true }

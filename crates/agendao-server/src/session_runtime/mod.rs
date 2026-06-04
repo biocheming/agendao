@@ -2,8 +2,6 @@ pub mod direct_bridge;
 pub(crate) mod events;
 pub(crate) mod memory;
 pub(crate) mod recheck_loop;
-pub(crate) mod stage_summary;
-pub(crate) mod state;
 pub(crate) mod steering;
 pub(crate) mod telemetry;
 
@@ -14,9 +12,8 @@ use tokio::sync::Mutex;
 use self::events::{
     broadcast_session_reconcile, emit_output_block_via_hook, DiffEntry, ReconcileReason,
 };
-use crate::runtime_control::{ExecutionPatch, ExecutionStatus, FieldUpdate, SessionRunStatus};
 use crate::ServerState;
-use agendao_command::output_blocks::{
+use agendao_command_render::output_blocks::{
     MessageBlock, MessagePhase, MessageRole as OutputMessageRole, OutputBlock, ReasoningBlock,
     SchedulerDecisionBlock, SchedulerDecisionField, SchedulerDecisionRenderSpec,
     SchedulerDecisionSection, SchedulerStageBlock, ToolPhase,
@@ -29,6 +26,9 @@ use agendao_orchestrator::{
     ToolOutput as OrchestratorToolOutput,
 };
 use agendao_provider::Provider;
+use agendao_server_core::runtime_control::{
+    ExecutionPatch, ExecutionStatus, FieldUpdate, SessionRunStatus,
+};
 use agendao_session::prompt::{
     assistant_reasoning_live_identity, assistant_text_live_identity, tool_call_live_identity,
     tool_result_live_identity, OutputBlockEvent, OutputBlockHook,
@@ -3069,7 +3069,9 @@ fn prettify_decision_value(raw: &str) -> String {
 fn route_outcome_field(decision: &RouteDecision) -> (String, &'static str) {
     match decision.mode {
         agendao_orchestrator::RouteMode::Direct => match decision.direct_kind {
-            Some(agendao_orchestrator::DirectKind::Reply) => ("Direct Reply".to_string(), "warning"),
+            Some(agendao_orchestrator::DirectKind::Reply) => {
+                ("Direct Reply".to_string(), "warning")
+            }
             Some(agendao_orchestrator::DirectKind::Clarify) => {
                 ("Direct Clarification".to_string(), "warning")
             }

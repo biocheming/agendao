@@ -42,10 +42,10 @@ pub use runtime::{
 };
 pub use sync::SkillSyncPlanner;
 pub use types::{
-    LoadedSkill, LoadedSkillFile, SkillCategoryView, SkillConditions, SkillDetailView,
-    SkillFileRef, SkillFrontmatter, SkillFrontmatterPatch, SkillHermesMetadata, SkillMeta,
-    SkillMetaView, SkillMetadataBlocks, SkillPrerequisites, SkillReadinessStatus,
-    SkillRequiredEnvironmentVariable, SkillAgendaoMetadata, SkillSummary,
+    LoadedSkill, LoadedSkillFile, SkillAgendaoMetadata, SkillCategoryView, SkillConditions,
+    SkillDetailView, SkillFileRef, SkillFrontmatter, SkillFrontmatterPatch, SkillHermesMetadata,
+    SkillMeta, SkillMetaView, SkillMetadataBlocks, SkillPrerequisites, SkillReadinessStatus,
+    SkillRequiredEnvironmentVariable, SkillSummary,
 };
 pub use workspace_artifact::{
     export_workspace_skill_artifact_bundle, import_workspace_skill_artifact_bundle,

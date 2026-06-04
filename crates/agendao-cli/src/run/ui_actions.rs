@@ -5,9 +5,9 @@ use std::io::{self, Write};
 use std::sync::Arc;
 
 use agendao_agent::AgentRegistry;
-use agendao_command::cli_select::{interactive_select, SelectOption, SelectResult};
-use agendao_command::cli_style::CliStyle;
 use agendao_command::{CommandRegistry, ResolvedUiCommand, UiActionId};
+use agendao_command_render::cli_style::CliStyle;
+use agendao_command_runtime::cli_select::{interactive_select, SelectOption, SelectResult};
 use agendao_provider::ProviderRegistry;
 
 use crate::api_client::CliApiClient;
@@ -330,7 +330,7 @@ pub(super) async fn cli_capture_voice_prompt(
     runtime: &mut CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
     sse_rx: &mut mpsc::UnboundedReceiver<CliServerEvent>,
-    local_state: &Option<Arc<agendao_server::ServerState>>,
+    local_state: &Option<Arc<crate::local_server_bridge::CliLocalServerState>>,
     transport: &Option<Arc<agendao_client::FrontendTransport>>,
     current_dir: &Path,
     style: &CliStyle,
@@ -355,7 +355,8 @@ pub(super) async fn cli_capture_voice_prompt(
         return Ok(());
     }
     let duration_seconds = multimodal.voice_config().duration_seconds;
-    let capture_voice_config = agendao_multimodal::MultimodalAuthority::merged_voice_config(&config);
+    let capture_voice_config =
+        agendao_multimodal::MultimodalAuthority::merged_voice_config(&config);
 
     let prompt_session = runtime
         .prompt_session_slot
@@ -454,13 +455,13 @@ pub(super) async fn cli_capture_voice_prompt(
                     );
                 }
                 if preflight.result.hard_block {
-                        if let Some(surface) = runtime.terminal_surface.as_ref() {
-                            let _ = surface.resume_modal_prompt(suspended_by_surface);
-                        } else if suspended_directly {
-                            if let Some(prompt_session) = prompt_session.as_ref() {
-                                let _ = prompt_session.resume();
-                            }
+                    if let Some(surface) = runtime.terminal_surface.as_ref() {
+                        let _ = surface.resume_modal_prompt(suspended_by_surface);
+                    } else if suspended_directly {
+                        if let Some(prompt_session) = prompt_session.as_ref() {
+                            let _ = prompt_session.resume();
                         }
+                    }
                     return Ok(());
                 }
             }
@@ -522,7 +523,7 @@ pub(super) async fn cli_execute_ui_action(
     runtime: &mut CliExecutionRuntime,
     api_client: &Arc<CliApiClient>,
     sse_rx: &mut mpsc::UnboundedReceiver<CliServerEvent>,
-    local_state: &Option<Arc<agendao_server::ServerState>>,
+    local_state: &Option<Arc<crate::local_server_bridge::CliLocalServerState>>,
     transport: &Option<Arc<agendao_client::FrontendTransport>>,
     provider_registry: &ProviderRegistry,
     agent_registry: &AgentRegistry,
@@ -1101,39 +1102,37 @@ pub(super) async fn cli_execute_ui_action(
             }
 
             let style = CliStyle::detect();
-            let mut lines = match crate::local_dispatch::get_all_providers(
-                local_state,
-                transport,
-                api_client,
-            )
-            .await
-            {
-                Ok(response) => response
-                    .all
-                    .into_iter()
-                    .flat_map(|provider| {
-                        let provider_id = provider.id;
-                        provider
-                            .models
-                            .into_iter()
-                            .map(move |model| format!("{}/{}", provider_id, model.id))
-                    })
-                    .collect::<Vec<_>>(),
-                Err(_) => {
-                    let mut fallback = Vec::new();
-                    for p in provider_registry.list() {
-                        for m in p.models() {
-                            fallback.push(format!("{}/{}", p.id(), m.id));
+            let mut lines =
+                match crate::local_dispatch::get_all_providers(local_state, transport, api_client)
+                    .await
+                {
+                    Ok(response) => response
+                        .all
+                        .into_iter()
+                        .flat_map(|provider| {
+                            let provider_id = provider.id;
+                            provider
+                                .models
+                                .into_iter()
+                                .map(move |model| format!("{}/{}", provider_id, model.id))
+                        })
+                        .collect::<Vec<_>>(),
+                    Err(_) => {
+                        let mut fallback = Vec::new();
+                        for p in provider_registry.list() {
+                            for m in p.models() {
+                                fallback.push(format!("{}/{}", p.id(), m.id));
+                            }
                         }
+                        fallback
                     }
-                    fallback
-                }
-            };
+                };
             lines.sort();
             lines.dedup();
-            let recent = crate::local_dispatch::get_recent_models(local_state, transport, api_client)
-                .await
-                .unwrap_or_default();
+            let recent =
+                crate::local_dispatch::get_recent_models(local_state, transport, api_client)
+                    .await
+                    .unwrap_or_default();
             if !recent.is_empty() {
                 let recent_lines = recent
                     .iter()
@@ -1193,8 +1192,12 @@ pub(super) async fn cli_execute_ui_action(
         }
         UiActionId::OpenModeList => {
             if let Some(mode_ref) = argument.map(str::trim).filter(|value| !value.is_empty()) {
-                match crate::local_dispatch::list_execution_modes(local_state, transport, api_client)
-                    .await
+                match crate::local_dispatch::list_execution_modes(
+                    local_state,
+                    transport,
+                    api_client,
+                )
+                .await
                 {
                     Ok(modes) => {
                         let normalized = mode_ref.to_ascii_lowercase();
@@ -1616,21 +1619,22 @@ pub(super) async fn cli_execute_ui_action(
             Ok(CliUiActionOutcome::Continue)
         }
         UiActionId::OpenAgentList => {
-            let resolved_agents = crate::local_dispatch::list_agents(local_state, transport, api_client)
-                .await
-                .unwrap_or_else(|_| {
-                    agent_registry
-                        .list()
-                        .into_iter()
-                        .map(|info| agendao_client::AgentInfo {
-                            id: info.name.clone(),
-                            name: info.name.clone(),
-                            description: info.description.clone(),
-                            mode: Some(format!("{:?}", info.mode).to_ascii_lowercase()),
-                            hidden: Some(info.hidden),
-                        })
-                        .collect()
-                });
+            let resolved_agents =
+                crate::local_dispatch::list_agents(local_state, transport, api_client)
+                    .await
+                    .unwrap_or_else(|_| {
+                        agent_registry
+                            .list()
+                            .into_iter()
+                            .map(|info| agendao_client::AgentInfo {
+                                id: info.name.clone(),
+                                name: info.name.clone(),
+                                description: info.description.clone(),
+                                mode: Some(format!("{:?}", info.mode).to_ascii_lowercase()),
+                                hidden: Some(info.hidden),
+                            })
+                            .collect()
+                    });
             if let Some(agent_name) = argument.map(str::trim).filter(|value| !value.is_empty()) {
                 let agents = resolved_agents;
                 let found = agents.iter().find(|info| info.name == agent_name);

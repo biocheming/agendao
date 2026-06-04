@@ -1,10 +1,10 @@
+use agendao_command_render::run_status_labels::canonical_run_status_title;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Padding, Paragraph, Wrap},
 };
-use agendao_command::run_status_labels::canonical_run_status_title;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -242,6 +242,9 @@ impl Prompt {
         let variant = self.context.current_model_variant();
         let animations_enabled = *self.context.animations_enabled.read();
         let show_activity_row = self.shows_activity_row();
+        let context_line = self
+            .render_context_line(&theme, selection.current_model.as_deref())
+            .filter(|line| !line.spans.is_empty());
         let inline_token_line = (!show_activity_row)
             .then(|| self.render_token_line(&theme))
             .filter(|line| !line.spans.is_empty());
@@ -257,6 +260,7 @@ impl Prompt {
         let max_content_lines = area
             .height
             .saturating_sub(if show_activity_row { 3 } else { 2 })
+            .saturating_sub(if context_line.is_some() { 1 } else { 0 })
             .saturating_sub(PROMPT_BLOCK_PAD_TOP)
             .saturating_sub(PROMPT_BLOCK_PAD_BOTTOM)
             .max(PROMPT_MIN_INPUT_LINES);
@@ -265,18 +269,23 @@ impl Prompt {
             .saturating_add(PROMPT_BLOCK_PAD_TOP)
             .saturating_add(PROMPT_BLOCK_PAD_BOTTOM);
         let chunk_constraints = if show_activity_row {
-            vec![
-                Constraint::Length(input_lines),
+            let mut constraints = vec![Constraint::Length(input_lines)];
+            if context_line.is_some() {
+                constraints.push(Constraint::Length(1));
+            }
+            constraints.extend([
                 Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Length(1),
-            ]
+            ]);
+            constraints
         } else {
-            vec![
-                Constraint::Length(input_lines),
-                Constraint::Length(1),
-                Constraint::Length(1),
-            ]
+            let mut constraints = vec![Constraint::Length(input_lines)];
+            if context_line.is_some() {
+                constraints.push(Constraint::Length(1));
+            }
+            constraints.extend([Constraint::Length(1), Constraint::Length(1)]);
+            constraints
         };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -367,6 +376,21 @@ impl Prompt {
             surface.set_cursor_position(cursor_x, cursor_y);
         }
 
+        let mut chunk_index = 1usize;
+        if let Some(context_line) = context_line {
+            render_prompt_continuation_row(
+                surface,
+                chunks[chunk_index],
+                active_color,
+                theme.background_element,
+            );
+            let context_row = row_content_area(chunks[chunk_index], PROMPT_LINE_H_INSET);
+            let context_paragraph =
+                Paragraph::new(context_line).style(Style::default().bg(theme.background_element));
+            surface.render_widget(context_paragraph, context_row);
+            chunk_index += 1;
+        }
+
         let mut info_parts = render_prompt_identity_spans(&self.context, self.mode, active_color);
         info_parts.push(Span::raw("  "));
 
@@ -391,15 +415,21 @@ impl Prompt {
             info_parts.extend(token_line.spans);
         }
 
-        render_prompt_continuation_row(surface, chunks[1], active_color, theme.background_element);
-        let info_row = row_content_area(chunks[1], PROMPT_LINE_H_INSET);
+        render_prompt_continuation_row(
+            surface,
+            chunks[chunk_index],
+            active_color,
+            theme.background_element,
+        );
+        let info_row = row_content_area(chunks[chunk_index], PROMPT_LINE_H_INSET);
         let info_line = Line::from(info_parts);
         let info_paragraph =
             Paragraph::new(info_line).style(Style::default().bg(theme.background_element));
         surface.render_widget(info_paragraph, info_row);
+        chunk_index += 1;
 
         if show_activity_row {
-            let spinner_row = chunks[2];
+            let spinner_row = chunks[chunk_index];
             surface.render_widget(
                 Paragraph::new("").style(Style::default().bg(theme.background_element)),
                 spinner_row,
@@ -426,11 +456,11 @@ impl Prompt {
 
             let status_line = Paragraph::new(self.render_status_line(&theme))
                 .style(Style::default().bg(theme.background_element));
-            surface.render_widget(status_line, chunks[3]);
+            surface.render_widget(status_line, chunks[chunk_index + 1]);
         } else {
             let status_line = Paragraph::new(self.render_status_line(&theme))
                 .style(Style::default().bg(theme.background_element));
-            surface.render_widget(status_line, chunks[2]);
+            surface.render_widget(status_line, chunks[chunk_index]);
         }
     }
 
@@ -685,9 +715,17 @@ impl Prompt {
     }
 
     pub fn desired_height(&self, width: u16) -> u16 {
+        let selection = self.context.selection_state();
+        let has_context_line = self
+            .render_context_line(
+                &self.context.theme.read(),
+                selection.current_model.as_deref(),
+            )
+            .is_some_and(|line| !line.spans.is_empty());
         self.input_display_lines(width)
             .saturating_add(PROMPT_BLOCK_PAD_TOP)
             .saturating_add(PROMPT_BLOCK_PAD_BOTTOM)
+            .saturating_add(if has_context_line { 1 } else { 0 })
             .saturating_add(if self.shows_activity_row() { 3 } else { 2 })
     }
 
@@ -1316,6 +1354,62 @@ impl Prompt {
             ));
         }
         Line::from(spans)
+    }
+
+    fn render_context_line(
+        &self,
+        theme: &Theme,
+        selected_model: Option<&str>,
+    ) -> Option<Line<'static>> {
+        let used = self.context.current_context_tokens()?;
+        let limit = self
+            .context
+            .resolve_model_info(selected_model)
+            .map(|model| model.context_window)
+            .filter(|limit| *limit > 0);
+
+        let mut spans = vec![Span::styled(
+            "Context ",
+            Style::default().fg(theme.text_muted),
+        )];
+
+        match limit {
+            Some(limit) => {
+                let percent = agendao_types::context_usage_percent(used, limit);
+                let accent = match agendao_types::context_pressure_for_percent(percent) {
+                    agendao_types::ContextPressure::Critical => theme.error,
+                    agendao_types::ContextPressure::AutoCompactSoon
+                    | agendao_types::ContextPressure::Warning => theme.warning,
+                    agendao_types::ContextPressure::Normal if percent.is_some() => theme.success,
+                    agendao_types::ContextPressure::Normal => theme.text_muted,
+                };
+                let percent_label =
+                    percent.map_or_else(|| "--".to_string(), |pct| format!("{pct}%"));
+                spans.push(Span::styled(
+                    format!(
+                        "{}/{}",
+                        format_compact_number(used),
+                        format_compact_number(limit)
+                    ),
+                    Style::default().fg(theme.text),
+                ));
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(
+                    agendao_types::context_usage_bar(percent, 8),
+                    Style::default().fg(accent),
+                ));
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(percent_label, Style::default().fg(accent)));
+            }
+            None => {
+                spans.push(Span::styled(
+                    format_compact_number(used),
+                    Style::default().fg(theme.text),
+                ));
+            }
+        }
+
+        Some(Line::from(spans))
     }
 
     fn current_session_token_io(&self) -> Option<(u64, u64, u64, u64, u64, u64)> {
@@ -2001,6 +2095,86 @@ mod tests {
     fn desired_height_preserves_two_line_input_when_idle_and_empty() {
         with_isolated_prompt(|prompt| {
             assert_eq!(prompt.desired_height(80), 5);
+        });
+    }
+
+    #[test]
+    fn desired_height_grows_when_context_meter_is_visible() {
+        with_isolated_prompt(|prompt| {
+            {
+                let mut providers = prompt.context.providers.write();
+                providers.push(crate::context::ProviderInfo {
+                    id: "openai".to_string(),
+                    name: "OpenAI".to_string(),
+                    models: vec![crate::context::ModelInfo {
+                        id: "openai/gpt-5".to_string(),
+                        name: "gpt-5".to_string(),
+                        context_window: 200_000,
+                        max_output_tokens: 0,
+                        supports_vision: false,
+                        supports_tools: true,
+                        cost_per_million_input: None,
+                        cost_per_million_output: None,
+                    }],
+                });
+            }
+            prompt
+                .context
+                .set_model("openai/gpt-5".to_string(), "openai".to_string());
+            {
+                let mut session = prompt.context.session.write();
+                session.session_usage_books = Some(agendao_types::SessionUsageBooks {
+                    live_context_tokens: Some(52_830),
+                    request_context_tokens: Some(52_830),
+                    ..Default::default()
+                });
+            }
+
+            assert_eq!(prompt.desired_height(80), 6);
+        });
+    }
+
+    #[test]
+    fn context_line_renders_meter_for_selected_model() {
+        with_isolated_prompt(|prompt| {
+            {
+                let mut providers = prompt.context.providers.write();
+                providers.push(crate::context::ProviderInfo {
+                    id: "openai".to_string(),
+                    name: "OpenAI".to_string(),
+                    models: vec![crate::context::ModelInfo {
+                        id: "openai/gpt-5".to_string(),
+                        name: "gpt-5".to_string(),
+                        context_window: 200_000,
+                        max_output_tokens: 0,
+                        supports_vision: false,
+                        supports_tools: true,
+                        cost_per_million_input: None,
+                        cost_per_million_output: None,
+                    }],
+                });
+            }
+            prompt
+                .context
+                .set_model("openai/gpt-5".to_string(), "openai".to_string());
+            {
+                let mut session = prompt.context.session.write();
+                session.session_usage_books = Some(agendao_types::SessionUsageBooks {
+                    live_context_tokens: Some(52_830),
+                    request_context_tokens: Some(52_830),
+                    ..Default::default()
+                });
+            }
+            let theme = prompt.context.theme.read().clone();
+            let rendered = line_text(
+                prompt
+                    .render_context_line(&theme, Some("openai/gpt-5"))
+                    .expect("context line"),
+            );
+
+            assert!(rendered.contains("Context"), "{rendered}");
+            assert!(rendered.contains("52.8K/200K"), "{rendered}");
+            assert!(rendered.contains("26%"), "{rendered}");
         });
     }
 

@@ -3,12 +3,12 @@ use crate::distribution::verify_sha256_checksum;
 use crate::hub::governance_dir;
 use crate::write::build_skill_document;
 use crate::{SkillError, SkillRoot};
-use flate2::read::GzDecoder;
 use agendao_config::ConfigStore;
 use agendao_types::{
     SkillArtifactCacheEntry, SkillArtifactCacheStatus, SkillArtifactKind, SkillArtifactRef,
     SkillHubPolicy,
 };
+use flate2::read::GzDecoder;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::fs;

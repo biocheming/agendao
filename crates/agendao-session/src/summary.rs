@@ -572,11 +572,11 @@ impl SessionSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
-    use futures::stream;
     use agendao_provider::{
         ChatRequest, ChatResponse, Choice, ModelInfo, ProviderError, StreamResult, Usage,
     };
+    use async_trait::async_trait;
+    use futures::stream;
 
     struct MockProvider {
         model: ModelInfo,

@@ -1,6 +1,8 @@
 use super::{format_token_count, CliFrontendProjection};
-use agendao_command::cli_style::CliStyle;
-use agendao_command::run_status_labels::{canonical_run_status_labels, canonical_run_status_title};
+use agendao_command_render::cli_style::CliStyle;
+use agendao_command_render::run_status_labels::{
+    canonical_run_status_labels, canonical_run_status_title,
+};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

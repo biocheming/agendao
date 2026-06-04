@@ -14,10 +14,10 @@ use uuid::Uuid;
 
 use agendao_types::Session as SessionRecord;
 pub use agendao_types::{
-    FileDiff, PermissionRuleset, SessionContextKind, SessionForkExplain, SessionForkHistoryMode,
-    SessionForkLifecycleExplain, SessionForkLifecycleScope, SessionOwnershipSummary, SessionRevert,
+    FileDiff, MessagePart, MessageRole, PartType, PermissionRuleset, SessionContextKind,
+    SessionForkExplain, SessionForkHistoryMode, SessionForkLifecycleExplain,
+    SessionForkLifecycleScope, SessionMessage, SessionOwnershipSummary, SessionRevert,
     SessionShare, SessionStatus, SessionSummary, SessionTime, SessionUsage, SessionUsageBooks,
-    SessionMessage, MessageRole, MessagePart, PartType,
 };
 
 // ============================================================================
@@ -106,8 +106,12 @@ impl Session {
         self.add_user_message_inner(text, metadata)
     }
 
-    fn add_user_message_inner(&mut self, text: &str, metadata: HashMap<String, serde_json::Value>) -> String {
-        use agendao_types::{SessionMessage, MessageRole, MessagePart, PartType};
+    fn add_user_message_inner(
+        &mut self,
+        text: &str,
+        metadata: HashMap<String, serde_json::Value>,
+    ) -> String {
+        use agendao_types::{MessagePart, MessageRole, PartType, SessionMessage};
 
         let msg_id = format!("msg_{}", Uuid::new_v4());
         let now = Utc::now();
@@ -141,7 +145,7 @@ impl Session {
 
     /// Add assistant message to session (Phase 6.1)
     pub fn add_assistant_message(&mut self, text: &str) -> String {
-        use agendao_types::{SessionMessage, MessageRole, MessagePart, PartType};
+        use agendao_types::{MessagePart, MessageRole, PartType, SessionMessage};
 
         let msg_id = format!("msg_{}", Uuid::new_v4());
         let now = Utc::now();

@@ -12,13 +12,13 @@ use ratatui::{
 };
 
 use crate::branding::{APP_NAME, APP_SHORT_NAME, APP_VERSION_DATE};
-use crate::context::{
+use crate::file_index::FileIndex;
+use crate::render::RenderSurface;
+use crate::state::{
     AppContext, LspConnectionStatus, McpConnectionStatus, MessageRole, SidebarLifecycleState,
     SidebarTab, TodoStatus,
 };
-use crate::file_index::FileIndex;
 use crate::theme::Theme;
-use crate::ui::RenderSurface;
 use agendao_core::process_registry::ProcessKind;
 
 const SIDEBAR_WORKSPACE_INDEX_MAX_DEPTH: usize = 8;
@@ -786,7 +786,9 @@ impl Sidebar {
                         ));
                         if let Some(note) = context_limit
                             .and_then(|limit| context_usage_percent(shown_context_tokens, limit))
-                            .and_then(|percent| agendao_types::context_pressure_label(Some(percent)))
+                            .and_then(|percent| {
+                                agendao_types::context_pressure_label(Some(percent))
+                            })
                         {
                             lines.push(Line::from(vec![
                                 Span::styled("State  ", Style::default().fg(theme.text_muted)),
@@ -2283,9 +2285,8 @@ fn context_usage_bar(percent: Option<u64>, width: usize) -> String {
 fn context_usage_style(theme: &Theme, percent: Option<u64>) -> Style {
     let color = match agendao_types::context_pressure_for_percent(percent) {
         agendao_types::ContextPressure::Critical => theme.error,
-        agendao_types::ContextPressure::AutoCompactSoon | agendao_types::ContextPressure::Warning => {
-            theme.warning
-        }
+        agendao_types::ContextPressure::AutoCompactSoon
+        | agendao_types::ContextPressure::Warning => theme.warning,
         agendao_types::ContextPressure::Normal if percent.is_some() => theme.success,
         agendao_types::ContextPressure::Normal => theme.text_muted,
     };
@@ -2321,7 +2322,7 @@ fn sidebar_usage_line(theme: &Theme, label: &str, used: u64, limit: Option<u64>)
     ])
 }
 
-fn total_session_tokens(usage: &agendao_session::SessionUsage) -> u64 {
+fn total_session_tokens(usage: &agendao_types::SessionUsage) -> u64 {
     usage.input_tokens + usage.output_tokens + usage.reasoning_tokens
 }
 
@@ -2524,7 +2525,7 @@ mod tests {
         let session_id = {
             let mut session = context.session.write();
             let session_id = session.create_session(Some("Token Session".to_string()));
-            session.session_usage = Some(agendao_session::SessionUsage {
+            session.session_usage = Some(agendao_types::SessionUsage {
                 input_tokens: 150_000,
                 output_tokens: 150_000,
                 reasoning_tokens: 0,

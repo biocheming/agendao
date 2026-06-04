@@ -2,23 +2,26 @@ pub mod api;
 pub mod app;
 pub mod branding;
 pub mod bridge;
+pub mod client;
 pub mod command;
 pub mod components;
 pub mod context;
+pub mod core;
 pub mod event;
 pub mod file_index;
 pub mod hooks;
+pub mod local_server_bridge;
+pub mod render;
 pub mod router;
+pub mod state;
 pub mod terminal;
 pub mod theme;
 pub mod ui;
 
 pub use api::ApiClient;
 pub use app::{App, AppLaunchConfig, RunOutcome};
-pub use event::Event;
-pub use router::{Route, Router};
+pub use core::{AppContext, Event, Route, Router, Theme};
 pub use terminal::{reset_title, set_session_title, set_title};
-pub use theme::Theme;
 
 fn setup_panic_hook() {
     std::panic::set_hook(Box::new(|panic_info| {

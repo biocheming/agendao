@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use chrono::{Local, TimeZone};
 use agendao_types::{
     ManagedSkillRecord, SkillArtifactCacheEntry, SkillDistributionRecord, SkillHubIndexResponse,
     SkillHubPolicy, SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
@@ -11,16 +10,21 @@ use agendao_types::{
     SkillSemanticConflictDiagnostic, SkillSourceKind, SkillSourceRef, SkillSyncAction,
     SkillSyncPlan, SkillVitalityState,
 };
+use chrono::{Local, TimeZone};
 use serde::Serialize;
 
 use crate::api_client::{
     CliApiClient, SkillHubIndexRefreshRequest, SkillHubManagedDetachRequest,
     SkillHubManagedRemoveRequest, SkillHubReviewCandidatesSyncRequest,
 };
+#[cfg(feature = "proposal-db")]
+use crate::cli::ProposalCommands;
 use crate::cli::{
-    ProposalCommands, SkillCommands, SkillHubCommands, SkillHubOutputFormat,
-    SkillRetirementReasonKindArg, SkillSourceArgs, SkillSourceKindArg, SkillVitalityStateArg,
+    SkillCommands, SkillHubCommands, SkillHubOutputFormat, SkillRetirementReasonKindArg,
+    SkillSourceArgs, SkillSourceKindArg, SkillVitalityStateArg,
 };
+#[cfg(feature = "proposal-db")]
+use crate::cli_local_data;
 use crate::import_export::{export_skill_data, import_skill_data};
 use crate::server_lifecycle::FrontendRuntimeContext;
 use crate::util::truncate_text;
@@ -49,7 +53,17 @@ pub(crate) async fn handle_skill_command(
         SkillCommands::Export { output } => export_skill_data(output),
         SkillCommands::Import { file } => import_skill_data(file),
         SkillCommands::Hub { action } => handle_skill_hub_command(action, runtime_context).await,
-        SkillCommands::Proposal { action } => handle_proposal_command(action).await,
+        SkillCommands::Proposal { action } => {
+            #[cfg(feature = "proposal-db")]
+            {
+                handle_proposal_command(action).await
+            }
+            #[cfg(not(feature = "proposal-db"))]
+            {
+                let _ = action;
+                anyhow::bail!("skill proposal commands require the `proposal-db` CLI feature")
+            }
+        }
     }
 }
 
@@ -1489,15 +1503,13 @@ fn format_timestamp(timestamp: i64) -> String {
 
 // ── Proposal commands ────────────────────────────────────────────────────
 
+#[cfg(feature = "proposal-db")]
 async fn handle_proposal_command(action: ProposalCommands) -> anyhow::Result<()> {
-    let db = agendao_storage::Database::new().await?;
-    let repo = agendao_storage::SkillEvolutionProposalRepository::new(db.pool().clone());
-
     match action {
         ProposalCommands::List { status } => {
             let status: agendao_types::ProposalStatus =
                 serde_json::from_str(&format!("\"{}\"", status))?;
-            let proposals = repo.list_by_status(&status).await?;
+            let proposals = cli_local_data::list_skill_evolution_proposals(&status).await?;
             if proposals.is_empty() {
                 println!("No proposals with status: {:?}", status);
                 return Ok(());
@@ -1518,7 +1530,7 @@ async fn handle_proposal_command(action: ProposalCommands) -> anyhow::Result<()>
             }
         }
         ProposalCommands::Show { id } => {
-            let Some(proposal) = repo.get_by_id(&id).await? else {
+            let Some(proposal) = cli_local_data::get_skill_evolution_proposal(&id).await? else {
                 anyhow::bail!("proposal not found: {}", id);
             };
             println!("ID:              {}", proposal.id);
@@ -1616,14 +1628,20 @@ async fn handle_proposal_command(action: ProposalCommands) -> anyhow::Result<()>
             }
         }
         ProposalCommands::Approve { id } => {
-            repo.transition_status(&id, &agendao_types::ProposalStatus::Accepted)
-                .await?;
+            cli_local_data::transition_skill_evolution_proposal(
+                &id,
+                &agendao_types::ProposalStatus::Accepted,
+            )
+            .await?;
             println!("Proposal {} approved.", id);
             println!("Note: Accepted does not modify SKILL.md. It marks the suggestion as approved for future application.");
         }
         ProposalCommands::Reject { id } => {
-            repo.transition_status(&id, &agendao_types::ProposalStatus::Rejected)
-                .await?;
+            cli_local_data::transition_skill_evolution_proposal(
+                &id,
+                &agendao_types::ProposalStatus::Rejected,
+            )
+            .await?;
             println!("Proposal {} rejected.", id);
         }
     }
@@ -1631,6 +1649,7 @@ async fn handle_proposal_command(action: ProposalCommands) -> anyhow::Result<()>
     Ok(())
 }
 
+#[cfg(feature = "proposal-db")]
 fn status_label(status: &agendao_types::ProposalStatus) -> &'static str {
     match status {
         agendao_types::ProposalStatus::Draft => "draft",

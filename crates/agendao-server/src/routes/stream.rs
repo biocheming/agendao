@@ -11,12 +11,12 @@ use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::session_runtime::events::{
-    broadcast_session_reconcile, send_sse_server_event, sse_output_block_hook, ReconcileReason,
-    ServerEvent,
+    broadcast_session_reconcile, send_sse_server_event, sse_output_block_hook,
 };
 use crate::{ApiError, ServerState};
 use agendao_agent::{AgentInfo, AgentRegistry};
 use agendao_provider::ToolDefinition;
+use agendao_server_core::runtime_events::{ReconcileReason, ServerEvent};
 use agendao_session::{MessageRole as SessionMessageRole, Session};
 
 use super::permission::request_permission;
@@ -528,10 +528,10 @@ pub(crate) async fn stream_message(
 #[cfg(test)]
 mod tests {
     use crate::session_runtime::scheduler_stage_block_from_message;
-    use chrono::Utc;
-    use agendao_command::governance_fixtures::canonical_scheduler_stage_fixture;
+    use agendao_command_render::governance_fixtures::canonical_scheduler_stage_fixture;
     use agendao_session::prompt::IngressSource;
     use agendao_session::{MessagePart, MessageRole, PartType, SessionMessage};
+    use chrono::Utc;
 
     use super::stream_ingress_envelope;
 

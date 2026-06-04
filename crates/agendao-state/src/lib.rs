@@ -1,5 +1,5 @@
-use anyhow::Result;
 use agendao_config::{ConfigStore, UiRecentModelConfig, WorkspaceIdentity, WorkspaceMode};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

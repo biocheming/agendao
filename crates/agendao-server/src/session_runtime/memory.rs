@@ -1,13 +1,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Result;
-use agendao_command::stage_protocol::StageSummary;
 use agendao_config::ConfigStore;
 use agendao_memory::{
     MemoryAuthority, SkillUsageObservation, SkillWriteObservation, ToolMemoryObservation,
 };
 use agendao_skill::SkillGovernanceAuthority;
+use agendao_stage_protocol::StageSummary;
 use agendao_types::{
     MemoryConflictResponse, MemoryConsolidationRequest, MemoryConsolidationResponse,
     MemoryConsolidationRunListResponse, MemoryConsolidationRunQuery, MemoryDetailView,
@@ -16,6 +15,7 @@ use agendao_types::{
     MemoryRuleHitQuery, MemoryRulePackListResponse, MemoryValidationReportResponse, Session,
     SessionMemoryInsight, SessionMemoryTelemetrySummary, SkillGuardReport,
 };
+use anyhow::Result;
 
 #[derive(Clone)]
 pub(crate) struct RuntimeMemoryAuthority {

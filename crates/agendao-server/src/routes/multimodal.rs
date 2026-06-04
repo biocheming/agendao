@@ -1,13 +1,13 @@
-use axum::{
-    extract::{Query, State},
-    routing::{get, post},
-    Json, Router,
-};
 use agendao_multimodal::{
     MultimodalAuthority, MultimodalCapabilitiesResponse, MultimodalPolicyResponse,
     MultimodalPreflightRequest, MultimodalPreflightResponse, SessionPartAdapter,
 };
 use agendao_provider::bootstrap::{ProviderBootstrapState, ProviderModel};
+use axum::{
+    extract::{Query, State},
+    routing::{get, post},
+    Json, Router,
+};
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -163,8 +163,8 @@ mod tests {
     use crate::ServerState;
     use agendao_config::{Config, ConfigStore, MultimodalConfig, ProviderConfig, VoiceConfig};
     use agendao_provider::{
-        catalog::metadata_path_for_snapshot, ModelCatalogAuthority, ModelLimit, ModelModalities,
-        ModelsData, ModelsDevInfo, ModelsProviderInfo,
+        metadata_path_for_snapshot, CatalogMetadata, ModelCatalogAuthority, ModelLimit,
+        ModelModalities, ModelsData, ModelsDevInfo, ModelsProviderInfo,
     };
     use std::collections::HashMap;
     use tempfile::tempdir;
@@ -180,8 +180,7 @@ mod tests {
         .expect("write snapshot");
         std::fs::write(
             metadata_path_for_snapshot(&snapshot_path),
-            serde_json::to_vec(&agendao_provider::CatalogMetadata::default())
-                .expect("serialize metadata"),
+            serde_json::to_vec(&CatalogMetadata::default()).expect("serialize metadata"),
         )
         .expect("write metadata");
 
@@ -322,7 +321,7 @@ mod tests {
             Json(MultimodalPreflightRequest {
                 model: None,
                 parts: Vec::new(),
-                session_parts: vec![agendao_session::prompt::PartInput::File {
+                session_parts: vec![agendao_types::PromptPart::File {
                     url: "data:audio/wav;base64,UklGRg==".to_string(),
                     filename: Some("voice.wav".to_string()),
                     mime: Some("audio/wav".to_string()),

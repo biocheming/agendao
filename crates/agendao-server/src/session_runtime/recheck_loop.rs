@@ -45,13 +45,13 @@ async fn run_recheck_wake_tick(telemetry: &RuntimeTelemetryAuthority) {
 
     for (session_id, status) in &statuses {
         match status {
-            crate::runtime_control::SessionRunStatus::Blocked { .. } => {
+            agendao_server_core::runtime_control::SessionRunStatus::Blocked { .. } => {
                 if telemetry.recheck_session(session_id).await.is_some() {
                     rechecked += 1;
                     tracing::info!(%session_id, "auto-rechecked blocked session");
                 }
             }
-            crate::runtime_control::SessionRunStatus::Sleeping { .. } => {
+            agendao_server_core::runtime_control::SessionRunStatus::Sleeping { .. } => {
                 if telemetry.wake_session(session_id).await.is_some() {
                     woken += 1;
                     tracing::info!(%session_id, "auto-woken sleeping session");
@@ -74,7 +74,7 @@ async fn run_recheck_wake_tick(telemetry: &RuntimeTelemetryAuthority) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime_control::SessionRunStatus;
+    use agendao_server_core::runtime_control::SessionRunStatus;
     use std::sync::Arc;
     use tokio::sync::broadcast;
 

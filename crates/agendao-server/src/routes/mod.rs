@@ -5,6 +5,8 @@ mod file;
 #[cfg(debug_assertions)]
 mod frontend_smoke;
 mod global;
+mod http_surface;
+#[cfg(feature = "mcp")]
 mod mcp;
 mod memory;
 mod multimodal;
@@ -14,6 +16,7 @@ mod process;
 mod project;
 mod provider;
 mod provider_diagnostics;
+#[cfg(feature = "pty")]
 mod pty;
 mod session;
 mod skill_catalog;
@@ -44,15 +47,17 @@ use self::workspace::workspace_routes;
 pub use config::*;
 pub use file::*;
 pub use global::*;
+pub use http_surface::attach_http_shell_routes;
+#[cfg(feature = "mcp")]
 pub use mcp::*;
 pub use permission::*;
 pub use project::*;
 pub use provider::*;
+#[cfg(feature = "pty")]
 pub use pty::*;
 pub use session::*;
 pub use tui::*;
-#[allow(unused_imports)]
-pub use workspace::*;
+pub use workspace::RecentModelsPayload;
 
 use axum::{
     extract::{Path, Query, State},
@@ -70,25 +75,22 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::session_runtime::events::{broadcast_config_updated, ServerEvent};
-use crate::web;
+use crate::session_runtime::events::broadcast_config_updated;
 use crate::{ApiError, Result, ServerState};
 use agendao_agent::{AgentMode, AgentRegistry};
-use agendao_command::{CommandRegistry, ResolvedUiCommand};
+use agendao_command::{
+    CommandInteractiveSpec, CommandInvocationSpec, CommandRegistry, CommandSource,
+    ResolvedUiCommand, UiCommandArgumentKind, UiCommandSpec,
+};
 use agendao_config::Config as AppConfig;
 use agendao_orchestrator::{SchedulerConfig, SchedulerPresetKind, AUTO_SCHEDULER_PROFILE_NAME};
 use agendao_permission::PermissionRuleset;
 use agendao_plugin::subprocess::{PluginLoader, PluginSubprocessError};
 use agendao_provider::AuthInfo;
+use agendao_server_core::runtime_events::ServerEvent;
 
 pub fn router() -> Router<Arc<ServerState>> {
-    let router = Router::new()
-        .route("/", get(web::web_index))
-        .route("/favicon.ico", get(web::root_favicon))
-        .route("/apple-touch-icon.png", get(web::root_apple_touch_icon))
-        .route("/web", get(web::web_index))
-        .route("/web/", get(web::web_index))
-        .route("/web/{*path}", get(web::web_file))
+    let router = attach_http_shell_routes(Router::new())
         .route("/health", get(health))
         .route("/event", get(event_stream))
         .route("/path", get(get_paths))
@@ -117,18 +119,15 @@ pub fn router() -> Router<Arc<ServerState>> {
         .route("/lsp", get(get_lsp_status))
         .route("/formatter", get(get_formatter_status))
         .route("/auth/{id}", put(set_auth).delete(delete_auth))
-        .route("/doc", get(get_doc))
         .route("/log", post(write_log))
         .nest("/session", session_routes())
         .nest("/provider", provider_routes())
         .nest("/config", config_routes())
         .nest("/external-adapter", external_adapter_routes())
-        .nest("/mcp", mcp_routes())
         .nest("/file", file_routes())
         .nest("/find", find_routes())
         .nest("/permission", permission_routes())
         .nest("/project", project_routes())
-        .nest("/pty", pty_routes())
         .nest("/question", question_routes())
         .nest("/tui", tui_routes())
         .nest("/process", process_routes())
@@ -138,6 +137,12 @@ pub fn router() -> Router<Arc<ServerState>> {
         .nest("/experimental", experimental_routes())
         .nest("/plugin", plugin_auth_routes())
         .nest("/web-plugin", web_plugin_routes());
+
+    #[cfg(feature = "mcp")]
+    let router = router.nest("/mcp", mcp_routes());
+
+    #[cfg(feature = "pty")]
+    let router = router.nest("/pty", pty_routes());
 
     #[cfg(debug_assertions)]
     let router = router.nest(
@@ -158,32 +163,6 @@ async fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-    })
-}
-
-// --- /doc endpoint: returns OpenAPI-style documentation info ---
-
-#[derive(Debug, Serialize)]
-struct DocInfo {
-    title: String,
-    version: String,
-    description: String,
-    openapi: String,
-}
-
-#[derive(Debug, Serialize)]
-struct DocResponse {
-    info: DocInfo,
-}
-
-async fn get_doc() -> Json<DocResponse> {
-    Json(DocResponse {
-        info: DocInfo {
-            title: "agendao".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            description: "agendao api".to_string(),
-            openapi: "3.1.1".to_string(),
-        },
     })
 }
 
@@ -272,17 +251,17 @@ struct CommandApiSpec {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     aliases: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    invocation: Option<agendao_command::CommandInvocationSpec>,
+    invocation: Option<CommandInvocationSpec>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    interactive: Option<agendao_command::CommandInteractiveSpec>,
-    source: agendao_command::CommandSource,
+    interactive: Option<CommandInteractiveSpec>,
+    source: CommandSource,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct UiCommandApiSpec {
     #[serde(flatten)]
-    command: agendao_command::UiCommandSpec,
-    argument_kind: agendao_command::UiCommandArgumentKind,
+    command: UiCommandSpec,
+    argument_kind: UiCommandArgumentKind,
 }
 
 async fn list_commands(State(state): State<Arc<ServerState>>) -> Result<Json<Vec<CommandApiSpec>>> {

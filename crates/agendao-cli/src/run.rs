@@ -5,23 +5,23 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use agendao_agent::AgentRegistry;
-use agendao_command::cli_permission::{prompt_permission, PermissionDecision};
-use agendao_command::cli_prompt::{
-    PromptCompletion, PromptFrame, PromptSession, PromptSessionEvent,
-};
-use agendao_command::live_semantic_consumer::LiveSemanticConsumer;
-use agendao_command::cli_spinner::SpinnerGuard;
-use agendao_command::cli_style::CliStyle;
-use agendao_command::interactive::{parse_interactive_command, InteractiveCommand};
-use agendao_command::output_blocks::{
+use agendao_command::CommandRegistry;
+use agendao_command_render::cli_style::CliStyle;
+use agendao_command_render::live_semantic_consumer::LiveSemanticConsumer;
+use agendao_command_render::output_blocks::{
     render_cli_block_rich, BlockTone, MessageBlock, MessagePhase, MessageRole as OutputMessageRole,
     OutputBlock, QueueItemBlock, ReasoningBlock, SchedulerStageBlock, StatusBlock, ToolPhase,
 };
-use agendao_command::terminal_presentation::{
+use agendao_command_render::terminal_presentation::{
     render_terminal_stream_block_semantic, TerminalSemanticStreamRenderState,
     TerminalStreamAccumulator,
 };
-use agendao_command::CommandRegistry;
+use agendao_command_runtime::cli_permission::{prompt_permission, PermissionDecision};
+use agendao_command_runtime::cli_prompt::{
+    PromptCompletion, PromptFrame, PromptSession, PromptSessionEvent,
+};
+use agendao_command_runtime::cli_spinner::SpinnerGuard;
+use agendao_command_runtime::interactive::{parse_interactive_command, InteractiveCommand};
 use agendao_config::loader::load_config;
 use agendao_config::Config;
 use agendao_core::agent_task_registry::{global_task_registry, AgentTaskStatus};
@@ -136,7 +136,7 @@ fn cli_resolve_show_thinking(explicit_flag: bool, config: Option<&Config>, fallb
 }
 
 async fn cli_save_recent_model_ref(
-    local_server: &Option<Arc<agendao_server::ServerState>>,
+    local_server: &Option<Arc<crate::local_server_bridge::CliLocalServerState>>,
     transport: &Option<Arc<agendao_client::FrontendTransport>>,
     api_client: &CliApiClient,
     model_ref: &str,
@@ -197,7 +197,8 @@ pub(crate) async fn run_non_interactive(
     } = options;
     let use_http = attach.is_some();
     let use_socket = !use_http && unix_socket.is_some();
-    let use_direct = !use_http && !use_socket;
+    let direct_requested = !use_http && !use_socket;
+    let use_direct = direct_requested && crate::local_server_bridge::direct_mode_available();
     let working_dir = match dir {
         Some(dir) => dir,
         None => std::env::current_dir()?,
@@ -242,15 +243,15 @@ pub(crate) async fn run_non_interactive(
             .await?
     };
     let api_client = CliApiClient::new(base_url.clone());
-    let local_server: Option<Arc<agendao_server::ServerState>> = if use_direct {
+    let local_server: Option<Arc<crate::local_server_bridge::CliLocalServerState>> = if use_direct {
         eprintln!("Starting CLI in Direct (in-process) mode");
-        Some(Arc::new(
-            agendao_server::ServerState::new_with_storage_for_url_in_workspace(
+        Some(
+            crate::local_server_bridge::create_local_server_state(
                 "http://127.0.0.1:0".to_string(),
                 working_dir.clone(),
             )
             .await?,
-        ))
+        )
     } else {
         None
     };
@@ -341,13 +342,12 @@ pub(crate) async fn run_non_interactive(
         title,
         directory: Some(cli_session_directory(&working_dir)),
         show_thinking,
-        local_server: None,
     })
     .await
 }
 
 async fn run_cli_prompt_local(
-    state: &Arc<agendao_server::ServerState>,
+    state: &Arc<crate::local_server_bridge::CliLocalServerState>,
     input: &str,
     command: Option<&str>,
     continue_last: bool,
@@ -359,18 +359,11 @@ async fn run_cli_prompt_local(
     title: Option<&str>,
     directory: &str,
 ) -> anyhow::Result<()> {
-    let session_id = resolve_local_session(
-        state,
-        continue_last,
-        session,
-        fork,
-        title,
-        directory,
-    )
-    .await?;
+    let session_id =
+        resolve_local_session(state, continue_last, session, fork, title, directory).await?;
 
     let message = build_prompt_message(input, command);
-    agendao_server::local_prompt(
+    crate::local_server_bridge::local_prompt(
         Arc::clone(state),
         &session_id,
         agendao_client::PromptRequest {
@@ -391,13 +384,13 @@ async fn run_cli_prompt_local(
     .await?;
 
     let messages =
-        agendao_server::local_list_messages(Arc::clone(state), &session_id, None, None).await?;
+        crate::local_server_bridge::local_list_messages(Arc::clone(state), &session_id).await?;
     print_assistant_messages(&messages);
     Ok(())
 }
 
 async fn resolve_local_session(
-    state: &Arc<agendao_server::ServerState>,
+    state: &Arc<crate::local_server_bridge::CliLocalServerState>,
     continue_last: bool,
     session: Option<&str>,
     fork: bool,
@@ -407,7 +400,7 @@ async fn resolve_local_session(
     let base_id = if let Some(session_id) = session {
         Some(session_id.to_string())
     } else if continue_last {
-        agendao_server::local_list_sessions(Arc::clone(state), None, Some(100))
+        crate::local_server_bridge::local_list_sessions(Arc::clone(state), None, Some(100))
             .await?
             .into_iter()
             .find(|s| s.parent_id.is_none() && s.directory == directory)
@@ -419,13 +412,13 @@ async fn resolve_local_session(
     if let Some(base_id) = base_id {
         if fork {
             let forked =
-                agendao_server::local_fork_session(Arc::clone(state), &base_id, None).await?;
+                crate::local_server_bridge::local_fork_session(Arc::clone(state), &base_id).await?;
             return Ok(forked.id);
         }
         return Ok(base_id);
     }
 
-    let created = agendao_server::local_create_session(
+    let created = crate::local_server_bridge::local_create_session(
         Arc::clone(state),
         agendao_client::CreateSessionRequest {
             scheduler_profile: None,
@@ -646,10 +639,10 @@ pub(crate) use session_projection::*;
 // Terminal surface, prompt chrome, and styled-output formatting.
 // frontend_state_prompt will transition here as prompt rendering is
 // untangled from event-loop dispatch.
-#[path = "run/frontend_state_surface.rs"]
-mod frontend_state_surface;
 #[path = "run/frontend_state_prompt.rs"]
 mod frontend_state_prompt;
+#[path = "run/frontend_state_surface.rs"]
+mod frontend_state_surface;
 use frontend_state_prompt::CliPromptChrome;
 use frontend_state_surface::{
     cli_copy_target_transcript, cli_refresh_prompt, print_cli_list_on_surface, CliTerminalSurface,
@@ -929,21 +922,11 @@ fn cli_kill_task(id: &str, runtime: Option<&CliExecutionRuntime>) {
 
 // ── CLI session listing ─────────────────────────────────────────────
 
+#[cfg(feature = "session-db")]
 async fn cli_list_sessions(runtime: Option<&CliExecutionRuntime>) {
     let style = CliStyle::detect();
 
-    let db = match agendao_storage::Database::new().await {
-        Ok(db) => db,
-        Err(e) => {
-            let lines = vec![format!("Failed to open session database: {}", e)];
-            let _ = print_cli_list_on_surface(runtime, "Sessions", None, &lines, &style);
-            return;
-        }
-    };
-
-    let session_repo = agendao_storage::SessionRepository::new(db.pool().clone());
-
-    let sessions = match session_repo.list(None, 20).await {
+    let sessions = match crate::cli_local_data::list_recent_session_rows(20).await {
         Ok(sessions) => sessions,
         Err(e) => {
             let lines = vec![format!("Failed to list sessions: {}", e)];
@@ -968,7 +951,7 @@ async fn cli_list_sessions(runtime: Option<&CliExecutionRuntime>) {
                 } else {
                     &session.id
                 };
-                let time_str = format_session_time(session.time.updated);
+                let time_str = crate::cli_local_data::format_relative_session_time(session.updated);
                 format!("{} {} {}", style.dim(id_short), title, style.dim(&time_str))
             })
             .collect()
@@ -983,21 +966,11 @@ async fn cli_list_sessions(runtime: Option<&CliExecutionRuntime>) {
     );
 }
 
-fn format_session_time(timestamp: i64) -> String {
-    let now = chrono::Utc::now().timestamp();
-    let elapsed = now - timestamp;
-    if elapsed < 0 {
-        return "just now".to_string();
-    }
-    if elapsed < 60 {
-        format!("{}s ago", elapsed)
-    } else if elapsed < 3600 {
-        format!("{}m ago", elapsed / 60)
-    } else if elapsed < 86400 {
-        format!("{}h ago", elapsed / 3600)
-    } else {
-        format!("{}d ago", elapsed / 86400)
-    }
+#[cfg(not(feature = "session-db"))]
+async fn cli_list_sessions(runtime: Option<&CliExecutionRuntime>) {
+    let style = CliStyle::detect();
+    let lines = vec!["Session listing requires the `session-db` CLI feature".to_string()];
+    let _ = print_cli_list_on_surface(runtime, "Recent Sessions", None, &lines, &style);
 }
 
 #[cfg(test)]
@@ -1022,24 +995,24 @@ mod tests {
     };
     use crate::api_client::SessionListItem;
     use crate::api_client::{SessionListHints, SessionListTime};
-    use chrono::Utc;
-    use agendao_command::cli_style::CliStyle;
-    use agendao_command::governance_fixtures::live_transcript_state_fixture;
-    use agendao_command::output_blocks::{
+    use agendao_command::{CommandRegistry, ResolvedUiCommand, UiActionId, UiCommandArgumentKind};
+    use agendao_command_render::cli_style::CliStyle;
+    use agendao_command_render::governance_fixtures::live_transcript_state_fixture;
+    use agendao_command_render::output_blocks::{
         MessageBlock, OutputBlock, SchedulerStageBlock, StatusBlock,
     };
-    use agendao_command::terminal_presentation::TerminalMessageRole;
-    use agendao_command::{CommandRegistry, ResolvedUiCommand, UiActionId, UiCommandArgumentKind};
+    use agendao_command_render::terminal_presentation::TerminalMessageRole;
     use agendao_config::{Config, UiPreferencesConfig};
     use agendao_util::util::color::strip_ansi;
+    use chrono::Utc;
     use std::collections::{BTreeSet, HashMap, VecDeque};
     use std::path::Path;
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex};
     use tokio::sync::Mutex as AsyncMutex;
 
-    use agendao_command::cli_spinner::SpinnerGuard;
-    use agendao_command::output_blocks::MessageRole as OutputMessageRole;
+    use agendao_command_render::output_blocks::MessageRole as OutputMessageRole;
+    use agendao_command_runtime::cli_spinner::SpinnerGuard;
     use agendao_types::{LiveMessagePartIdentity, LiveMessagePartKind, LivePartPhase};
 
     #[test]
@@ -2601,7 +2574,7 @@ mod tests {
             &runtime,
             "root-session",
             None,
-            &OutputBlock::Reasoning(agendao_command::output_blocks::ReasoningBlock::full(
+            &OutputBlock::Reasoning(agendao_command_render::output_blocks::ReasoningBlock::full(
                 "Thinking user".to_string(),
             )),
             Some(&live_identity(
@@ -2640,7 +2613,7 @@ mod tests {
             &runtime,
             "root-session",
             Some("assistant-1"),
-            &OutputBlock::Reasoning(agendao_command::output_blocks::ReasoningBlock::full(
+            &OutputBlock::Reasoning(agendao_command_render::output_blocks::ReasoningBlock::full(
                 "Thinking first".to_string(),
             )),
         );
@@ -2649,9 +2622,11 @@ mod tests {
                 &runtime,
                 "root-session",
                 Some("assistant-1"),
-                &OutputBlock::Reasoning(agendao_command::output_blocks::ReasoningBlock::full(
-                    "Thinking first".to_string(),
-                )),
+                &OutputBlock::Reasoning(
+                    agendao_command_render::output_blocks::ReasoningBlock::full(
+                        "Thinking first".to_string(),
+                    )
+                ),
                 Some(&snapshot_identity),
                 &style,
             ),
@@ -2662,7 +2637,7 @@ mod tests {
             &runtime,
             "root-session",
             Some("assistant-1"),
-            &OutputBlock::Reasoning(agendao_command::output_blocks::ReasoningBlock::full(
+            &OutputBlock::Reasoning(agendao_command_render::output_blocks::ReasoningBlock::full(
                 "Thinking first second".to_string(),
             )),
         );
@@ -2670,7 +2645,7 @@ mod tests {
             &runtime,
             "root-session",
             Some("assistant-1"),
-            &OutputBlock::Reasoning(agendao_command::output_blocks::ReasoningBlock::end()),
+            &OutputBlock::Reasoning(agendao_command_render::output_blocks::ReasoningBlock::end()),
             Some(&end_identity),
             &style,
         );
@@ -2771,7 +2746,7 @@ mod tests {
             Some("assistant-1"),
         );
         let first = cli_render_live_slot_snapshot(
-            &OutputBlock::Tool(agendao_command::output_blocks::ToolBlock::done(
+            &OutputBlock::Tool(agendao_command_render::output_blocks::ToolBlock::done(
                 "skill",
                 Some("{\"category\":\"literature-research/skills\"}".to_string()),
             )),
@@ -2779,7 +2754,7 @@ mod tests {
             &style,
         );
         let second = cli_render_live_slot_snapshot(
-            &OutputBlock::Tool(agendao_command::output_blocks::ToolBlock::done(
+            &OutputBlock::Tool(agendao_command_render::output_blocks::ToolBlock::done(
                 "skill",
                 Some("{\"category\":\"scientific-skills\"}".to_string()),
             )),
@@ -2835,7 +2810,7 @@ mod tests {
         let mut transcript = CliVisibleTranscript::new(true);
         super::cli_apply_live_slot_update(
             &mut transcript,
-            &OutputBlock::Reasoning(agendao_command::output_blocks::ReasoningBlock::full(
+            &OutputBlock::Reasoning(agendao_command_render::output_blocks::ReasoningBlock::full(
                 "Thinking academic".to_string(),
             )),
             &snapshot_identity,
@@ -2858,7 +2833,7 @@ mod tests {
 
         super::cli_apply_live_slot_update(
             &mut transcript,
-            &OutputBlock::Reasoning(agendao_command::output_blocks::ReasoningBlock::end()),
+            &OutputBlock::Reasoning(agendao_command_render::output_blocks::ReasoningBlock::end()),
             &end_identity,
             &style,
         );
@@ -3006,6 +2981,117 @@ mod tests {
             .expect("root transcript")
             .rendered_text();
         assert_eq!(rendered, "● root line\n", "{rendered}");
+    }
+
+    #[test]
+    fn live_runtime_surfaces_tool_aux_before_idle_clears_tool_aux_but_preserves_stage() {
+        let runtime = test_runtime_with_attached_focus_data();
+        let fixture = live_transcript_state_fixture();
+        let style = CliStyle::plain();
+
+        handle_sse_event(
+            &runtime,
+            CliServerEvent::SessionBusy {
+                session_id: "root-session".to_string(),
+            },
+            &style,
+        );
+        handle_sse_event(
+            &runtime,
+            CliServerEvent::ToolCallStarted {
+                session_id: "root-session".to_string(),
+                tool_call_id: fixture.tool_progress_exclusion.tool_running.tool_id.clone(),
+                tool_name: fixture
+                    .tool_progress_exclusion
+                    .tool_running
+                    .tool_name
+                    .clone(),
+            },
+            &style,
+        );
+        handle_sse_event(
+            &runtime,
+            output_block_event(
+                Some(&fixture.scheduler_stage_exclusion.stage_id),
+                Some(fixture.scheduler_stage_exclusion.scheduler_identity()),
+                fixture.scheduler_stage_exclusion.payload(),
+            ),
+            &style,
+        );
+
+        let projection = runtime.frontend_projection.lock().expect("projection");
+        let active_stage = projection
+            .active_stage
+            .as_ref()
+            .expect("scheduler stage should stay active before idle");
+        assert_eq!(
+            active_stage.stage_id.as_deref(),
+            Some(fixture.scheduler_stage_exclusion.stage_id.as_str())
+        );
+        let prompt_lines_before_idle = projection
+            .prompt_lane_lines_stable(8)
+            .iter()
+            .map(|line| strip_ansi(line))
+            .collect::<Vec<_>>();
+        drop(projection);
+
+        assert!(
+            prompt_lines_before_idle
+                .iter()
+                .any(|line| line.starts_with("Info: Using ")),
+            "{prompt_lines_before_idle:?}"
+        );
+        assert!(
+            prompt_lines_before_idle.iter().any(|line| {
+                line.contains(&fixture.scheduler_stage_exclusion.title)
+                    || line.contains(&fixture.scheduler_stage_exclusion.stage)
+            }),
+            "{prompt_lines_before_idle:?}"
+        );
+
+        handle_sse_event(
+            &runtime,
+            CliServerEvent::SessionIdle {
+                session_id: "root-session".to_string(),
+            },
+            &style,
+        );
+
+        let projection = runtime.frontend_projection.lock().expect("projection");
+        let prompt_lines_after_idle = projection
+            .prompt_lane_lines_stable(8)
+            .iter()
+            .map(|line| strip_ansi(line))
+            .collect::<Vec<_>>();
+        let transcript_after_idle = projection.transcript.rendered_text();
+        assert!(
+            projection.active_stage.is_some(),
+            "{prompt_lines_after_idle:?}"
+        );
+        drop(projection);
+
+        assert!(
+            !prompt_lines_after_idle
+                .iter()
+                .any(|line| line.starts_with("Info: Using ")),
+            "{prompt_lines_after_idle:?}"
+        );
+        assert!(
+            prompt_lines_after_idle
+                .iter()
+                .any(|line| line.contains("stage 1/1")),
+            "{prompt_lines_after_idle:?}"
+        );
+        assert!(
+            prompt_lines_after_idle
+                .iter()
+                .any(|line| line.contains("running")),
+            "{prompt_lines_after_idle:?}"
+        );
+        assert_eq!(
+            transcript_after_idle, "● root line\n",
+            "{transcript_after_idle}"
+        );
     }
 
     #[test]
@@ -3338,7 +3424,7 @@ mod tests {
             .any(|line| line.contains("/model")));
         assert_eq!(
             assist.completion,
-            Some(agendao_command::cli_prompt::PromptCompletion {
+            Some(agendao_command_runtime::cli_prompt::PromptCompletion {
                 line: "/model ".to_string(),
                 cursor_pos: 7,
             })
@@ -3374,7 +3460,7 @@ mod tests {
             .any(|line| line.contains("dashscope/qwen-plus [active]")));
         assert_eq!(
             assist.completion,
-            Some(agendao_command::cli_prompt::PromptCompletion {
+            Some(agendao_command_runtime::cli_prompt::PromptCompletion {
                 line: "/model dashscope/qwen-max".to_string(),
                 cursor_pos: 25,
             })
@@ -3402,7 +3488,7 @@ mod tests {
             .any(|line| line.contains("/preset suggestions")));
         assert_eq!(
             assist.completion,
-            Some(agendao_command::cli_prompt::PromptCompletion {
+            Some(agendao_command_runtime::cli_prompt::PromptCompletion {
                 line: "/preset ".to_string(),
                 cursor_pos: 8,
             })

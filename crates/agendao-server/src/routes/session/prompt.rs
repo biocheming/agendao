@@ -3,11 +3,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::{
-    extract::{Path, State},
-    http::HeaderMap,
-    Json,
-};
 use agendao_config::Config as AppConfig;
 use agendao_memory::{
     load_last_prefetch_packet, load_persisted_memory_snapshot, render_frozen_snapshot_block,
@@ -20,6 +15,11 @@ use agendao_types::{
     SessionContinuityLimits, SessionContinuityMemoryAnchor, SessionContinuityPacket,
     SessionContinuityTurn, SessionMessage,
 };
+use axum::{
+    extract::{Path, State},
+    http::HeaderMap,
+    Json,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -29,10 +29,8 @@ use crate::routes::multimodal::resolve_provider_model;
 use crate::routes::permission::request_permission;
 use crate::routes::provider_diagnostics::attach_provider_diagnostic_from_error;
 use crate::routes::skill_catalog::enrich_scheduler_plan_skills;
-use crate::runtime_control::SessionRunStatus;
 use crate::session_runtime::events::{
     broadcast_session_reconcile, emit_output_block_via_hook, server_output_block_hook,
-    ReconcileReason, ServerEvent,
 };
 use crate::session_runtime::{
     assistant_visible_text, ensure_default_session_title,
@@ -42,9 +40,11 @@ use crate::session_runtime::{
 use crate::{ApiError, Result, ServerState};
 use agendao_agent::{AgentMode, AgentRegistry};
 use agendao_command::{
-    output_blocks::{MessageBlock, MessageRole as OutputMessageRole, OutputBlock},
     Command, CommandArgumentField, CommandArgumentKind, CommandContext, CommandRegistry,
     InteractivePolicy,
+};
+use agendao_command_render::output_blocks::{
+    MessageBlock, MessageRole as OutputMessageRole, OutputBlock,
 };
 use agendao_multimodal::{MultimodalAuthority, RuntimeMultimodalExplain, SessionPartAdapter};
 use agendao_orchestrator::output_metadata::output_usage;
@@ -59,6 +59,8 @@ use agendao_orchestrator::{
     ModelResolver, ObjectiveDefinition, Orchestrator, OrchestratorContext, ScopeDefinition,
     ToolExecutor as OrchestratorToolExecutor, ToolRunner,
 };
+use agendao_server_core::runtime_control::SessionRunStatus;
+use agendao_server_core::runtime_events::{ReconcileReason, ServerEvent};
 use agendao_session::prompt::assistant_text_live_identity;
 use agendao_types::{ControlInputKind, ControlInputPhase, LivePartPhase};
 
@@ -72,7 +74,7 @@ use super::autoresearch_target::{
     AUTORESEARCH_PROFILE_OVERRIDE_METADATA_KEY,
 };
 use super::cancel::is_scheduler_cancellation_error;
-use super::messages::{prompt_display_text, prompt_text_from_parts};
+use super::messages::{prompt_display_text, prompt_parts_from_session_parts, prompt_text_from_parts};
 use super::scheduler::{
     apply_scheduler_selection_session_metadata, apply_skill_tree_telemetry_metadata,
     resolve_prompt_request_config, resolve_scheduler_profile_config, scheduler_mode_kind,
@@ -1971,7 +1973,8 @@ async fn session_prompt_inner(
     let agent_system_prompt = request_config.agent_system_prompt.clone();
     let task_compiled_request = request_config.compiled_request.clone();
     let multimodal_explain = {
-        let multimodal_parts = SessionPartAdapter::from_session_parts(&prompt_parts);
+        let prompt_input_parts = prompt_parts_from_session_parts(&prompt_parts);
+        let multimodal_parts = SessionPartAdapter::from_session_parts(&prompt_input_parts);
         if multimodal_parts.is_empty() {
             None
         } else {
@@ -1987,7 +1990,7 @@ async fn session_prompt_inner(
             let transport = authority.capability_authority().transport_explain(
                 &capability,
                 &provider_model,
-                &prompt_parts,
+                &prompt_input_parts,
             );
             if result.hard_block {
                 return Err(ApiError::BadRequest(
@@ -2671,22 +2674,24 @@ async fn session_prompt_inner(
                     let Some(snapshot) = snapshot else { continue };
                     if let (Some(s_repo), Some(m_repo)) = (&s_repo, &m_repo) {
                         match serde_json::to_value(&snapshot) {
-                            Ok(val) => match serde_json::from_value::<agendao_types::Session>(val) {
-                                Ok(mut stored) => {
-                                    let messages = std::mem::take(&mut stored.messages);
-                                    if let Err(e) = s_repo.upsert(&stored).await {
-                                        tracing::warn!(session_id = %stored.id, %e, "incremental session upsert failed");
-                                    }
-                                    for msg in messages {
-                                        if let Err(e) = m_repo.upsert(&msg).await {
-                                            tracing::warn!(message_id = %msg.id, %e, "incremental message upsert failed");
+                            Ok(val) => {
+                                match serde_json::from_value::<agendao_types::Session>(val) {
+                                    Ok(mut stored) => {
+                                        let messages = std::mem::take(&mut stored.messages);
+                                        if let Err(e) = s_repo.upsert(&stored).await {
+                                            tracing::warn!(session_id = %stored.id, %e, "incremental session upsert failed");
+                                        }
+                                        for msg in messages {
+                                            if let Err(e) = m_repo.upsert(&msg).await {
+                                                tracing::warn!(message_id = %msg.id, %e, "incremental message upsert failed");
+                                            }
                                         }
                                     }
+                                    Err(e) => {
+                                        tracing::warn!(session_id = %snapshot.id, %e, "incremental persist: failed to deserialize session snapshot");
+                                    }
                                 }
-                                Err(e) => {
-                                    tracing::warn!(session_id = %snapshot.id, %e, "incremental persist: failed to deserialize session snapshot");
-                                }
-                            },
+                            }
                             Err(e) => {
                                 tracing::warn!(session_id = %snapshot.id, %e, "incremental persist: failed to serialize session snapshot");
                             }
@@ -2795,7 +2800,7 @@ async fn session_prompt_inner(
                                 let parent_tool_call_id = properties["parent_tool_call_id"]
                                 .as_str()
                                 .map(
-                                    crate::runtime_control::RuntimeControlRegistry::tool_call_execution_id,
+                                    agendao_server_core::runtime_control::RuntimeControlRegistry::tool_call_execution_id,
                                 );
                                 let stage_id = if let Some(ref pid) = parent_tool_call_id {
                                     state.runtime_telemetry.resolve_stage_id(pid).await

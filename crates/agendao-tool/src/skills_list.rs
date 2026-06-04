@@ -1,5 +1,5 @@
-use async_trait::async_trait;
 use agendao_config::ConfigStore;
+use async_trait::async_trait;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;

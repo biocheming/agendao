@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-agendao-content = { path = "../agendao-content" }
+agendao-stage-protocol = { path = "../agendao-stage-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

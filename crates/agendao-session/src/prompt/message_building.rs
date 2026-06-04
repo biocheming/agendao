@@ -2169,14 +2169,14 @@ impl SessionPrompt {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
-    use futures::stream;
     use agendao_config::{CompactionConfig as AppCompactionConfig, Config, ConfigStore};
     use agendao_orchestrator::output_projection::{
         ContextProjectionPolicy, SCHEDULER_MODEL_CONTEXT_SUMMARY_METADATA_KEY,
         SCHEDULER_OUTPUT_PROJECTION_POLICY_METADATA_KEY,
     };
     use agendao_provider::{ChatRequest, ChatResponse, ModelInfo, ProviderError, StreamResult};
+    use async_trait::async_trait;
+    use futures::stream;
 
     struct StaticModelProvider {
         model: Option<ModelInfo>,

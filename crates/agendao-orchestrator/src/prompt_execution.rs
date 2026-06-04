@@ -1,14 +1,15 @@
+use crate::{OrchestratorError, PromptExecutionOptions, PromptExecutionResult, UsageInfo};
+use agendao_provider::{
+    ChatRequest, Content, ContentPart, Message, ProviderRegistry, ToolDefinition,
+};
+use agendao_session_core::{MessageRole, PartType, SessionAccess, SessionStore};
+use agendao_tool::{ToolContext, ToolRegistry};
 /// Prompt execution logic
 ///
 /// Phase 4.4: Extract complex execution logic from core.rs
 /// Phase 6.1: Add multi-turn conversation support
 /// Phase 6.2: Add tool calling support
-
 use std::sync::Arc;
-use agendao_provider::{ChatRequest, Content, ContentPart, Message, ProviderRegistry, ToolDefinition};
-use agendao_session_core::{SessionAccess, SessionStore, MessageRole, PartType};
-use agendao_tool::{ToolRegistry, ToolContext};
-use crate::{OrchestratorError, PromptExecutionOptions, PromptExecutionResult, UsageInfo};
 
 fn annotate_latest_user_message_metadata(
     session: &mut impl SessionAccess,
@@ -42,10 +43,9 @@ fn annotate_latest_user_message_metadata(
         );
     }
     if !text.is_empty() {
-        user_msg.metadata.insert(
-            "resolved_user_prompt".to_string(),
-            serde_json::json!(text),
-        );
+        user_msg
+            .metadata
+            .insert("resolved_user_prompt".to_string(), serde_json::json!(text));
     }
 }
 
@@ -210,9 +210,7 @@ pub async fn execute_prompt_with_session<S: SessionStore>(
     if !options.continue_last || !text.is_empty() {
         let mut sessions_guard = sessions.lock().await;
         let session = sessions_guard.ensure_session(session_id);
-        if let (Some(origin), Some(surface)) =
-            (options.source_origin, options.source_surface)
-        {
+        if let (Some(origin), Some(surface)) = (options.source_origin, options.source_surface) {
             session.add_user_message_with_source(text, origin, surface);
         } else {
             session.add_user_message(text);
@@ -305,7 +303,10 @@ pub async fn execute_prompt_with_session<S: SessionStore>(
             let msg_id = session.add_assistant_message(&response_text);
 
             // Update usage statistics
-            session.add_usage(accumulated_usage.input_tokens, accumulated_usage.output_tokens);
+            session.add_usage(
+                accumulated_usage.input_tokens,
+                accumulated_usage.output_tokens,
+            );
 
             msg_id
         };
@@ -328,7 +329,11 @@ pub async fn execute_prompt_with_session<S: SessionStore>(
                     .get_mut(session_id)
                     .ok_or_else(|| OrchestratorError::Other("Session not found".to_string()))?;
 
-                session.add_tool_result(&tool_call.id, &tool_result, tool_result.starts_with("Error:"));
+                session.add_tool_result(
+                    &tool_call.id,
+                    &tool_result,
+                    tool_result.starts_with("Error:"),
+                );
             }
         }
 
@@ -486,9 +491,12 @@ fn build_messages_from_session(session: &impl SessionAccess) -> Vec<Message> {
                     for part in &msg.parts {
                         match &part.part_type {
                             PartType::Text { text, .. } => text_buf.push_str(text),
-                            PartType::ToolCall { id, name, input, .. } => {
+                            PartType::ToolCall {
+                                id, name, input, ..
+                            } => {
                                 if !text_buf.is_empty() {
-                                    content_parts.push(ContentPart::text(std::mem::take(&mut text_buf)));
+                                    content_parts
+                                        .push(ContentPart::text(std::mem::take(&mut text_buf)));
                                 }
                                 content_parts.push(ContentPart::tool_use(
                                     id.clone(),
@@ -554,19 +562,6 @@ fn extract_text_content(parts: &[agendao_types::MessagePart]) -> String {
         .join("")
 }
 
-/// Execute prompt with tool calling support (Phase 5)
-#[allow(dead_code)]
-pub async fn execute_prompt_with_tools(
-    _providers: &Arc<tokio::sync::RwLock<ProviderRegistry>>,
-    _session_id: &str,
-    _text: &str,
-    _options: &PromptExecutionOptions,
-) -> Result<PromptExecutionResult, OrchestratorError> {
-    Err(OrchestratorError::Other(
-        "execute_prompt_with_tools not yet implemented (Phase 5)".to_string(),
-    ))
-}
-
 /// Execute prompt with streaming output (Phase 6.3)
 ///
 /// Returns a stream of events that includes:
@@ -588,16 +583,14 @@ pub async fn execute_prompt_streaming_with_session<S: SessionStore + Send + 'sta
     text: &str,
     options: &PromptExecutionOptions,
 ) -> Result<agendao_provider::StreamResult, OrchestratorError> {
-    use futures::stream::{self, StreamExt};
     use agendao_provider::StreamEvent;
+    use futures::stream::{self, StreamExt};
 
     // 1. Add user message to session
     {
         let mut sessions_guard = sessions.lock().await;
         let session = sessions_guard.ensure_session(session_id);
-        if let (Some(origin), Some(surface)) =
-            (options.source_origin, options.source_surface)
-        {
+        if let (Some(origin), Some(surface)) = (options.source_origin, options.source_surface) {
             session.add_user_message_with_source(text, origin, surface);
         } else {
             session.add_user_message(text);
@@ -735,7 +728,8 @@ pub async fn execute_prompt_streaming_with_session<S: SessionStore + Send + 'sta
                                 // Save assistant message
                                 {
                                     let mut sessions_guard = state.sessions.lock().await;
-                                    let session = sessions_guard.get_mut(&state.session_id).unwrap();
+                                    let session =
+                                        sessions_guard.get_mut(&state.session_id).unwrap();
                                     session.add_assistant_message(&state.accumulated_text);
                                     session.add_usage(
                                         state.accumulated_usage.input_tokens,
@@ -749,7 +743,8 @@ pub async fn execute_prompt_streaming_with_session<S: SessionStore + Send + 'sta
                                     return Some((Ok(event), state));
                                 } else {
                                     // Execute tools and start next round
-                                    let tool_calls = std::mem::take(&mut state.accumulated_tool_calls);
+                                    let tool_calls =
+                                        std::mem::take(&mut state.accumulated_tool_calls);
                                     state.accumulated_text.clear();
                                     state.round += 1;
 
@@ -782,7 +777,8 @@ pub async fn execute_prompt_streaming_with_session<S: SessionStore + Send + 'sta
                                     // Build messages for next round
                                     let messages = {
                                         let sessions_guard = state.sessions.lock().await;
-                                        let session = sessions_guard.get(&state.session_id).unwrap();
+                                        let session =
+                                            sessions_guard.get(&state.session_id).unwrap();
                                         build_messages_from_session(session)
                                     };
 

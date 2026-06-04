@@ -1,3 +1,5 @@
+#![cfg(feature = "terminal-ui")]
+
 //! CLI terminal style primitives — colors, icons, indentation.
 //!
 //! Provides ANSI escape–based styling that automatically degrades to plain

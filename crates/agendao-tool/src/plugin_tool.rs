@@ -12,8 +12,8 @@ use serde_json::Value;
 use agendao_plugin::subprocess::client::PluginToolDef;
 use agendao_plugin::subprocess::loader::PluginLoader;
 
-use crate::tool::{Metadata, Tool, ToolContext, ToolError, ToolResult, ToolSchemaSourceKind};
 use crate::truncation;
+use crate::{Metadata, Tool, ToolContext, ToolError, ToolResult, ToolSchemaSourceKind};
 
 pub struct PluginTool {
     tool_id: String,

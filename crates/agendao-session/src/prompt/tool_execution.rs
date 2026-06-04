@@ -1521,12 +1521,12 @@ fn synthetic_attachment_filename(
 mod tests {
     use super::*;
     use crate::Session;
-    use async_trait::async_trait;
-    use futures::stream;
     use agendao_provider::{
         ChatRequest, ChatResponse, ModelInfo, Provider, ProviderError, StreamResult,
     };
     use agendao_tool::{Tool, ToolContext, ToolError, ToolResult};
+    use async_trait::async_trait;
+    use futures::stream;
     use std::collections::HashSet;
     use std::sync::Arc;
 

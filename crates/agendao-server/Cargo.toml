@@ -5,8 +5,16 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+default = ["http", "ws", "pty", "mcp"]
+http = ["dep:axum", "dep:axum-extra", "dep:tower", "dep:tower-http", "dep:tokio-stream"]
+ws = ["http", "axum/ws", "dep:tokio-tungstenite"]
+pty = ["ws", "dep:agendao-server-pty"]
+mcp = ["dep:agendao-mcp"]
+
 [dependencies]
-agendao-core = { path = "../agendao-core" }
+agendao-server-core = { path = "../agendao-server-core" }
+agendao-core = { path = "../agendao-core", features = ["process-registry", "agent-task-registry"] }
 agendao-api = { path = "../agendao-api" }
 agendao-agent = { path = "../agendao-agent" }
 agendao-execution-types = { path = "../agendao-execution-types" }
@@ -15,44 +23,47 @@ agendao-orchestrator = { path = "../agendao-orchestrator" }
 agendao-provider = { path = "../agendao-provider" }
 agendao-state = { path = "../agendao-state" }
 agendao-runtime-context = { path = "../agendao-runtime-context" }
+agendao-command = { path = "../agendao-command", default-features = false }
+agendao-command-render = { path = "../agendao-command-render" }
+agendao-stage-protocol = { path = "../agendao-stage-protocol" }
 agendao-memory = { path = "../agendao-memory" }
 agendao-session = { path = "../agendao-session" }
 agendao-session-core = { path = "../agendao-session-core" }
 agendao-skill = { path = "../agendao-skill" }
 agendao-storage = { path = "../agendao-storage" }
+agendao-server-pty = { path = "../agendao-server-pty", optional = true }
+agendao-output-blocks = { path = "../agendao-output-blocks" }
 agendao-types = { path = "../agendao-types" }
 agendao-config = { path = "../agendao-config" }
 agendao-permission = { path = "../agendao-permission" }
-agendao-mcp = { path = "../agendao-mcp" }
+agendao-mcp = { path = "../agendao-mcp", optional = true }
 agendao-plugin = { path = "../agendao-plugin" }
 agendao-tool = { path = "../agendao-tool" }
-agendao-command = { path = "../agendao-command" }
 libc = { version = "0.2" }
-tokio = { workspace = true }
-tokio-util = { workspace = true }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt", "rt-multi-thread", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
+serde_yaml = "0.9"
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
-clap = { workspace = true }
-axum = { version = "0.8", features = ["ws"] }
-axum-extra = { workspace = true }
-tower = { workspace = true }
-tower-http = { workspace = true }
-tokio-stream = { workspace = true, features = ["sync"] }
-tokio-tungstenite = "0.26"
+clap = { version = "4", features = ["derive"] }
+axum = { version = "0.8", optional = true }
+axum-extra = { version = "0.10", features = ["typed-header"], optional = true }
+tower = { version = "0.5", optional = true }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"], optional = true }
+tokio-stream = { version = "0.1", features = ["sync"], optional = true }
+tokio-tungstenite = { version = "0.26", optional = true }
 dirs = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 once_cell = { workspace = true }
-portable-pty = { workspace = true }
 base64 = { workspace = true }
 url = { workspace = true }
-hex = { workspace = true }
+hex = "0.4"
 sha2 = { workspace = true }
 hmac = "0.12"
 

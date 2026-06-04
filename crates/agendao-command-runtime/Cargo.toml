@@ -1,0 +1,26 @@
+[package]
+name = "agendao-command-runtime"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+default = ["terminal-ui", "runtime-hooks", "agent-presenter"]
+terminal-ui = ["agendao-command/terminal-ui", "dep:tokio", "dep:crossterm"]
+runtime-hooks = [
+    "terminal-ui",
+    "agendao-command/runtime-hooks",
+    "dep:agendao-permission",
+    "dep:agendao-tool",
+]
+agent-presenter = ["terminal-ui", "agendao-command/agent-presenter"]
+
+[dependencies]
+agendao-command = { path = "../agendao-command", default-features = false }
+agendao-permission = { path = "../agendao-permission", optional = true }
+agendao-tool = { path = "../agendao-tool", optional = true }
+tokio = { version = "1.0", features = ["macros", "rt", "sync", "time"], optional = true }
+crossterm = { version = "0.29", optional = true }
+serde_json = "1.0"
+tracing = "0.1"

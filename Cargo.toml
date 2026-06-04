@@ -7,7 +7,10 @@ members = [
     "crates/agendao-launcher",
     "crates/agendao-client",
     "crates/agendao-core",
-    "crates/agendao-content",
+    "crates/agendao-output-blocks",
+    "crates/agendao-stage-protocol",
+    "crates/agendao-command-render",
+    "crates/agendao-command-runtime",
     "crates/agendao-types",
     "crates/agendao-util",
     "crates/agendao-multimodal",
@@ -24,16 +27,26 @@ members = [
     "crates/agendao-session-core",
     "crates/agendao-skill",
     "crates/agendao-storage",
+    "crates/agendao-storage-core",
+    "crates/agendao-storage-sqlite",
+    "crates/agendao-tool-core",
     "crates/agendao-tool",
+    "crates/agendao-tool-web",
     "crates/agendao-agent",
+    "crates/agendao-server-core",
+    "crates/agendao-server-local",
+    "crates/agendao-server-pty",
     "crates/agendao-server",
     "crates/agendao-watcher",
     "crates/agendao-lsp",
     "crates/agendao-mcp",
+    "crates/agendao-cli-core",
+    "crates/agendao-cli-admin",
     "crates/agendao-cli",
     "crates/agendao-command",
     "crates/agendao-plugin",
     "crates/agendao-orchestrator",
+    "crates/agendao-tui-core",
     "crates/agendao-tui",
 ]
 
@@ -50,60 +63,19 @@ codegen-units = 1
 debug = 0
 
 [workspace.dependencies]
-tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
 anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tracing-appender = "0.2"
-rand = "0.8"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 once_cell = "1"
-lazy_static = "1.4"
 regex = "1"
 glob = "0.3"
-hex = "0.4"
-clap = { version = "4", features = ["derive"] }
-notify = "7"
-walkdir = "2"
-nucleo-matcher = "=0.3.1"
-syntect = { version = "=5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "regex-onig"] }
-similar = "=2.7.0"
 dirs = "6"
 async-trait = "0.1"
 futures = "0.3"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "charset", "http2", "json", "rustls-tls-webpki-roots", "stream", "system-proxy"] }
-reqwest-eventsource = "0.6"
-tokio-stream = "0.1"
-tokio-util = "0.7"
-pin-project-lite = "0.2"
-axum = "0.8"
-axum-extra = { version = "0.10", features = ["typed-header"] }
-tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
-hyper = { version = "1", features = ["full"] }
-http-body-util = "0.1"
-async-process = "2"
-which = "7"
-content_inspector = "0.2"
-parking_lot = "0.12"
-dashmap = "6.1"
 url = "2.5"
-lsp-types = "0.97"
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
-portable-pty = "0.8"
-oauth2 = { version = "5", default-features = false, features = ["reqwest", "rustls-tls"] }
 sha2 = "0.10"
-arc-swap = "1"
 base64 = "0.22"
-petgraph = "0.8"
-tree-sitter = "0.26.3"
-tree-sitter-bash = "0.23"
-ast-grep = "0.41.0"
-ast-grep-core = "0.41.0"
-ast-grep-language = "0.41.0"
-ast-grep-config = "0.41.0"

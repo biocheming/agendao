@@ -3,21 +3,20 @@
 /// Phase 1: Only Direct + Http
 /// Phase 2: Add Unix socket ✓
 /// Phase 3: Smart fallback logic ✓
-
 pub mod direct;
 pub mod http;
-pub mod unix;
 pub mod selector;
+pub mod unix;
 
 pub use direct::DirectTransport;
 pub use http::HttpTransport;
-pub use unix::UnixSocketTransport;
 pub use selector::TransportSelector;
+pub use unix::UnixSocketTransport;
 
-use anyhow::Result;
 use agendao_api::{AgentInfo, ExecutionModeInfo, FullProviderListResponse};
 use agendao_runtime_context::ResolvedWorkspaceContext;
 use agendao_state::RecentModelEntry;
+use anyhow::Result;
 
 /// Transport layer for frontend-to-core communication.
 ///

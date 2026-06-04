@@ -6,8 +6,8 @@ use axum::Json;
 use agendao_core::agent_task_registry::{global_task_registry, AgentTask, AgentTaskStatus};
 use agendao_session::{PartType, Session, ToolCallStatus};
 
-use crate::runtime_control::SessionExecutionTopology;
 use crate::{ApiError, Result, ServerState};
+use agendao_server_core::runtime_control::SessionExecutionTopology;
 
 use super::cancel::ensure_session_exists;
 
@@ -72,7 +72,10 @@ pub(super) async fn cancel_session_execution(
     match result {
         Some(kind) => {
             // For AgentTask, also cancel via the global task registry.
-            if matches!(kind, crate::runtime_control::ExecutionKind::AgentTask) {
+            if matches!(
+                kind,
+                agendao_server_core::runtime_control::ExecutionKind::AgentTask
+            ) {
                 if let Some(task_id) = execution_id.strip_prefix("agent_task:") {
                     let _ = global_task_registry().cancel(task_id);
                 }
@@ -91,8 +94,8 @@ pub(super) async fn cancel_session_execution(
 
 pub(super) fn collect_active_tool_execution_records(
     session: &Session,
-    existing_records: &[crate::runtime_control::ExecutionRecord],
-) -> Vec<crate::runtime_control::ExecutionRecord> {
+    existing_records: &[agendao_server_core::runtime_control::ExecutionRecord],
+) -> Vec<agendao_server_core::runtime_control::ExecutionRecord> {
     let session_record = session.record();
     let parent_id = select_active_tool_parent_id(existing_records);
     // Resolve stage_id from the parent record.
@@ -107,7 +110,12 @@ pub(super) fn collect_active_tool_execution_records(
     // double-counting when the lifecycle hook has already registered them.
     let registered_ids: std::collections::HashSet<&str> = existing_records
         .iter()
-        .filter(|r| matches!(r.kind, crate::runtime_control::ExecutionKind::ToolCall))
+        .filter(|r| {
+            matches!(
+                r.kind,
+                agendao_server_core::runtime_control::ExecutionKind::ToolCall
+            )
+        })
         .map(|r| r.id.as_str())
         .collect();
 
@@ -137,8 +145,12 @@ pub(super) fn collect_active_tool_execution_records(
             }
 
             let execution_status = match status {
-                ToolCallStatus::Pending => crate::runtime_control::ExecutionStatus::Waiting,
-                ToolCallStatus::Running => crate::runtime_control::ExecutionStatus::Running,
+                ToolCallStatus::Pending => {
+                    agendao_server_core::runtime_control::ExecutionStatus::Waiting
+                }
+                ToolCallStatus::Running => {
+                    agendao_server_core::runtime_control::ExecutionStatus::Running
+                }
                 ToolCallStatus::Completed | ToolCallStatus::Error => continue,
             };
 
@@ -154,10 +166,10 @@ pub(super) fn collect_active_tool_execution_records(
                 }
             };
 
-            records.push(crate::runtime_control::ExecutionRecord {
+            records.push(agendao_server_core::runtime_control::ExecutionRecord {
                 id: format!("tool_call:{id}"),
                 session_id: session_record.id.clone(),
-                kind: crate::runtime_control::ExecutionKind::ToolCall,
+                kind: agendao_server_core::runtime_control::ExecutionKind::ToolCall,
                 status: execution_status,
                 label: Some(format!("Tool: {name}")),
                 parent_id: parent_id.clone(),
@@ -187,8 +199,8 @@ pub(super) fn collect_active_tool_execution_records(
 
 pub(super) fn collect_active_agent_task_execution_records(
     session_id: &str,
-    existing_records: &[crate::runtime_control::ExecutionRecord],
-) -> Vec<crate::runtime_control::ExecutionRecord> {
+    existing_records: &[agendao_server_core::runtime_control::ExecutionRecord],
+) -> Vec<agendao_server_core::runtime_control::ExecutionRecord> {
     let parent_id = select_active_agent_task_parent_id(existing_records);
     let stage_id = parent_id.as_ref().and_then(|pid| {
         existing_records
@@ -212,16 +224,16 @@ fn agent_task_execution_record(
     session_id: &str,
     parent_id: Option<String>,
     stage_id: Option<String>,
-) -> crate::runtime_control::ExecutionRecord {
+) -> agendao_server_core::runtime_control::ExecutionRecord {
     let (status, waiting_on, recent_event, step) = match &task.status {
         AgentTaskStatus::Pending => (
-            crate::runtime_control::ExecutionStatus::Waiting,
+            agendao_server_core::runtime_control::ExecutionStatus::Waiting,
             Some("agent".to_string()),
             Some("Agent task queued".to_string()),
             None,
         ),
         AgentTaskStatus::Running { step } => (
-            crate::runtime_control::ExecutionStatus::Running,
+            agendao_server_core::runtime_control::ExecutionStatus::Running,
             Some("agent".to_string()),
             Some(match task.max_steps {
                 Some(max_steps) => format!("Step {} / {}", step, max_steps),
@@ -232,17 +244,17 @@ fn agent_task_execution_record(
         AgentTaskStatus::Completed { .. }
         | AgentTaskStatus::Cancelled
         | AgentTaskStatus::Failed { .. } => (
-            crate::runtime_control::ExecutionStatus::Running,
+            agendao_server_core::runtime_control::ExecutionStatus::Running,
             None,
             None,
             None,
         ),
     };
 
-    crate::runtime_control::ExecutionRecord {
+    agendao_server_core::runtime_control::ExecutionRecord {
         id: format!("agent_task:{}", task.id),
         session_id: session_id.to_string(),
-        kind: crate::runtime_control::ExecutionKind::AgentTask,
+        kind: agendao_server_core::runtime_control::ExecutionKind::AgentTask,
         status,
         label: Some(format!("Agent task: {}", task.agent_name)),
         parent_id,
@@ -263,17 +275,22 @@ fn agent_task_execution_record(
 }
 
 fn select_active_tool_parent_id(
-    records: &[crate::runtime_control::ExecutionRecord],
+    records: &[agendao_server_core::runtime_control::ExecutionRecord],
 ) -> Option<String> {
     select_preferred_execution_parent_id(records)
 }
 
 fn select_active_agent_task_parent_id(
-    records: &[crate::runtime_control::ExecutionRecord],
+    records: &[agendao_server_core::runtime_control::ExecutionRecord],
 ) -> Option<String> {
     records
         .iter()
-        .filter(|record| matches!(record.kind, crate::runtime_control::ExecutionKind::ToolCall))
+        .filter(|record| {
+            matches!(
+                record.kind,
+                agendao_server_core::runtime_control::ExecutionKind::ToolCall
+            )
+        })
         .filter(|record| {
             record
                 .metadata
@@ -289,16 +306,16 @@ fn select_active_agent_task_parent_id(
 }
 
 fn select_preferred_execution_parent_id(
-    records: &[crate::runtime_control::ExecutionRecord],
+    records: &[agendao_server_core::runtime_control::ExecutionRecord],
 ) -> Option<String> {
     records
         .iter()
         .filter(|record| {
             matches!(
                 record.kind,
-                crate::runtime_control::ExecutionKind::PromptRun
-                    | crate::runtime_control::ExecutionKind::SchedulerRun
-                    | crate::runtime_control::ExecutionKind::SchedulerStage
+                agendao_server_core::runtime_control::ExecutionKind::PromptRun
+                    | agendao_server_core::runtime_control::ExecutionKind::SchedulerRun
+                    | agendao_server_core::runtime_control::ExecutionKind::SchedulerStage
             )
         })
         .max_by_key(|record| {
@@ -311,13 +328,13 @@ fn select_preferred_execution_parent_id(
         .map(|record| record.id.clone())
 }
 
-fn execution_parent_rank(kind: &crate::runtime_control::ExecutionKind) -> u8 {
+fn execution_parent_rank(kind: &agendao_server_core::runtime_control::ExecutionKind) -> u8 {
     match kind {
-        crate::runtime_control::ExecutionKind::PromptRun => 0,
-        crate::runtime_control::ExecutionKind::SchedulerRun => 1,
-        crate::runtime_control::ExecutionKind::SchedulerStage => 2,
-        crate::runtime_control::ExecutionKind::ToolCall
-        | crate::runtime_control::ExecutionKind::AgentTask
-        | crate::runtime_control::ExecutionKind::Question => 0,
+        agendao_server_core::runtime_control::ExecutionKind::PromptRun => 0,
+        agendao_server_core::runtime_control::ExecutionKind::SchedulerRun => 1,
+        agendao_server_core::runtime_control::ExecutionKind::SchedulerStage => 2,
+        agendao_server_core::runtime_control::ExecutionKind::ToolCall
+        | agendao_server_core::runtime_control::ExecutionKind::AgentTask
+        | agendao_server_core::runtime_control::ExecutionKind::Question => 0,
     }
 }

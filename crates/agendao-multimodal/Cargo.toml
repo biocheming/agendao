@@ -8,7 +8,7 @@ license.workspace = true
 [dependencies]
 agendao-config = { path = "../agendao-config" }
 agendao-provider = { path = "../agendao-provider" }
-agendao-session = { path = "../agendao-session" }
+agendao-types = { path = "../agendao-types" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

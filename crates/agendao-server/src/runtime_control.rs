@@ -1,6 +1,6 @@
-use chrono::Utc;
 #[cfg(test)]
-use agendao_command::stage_protocol::{ExecutionNode, ExecutionNodeKind, ExecutionNodeStatus};
+use agendao_stage_protocol::{ExecutionNode, ExecutionNodeKind, ExecutionNodeStatus};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;

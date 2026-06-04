@@ -1,8 +1,7 @@
 use crate::{
-    write::parse_skill_frontmatter_lines, SkillDetailView,
+    write::parse_skill_frontmatter_lines, SkillAgendaoMetadata, SkillDetailView,
     SkillFrontmatter as FormalSkillFrontmatter, SkillHermesMetadata, SkillMetadataBlocks,
     SkillPrerequisites, SkillReadinessStatus, SkillRequiredEnvironmentVariable,
-    SkillAgendaoMetadata,
 };
 use serde::de::DeserializeOwned;
 use serde_yaml::Value as YamlValue;

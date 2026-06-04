@@ -712,7 +712,7 @@ mod tests {
                 total: Some(2),
                 step: Some(1),
                 step_total: Some(3),
-                status: agendao_content::stage_protocol::StageStatus::Running,
+                status: agendao_stage_protocol::StageStatus::Running,
                 prompt_tokens: Some(11),
                 completion_tokens: Some(7),
                 reasoning_tokens: Some(5),

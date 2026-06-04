@@ -10,14 +10,16 @@ use crate::session_runtime::{
     assistant_visible_text, decision_from_stage_text, scheduler_stage_block_from_message,
 };
 use crate::{ApiError, Result, ServerState};
-use agendao_command::agent_presenter::{
+use agendao_command_render::agent_presenter::{
     history_session_event_to_web, history_tool_call_to_web, history_tool_result_to_web,
     output_block_to_web,
 };
-use agendao_command::output_blocks::{
+use agendao_command_render::output_blocks::{
     MessageBlock, MessagePhase, MessageRole, OutputBlock, ReasoningBlock,
 };
-use agendao_multimodal::{MultimodalDisplaySummary, PersistedMultimodalExplain, SessionPartAdapter};
+use agendao_multimodal::{
+    MultimodalDisplaySummary, PersistedMultimodalExplain, SessionPartAdapter,
+};
 
 use super::session_crud::persist_sessions_if_enabled;
 
@@ -51,13 +53,47 @@ pub(crate) fn prompt_text_from_parts(parts: &[agendao_session::prompt::PartInput
         .join("\n")
 }
 
+pub(crate) fn prompt_parts_from_session_parts(
+    parts: &[agendao_session::prompt::PartInput],
+) -> Vec<agendao_types::PromptPart> {
+    parts.iter()
+        .map(|part| match part {
+            agendao_session::prompt::PartInput::Text { text } => agendao_types::PromptPart::Text {
+                text: text.clone(),
+            },
+            agendao_session::prompt::PartInput::File {
+                url,
+                filename,
+                mime,
+            } => agendao_types::PromptPart::File {
+                url: url.clone(),
+                filename: filename.clone(),
+                mime: mime.clone(),
+            },
+            agendao_session::prompt::PartInput::Agent { name } => {
+                agendao_types::PromptPart::Agent { name: name.clone() }
+            }
+            agendao_session::prompt::PartInput::Subtask {
+                prompt,
+                description,
+                agent,
+            } => agendao_types::PromptPart::Subtask {
+                prompt: prompt.clone(),
+                description: description.clone(),
+                agent: agent.clone(),
+            },
+        })
+        .collect()
+}
+
 pub(crate) fn prompt_display_text(parts: &[agendao_session::prompt::PartInput]) -> String {
     let text = prompt_text_from_parts(parts);
     if !text.trim().is_empty() {
         return text;
     }
 
-    let multimodal_parts = SessionPartAdapter::from_session_parts(parts);
+    let prompt_parts = prompt_parts_from_session_parts(parts);
+    let multimodal_parts = SessionPartAdapter::from_session_parts(&prompt_parts);
     let summary = MultimodalDisplaySummary::from_parts(None, &multimodal_parts);
     if !summary.compact_label.trim().is_empty() {
         return summary.compact_label;
@@ -262,11 +298,13 @@ fn part_to_info(
                 if let serde_json::Value::Object(map) = &mut block {
                     map.insert(
                         "live_identity".to_string(),
-                        serde_json::to_value(agendao_session::prompt::assistant_text_live_identity(
-                            message_id,
-                            Some(part.id.clone()),
-                            agendao_types::LivePartPhase::Snapshot,
-                        ))
+                        serde_json::to_value(
+                            agendao_session::prompt::assistant_text_live_identity(
+                                message_id,
+                                Some(part.id.clone()),
+                                agendao_types::LivePartPhase::Snapshot,
+                            ),
+                        )
                         .expect("assistant text identity"),
                     );
                 }

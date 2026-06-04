@@ -12,7 +12,9 @@ const TOOL_RESULT_PREVIEW_CHARS: usize = 8_000;
 /// Read tool result budget from the canonical authority.
 /// Falls back to the legacy constants when no config store is available
 /// (standalone / non-server contexts).
-pub fn tool_result_budget(config: Option<&agendao_config::RuntimeBudgetConfig>) -> ToolResultBudget {
+pub fn tool_result_budget(
+    config: Option<&agendao_config::RuntimeBudgetConfig>,
+) -> ToolResultBudget {
     config.map_or_else(ToolResultBudget::legacy, |b| ToolResultBudget {
         max_single_chars: b.tool_result_max_chars,
         max_batch_chars: b.tool_batch_aggregate_max_chars,

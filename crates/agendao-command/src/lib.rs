@@ -5,26 +5,54 @@
 //! - MCP prompts
 //! - Built-in commands
 pub mod actions;
+#[cfg(feature = "agent-presenter")]
 pub mod agent_presenter;
+#[path = "../../agendao-command-render/src/branding.rs"]
 pub mod branding;
+#[cfg(feature = "terminal-ui")]
 pub mod cli_markdown;
+#[cfg(feature = "terminal-ui")]
 pub mod cli_panel;
+#[cfg(feature = "runtime-hooks")]
+#[path = "../../agendao-command-runtime/src/cli_permission.rs"]
 pub mod cli_permission;
+#[cfg(feature = "terminal-ui")]
+#[path = "../../agendao-command-runtime/src/cli_prompt.rs"]
 pub mod cli_prompt;
+#[cfg(feature = "terminal-ui")]
+#[path = "../../agendao-command-runtime/src/cli_select.rs"]
 pub mod cli_select;
+#[cfg(feature = "terminal-ui")]
+#[path = "../../agendao-command-runtime/src/cli_spinner.rs"]
 pub mod cli_spinner;
+#[cfg(feature = "terminal-ui")]
 pub mod cli_style;
+#[cfg(feature = "terminal-ui")]
+#[path = "../../agendao-command-render/src/governance_fixtures.rs"]
 pub mod governance_fixtures;
 #[cfg(test)]
 mod governance_tests;
+#[path = "../../agendao-command-runtime/src/interactive.rs"]
 pub mod interactive;
+#[path = "../../agendao-command-render/src/live_semantic_consumer.rs"]
 pub mod live_semantic_consumer;
+#[cfg(feature = "terminal-ui")]
+#[path = "../../agendao-command-render/src/output_blocks.rs"]
 pub mod output_blocks;
+#[path = "../../agendao-command-render/src/run_status_labels.rs"]
 pub mod run_status_labels;
 pub mod stage_protocol;
+#[cfg(feature = "terminal-ui")]
+#[path = "../../agendao-command-render/src/terminal_presentation.rs"]
 pub mod terminal_presentation;
+#[cfg(feature = "terminal-ui")]
+#[path = "../../agendao-command-render/src/terminal_segment_display.rs"]
 pub mod terminal_segment_display;
+#[cfg(feature = "terminal-ui")]
+#[path = "../../agendao-command-render/src/terminal_tool_block_display.rs"]
 pub mod terminal_tool_block_display;
+#[cfg(feature = "terminal-ui")]
+#[path = "../../agendao-command-render/src/terminal_tool_cli_render.rs"]
 mod terminal_tool_cli_render;
 pub use actions::{
     ui_command_argument_kind, UiActionId, UiCommandArgumentKind, UiCommandCategory, UiCommandSpec,
@@ -33,6 +61,7 @@ pub use actions::{
 pub use stage_protocol::*;
 mod start_work;
 
+#[cfg(feature = "runtime-hooks")]
 use agendao_plugin::{HookContext, HookEvent};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -596,11 +625,17 @@ impl CommandRegistry {
             return Ok(());
         }
 
-        let pattern = commands_dir.join("*.md");
-        let pattern_str = pattern.to_string_lossy();
+        let mut paths = std::fs::read_dir(&commands_dir)?
+            .map(|entry| entry.map(|value| value.path()))
+            .collect::<Result<Vec<_>, _>>()?;
+        paths.retain(|path| {
+            path.extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case("md"))
+        });
+        paths.sort();
 
-        for entry in glob::glob(&pattern_str)? {
-            let path = entry?;
+        for path in paths {
             let name = path
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -677,6 +712,7 @@ impl CommandRegistry {
     }
 
     /// Execute a command with plugin hooks (async version)
+    #[cfg(feature = "runtime-hooks")]
     pub async fn execute_with_hooks(
         &self,
         name: &str,
@@ -712,6 +748,16 @@ impl CommandRegistry {
         }
 
         Ok(rendered)
+    }
+
+    /// Execute a command with hooks when runtime integrations are disabled.
+    #[cfg(not(feature = "runtime-hooks"))]
+    pub async fn execute_with_hooks(
+        &self,
+        name: &str,
+        ctx: CommandContext,
+    ) -> anyhow::Result<String> {
+        self.execute(name, ctx)
     }
 
     fn render_command(&self, command: &Command, ctx: CommandContext) -> anyhow::Result<String> {
@@ -814,6 +860,7 @@ impl CommandRegistry {
     }
 }
 
+#[cfg(feature = "runtime-hooks")]
 fn command_payload_object(
     payload: &serde_json::Value,
 ) -> Option<&serde_json::Map<String, serde_json::Value>> {
@@ -824,6 +871,7 @@ fn command_payload_object(
         .or_else(|| payload.get("data").and_then(|value| value.as_object()))
 }
 
+#[cfg(feature = "runtime-hooks")]
 fn apply_command_hook_payload(rendered: &mut String, payload: &serde_json::Value) {
     let Some(object) = command_payload_object(payload) else {
         return;

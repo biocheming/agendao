@@ -1,12 +1,35 @@
-use chrono::{DateTime, Utc};
-use agendao_command::output_blocks::SchedulerStageBlock;
-use agendao_command::stage_protocol::{StageStatus, StageSummary};
-use agendao_command::terminal_tool_block_display::{
+use agendao_command_render::output_blocks::SchedulerStageBlock;
+use agendao_command_render::terminal_tool_block_display::{
     build_file_items, build_image_items, summarize_block_items_inline,
 };
+#[cfg(feature = "multimodal")]
 use agendao_multimodal::PersistedMultimodalExplain;
+use agendao_stage_protocol::{StageStatus, StageSummary};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+#[cfg(not(feature = "multimodal"))]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PersistedMultimodalExplain {
+    #[serde(default)]
+    pub attachment_count: usize,
+    #[serde(default)]
+    pub unsupported_parts: Vec<String>,
+    #[serde(default)]
+    pub recommended_downgrade: Option<String>,
+}
+
+#[cfg(not(feature = "multimodal"))]
+impl PersistedMultimodalExplain {
+    pub fn summary_line(&self) -> String {
+        format!("{} attachment(s)", self.attachment_count)
+    }
+
+    pub fn combined_warnings(&self) -> Vec<String> {
+        Vec::new()
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Session {
@@ -1103,7 +1126,7 @@ impl SessionContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agendao_command::governance_fixtures::live_transcript_state_fixture;
+    use agendao_command_render::governance_fixtures::live_transcript_state_fixture;
     use serde_json::json;
 
     fn live_identity(

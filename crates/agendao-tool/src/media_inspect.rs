@@ -1,8 +1,8 @@
-use async_trait::async_trait;
 use agendao_types::{
     SessionContextKind, SubsessionHandoffFieldKind, SubsessionHandoffPacket,
     SubsessionResultAbsorbMode,
 };
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -302,7 +302,7 @@ impl ExecutionPreflightRunner for MediaReadPreflight {
         };
 
         let mut report = execute_registry_tool_execution_preflight(
-            &registry,
+            registry.as_ref(),
             "read",
             serde_json::json!({
                 "file_path": subject.clone(),

@@ -1,5 +1,4 @@
 /// Integration test for streaming prompt execution (Phase 6.3)
-
 use agendao_orchestrator::{OrchestrationCore, PromptExecutionOptions};
 use agendao_provider::{
     ChatRequest, ChatResponse, Message, ModelInfo, Provider, ProviderError, StreamEvent,
@@ -186,8 +185,5 @@ async fn test_streaming_accumulates_text() {
     // Verify session has the complete text
     let session_detail = core.get_session("test-session-2").await.unwrap();
     assert_eq!(session_detail.messages.len(), 2);
-    assert_eq!(
-        session_detail.messages[1].content,
-        "Hello from streaming"
-    );
+    assert_eq!(session_detail.messages[1].content, "Hello from streaming");
 }
