@@ -24,8 +24,8 @@ use agendao_tool::{registry::create_default_registry, ToolContext};
 
 use crate::cli::*;
 #[cfg(feature = "session-db")]
-use crate::cli_local_data;
-use crate::server_lifecycle::FrontendRuntimeContext;
+use crate::cli_session_store;
+use crate::server_lifecycle::CliRuntimeContext;
 
 fn resolve_document_input_to_path(input: &str) -> anyhow::Result<PathBuf> {
     if input.starts_with("file://") {
@@ -173,7 +173,7 @@ fn resolve_context_docs_registry_path_from_config() -> anyhow::Result<PathBuf> {
 
 async fn resolve_server_skill_catalog(
     session_id: Option<&str>,
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<Vec<serde_json::Value>> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
@@ -196,7 +196,7 @@ async fn resolve_server_skill_catalog(
 async fn resolve_server_skill_detail(
     name: &str,
     session_id: Option<&str>,
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<serde_json::Value> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
@@ -221,7 +221,7 @@ fn debug_skill_source_kind_to_api(kind: SkillSourceKindArg) -> SkillSourceKind {
 }
 
 async fn resolve_server_skill_hub_managed(
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<serde_json::Value> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
@@ -229,7 +229,7 @@ async fn resolve_server_skill_hub_managed(
 }
 
 async fn resolve_server_skill_hub_index(
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<serde_json::Value> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
@@ -241,7 +241,7 @@ async fn resolve_server_skill_hub_index_refresh(
     source_kind: SkillSourceKindArg,
     locator: &str,
     revision: Option<&str>,
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<serde_json::Value> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
@@ -259,7 +259,7 @@ async fn resolve_server_skill_hub_index_refresh(
 }
 
 async fn resolve_server_skill_hub_audit(
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<serde_json::Value> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
@@ -270,7 +270,7 @@ async fn resolve_server_skill_hub_timeline(
     skill_name: Option<&str>,
     source_id: Option<&str>,
     limit: Option<usize>,
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<serde_json::Value> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
@@ -296,7 +296,7 @@ async fn resolve_server_skill_hub_guard(
     source_kind: Option<SkillSourceKindArg>,
     locator: Option<&str>,
     revision: Option<&str>,
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<serde_json::Value> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
@@ -336,7 +336,7 @@ async fn resolve_server_skill_hub_sync_plan(
     source_kind: SkillSourceKindArg,
     locator: &str,
     revision: Option<&str>,
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<serde_json::Value> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
@@ -359,7 +359,7 @@ async fn resolve_server_skill_hub_sync_apply(
     source_kind: SkillSourceKindArg,
     locator: &str,
     revision: Option<&str>,
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<serde_json::Value> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
@@ -378,7 +378,7 @@ async fn resolve_server_skill_hub_sync_apply(
 }
 
 async fn resolve_server_skill_hub_distributions(
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<serde_json::Value> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
@@ -388,7 +388,7 @@ async fn resolve_server_skill_hub_distributions(
 }
 
 async fn resolve_server_skill_hub_artifact_cache(
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<serde_json::Value> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
@@ -398,7 +398,7 @@ async fn resolve_server_skill_hub_artifact_cache(
 }
 
 async fn resolve_server_skill_hub_lifecycle(
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<serde_json::Value> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
@@ -411,7 +411,7 @@ async fn resolve_server_skill_hub_install_plan(
     locator: &str,
     skill_name: &str,
     revision: Option<&str>,
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<serde_json::Value> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
@@ -436,7 +436,7 @@ async fn resolve_server_skill_hub_install_apply(
     locator: &str,
     skill_name: &str,
     revision: Option<&str>,
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<serde_json::Value> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
@@ -461,7 +461,7 @@ async fn resolve_server_skill_hub_update_plan(
     locator: &str,
     skill_name: &str,
     revision: Option<&str>,
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<serde_json::Value> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
@@ -486,7 +486,7 @@ async fn resolve_server_skill_hub_update_apply(
     locator: &str,
     skill_name: &str,
     revision: Option<&str>,
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<serde_json::Value> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
@@ -512,7 +512,7 @@ async fn resolve_server_skill_hub_detach(
     locator: &str,
     skill_name: &str,
     revision: Option<&str>,
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<serde_json::Value> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
@@ -538,7 +538,7 @@ async fn resolve_server_skill_hub_remove(
     locator: &str,
     skill_name: &str,
     revision: Option<&str>,
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<serde_json::Value> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
@@ -559,7 +559,7 @@ async fn resolve_server_skill_hub_remove(
 
 async fn resolve_server_session_repair_summary(
     session_id: &str,
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<SessionRepairSummaryResponse> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
@@ -568,7 +568,7 @@ async fn resolve_server_session_repair_summary(
 
 async fn resolve_server_repair_query(
     query: &RepairQuery,
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<RepairQueryResponse> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
     let client = CliApiClient::new(base_url);
@@ -694,9 +694,9 @@ fn print_repair_query_response(response: &RepairQueryResponse) {
     println!("truncated: {}", response.truncated);
 }
 
-pub(crate) async fn handle_debug_command(
+pub(super) async fn handle_debug_command(
     action: DebugCommands,
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<()> {
     match action {
         DebugCommands::Paths => {
@@ -979,7 +979,7 @@ pub(crate) async fn handle_debug_command(
         DebugCommands::Scrap => {
             #[cfg(feature = "session-db")]
             {
-                let sessions = cli_local_data::list_sessions(None, 10_000).await?;
+                let sessions = cli_session_store::list_sessions(None, 10_000).await?;
                 let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
                 for session in sessions {
                     grouped

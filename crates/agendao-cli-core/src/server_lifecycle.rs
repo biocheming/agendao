@@ -16,11 +16,11 @@ type DiscoverServerHook = dyn Fn(ServerDiscoveryRequest) -> BoxFuture<'static, a
     + 'static;
 
 #[derive(Clone)]
-pub struct FrontendRuntimeContext {
+pub struct CliRuntimeContext {
     discover_server: Arc<DiscoverServerHook>,
 }
 
-impl FrontendRuntimeContext {
+impl CliRuntimeContext {
     pub fn new<F>(discover_server: F) -> Self
     where
         F: Fn(ServerDiscoveryRequest) -> BoxFuture<'static, anyhow::Result<String>>

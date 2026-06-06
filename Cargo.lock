@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agendao"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-cli",
  "agendao-client",
@@ -31,7 +31,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-agent"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-config",
  "agendao-execution-types",
@@ -55,7 +55,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-api"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-multimodal",
  "agendao-skill",
@@ -68,15 +68,13 @@ dependencies = [
 
 [[package]]
 name = "agendao-cli"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-agent",
  "agendao-cli-admin",
  "agendao-cli-core",
  "agendao-client",
- "agendao-command",
  "agendao-command-render",
- "agendao-command-runtime",
  "agendao-config",
  "agendao-core",
  "agendao-grep",
@@ -103,7 +101,6 @@ dependencies = [
  "async-trait",
  "base64",
  "chrono",
- "crossterm 0.27.0",
  "dirs",
  "futures",
  "reqwest",
@@ -119,7 +116,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-cli-admin"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-cli-core",
  "anyhow",
@@ -128,7 +125,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-cli-core"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-client",
  "anyhow",
@@ -138,7 +135,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-client"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-api",
  "agendao-command",
@@ -158,7 +155,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-command"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-agent",
  "agendao-output-blocks",
@@ -169,7 +166,7 @@ dependencies = [
  "agendao-types",
  "anyhow",
  "chrono",
- "crossterm 0.29.0",
+ "crossterm",
  "pulldown-cmark",
  "serde",
  "serde_json",
@@ -180,12 +177,12 @@ dependencies = [
 
 [[package]]
 name = "agendao-command-render"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-command",
  "agendao-output-blocks",
  "agendao-types",
- "crossterm 0.29.0",
+ "crossterm",
  "serde",
  "serde_json",
  "unicode-width 0.1.14",
@@ -193,12 +190,12 @@ dependencies = [
 
 [[package]]
 name = "agendao-command-runtime"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-command",
  "agendao-permission",
  "agendao-tool",
- "crossterm 0.29.0",
+ "crossterm",
  "serde_json",
  "tokio",
  "tracing",
@@ -206,7 +203,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-config"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-types",
  "anyhow",
@@ -224,7 +221,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-core"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "chrono",
  "hex",
@@ -241,7 +238,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-execution-types"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-core",
  "agendao-provider",
@@ -251,7 +248,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-grep"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "anyhow",
  "regex",
@@ -263,7 +260,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-launcher"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "anyhow",
  "dirs",
@@ -277,7 +274,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-lsp"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-core",
  "async-trait",
@@ -293,7 +290,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-mcp"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-core",
  "anyhow",
@@ -320,7 +317,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-memory"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-config",
  "agendao-runtime-context",
@@ -338,7 +335,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-multimodal"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-config",
  "agendao-provider",
@@ -350,7 +347,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-orchestrator"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-config",
  "agendao-execution-types",
@@ -376,7 +373,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-output-blocks"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-stage-protocol",
  "serde",
@@ -385,7 +382,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-permission"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-plugin",
  "anyhow",
@@ -400,7 +397,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-plugin"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-config",
  "agendao-core",
@@ -419,7 +416,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-provider"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-types",
  "agendao-util",
@@ -448,7 +445,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-runtime-context"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-config",
  "agendao-state",
@@ -463,7 +460,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-server"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-agent",
  "agendao-api",
@@ -523,7 +520,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-server-core"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-api",
  "agendao-command-render",
@@ -542,7 +539,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-server-local"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-client",
  "agendao-config",
@@ -558,7 +555,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-server-pty"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "chrono",
  "portable-pty",
@@ -571,7 +568,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-session"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-config",
  "agendao-core",
@@ -614,7 +611,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-session-core"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-types",
  "chrono",
@@ -626,7 +623,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-skill"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-config",
  "agendao-types",
@@ -646,7 +643,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-stage-protocol"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "chrono",
  "serde",
@@ -656,7 +653,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-state"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-config",
  "anyhow",
@@ -669,7 +666,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-storage"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-storage-core",
  "agendao-storage-sqlite",
@@ -690,7 +687,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-storage-core"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "async-trait",
  "serde",
@@ -699,7 +696,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-storage-sqlite"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-storage-core",
  "async-trait",
@@ -709,7 +706,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-tool"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-config",
  "agendao-core",
@@ -756,7 +753,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-tool-core"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-config",
  "agendao-execution-types",
@@ -776,7 +773,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-tool-web"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-config",
  "agendao-tool-core",
@@ -801,7 +798,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-tui"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-agent",
  "agendao-client",
@@ -828,7 +825,7 @@ dependencies = [
  "atty",
  "base64",
  "chrono",
- "crossterm 0.29.0",
+ "crossterm",
  "dirs",
  "futures",
  "nucleo-matcher",
@@ -855,9 +852,9 @@ dependencies = [
 
 [[package]]
 name = "agendao-tui-core"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
- "crossterm 0.29.0",
+ "crossterm",
  "once_cell",
  "ratatui",
  "serde",
@@ -866,7 +863,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-types"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-stage-protocol",
  "anyhow",
@@ -880,7 +877,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-util"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "anyhow",
  "chrono",
@@ -898,7 +895,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-voice"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "agendao-config",
  "anyhow",
@@ -910,7 +907,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-watcher"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "dashmap",
  "glob",
@@ -1565,22 +1562,6 @@ checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
 name = "crossterm"
-version = "0.27.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f476fe445d41c9e991fd07515a6f463074b782242ccf4a5b7b1d1012e70824df"
-dependencies = [
- "bitflags 2.11.0",
- "crossterm_winapi",
- "libc",
- "mio 0.8.11",
- "parking_lot",
- "signal-hook",
- "signal-hook-mio",
- "winapi",
-]
-
-[[package]]
-name = "crossterm"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b9f2e4c67f833b660cdb0a3523065869fb35570177239812ed4c905aeff87b"
@@ -1590,7 +1571,7 @@ dependencies = [
  "derive_more",
  "document-features",
  "futures-core",
- "mio 1.1.1",
+ "mio",
  "parking_lot",
  "rustix",
  "signal-hook",
@@ -3074,18 +3055,6 @@ dependencies = [
 
 [[package]]
 name = "mio"
-version = "0.8.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4a650543ca06a924e8b371db273b2756685faae30f8487da1b56505a8f78b0c"
-dependencies = [
- "libc",
- "log",
- "wasi",
- "windows-sys 0.48.0",
-]
-
-[[package]]
-name = "mio"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a69bcab0ad47271a0234d9422b131806bf3968021e5dc9328caf2d4cd58557fc"
@@ -3152,7 +3121,7 @@ dependencies = [
  "kqueue",
  "libc",
  "log",
- "mio 1.1.1",
+ "mio",
  "notify-types",
  "walkdir",
  "windows-sys 0.52.0",
@@ -3790,7 +3759,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "577c9b9f652b4c121fb25c6a391dd06406d3b092ba68827e6d2f09550edc54b3"
 dependencies = [
  "cfg-if",
- "crossterm 0.29.0",
+ "crossterm",
  "instability",
  "ratatui-core",
 ]
@@ -3991,7 +3960,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3deb66052bd977b9b83608a9e19da6a1df50c6900cc1550cea7f6c13674d6fe2"
 dependencies = [
  "anyhow",
- "crossterm 0.29.0",
+ "crossterm",
  "futures",
  "once_cell",
  "parking_lot",
@@ -4415,8 +4384,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b75a19a7a740b25bc7944bdee6172368f988763b744e3d4dfe753f6b4ece40cc"
 dependencies = [
  "libc",
- "mio 0.8.11",
- "mio 1.1.1",
+ "mio",
  "signal-hook",
 ]
 
@@ -5079,7 +5047,7 @@ checksum = "72a2903cd7736441aac9df9d7688bd0ce48edccaadf181c3b90be801e81d3d86"
 dependencies = [
  "bytes",
  "libc",
- "mio 1.1.1",
+ "mio",
  "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",

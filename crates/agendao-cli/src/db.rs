@@ -1,9 +1,9 @@
 use std::process::Command as ProcessCommand;
 
 use crate::cli::{DbCommands, DbOutputFormat};
-use crate::cli_local_data::{collect_session_stats, local_database_path};
+use crate::cli_session_store::{collect_session_stats, local_database_path};
 
-pub(crate) async fn handle_db_command(
+pub(super) async fn handle_db_command(
     action: Option<DbCommands>,
     query: Option<String>,
     format: DbOutputFormat,
@@ -43,7 +43,7 @@ pub(crate) async fn handle_db_command(
     Ok(())
 }
 
-pub(crate) async fn handle_stats_command(
+pub(super) async fn handle_stats_command(
     days: Option<i64>,
     tools_limit: Option<usize>,
     models_limit: Option<usize>,

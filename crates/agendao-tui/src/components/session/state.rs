@@ -5,8 +5,8 @@ const HEADER_NARROW_THRESHOLD: u16 = 80;
 const THINKING_PREVIEW_LINES: usize = 2;
 const MOUSE_SCROLL_LINES: usize = 3;
 const MESSAGE_BLOCK_RIGHT_PADDING: usize = 1;
-const SIDEBAR_CLOSE_BUTTON_WIDTH: u16 = 3;
-const SIDEBAR_OPEN_BUTTON_WIDTH: u16 = 3;
+const SIDEBAR_CLOSE_BUTTON_WIDTH: u16 = 5;
+const SIDEBAR_OPEN_BUTTON_WIDTH: u16 = 5;
 const SEMANTIC_HIGHLIGHT_MAX_CHARS: usize = 8_000;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -105,6 +105,8 @@ struct SessionMessagesSnapshot {
     theme: crate::theme::Theme,
     messages: Vec<Message>,
     revert_info: Option<RevertInfo>,
+    directory: String,
+    message_density: crate::context::MessageDensity,
     show_scrollbar: bool,
     show_timestamps: bool,
     show_thinking: bool,
@@ -120,6 +122,8 @@ impl SessionMessagesSnapshot {
 
     fn capture(context: &Arc<AppContext>, session_id: &str) -> Self {
         let theme = context.theme.read().clone();
+        let directory = context.directory.read().clone();
+        let message_density = context.message_density();
         let show_scrollbar = context.show_scrollbar_enabled();
         let show_timestamps = context.show_timestamps_enabled();
         let show_thinking = context.show_thinking_enabled();
@@ -151,6 +155,8 @@ impl SessionMessagesSnapshot {
             theme,
             messages,
             revert_info,
+            directory,
+            message_density,
             show_scrollbar,
             show_timestamps,
             show_thinking,
@@ -173,46 +179,18 @@ struct SessionHeaderSnapshot {
 }
 
 #[derive(Clone)]
-struct SessionFooterSnapshot {
-    directory: String,
-    context_meter: Option<String>,
-    context_meter_percent: Option<u64>,
-    permission_count: usize,
-    connected_lsp: usize,
-    connected_mcp: usize,
-    has_mcp_failures: bool,
-    has_mcp_registration_needed: bool,
-    show_connect_hint: bool,
-}
-
-#[derive(Clone)]
 struct SessionRenderSnapshot {
     theme: crate::theme::Theme,
     show_header: bool,
     header: SessionHeaderSnapshot,
-    footer: SessionFooterSnapshot,
 }
 
 impl SessionRenderSnapshot {
     fn capture(context: &Arc<AppContext>, session_id: &str) -> Self {
         let theme = context.theme.read().clone();
         let show_header = context.show_header_enabled();
-        let directory = context.directory.read().clone();
-        let permission_count = *context.pending_permissions.read();
-        let has_connected_provider = *context.has_connected_provider.read();
-
         let selection = context.selection_state();
-        let (
-            parent_title,
-            title,
-            subtitle,
-            usage,
-            footer_context_meter,
-            footer_context_meter_percent,
-            status_label,
-            status_running,
-            status_retrying,
-        ) = {
+        let (parent_title, title, subtitle, usage, status_label, status_running, status_retrying) = {
             let session_ctx = context.session.read();
             let session = session_ctx.sessions.get(session_id);
             let title = session
@@ -241,11 +219,6 @@ impl SessionRenderSnapshot {
                 .iter()
                 .rev()
                 .find(|m| matches!(m.role, MessageRole::Assistant) && m.tokens.output > 0);
-            let active_model = messages
-                .iter()
-                .rev()
-                .find(|m| matches!(m.role, MessageRole::Assistant))
-                .and_then(|m| m.model.as_deref());
 
             let total_cost = context
                 .session_usage()
@@ -258,8 +231,6 @@ impl SessionRenderSnapshot {
                         .map(|m| m.cost)
                         .sum()
                 });
-            let current_context_tokens = context.current_context_tokens();
-
             let usage = last_assistant.and_then(|assistant_msg| {
                 let total_tokens = context
                     .session_usage()
@@ -278,16 +249,9 @@ impl SessionRenderSnapshot {
                 parts.push(format!("${:.4}", total_cost));
                 Some(parts.join("  ·  "))
             });
-            let footer_context_meter = current_context_tokens.and_then(|current_context_tokens| {
-                let model = context.resolve_model_info(active_model);
-                format_context_usage_meter(
-                    current_context_tokens,
-                    model.as_ref().map(|model| model.context_window),
-                )
-            });
 
             let (status_label, status_running, status_retrying) =
-                if permission_count > 0 || context.get_pending_permission().is_some() {
+                if *context.pending_permissions.read() > 0 || context.get_pending_permission().is_some() {
                     (
                         Some(canonical_run_status_badge("awaiting_permission").to_string()),
                         false,
@@ -345,41 +309,9 @@ impl SessionRenderSnapshot {
                 title,
                 subtitle,
                 usage,
-                footer_context_meter
-                    .as_ref()
-                    .map(|(label, _)| label.clone()),
-                footer_context_meter.and_then(|(_, percent)| percent),
                 status_label,
                 status_running,
                 status_retrying,
-            )
-        };
-
-        let (connected_lsp, connected_mcp, has_mcp_failures, has_mcp_registration_needed) = {
-            let lsp_status = context.lsp_status.read();
-            let mcp_servers = context.mcp_servers.read();
-            let connected_lsp = lsp_status
-                .iter()
-                .filter(|s| matches!(s.status, crate::context::LspConnectionStatus::Connected))
-                .count();
-            let connected_mcp = mcp_servers
-                .iter()
-                .filter(|s| matches!(s.status, crate::context::McpConnectionStatus::Connected))
-                .count();
-            let has_mcp_failures = mcp_servers
-                .iter()
-                .any(|s| matches!(s.status, crate::context::McpConnectionStatus::Failed));
-            let has_mcp_registration_needed = mcp_servers.iter().any(|s| {
-                matches!(
-                    s.status,
-                    crate::context::McpConnectionStatus::NeedsClientRegistration
-                )
-            });
-            (
-                connected_lsp,
-                connected_mcp,
-                has_mcp_failures,
-                has_mcp_registration_needed,
             )
         };
 
@@ -394,18 +326,6 @@ impl SessionRenderSnapshot {
                 status_label,
                 status_running,
                 status_retrying,
-            },
-            footer: SessionFooterSnapshot {
-                directory,
-                context_meter: footer_context_meter,
-                context_meter_percent: footer_context_meter_percent,
-                permission_count,
-                connected_lsp,
-                connected_mcp,
-                has_mcp_failures,
-                has_mcp_registration_needed,
-                show_connect_hint: !has_connected_provider
-                    && Utc::now().timestamp().rem_euclid(15) >= 10,
             },
         }
     }
@@ -479,7 +399,6 @@ struct SessionRenderLayout {
 struct MainPaneLayout {
     header_area: Rect,
     messages_area: Rect,
-    footer_area: Rect,
     prompt_area: Rect,
     show_header: bool,
     show_prompt: bool,
@@ -490,6 +409,7 @@ struct SessionRenderResources<'a> {
     messages: &'a [Message],
     terminal_messages: &'a [TerminalMessage],
     revert_info: Option<crate::context::RevertInfo>,
+    directory: String,
     content_width: usize,
     show_thinking: bool,
     show_timestamps: bool,
@@ -692,6 +612,7 @@ struct MessageRenderOutput {
 struct SessionMessageRenderItem {
     message_id: String,
     gap_before: bool,
+    gap_after: usize,
     output: MessageRenderOutput,
 }
 
@@ -762,6 +683,7 @@ enum SessionMessageRenderProps {
 struct SessionMessageRenderInput {
     message_id: String,
     gap_before: bool,
+    gap_after: usize,
     memo_key: u64,
     props: SessionMessageRenderProps,
 }
@@ -1091,6 +1013,7 @@ impl Component for SessionMessageItemComponent {
         *self.output.lock() = Some(SessionMessageRenderItem {
             message_id: self.input.message_id.clone(),
             gap_before: self.input.gap_before,
+            gap_after: self.input.gap_after,
             output,
         });
     }

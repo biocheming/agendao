@@ -179,7 +179,7 @@ impl HomeView {
             .get(tip_idx)
             .copied()
             .unwrap_or("Use /help to open command guide");
-        let mut spans = vec![Span::styled("● Tip ", Style::default().fg(theme.warning))];
+        let mut spans = vec![Span::styled("• Tip ", Style::default().fg(theme.warning))];
         spans.extend(parse_tip_highlights(tip, &theme));
         let paragraph = Paragraph::new(Line::from(spans));
 
@@ -265,7 +265,7 @@ impl HomeView {
             };
             spans.push(Span::raw(" ".repeat(left_padding)));
             spans.push(Span::styled(
-                "⊙ ".to_string(),
+                "• ".to_string(),
                 Style::default().fg(dot_color),
             ));
             spans.push(Span::styled(

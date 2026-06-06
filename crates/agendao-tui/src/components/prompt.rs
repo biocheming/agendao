@@ -18,7 +18,7 @@ use crate::file_index::FileIndex;
 use crate::theme::Theme;
 use crate::ui::RenderSurface;
 
-use super::spinner::{progress_circle_icon, KnightRiderSpinner, SpinnerMode, TaskKind};
+use super::spinner::{KnightRiderSpinner, SpinnerMode, TaskKind};
 
 const MAX_HISTORY_ENTRIES: usize = 200;
 const MAX_STASH_ENTRIES: usize = 50;
@@ -32,9 +32,11 @@ const FILE_INDEX_MAX_DEPTH: usize = 8;
 const FILE_SUGGESTION_LIMIT: usize = 20;
 const PROMPT_BLOCK_PAD_LEFT: u16 = 1;
 const PROMPT_BLOCK_PAD_RIGHT: u16 = 1;
-const PROMPT_BLOCK_PAD_TOP: u16 = 1;
-const PROMPT_BLOCK_PAD_BOTTOM: u16 = 0;
+const PROMPT_BLOCK_PAD_TOP: u16 = 0;
+const PROMPT_BLOCK_PAD_BOTTOM: u16 = 1;
 const PROMPT_LINE_H_INSET: u16 = 1;
+const PROMPT_SPINNER_FRAME_MS: u128 = 280;
+const PROMPT_SPINNER_FRAMES: [&str; 3] = ["•··", "·•·", "··•"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptMode {
@@ -242,9 +244,6 @@ impl Prompt {
         let variant = self.context.current_model_variant();
         let animations_enabled = *self.context.animations_enabled.read();
         let show_activity_row = self.shows_activity_row();
-        let context_line = self
-            .render_context_line(&theme, selection.current_model.as_deref())
-            .filter(|line| !line.spans.is_empty());
         let inline_token_line = (!show_activity_row)
             .then(|| self.render_token_line(&theme))
             .filter(|line| !line.spans.is_empty());
@@ -255,12 +254,40 @@ impl Prompt {
         } else {
             highlight_color
         };
+        let card_border_color = if self.focused {
+            if matches!(self.mode, PromptMode::Shell) {
+                theme.primary
+            } else {
+                theme.border_active
+            }
+        } else {
+            theme.border_subtle
+        };
+        let card_background = theme.background_panel;
+        let content_background = theme.background_element;
+        let meta_background = card_background;
         let placeholder = self.active_placeholder();
+        let inner_area = Rect {
+            x: area.x.saturating_add(1),
+            y: area.y.saturating_add(1),
+            width: area.width.saturating_sub(2),
+            height: area.height.saturating_sub(2),
+        };
+        if inner_area.width == 0 || inner_area.height == 0 {
+            return;
+        }
 
-        let max_content_lines = area
+        surface.render_widget(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(card_border_color))
+                .style(Style::default().bg(card_background)),
+            area,
+        );
+
+        let max_content_lines = inner_area
             .height
             .saturating_sub(if show_activity_row { 3 } else { 2 })
-            .saturating_sub(if context_line.is_some() { 1 } else { 0 })
             .saturating_sub(PROMPT_BLOCK_PAD_TOP)
             .saturating_sub(PROMPT_BLOCK_PAD_BOTTOM)
             .max(PROMPT_MIN_INPUT_LINES);
@@ -270,9 +297,6 @@ impl Prompt {
             .saturating_add(PROMPT_BLOCK_PAD_BOTTOM);
         let chunk_constraints = if show_activity_row {
             let mut constraints = vec![Constraint::Length(input_lines)];
-            if context_line.is_some() {
-                constraints.push(Constraint::Length(1));
-            }
             constraints.extend([
                 Constraint::Length(1),
                 Constraint::Length(1),
@@ -281,45 +305,32 @@ impl Prompt {
             constraints
         } else {
             let mut constraints = vec![Constraint::Length(input_lines)];
-            if context_line.is_some() {
-                constraints.push(Constraint::Length(1));
-            }
             constraints.extend([Constraint::Length(1), Constraint::Length(1)]);
             constraints
         };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints(chunk_constraints)
-            .split(area);
-
-        let border_set = ratatui::symbols::border::Set {
-            top_left: " ",
-            top_right: " ",
-            bottom_left: " ",
-            bottom_right: " ",
-            vertical_left: "┃",
-            vertical_right: " ",
-            horizontal_top: " ",
-            horizontal_bottom: " ",
-        };
+            .split(inner_area);
 
         let paragraph = if self.input.is_empty() {
             Paragraph::new(Line::from(Span::styled(
                 placeholder,
-                Style::default().fg(theme.text_muted),
+                Style::default().fg(if self.focused {
+                    theme.border_subtle
+                } else {
+                    theme.text_muted
+                }),
             )))
             .block(
                 Block::default()
-                    .borders(Borders::LEFT)
-                    .border_set(border_set)
-                    .border_style(Style::default().fg(active_color))
                     .padding(Padding::new(
                         PROMPT_BLOCK_PAD_LEFT,
                         PROMPT_BLOCK_PAD_RIGHT,
                         PROMPT_BLOCK_PAD_TOP,
                         PROMPT_BLOCK_PAD_BOTTOM,
                     ))
-                    .style(Style::default().bg(theme.background_element)),
+                    .style(Style::default().bg(content_background)),
             )
             .style(Style::default().fg(if self.focused {
                 theme.text
@@ -330,16 +341,13 @@ impl Prompt {
             Paragraph::new(self.input.clone())
                 .block(
                     Block::default()
-                        .borders(Borders::LEFT)
-                        .border_set(border_set)
-                        .border_style(Style::default().fg(active_color))
                         .padding(Padding::new(
                             PROMPT_BLOCK_PAD_LEFT,
                             PROMPT_BLOCK_PAD_RIGHT,
                             PROMPT_BLOCK_PAD_TOP,
                             PROMPT_BLOCK_PAD_BOTTOM,
                         ))
-                        .style(Style::default().bg(theme.background_element)),
+                        .style(Style::default().bg(content_background)),
                 )
                 .wrap(Wrap { trim: false })
                 .style(Style::default().fg(if self.focused {
@@ -351,15 +359,11 @@ impl Prompt {
 
         surface.render_widget(paragraph, chunks[0]);
         if self.focused {
-            let content_origin_x = chunks[0]
-                .x
-                .saturating_add(1)
-                .saturating_add(PROMPT_BLOCK_PAD_LEFT);
+            let content_origin_x = chunks[0].x.saturating_add(PROMPT_BLOCK_PAD_LEFT);
             let content_origin_y = chunks[0].y.saturating_add(PROMPT_BLOCK_PAD_TOP);
             let input_width = usize::from(
                 chunks[0]
                     .width
-                    .saturating_sub(1)
                     .saturating_sub(PROMPT_BLOCK_PAD_LEFT)
                     .saturating_sub(PROMPT_BLOCK_PAD_RIGHT),
             )
@@ -377,61 +381,43 @@ impl Prompt {
         }
 
         let mut chunk_index = 1usize;
-        if let Some(context_line) = context_line {
-            render_prompt_continuation_row(
-                surface,
-                chunks[chunk_index],
-                active_color,
-                theme.background_element,
-            );
-            let context_row = row_content_area(chunks[chunk_index], PROMPT_LINE_H_INSET);
-            let context_paragraph =
-                Paragraph::new(context_line).style(Style::default().bg(theme.background_element));
-            surface.render_widget(context_paragraph, context_row);
-            chunk_index += 1;
-        }
 
-        let mut info_parts = render_prompt_identity_spans(&self.context, self.mode, active_color);
+        let mut info_parts =
+            render_prompt_identity_spans(&self.context, &theme, self.mode, active_color);
         info_parts.push(Span::raw("  "));
 
         if let Some(model_label) = prompt_model_summary(
             selection.current_model.as_deref(),
             selection.current_provider.as_deref(),
         ) {
-            info_parts.push(Span::styled(model_label, Style::default().fg(theme.text)));
+            info_parts.push(Span::styled(
+                model_label,
+                Style::default().fg(theme.text_muted),
+            ));
             if let Some(ref v) = variant {
                 info_parts.push(Span::styled(" · ", Style::default().fg(theme.text_muted)));
                 info_parts.push(Span::styled(
                     v.clone(),
-                    Style::default().fg(theme.warning).bold(),
+                    Style::default().fg(theme.text_muted),
                 ));
             }
         }
         if let Some(token_line) = inline_token_line {
-            info_parts.push(Span::styled(
-                "  ",
-                Style::default().bg(theme.background_element),
-            ));
+            info_parts.push(Span::styled("  ", Style::default().bg(meta_background)));
             info_parts.extend(token_line.spans);
         }
 
-        render_prompt_continuation_row(
-            surface,
-            chunks[chunk_index],
-            active_color,
-            theme.background_element,
-        );
+        render_prompt_continuation_row(surface, chunks[chunk_index], meta_background);
         let info_row = row_content_area(chunks[chunk_index], PROMPT_LINE_H_INSET);
         let info_line = Line::from(info_parts);
-        let info_paragraph =
-            Paragraph::new(info_line).style(Style::default().bg(theme.background_element));
+        let info_paragraph = Paragraph::new(info_line).style(Style::default().bg(meta_background));
         surface.render_widget(info_paragraph, info_row);
         chunk_index += 1;
 
         if show_activity_row {
             let spinner_row = chunks[chunk_index];
             surface.render_widget(
-                Paragraph::new("").style(Style::default().bg(theme.background_element)),
+                Paragraph::new("").style(Style::default().bg(meta_background)),
                 spinner_row,
             );
             let spinner_chunks = Layout::default()
@@ -440,26 +426,26 @@ impl Prompt {
                 .split(spinner_row);
 
             let spinner_icon = if animations_enabled {
-                progress_circle_icon()
+                prompt_spinner_frame()
             } else {
-                "◌"
+                PROMPT_SPINNER_FRAMES[0]
             };
             let spinner = Paragraph::new(Line::from(vec![Span::styled(
                 spinner_icon,
                 Style::default().fg(active_color),
             )]))
-            .style(Style::default().bg(theme.background_element));
+            .style(Style::default().bg(meta_background));
             surface.render_widget(spinner, spinner_chunks[0]);
             let token_line = Paragraph::new(self.render_token_line(&theme))
-                .style(Style::default().bg(theme.background_element));
+                .style(Style::default().bg(meta_background));
             surface.render_widget(token_line, spinner_chunks[1]);
 
             let status_line = Paragraph::new(self.render_status_line(&theme))
-                .style(Style::default().bg(theme.background_element));
+                .style(Style::default().bg(meta_background));
             surface.render_widget(status_line, chunks[chunk_index + 1]);
         } else {
             let status_line = Paragraph::new(self.render_status_line(&theme))
-                .style(Style::default().bg(theme.background_element));
+                .style(Style::default().bg(meta_background));
             surface.render_widget(status_line, chunks[chunk_index]);
         }
     }
@@ -715,18 +701,11 @@ impl Prompt {
     }
 
     pub fn desired_height(&self, width: u16) -> u16 {
-        let selection = self.context.selection_state();
-        let has_context_line = self
-            .render_context_line(
-                &self.context.theme.read(),
-                selection.current_model.as_deref(),
-            )
-            .is_some_and(|line| !line.spans.is_empty());
         self.input_display_lines(width)
             .saturating_add(PROMPT_BLOCK_PAD_TOP)
             .saturating_add(PROMPT_BLOCK_PAD_BOTTOM)
-            .saturating_add(if has_context_line { 1 } else { 0 })
             .saturating_add(if self.shows_activity_row() { 3 } else { 2 })
+            .saturating_add(2)
     }
 
     fn shows_activity_row(&self) -> bool {
@@ -1249,7 +1228,7 @@ impl Prompt {
                 if queued > 0 {
                     spans.push(Span::styled(
                         format!("queued {}", queued),
-                        Style::default().fg(theme.warning),
+                        Style::default().fg(theme.text_muted),
                     ));
                     spans.push(Span::raw("  "));
                 }
@@ -1272,7 +1251,7 @@ impl Prompt {
                 let mut spans = vec![
                     Span::styled(
                         canonical_run_status_title("compacting"),
-                        Style::default().fg(theme.warning),
+                        Style::default().fg(theme.text_muted),
                     ),
                     Span::raw("  "),
                 ];
@@ -1354,62 +1333,6 @@ impl Prompt {
             ));
         }
         Line::from(spans)
-    }
-
-    fn render_context_line(
-        &self,
-        theme: &Theme,
-        selected_model: Option<&str>,
-    ) -> Option<Line<'static>> {
-        let used = self.context.current_context_tokens()?;
-        let limit = self
-            .context
-            .resolve_model_info(selected_model)
-            .map(|model| model.context_window)
-            .filter(|limit| *limit > 0);
-
-        let mut spans = vec![Span::styled(
-            "Context ",
-            Style::default().fg(theme.text_muted),
-        )];
-
-        match limit {
-            Some(limit) => {
-                let percent = agendao_types::context_usage_percent(used, limit);
-                let accent = match agendao_types::context_pressure_for_percent(percent) {
-                    agendao_types::ContextPressure::Critical => theme.error,
-                    agendao_types::ContextPressure::AutoCompactSoon
-                    | agendao_types::ContextPressure::Warning => theme.warning,
-                    agendao_types::ContextPressure::Normal if percent.is_some() => theme.success,
-                    agendao_types::ContextPressure::Normal => theme.text_muted,
-                };
-                let percent_label =
-                    percent.map_or_else(|| "--".to_string(), |pct| format!("{pct}%"));
-                spans.push(Span::styled(
-                    format!(
-                        "{}/{}",
-                        format_compact_number(used),
-                        format_compact_number(limit)
-                    ),
-                    Style::default().fg(theme.text),
-                ));
-                spans.push(Span::raw(" "));
-                spans.push(Span::styled(
-                    agendao_types::context_usage_bar(percent, 8),
-                    Style::default().fg(accent),
-                ));
-                spans.push(Span::raw(" "));
-                spans.push(Span::styled(percent_label, Style::default().fg(accent)));
-            }
-            None => {
-                spans.push(Span::styled(
-                    format_compact_number(used),
-                    Style::default().fg(theme.text),
-                ));
-            }
-        }
-
-        Some(Line::from(spans))
     }
 
     fn current_session_token_io(&self) -> Option<(u64, u64, u64, u64, u64, u64)> {
@@ -1616,41 +1539,25 @@ fn inset_horizontal(area: Rect, padding: u16) -> Rect {
 }
 
 fn row_content_area(area: Rect, horizontal_padding: u16) -> Rect {
-    if area.width <= 1 {
+    if area.width == 0 {
         return area;
     }
-    let inner = Rect {
-        x: area.x.saturating_add(1),
-        y: area.y,
-        width: area.width.saturating_sub(1),
-        height: area.height,
-    };
-    inset_horizontal(inner, horizontal_padding)
+    inset_horizontal(area, horizontal_padding)
 }
 
 fn render_prompt_continuation_row<S: RenderSurface>(
     surface: &mut S,
     area: Rect,
-    border_color: Color,
     background: Color,
 ) {
     if area.width == 0 || area.height == 0 {
         return;
     }
 
-    let mut spans = vec![Span::styled(
-        "┃",
-        Style::default().fg(border_color).bg(background),
-    )];
-    let trailing = usize::from(area.width).saturating_sub(1);
-    if trailing > 0 {
-        spans.push(Span::styled(
-            " ".repeat(trailing),
-            Style::default().bg(background),
-        ));
-    }
-
-    surface.render_widget(Paragraph::new(Line::from(spans)), area);
+    surface.render_widget(
+        Paragraph::new(" ".repeat(area.width as usize)).style(Style::default().bg(background)),
+        area,
+    );
 }
 
 fn subsequence_score(query: &str, target: &str) -> Option<i32> {
@@ -1711,6 +1618,7 @@ fn spinner_mode_from_env() -> SpinnerMode {
 
 fn render_prompt_identity_spans(
     context: &Arc<AppContext>,
+    theme: &Theme,
     mode: PromptMode,
     accent: Color,
 ) -> Vec<Span<'static>> {
@@ -1720,18 +1628,26 @@ fn render_prompt_identity_spans(
         .current_scheduler_profile()
         .filter(|value| !value.trim().is_empty())
     {
-        ("◌", profile)
+        ("☯", profile)
     } else if let Some(agent) = current_mode_name(context) {
-        ("◈", agent)
+        ("☯", agent)
     } else {
-        ("◦", "auto".to_string())
+        ("☯", "auto".to_string())
     };
 
     vec![
         Span::styled(icon, Style::default().fg(accent)),
         Span::raw(" "),
-        Span::styled(label, Style::default().fg(accent).bold()),
+        Span::styled(label, Style::default().fg(theme.text)),
     ]
+}
+
+fn prompt_spinner_frame() -> &'static str {
+    let ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    PROMPT_SPINNER_FRAMES[(ms / PROMPT_SPINNER_FRAME_MS) as usize % PROMPT_SPINNER_FRAMES.len()]
 }
 
 fn prompt_model_summary(model: Option<&str>, provider: Option<&str>) -> Option<String> {
@@ -2099,7 +2015,7 @@ mod tests {
     }
 
     #[test]
-    fn desired_height_grows_when_context_meter_is_visible() {
+    fn desired_height_ignores_context_meter_availability() {
         with_isolated_prompt(|prompt| {
             {
                 let mut providers = prompt.context.providers.write();
@@ -2130,51 +2046,7 @@ mod tests {
                 });
             }
 
-            assert_eq!(prompt.desired_height(80), 6);
-        });
-    }
-
-    #[test]
-    fn context_line_renders_meter_for_selected_model() {
-        with_isolated_prompt(|prompt| {
-            {
-                let mut providers = prompt.context.providers.write();
-                providers.push(crate::context::ProviderInfo {
-                    id: "openai".to_string(),
-                    name: "OpenAI".to_string(),
-                    models: vec![crate::context::ModelInfo {
-                        id: "openai/gpt-5".to_string(),
-                        name: "gpt-5".to_string(),
-                        context_window: 200_000,
-                        max_output_tokens: 0,
-                        supports_vision: false,
-                        supports_tools: true,
-                        cost_per_million_input: None,
-                        cost_per_million_output: None,
-                    }],
-                });
-            }
-            prompt
-                .context
-                .set_model("openai/gpt-5".to_string(), "openai".to_string());
-            {
-                let mut session = prompt.context.session.write();
-                session.session_usage_books = Some(agendao_types::SessionUsageBooks {
-                    live_context_tokens: Some(52_830),
-                    request_context_tokens: Some(52_830),
-                    ..Default::default()
-                });
-            }
-            let theme = prompt.context.theme.read().clone();
-            let rendered = line_text(
-                prompt
-                    .render_context_line(&theme, Some("openai/gpt-5"))
-                    .expect("context line"),
-            );
-
-            assert!(rendered.contains("Context"), "{rendered}");
-            assert!(rendered.contains("52.8K/200K"), "{rendered}");
-            assert!(rendered.contains("26%"), "{rendered}");
+            assert_eq!(prompt.desired_height(80), 5);
         });
     }
 

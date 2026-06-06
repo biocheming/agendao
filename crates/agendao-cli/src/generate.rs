@@ -4,9 +4,18 @@ use agendao_config::loader::load_config;
 use agendao_provider::ModelsRegistry;
 
 use crate::providers::setup_providers;
-use crate::util::format_tokens;
 
-pub(crate) async fn list_models(
+fn format_tokens(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.0}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
+pub(super) async fn list_models(
     provider_filter: Option<String>,
     refresh: bool,
     verbose: bool,

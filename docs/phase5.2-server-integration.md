@@ -1,4 +1,6 @@
-# Phase 5.2: 服务器集成 Unix Socket 启动
+# Phase 5.2: 服务器集成 Unix Socket 启动（阶段记录）
+
+这份文档记录的是服务端接入 Unix socket 的阶段实现切面。它保留实现背景和当时的接线方式，但当前产品面的入口与默认行为应以 `commands.md` 为准。
 
 ## 目标
 

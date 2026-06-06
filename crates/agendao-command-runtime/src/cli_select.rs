@@ -7,13 +7,15 @@
 //! - Multi-select support with checkboxes
 //! - Enter to confirm selection
 
-use crate::cli_panel::{display_width, CliPanelFrame};
+#[cfg(test)]
+use crate::cli_panel::display_width;
+use crate::cli_panel::CliPanelFrame;
 use crate::cli_style::CliStyle;
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
-    terminal::{self, ClearType},
+    terminal::{self, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use std::io::{self, Write};
 
@@ -36,9 +38,7 @@ pub enum SelectResult {
 }
 
 #[derive(Debug, Clone)]
-struct SelectorRenderState {
-    rendered_plain_rows: Vec<String>,
-}
+struct SelectorRenderState;
 
 /// Run an interactive single-select prompt.
 ///
@@ -157,8 +157,10 @@ fn run_selector(
 
     // Enter raw mode for key-by-key reading
     terminal::enable_raw_mode()?;
-    // Hide cursor during selection
-    execute!(stdout, cursor::Hide)?;
+    // Modal UI owns an alternate screen. Do not write full-screen clears into
+    // the normal CLI scrollback.
+    execute!(stdout, EnterAlternateScreen, cursor::Hide)?;
+    clear_modal_screen(&mut stdout)?;
 
     // Initial draw
     let mut frame = build_frame();
@@ -247,12 +249,11 @@ fn run_selector(
                         code: KeyCode::Enter,
                         ..
                     } => {
-                        cleanup_terminal(&mut stdout, &render_state)?;
-
                         // Check if "Other" is selected
                         if cursor_pos == options.len() {
-                            // "Other" selected — prompt for free text
-                            let text = prompt_other_text(&mut stdout, question, style)?;
+                            let text_result = prompt_other_text(&mut stdout, question, style);
+                            cleanup_terminal(&mut stdout, &render_state)?;
+                            let text = text_result?;
                             return if text.trim().is_empty() {
                                 Ok(SelectResult::Cancelled)
                             } else {
@@ -260,6 +261,7 @@ fn run_selector(
                             };
                         }
 
+                        cleanup_terminal(&mut stdout, &render_state)?;
                         if multi {
                             // Collect all checked items
                             let choices: Vec<String> = selected
@@ -385,29 +387,19 @@ fn draw_panel(
     let rendered = frame.render_lines(&lines);
     write!(out, "{rendered}")?;
     out.flush()?;
-    Ok(SelectorRenderState {
-        rendered_plain_rows: rendered.lines().map(strip_ansi_text).collect(),
-    })
+    Ok(SelectorRenderState)
 }
 
 fn erase_lines(out: &mut impl Write, state: &SelectorRenderState) -> io::Result<()> {
-    let width = terminal::size()
-        .map(|(width, _)| usize::from(width).max(1))
-        .unwrap_or(80);
-    let count = selector_physical_row_count(&state.rendered_plain_rows, width);
-    for _ in 0..count {
-        execute!(
-            out,
-            cursor::MoveUp(1),
-            terminal::Clear(ClearType::CurrentLine)
-        )?;
-    }
+    let _ = state;
+    clear_modal_screen(out)?;
     Ok(())
 }
 
 fn cleanup_terminal(out: &mut impl Write, state: &SelectorRenderState) -> io::Result<()> {
-    erase_lines(out, state)?;
-    execute!(out, cursor::Show)?;
+    let _ = state;
+    clear_modal_screen(out)?;
+    execute!(out, cursor::Show, LeaveAlternateScreen)?;
     terminal::disable_raw_mode()?;
     Ok(())
 }
@@ -419,7 +411,7 @@ struct PanelState<'a> {
 }
 
 fn prompt_other_text(out: &mut impl Write, question: &str, style: &CliStyle) -> io::Result<String> {
-    // Restore terminal to normal mode for text input
+    clear_modal_screen(out)?;
     execute!(out, cursor::Show)?;
     terminal::disable_raw_mode()?;
 
@@ -430,12 +422,6 @@ fn prompt_other_text(out: &mut impl Write, question: &str, style: &CliStyle) -> 
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
     let answer = input.trim().to_string();
-    let typed_line = format!("  › {} {}", question, input.trim_end_matches(['\n', '\r']));
-
-    // Erase the input line and leave the cursor at the parked modal row.
-    clear_recent_plain_rows(&mut io::stdout(), &[typed_line])?;
-    io::stdout().flush()?;
-
     Ok(answer)
 }
 
@@ -492,28 +478,24 @@ fn fallback_select(
     Ok(SelectResult::Other(input.to_string()))
 }
 
+#[cfg(test)]
 fn selector_physical_row_count(rows: &[String], terminal_width: usize) -> usize {
     rows.iter()
         .map(|row| wrapped_terminal_row_count(row, terminal_width))
         .sum()
 }
 
-fn clear_recent_plain_rows(out: &mut impl Write, rows: &[String]) -> io::Result<()> {
-    let width = terminal::size()
-        .map(|(width, _)| usize::from(width).max(1))
-        .unwrap_or(80);
-    let count = selector_physical_row_count(rows, width);
-    for _ in 0..count {
-        execute!(
-            out,
-            cursor::MoveUp(1),
-            cursor::MoveToColumn(0),
-            terminal::Clear(ClearType::CurrentLine)
-        )?;
-    }
-    Ok(())
+fn clear_modal_screen(out: &mut impl Write) -> io::Result<()> {
+    execute!(
+        out,
+        cursor::MoveTo(0, 0),
+        terminal::Clear(ClearType::All),
+        cursor::MoveTo(0, 0)
+    )?;
+    out.flush()
 }
 
+#[cfg(test)]
 fn wrapped_terminal_row_count(row: &str, terminal_width: usize) -> usize {
     let visible_width = display_width(row);
     if visible_width == 0 {
@@ -521,27 +503,6 @@ fn wrapped_terminal_row_count(row: &str, terminal_width: usize) -> usize {
     } else {
         visible_width.div_ceil(terminal_width.max(1))
     }
-}
-
-fn strip_ansi_text(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                while let Some(next) = chars.next() {
-                    if ('@'..='~').contains(&next) {
-                        break;
-                    }
-                }
-                continue;
-            }
-            continue;
-        }
-        out.push(ch);
-    }
-    out
 }
 
 #[cfg(test)]
@@ -608,10 +569,7 @@ mod tests {
         assert!(rendered.contains("class: External access"));
         assert!(rendered.contains("Permission required"));
         assert!(rendered.contains("Allow Once"));
-        assert_eq!(
-            rendered.lines().count(),
-            render_state.rendered_plain_rows.len()
-        );
+        let _ = render_state;
     }
 
     #[test]

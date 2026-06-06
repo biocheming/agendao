@@ -1,6 +1,6 @@
 # AgenDao 文档状态总表
 
-文档日期：`2026-05-17`
+文档日期：`2026-06-06`
 
 本文不是发布日志，也不是今天改了什么的流水账。它的作用只有一个：把 `agendao/docs` 里哪些文档是当前真相、哪些是设计参考、哪些已经主要转为复盘材料，统一说清楚。
 
@@ -78,7 +78,7 @@
 结论：
 
 - `agendao` 已是产品壳。
-- `agendao-cli` / `agendao-tui` / `agendao-web` / `agendao-server` 的角色划分已经清楚。
+- `agendao-cli` / `agendao-tui` / `agendao-web` / `agendao-server` 的角色划分已经清楚：`agendao-cli` 负责非交互执行与管理命令，`agendao-tui` 负责终端会话界面，`agendao-web` 负责浏览器界面，`agendao-server` 负责 authority。
 - 这份蓝图文档现在更像边界守护参考，而不是高频执行清单。
 
 对应文档：
@@ -131,6 +131,25 @@
 | `plugins.md` | 插件系统说明 | 当前 |
 | `plugins-capability-matrix.md` | 插件能力矩阵 | 当前 |
 | `agents.md` | agent 系统说明 | 当前 |
+
+## 阶段记录与归档文档
+
+下列文档继续保留，因为它们能解释特定阶段的设计判断、实现顺序或测试口径；但阅读时应把它们视为归档材料，而不是当前产品面的直接说明：
+
+| 文档 | 当前定位 | 状态判断 |
+| --- | --- | --- |
+| `agendao-统一前端事件契约-2026-06-05.md` | 前端事件收口阶段记录 | `归档参考` |
+| `frontend-transport-event-matrix-2026-05-28.md` | 传输/事件覆盖快照 | `归档参考` |
+| `mixed-transport-progress.md` | 混合传输阶段总进度记录 | `归档参考` |
+| `phase4.2-session-manager-extraction.md` | SessionManager 提取复盘 | `归档参考` |
+| `phase5.1-unix-socket-transport.md` | Unix socket 阶段实现记录 | `归档参考` |
+| `phase5.2-server-integration.md` | 服务端接入阶段记录 | `归档参考` |
+| `phase5.3-tui-cli-integration.md` | 传输选择集成阶段记录 | `归档参考` |
+| `phase6.1-complete-execute-prompt.md` | prompt 执行阶段记录 | `归档参考` |
+| `phase6.2-tool-calling-support.md` | tool calling 阶段记录 | `归档参考` |
+| `phase6.3-streaming-support.md` | streaming 阶段记录 | `归档参考` |
+| `phase6.4-performance-testing.md` | 性能测试计划稿 | `归档参考` |
+| `phase6.5-integration-testing.md` | 集成测试计划稿 | `归档参考` |
 
 ## 计划文档状态
 

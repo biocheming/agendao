@@ -12,7 +12,7 @@
 
 > AgenDao 想做的是更会记住、更会收束、更会把一件事做完。
 
-当前版本：`v2026.6.3`
+当前版本：`v2026.6.6`
 
 ---
 
@@ -173,7 +173,7 @@ cargo run -p agendao --
 当前默认传输策略：
 
 - `agendao tui` 默认走 Direct（in-process）
-- `agendao run` / `agendao cli` 默认走 Direct（in-process）
+- `agendao run` 默认优先走本地运行路径；显式附着时再切到远端传输
 - `--socket` 显式覆盖为本地 Unix socket
 - `--attach-url` / `--attach` 显式覆盖为 HTTP
 - `agendao web` 保持 HTTP-first
@@ -205,7 +205,7 @@ cargo run -p agendao -- web --hostname 127.0.0.1 --port 3000    # Web
 如果你从仓库结构理解 AgenDao，比较好的看法不是"有哪些 crate"，而是"哪些责任被谁拥有"。
 
 - `crates/agendao` — 产品分发壳，唯一正式分发入口
-- `crates/agendao-cli` / `crates/agendao-tui` / `apps/agendao-web` — 三个前端层，各自表达不同的交互姿态，但共享同一运行时
+- `crates/agendao-cli` / `crates/agendao-tui` / `apps/agendao-web` — 命令入口、终端界面和 Web 界面，共享同一运行时与同一套 authority
 - `crates/agendao-server` — HTTP、SSE、runtime control、读模型路由
 - `crates/agendao-session` — session 领域模型、提示面组织、上下文连续性
 - `crates/agendao-orchestrator` — scheduler / orchestration authority

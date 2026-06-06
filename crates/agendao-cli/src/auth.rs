@@ -23,14 +23,14 @@ pub(crate) const AUTH_ENV_PROVIDERS: &[(&str, &str)] = &[
     ("github-copilot", "GITHUB_COPILOT_TOKEN"),
 ];
 
-pub(crate) fn provider_env_var(provider: &str) -> Option<&'static str> {
+fn provider_env_var(provider: &str) -> Option<&'static str> {
     let normalized = provider.trim().to_lowercase();
     AUTH_ENV_PROVIDERS
         .iter()
         .find_map(|(name, env)| (*name == normalized).then_some(*env))
 }
 
-pub(crate) async fn handle_auth_command(action: AuthCommands) -> anyhow::Result<()> {
+pub(super) async fn handle_auth_command(action: AuthCommands) -> anyhow::Result<()> {
     match action {
         AuthCommands::List => {
             println!("\nCredential providers:");

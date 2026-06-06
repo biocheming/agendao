@@ -9,7 +9,8 @@ license.workspace = true
 default = ["product-shell"]
 product-shell = [
     "dep:agendao-cli",
-    "agendao-cli/interactive",
+    "agendao-cli/run-core",
+    "agendao-cli/run-remote-stream",
     "agendao-cli/local-server",
     "dep:agendao-client",
     "dep:agendao-launcher",
@@ -32,7 +33,8 @@ product-shell = [
 ]
 product-cli-bin = [
     "dep:agendao-cli",
-    "agendao-cli/interactive",
+    "agendao-cli/run-core",
+    "agendao-cli/run-remote-stream",
     "agendao-cli/local-server",
     "dep:dirs",
     "dep:tracing-subscriber",

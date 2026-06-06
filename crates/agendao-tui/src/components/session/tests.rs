@@ -166,7 +166,15 @@ fn formats_context_usage_label_without_meter() {
 fn formats_context_usage_meter_with_compact_bar() {
     assert_eq!(
         super::format_context_usage_meter(12_450, Some(200_000)),
-        Some(("12.4K/200K [█░░░░░░░] 6%".to_string(), Some(6)))
+        Some(("ctx 12.4K/200K [█░░░░░░░] 6%".to_string(), Some(6)))
+    );
+}
+
+#[test]
+fn formats_context_usage_meter_without_limit_as_fallback_label() {
+    assert_eq!(
+        super::format_context_usage_meter(12_450, None),
+        Some(("ctx 12.4K".to_string(), None))
     );
 }
 

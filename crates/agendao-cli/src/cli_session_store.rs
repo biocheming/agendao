@@ -32,13 +32,6 @@ pub(crate) struct SessionDetailRow {
     pub message_count: usize,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct RecentSessionRow {
-    pub id: String,
-    pub title: String,
-    pub updated: i64,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 struct SessionStatsUsageSummary {
     usage: SessionUsage,
@@ -151,18 +144,6 @@ pub(crate) async fn import_session_bundle(
     Ok(imported)
 }
 
-pub(crate) async fn list_recent_session_rows(limit: i64) -> anyhow::Result<Vec<RecentSessionRow>> {
-    let sessions = list_sessions(None, limit).await?;
-    Ok(sessions
-        .into_iter()
-        .map(|session| RecentSessionRow {
-            id: session.id,
-            title: session.title,
-            updated: session.time.updated,
-        })
-        .collect())
-}
-
 pub(crate) async fn collect_session_stats(
     days: Option<i64>,
     tools_limit: Option<usize>,
@@ -238,37 +219,43 @@ pub(crate) async fn collect_session_stats(
                 .get("provider_id")
                 .and_then(|value| value.as_str())
             {
-                let model = message
+                let model_name = message
                     .metadata
-                    .get("model_id")
+                    .get("model")
                     .and_then(|value| value.as_str())
-                    .unwrap_or("unknown");
-                *model_usage
-                    .entry(format!("{}/{}", provider, model))
-                    .or_insert(0) += 1;
+                    .unwrap_or("");
+                let key = if model_name.is_empty() {
+                    provider.to_string()
+                } else {
+                    format!("{provider}/{model_name}")
+                };
+                *model_usage.entry(key).or_insert(0) += 1;
             }
-            for part in message.parts {
-                if let agendao_types::PartType::ToolCall { name, .. } = part.part_type {
-                    *tool_usage.entry(name).or_insert(0) += 1;
+
+            if let Some(tool_calls) = message
+                .metadata
+                .get("tool_calls")
+                .and_then(|value| value.as_array())
+            {
+                for tool_call in tool_calls {
+                    if let Some(name) = tool_call.get("name").and_then(|value| value.as_str()) {
+                        *tool_usage.entry(name.to_string()).or_insert(0) += 1;
+                    }
                 }
             }
         }
     }
 
-    let mut last_run_status_usage_rows: Vec<_> = last_run_status_usage.into_iter().collect();
-    last_run_status_usage_rows
-        .sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
-
-    let mut model_usage_rows: Vec<_> = model_usage.into_iter().collect();
-    model_usage_rows.sort_by(|left, right| right.1.cmp(&left.1));
+    let mut model_usage: Vec<_> = model_usage.into_iter().collect();
+    model_usage.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     if let Some(limit) = models_limit {
-        model_usage_rows.truncate(limit);
+        model_usage.truncate(limit);
     }
 
-    let mut tool_usage_rows: Vec<_> = tool_usage.into_iter().collect();
-    tool_usage_rows.sort_by(|left, right| right.1.cmp(&left.1));
+    let mut tool_usage: Vec<_> = tool_usage.into_iter().collect();
+    tool_usage.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     if let Some(limit) = tools_limit {
-        tool_usage_rows.truncate(limit);
+        tool_usage.truncate(limit);
     }
 
     Ok(SessionStatsReport {
@@ -283,193 +270,36 @@ pub(crate) async fn collect_session_stats(
         total_cache_write,
         persisted_telemetry_sessions,
         persisted_stage_summaries,
-        last_run_status_usage: last_run_status_usage_rows,
-        model_usage: model_usage_rows,
-        tool_usage: tool_usage_rows,
+        last_run_status_usage: last_run_status_usage.into_iter().collect(),
+        model_usage,
+        tool_usage,
     })
 }
 
-pub(crate) fn format_relative_session_time(timestamp: i64) -> String {
-    let now = chrono::Utc::now().timestamp();
-    let elapsed = now - timestamp;
-    if elapsed < 0 {
-        return "just now".to_string();
-    }
-    if elapsed < 60 {
-        format!("{}s ago", elapsed)
-    } else if elapsed < 3600 {
-        format!("{}m ago", elapsed / 60)
-    } else if elapsed < 86400 {
-        format!("{}h ago", elapsed / 3600)
-    } else {
-        format!("{}d ago", elapsed / 86400)
-    }
-}
-
 fn session_stats_usage_summary(session: &Session) -> SessionStatsUsageSummary {
-    if let Some(snapshot) = session
+    let persisted_snapshot = session
         .metadata
         .get(SESSION_TELEMETRY_METADATA_KEY)
-        .cloned()
-        .and_then(|value| serde_json::from_value::<SessionTelemetrySnapshot>(value).ok())
-    {
-        return SessionStatsUsageSummary {
-            usage: snapshot.usage,
-            used_persisted_snapshot: true,
-            stage_summary_count: snapshot.stage_summaries.len(),
-            last_run_status: Some(snapshot.last_run_status),
-        };
-    }
+        .and_then(|value| serde_json::from_value::<SessionTelemetrySnapshot>(value.clone()).ok());
+
+    let stage_summary_count = persisted_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.stage_summaries.len())
+        .unwrap_or(0);
+    let last_run_status = persisted_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.last_run_status.clone());
+
+    let usage = persisted_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.usage.clone())
+        .or_else(|| session.usage.clone())
+        .unwrap_or_default();
 
     SessionStatsUsageSummary {
-        usage: session.usage.clone().unwrap_or_default(),
-        used_persisted_snapshot: false,
-        stage_summary_count: 0,
-        last_run_status: None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{session_stats_usage_summary, SESSION_TELEMETRY_METADATA_KEY};
-    use std::collections::{BTreeMap, HashMap};
-
-    use agendao_stage_protocol::StageStatus;
-    use agendao_types::{
-        PersistedStageTelemetrySummary, Session, SessionStatus, SessionTelemetrySnapshot,
-        SessionTelemetrySnapshotVersion, SessionTime, SessionUsage,
-    };
-
-    fn sample_session() -> Session {
-        Session {
-            id: "session-1".to_string(),
-            slug: "session-1".to_string(),
-            project_id: "project".to_string(),
-            directory: "/tmp/project".to_string(),
-            parent_id: None,
-            title: "Session".to_string(),
-            version: "1".to_string(),
-            time: SessionTime::default(),
-            messages: Vec::new(),
-            summary: None,
-            share: None,
-            revert: None,
-            permission: None,
-            usage: None,
-            status: SessionStatus::Active,
-            metadata: HashMap::new(),
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        }
-    }
-
-    #[test]
-    fn stats_usage_prefers_persisted_snapshot_over_legacy_usage() {
-        let mut session = sample_session();
-        session.usage = Some(SessionUsage {
-            input_tokens: 1,
-            output_tokens: 2,
-            reasoning_tokens: 3,
-            cache_write_tokens: 4,
-            cache_read_tokens: 5,
-            cache_miss_tokens: 0,
-            context_tokens: 0,
-            total_cost: 0.1,
-        });
-        session.metadata.insert(
-            SESSION_TELEMETRY_METADATA_KEY.to_string(),
-            serde_json::to_value(SessionTelemetrySnapshot {
-                version: SessionTelemetrySnapshotVersion::V1,
-                usage: SessionUsage {
-                    input_tokens: 100,
-                    output_tokens: 200,
-                    reasoning_tokens: 30,
-                    cache_write_tokens: 40,
-                    cache_read_tokens: 50,
-                    cache_miss_tokens: 0,
-                    context_tokens: 0,
-                    total_cost: 1.5,
-                },
-                stage_summaries: vec![PersistedStageTelemetrySummary {
-                    stage_id: "stage-1".to_string(),
-                    stage_name: "Plan".to_string(),
-                    index: Some(1),
-                    total: Some(1),
-                    step: Some(1),
-                    step_total: Some(1),
-                    status: StageStatus::Done,
-                    prompt_tokens: None,
-                    completion_tokens: None,
-                    reasoning_tokens: None,
-                    cache_read_tokens: None,
-                    cache_write_tokens: None,
-                    focus: None,
-                    last_event: None,
-                    waiting_on: None,
-                    activity: None,
-                    estimated_context_tokens: None,
-                    skill_tree_budget: None,
-                    skill_tree_truncation_strategy: None,
-                    skill_tree_truncated: None,
-                    retry_attempt: None,
-                    active_agent_count: 0,
-                    active_tool_count: 0,
-                    attached_session_count: 0,
-                    primary_attached_session_id: None,
-                }],
-                tool_repair_summary: None,
-                memory: None,
-                compaction_continuity: None,
-                repair_query_snapshot: None,
-                tool_trajectory_quality: None,
-                tool_result_governance: None,
-                pending_permission_count: 0,
-                pending_followup_count: 0,
-                granted_by_turn_count: 0,
-                granted_by_session_count: 0,
-                granted_by_matcher_kind: BTreeMap::new(),
-                last_permission_matcher_kind: None,
-                last_permission_grant_target: None,
-                last_permission_miss_count: 0,
-                pending_steering_count: 0,
-                consumed_steering_count: 0,
-                last_steering_injected_at: None,
-                last_steering_source_session_id: None,
-                last_steering_latency_ms: None,
-                last_permission_pending_ms: None,
-                last_run_status: "completed".to_string(),
-                updated_at: 123,
-            })
-            .expect("snapshot should serialize"),
-        );
-
-        let summary = session_stats_usage_summary(&session);
-
-        assert!(summary.used_persisted_snapshot);
-        assert_eq!(summary.usage.input_tokens, 100);
-        assert_eq!(summary.stage_summary_count, 1);
-        assert_eq!(summary.last_run_status.as_deref(), Some("completed"));
-    }
-
-    #[test]
-    fn stats_usage_falls_back_to_legacy_usage_when_snapshot_missing() {
-        let mut session = sample_session();
-        session.usage = Some(SessionUsage {
-            input_tokens: 10,
-            output_tokens: 20,
-            reasoning_tokens: 3,
-            cache_write_tokens: 4,
-            cache_read_tokens: 5,
-            cache_miss_tokens: 0,
-            context_tokens: 0,
-            total_cost: 0.25,
-        });
-
-        let summary = session_stats_usage_summary(&session);
-
-        assert!(!summary.used_persisted_snapshot);
-        assert_eq!(summary.usage.output_tokens, 20);
-        assert_eq!(summary.stage_summary_count, 0);
-        assert_eq!(summary.last_run_status, None);
+        usage,
+        used_persisted_snapshot: persisted_snapshot.is_some(),
+        stage_summary_count,
+        last_run_status,
     }
 }

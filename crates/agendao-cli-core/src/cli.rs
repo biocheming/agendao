@@ -16,11 +16,6 @@ pub enum Commands {
         #[command(flatten)]
         args: RunCommandArgs,
     },
-    #[command(about = "Launch the interactive rich CLI directly")]
-    Cli {
-        #[command(flatten)]
-        args: CliCommandArgs,
-    },
     #[command(about = "List available models")]
     Models {
         #[arg(value_name = "PROVIDER")]
@@ -128,12 +123,6 @@ pub enum Commands {
     },
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
-pub enum InteractiveCliMode {
-    Rich,
-    Compact,
-}
-
 #[derive(Args, Clone, Debug)]
 pub struct RunCommandArgs {
     #[arg(value_name = "MESSAGE", trailing_var_arg = true)]
@@ -170,8 +159,6 @@ pub struct RunCommandArgs {
     pub variant: Option<String>,
     #[arg(long, default_value_t = false)]
     pub thinking: bool,
-    #[arg(long = "interactive-mode", default_value = "rich")]
-    pub interactive_mode: InteractiveCliMode,
     /// Force Direct (in-process) mode. This is already the default unless
     /// `--socket` or `--attach` / `--attach-url` is provided.
     #[arg(long, default_value_t = false)]
@@ -179,12 +166,6 @@ pub struct RunCommandArgs {
     /// Use the standard local Unix socket instead of Direct mode.
     #[arg(long = "socket", alias = "unix-socket", default_value_t = false)]
     pub socket: bool,
-}
-
-#[derive(Args, Clone, Debug)]
-pub struct CliCommandArgs {
-    #[command(flatten)]
-    pub run: RunCommandArgs,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -1138,46 +1119,6 @@ mod tests {
                 );
             }
             _ => panic!("expected steer command"),
-        }
-    }
-
-    #[test]
-    fn cli_command_defaults_to_rich_interactive_mode() {
-        let cli = Cli::parse_from(["agendao", "cli"]);
-        match cli.command {
-            Commands::Cli { args } => {
-                assert_eq!(args.run.interactive_mode, InteractiveCliMode::Rich);
-            }
-            _ => panic!("expected cli command"),
-        }
-    }
-
-    #[test]
-    fn cli_command_accepts_run_style_arguments() {
-        let cli = Cli::parse_from([
-            "agendao",
-            "cli",
-            "-m",
-            "deepseek/deepseek-v4-flash",
-            "--agent",
-            "build",
-            "hello",
-            "world",
-        ]);
-        match cli.command {
-            Commands::Cli { args } => {
-                assert_eq!(
-                    args.run.model.as_deref(),
-                    Some("deepseek/deepseek-v4-flash")
-                );
-                assert_eq!(args.run.agent.as_deref(), Some("build"));
-                assert_eq!(
-                    args.run.message,
-                    vec!["hello".to_string(), "world".to_string()]
-                );
-                assert_eq!(args.run.interactive_mode, InteractiveCliMode::Rich);
-            }
-            _ => panic!("expected cli command"),
         }
     }
 }

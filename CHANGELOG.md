@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026.6.6
+
+- 同步工作区版本到 `v2026.6.6`，按仓库版本脚本更新工作区版本、Web 根包版本与相关 lock 文件中的 AgenDao 自身条目。
+- 刷新根文档与 `agendao/docs` 的版本基线、示例基线和安装示例，使当前对外可见版本号与产品状态保持一致。
+- 清理文档里的过时前端叙述：当前文档统一按 `agendao-cli` 非交互命令面、`agendao-tui` 终端界面、`agendao-web` 浏览器界面、`agendao-server` authority 的产品结构描述；旧 CLI rich/compact 交互叙述转入阶段记录口径。
+
 ## 2026.5.17
 
 - 同步工作区版本到 `v2026.6.3`，更新工作区版本、Web 根包版本与相关 lock 文件中的 AgenDao 自身条目。

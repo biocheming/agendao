@@ -3,10 +3,28 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::cli::{McpAuthCommands, McpCommands};
-use crate::util::{parse_http_json, server_url};
+
+fn server_url(base: &str, path: &str) -> String {
+    format!(
+        "{}/{}",
+        base.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    )
+}
+
+async fn parse_http_json<T: for<'de> serde::Deserialize<'de>>(
+    response: reqwest::Response,
+) -> anyhow::Result<T> {
+    let status = response.status();
+    let body = response.text().await?;
+    if !status.is_success() {
+        anyhow::bail!("Request failed ({}): {}", status, body);
+    }
+    Ok(serde_json::from_str(&body)?)
+}
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct McpStatusEntry {
+struct McpStatusEntry {
     name: String,
     status: String,
     tools: usize,
@@ -21,7 +39,7 @@ struct McpAuthStartResponse {
     status: String,
 }
 
-pub(crate) async fn handle_mcp_command(server: String, action: McpCommands) -> anyhow::Result<()> {
+pub(super) async fn handle_mcp_command(server: String, action: McpCommands) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
 
     match action {

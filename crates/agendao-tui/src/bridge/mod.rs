@@ -129,6 +129,11 @@ impl UiBridge {
 }
 
 fn queued_event_is_superseded_by(queued: &Event, incoming: &Event) -> bool {
+    if let (Event::Mouse(queued_mouse), Event::Mouse(incoming_mouse)) = (queued, incoming) {
+        return matches!(queued_mouse.kind, MouseEventKind::Moved)
+            && matches!(incoming_mouse.kind, MouseEventKind::Moved);
+    }
+
     let (
         Some((queued_session_id, queued_id, queued_kind)),
         Some((incoming_session_id, incoming_id, incoming_kind)),
@@ -591,10 +596,7 @@ fn map_crossterm_event(event: CrosstermEvent) -> Option<Event> {
     match event {
         CrosstermEvent::Key(key) if is_primary_key_event(key) => Some(Event::Key(key)),
         CrosstermEvent::Key(_) => None,
-        CrosstermEvent::Mouse(mouse) if !matches!(mouse.kind, MouseEventKind::Moved) => {
-            Some(Event::Mouse(mouse))
-        }
-        CrosstermEvent::Mouse(_) => None,
+        CrosstermEvent::Mouse(mouse) => Some(Event::Mouse(mouse)),
         CrosstermEvent::Resize(width, height) => Some(Event::Resize(width, height)),
         CrosstermEvent::FocusGained => Some(Event::FocusGained),
         CrosstermEvent::FocusLost => Some(Event::FocusLost),

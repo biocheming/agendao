@@ -407,9 +407,44 @@ impl SessionContext {
                 index.insert(msg.id.clone(), pos);
             }
         }
+
+        if let Some(existing_pos) = Self::matching_optimistic_user_message_pos(messages, &message) {
+            let previous_id = messages[existing_pos].id.clone();
+            messages[existing_pos] = message;
+            index.remove(&previous_id);
+            index.insert(messages[existing_pos].id.clone(), existing_pos);
+            return;
+        }
+
         let message_id = message.id.clone();
         messages.push(message);
         index.insert(message_id, messages.len().saturating_sub(1));
+    }
+
+    fn matching_optimistic_user_message_pos(
+        messages: &[Message],
+        incoming: &Message,
+    ) -> Option<usize> {
+        if incoming.role != MessageRole::User {
+            return None;
+        }
+
+        let incoming_content = incoming.content.trim();
+        if incoming_content.is_empty() {
+            return None;
+        }
+
+        messages.iter().rposition(|existing| {
+            existing.id.starts_with("local_user_")
+                && existing.role == MessageRole::User
+                && existing.content.trim() == incoming_content
+                && existing
+                    .created_at
+                    .signed_duration_since(incoming.created_at)
+                    .num_seconds()
+                    .abs()
+                    <= 10
+        })
     }
 
     fn merge_incremental_sync_message(existing: &Message, incoming: Message) -> Message {
@@ -1885,5 +1920,76 @@ mod tests {
             vec!["reasoning", "tool_result", "tool_result", "text"],
             "{part_kinds:?}"
         );
+    }
+
+    #[test]
+    fn incremental_sync_replaces_matching_optimistic_user_message() {
+        let mut ctx = SessionContext::new();
+        let session_id = "session-1";
+        let now = Utc::now();
+
+        ctx.upsert_session(Session {
+            id: session_id.to_string(),
+            title: "Session".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_id: None,
+            share: None,
+            metadata: None,
+        });
+
+        ctx.add_message(
+            session_id,
+            Message {
+                id: "local_user_123".to_string(),
+                role: MessageRole::User,
+                content: "hello general".to_string(),
+                created_at: now,
+                agent: Some("general".to_string()),
+                model: None,
+                mode: None,
+                finish: None,
+                error: None,
+                completed_at: None,
+                cost: 0.0,
+                tokens: TokenUsage::default(),
+                metadata: None,
+                multimodal: None,
+                parts: vec![MessagePart::Text {
+                    text: "hello general".to_string(),
+                }],
+            },
+        );
+
+        ctx.upsert_messages_incremental(
+            session_id,
+            vec![Message {
+                id: "msg_server_1".to_string(),
+                role: MessageRole::User,
+                content: "hello general".to_string(),
+                created_at: now + chrono::TimeDelta::seconds(1),
+                agent: None,
+                model: None,
+                mode: None,
+                finish: None,
+                error: None,
+                completed_at: None,
+                cost: 0.0,
+                tokens: TokenUsage::default(),
+                metadata: Some(HashMap::from([(
+                    "source_origin".to_string(),
+                    serde_json::json!("operator"),
+                )])),
+                multimodal: None,
+                parts: vec![MessagePart::Text {
+                    text: "hello general".to_string(),
+                }],
+            }],
+        );
+
+        let messages = ctx.messages.get(session_id).expect("messages");
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert_eq!(messages[0].id, "msg_server_1");
+        assert_eq!(messages[0].content, "hello general");
     }
 }

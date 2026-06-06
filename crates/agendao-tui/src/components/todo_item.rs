@@ -23,13 +23,10 @@ impl TodoItem {
 
     pub fn render(&self, frame: &mut Frame, area: Rect) {
         let (icon, color) = match &self.status {
-            TodoStatus::Pending => ("○", ratatui::style::Color::Gray),
-            TodoStatus::InProgress => (
-                super::spinner::progress_circle_icon(),
-                ratatui::style::Color::Yellow,
-            ),
-            TodoStatus::Completed => ("●", ratatui::style::Color::Green),
-            TodoStatus::Cancelled => ("○", ratatui::style::Color::DarkGray),
+            TodoStatus::Pending => ("◯", ratatui::style::Color::Gray),
+            TodoStatus::InProgress => ("◐", ratatui::style::Color::Yellow),
+            TodoStatus::Completed => ("•", ratatui::style::Color::Green),
+            TodoStatus::Cancelled => ("◯", ratatui::style::Color::DarkGray),
         };
 
         let line = Line::from(vec![

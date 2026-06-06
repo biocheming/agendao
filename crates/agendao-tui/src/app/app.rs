@@ -1257,7 +1257,11 @@ impl App {
                         if self.handle_dialog_mouse(mouse_event)? {
                             return Ok(());
                         }
-                        self.event_caused_change = false;
+                        self.event_caused_change = self
+                            .context
+                            .session_view_handle()
+                            .map(|sv| sv.handle_mouse_move(mouse_event.column, mouse_event.row))
+                            .unwrap_or(false);
                     }
                     MouseEventKind::Up(_) => {
                         if self.status_dialog.is_open() {
@@ -1641,6 +1645,13 @@ impl App {
         if let Some(delta) = self
             .prompt
             .next_tick_after(now, self.sync_runtime.last_tick_at)
+        {
+            schedule_at(now + delta);
+        }
+        if let Some(delta) = self
+            .context
+            .session_view_handle()
+            .and_then(|sv| sv.next_tooltip_tick_after())
         {
             schedule_at(now + delta);
         }

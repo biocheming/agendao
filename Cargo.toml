@@ -51,10 +51,13 @@ members = [
 ]
 
 [workspace.package]
-version = "2026.6.3"
+version = "2026.6.6"
 edition = "2021"
 authors = ["Biocheming"]
 license = "MIT"
+
+[profile.dev]
+debug = 0
 
 [profile.release]
 strip = "debuginfo"

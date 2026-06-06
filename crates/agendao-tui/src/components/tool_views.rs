@@ -173,7 +173,7 @@ impl TaskToolView {
         let status_icon = match self.status {
             ToolCallStatus::Pending => "◯",
             ToolCallStatus::Running => "◐",
-            ToolCallStatus::Completed => "●",
+            ToolCallStatus::Completed => "•",
             ToolCallStatus::Failed => "✗",
         };
 
@@ -422,10 +422,10 @@ impl TodoWriteToolView {
 
         for (content, status) in &self.items {
             let (icon, color) = match status {
-                TodoStatus::Pending => ("○", theme.text_muted),
-                TodoStatus::InProgress => (super::spinner::progress_circle_icon(), theme.warning),
-                TodoStatus::Completed => ("●", theme.success),
-                TodoStatus::Cancelled => ("○", theme.text_muted),
+                TodoStatus::Pending => ("◯", theme.text_muted),
+                TodoStatus::InProgress => ("◐", theme.warning),
+                TodoStatus::Completed => ("•", theme.success),
+                TodoStatus::Cancelled => ("◯", theme.text_muted),
             };
 
             lines.push(Line::from(vec![

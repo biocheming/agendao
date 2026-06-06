@@ -1,5 +1,12 @@
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use agendao_config::ConfigStore;
+use agendao_skill::{
+    export_workspace_skill_artifact_bundle, import_workspace_skill_artifact_bundle, SkillAuthority,
+};
 use agendao_types::{
     ManagedSkillRecord, SkillArtifactCacheEntry, SkillDistributionRecord, SkillHubIndexResponse,
     SkillHubPolicy, SkillHubRemoteInstallApplyRequest, SkillHubRemoteInstallPlanRequest,
@@ -8,7 +15,7 @@ use agendao_types::{
     SkillManagedLifecycleRecord, SkillNegativeEntropyDiagnostic, SkillOperationalSnapshot,
     SkillRemoteInstallPlan, SkillRemoteInstallResponse, SkillRetirementReasonKind,
     SkillSemanticConflictDiagnostic, SkillSourceKind, SkillSourceRef, SkillSyncAction,
-    SkillSyncPlan, SkillVitalityState,
+    SkillSyncPlan, SkillVitalityState, WorkspaceSkillArtifactImportEnvelope,
 };
 use chrono::{Local, TimeZone};
 use serde::Serialize;
@@ -23,10 +30,7 @@ use crate::cli::{
     SkillCommands, SkillHubCommands, SkillHubOutputFormat, SkillRetirementReasonKindArg,
     SkillSourceArgs, SkillSourceKindArg, SkillVitalityStateArg,
 };
-#[cfg(feature = "proposal-db")]
-use crate::cli_local_data;
-use crate::import_export::{export_skill_data, import_skill_data};
-use crate::server_lifecycle::FrontendRuntimeContext;
+use crate::server_lifecycle::CliRuntimeContext;
 use crate::util::truncate_text;
 
 #[derive(Debug, Clone)]
@@ -45,9 +49,61 @@ struct SkillReviewCandidateView {
     evidence_lines: Vec<String>,
 }
 
-pub(crate) async fn handle_skill_command(
+fn export_skill_data(output: Option<PathBuf>) -> anyhow::Result<()> {
+    let current_dir = std::env::current_dir()?;
+    export_workspace_skill_data_from_dir(&current_dir, output)
+}
+
+fn import_skill_data(file: String) -> anyhow::Result<()> {
+    let current_dir = std::env::current_dir()?;
+    import_workspace_skill_data_into_dir(&current_dir, Path::new(&file))?;
+    Ok(())
+}
+
+fn export_workspace_skill_data_from_dir(
+    base_dir: &Path,
+    output: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let authority = workspace_skill_authority(base_dir);
+    let export = export_workspace_skill_artifact_bundle(&authority)?;
+
+    let json = serde_json::to_string_pretty(&export)?;
+    match output {
+        Some(path) => {
+            fs::write(&path, json)?;
+            println!("Exported workspace skill data to {}", path.display());
+        }
+        None => {
+            println!("{}", json);
+        }
+    }
+
+    Ok(())
+}
+
+fn import_workspace_skill_data_into_dir(base_dir: &Path, file: &Path) -> anyhow::Result<usize> {
+    let raw = fs::read_to_string(file)?;
+    let payload: WorkspaceSkillArtifactImportEnvelope = serde_json::from_str(&raw)?;
+
+    let authority = workspace_skill_authority(base_dir);
+    let imported = import_workspace_skill_artifact_bundle(&authority, payload)?;
+
+    println!(
+        "Imported {} workspace skill(s) from {}",
+        imported,
+        file.display()
+    );
+    Ok(imported)
+}
+
+fn workspace_skill_authority(base_dir: &Path) -> SkillAuthority {
+    let config_store = ConfigStore::from_project_dir(base_dir).ok().map(Arc::new);
+    SkillAuthority::new(base_dir.to_path_buf(), config_store)
+}
+
+pub(super) async fn handle_skill_command(
     action: SkillCommands,
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<()> {
     match action {
         SkillCommands::Export { output } => export_skill_data(output),
@@ -69,7 +125,7 @@ pub(crate) async fn handle_skill_command(
 
 async fn handle_skill_hub_command(
     action: SkillHubCommands,
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<()> {
     let client = hub_client(runtime_context).await?;
     match action {
@@ -466,7 +522,7 @@ async fn handle_skill_hub_command(
     Ok(())
 }
 
-async fn hub_client(runtime_context: &FrontendRuntimeContext) -> anyhow::Result<CliApiClient> {
+async fn hub_client(runtime_context: &CliRuntimeContext) -> anyhow::Result<CliApiClient> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
     Ok(CliApiClient::new(base_url))
 }
@@ -1509,7 +1565,7 @@ async fn handle_proposal_command(action: ProposalCommands) -> anyhow::Result<()>
         ProposalCommands::List { status } => {
             let status: agendao_types::ProposalStatus =
                 serde_json::from_str(&format!("\"{}\"", status))?;
-            let proposals = cli_local_data::list_skill_evolution_proposals(&status).await?;
+            let proposals = list_skill_evolution_proposals(&status).await?;
             if proposals.is_empty() {
                 println!("No proposals with status: {:?}", status);
                 return Ok(());
@@ -1530,7 +1586,7 @@ async fn handle_proposal_command(action: ProposalCommands) -> anyhow::Result<()>
             }
         }
         ProposalCommands::Show { id } => {
-            let Some(proposal) = cli_local_data::get_skill_evolution_proposal(&id).await? else {
+            let Some(proposal) = get_skill_evolution_proposal(&id).await? else {
                 anyhow::bail!("proposal not found: {}", id);
             };
             println!("ID:              {}", proposal.id);
@@ -1628,24 +1684,47 @@ async fn handle_proposal_command(action: ProposalCommands) -> anyhow::Result<()>
             }
         }
         ProposalCommands::Approve { id } => {
-            cli_local_data::transition_skill_evolution_proposal(
-                &id,
-                &agendao_types::ProposalStatus::Accepted,
-            )
-            .await?;
+            transition_skill_evolution_proposal(&id, &agendao_types::ProposalStatus::Accepted)
+                .await?;
             println!("Proposal {} approved.", id);
             println!("Note: Accepted does not modify SKILL.md. It marks the suggestion as approved for future application.");
         }
         ProposalCommands::Reject { id } => {
-            cli_local_data::transition_skill_evolution_proposal(
-                &id,
-                &agendao_types::ProposalStatus::Rejected,
-            )
-            .await?;
+            transition_skill_evolution_proposal(&id, &agendao_types::ProposalStatus::Rejected)
+                .await?;
             println!("Proposal {} rejected.", id);
         }
     }
 
+    Ok(())
+}
+
+#[cfg(feature = "proposal-db")]
+async fn list_skill_evolution_proposals(
+    status: &agendao_types::ProposalStatus,
+) -> anyhow::Result<Vec<agendao_types::SkillEvolutionProposal>> {
+    let db = agendao_storage::Database::new().await?;
+    let repo = agendao_storage::SkillEvolutionProposalRepository::new(db.pool().clone());
+    Ok(repo.list_by_status(status).await?)
+}
+
+#[cfg(feature = "proposal-db")]
+async fn get_skill_evolution_proposal(
+    id: &str,
+) -> anyhow::Result<Option<agendao_types::SkillEvolutionProposal>> {
+    let db = agendao_storage::Database::new().await?;
+    let repo = agendao_storage::SkillEvolutionProposalRepository::new(db.pool().clone());
+    Ok(repo.get_by_id(id).await?)
+}
+
+#[cfg(feature = "proposal-db")]
+async fn transition_skill_evolution_proposal(
+    id: &str,
+    next: &agendao_types::ProposalStatus,
+) -> anyhow::Result<()> {
+    let db = agendao_storage::Database::new().await?;
+    let repo = agendao_storage::SkillEvolutionProposalRepository::new(db.pool().clone());
+    repo.transition_status(id, next).await?;
     Ok(())
 }
 
@@ -1657,5 +1736,103 @@ fn status_label(status: &agendao_types::ProposalStatus) -> &'static str {
         agendao_types::ProposalStatus::Rejected => "rejected",
         agendao_types::ProposalStatus::Superseded => "superseded",
         agendao_types::ProposalStatus::Applied => "applied",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{export_workspace_skill_data_from_dir, import_workspace_skill_data_into_dir};
+    use agendao_skill::SkillAuthority;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_workspace(label: &str) -> PathBuf {
+        let unique = format!(
+            "agendao-cli-{label}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be valid")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&path).expect("workspace should be created");
+        path
+    }
+
+    fn write_workspace_skill(
+        root: &Path,
+        relative_dir: &str,
+        name: &str,
+        description: &str,
+        body: &str,
+        supporting_files: &[(&str, &str)],
+    ) {
+        let skill_dir = root.join(".agendao/skills").join(relative_dir);
+        fs::create_dir_all(&skill_dir).expect("skill dir");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n---\n\n{body}\n"),
+        )
+        .expect("skill markdown");
+        for (relative_path, content) in supporting_files {
+            let path = skill_dir.join(relative_path);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("supporting parent");
+            }
+            fs::write(path, content).expect("supporting file");
+        }
+    }
+
+    fn authority_for(base_dir: &Path) -> SkillAuthority {
+        let config_store = agendao_config::ConfigStore::from_project_dir(base_dir)
+            .ok()
+            .map(Arc::new);
+        SkillAuthority::new(base_dir.to_path_buf(), config_store)
+    }
+
+    #[test]
+    fn workspace_skill_export_and_import_roundtrip_through_cli_helpers() {
+        let source = temp_workspace("skill-export-source");
+        let target = temp_workspace("skill-export-target");
+        let export_path = temp_workspace("skill-export-file").join("skills.json");
+
+        write_workspace_skill(
+            &source,
+            "reviewer",
+            "reviewer",
+            "Review code changes",
+            "# Reviewer\n\nInspect patches carefully.",
+            &[("templates/checklist.md", "- scope\n- tests\n")],
+        );
+
+        export_workspace_skill_data_from_dir(&source, Some(export_path.clone())).expect("export");
+        assert!(export_path.exists());
+
+        let exported = fs::read_to_string(&export_path).expect("exported artifact");
+        assert!(exported.contains("\"version\": \"agendao-rust/workspace-skill/v1\""));
+        assert!(exported.contains("\"reviewer\""));
+        assert!(!exported.contains(&source.display().to_string()));
+
+        let imported = import_workspace_skill_data_into_dir(&target, &export_path).expect("import");
+        assert_eq!(imported, 1);
+
+        let authority = authority_for(&target);
+        let skill = authority
+            .load_skill_for_inspection("reviewer", None)
+            .expect("skill should load");
+        assert_eq!(skill.meta.name, "reviewer");
+        assert!(skill.content.contains("Inspect patches carefully."));
+
+        let supporting = authority
+            .load_skill_file_for_inspection("reviewer", "templates/checklist.md")
+            .expect("supporting file should load");
+        assert_eq!(supporting.content, "- scope\n- tests\n");
+
+        let _ = fs::remove_dir_all(&source);
+        let _ = fs::remove_dir_all(&target);
+        let _ = fs::remove_dir_all(export_path.parent().expect("export parent"));
     }
 }
