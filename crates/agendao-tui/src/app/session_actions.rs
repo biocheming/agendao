@@ -12,6 +12,28 @@ pub(super) struct TranscriptOptions {
 }
 
 impl App {
+    pub(super) fn queue_delete_session(&mut self, session_id: String) {
+        let Some(client) = self.context.get_api_client() else {
+            self.alert_dialog.set_message("API unavailable.");
+            self.open_alert_dialog();
+            return;
+        };
+
+        let context = self.context.clone();
+        std::thread::spawn(move || {
+            let outcome = match client.delete_session(&session_id) {
+                Ok(_) => crate::event::SessionDeleteOutcome::Succeeded,
+                Err(error) => crate::event::SessionDeleteOutcome::Failed {
+                    message: error.to_string(),
+                },
+            };
+            let _ = context.emit_custom_event(crate::event::CustomEvent::SessionDeleteFinished {
+                session_id,
+                outcome,
+            });
+        });
+    }
+
     pub(super) fn current_session_id(&self) -> Option<String> {
         self.context.current_route_session_id()
     }

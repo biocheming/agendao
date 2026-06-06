@@ -417,6 +417,17 @@ impl RuntimeApiClient {
         self.block_on(self.client.reply_permission(permission_id, reply, message))
     }
 
+    fn delete_session(&self, session_id: &str) -> anyhow::Result<bool> {
+        if let Some(ref state) = self.local_server {
+            let state = std::sync::Arc::clone(state);
+            let session_id = session_id.to_string();
+            return self.block_on(async move {
+                crate::local_server_bridge::local_delete_session(state, &session_id).await
+            });
+        }
+        self.block_on(self.client.delete_session(session_id))
+    }
+
     fn update_skill_proposal_status(
         &self,
         id: &str,
@@ -437,7 +448,6 @@ impl RuntimeApiClient {
         fn get_session_recovery(&self, session_id: &str) -> SessionRecoveryProtocol;
         fn execute_session_recovery(&self, session_id: &str, action: RecoveryActionKind, target_id: Option<String>) -> serde_json::Value;
         fn update_session_title(&self, session_id: &str, title: &str) -> SessionInfo;
-        fn delete_session(&self, session_id: &str) -> bool;
         fn execute_shell(&self, session_id: &str, command: String, workdir: Option<String>) -> serde_json::Value;
         fn abort_session(&self, session_id: &str) -> serde_json::Value;
         fn cancel_tool_call(&self, session_id: &str, tool_call_id: &str) -> serde_json::Value;
@@ -2052,6 +2062,38 @@ mod tests {
         assert!(
             !agents.is_empty(),
             "local agent listing should use local server authority"
+        );
+    }
+
+    #[cfg(feature = "local-server")]
+    #[test]
+    fn local_runtime_delete_session_removes_it_from_local_listing() {
+        let paths = test_local_paths();
+        let _env = install_local_test_env(&paths.data_root);
+        let client = RuntimeApiClient::new_local_for_workspace(paths.workspace_root);
+
+        let session = client
+            .create_session(None, Some(".".to_string()))
+            .expect("create local session");
+        let before = client
+            .list_sessions()
+            .expect("list sessions before local delete");
+        assert!(
+            before.iter().any(|item| item.id == session.id),
+            "new local session should appear in local listing"
+        );
+
+        let deleted = client
+            .delete_session(&session.id)
+            .expect("delete local session");
+        assert!(deleted, "local session delete should report success");
+
+        let after = client
+            .list_sessions()
+            .expect("list sessions after local delete");
+        assert!(
+            after.iter().all(|item| item.id != session.id),
+            "deleted local session should disappear from local listing"
         );
     }
 }

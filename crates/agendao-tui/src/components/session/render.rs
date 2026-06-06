@@ -1768,6 +1768,30 @@ fn format_context_usage_label(used: u64, limit: Option<u64>) -> String {
     label
 }
 
+#[cfg(test)]
+fn context_usage_bar(percent: Option<u64>, width: usize) -> String {
+    agendao_types::context_usage_bar(percent, width)
+}
+
+#[cfg(test)]
+fn format_context_usage_meter(used: u64, limit: Option<u64>) -> Option<(String, Option<u64>)> {
+    let Some(limit) = limit.filter(|limit| *limit > 0) else {
+        return Some((format!("ctx {}", format_compact_number(used)), None));
+    };
+
+    let percent = agendao_types::context_usage_percent(used, limit);
+    Some((
+        format!(
+            "ctx {}/{} {} {}",
+            format_compact_number(used),
+            format_compact_number(limit),
+            context_usage_bar(percent, 8),
+            percent.map_or_else(|| "--".to_string(), |pct| pct.to_string())
+        ) + "%",
+        percent,
+    ))
+}
+
 fn total_session_tokens(usage: &agendao_types::SessionUsage) -> u64 {
     usage.input_tokens + usage.output_tokens + usage.reasoning_tokens
 }

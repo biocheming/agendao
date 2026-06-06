@@ -81,7 +81,7 @@ pub struct SidebarRenderState {
     pending_navigate_attached: Option<usize>,
     /// Pending direct session navigation target.
     pending_navigate_session: Option<String>,
-    /// Set when the root session node is double-clicked (navigate back to parent).
+    /// Legacy fallback for parent navigation when no explicit graph root is available.
     pending_navigate_parent: bool,
 }
 
@@ -177,18 +177,11 @@ impl SidebarRenderState {
             .find(|(li, _)| *li == line_index)
         {
             if *cs_idx == usize::MAX {
-                // Root session node — navigate to the graph root when viewing
-                // a child session; only navigate "up" when already at root.
-                match (
-                    self.session_graph_root_id.as_ref(),
-                    self.session_graph_active_id.as_ref(),
-                ) {
-                    (Some(root_id), Some(active_id)) if active_id != root_id => {
-                        self.pending_navigate_session = Some(root_id.clone());
-                    }
-                    _ => {
-                        self.pending_navigate_parent = true;
-                    }
+                // Root session node should always activate the graph root session.
+                if let Some(root_id) = self.session_graph_root_id.as_ref() {
+                    self.pending_navigate_session = Some(root_id.clone());
+                } else {
+                    self.pending_navigate_parent = true;
                 }
                 self.workspace_tooltip = None;
                 return true;
@@ -2708,6 +2701,25 @@ mod tests {
             attached_session_line_hits: vec![(0, usize::MAX)],
             session_graph_root_id: Some("root-session".to_string()),
             session_graph_active_id: Some("child-session".to_string()),
+            ..Default::default()
+        };
+        let mut lifecycle = SidebarLifecycleState::default();
+
+        assert!(state.handle_click(&mut lifecycle, 0, 0));
+        assert_eq!(
+            state.take_pending_navigate_session().as_deref(),
+            Some("root-session")
+        );
+        assert!(!state.take_pending_navigate_parent());
+    }
+
+    #[test]
+    fn root_session_hit_stays_on_graph_root_when_already_viewing_root() {
+        let mut state = SidebarRenderState {
+            sections_area: Some(Rect::new(0, 0, 20, 8)),
+            attached_session_line_hits: vec![(0, usize::MAX)],
+            session_graph_root_id: Some("root-session".to_string()),
+            session_graph_active_id: Some("root-session".to_string()),
             ..Default::default()
         };
         let mut lifecycle = SidebarLifecycleState::default();

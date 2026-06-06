@@ -66,6 +66,20 @@ pub async fn local_list_sessions(
     Ok(response.items)
 }
 
+pub async fn local_delete_session(
+    state: Arc<ServerState>,
+    session_id: &str,
+) -> anyhow::Result<bool> {
+    let Json(response) =
+        super::session_crud::delete_session(State(state), Path(session_id.to_string()))
+            .await
+            .map_err(api_error)?;
+    Ok(response
+        .get("deleted")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true))
+}
+
 pub async fn local_list_messages(
     state: Arc<ServerState>,
     session_id: &str,
@@ -171,7 +185,8 @@ pub async fn local_prompt(
     request: agendao_api::PromptRequest,
 ) -> anyhow::Result<agendao_api::PromptResponse> {
     let parts = request.parts.map(|parts| {
-        parts.into_iter()
+        parts
+            .into_iter()
             .map(|part| match part {
                 agendao_api::PromptPart::Text { text } => {
                     agendao_session::prompt::PartInput::Text { text }

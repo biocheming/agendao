@@ -75,6 +75,10 @@ pub async fn local_list_sessions(
     agendao_server::local_list_sessions(state, search, limit).await
 }
 
+pub async fn local_delete_session(state: Arc<LocalServerState>, session_id: &str) -> Result<bool> {
+    agendao_server::local_delete_session(state, session_id).await
+}
+
 pub async fn local_connect_provider(
     state: Arc<LocalServerState>,
     request: ConnectProviderRequest,

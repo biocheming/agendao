@@ -8,6 +8,12 @@ pub enum PermissionReplyOutcome {
 }
 
 #[derive(Clone, Debug)]
+pub enum SessionDeleteOutcome {
+    Succeeded,
+    Failed { message: String },
+}
+
+#[derive(Clone, Debug)]
 pub enum Event {
     Key(KeyEvent),
     Mouse(MouseEvent),
@@ -49,6 +55,10 @@ pub enum CustomEvent {
     PermissionReplyFinished {
         permission_id: String,
         outcome: PermissionReplyOutcome,
+    },
+    SessionDeleteFinished {
+        session_id: String,
+        outcome: SessionDeleteOutcome,
     },
     SessionTelemetryRefreshFinished {
         session_id: String,

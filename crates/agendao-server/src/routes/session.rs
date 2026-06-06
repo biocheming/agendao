@@ -25,13 +25,13 @@ use crate::ServerState;
 
 // ─── Re-exports for sibling route modules (e.g. stream.rs) ─────────────────
 pub use self::local_api::{
-    local_connect_provider, local_create_session, local_fork_session, local_get_all_providers,
-    local_get_config, local_get_config_providers, local_get_config_validation,
-    local_get_known_providers, local_get_multimodal_capabilities, local_get_multimodal_policy,
-    local_get_provider_connect_schema, local_get_provider_descriptor, local_get_recent_models,
-    local_get_session, local_get_workspace_context, local_list_agents, local_list_execution_modes,
-    local_list_messages, local_list_permissions, local_list_questions, local_list_sessions,
-    local_preflight_multimodal, local_prompt, local_put_recent_models,
+    local_connect_provider, local_create_session, local_delete_session, local_fork_session,
+    local_get_all_providers, local_get_config, local_get_config_providers,
+    local_get_config_validation, local_get_known_providers, local_get_multimodal_capabilities,
+    local_get_multimodal_policy, local_get_provider_connect_schema, local_get_provider_descriptor,
+    local_get_recent_models, local_get_session, local_get_workspace_context, local_list_agents,
+    local_list_execution_modes, local_list_messages, local_list_permissions, local_list_questions,
+    local_list_sessions, local_preflight_multimodal, local_prompt, local_put_recent_models,
     local_refresh_provider_catalog, local_register_provider, local_reject_question,
     local_reply_permission, local_reply_question, local_resolve_provider_connect,
 };

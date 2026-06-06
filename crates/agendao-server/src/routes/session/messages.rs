@@ -56,11 +56,12 @@ pub(crate) fn prompt_text_from_parts(parts: &[agendao_session::prompt::PartInput
 pub(crate) fn prompt_parts_from_session_parts(
     parts: &[agendao_session::prompt::PartInput],
 ) -> Vec<agendao_types::PromptPart> {
-    parts.iter()
+    parts
+        .iter()
         .map(|part| match part {
-            agendao_session::prompt::PartInput::Text { text } => agendao_types::PromptPart::Text {
-                text: text.clone(),
-            },
+            agendao_session::prompt::PartInput::Text { text } => {
+                agendao_types::PromptPart::Text { text: text.clone() }
+            }
             agendao_session::prompt::PartInput::File {
                 url,
                 filename,

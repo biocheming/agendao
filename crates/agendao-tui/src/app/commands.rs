@@ -204,30 +204,7 @@ impl App {
                             );
                             return Ok(());
                         };
-                        let Some(client) = self.context.get_api_client() else {
-                            return Ok(());
-                        };
-                        match client.delete_session(&session_id) {
-                            Ok(_) => {
-                                if self.current_session_id().as_deref() == Some(session_id.as_str())
-                                {
-                                    self.context.navigate_home();
-                                }
-                                self.refresh_session_list_dialog();
-                                self.toast.show(
-                                    ToastVariant::Success,
-                                    &format!("Session deleted: {}", session_id),
-                                    2200,
-                                );
-                            }
-                            Err(err) => {
-                                self.toast.show(
-                                    ToastVariant::Error,
-                                    &format!("Failed to delete session: {}", err),
-                                    3000,
-                                );
-                            }
-                        }
+                        self.queue_delete_session(session_id);
                         Ok(())
                     }
                     _ => {

@@ -74,7 +74,9 @@ use super::autoresearch_target::{
     AUTORESEARCH_PROFILE_OVERRIDE_METADATA_KEY,
 };
 use super::cancel::is_scheduler_cancellation_error;
-use super::messages::{prompt_display_text, prompt_parts_from_session_parts, prompt_text_from_parts};
+use super::messages::{
+    prompt_display_text, prompt_parts_from_session_parts, prompt_text_from_parts,
+};
 use super::scheduler::{
     apply_scheduler_selection_session_metadata, apply_skill_tree_telemetry_metadata,
     resolve_prompt_request_config, resolve_scheduler_profile_config, scheduler_mode_kind,
