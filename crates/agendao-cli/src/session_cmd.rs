@@ -6,14 +6,14 @@ use crate::api_client::{
 use crate::cli::SessionListFormat;
 use crate::cli::{SessionCommands, SessionProvisionFormat};
 #[cfg(feature = "session-db")]
-use crate::cli_local_data;
-use crate::server_lifecycle::FrontendRuntimeContext;
+use crate::cli_session_store;
+use crate::server_lifecycle::CliRuntimeContext;
 #[cfg(feature = "session-db")]
 use crate::util::truncate_text;
 
-pub(crate) async fn handle_session_command(
+pub(super) async fn handle_session_command(
     action: SessionCommands,
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<()> {
     match action {
         SessionCommands::ProvisionExternalAdapter {
@@ -51,7 +51,7 @@ pub(crate) async fn handle_session_command(
             #[cfg(feature = "session-db")]
             {
                 let limit = max_count.unwrap_or(50).max(1);
-                let sessions = cli_local_data::list_sessions(project.as_deref(), limit)
+                let sessions = cli_session_store::list_sessions(project.as_deref(), limit)
                     .await
                     .map_err(|e| anyhow::anyhow!("Failed to list sessions: {}", e))?;
 
@@ -106,7 +106,7 @@ pub(crate) async fn handle_session_command(
         SessionCommands::Show { session_id } => {
             #[cfg(feature = "session-db")]
             {
-                let Some(detail) = cli_local_data::get_session_detail(&session_id)
+                let Some(detail) = cli_session_store::get_session_detail(&session_id)
                     .await
                     .map_err(|e| anyhow::anyhow!("Failed to load session: {}", e))?
                 else {
@@ -134,7 +134,7 @@ pub(crate) async fn handle_session_command(
         SessionCommands::Delete { session_id } => {
             #[cfg(feature = "session-db")]
             {
-                cli_local_data::delete_session(&session_id)
+                cli_session_store::delete_session(&session_id)
                     .await
                     .map_err(|e| anyhow::anyhow!("Failed to delete session: {}", e))?;
                 println!("Session {} deleted.", session_id);
@@ -149,7 +149,7 @@ pub(crate) async fn handle_session_command(
     }
 }
 
-async fn session_client(runtime_context: &FrontendRuntimeContext) -> anyhow::Result<CliApiClient> {
+async fn session_client(runtime_context: &CliRuntimeContext) -> anyhow::Result<CliApiClient> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
     Ok(CliApiClient::new(base_url))
 }
@@ -183,10 +183,10 @@ fn print_provisioned_external_adapter_session(
 
 /// Submit a mid-run steering message to a session.
 /// Constitution §9: CLI submits; runtime consumes at next tool boundary.
-pub(crate) async fn handle_steer_command(
+pub(super) async fn handle_steer_command(
     session: String,
     message: Vec<String>,
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<()> {
     let text = message.join(" ");
     if text.trim().is_empty() {

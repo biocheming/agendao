@@ -144,6 +144,7 @@ pub(super) fn render_reasoning_part_with_width(
     }
 
     lines.push(Line::from(Span::styled("▼ reasoning", header_style)));
+    lines.push(Line::from(""));
 
     let visible_count = if collapsible && collapsed {
         preview_lines
@@ -165,6 +166,7 @@ pub(super) fn render_reasoning_part_with_width(
     }
 
     if collapsible {
+        lines.push(Line::from(""));
         lines.push(Line::from(Span::styled("┆ collapse", body_style)));
     }
 
@@ -322,7 +324,7 @@ fn render_scheduler_stage_part(
     let body = block.as_ref().map(|b| b.text.as_str()).unwrap_or(text);
     if let Some(card) = generic_stage_card_from_text(body) {
         lines.push(Line::from(vec![
-            Span::styled("◈ ", Style::default().fg(theme.info)),
+            Span::styled("◦ ", Style::default().fg(theme.info)),
             Span::styled(
                 card.title.clone(),
                 Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
@@ -391,7 +393,7 @@ fn render_decision_stage_part(
     }
 
     lines.push(Line::from(vec![
-        Span::styled("◈ ", Style::default().fg(theme.info)),
+        Span::styled("◦ ", Style::default().fg(theme.info)),
         Span::styled(
             decision.title.clone(),
             Style::default().fg(theme.info).add_modifier(Modifier::BOLD),

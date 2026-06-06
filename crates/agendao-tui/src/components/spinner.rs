@@ -15,19 +15,6 @@ const KNIGHT_RIDER_FRAME_INTERVAL_MS: u64 = 40;
 const BRAILLE_FRAME_INTERVAL_MS: u64 = 80;
 const BRAILLE_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/// Animated circle icon for in-progress / running states.
-/// Clockwise half-circle rotation: ◐ → ◓ → ◑ → ◒
-const PROGRESS_CIRCLE_FRAMES: [&str; 4] = ["◐", "◓", "◑", "◒"];
-const PROGRESS_CIRCLE_FRAME_MS: u128 = 400;
-
-pub fn progress_circle_icon() -> &'static str {
-    let ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    PROGRESS_CIRCLE_FRAMES[(ms / PROGRESS_CIRCLE_FRAME_MS) as usize % PROGRESS_CIRCLE_FRAMES.len()]
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TaskKind {
     #[default]

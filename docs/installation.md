@@ -286,7 +286,7 @@ AgenDao 使用以下标准目录（遵循 XDG 规范）：
 |------|------|
 | 默认 | 核心功能集 |
 
-如需调整产品装配层或发布入口，检查 `crates/agendao/Cargo.toml`；如需调整命令前端行为，检查 `crates/agendao-cli/Cargo.toml`。
+如需调整产品装配层或发布入口，检查 `crates/agendao/Cargo.toml`；如需调整 `run` 命令与管理命令行为，检查 `crates/agendao-cli/Cargo.toml`；如需调整终端界面行为，检查 `crates/agendao-tui/Cargo.toml`。
 
 ---
 
@@ -336,7 +336,7 @@ agendao uninstall --dry-run                   # 仅预览将删除的文件
 
 ```bash
 agendao upgrade
-agendao upgrade v2026.6.3           # 升级到指定版本
+agendao upgrade v2026.6.6           # 升级到指定版本
 agendao upgrade --method brew       # 显式指定包管理器方式
 ```
 

@@ -9,5 +9,5 @@ async fn main() -> anyhow::Result<()> {
     if product_cli::dispatch_if_product_command(args.clone()).await? {
         return Ok(());
     }
-    agendao_cli::run_frontend_with_context(args, host::frontend_runtime_context()).await
+    agendao_cli::run_cli_with_context(args, host::cli_runtime_context()).await
 }

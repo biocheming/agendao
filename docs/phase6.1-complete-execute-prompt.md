@@ -1,4 +1,6 @@
-# Phase 6.1: 完整的 execute_prompt - 多轮对话支持
+# Phase 6.1: 完整的 execute_prompt - 多轮对话支持（阶段记录）
+
+这份文档保留的是 `execute_prompt` 逐步补齐多轮会话能力时的阶段实现说明。阅读时应把它视为历史切面，而不是当前 orchestrator 能力边界的唯一来源。
 
 ## 目标
 

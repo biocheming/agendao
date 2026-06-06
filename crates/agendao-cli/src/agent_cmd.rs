@@ -5,7 +5,7 @@ use agendao_config::loader::load_config;
 
 use crate::cli::AgentCommands;
 
-pub(crate) async fn handle_agent_command(action: AgentCommands) -> anyhow::Result<()> {
+pub(super) async fn handle_agent_command(action: AgentCommands) -> anyhow::Result<()> {
     match action {
         AgentCommands::List => {
             let cwd = std::env::current_dir()?;

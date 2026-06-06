@@ -1,6 +1,6 @@
 # AgenDao CLI 命令参考
 
-本文档是 AgenDao 所有 CLI 子命令和交互式斜杠命令的完整参考。命令行通过 `agendao <subcommand>` 调用；交互式命令在 REPL 提示符下输入 `/command` 触发。
+本文档是 AgenDao 所有 CLI 子命令和交互式斜杠命令的完整参考。命令行通过 `agendao <subcommand>` 调用；交互式命令在 TUI 或 Web 会话里输入 `/command` 触发。
 
 ---
 
@@ -40,8 +40,8 @@
 
 AgenDao 的命令分两层：
 
-- **CLI 子命令**：通过 `agendao <subcommand>` 调用，例如 `agendao tui`、`agendao run`。
-- **交互式斜杠命令**：在 TUI 或 CLI REPL 内输入 `/command` 触发。
+- **命令行子命令**：通过 `agendao <subcommand>` 调用，例如 `agendao tui`、`agendao run`。
+- **交互式斜杠命令**：在 TUI 或 Web 会话中输入 `/command` 触发；`agendao run --command` 也可在非交互执行中发送单条斜杠命令。
 
 全局入口：
 
@@ -54,7 +54,7 @@ agendao [subcommand] [options]
 默认传输策略：
 
 - `agendao tui` 默认 Direct（in-process）
-- `agendao run` / `agendao cli` 默认 Direct（in-process）
+- `agendao run` 默认优先走本地运行路径；显式附着时再切到远端传输
 - `--socket` 显式覆盖为 Unix socket
 - `--attach-url` / `--attach` 显式覆盖为 HTTP
 - `agendao web` 保持 HTTP-first
@@ -117,7 +117,7 @@ agendao tui -s abc123 --fork
 
 ## agendao run -- 非交互式执行
 
-向 AgenDao 发送单条消息或命令，以非交互方式运行。不传消息时进入交互式 CLI REPL。
+向 AgenDao 发送单条消息或命令，以非交互方式运行。不传消息时不会进入交互式会话，而是直接报错并提示改用 `agendao tui`。
 
 ### 用法
 
@@ -148,7 +148,6 @@ agendao run --command <command> [选项]
 | `--port` | u16 | -- | 自动拉起本地服务器时使用的端口 |
 | `--variant` | string | -- | 模型变体 |
 | `--thinking` | flag | false | 显示思考过程 |
-| `--interactive-mode` | enum | rich | CLI 交互模式: `rich` 或 `compact` |
 | `--local` | flag | false | 强制 Direct；当前只是显式声明默认行为 |
 
 ### 示例
@@ -851,7 +850,7 @@ agendao generate
 
 ## 交互式斜杠命令
 
-在 TUI 或 CLI REPL 中，以下斜杠命令可用：
+在 TUI 或 Web 会话中，以下斜杠命令可用：
 
 ### 会话管理
 
@@ -939,7 +938,7 @@ agendao generate
 | `/bottom` / `/end` | 滚动到底部 |
 | `/theme` | 列出/选择主题 |
 
-### CLI 专用
+### 当前交互界面入口
 
 | 命令 | 说明 |
 |------|------|

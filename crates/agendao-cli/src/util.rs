@@ -1,38 +1,23 @@
-use serde::Deserialize;
+#[cfg(feature = "run-core")]
 use std::fs;
+#[cfg(feature = "run-core")]
 use std::io::{self, IsTerminal, Read};
+#[cfg(feature = "run-core")]
 use std::path::PathBuf;
 
+#[cfg(feature = "run-core")]
 use agendao_grep::Ripgrep;
 
-pub(crate) fn parse_model_and_provider(model: Option<String>) -> (Option<String>, Option<String>) {
-    let Some(raw) = model else {
-        return (None, None);
-    };
-    let raw = raw.trim().to_string();
-    if let Some((provider, model_id)) = raw.split_once('/') {
-        return (
-            Some(provider.trim().to_string()),
-            Some(model_id.trim().to_string()),
-        );
-    }
-    if let Some((provider, model_id)) = raw.split_once(':') {
-        return (
-            Some(provider.trim().to_string()),
-            Some(model_id.trim().to_string()),
-        );
-    }
-    (None, Some(raw))
-}
-
-pub(crate) fn parse_bool_env(value: &str) -> bool {
+#[cfg(feature = "run-remote-stream")]
+pub(super) fn parse_bool_env(value: &str) -> bool {
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
         "1" | "true" | "yes" | "on"
     )
 }
 
-pub(crate) fn append_cli_file_attachments(
+#[cfg(feature = "run-core")]
+pub(super) fn append_cli_file_attachments(
     input: &mut String,
     files: &[PathBuf],
     base_dir: &PathBuf,
@@ -88,7 +73,8 @@ pub(crate) fn append_cli_file_attachments(
     Ok(())
 }
 
-pub(crate) fn collect_run_input(message: Vec<String>) -> anyhow::Result<String> {
+#[cfg(feature = "run-core")]
+pub(super) fn collect_run_input(message: Vec<String>) -> anyhow::Result<String> {
     let mut input = message.join(" ");
     if !io::stdin().is_terminal() {
         let mut piped = String::new();
@@ -103,7 +89,7 @@ pub(crate) fn collect_run_input(message: Vec<String>) -> anyhow::Result<String> 
     Ok(input)
 }
 
-pub(crate) fn truncate_text(input: &str, max_chars: usize) -> String {
+pub(super) fn truncate_text(input: &str, max_chars: usize) -> String {
     if input.chars().count() <= max_chars {
         return input.to_string();
     }
@@ -113,33 +99,4 @@ pub(crate) fn truncate_text(input: &str, max_chars: usize) -> String {
     }
     out.push_str("..");
     out
-}
-
-pub(crate) fn format_tokens(n: u64) -> String {
-    if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else if n >= 1_000 {
-        format!("{:.0}K", n as f64 / 1_000.0)
-    } else {
-        n.to_string()
-    }
-}
-
-pub(crate) fn server_url(base: &str, path: &str) -> String {
-    format!(
-        "{}/{}",
-        base.trim_end_matches('/'),
-        path.trim_start_matches('/')
-    )
-}
-
-pub(crate) async fn parse_http_json<T: for<'de> Deserialize<'de>>(
-    response: reqwest::Response,
-) -> anyhow::Result<T> {
-    let status = response.status();
-    let body = response.text().await?;
-    if !status.is_success() {
-        anyhow::bail!("Request failed ({}): {}", status, body);
-    }
-    Ok(serde_json::from_str(&body)?)
 }

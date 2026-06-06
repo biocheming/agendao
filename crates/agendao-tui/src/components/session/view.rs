@@ -238,11 +238,11 @@ impl SessionView {
             false,
         );
         if let Some(close_area) = next_sidebar.close_button_area {
-            let close = Paragraph::new("✕")
+            let close = Paragraph::new("  ✕  ")
                 .style(
                     Style::default()
-                        .fg(theme.text)
-                        .bg(theme.background_panel)
+                        .fg(theme.text_muted)
+                        .bg(theme.background_element)
                         .add_modifier(Modifier::BOLD),
                 )
                 .alignment(ratatui::layout::Alignment::Center);
@@ -271,7 +271,7 @@ impl SessionView {
         };
         next_sidebar.backdrop_area = Some(area);
 
-        let sidebar_bg = tint_sidebar_overlay(theme.background_menu, theme.primary);
+        let sidebar_bg = tint_sidebar_overlay(theme.background_panel, theme.primary);
         let backdrop = Block::default().style(Style::default().bg(theme.background_menu));
         surface.render_widget(backdrop, area);
 
@@ -299,8 +299,8 @@ impl SessionView {
             Some(sidebar_bg),
         );
         if let Some(close_area) = next_sidebar.close_button_area {
-            let close = Paragraph::new("✕")
-                .style(Style::default().fg(theme.text).bg(sidebar_bg))
+            let close = Paragraph::new("  ✕  ")
+                .style(Style::default().fg(theme.text_muted).bg(theme.background_element))
                 .alignment(ratatui::layout::Alignment::Center);
             surface.render_widget(close, close_area);
         }
@@ -334,11 +334,11 @@ impl SessionView {
             height: 1,
         };
         next_sidebar.open_button_area = Some(button);
-        let glyph = Paragraph::new("☰")
+        let glyph = Paragraph::new("  ☰  ")
             .style(
                 Style::default()
-                    .fg(theme.primary)
-                    .bg(theme.background_element)
+                    .fg(theme.text_muted)
+                    .bg(theme.background_panel)
                     .add_modifier(Modifier::BOLD),
             )
             .alignment(ratatui::layout::Alignment::Center);
@@ -583,9 +583,6 @@ impl SessionView {
             self.render_header(snapshot, surface, layout.header_area);
         }
         self.render_messages(state, context, surface, layout.messages_area);
-        if layout.footer_area.height > 0 {
-            self.render_session_footer(snapshot, surface, layout.footer_area);
-        }
         if layout.show_prompt && layout.prompt_area.height > 0 {
             prompt.render(surface, layout.prompt_area);
         }
@@ -604,15 +601,12 @@ impl SessionView {
 
         let show_header = snapshot.show_header;
         let header_height = if show_header { 3u16 } else { 0u16 };
-        let session_footer_height = 1u16;
         let desired_prompt_height = prompt.desired_height(area.width);
         let total_height = area.height;
         let available_after_header = total_height.saturating_sub(header_height);
-        let available_after_header_footer =
-            available_after_header.saturating_sub(session_footer_height);
         let prompt_empty = prompt.get_input().trim().is_empty();
         let viewport_height = if state.viewport.messages_viewport_height == 0 {
-            usize::from(available_after_header_footer)
+            usize::from(available_after_header)
         } else {
             state.viewport.messages_viewport_height
         };
@@ -620,7 +614,7 @@ impl SessionView {
             >= state.viewport.rendered_line_count;
         let show_prompt = !prompt_empty || near_bottom;
         let prompt_height = if show_prompt {
-            desired_prompt_height.min(available_after_header_footer)
+            desired_prompt_height.min(available_after_header)
         } else {
             0
         };
@@ -631,24 +625,22 @@ impl SessionView {
                 .constraints([
                     Constraint::Length(header_height),
                     Constraint::Min(0),
-                    Constraint::Length(session_footer_height.min(available_after_header)),
                     Constraint::Length(0),
                     Constraint::Length(0),
                 ])
                 .split(area)
-        } else if available_after_header_footer <= prompt_height {
+        } else if available_after_header <= prompt_height {
             Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(header_height),
                     Constraint::Min(0),
-                    Constraint::Length(session_footer_height.min(available_after_header)),
-                    Constraint::Length(prompt_height.min(available_after_header_footer)),
+                    Constraint::Length(prompt_height.min(available_after_header)),
                     Constraint::Min(0),
                 ])
                 .split(area)
         } else {
-            let max_messages_height = available_after_header_footer.saturating_sub(prompt_height);
+            let max_messages_height = available_after_header.saturating_sub(prompt_height);
             let desired_messages_height = (state.viewport.rendered_line_count as u16)
                 .max(1)
                 .min(max_messages_height);
@@ -658,7 +650,6 @@ impl SessionView {
                 .constraints([
                     Constraint::Length(header_height),
                     Constraint::Length(desired_messages_height),
-                    Constraint::Length(session_footer_height.min(available_after_header)),
                     Constraint::Length(prompt_height),
                     Constraint::Min(0),
                 ])
@@ -668,8 +659,7 @@ impl SessionView {
         Some(MainPaneLayout {
             header_area: layout[0],
             messages_area: layout[1],
-            footer_area: layout[2],
-            prompt_area: layout[3],
+            prompt_area: layout[2],
             show_header,
             show_prompt,
         })
@@ -681,12 +671,24 @@ impl SessionView {
         surface: &mut S,
         area: Rect,
     ) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
         let theme = &snapshot.theme;
-        let inner_width = usize::from(area.width.saturating_sub(2));
+        let inner_width = usize::from(area.width.saturating_sub(4));
         let status_accent = if snapshot.header.status_retrying {
             theme.warning
         } else {
             theme.primary
+        };
+        let header_border = if snapshot.header.status_running {
+            if snapshot.header.status_retrying {
+                theme.warning
+            } else {
+                theme.border_active
+            }
+        } else {
+            theme.border_subtle
         };
 
         let mut title_width = UnicodeWidthStr::width(snapshot.header.title.as_str());
@@ -707,7 +709,10 @@ impl SessionView {
 
         if snapshot.header.status_running {
             title_width = title_width.saturating_add(2);
-            title_spans.push(Span::styled("● ", Style::default().fg(status_accent)));
+            title_spans.push(Span::styled(
+                "◐ ",
+                Style::default().fg(status_accent),
+            ));
         }
 
         title_spans.push(Span::styled(
@@ -764,134 +769,15 @@ impl SessionView {
         };
         let content = vec![Line::from(title_spans), subtitle_line];
 
-        let border_set = ratatui::symbols::border::Set {
-            top_left: " ",
-            top_right: " ",
-            bottom_left: " ",
-            bottom_right: " ",
-            vertical_left: "┃",
-            vertical_right: " ",
-            horizontal_top: " ",
-            horizontal_bottom: " ",
-        };
         let paragraph = Paragraph::new(content)
             .block(
                 Block::default()
-                    .borders(Borders::LEFT)
-                    .border_set(border_set)
-                    .border_style(Style::default().fg(if snapshot.header.status_running {
-                        if snapshot.header.status_retrying {
-                            theme.warning
-                        } else {
-                            theme.border_active
-                        }
-                    } else {
-                        theme.border
-                    }))
-                    .padding(ratatui::widgets::Padding::new(1, 1, 1, 0)),
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(header_border))
+                    .padding(ratatui::widgets::Padding::new(1, 1, 0, 0)),
             )
             .style(Style::default().bg(theme.background_panel));
 
-        surface.render_widget(paragraph, area);
-    }
-
-    fn render_session_footer<S: RenderSurface>(
-        &self,
-        snapshot: &SessionRenderSnapshot,
-        surface: &mut S,
-        area: Rect,
-    ) {
-        if area.width == 0 || area.height == 0 {
-            return;
-        }
-
-        let theme = &snapshot.theme;
-        let footer = &snapshot.footer;
-        let has_mcp_issues = footer.has_mcp_failures || footer.has_mcp_registration_needed;
-
-        let mut right_spans = Vec::new();
-        if footer.show_connect_hint {
-            right_spans.push(Span::styled(
-                "Get started ",
-                Style::default().fg(theme.text_muted),
-            ));
-            right_spans.push(Span::styled("/connect", Style::default().fg(theme.primary)));
-        } else {
-            if footer.permission_count > 0 {
-                right_spans.push(Span::styled(
-                    format!(
-                        "△ {} Permission{}",
-                        footer.permission_count,
-                        if footer.permission_count == 1 {
-                            ""
-                        } else {
-                            "s"
-                        }
-                    ),
-                    Style::default().fg(theme.warning),
-                ));
-                right_spans.push(Span::raw("  "));
-            }
-
-            right_spans.push(Span::styled(
-                format!("• {} LSP", footer.connected_lsp),
-                Style::default().fg(if footer.connected_lsp > 0 {
-                    theme.success
-                } else {
-                    theme.text_muted
-                }),
-            ));
-            right_spans.push(Span::raw("  "));
-
-            if footer.connected_mcp > 0 || has_mcp_issues {
-                let mcp_color = if footer.has_mcp_failures {
-                    theme.error
-                } else if footer.has_mcp_registration_needed {
-                    theme.warning
-                } else {
-                    theme.success
-                };
-                right_spans.push(Span::styled(
-                    format!("⊙ {} MCP", footer.connected_mcp),
-                    Style::default().fg(mcp_color),
-                ));
-                right_spans.push(Span::raw("  "));
-            }
-        }
-
-        let meter_style = match agendao_types::context_pressure_for_percent(footer.context_meter_percent) {
-            agendao_types::ContextPressure::Critical => Style::default().fg(theme.error),
-            agendao_types::ContextPressure::AutoCompactSoon
-            | agendao_types::ContextPressure::Warning => Style::default().fg(theme.warning),
-            agendao_types::ContextPressure::Normal if footer.context_meter_percent.is_some() => {
-                Style::default().fg(theme.success)
-            }
-            agendao_types::ContextPressure::Normal => Style::default().fg(theme.text_muted),
-        };
-        let mut left_spans = vec![Span::styled(
-            footer.directory.clone(),
-            Style::default().fg(theme.text_muted),
-        )];
-        if let Some(context_meter) = footer.context_meter.as_ref() {
-            left_spans.push(Span::raw("  "));
-            left_spans.push(Span::styled(context_meter.clone(), meter_style));
-        }
-
-        let right_text_len: usize = right_spans.iter().map(|s| s.content.len()).sum();
-        let left_text_len: usize = left_spans.iter().map(|s| s.content.len()).sum();
-        let available = area.width as usize;
-        let mut line_spans = left_spans;
-        if available > left_text_len + right_text_len + 1 {
-            line_spans.push(Span::raw(
-                " ".repeat(available - left_text_len - right_text_len),
-            ));
-        } else {
-            line_spans.push(Span::raw(" "));
-        }
-        line_spans.extend(right_spans);
-
-        let paragraph =
-            Paragraph::new(Line::from(line_spans)).style(Style::default().bg(theme.background));
         surface.render_widget(paragraph, area);
     }
 
@@ -1141,6 +1027,15 @@ impl SessionView {
 
     pub fn scroll_down_mouse(&self) {
         self.scroll_down_by(MOUSE_SCROLL_LINES);
+    }
+
+    pub fn handle_mouse_move(&self, col: u16, row: u16) -> bool {
+        let _ = (col, row);
+        false
+    }
+
+    pub fn next_tooltip_tick_after(&self) -> Option<Duration> {
+        None
     }
 
     pub fn scroll_page_up(&self) {

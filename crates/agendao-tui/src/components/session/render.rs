@@ -135,6 +135,7 @@ fn resolve_session_render_model(
         messages,
         terminal_messages: &terminal_messages,
         revert_info: snapshot.revert_info.clone(),
+        directory: snapshot.directory.clone(),
         content_width,
         show_thinking: snapshot.show_thinking,
         show_timestamps: snapshot.show_timestamps,
@@ -145,7 +146,10 @@ fn resolve_session_render_model(
         thinking_bg: message_palette::thinking_message_bg(&theme),
         assistant_border: message_palette::assistant_border_color(&theme),
         thinking_border: message_palette::thinking_border_color(&theme),
-        message_gap_lines: 0,
+        message_gap_lines: match snapshot.message_density {
+            crate::context::MessageDensity::Compact => 1,
+            crate::context::MessageDensity::Cozy => 2,
+        },
     };
     let (rendered_messages, next_message_cache) =
         render_session_message_items(area, buffer, &resources, expanded_reasoning, message_cache);
@@ -312,6 +316,13 @@ fn build_session_render_model(
             }
         }));
         visible_reasoning_ids.extend(item.output.visible_reasoning_ids);
+        if item.gap_after > 0 {
+            buffer.push_spacing(
+                item.gap_after,
+                resources.theme.background,
+                resources.content_width,
+            );
+        }
     }
 
     SessionRenderModel {
@@ -345,6 +356,7 @@ fn render_session_message_items(
             items.push(SessionMessageRenderItem {
                 message_id: input.message_id,
                 gap_before: input.gap_before,
+                gap_after: input.gap_after,
                 output: cached.output.clone(),
             });
             continue;
@@ -361,6 +373,7 @@ fn render_session_message_items(
         let next_item = output.lock().take().unwrap_or(SessionMessageRenderItem {
             message_id: input.message_id.clone(),
             gap_before: input.gap_before,
+            gap_after: input.gap_after,
             output: MessageRenderOutput::new(Vec::new()),
         });
         next_cache_entries.insert(
@@ -411,9 +424,23 @@ fn build_session_message_render_inputs(
             &mut rendered_first_system_prompt,
         );
         last_visible_role = Some(message_role_for_render_props(&props));
+        let has_more_visible_messages = resources.messages[idx + 1..]
+            .iter()
+            .enumerate()
+            .any(|(offset, _)| {
+                !resources
+                    .terminal_messages
+                    .get(idx + 1 + offset)
+                    .is_some_and(is_tool_result_carrier)
+            });
         inputs.push(SessionMessageRenderInput {
             message_id: msg.id.clone(),
             gap_before,
+            gap_after: if has_more_visible_messages {
+                resources.message_gap_lines
+            } else {
+                0
+            },
             memo_key: build_message_output_memo_key(&props),
             props,
         });
@@ -973,6 +1000,7 @@ fn build_assistant_render_resources(
         messages: &[],
         terminal_messages: &[],
         revert_info: None,
+        directory: String::new(),
         content_width: context.content_width,
         show_thinking: true,
         show_timestamps: context.show_timestamps,
@@ -1118,7 +1146,18 @@ fn render_assistant_footer_output(
     context: &MessageRenderContext,
 ) -> AssistantSegmentRenderOutput {
     let resources = build_assistant_render_resources(context);
-    build_assistant_shared_items_output(vec![item.line.clone()], style, &resources)
+    AssistantSegmentRenderOutput {
+        lines: paint_block_lines_with_padding(
+            vec![item.line.clone()],
+            style.background,
+            style.border,
+            resources.content_width,
+            true,
+            false,
+        ),
+        toggle_line_offsets: Vec::new(),
+        visible_reasoning_ids: HashSet::new(),
+    }
 }
 
 fn build_assistant_segment_items(
@@ -1249,7 +1288,7 @@ fn build_assistant_footer_item(
         idx,
         last_assistant_idx,
         msg,
-        resources.fallback_model.as_deref(),
+        &resources.directory,
         &resources.theme,
     )
     .map(|line| AssistantMessageItem::Footer(AssistantFooterItem { line }))
@@ -1306,6 +1345,17 @@ fn paint_block_lines(
     border_color: Color,
     width: usize,
 ) -> Vec<Line<'static>> {
+    paint_block_lines_with_padding(lines, background, border_color, width, true, true)
+}
+
+fn paint_block_lines_with_padding(
+    lines: Vec<Line<'static>>,
+    background: Color,
+    border_color: Color,
+    width: usize,
+    pad_top: bool,
+    pad_bottom: bool,
+) -> Vec<Line<'static>> {
     let painted: Vec<Line<'static>> = lines
         .into_iter()
         .flat_map(|line| wrap_block_line(line, width))
@@ -1333,10 +1383,15 @@ fn paint_block_lines(
         paint_block_line(Line::from(""), background, border_color, width)
     };
 
-    let mut padded = Vec::with_capacity(painted.len() + 2);
-    padded.push(padding_line.clone());
+    let mut padded =
+        Vec::with_capacity(painted.len() + usize::from(pad_top) + usize::from(pad_bottom));
+    if pad_top {
+        padded.push(padding_line.clone());
+    }
     padded.extend(painted);
-    padded.push(padding_line);
+    if pad_bottom {
+        padded.push(padding_line);
+    }
     padded
 }
 
@@ -1450,7 +1505,7 @@ fn point_in_optional_rect(area: Option<Rect>, col: u16, row: u16) -> bool {
 fn tint_sidebar_overlay(background: Color, accent: Color) -> Color {
     match (background, accent) {
         (Color::Rgb(br, bg, bb), Color::Rgb(ar, ag, ab)) => {
-            let blend = |b: u8, a: u8| -> u8 { ((u16::from(b) * 4 + u16::from(a)) / 5) as u8 };
+            let blend = |b: u8, a: u8| -> u8 { ((u16::from(b) * 6 + u16::from(a)) / 7) as u8 };
             Color::Rgb(blend(br, ar), blend(bg, ag), blend(bb, ab))
         }
         _ => background,
@@ -1560,7 +1615,7 @@ fn assistant_footer(
     idx: usize,
     last_assistant_idx: Option<usize>,
     message: &Message,
-    fallback_model: Option<&str>,
+    directory: &str,
     theme: &crate::theme::Theme,
 ) -> Option<Line<'static>> {
     if !matches!(message.role, MessageRole::Assistant) {
@@ -1575,42 +1630,17 @@ fn assistant_footer(
         return None;
     }
 
-    let mode = message
-        .mode
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| assistant_metadata_text(message, "scheduler_profile"))
-        .or_else(|| {
-            message
-                .agent
-                .as_deref()
-                .filter(|value| !value.trim().is_empty())
-        })
-        .unwrap_or("assistant");
     let mut spans = vec![
         Span::styled(
-            "◆ ",
+            "󰉋 ",
             Style::default().fg(if is_interrupted {
                 theme.text_muted
             } else {
-                assistant_marker_color(message.agent.as_deref(), theme)
+                theme.border
             }),
         ),
-        Span::styled(mode.to_string(), Style::default().fg(theme.text)),
+        Span::styled(directory.to_string(), Style::default().fg(theme.text_muted)),
     ];
-
-    if let Some(model) = message
-        .model
-        .as_deref()
-        .or(fallback_model)
-        .filter(|value| !value.trim().is_empty())
-    {
-        spans.push(Span::styled(" · ", Style::default().fg(theme.text_muted)));
-        spans.push(Span::styled(
-            model.to_string(),
-            Style::default().fg(theme.text_muted),
-        ));
-    }
 
     if let Some(duration) = assistant_duration(messages, idx, message, is_final) {
         spans.push(Span::styled(" · ", Style::default().fg(theme.text_muted)));
@@ -1628,14 +1658,6 @@ fn assistant_footer(
     }
 
     Some(Line::from(spans))
-}
-
-fn assistant_metadata_text<'a>(message: &'a Message, key: &str) -> Option<&'a str> {
-    message
-        .metadata
-        .as_ref()
-        .and_then(|metadata| metadata.get(key))
-        .and_then(|value| value.as_str())
 }
 
 fn assistant_duration(
@@ -1726,21 +1748,13 @@ fn format_compact_number(value: u64) -> String {
     value.to_string()
 }
 
-fn context_usage_percent(used: u64, limit: u64) -> Option<u64> {
-    agendao_types::context_usage_percent(used, limit)
-}
-
-fn context_usage_bar(percent: Option<u64>, width: usize) -> String {
-    agendao_types::context_usage_bar(percent, width)
-}
-
 #[cfg(test)]
 fn format_context_usage_label(used: u64, limit: Option<u64>) -> String {
     let Some(limit) = limit.filter(|limit| *limit > 0) else {
         return format_compact_number(used);
     };
 
-    let percent = context_usage_percent(used, limit);
+    let percent = agendao_types::context_usage_percent(used, limit);
     let mut label = format!(
         "{}/{} {}%",
         format_compact_number(used),
@@ -1752,23 +1766,6 @@ fn format_context_usage_label(used: u64, limit: Option<u64>) -> String {
         label.push_str(suffix);
     }
     label
-}
-
-fn format_context_usage_meter(used: u64, limit: Option<u64>) -> Option<(String, Option<u64>)> {
-    let limit = limit.filter(|limit| *limit > 0)?;
-    let percent = context_usage_percent(used, limit);
-    let mut label = format!(
-        "{}/{} {} {}%",
-        format_compact_number(used),
-        format_compact_number(limit),
-        context_usage_bar(percent, 8),
-        percent.unwrap_or(0)
-    );
-    if let Some(suffix) = agendao_types::context_pressure_label(percent) {
-        label.push(' ');
-        label.push_str(suffix);
-    }
-    Some((label, percent))
 }
 
 fn total_session_tokens(usage: &agendao_types::SessionUsage) -> u64 {

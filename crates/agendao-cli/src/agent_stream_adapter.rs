@@ -1,6 +1,6 @@
 use agendao_agent::AgentExecutor;
 
-pub(crate) async fn stream_prompt_to_text(
+pub(super) async fn stream_prompt_to_text(
     executor: &mut AgentExecutor,
     prompt: &str,
 ) -> anyhow::Result<String> {

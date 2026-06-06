@@ -424,11 +424,12 @@ CLI：`agendao mcp add <name> --command <cmd>`、`agendao mcp add <name> --url <
 
 | 字段 | 说明 |
 |------|------|
-| `mode` | TUI 模式（`"rich"` 或 `"compact"`，对应 `agendao run --interactive-mode`） |
 | `sidebar` | 显示侧边栏 |
 | `scrollSpeed` | 滚动速度 |
 | `scrollAcceleration.enabled` | 滚动加速 |
 | `diffStyle` | Diff 显示样式 |
+
+当前 TUI 的主要显示偏好已经收敛到 `uiPreferences`，例如 `showHeader`、`showScrollbar`、`showThinking`、`messageDensity`、`semanticHighlight`。`compact` 现在是消息密度和内容压缩语义，不再是旧的交互前端模式切换。
 
 ---
 

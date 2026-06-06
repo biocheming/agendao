@@ -473,7 +473,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-core"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "chrono",
  "hex",
@@ -499,7 +499,7 @@ dependencies = [
 
 [[package]]
 name = "agendao-plugin"
-version = "2026.6.3"
+version = "2026.6.6"
 dependencies = [
  "anyhow",
  "async-trait",

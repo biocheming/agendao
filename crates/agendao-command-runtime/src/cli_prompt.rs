@@ -126,8 +126,6 @@ enum PromptSessionCommand {
     Refresh(SyncSender<()>),
     Suspend(SyncSender<()>),
     Resume(SyncSender<()>),
-    PauseModal(SyncSender<()>),
-    ResumeModal(SyncSender<()>),
     Shutdown(SyncSender<()>),
 }
 
@@ -246,7 +244,7 @@ impl PromptSession {
                     run_prompt_session(frame_factory, completion_factory, event_tx, command_rx)
                 {
                     let _ = error_event_tx.send(PromptSessionEvent::Interrupt);
-                    eprintln!("prompt session error: {error}");
+                    tracing::error!(%error, "prompt session worker exited with error");
                 }
             })?;
         Ok(Self {
@@ -265,14 +263,6 @@ impl PromptSession {
 
     pub fn resume(&self) -> io::Result<()> {
         self.request(PromptSessionCommand::Resume)
-    }
-
-    pub fn pause_modal(&self) -> io::Result<()> {
-        self.request(PromptSessionCommand::PauseModal)
-    }
-
-    pub fn resume_modal(&self) -> io::Result<()> {
-        self.request(PromptSessionCommand::ResumeModal)
     }
 
     pub fn shutdown(&self) -> io::Result<()> {
@@ -317,7 +307,6 @@ fn run_prompt_session(
     let mut stdout = io::stdout();
     let mut suspend_depth = 0usize;
     let mut frame = frame_factory(&line, cursor_pos);
-    let mut modal_parked = false;
 
     terminal::enable_raw_mode()?;
     let mut render_state = Some(render_prompt_frame(
@@ -381,67 +370,9 @@ fn run_prompt_session(
                     }
                     let _ = ack.send(());
                 }
-                PromptSessionCommand::PauseModal(ack) => {
-                    suspend_depth = suspend_depth.saturating_add(1);
-                    if suspend_depth == 1 {
-                        if let Some(state) = render_state.as_ref() {
-                            park_prompt_for_modal(&mut stdout, state)?;
-                            modal_parked = true;
-                        }
-                        terminal::disable_raw_mode()?;
-                    }
-                    let _ = ack.send(());
-                }
-                PromptSessionCommand::ResumeModal(ack) => {
-                    frame = frame_factory(&line, cursor_pos);
-                    suspend_depth = suspend_depth.saturating_sub(1);
-                    if suspend_depth == 0 {
-                        terminal::enable_raw_mode()?;
-                        if modal_parked {
-                            render_state = match render_state.as_ref() {
-                                Some(state) => Some(render_prompt_frame_from_parked(
-                                    &mut stdout,
-                                    &frame,
-                                    &line,
-                                    cursor_pos,
-                                    state,
-                                )?),
-                                None => Some(render_prompt_frame(
-                                    &mut stdout,
-                                    &frame,
-                                    &line,
-                                    cursor_pos,
-                                    None,
-                                )?),
-                            };
-                            modal_parked = false;
-                        } else if render_state.is_none() {
-                            render_state = Some(render_prompt_frame(
-                                &mut stdout,
-                                &frame,
-                                &line,
-                                cursor_pos,
-                                None,
-                            )?);
-                        } else {
-                            render_state = Some(render_prompt_frame(
-                                &mut stdout,
-                                &frame,
-                                &line,
-                                cursor_pos,
-                                render_state.as_ref(),
-                            )?);
-                        }
-                    }
-                    let _ = ack.send(());
-                }
                 PromptSessionCommand::Shutdown(ack) => {
                     if let Some(state) = render_state.take() {
-                        if modal_parked {
-                            dismiss_prompt_from_parked(&mut stdout, &state)?;
-                        } else {
-                            dismiss_prompt(&mut stdout, &state)?;
-                        }
+                        dismiss_prompt(&mut stdout, &state)?;
                     }
                     let _ = ack.send(());
                     terminal::disable_raw_mode()?;
@@ -513,11 +444,7 @@ fn run_prompt_session(
             {
                 if line.is_empty() {
                     if let Some(state) = render_state.take() {
-                        if modal_parked {
-                            dismiss_prompt_from_parked(&mut stdout, &state)?;
-                        } else {
-                            dismiss_prompt(&mut stdout, &state)?;
-                        }
+                        dismiss_prompt(&mut stdout, &state)?;
                     }
                     let _ = event_tx.send(PromptSessionEvent::Eof);
                     terminal::disable_raw_mode()?;
@@ -1331,7 +1258,9 @@ fn render_prompt_frame_after_resize<W: Write>(
     cursor_pos: usize,
     previous_state: &PromptRenderState,
 ) -> io::Result<PromptRenderState> {
-    let (_, current_row) = cursor::position()?;
+    let Ok((_, current_row)) = cursor::position() else {
+        return render_prompt_frame(stdout, frame, line, cursor_pos, None);
+    };
     let frame_top_row =
         prompt_frame_top_row_after_resize(current_row, previous_state, terminal::size()?.0);
     execute!(stdout, cursor::MoveTo(0, frame_top_row))?;
@@ -1396,115 +1325,8 @@ fn strip_ansi_text(text: &str) -> String {
     out
 }
 
-fn render_prompt_frame_from_parked<W: Write>(
-    stdout: &mut W,
-    frame: &PromptFrame,
-    line: &str,
-    cursor_pos: usize,
-    previous_state: &PromptRenderState,
-) -> io::Result<PromptRenderState> {
-    let viewport = wrapped_viewport(line, cursor_pos, frame.inner_width, frame.max_visible_rows);
-    let screen_rows = frame.screen_lines.len();
-    let pre_input_rows = frame.chrome_before_input.len();
-    let post_input_rows = frame.chrome_after_input.len();
-    let new_frame_height =
-        screen_rows + pre_input_rows + viewport.visible_rows.len() + post_input_rows;
-    let terminal_width = usize::from(terminal::size()?.0).max(1);
-
-    move_to_parked_prompt_frame_top(stdout, previous_state)?;
-
-    let mut rendered_rows = Vec::with_capacity(
-        frame.screen_lines.len()
-            + frame.chrome_before_input.len()
-            + viewport.visible_rows.len()
-            + frame.chrome_after_input.len(),
-    );
-    rendered_rows.extend(frame.screen_lines.iter().cloned());
-    rendered_rows.extend(frame.chrome_before_input.iter().cloned());
-    rendered_rows.extend(
-        viewport
-            .visible_rows
-            .iter()
-            .enumerate()
-            .map(|(index, row)| compose_input_row(frame, row, index == 0)),
-    );
-    rendered_rows.extend(frame.chrome_after_input.iter().cloned());
-    let rendered_plain_rows = rendered_rows
-        .iter()
-        .map(|row| strip_ansi_text(row))
-        .collect::<Vec<_>>();
-    let new_frame_physical_rows = rendered_plain_rows
-        .iter()
-        .map(|row| wrapped_terminal_row_count(row, terminal_width))
-        .sum::<usize>()
-        .max(1);
-    let cursor_col_in_frame_row = usize::from(frame.input_prefix_width) + viewport.cursor_col;
-    let cursor_physical_row_in_frame = prompt_cursor_physical_row_in_frame(
-        &rendered_plain_rows,
-        target_row_index(screen_rows, pre_input_rows, viewport.cursor_row),
-        cursor_col_in_frame_row,
-        terminal_width,
-    );
-
-    reserve_frame_growth(
-        stdout,
-        previous_state.frame_physical_rows,
-        new_frame_physical_rows,
-    )?;
-
-    for (index, row) in rendered_rows.iter().enumerate() {
-        if index > 0 {
-            write!(stdout, "\r\n")?;
-        }
-        write!(
-            stdout,
-            "\r{}{}",
-            row,
-            terminal::Clear(ClearType::UntilNewLine)
-        )?;
-    }
-
-    let trailing_rows = previous_state
-        .frame_physical_rows
-        .saturating_sub(new_frame_physical_rows);
-    for _ in 0..trailing_rows {
-        write!(stdout, "\r\n\r{}", terminal::Clear(ClearType::UntilNewLine),)?;
-    }
-
-    let total_rows = new_frame_physical_rows.max(previous_state.frame_physical_rows);
-    let rows_up = total_rows
-        .saturating_sub(1)
-        .saturating_sub(cursor_physical_row_in_frame) as u16;
-    execute!(
-        stdout,
-        cursor::MoveUp(rows_up),
-        cursor::MoveToColumn(frame.input_prefix_width + viewport.cursor_col as u16)
-    )?;
-    stdout.flush()?;
-
-    Ok(PromptRenderState {
-        cursor_row_in_view: viewport.cursor_row,
-        screen_rows,
-        pre_input_rows,
-        frame_height: new_frame_height,
-        frame_physical_rows: new_frame_physical_rows,
-        cursor_row_in_frame: target_row_index(screen_rows, pre_input_rows, viewport.cursor_row),
-        cursor_physical_row_in_frame,
-        cursor_col_in_frame_row,
-        rendered_plain_rows,
-    })
-}
-
 fn dismiss_prompt<W: Write>(stdout: &mut W, state: &PromptRenderState) -> io::Result<()> {
     move_to_prompt_frame_top(stdout, state)?;
-    clear_prompt_from_top(stdout)
-}
-
-fn dismiss_prompt_from_parked<W: Write>(
-    stdout: &mut W,
-    state: &PromptRenderState,
-) -> io::Result<()> {
-    move_to_parked_prompt_frame_top(stdout, state)?;
     clear_prompt_from_top(stdout)
 }
 
@@ -1518,22 +1340,6 @@ fn move_to_prompt_frame_top<W: Write>(stdout: &mut W, state: &PromptRenderState)
         stdout,
         cursor::MoveToColumn(0),
         cursor::MoveUp(state.cursor_physical_row_in_frame as u16),
-    )
-}
-
-fn move_to_parked_prompt_frame_top<W: Write>(
-    stdout: &mut W,
-    state: &PromptRenderState,
-) -> io::Result<()> {
-    debug_assert_eq!(
-        state.cursor_row_in_frame,
-        state.screen_rows + state.pre_input_rows + state.cursor_row_in_view
-    );
-    debug_assert!(state.frame_height >= state.cursor_row_in_frame + 1);
-    execute!(
-        stdout,
-        cursor::MoveToColumn(0),
-        cursor::MoveUp(state.frame_physical_rows as u16),
     )
 }
 
@@ -1559,22 +1365,6 @@ fn reserve_frame_growth<W: Write>(
         }
         execute!(stdout, cursor::MoveUp(extra))?;
     }
-    Ok(())
-}
-
-fn park_prompt_for_modal<W: Write>(stdout: &mut W, state: &PromptRenderState) -> io::Result<()> {
-    debug_assert_eq!(
-        state.cursor_row_in_frame,
-        state.screen_rows + state.pre_input_rows + state.cursor_row_in_view
-    );
-    debug_assert!(state.frame_height >= state.cursor_row_in_frame + 1);
-    let rows_down = state
-        .frame_physical_rows
-        .saturating_sub(1)
-        .saturating_sub(state.cursor_physical_row_in_frame) as u16;
-    execute!(stdout, cursor::MoveToColumn(0), cursor::MoveDown(rows_down))?;
-    write!(stdout, "\r\n")?;
-    stdout.flush()?;
     Ok(())
 }
 
@@ -2048,57 +1838,6 @@ mod tests {
         let text = "abcdefghijXYZ";
         assert_eq!(move_cursor_home(text, 12, 5), 10);
         assert_eq!(move_cursor_end(text, 12, 5), 13);
-    }
-
-    #[test]
-    fn modal_park_and_resume_keep_frame_renderable() {
-        let style = CliStyle::plain();
-        let frame = PromptFrame::boxed("Agent build", "Model auto", &style)
-            .with_screen_lines(vec!["● prior transcript".to_string()]);
-        let mut buf = Vec::new();
-        let state = render_prompt_frame(&mut buf, &frame, "draft", 5, None).unwrap();
-        let first_height = state.frame_height;
-
-        park_prompt_for_modal(&mut buf, &state).unwrap();
-        let resumed = render_prompt_frame_from_parked(
-            &mut buf,
-            &frame,
-            "draft resumed",
-            "draft resumed".chars().count(),
-            &state,
-        )
-        .unwrap();
-
-        assert_eq!(resumed.screen_rows, 1);
-        assert!(resumed.frame_height >= first_height);
-
-        dismiss_prompt_from_parked(&mut buf, &resumed).unwrap();
-    }
-
-    #[test]
-    fn parked_prompt_dismiss_clears_from_frame_top() {
-        let state = PromptRenderState {
-            cursor_row_in_view: 0,
-            screen_rows: 2,
-            pre_input_rows: 1,
-            frame_height: 5,
-            frame_physical_rows: 5,
-            cursor_row_in_frame: 3,
-            cursor_physical_row_in_frame: 3,
-            cursor_col_in_frame_row: 2,
-            rendered_plain_rows: vec![
-                "header one".to_string(),
-                "header two".to_string(),
-                "prompt".to_string(),
-                "body".to_string(),
-                "footer".to_string(),
-            ],
-        };
-        let mut buf = Vec::new();
-        dismiss_prompt_from_parked(&mut buf, &state).unwrap();
-        let rendered = String::from_utf8_lossy(&buf);
-        assert!(rendered.contains("\u{1b}[5A"));
-        assert!(rendered.contains("\u{1b}[J"));
     }
 
     #[test]

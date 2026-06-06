@@ -5,7 +5,7 @@ use agendao_cli_core::cli::{
     DebugCommands, GithubCommands, McpCommands, MemoryCommands, ProviderCommands, SessionCommands,
     SkillCommands,
 };
-use agendao_cli_core::FrontendRuntimeContext;
+use agendao_cli_core::CliRuntimeContext;
 use async_trait::async_trait;
 
 #[async_trait(?Send)]
@@ -20,7 +20,7 @@ pub trait AdminCommandHandler {
     async fn handle_session(
         &self,
         action: SessionCommands,
-        runtime_context: &FrontendRuntimeContext,
+        runtime_context: &CliRuntimeContext,
     ) -> anyhow::Result<()>;
 
     async fn export_memory(&self, output: Option<PathBuf>) -> anyhow::Result<()>;
@@ -30,7 +30,7 @@ pub trait AdminCommandHandler {
     async fn handle_skill(
         &self,
         action: SkillCommands,
-        runtime_context: &FrontendRuntimeContext,
+        runtime_context: &CliRuntimeContext,
     ) -> anyhow::Result<()>;
 
     async fn handle_provider(&self, action: ProviderCommands) -> anyhow::Result<()>;
@@ -53,7 +53,7 @@ pub trait AdminCommandHandler {
     async fn handle_config(
         &self,
         action: Option<ConfigCommands>,
-        runtime_context: &FrontendRuntimeContext,
+        runtime_context: &CliRuntimeContext,
     ) -> anyhow::Result<()>;
 
     async fn handle_auth(&self, action: AuthCommands) -> anyhow::Result<()>;
@@ -63,7 +63,7 @@ pub trait AdminCommandHandler {
     async fn handle_debug(
         &self,
         action: DebugCommands,
-        runtime_context: &FrontendRuntimeContext,
+        runtime_context: &CliRuntimeContext,
     ) -> anyhow::Result<()>;
 
     async fn handle_mcp(&self, server: String, action: McpCommands) -> anyhow::Result<()>;
@@ -84,14 +84,14 @@ pub trait AdminCommandHandler {
         &self,
         session: String,
         message: Vec<String>,
-        runtime_context: &FrontendRuntimeContext,
+        runtime_context: &CliRuntimeContext,
     ) -> anyhow::Result<()>;
 }
 
 pub async fn dispatch_admin_command<H>(
     handler: &H,
     command: Commands,
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<()>
 where
     H: AdminCommandHandler + Sync,
@@ -168,8 +168,8 @@ where
                 .handle_steer(session, message, runtime_context)
                 .await?;
         }
-        Commands::Run { .. } | Commands::Cli { .. } => {
-            anyhow::bail!("interactive CLI commands must be dispatched via frontend entry")
+        Commands::Run { .. } => {
+            anyhow::bail!("run commands must be dispatched via CLI entry")
         }
     }
 

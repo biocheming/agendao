@@ -1,4 +1,6 @@
-# Phase 4.2: SessionManager 提取完成总结
+# Phase 4.2: SessionManager 提取完成总结（阶段记录）
+
+这份文档记录的是当时把 `SessionManager` 抽成独立 authority 的设计与拆分过程。当前产品阅读时，应把它视为历史复盘和边界参考，而不是现行实施指南。
 
 ## 目标
 

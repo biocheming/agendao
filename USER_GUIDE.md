@@ -4,8 +4,8 @@
 
 ## 0. 版本
 
-- 当前版本：`v2026.6.3`
-- 当前 CLI 命令：`agendao`
+- 当前版本：`v2026.6.6`
+- 当前产品命令：`agendao`
 
 ## 1. 先选运行方式
 
@@ -148,7 +148,7 @@ AgenDao 现在区分：
 
 ### 4.2 Slash Command
 
-- TUI、CLI、Web 使用统一 slash command 语义
+- `run`、TUI、Web 使用统一 slash command 语义
 - 命令缺参数时，会走 question / 参数补全链路
 - 不再要求每个命令都必须走旧式静态预注册弹窗
 - 如果要终止某个已登记的 agent task，用 `/tasks kill <ID>`；`/abort` 针对的是当前会话执行边界

@@ -3,8 +3,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-#[cfg(feature = "interactive")]
-use agendao_command_render::cli_style::CliStyle;
 use agendao_plugin::init_global;
 use agendao_plugin::subprocess::{PluginContext, PluginLoader};
 use agendao_provider::{
@@ -15,14 +13,14 @@ use agendao_provider::{
 
 const DEFAULT_PLUGIN_SERVER_URL: &str = "http://127.0.0.1:3000";
 
-pub(crate) async fn setup_providers(
+pub(super) async fn setup_providers(
     config: &agendao_config::Config,
 ) -> anyhow::Result<ProviderRegistry> {
     let cwd = std::env::current_dir()?;
     setup_providers_for_dir(config, &cwd).await
 }
 
-pub(crate) async fn setup_providers_for_dir(
+async fn setup_providers_for_dir(
     config: &agendao_config::Config,
     cwd: &Path,
 ) -> anyhow::Result<ProviderRegistry> {
@@ -68,7 +66,7 @@ fn convert_config_providers(
     convert_config_providers_with_mode(config, ProviderBootstrapMode::Runtime)
 }
 
-pub(crate) fn convert_config_providers_for_artifact(
+pub(super) fn convert_config_providers_for_artifact(
     config: &agendao_config::Config,
 ) -> std::collections::HashMap<String, BootstrapConfigProvider> {
     convert_config_providers_with_mode(config, ProviderBootstrapMode::Artifact)
@@ -349,143 +347,4 @@ fn resolve_native_plugin_path(cwd: &Path, raw_path: &str) -> PathBuf {
     } else {
         cwd.join(path)
     }
-}
-
-#[cfg(feature = "interactive")]
-pub(crate) fn render_help(style: &CliStyle) -> String {
-    let pad = 17; // column width for command names
-
-    let fmt = |cmd: &str, desc: &str| -> String {
-        format!(
-            "{} {}",
-            style.bold(format!("{:<pad$}", cmd).as_str()),
-            style.dim(desc)
-        )
-    };
-
-    // ── Basic commands ──────────────────────────────────────────
-    let basic_lines: Vec<String> = vec![
-        fmt("exit, quit", "End the session"),
-        fmt("help", "Show this help message"),
-        fmt("clear", "Clear screen"),
-    ];
-
-    // ── Slash commands ──────────────────────────────────────────
-    let slash_lines: Vec<String> = vec![
-        fmt("/help", "Show this help message"),
-        fmt("/abort", "Cancel the current running response"),
-        fmt("/recover", "List recovery actions for the last run"),
-        fmt("/recover <id>", "Execute a recovery action"),
-        fmt("/new", "Start a new session"),
-        fmt("/clear", "Clear screen"),
-        fmt("/status", "Show session status"),
-        fmt("/runtime", "Show current runtime telemetry"),
-        fmt("/usage", "Show authority-backed session usage"),
-        fmt(
-            "/insights",
-            "Show persisted runtime explain, multimodal explain, and memory insights",
-        ),
-        fmt(
-            "/validation",
-            "Show workspace config validation aggregated from config owners",
-        ),
-        fmt("/events [filters]", "Show runtime event log"),
-        fmt("/memory [search]", "List workspace memory records"),
-        fmt(
-            "/memory preview [query]",
-            "Preview which memory records would be injected this turn",
-        ),
-        fmt("/memory show <id>", "Show memory detail"),
-        fmt("/memory validation <id>", "Show latest validation report"),
-        fmt(
-            "/memory conflicts <id>",
-            "Show recorded duplicate/contradiction conflicts",
-        ),
-        fmt("/memory rules", "List builtin memory rule packs"),
-        fmt(
-            "/memory hits [run=<id> record=<id> limit=<n>]",
-            "List persisted memory rule hits",
-        ),
-        fmt("/memory runs", "List memory consolidation runs"),
-        fmt(
-            "/memory consolidate [candidates] [limit=<n>]",
-            "Run authority-backed consolidation and reflection",
-        ),
-        fmt(
-            "/events next|prev|first|clear",
-            "Page or reset the current event view",
-        ),
-        fmt(
-            "/events page <n>",
-            "Jump to a specific page for the current filter",
-        ),
-        fmt(
-            "/events stage=<id> type=<kind> limit=<n> [page=<n>]",
-            "Filter events with structured query terms",
-        ),
-        fmt("/inspect [stage_id]", "Alias for /events with stage filter"),
-        fmt("/models", "List all available models"),
-        fmt("/models refresh", "Refresh the shared model catalogue"),
-        fmt("/model <id>", "Switch to a specific model"),
-        fmt(
-            "/model add <provider>/<key> key=value...",
-            "Add a provider-scoped model override",
-        ),
-        fmt(
-            "/model edit <provider>/<key> key=value...",
-            "Edit a configured model override",
-        ),
-        fmt(
-            "/model delete <provider>/<key>",
-            "Delete a configured model override",
-        ),
-        fmt("/agents", "List available agents"),
-        fmt("/agent <name>", "Switch to a specific agent"),
-        fmt("/presets", "List available scheduler presets"),
-        fmt("/preset <name>", "Switch to a specific scheduler preset"),
-        fmt("/providers", "List configured providers"),
-        fmt("/sessions", "List local sessions"),
-        fmt("/parent", "Return to the parent session"),
-        fmt("/tasks", "List agent tasks"),
-        fmt(
-            "/compact [focus]",
-            "Compact conversation history, optionally around a topic",
-        ),
-        fmt("/copy", "Copy last assistant reply"),
-    ];
-
-    // ── Tips ────────────────────────────────────────────────────
-    let tip_lines: Vec<String> = vec![
-        format!(
-            "Use {} to specify a model at startup",
-            style.bold("--model")
-        ),
-        format!(
-            "Use {} to specify an agent at startup",
-            style.bold("--agent")
-        ),
-        format!(
-            "Any text not starting with {} is sent as a prompt",
-            style.bold("/")
-        ),
-    ];
-
-    // ── Render ──────────────────────────────────────────────────
-    let mut out = String::new();
-    for (title, lines) in [
-        ("Commands", basic_lines.as_slice()),
-        ("Slash Commands", slash_lines.as_slice()),
-        ("Tips", tip_lines.as_slice()),
-    ] {
-        out.push_str(&format!(
-            "\r\n  {} {}\r\n",
-            style.bold_cyan(style.bullet()),
-            style.bold(title),
-        ));
-        for line in lines {
-            out.push_str(&format!("    {}\r\n", line));
-        }
-    }
-    out.push_str("\r\n");
-    out
 }

@@ -7,11 +7,11 @@ license.workspace = true
 autobins = false
 
 [features]
-default = ["interactive", "local-server", "db", "lsp", "memory"]
-interactive = [
-    "dep:agendao-command",
+default = ["run-core", "run-remote-stream", "local-server", "db", "lsp", "memory"]
+run-core = []
+run-remote-stream = [
+    "run-core",
     "dep:agendao-command-render",
-    "dep:agendao-command-runtime",
 ]
 local-server = ["dep:agendao-server"]
 db = ["session-db", "proposal-db", "memory-db"]
@@ -46,9 +46,7 @@ agendao-storage = { path = "../agendao-storage", optional = true, default-featur
 agendao-state = { path = "../agendao-state" }
 agendao-tool = { path = "../agendao-tool" }
 agendao-types = { path = "../agendao-types" }
-agendao-command = { path = "../agendao-command", optional = true, default-features = false }
 agendao-command-render = { path = "../agendao-command-render", optional = true }
-agendao-command-runtime = { path = "../agendao-command-runtime", optional = true }
 agendao-stage-protocol = { path = "../agendao-stage-protocol" }
 agendao-lsp = { path = "../agendao-lsp", optional = true }
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
@@ -65,5 +63,4 @@ dirs = { workspace = true }
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"], optional = true }
 url = { workspace = true }
 which = "7"
-crossterm = "0.27"
 base64 = { workspace = true }

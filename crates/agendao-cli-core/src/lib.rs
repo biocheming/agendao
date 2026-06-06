@@ -4,7 +4,7 @@ use clap::Parser;
 pub mod cli;
 mod server_lifecycle;
 
-pub use server_lifecycle::{FrontendRuntimeContext, ServerDiscoveryRequest};
+pub use server_lifecycle::{CliRuntimeContext, ServerDiscoveryRequest};
 
 pub fn parse_cli_from<I, T>(args: I) -> cli::Cli
 where

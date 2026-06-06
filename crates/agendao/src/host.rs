@@ -61,9 +61,9 @@ pub struct AcpCommandRequest {
 const DEFAULT_SERVER_PORT: u16 = 3000;
 const SERVER_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub fn frontend_runtime_context() -> agendao_cli::FrontendRuntimeContext {
+pub fn cli_runtime_context() -> agendao_cli::CliRuntimeContext {
     let auto_started_server = Arc::new(AutoStartedServerOwner::default());
-    agendao_cli::FrontendRuntimeContext::new(move |request| {
+    agendao_cli::CliRuntimeContext::new(move |request| {
         let auto_started_server = auto_started_server.clone();
         Box::pin(async move { discover_or_start_local_server(request, auto_started_server).await })
     })
@@ -108,7 +108,7 @@ impl Drop for AutoStartedServerOwner {
             return;
         };
         if let Err(error) = child.start_kill() {
-            tracing::debug!(%error, "failed to kill auto-started local server on frontend exit");
+            tracing::debug!(%error, "failed to kill auto-started local server on CLI exit");
         }
     }
 }

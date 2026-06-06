@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
         Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
@@ -790,9 +790,16 @@ impl Sidebar {
                                 agendao_types::context_pressure_label(Some(percent))
                             })
                         {
+                            let note_style = context_usage_style(
+                                &theme,
+                                context_usage_percent(
+                                    shown_context_tokens,
+                                    context_limit.unwrap_or(0),
+                                ),
+                            );
                             lines.push(Line::from(vec![
                                 Span::styled("State  ", Style::default().fg(theme.text_muted)),
-                                Span::styled(note, Style::default().fg(theme.warning)),
+                                Span::styled(note, note_style),
                             ]));
                         }
                     }
@@ -1151,7 +1158,7 @@ impl Sidebar {
                                 theme.text_muted
                             })),
                         ),
-                        Span::styled("● ", mk_style(Style::default().fg(kind_color))),
+                        Span::styled("• ", mk_style(Style::default().fg(kind_color))),
                         Span::styled(
                             truncate_text(&proc.name, name_width),
                             mk_style(Style::default().fg(fg)),
@@ -1185,14 +1192,14 @@ impl Sidebar {
                         let (symbol, color) = match status {
                             crate::api::ExecutionStatus::Running => {
                                 running += 1;
-                                ("●", theme.info)
+                                ("◐", theme.info)
                             }
                             crate::api::ExecutionStatus::Waiting => ("◯", theme.warning),
                             crate::api::ExecutionStatus::Done => {
                                 done += 1;
                                 ("✓", theme.success)
                             }
-                            _ => ("●", theme.text_muted),
+                            _ => ("•", theme.text_muted),
                         };
                         let name_width = area.width.saturating_sub(12) as usize;
                         agent_lines.push(Line::from(vec![
@@ -1288,16 +1295,16 @@ impl Sidebar {
                     if collapsed { "▶ " } else { "▼ " },
                     Style::default().fg(theme.text_muted),
                 ));
+            } else {
+                header.push(Span::styled("  ", Style::default().fg(theme.text_muted)));
             }
             header.push(Span::styled(
                 section.title.to_string(),
                 Style::default().fg(theme.text).bold(),
             ));
-            if collapsed {
-                if let Some(summary) = section.summary {
-                    header.push(Span::styled(" · ", Style::default().fg(theme.text_muted)));
-                    header.push(Span::styled(summary, Style::default().fg(theme.text_muted)));
-                }
+            if let Some(summary) = section.summary {
+                header.push(Span::styled(" · ", Style::default().fg(theme.text_muted)));
+                header.push(Span::styled(summary, Style::default().fg(theme.text_muted)));
             }
             lines.push(Line::from(header));
             line_index += 1;
@@ -1306,6 +1313,11 @@ impl Sidebar {
                 let is_processes = section.key == "processes";
                 let child_hit_rows = section.attached_session_hit_rows.as_ref();
                 let workspace_hit_rows = section.workspace_hit_rows.as_ref();
+                lines.push(Line::from(Span::styled(
+                    "  ",
+                    Style::default().fg(theme.border_subtle),
+                )));
+                line_index += 1;
                 for (row_idx, row) in section.lines.into_iter().enumerate() {
                     if is_processes {
                         process_line_hits.push((line_index, row_idx));
@@ -1320,7 +1332,17 @@ impl Sidebar {
                             workspace_line_hits.push((line_index, *node_index));
                         }
                     }
-                    lines.push(row);
+                    let mut spans = Vec::with_capacity(row.spans.len() + 1);
+                    spans.push(Span::styled("  ", Style::default().fg(theme.border_subtle)));
+                    spans.extend(row.spans.into_iter().map(|span| {
+                        let style = if span.style.add_modifier.contains(Modifier::BOLD) {
+                            span.style
+                        } else {
+                            span.style
+                        };
+                        Span::styled(span.content, style)
+                    }));
+                    lines.push(Line::from(spans));
                     line_index += 1;
                 }
             }
@@ -2035,7 +2057,7 @@ fn build_session_graph_lines(
     hit_rows.push(None);
 
     let root_label = format!(
-        "● {}  {}",
+        "• {}  {}",
         truncate_text(current_title, width.saturating_sub(12) as usize),
         short_session_id(current_session_id)
     );
@@ -2224,11 +2246,11 @@ fn short_session_id(session_id: &str) -> String {
 
 fn session_status_badge(theme: &Theme, status: &str) -> (&'static str, ratatui::style::Color) {
     match status {
-        "running" => ("●", theme.info),
-        "done" => ("●", theme.success),
-        "cancelled" => ("●", theme.error),
+        "running" => ("◐", theme.info),
+        "done" => ("•", theme.success),
+        "cancelled" => ("•", theme.error),
         "waiting" => ("◯", theme.warning),
-        _ => ("●", theme.text_muted),
+        _ => ("•", theme.text_muted),
     }
 }
 

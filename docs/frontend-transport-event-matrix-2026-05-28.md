@@ -1,10 +1,20 @@
-# Frontend × Transport × Event 能力矩阵（2026-05-28）
+# Frontend × Transport × Event 能力矩阵（2026-05-28，阶段快照）
+
+这份矩阵是 2026-05-28 时点的覆盖快照，用来说明当时各传输层和事件通道的实现差异。它不是当前版本的正式兼容性承诺。
+
+今天如果要判断产品真相，应以：
+
+- `docs/index.md`
+- `docs/commands.md`
+- `docs/agendao-统一前端事件契约-2026-06-05.md`
+
+为主，再把这份表当成历史背景。
 
 ## Canonical Event Contract
 `ServerEvent` in `events.rs` — sole canonical event contract.
 
 ## Shared DirectEventBridge
-`direct_bridge.rs` — TUI+CLI shared poll bridge. Both frontends consume same event stream.
+`direct_bridge.rs` 在当时是 TUI 和旧 CLI 交互面共用的 poll bridge。
 Unix: `subscribe_events` → `DirectEvent` JSON lines.
 
 ## Transport × Event Coverage Matrix

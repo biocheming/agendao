@@ -16,7 +16,27 @@ use agendao_tool::registry::create_default_registry;
 use crate::agent_stream_adapter::stream_prompt_to_text;
 use crate::cli::GithubCommands;
 use crate::providers::setup_providers;
-use crate::util::{parse_model_and_provider, truncate_text};
+use crate::util::truncate_text;
+
+fn parse_model_and_provider(model: Option<String>) -> (Option<String>, Option<String>) {
+    let Some(raw) = model else {
+        return (None, None);
+    };
+    let raw = raw.trim().to_string();
+    if let Some((provider, model_id)) = raw.split_once('/') {
+        return (
+            Some(provider.trim().to_string()),
+            Some(model_id.trim().to_string()),
+        );
+    }
+    if let Some((provider, model_id)) = raw.split_once(':') {
+        return (
+            Some(provider.trim().to_string()),
+            Some(model_id.trim().to_string()),
+        );
+    }
+    (None, Some(raw))
+}
 
 fn to_orchestrator_skill_tree(node: &SkillTreeNodeConfig) -> SkillTreeNode {
     SkillTreeNode {
@@ -68,7 +88,7 @@ fn resolve_request_skill_tree_plan(config: &Config) -> Option<SkillTreeRequestPl
     }
 }
 
-pub(crate) fn parse_github_remote(url: &str) -> Option<(String, String)> {
+fn parse_github_remote(url: &str) -> Option<(String, String)> {
     let normalized = url.trim().trim_end_matches('/').trim_end_matches(".git");
     let path = if let Some(value) = normalized.strip_prefix("https://github.com/") {
         value
@@ -91,7 +111,7 @@ pub(crate) fn parse_github_remote(url: &str) -> Option<(String, String)> {
     Some((owner.to_string(), repo.to_string()))
 }
 
-pub(crate) fn provider_secret_keys(provider: &str) -> Vec<&'static str> {
+fn provider_secret_keys(provider: &str) -> Vec<&'static str> {
     match provider {
         "ethnopic" => vec!["ANTHROPIC_API_KEY"],
         "openai" => vec!["OPENAI_API_KEY"],
@@ -117,7 +137,7 @@ pub(crate) fn provider_secret_keys(provider: &str) -> Vec<&'static str> {
     }
 }
 
-pub(crate) async fn choose_github_model() -> anyhow::Result<String> {
+async fn choose_github_model() -> anyhow::Result<String> {
     if let Ok(model) = std::env::var("AGENDAO_GITHUB_MODEL") {
         if !model.trim().is_empty() {
             return Ok(model);
@@ -147,7 +167,7 @@ pub(crate) async fn choose_github_model() -> anyhow::Result<String> {
     Ok("openai/gpt-4.1".to_string())
 }
 
-pub(crate) fn build_github_workflow(model: &str) -> String {
+fn build_github_workflow(model: &str) -> String {
     let provider = model.split('/').next().unwrap_or_default();
     let env_vars = provider_secret_keys(provider);
 
@@ -197,7 +217,7 @@ jobs:
     )
 }
 
-pub(crate) fn load_mock_event(event: &str) -> anyhow::Result<serde_json::Value> {
+fn load_mock_event(event: &str) -> anyhow::Result<serde_json::Value> {
     let path = PathBuf::from(event);
     if path.exists() {
         let text = fs::read_to_string(path)?;
@@ -206,22 +226,22 @@ pub(crate) fn load_mock_event(event: &str) -> anyhow::Result<serde_json::Value> 
     Ok(serde_json::from_str(event)?)
 }
 
-pub(crate) fn github_is_user_event(event_name: &str) -> bool {
+fn github_is_user_event(event_name: &str) -> bool {
     matches!(
         event_name,
         "issue_comment" | "pull_request_review_comment" | "issues" | "pull_request"
     )
 }
 
-pub(crate) fn github_is_repo_event(event_name: &str) -> bool {
+fn github_is_repo_event(event_name: &str) -> bool {
     matches!(event_name, "schedule" | "workflow_dispatch")
 }
 
-pub(crate) fn github_is_comment_event(event_name: &str) -> bool {
+fn github_is_comment_event(event_name: &str) -> bool {
     matches!(event_name, "issue_comment" | "pull_request_review_comment")
 }
 
-pub(crate) fn github_comment_type(event_name: &str) -> Option<&'static str> {
+fn github_comment_type(event_name: &str) -> Option<&'static str> {
     match event_name {
         "issue_comment" => Some("issue"),
         "pull_request_review_comment" => Some("pr_review"),
@@ -231,7 +251,7 @@ pub(crate) fn github_comment_type(event_name: &str) -> Option<&'static str> {
 
 // PLACEHOLDER_CHUNK_2
 
-pub(crate) fn github_actor(payload: &serde_json::Value) -> Option<String> {
+fn github_actor(payload: &serde_json::Value) -> Option<String> {
     payload
         .get("sender")
         .and_then(|v| v.get("login"))
@@ -244,7 +264,7 @@ pub(crate) fn github_actor(payload: &serde_json::Value) -> Option<String> {
         })
 }
 
-pub(crate) fn github_issue_number(event_name: &str, payload: &serde_json::Value) -> Option<u64> {
+fn github_issue_number(event_name: &str, payload: &serde_json::Value) -> Option<u64> {
     match event_name {
         "issue_comment" | "issues" => github_u64(payload, &["issue", "number"]),
         "pull_request" | "pull_request_review_comment" => {
@@ -254,7 +274,7 @@ pub(crate) fn github_issue_number(event_name: &str, payload: &serde_json::Value)
     }
 }
 
-pub(crate) fn github_is_pr_context(event_name: &str, payload: &serde_json::Value) -> bool {
+fn github_is_pr_context(event_name: &str, payload: &serde_json::Value) -> bool {
     match event_name {
         "pull_request" | "pull_request_review_comment" => true,
         "issue_comment" => payload
@@ -265,7 +285,7 @@ pub(crate) fn github_is_pr_context(event_name: &str, payload: &serde_json::Value
     }
 }
 
-pub(crate) fn github_mentions() -> Vec<String> {
+fn github_mentions() -> Vec<String> {
     std::env::var("MENTIONS")
         .unwrap_or_else(|_| "/agendao,/oc".to_string())
         .split(',')
@@ -274,7 +294,7 @@ pub(crate) fn github_mentions() -> Vec<String> {
         .collect()
 }
 
-pub(crate) fn normalize_github_event_payload(raw: serde_json::Value) -> serde_json::Value {
+fn normalize_github_event_payload(raw: serde_json::Value) -> serde_json::Value {
     if let Some(payload_obj) = raw.get("payload").and_then(|v| v.as_object()) {
         let mut map = payload_obj.clone();
         if !map.contains_key("repository") {
@@ -310,7 +330,7 @@ pub(crate) fn normalize_github_event_payload(raw: serde_json::Value) -> serde_js
     raw
 }
 
-pub(crate) fn github_inline(value: Option<&str>) -> String {
+fn github_inline(value: Option<&str>) -> String {
     value
         .unwrap_or_default()
         .trim()
@@ -318,7 +338,7 @@ pub(crate) fn github_inline(value: Option<&str>) -> String {
         .replace('\n', " ")
 }
 
-pub(crate) fn github_footer(owner: &str, repo: &str) -> String {
+fn github_footer(owner: &str, repo: &str) -> String {
     if let Ok(run_id) = std::env::var("GITHUB_RUN_ID") {
         let run_id = run_id.trim();
         if !run_id.is_empty() {
@@ -332,7 +352,7 @@ pub(crate) fn github_footer(owner: &str, repo: &str) -> String {
 
 // PLACEHOLDER_CHUNK_3
 
-pub(crate) fn github_action_context_lines() -> Vec<String> {
+fn github_action_context_lines() -> Vec<String> {
     vec![
         "<github_action_context>".to_string(),
         "You are running as a GitHub Action. Important:".to_string(),
@@ -344,7 +364,7 @@ pub(crate) fn github_action_context_lines() -> Vec<String> {
     ]
 }
 
-pub(crate) fn build_prompt_data_for_issue(
+fn build_prompt_data_for_issue(
     owner: &str,
     repo: &str,
     issue_number: u64,
@@ -416,7 +436,7 @@ pub(crate) fn build_prompt_data_for_issue(
     Ok(lines.join("\n"))
 }
 
-pub(crate) fn build_prompt_data_for_pr(
+fn build_prompt_data_for_pr(
     owner: &str,
     repo: &str,
     pr_number: u64,
@@ -597,7 +617,7 @@ pub(crate) fn build_prompt_data_for_pr(
 
 // PLACEHOLDER_CHUNK_8
 
-pub(crate) fn prompt_from_github_context(
+fn prompt_from_github_context(
     event_name: &str,
     payload: &serde_json::Value,
 ) -> anyhow::Result<String> {
@@ -695,7 +715,7 @@ pub(crate) fn prompt_from_github_context(
     }
 }
 
-pub(crate) fn ensure_gh_available() -> anyhow::Result<()> {
+fn ensure_gh_available() -> anyhow::Result<()> {
     let output = ProcessCommand::new("gh")
         .arg("--version")
         .output()
@@ -706,7 +726,7 @@ pub(crate) fn ensure_gh_available() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) fn github_repo_from_payload(payload: &serde_json::Value) -> Option<(String, String)> {
+fn github_repo_from_payload(payload: &serde_json::Value) -> Option<(String, String)> {
     let repo = payload
         .get("repository")
         .or_else(|| payload.get("repo"))
@@ -730,7 +750,7 @@ pub(crate) fn github_repo_from_payload(payload: &serde_json::Value) -> Option<(S
 
 // PLACEHOLDER_CHUNK_10
 
-pub(crate) fn github_repo_from_env_or_git() -> anyhow::Result<(String, String)> {
+fn github_repo_from_env_or_git() -> anyhow::Result<(String, String)> {
     if let Ok(repo) = std::env::var("GITHUB_REPOSITORY") {
         if let Some((owner, name)) = repo.split_once('/') {
             if !owner.is_empty() && !name.is_empty() {
@@ -751,7 +771,7 @@ pub(crate) fn github_repo_from_env_or_git() -> anyhow::Result<(String, String)> 
         .ok_or_else(|| anyhow::anyhow!("Unsupported GitHub remote URL format: {}", remote_url))
 }
 
-pub(crate) fn github_u64(payload: &serde_json::Value, path: &[&str]) -> Option<u64> {
+fn github_u64(payload: &serde_json::Value, path: &[&str]) -> Option<u64> {
     let mut cursor = payload;
     for key in path {
         cursor = cursor.get(*key)?;
@@ -759,7 +779,7 @@ pub(crate) fn github_u64(payload: &serde_json::Value, path: &[&str]) -> Option<u
     cursor.as_u64()
 }
 
-pub(crate) fn gh_api_json(
+fn gh_api_json(
     method: &str,
     endpoint: &str,
     body: Option<&serde_json::Value>,
@@ -814,7 +834,7 @@ pub(crate) fn gh_api_json(
     Ok(parsed)
 }
 
-pub(crate) fn github_assert_write_permission(
+fn github_assert_write_permission(
     owner: &str,
     repo: &str,
     actor: &str,
@@ -833,13 +853,13 @@ pub(crate) fn github_assert_write_permission(
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct GithubReactionHandle {
+struct GithubReactionHandle {
     delete_endpoint: String,
 }
 
 // PLACEHOLDER_CHUNK_12
 
-pub(crate) fn github_add_reaction(
+fn github_add_reaction(
     owner: &str,
     repo: &str,
     issue_number: Option<u64>,
@@ -873,11 +893,11 @@ pub(crate) fn github_add_reaction(
     })
 }
 
-pub(crate) fn github_remove_reaction(reaction: &GithubReactionHandle, token: Option<&str>) {
+fn github_remove_reaction(reaction: &GithubReactionHandle, token: Option<&str>) {
     let _ = gh_api_json("DELETE", &reaction.delete_endpoint, None, token);
 }
 
-pub(crate) fn github_create_comment(
+fn github_create_comment(
     owner: &str,
     repo: &str,
     issue_number: u64,
@@ -897,13 +917,13 @@ pub(crate) fn github_create_comment(
 // PLACEHOLDER_CHUNK_13
 
 #[derive(Debug, Clone)]
-pub(crate) struct GithubPrRuntimeInfo {
+struct GithubPrRuntimeInfo {
     head_ref: String,
     head_repo_full_name: String,
     base_repo_full_name: String,
 }
 
-pub(crate) fn git_run(args: &[&str]) -> anyhow::Result<()> {
+fn git_run(args: &[&str]) -> anyhow::Result<()> {
     let output = ProcessCommand::new("git")
         .args(args)
         .output()
@@ -915,7 +935,7 @@ pub(crate) fn git_run(args: &[&str]) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) fn git_output(args: &[&str]) -> anyhow::Result<String> {
+fn git_output(args: &[&str]) -> anyhow::Result<String> {
     let output = ProcessCommand::new("git")
         .args(args)
         .output()
@@ -927,7 +947,7 @@ pub(crate) fn git_output(args: &[&str]) -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-pub(crate) fn gh_run(args: &[&str], token: Option<&str>) -> anyhow::Result<()> {
+fn gh_run(args: &[&str], token: Option<&str>) -> anyhow::Result<()> {
     let mut cmd = ProcessCommand::new("gh");
     cmd.args(args);
     if let Some(token) = token {
@@ -943,11 +963,7 @@ pub(crate) fn gh_run(args: &[&str], token: Option<&str>) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) fn github_default_branch(
-    owner: &str,
-    repo: &str,
-    token: Option<&str>,
-) -> anyhow::Result<String> {
+fn github_default_branch(owner: &str, repo: &str, token: Option<&str>) -> anyhow::Result<String> {
     let endpoint = format!("repos/{owner}/{repo}");
     let value = gh_api_json("GET", &endpoint, None, token)?;
     let branch = value
@@ -965,7 +981,7 @@ pub(crate) fn github_default_branch(
 
 // PLACEHOLDER_CHUNK_14
 
-pub(crate) fn github_fetch_pr_runtime_info(
+fn github_fetch_pr_runtime_info(
     owner: &str,
     repo: &str,
     pr_number: u64,
@@ -1002,7 +1018,7 @@ pub(crate) fn github_fetch_pr_runtime_info(
     })
 }
 
-pub(crate) fn github_generate_branch_name(prefix: &str, issue_number: Option<u64>) -> String {
+fn github_generate_branch_name(prefix: &str, issue_number: Option<u64>) -> String {
     let stamp = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
     if let Some(issue_number) = issue_number {
         return format!("agendao/{}{}-{}", prefix, issue_number, stamp);
@@ -1010,16 +1026,13 @@ pub(crate) fn github_generate_branch_name(prefix: &str, issue_number: Option<u64
     format!("agendao/{}-{}", prefix, stamp)
 }
 
-pub(crate) fn github_checkout_new_branch(
-    prefix: &str,
-    issue_number: Option<u64>,
-) -> anyhow::Result<String> {
+fn github_checkout_new_branch(prefix: &str, issue_number: Option<u64>) -> anyhow::Result<String> {
     let branch = github_generate_branch_name(prefix, issue_number);
     git_run(&["checkout", "-b", &branch])?;
     Ok(branch)
 }
 
-pub(crate) fn github_checkout_pr_branch(
+fn github_checkout_pr_branch(
     owner: &str,
     repo: &str,
     pr_number: u64,
@@ -1032,7 +1045,7 @@ pub(crate) fn github_checkout_pr_branch(
 
 // PLACEHOLDER_CHUNK_15
 
-pub(crate) fn github_detect_dirty(original_head: &str) -> anyhow::Result<(bool, bool)> {
+fn github_detect_dirty(original_head: &str) -> anyhow::Result<(bool, bool)> {
     let status = git_output(&["status", "--porcelain"])?;
     let has_uncommitted_changes = !status.trim().is_empty();
     if has_uncommitted_changes {
@@ -1042,7 +1055,7 @@ pub(crate) fn github_detect_dirty(original_head: &str) -> anyhow::Result<(bool, 
     Ok((current_head.trim() != original_head.trim(), false))
 }
 
-pub(crate) fn github_commit_all(
+fn github_commit_all(
     summary: &str,
     actor: Option<&str>,
     include_coauthor: bool,
@@ -1068,15 +1081,15 @@ pub(crate) fn github_commit_all(
     Ok(())
 }
 
-pub(crate) fn github_push_new_branch(branch: &str) -> anyhow::Result<()> {
+fn github_push_new_branch(branch: &str) -> anyhow::Result<()> {
     git_run(&["push", "-u", "origin", branch])
 }
 
-pub(crate) fn github_push_current_branch() -> anyhow::Result<()> {
+fn github_push_current_branch() -> anyhow::Result<()> {
     git_run(&["push"])
 }
 
-pub(crate) fn github_push_to_fork(pr: &GithubPrRuntimeInfo) -> anyhow::Result<()> {
+fn github_push_to_fork(pr: &GithubPrRuntimeInfo) -> anyhow::Result<()> {
     let remote_name = "fork";
     let remote_url = format!("https://github.com/{}.git", pr.head_repo_full_name);
     if git_run(&["remote", "get-url", remote_name]).is_ok() {
@@ -1089,7 +1102,7 @@ pub(crate) fn github_push_to_fork(pr: &GithubPrRuntimeInfo) -> anyhow::Result<()
 
 // PLACEHOLDER_CHUNK_16
 
-pub(crate) fn github_summary_title(response: &str, fallback: &str) -> String {
+fn github_summary_title(response: &str, fallback: &str) -> String {
     let first = response
         .lines()
         .map(str::trim)
@@ -1102,7 +1115,7 @@ pub(crate) fn github_summary_title(response: &str, fallback: &str) -> String {
     truncate_text(first, 72)
 }
 
-pub(crate) fn github_create_pr(
+fn github_create_pr(
     owner: &str,
     repo: &str,
     base: &str,
@@ -1143,7 +1156,7 @@ pub(crate) fn github_create_pr(
 
 // PLACEHOLDER_CHUNK_17
 
-pub(crate) async fn generate_agent_response(
+async fn generate_agent_response(
     prompt: &str,
     model: Option<String>,
     agent_name: &str,
@@ -1204,7 +1217,7 @@ pub(crate) async fn generate_agent_response(
     stream_prompt_to_text(&mut executor, prompt).await
 }
 
-pub(crate) async fn handle_github_command(action: GithubCommands) -> anyhow::Result<()> {
+pub(super) async fn handle_github_command(action: GithubCommands) -> anyhow::Result<()> {
     match action {
         GithubCommands::Status => {
             let version = std::process::Command::new("gh")
@@ -1652,7 +1665,7 @@ pub(crate) async fn handle_github_command(action: GithubCommands) -> anyhow::Res
     Ok(())
 }
 
-pub(crate) async fn handle_pr_command(number: u32) -> anyhow::Result<()> {
+pub(super) async fn handle_pr_command(number: u32) -> anyhow::Result<()> {
     let branch = format!("pr/{}", number);
     let status = ProcessCommand::new("gh")
         .args([

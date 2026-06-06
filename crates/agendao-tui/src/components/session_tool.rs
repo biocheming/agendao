@@ -909,14 +909,14 @@ fn styles_for_state(
                 .add_modifier(Modifier::BOLD),
         ),
         TerminalToolState::Running => (
-            super::spinner::progress_circle_icon(),
+            "◐",
             Style::default().fg(theme.warning),
             Style::default()
                 .fg(theme.primary)
                 .add_modifier(Modifier::BOLD),
         ),
         TerminalToolState::Completed => (
-            "●",
+            "•",
             Style::default().fg(theme.success),
             Style::default()
                 .fg(theme.primary)

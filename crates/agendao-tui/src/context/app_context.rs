@@ -11,8 +11,8 @@ use crate::api::{ApiClient, SessionExecutionTopology, SessionTelemetrySnapshot};
 use crate::bridge::{UiBridge, UiBridgeSnapshot};
 use crate::components::SessionView;
 use crate::context::{
-    collect_attached_sessions_from_stage_summaries, AttachedSessionInfo, KeybindRegistry,
-    MessageRole, SessionContext, TokenUsage,
+    collect_attached_sessions_from_stage_summaries, AttachedSessionInfo, KeybindRegistry, Message,
+    MessagePart, MessageRole, SessionContext, TokenUsage,
 };
 use crate::event::{CustomEvent, Event};
 use crate::router::Router;
@@ -1186,11 +1186,76 @@ fn current_context_tokens_from_state(state: &SessionState) -> Option<u64> {
             .find(|stage| stage.stage_id == active_stage_id)
             .and_then(|stage| stage.estimated_context_tokens)
     });
-
+    let estimated_history_context_tokens = state
+        .current_session_id
+        .as_ref()
+        .and_then(|session_id| state.messages.get(session_id))
+        .and_then(|messages| estimate_context_tokens_from_history(messages));
     agendao_types::current_context_tokens_from_sources(
         usage_context_tokens,
         active_stage_context_tokens,
     )
+    .or(estimated_history_context_tokens)
+}
+
+fn estimate_context_tokens_from_history(messages: &[Message]) -> Option<u64> {
+    let tail_start = messages
+        .iter()
+        .rposition(message_marks_compaction_boundary)
+        .unwrap_or(0);
+    let tail = &messages[tail_start..];
+
+    let mut total_chars = 0usize;
+    for message in tail {
+        total_chars = total_chars.saturating_add(message.content.len());
+        for part in &message.parts {
+            match part {
+                MessagePart::Text { text } | MessagePart::Reasoning { text } => {
+                    total_chars = total_chars.saturating_add(text.len());
+                }
+                MessagePart::File { path, mime } => {
+                    total_chars = total_chars
+                        .saturating_add(path.len())
+                        .saturating_add(mime.len());
+                }
+                MessagePart::Image { url } => {
+                    total_chars = total_chars.saturating_add(url.len());
+                }
+                MessagePart::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                } => {
+                    total_chars = total_chars
+                        .saturating_add(id.len())
+                        .saturating_add(name.len())
+                        .saturating_add(arguments.len());
+                }
+                MessagePart::ToolResult {
+                    id, result, title, ..
+                } => {
+                    total_chars = total_chars
+                        .saturating_add(id.len())
+                        .saturating_add(result.len())
+                        .saturating_add(title.as_deref().map(str::len).unwrap_or(0));
+                }
+            }
+        }
+    }
+
+    (total_chars > 0).then_some(std::cmp::max(1, total_chars / 4) as u64)
+}
+
+fn message_marks_compaction_boundary(message: &Message) -> bool {
+    if message.content.starts_with("Compacted ") {
+        return true;
+    }
+    message.parts.iter().any(|part| match part {
+        MessagePart::Text { text } | MessagePart::Reasoning { text } => {
+            text.starts_with("Compacted ")
+        }
+        _ => false,
+    })
 }
 
 impl Default for AppContext {
@@ -1401,6 +1466,36 @@ mod tests {
         state.stage_summaries = vec![stage_summary("stage-exec", Some(256_000))];
 
         assert_eq!(current_context_tokens_from_state(&state), Some(256_000));
+    }
+
+    #[test]
+    fn current_context_tokens_falls_back_to_history_estimate_like_web() {
+        let mut state = SessionState::default();
+        state.current_session_id = Some("session-1".to_string());
+        state.messages.insert(
+            "session-1".to_string(),
+            vec![Message {
+                id: "assistant-1".to_string(),
+                role: MessageRole::Assistant,
+                content: "abcd".repeat(500),
+                created_at: Utc::now(),
+                agent: None,
+                model: None,
+                mode: None,
+                finish: None,
+                error: None,
+                completed_at: None,
+                cost: 0.0,
+                tokens: TokenUsage::default(),
+                metadata: None,
+                multimodal: None,
+                parts: vec![MessagePart::Text {
+                    text: "efgh".repeat(500),
+                }],
+            }],
+        );
+
+        assert_eq!(current_context_tokens_from_state(&state), Some(1000));
     }
 
     #[test]

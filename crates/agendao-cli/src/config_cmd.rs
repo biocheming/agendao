@@ -9,11 +9,11 @@ use crate::api_client::{
     ConfigPolicyValidationSnapshot,
 };
 use crate::cli::{ConfigCommands, ConfigOutputArgs, ConfigOutputFormat};
-use crate::server_lifecycle::FrontendRuntimeContext;
+use crate::server_lifecycle::CliRuntimeContext;
 
-pub(crate) async fn handle_config_command(
+pub(super) async fn handle_config_command(
     action: Option<ConfigCommands>,
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
 ) -> anyhow::Result<()> {
     match action {
         None => show_config(),
@@ -23,7 +23,7 @@ pub(crate) async fn handle_config_command(
     }
 }
 
-pub(crate) fn show_config() -> anyhow::Result<()> {
+fn show_config() -> anyhow::Result<()> {
     let current_dir = std::env::current_dir()?;
     let config = load_config(&current_dir)?;
 
@@ -80,7 +80,7 @@ pub(crate) fn show_config() -> anyhow::Result<()> {
 }
 
 async fn show_config_validation(
-    runtime_context: &FrontendRuntimeContext,
+    runtime_context: &CliRuntimeContext,
     output: &ConfigOutputArgs,
 ) -> anyhow::Result<()> {
     let client = config_client(runtime_context).await?;
@@ -95,7 +95,7 @@ async fn show_config_validation(
     Ok(())
 }
 
-async fn config_client(runtime_context: &FrontendRuntimeContext) -> anyhow::Result<CliApiClient> {
+async fn config_client(runtime_context: &CliRuntimeContext) -> anyhow::Result<CliApiClient> {
     let base_url = runtime_context.discover_or_start_server(None).await?;
     Ok(CliApiClient::new(base_url))
 }
@@ -108,7 +108,7 @@ fn print_config_validation_snapshot(snapshot: &ConfigPolicyValidationSnapshot) {
     }
 }
 
-pub(crate) fn config_validation_lines(snapshot: &ConfigPolicyValidationSnapshot) -> Vec<String> {
+fn config_validation_lines(snapshot: &ConfigPolicyValidationSnapshot) -> Vec<String> {
     let error_count = snapshot
         .reports
         .iter()

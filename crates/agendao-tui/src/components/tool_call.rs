@@ -55,8 +55,8 @@ impl ToolCallView {
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let status_icon = match self.tool_call.status {
             ToolCallStatus::Pending => "◯",
-            ToolCallStatus::Running => super::spinner::progress_circle_icon(),
-            ToolCallStatus::Completed => "●",
+            ToolCallStatus::Running => "◐",
+            ToolCallStatus::Completed => "•",
             ToolCallStatus::Failed => "✗",
         };
 

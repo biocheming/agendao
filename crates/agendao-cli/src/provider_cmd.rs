@@ -11,7 +11,7 @@ use agendao_types::{ProviderArtifactBundle, ProviderArtifactImportEnvelope};
 
 use crate::providers::convert_config_providers_for_artifact;
 
-pub(crate) async fn handle_provider_command(
+pub(super) async fn handle_provider_command(
     action: crate::cli::ProviderCommands,
 ) -> anyhow::Result<()> {
     match action {
@@ -20,12 +20,12 @@ pub(crate) async fn handle_provider_command(
     }
 }
 
-pub(crate) fn export_provider_data(output: Option<PathBuf>) -> anyhow::Result<()> {
+fn export_provider_data(output: Option<PathBuf>) -> anyhow::Result<()> {
     let current_dir = std::env::current_dir()?;
     export_provider_data_from_dir(&current_dir, output)
 }
 
-pub(crate) fn import_provider_data(file: String) -> anyhow::Result<()> {
+fn import_provider_data(file: String) -> anyhow::Result<()> {
     let current_dir = std::env::current_dir()?;
     import_provider_data_into_dir(&current_dir, Path::new(&file))?;
     Ok(())
