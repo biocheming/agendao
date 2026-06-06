@@ -1249,22 +1249,7 @@ impl App {
                         match state {
                             SessionDeleteState::Armed(_) => {}
                             SessionDeleteState::Confirmed(session_id) => {
-                                if let Some(client) = self.context.get_api_client() {
-                                    if let Err(err) = client.delete_session(&session_id) {
-                                        self.alert_dialog.set_message(&format!(
-                                            "Failed to delete session `{}`:\n{}",
-                                            session_id, err
-                                        ));
-                                        self.open_alert_dialog();
-                                    } else {
-                                        if self.current_session_id().as_deref()
-                                            == Some(session_id.as_str())
-                                        {
-                                            self.context.navigate_home();
-                                        }
-                                        self.refresh_session_list_dialog();
-                                    }
-                                }
+                                self.queue_delete_session(session_id);
                             }
                         }
                     }

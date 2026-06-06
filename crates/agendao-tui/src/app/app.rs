@@ -55,7 +55,7 @@ use crate::client::{
 use crate::core::{
     collect_attached_sessions, is_primary_key_event, normalize_key_event, AppContext, CustomEvent,
     Event, LeaderKeyState, McpConnectionStatus, McpServerStatus, Message, MessageRole, RevertInfo,
-    Route, Session, SessionStatus, StateChange, StatusDialogView, TokenUsage,
+    Route, Session, SessionDeleteOutcome, SessionStatus, StateChange, StatusDialogView, TokenUsage,
     TuiEventsBrowserState, TuiMemoryConsolidationState, TuiMemoryDetailState, TuiMemoryListState,
     TuiMemoryPreviewState, TuiMemoryRuleHitsState,
 };
@@ -1412,6 +1412,32 @@ impl App {
                             self.alert_dialog.set_message(&format!(
                                 "Failed to submit permission response:\n{}",
                                 message
+                            ));
+                            self.open_alert_dialog();
+                        }
+                    }
+                    self.event_caused_change = true;
+                }
+                CustomEvent::SessionDeleteFinished {
+                    session_id,
+                    outcome,
+                } => {
+                    match outcome {
+                        SessionDeleteOutcome::Succeeded => {
+                            if self.current_session_id().as_deref() == Some(session_id.as_str()) {
+                                self.context.navigate_home();
+                            }
+                            self.refresh_session_list_dialog();
+                            self.toast.show(
+                                crate::components::ToastVariant::Success,
+                                &format!("Session deleted: {}", session_id),
+                                2200,
+                            );
+                        }
+                        SessionDeleteOutcome::Failed { message } => {
+                            self.alert_dialog.set_message(&format!(
+                                "Failed to delete session `{}`:\n{}",
+                                session_id, message
                             ));
                             self.open_alert_dialog();
                         }

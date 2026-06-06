@@ -200,6 +200,19 @@ pub async fn local_list_sessions(
 }
 
 #[cfg(feature = "local-server")]
+pub async fn local_delete_session(state: Arc<LocalServerState>, session_id: &str) -> Result<bool> {
+    agendao_server_local::local_delete_session(state, session_id).await
+}
+
+#[cfg(not(feature = "local-server"))]
+pub async fn local_delete_session(
+    _state: Arc<LocalServerState>,
+    _session_id: &str,
+) -> Result<bool> {
+    Err(anyhow::anyhow!("local server bridge unavailable"))
+}
+
+#[cfg(feature = "local-server")]
 pub async fn local_connect_provider(
     state: Arc<LocalServerState>,
     request: ConnectProviderRequest,
@@ -530,10 +543,18 @@ pub async fn local_refresh_provider_catalog(
     Err(anyhow::anyhow!("local server bridge unavailable"))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "local-server"))]
 pub async fn local_register_provider(
     state: &Arc<LocalServerState>,
     provider: Arc<dyn agendao_provider::Provider>,
 ) {
     agendao_server_local::local_register_provider(state, provider).await
+}
+
+#[cfg(all(test, not(feature = "local-server")))]
+pub async fn local_register_provider(
+    _state: &Arc<LocalServerState>,
+    _provider: Arc<dyn agendao_provider::Provider>,
+) {
+    panic!("local-server feature is required for local provider registration tests");
 }

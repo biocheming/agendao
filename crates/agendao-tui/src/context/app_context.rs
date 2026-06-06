@@ -1360,7 +1360,7 @@ fn split_theme_variant(name: &str) -> Option<(&str, &str)> {
 mod tests {
     use super::{current_context_tokens_from_state, AppContext, SessionState};
     use crate::api::SessionRuntimeState;
-    use crate::context::{Message, MessageRole, TokenUsage};
+    use crate::context::{Message, MessagePart, MessageRole, TokenUsage};
     use agendao_command_render::output_blocks::SchedulerStageBlock;
     use agendao_stage_protocol::{StageStatus, StageSummary};
     use agendao_types::{SessionUsage, SessionUsageBooks, WorkflowUsageSummary};

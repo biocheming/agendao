@@ -1129,10 +1129,28 @@ impl Prompt {
     }
 
     fn render_status_line(&self, theme: &Theme) -> Line<'static> {
+        if let Some(token) = self.current_slash_token() {
+            if self
+                .current_session_status()
+                .map_or(true, |status| matches!(status, SessionStatus::Idle))
+            {
+                return self.slash_hint_line(theme, &token);
+            }
+        }
         if let Some(status) = self.current_session_status() {
             return self.status_line_for_session(status, theme);
         }
         self.hint_line(theme)
+    }
+
+    fn current_slash_token(&self) -> Option<String> {
+        self.current_token().and_then(|(_, _, token)| {
+            if token.starts_with('/') {
+                Some(token)
+            } else {
+                None
+            }
+        })
     }
 
     fn current_session_status(&self) -> Option<SessionStatus> {
@@ -1414,10 +1432,8 @@ impl Prompt {
     }
 
     fn hint_line(&self, theme: &Theme) -> Line<'static> {
-        if let Some((_, _, token)) = self.current_token() {
-            if token.starts_with('/') {
-                return self.slash_hint_line(theme, &token);
-            }
+        if let Some(token) = self.current_slash_token() {
+            return self.slash_hint_line(theme, &token);
         }
         Line::from("")
     }
@@ -1980,6 +1996,24 @@ mod tests {
             let theme = prompt.context.theme.read().clone();
             let rendered = line_text(prompt.status_line_for_session(SessionStatus::Idle, &theme));
             assert_eq!(rendered, "Run failed");
+        });
+    }
+
+    #[test]
+    fn slash_hint_line_surfaces_inside_idle_session() {
+        with_isolated_prompt(|mut prompt| {
+            let session_id = {
+                let mut session = prompt.context.session.write();
+                session.data.create_session(Some("Test".to_string()))
+            };
+            prompt.context.navigate_session(session_id);
+            prompt.set_input("/sess".to_string());
+
+            let theme = prompt.context.theme.read().clone();
+            let rendered = line_text(prompt.render_status_line(&theme));
+
+            assert!(rendered.contains("matches:"), "{rendered}");
+            assert!(rendered.contains("/session"), "{rendered}");
         });
     }
 
