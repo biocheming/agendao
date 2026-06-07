@@ -40,7 +40,6 @@ interface MemoryTabProps {
   onRunMemoryConsolidation: () => void;
   memoryListResponse: MemoryListResponseRecord | null;
   selectedMemoryId: string | null;
-  selectedMemoryCardIdLabel: string | null;
   onSelectMemoryId: (value: string) => void;
   memoryDetailLoading: boolean;
   memoryDetail: MemoryDetailResponseRecord | null;
@@ -84,7 +83,6 @@ export function MemoryTab({
   onRunMemoryConsolidation,
   memoryListResponse,
   selectedMemoryId,
-  selectedMemoryCardIdLabel,
   onSelectMemoryId,
   memoryDetailLoading,
   memoryDetail,
@@ -99,11 +97,7 @@ export function MemoryTab({
   const {
     primaryButtonClass,
     secondaryButtonClass,
-    summaryCardClass,
-    sectionCardClass,
     mutedCardClass,
-    insetCardClass,
-    disclosureCardClass,
   } = styles;
 
 

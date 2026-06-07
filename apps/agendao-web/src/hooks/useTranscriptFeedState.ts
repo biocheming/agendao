@@ -3,7 +3,6 @@ import {
   useCallback,
   useEffect,
   useRef,
-  useState,
   type MutableRefObject,
 } from "react";
 import type {
@@ -19,6 +18,7 @@ import {
   setActiveFeedSequence,
   visibleSnapshotFromLiveBlocks,
 } from "../lib/liveTranscriptState";
+import { useAgendaoStore } from "../store";
 
 type SessionLiveBlockCache = Record<string, OutputBlock[]>;
 type SessionOptimisticFeedCache = Record<string, FeedMessage[]>;
@@ -57,8 +57,10 @@ export function useTranscriptFeedState({
   sessionIds,
   showThinking,
 }: UseTranscriptFeedStateOptions) {
-  const [messages, setMessages] = useState<FeedMessage[]>([]);
-  const [messageHistory, setMessageHistory] = useState<MessageRecord[]>([]);
+  const messages = useAgendaoStore((s) => s.messages);
+  const messageHistory = useAgendaoStore((s) => s.messageHistory);
+  const setMessages = useAgendaoStore((s) => s.setMessages);
+  const setMessageHistory = useAgendaoStore((s) => s.setMessageHistory);
   const liveBlocksRef = useRef<SessionLiveBlockCache>({});
   const optimisticMessagesRef = useRef<SessionOptimisticFeedCache>({});
   const pendingOutputBlocksRef = useRef<Record<string, OutputBlock[]>>({});
@@ -138,7 +140,7 @@ export function useTranscriptFeedState({
         ),
       );
     });
-  }, [clearPendingOutputBlockFlush, selectedSessionRef]);
+  }, [clearPendingOutputBlockFlush, selectedSessionRef, setMessages]);
 
   const schedulePendingOutputBlockFlush = useCallback(() => {
     if (outputFlushFrameRef.current !== null) {
@@ -220,12 +222,12 @@ export function useTranscriptFeedState({
       [sessionId]: merged.remaining,
     };
     setMessages(merged.messages);
-  }, [materializePendingOutputBlocksForSession]);
+  }, [materializePendingOutputBlocksForSession, setMessageHistory, setMessages]);
 
   const clearTranscriptFeed = useCallback(() => {
     setMessages([]);
     setMessageHistory([]);
-  }, []);
+  }, [setMessageHistory, setMessages]);
 
   return {
     clearPendingOutputBlockFlush,

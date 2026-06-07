@@ -19,11 +19,11 @@ import type {
   SkillSyncPlanRecord,
 } from "@/lib/skill";
 import { cn } from "@/lib/utils";
-import { SkillGovernanceTimeline } from "../SkillGovernanceTimeline";
+import { SkillGovernanceTimeline } from "../settings/SkillGovernanceTimeline";
 import {
   SkillMethodologyDraft,
   SkillMethodologyEditor,
-} from "../SkillMethodologyEditor";
+} from "../settings/SkillMethodologyEditor";
 
 type SkillEditorMode = "methodology" | "raw";
 type SkillSubtabId = "overview" | "hub" | "catalog" | "governance";
@@ -314,7 +314,6 @@ export function SkillsTab({
   skillSemanticConflicts,
   skillSourceIndices,
   skillDistributions,
-  skillArtifactCache,
   skillHubPolicy,
   skillLifecycle,
   skillGovernanceTimeline,
@@ -345,7 +344,6 @@ export function SkillsTab({
   selectedSkillName,
   onSelectedSkillNameChange,
   selectedSkillEntry,
-  skillDetail,
   skillDetailLoading,
   skillEditorContent,
   onSkillEditorContentChange,

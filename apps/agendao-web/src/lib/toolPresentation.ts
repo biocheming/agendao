@@ -1,4 +1,4 @@
-import { hasDisplayContract, type OutputField, type OutputPreview, type ToolOutputBlock } from "./history";
+import { hasDisplayContract, type OutputField, type ToolOutputBlock } from "./history";
 import { isSkillToolName } from "./toolLabels";
 
 export function toolDisplayTitle(block: ToolOutputBlock): string {

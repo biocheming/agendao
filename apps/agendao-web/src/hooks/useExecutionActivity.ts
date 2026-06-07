@@ -13,8 +13,8 @@ import type {
 } from "../lib/sessionActivity";
 import { isLiveStageStatus } from "../lib/contextPressure";
 import { buildRunTailSummary, type RunTailSummary } from "../lib/runTailSummary";
-import { isSkillToolName, toolActivityLabel } from "../lib/toolLabels";
-import { hasDisplayContract, type OutputField, type OutputPreview } from "../lib/history";
+import { toolActivityLabel } from "../lib/toolLabels";
+import { type OutputField, type OutputPreview } from "../lib/history";
 import {
   toolDisplayFields,
   toolDisplayPreview,
@@ -359,7 +359,10 @@ export function useExecutionActivity({
     void refreshExecutionActivity(selectedSessionId, activityFilters, activityPage);
   }, [activityFilters, activityPage, refreshExecutionActivity, resetExecutionActivity, selectedSessionId]);
 
-  const telemetryStages = Array.isArray(telemetry?.stages) ? telemetry.stages : [];
+  const telemetryStages = useMemo(
+    () => (Array.isArray(telemetry?.stages) ? telemetry.stages : []),
+    [telemetry?.stages],
+  );
   const executionTopology = telemetry?.topology
     ? {
         ...telemetry.topology,

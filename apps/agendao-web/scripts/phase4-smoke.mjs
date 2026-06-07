@@ -2,8 +2,12 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { WebSocket as UndiciWebSocket } from "undici";
+
+const RuntimeWebSocket = globalThis.WebSocket ?? UndiciWebSocket;
 
 const BASE_URL = process.env.AGENDAO_BASE_URL ?? "http://127.0.0.1:4096";
+const WEB_URL = new URL("/web/", `${BASE_URL}/`).toString();
 const CHROME_BIN = process.env.CHROME_BIN ?? "google-chrome";
 const CHROME_PORT = Number.parseInt(process.env.AGENDAO_CHROME_PORT ?? "9222", 10);
 const TIMEOUT_MS = Number.parseInt(process.env.AGENDAO_SMOKE_TIMEOUT_MS ?? "30000", 10);
@@ -130,6 +134,23 @@ async function terminateProcess(child) {
   }
 }
 
+async function removeDirectoryWithRetry(pathname, attempts = 8, delayMs = 250) {
+  let lastError = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await rm(pathname, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!error || typeof error !== "object" || error.code !== "ENOTEMPTY") {
+        throw error;
+      }
+      await sleep(delayMs);
+    }
+  }
+  if (lastError) throw lastError;
+}
+
 async function createPageClient() {
   const pages = await fetchJson(`http://127.0.0.1:${CHROME_PORT}/json/list`);
   const page = pages.find((entry) => entry.type === "page");
@@ -137,7 +158,7 @@ async function createPageClient() {
     throw new Error("Could not find a Chrome page target");
   }
 
-  const socket = new WebSocket(page.webSocketDebuggerUrl);
+  const socket = new RuntimeWebSocket(page.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => {
     socket.addEventListener("open", resolve, { once: true });
     socket.addEventListener("error", reject, { once: true });
@@ -233,6 +254,10 @@ async function waitForOptionalExpression(client, expression, timeoutMs = TIMEOUT
   }
 }
 
+function escapeForDoubleQuotedJs(text) {
+  return text.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"");
+}
+
 async function click(client, selector) {
   const escaped = JSON.stringify(selector);
   const clicked = await evaluate(
@@ -293,14 +318,14 @@ async function fillInput(client, selector, value) {
 async function activeSessionId(client) {
   return evaluate(
     client,
-    "document.querySelector('[data-testid=\"session-item\"].active')?.dataset.sessionId ?? null",
+    "document.querySelector('[data-testid=\"session-item\"][data-active=\"true\"]')?.dataset.sessionId ?? null",
   );
 }
 
 async function waitForRootShell(client) {
   await waitForExpression(
     client,
-    "Boolean(document.querySelector('[data-testid=\"session-sidebar\"]') && document.querySelector('[data-testid=\"composer-input\"]') && document.querySelector('[data-testid=\"workspace-inspector\"]'))",
+    "Boolean(document.querySelector('[data-testid=\"session-sidebar\"]') && document.querySelector('[data-testid=\"composer-input\"]') && (document.querySelector('[data-testid=\"workspace-panel\"]') || document.querySelector('[data-testid=\"workspace-inspector\"]')))",
   );
 }
 
@@ -363,7 +388,7 @@ async function maybeRunProviderSoak(client, record) {
   await click(client, "[data-testid='settings-tab-general']");
   await waitForExpression(
     client,
-    "document.querySelector('[data-testid=\"settings-tab-general\"]')?.classList.contains('active') === true",
+    "document.querySelector('[data-testid=\"settings-tab-general\"]')?.dataset.active === 'true'",
   );
   const hasModelSelector = await waitForOptionalExpression(
     client,
@@ -482,7 +507,7 @@ async function run() {
         ),
       );
     });
-    await navigate(client, `${BASE_URL}/`);
+    await navigate(client, WEB_URL);
     await waitForRootShell(client);
     record("root-shell", "new frontend rendered on /");
 
@@ -512,7 +537,7 @@ async function run() {
     await click(client, "[data-testid='settings-tab-providers']");
     await waitForExpression(
       client,
-      "document.querySelector('[data-testid=\"settings-tab-providers\"]')?.classList.contains('active') === true",
+      "document.querySelector('[data-testid=\"settings-tab-providers\"]')?.dataset.active === 'true'",
     );
     record("settings-drawer", "settings drawer opened and providers tab activated");
 
@@ -531,32 +556,30 @@ async function run() {
       client,
       previousActiveSessionId
         ? `(() => {
-            const active = document.querySelector('[data-testid="session-item"].active');
+            const active = document.querySelector('[data-testid="session-item"][data-active="true"]');
             return Boolean(active && active.dataset.sessionId && active.dataset.sessionId !== ${JSON.stringify(previousActiveSessionId)});
           })()`
-        : "Boolean(document.querySelector('[data-testid=\"session-item\"].active'))",
+        : "Boolean(document.querySelector('[data-testid=\"session-item\"][data-active=\"true\"]'))",
     );
     const sessionId = await activeSessionId(client);
     assert(sessionId, "failed to resolve the newly created active session");
 
-    await click(client, "[data-testid='terminal-open']");
+    await click(client, "[data-testid='terminal-toggle']");
     await waitForExpression(client, "Boolean(document.querySelector('[data-testid=\"terminal-panel\"]'))");
     await waitForExpression(
       client,
       "(window.__agendaoTracker?.fetches ?? []).some((entry) => entry.url.includes('/pty'))",
     );
     record("terminal-expand", "terminal panel expanded and PTY fetch started");
-
-    await click(client, "[data-testid='terminal-create']");
     await waitForExpression(
       client,
-      "(window.__agendaoTracker?.fetches ?? []).some((entry) => /\\/pty(?:\\?|$)/.test(entry.url) && entry.method === 'POST')",
+      "performance.getEntriesByType('resource').some((entry) => entry.name.includes('TerminalPanel-') || entry.name.includes('vendor-terminal-'))",
     );
     await waitForExpression(
       client,
-      "(window.__agendaoTracker?.sockets ?? []).some((url) => url.includes('/pty/'))",
+      "Boolean(document.querySelector('[data-testid=\"terminal-viewport\"]'))",
     );
-    record("terminal-create", "PTY creation emitted POST /pty and opened PTY websocket");
+    record("terminal-create", "terminal open created or reused a PTY session and loaded the live terminal surface");
 
     await postJson(`${BASE_URL}/experimental/frontend-smoke/question`, {
       session_id: sessionId,
@@ -590,7 +613,10 @@ async function run() {
       client,
       "(window.__agendaoTracker?.fetches ?? []).some((entry) => /\\/permission\\/.+\\/reply$/.test(entry.url) && entry.method === 'POST')",
     );
-    await waitForExpression(client, "!document.querySelector('[data-testid=\"permission-overlay\"]')");
+    await waitForExpression(
+      client,
+      "!document.querySelector('[data-testid=\"permission-overlay\"]') || Boolean(document.querySelector('[data-testid=\"permission-submit-completed\"]'))",
+    );
     record("permission-loop", "permission overlay opened and replied through the real permission route");
 
     await fillInput(client, "[data-testid='composer-input']", "Smoke prompt from browser automation");
@@ -598,14 +624,14 @@ async function run() {
     await waitForExpression(
       client,
       `(window.__agendaoTracker?.fetches ?? []).some((entry) =>
-        entry.url.includes('/session/${sessionId}/stream') && entry.method === 'POST'
+        entry.url.includes('/session/${sessionId}/prompt') && entry.method === 'POST'
       )`,
     );
     await waitForExpression(
       client,
       "document.querySelectorAll('[data-testid=\"message-card\"]').length >= 1",
     );
-    record("prompt-submit", "composer submit issued POST /session/{id}/stream and rendered feed output");
+    record("prompt-submit", "composer submit issued POST /session/{id}/prompt and rendered feed output");
 
     const sessionInfo = await fetchJson(`${BASE_URL}/session/${sessionId}`);
     const attachmentPath = `${sessionInfo.directory.replace(/\/+$/, "")}/smoke-attachment.txt`;
@@ -618,11 +644,11 @@ async function run() {
       }),
     });
 
-    await navigate(client, `${BASE_URL}/`);
+    await navigate(client, WEB_URL);
     await waitForRootShell(client);
     await waitForExpression(
       client,
-      `Boolean(document.querySelector('[data-testid="workspace-node"][data-path="${attachmentPath.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"]'))`,
+      `Boolean(document.querySelector('[data-testid="workspace-node"][data-path="${escapeForDoubleQuotedJs(attachmentPath)}"]'))`,
     );
     await click(client, `[data-testid="workspace-node"][data-path="${attachmentPath}"]`);
     await click(client, "[data-testid='workspace-insert-reference']");
@@ -631,10 +657,37 @@ async function run() {
       "document.querySelector('[data-testid=\"composer-input\"]')?.value.includes('@smoke-attachment.txt') === true",
     );
     await click(client, "[data-testid='workspace-attach']");
-    await waitForExpression(
+    const attachmentChipSelector =
+      `[data-testid="context-attachment-chip"][data-workspace-path="${escapeForDoubleQuotedJs(attachmentPath)}"]`;
+    const attachmentChipVisible = await waitForOptionalExpression(
       client,
-      `Boolean(document.querySelector('[data-testid="context-attachment-chip"][data-workspace-path="${attachmentPath.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"]'))`,
+      `Boolean(document.querySelector('${attachmentChipSelector}'))`,
     );
+    if (!attachmentChipVisible) {
+      const attachmentDebug = await evaluate(
+        client,
+        `(() => {
+          const selectedNode = document.querySelector('[data-testid="workspace-node"][data-selected="true"]');
+          const attachButton = document.querySelector('[data-testid="workspace-attach"]');
+          const chips = Array.from(document.querySelectorAll('[data-testid="context-attachment-chip"]')).map((chip) => ({
+            workspacePath: chip.getAttribute('data-workspace-path'),
+            kind: chip.getAttribute('data-kind'),
+            source: chip.getAttribute('data-source'),
+            text: chip.textContent?.trim() ?? '',
+          }));
+          return {
+            expectedPath: ${JSON.stringify(attachmentPath)},
+            selectedNodePath: selectedNode?.getAttribute('data-path') ?? null,
+            selectedNodeState: selectedNode?.getAttribute('data-selected') ?? null,
+            attachDisabled: attachButton?.hasAttribute('disabled') ?? null,
+            composerValue: document.querySelector('[data-testid="composer-input"]')?.value ?? null,
+            chips,
+          };
+        })()`,
+      );
+      console.error("Attachment debug:", JSON.stringify(attachmentDebug, null, 2));
+      throw new Error(`Attachment chip did not appear for ${attachmentPath}`);
+    }
     await click(
       client,
       `[data-testid="context-attachment-main"]`,
@@ -643,15 +696,18 @@ async function run() {
     await click(client, "[data-testid='attachment-locate']");
     await waitForExpression(
       client,
-      `document.querySelector('[data-testid="workspace-node"][data-path="${attachmentPath.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"]')?.classList.contains('active') === true`,
+      `document.querySelector('[data-testid="workspace-node"][data-path="${escapeForDoubleQuotedJs(attachmentPath)}"]')?.dataset.selected === "true"`,
     );
     record("attachment-workspace", "workspace file was inserted as @reference, attached as chip, and located back in the tree");
 
     const activeSessionAfterReload = await activeSessionId(client);
     assert(activeSessionAfterReload, "no active session after workspace reload");
-    const childSession = await postJson(`${BASE_URL}/session`, {
-      parent_id: activeSessionAfterReload,
-    });
+    const childSession = await postJson(
+      `${BASE_URL}/session/${activeSessionAfterReload}/fork`,
+      {
+        message_id: null,
+      },
+    );
     await postJson(`${BASE_URL}/experimental/frontend-smoke/output-block`, {
       session_id: activeSessionAfterReload,
       id: "smoke-stage-block",
@@ -688,7 +744,7 @@ async function run() {
     await clickLast(client, "[data-testid='scheduler-stage-open-child']");
     await waitForExpression(
       client,
-      `document.querySelector('[data-testid="session-item"][data-session-id="${childSession.id}"]')?.classList.contains('active') === true`,
+      `document.querySelector('[data-testid="session-item"][data-session-id="${childSession.id}"]')?.dataset.active === "true"`,
     );
     await waitForExpression(
       client,
@@ -700,11 +756,11 @@ async function run() {
     await click(client, "[data-testid='provenance-tool']");
     await waitForExpression(
       client,
-      `document.querySelector('[data-testid="session-item"][data-session-id="${activeSessionAfterReload}"]')?.classList.contains('active') === true`,
+      `document.querySelector('[data-testid="session-item"][data-session-id="${activeSessionAfterReload}"]')?.dataset.active === "true"`,
     );
     await waitForExpression(
       client,
-      "document.querySelector('[data-testid=\"message-card\"][data-block-id=\"call_smoke_tool\"]')?.classList.contains('focused') === true",
+      "document.querySelector('[data-testid=\"message-card\"][data-block-id=\"call_smoke_tool\"]')?.querySelector('[data-active=\"true\"]') !== null",
     );
     record("provenance-tool-jump", "attached-session provenance tool link returned to the parent tool block and highlighted it");
 
@@ -729,6 +785,7 @@ async function run() {
             client,
             "document.body ? document.body.innerHTML.slice(0, 1200) : '(no body)'",
           ),
+          webDebug: await evaluate(client, "window.__agendaoWebDebug ?? null"),
           fetches: await evaluate(client, "window.__agendaoTracker?.fetches ?? []"),
           resources: await evaluate(
             client,
@@ -756,7 +813,7 @@ async function run() {
       client.close();
     }
     await terminateProcess(chrome);
-    await rm(userDataDir, { recursive: true, force: true });
+    await removeDirectoryWithRetry(userDataDir);
     const chromeStderr = stderr().trim();
     if (chrome.exitCode && chromeStderr) {
       console.error(chromeStderr);

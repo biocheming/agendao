@@ -70,9 +70,7 @@ export function useDiagnosticsFromTelemetry(
     }
     return null;
   }, [
-    telemetry?.cache_evidence,
-    telemetry?.context_closure_contract,
-    telemetry?.cache_semantics,
+    telemetry,
     messageHistory,
   ]);
 

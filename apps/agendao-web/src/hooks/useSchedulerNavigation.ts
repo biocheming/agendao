@@ -1,8 +1,9 @@
 import type { Dispatch, SetStateAction } from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import type { SessionRecord } from "../lib/session";
 import type { ConversationJumpTarget } from "./useConversationJump";
 import type { useExecutionActivity } from "./useExecutionActivity";
+import { useAgendaoStore } from "../store";
 
 interface UseSchedulerNavigationOptions {
   sessions: SessionRecord[];
@@ -75,9 +76,13 @@ export function useSchedulerNavigation({
   jumpToConversationTarget,
   queueConversationJumpTarget,
 }: UseSchedulerNavigationOptions) {
-  const [activeStageContext, setActiveStageContext] = useState<StageNavigationContext | null>(null);
-  const [previewStageId, setPreviewStageId] = useState<string | null>(null);
-  const [sessionBreadcrumbs, setSessionBreadcrumbs] = useState<SessionBreadcrumb[]>([]);
+  const activeStageContext = useAgendaoStore((s) => s.activeStageContext) as StageNavigationContext | null;
+  const setActiveStageContext = useAgendaoStore((s) => s.setActiveStageContext);
+  const previewStageId = useAgendaoStore((s) => s.previewStageId);
+  const setPreviewStageId = useAgendaoStore((s) => s.setPreviewStageId);
+  const sessionBreadcrumbs = useAgendaoStore((s) => s.sessionBreadcrumbs);
+  const setSessionBreadcrumbs = useAgendaoStore((s) => s.setSessionBreadcrumbs);
+  const currentBreadcrumbProvenanceFor = useAgendaoStore((s) => s.currentBreadcrumbProvenanceFor);
 
   const sessionForId = useCallback(
     (sessionId: string | null | undefined) => {
@@ -147,11 +152,11 @@ export function useSchedulerNavigation({
 
       return [breadcrumbForSession(selectedSessionId, session)];
     });
-  }, [breadcrumbForSession, selectedSessionId, sessionForId]);
+  }, [breadcrumbForSession, selectedSessionId, sessionForId, setSessionBreadcrumbs]);
 
   useEffect(() => {
     setPreviewStageId(null);
-  }, [selectedSessionId]);
+  }, [selectedSessionId, setPreviewStageId]);
 
   useEffect(() => {
     if (!activeStageContext?.stageId || activeStageContext.sessionId !== selectedSessionId) {
@@ -182,12 +187,12 @@ export function useSchedulerNavigation({
         setBanner(`Focused stage ${stageId}`);
       }
     },
-    [focusStageInActivity, selectedSessionId, setBanner],
+    [focusStageInActivity, selectedSessionId, setActiveStageContext, setBanner, setPreviewStageId],
   );
 
   const previewStage = useCallback((stageId: string | null | undefined) => {
     setPreviewStageId(stageId?.trim() ? stageId : null);
-  }, []);
+  }, [setPreviewStageId]);
 
   const navigateToStage = useCallback(
     (stageId: string) => {
@@ -275,7 +280,9 @@ export function useSchedulerNavigation({
       currentTrail,
       selectedSessionId,
       sessions,
+      setActiveStageContext,
       setBanner,
+      setSessionBreadcrumbs,
       setSelectedSessionId,
       setSessions,
     ],
@@ -288,7 +295,7 @@ export function useSchedulerNavigation({
       setActiveStageContext(null);
       setSelectedSessionId(sessionId);
     },
-    [breadcrumbForSession, sessionForId, setSelectedSessionId],
+    [breadcrumbForSession, sessionForId, setActiveStageContext, setSelectedSessionId, setSessionBreadcrumbs],
   );
 
   const navigateToBreadcrumb = useCallback(
@@ -314,7 +321,7 @@ export function useSchedulerNavigation({
       }
       setSelectedSessionId(sessionId);
     },
-    [queueConversationJumpTarget, sessionBreadcrumbs, setSelectedSessionId],
+    [queueConversationJumpTarget, sessionBreadcrumbs, setActiveStageContext, setSelectedSessionId, setSessionBreadcrumbs],
   );
 
   const restoreActiveStage = useCallback(() => {
@@ -338,19 +345,10 @@ export function useSchedulerNavigation({
     [focusStage, selectedSessionId],
   );
 
-  const currentBreadcrumbProvenance = useMemo(() => {
-    if (!selectedSessionId || sessionBreadcrumbs.length < 2) return null;
-    const selectedIndex = sessionBreadcrumbs.findIndex((crumb) => crumb.sessionId === selectedSessionId);
-    if (selectedIndex <= 0) return null;
-    const sourceCrumb = sessionBreadcrumbs[selectedIndex - 1];
-    return {
-      sourceSessionId: sourceCrumb.sessionId,
-      sourceSessionTitle: sourceCrumb.title,
-      label: sourceCrumb.viaLabel ?? null,
-      stageId: sourceCrumb.viaStageId ?? null,
-      toolCallId: sourceCrumb.viaToolCallId ?? null,
-    } satisfies BreadcrumbProvenance;
-  }, [selectedSessionId, sessionBreadcrumbs]);
+  const currentBreadcrumbProvenance = useMemo(
+    () => currentBreadcrumbProvenanceFor(selectedSessionId),
+    [currentBreadcrumbProvenanceFor, selectedSessionId],
+  );
 
   const navigateToProvenanceSession = useCallback(() => {
     if (!currentBreadcrumbProvenance) return;
@@ -371,7 +369,7 @@ export function useSchedulerNavigation({
       label: currentBreadcrumbProvenance.label ?? currentBreadcrumbProvenance.stageId,
     });
     setSelectedSessionId(currentBreadcrumbProvenance.sourceSessionId);
-  }, [currentBreadcrumbProvenance, queueConversationJumpTarget, setSelectedSessionId]);
+  }, [currentBreadcrumbProvenance, queueConversationJumpTarget, setActiveStageContext, setSelectedSessionId]);
 
   const navigateToProvenanceToolCall = useCallback(() => {
     if (!currentBreadcrumbProvenance?.toolCallId) return;
@@ -387,7 +385,7 @@ export function useSchedulerNavigation({
       label: currentBreadcrumbProvenance.label ?? currentBreadcrumbProvenance.toolCallId,
     });
     setSelectedSessionId(currentBreadcrumbProvenance.sourceSessionId);
-  }, [currentBreadcrumbProvenance, queueConversationJumpTarget, setSelectedSessionId]);
+  }, [currentBreadcrumbProvenance, queueConversationJumpTarget, setActiveStageContext, setSelectedSessionId]);
 
   return {
     activeStageId: activeStageContext?.sessionId === selectedSessionId ? activeStageContext.stageId ?? null : null,

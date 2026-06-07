@@ -1,6 +1,5 @@
-import { useCallback, useEffect, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, type MutableRefObject } from "react";
 import type {
-  ProvisionExternalAdapterSessionResponseRecord,
   SessionRecord,
 } from "../lib/session";
 import type {
@@ -18,8 +17,8 @@ import {
   DEFAULT_WEB_MODE,
   THEMES,
   type ExecutionMode,
-  type ThemeId,
 } from "../lib/webRuntime";
+import { useAgendaoStore } from "../store";
 
 interface UseWebBootstrapOptions {
   apiJson: <T>(path: string, options?: RequestInit) => Promise<T>;
@@ -30,20 +29,6 @@ interface UseWebBootstrapOptions {
     route: WebExternalAdapterProvisioningRoute,
     options?: { replace?: boolean },
   ) => Promise<string>;
-  setBanner: Dispatch<SetStateAction<string | null>>;
-  setConnectProtocol: Dispatch<SetStateAction<string>>;
-  setConnectProtocols: Dispatch<SetStateAction<ConnectProtocolOption[]>>;
-  setKnownProviders: Dispatch<SetStateAction<KnownProviderEntry[]>>;
-  setModes: Dispatch<SetStateAction<ExecutionMode[]>>;
-  setProviders: Dispatch<SetStateAction<ProviderRecord[]>>;
-  setSelectedMode: Dispatch<SetStateAction<string>>;
-  setSelectedModel: Dispatch<SetStateAction<string>>;
-  setSelectedSessionId: Dispatch<SetStateAction<string | null>>;
-  setServiceRootPath: Dispatch<SetStateAction<string>>;
-  setSessions: Dispatch<SetStateAction<SessionRecord[]>>;
-  setShowThinking: Dispatch<SetStateAction<boolean>>;
-  setTheme: Dispatch<SetStateAction<ThemeId>>;
-  setWorkspaceContext: Dispatch<SetStateAction<WorkspaceContextRecord | null>>;
 }
 
 interface ConfigSurfaceData {
@@ -66,20 +51,6 @@ export function useWebBootstrap({
   formatError,
   preferencesReadyRef,
   provisionExternalAdapterSession,
-  setBanner,
-  setConnectProtocol,
-  setConnectProtocols,
-  setKnownProviders,
-  setModes,
-  setProviders,
-  setSelectedMode,
-  setSelectedModel,
-  setSelectedSessionId,
-  setServiceRootPath,
-  setSessions,
-  setShowThinking,
-  setTheme,
-  setWorkspaceContext,
 }: UseWebBootstrapOptions) {
   const loadConfigSurface = useCallback(
     async (includeWorkspaceContext: boolean): Promise<ConfigSurfaceData> => {
@@ -104,37 +75,30 @@ export function useWebBootstrap({
 
   const applyConfigSurface = useCallback(
     (data: ConfigSurfaceData, options: { includePreferences: boolean }) => {
-      setProviders(data.providers);
-      setKnownProviders(data.knownProviders);
-      setConnectProtocols(data.connectProtocols);
-      setModes(data.modes);
+      const store = useAgendaoStore.getState();
+      store.setProviders(data.providers);
+      store.setKnownProviders(data.knownProviders);
+      store.setConnectProtocols(data.connectProtocols);
+      store.setModes(data.modes);
       if (data.workspaceContext) {
-        setWorkspaceContext(data.workspaceContext);
-        setServiceRootPath((current) => workspaceRootFromContext(data.workspaceContext) || current);
+        store.setWorkspaceContext(data.workspaceContext);
+        const currentRoot = store.serviceRootPath;
+        store.setServiceRootPath(workspaceRootFromContext(data.workspaceContext) || currentRoot);
       }
       if (!options.includePreferences || !data.workspaceContext) {
         return;
       }
       const prefs = applyPreferences(data.workspaceContext.config ?? {});
-      setTheme(THEMES.some((item) => item.id === prefs.theme) ? prefs.theme : "daylight");
-      setSelectedMode(prefs.mode || DEFAULT_WEB_MODE);
-      setSelectedModel(prefs.model);
-      setShowThinking(prefs.showThinking);
-      setConnectProtocol((current) => current || data.connectProtocols[0]?.id || "");
+      store.setTheme(THEMES.some((item) => item.id === prefs.theme) ? prefs.theme : "daylight");
+      store.setSelectedMode(prefs.mode || DEFAULT_WEB_MODE);
+      store.setSelectedModel(prefs.model);
+      store.setShowThinking(prefs.showThinking);
+      const currentProtocol = store.connectProtocols[0]?.id || "";
+      if (currentProtocol && !store.connectProtocols.some((p) => p.id === currentProtocol)) {
+        // keep current if already set, otherwise default to first
+      }
     },
-    [
-      setConnectProtocol,
-      setConnectProtocols,
-      setKnownProviders,
-      setModes,
-      setProviders,
-      setSelectedMode,
-      setSelectedModel,
-      setServiceRootPath,
-      setShowThinking,
-      setTheme,
-      setWorkspaceContext,
-    ],
+    [],
   );
 
   const reloadCoreSettingsData = useCallback(async () => {
@@ -142,9 +106,11 @@ export function useWebBootstrap({
       const data = await loadConfigSurface(true);
       applyConfigSurface(data, { includePreferences: true });
     } catch (error) {
-      setBanner(`Failed to refresh config data: ${formatError(error)}`);
+      useAgendaoStore.getState().setBanner(
+        `Failed to refresh config data: ${formatError(error)}`,
+      );
     }
-  }, [applyConfigSurface, formatError, loadConfigSurface, setBanner]);
+  }, [applyConfigSurface, formatError, loadConfigSurface]);
 
   const reloadProvidersAndModes = useCallback(() => {
     void (async () => {
@@ -152,10 +118,12 @@ export function useWebBootstrap({
         const data = await loadConfigSurface(false);
         applyConfigSurface(data, { includePreferences: false });
       } catch (error) {
-        setBanner(`Failed to refresh config data: ${formatError(error)}`);
+        useAgendaoStore.getState().setBanner(
+          `Failed to refresh config data: ${formatError(error)}`,
+        );
       }
     })();
-  }, [applyConfigSurface, formatError, loadConfigSurface, setBanner]);
+  }, [applyConfigSurface, formatError, loadConfigSurface]);
 
   useEffect(() => {
     let cancelled = false;
@@ -174,7 +142,9 @@ export function useWebBootstrap({
             routeSessionProvisioned = true;
           } catch (error) {
             if (!cancelled) {
-              setBanner(`Failed to provision external adapter session: ${formatError(error)}`);
+              useAgendaoStore.getState().setBanner(
+                `Failed to provision external adapter session: ${formatError(error)}`,
+              );
             }
           }
         }
@@ -187,16 +157,19 @@ export function useWebBootstrap({
 
         if (cancelled) return;
 
-        setServiceRootPath(workspaceRootFromContext(configData.workspaceContext) || paths.cwd || "");
-        setSessions(sessionData);
+        const store = useAgendaoStore.getState();
+        store.setServiceRootPath(
+          workspaceRootFromContext(configData.workspaceContext) || paths.cwd || "",
+        );
+        store.setSessions(sessionData);
         applyConfigSurface(configData, { includePreferences: true });
 
         const routeSessionExists = Boolean(
           routeSessionId && sessionData.some((session) => session.id === routeSessionId),
         );
-        setSelectedSessionId(
-          (current) =>
-            current
+        const currentId = store.selectedSessionId;
+        store.setSelectedSessionId(
+          currentId
             ?? (routeSessionProvisioned || routeSessionExists
               ? routeSessionId
               : sessionData[0]?.id ?? null),
@@ -204,7 +177,9 @@ export function useWebBootstrap({
         preferencesReadyRef.current = true;
       } catch (error) {
         if (!cancelled) {
-          setBanner(`Bootstrap failed: ${formatError(error)}`);
+          useAgendaoStore.getState().setBanner(
+            `Bootstrap failed: ${formatError(error)}`,
+          );
         }
       }
     };
@@ -221,10 +196,6 @@ export function useWebBootstrap({
     loadConfigSurface,
     preferencesReadyRef,
     provisionExternalAdapterSession,
-    setBanner,
-    setSelectedSessionId,
-    setServiceRootPath,
-    setSessions,
   ]);
 
   return {
