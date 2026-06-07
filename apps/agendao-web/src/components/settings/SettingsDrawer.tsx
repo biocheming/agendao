@@ -1927,12 +1927,12 @@ export function SettingsDrawer({
   const checkboxClass = "roc-form-checkbox";
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-end bg-black/40 p-2 backdrop-blur-sm sm:p-3" data-testid="settings-overlay" onClick={onClose}>
-      <section
-        className="flex h-full w-full max-w-[44rem] flex-col overflow-y-auto rounded-[28px] border border-border/60 bg-background shadow-2xl"
-        data-testid="settings-drawer"
-        onClick={(event) => event.stopPropagation()}
-      >
+    <div className="roc-app-shell flex h-dvh flex-col overflow-hidden bg-background text-foreground font-sans" data-testid="settings-page">
+      <div className="mx-auto flex h-full w-full max-w-[110rem] flex-1 flex-col overflow-hidden px-4 py-6 md:px-6">
+        <section
+          className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[28px] border border-border/60 bg-background shadow-sm"
+          data-testid="settings-drawer"
+        >
         <header className="flex items-start justify-between gap-4 px-5 pb-5 pt-6 sm:px-7 sm:pb-6 sm:pt-7">
           <div>
             <p className="m-0 mb-1.5 text-xs tracking-widest uppercase text-amber-700 font-bold">Settings</p>
@@ -1976,7 +1976,7 @@ export function SettingsDrawer({
           </div>
         </nav>
 
-        <div className="flex flex-1 min-h-0 flex-col gap-6 px-5 pb-6 pt-5 sm:px-7 sm:pb-7 sm:pt-6">
+        <div className="flex flex-1 min-h-0 flex-col gap-6 overflow-y-auto px-5 pb-6 pt-5 sm:px-7 sm:pb-7 sm:pt-6">
           {feedback ? <div className="rounded-lg border border-amber-300 bg-amber-50/80 px-4 py-2.5 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/60 dark:text-amber-200">{feedback}</div> : null}
           {loading ? <div className="flex flex-col items-center justify-center gap-3 text-muted-foreground py-8">Loading settings...</div> : null}
           {!loading && isolatedNotice ? (
@@ -3261,7 +3261,8 @@ export function SettingsDrawer({
             </div>
           ) : null}
         </div>
-      </section>
+        </section>
+      </div>
     </div>
   );
 }

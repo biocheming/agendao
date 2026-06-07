@@ -8,7 +8,6 @@ import {
   attachmentWorkspacePath,
   appendReferenceToken,
   fileUrlFromPath,
-  findFirstFile,
   findNodeByPath,
   guessWorkspaceMime,
   parentDirectory,
@@ -617,7 +616,6 @@ export function useWorkspaceCoordinator({
     setPendingWorkspaceSelection,
     workspaceReloadToken,
     ensureWorkspaceNodeLoaded,
-    selectedSessionId,
   ]);
 
   useEffect(() => {
@@ -726,6 +724,7 @@ export function useWorkspaceCoordinator({
       workspaceBasePath,
       workspaceDirty,
       workspaceTargetDirectory,
+      ensureWorkspaceNodeLoaded,
     ],
   );
 }

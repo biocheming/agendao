@@ -1,5 +1,6 @@
 import { useCallback, useEffect, type MutableRefObject } from "react";
 import type {
+  SessionListResponseRecord,
   SessionRecord,
 } from "../lib/session";
 import type {
@@ -18,11 +19,11 @@ import {
   THEMES,
   type ExecutionMode,
 } from "../lib/webRuntime";
+import { normalizeSessionRecords } from "../lib/sidebar";
 import { useAgendaoStore } from "../store";
 
 interface UseWebBootstrapOptions {
   apiJson: <T>(path: string, options?: RequestInit) => Promise<T>;
-  fetchSessions: () => Promise<SessionRecord[]>;
   formatError: (error: unknown) => string;
   preferencesReadyRef: MutableRefObject<boolean>;
   provisionExternalAdapterSession: (
@@ -54,7 +55,6 @@ function visibleModes(modeData: ExecutionMode[] | null | undefined): ExecutionMo
 
 export function useWebBootstrap({
   apiJson,
-  fetchSessions,
   formatError,
   preferencesReadyRef,
   provisionExternalAdapterSession,
@@ -157,7 +157,9 @@ export function useWebBootstrap({
         }
 
         const [sessionData, configData, paths] = await Promise.all([
-          fetchSessions(),
+          apiJson<SessionListResponseRecord>("/session?limit=500").then((response) =>
+            normalizeSessionRecords(response?.items ?? []),
+          ),
           loadConfigSurface(true),
           apiJson<PathsResponseRecord>("/path"),
         ]);
@@ -215,7 +217,6 @@ export function useWebBootstrap({
   }, [
     apiJson,
     applyConfigSurface,
-    fetchSessions,
     formatError,
     loadConfigSurface,
     preferencesReadyRef,

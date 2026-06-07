@@ -1,6 +1,7 @@
 import type { RefObject } from "react";
 import { useEffect, useRef, useState } from "react";
 import { MessageCard } from "./MessageCard";
+import { useI18n } from "../../i18n/I18nProvider";
 import {
   Conversation,
   ConversationContent,
@@ -24,6 +25,9 @@ interface ConversationFeedPanelProps {
   activeStageId: string | null;
   activeToolCallId: string | null;
   onCopyMessageLink?: (message: FeedMessage) => Promise<void> | void;
+  onCopySelectedMessageLink?: () => Promise<void> | void;
+  onCopySelectedMessagesMarkdown?: () => Promise<void> | void;
+  onClearSelectedMessages?: () => void;
   onToggleMessageSelected?: (message: FeedMessage) => void;
   onNavigateStage: (stageId: string) => void;
   onNavigateAttachedSession: (
@@ -120,10 +124,14 @@ export function ConversationFeedPanel({
   activeStageId,
   activeToolCallId,
   onCopyMessageLink,
+  onCopySelectedMessageLink,
+  onCopySelectedMessagesMarkdown,
+  onClearSelectedMessages,
   onToggleMessageSelected,
   onNavigateStage,
   onNavigateAttachedSession,
 }: ConversationFeedPanelProps) {
+  const { t } = useI18n();
   const historyLoading = useAgendaoStore((s) => s.historyLoading);
   const messages = useAgendaoStore((s) => s.messages);
   const selectedMessageIds = useAgendaoStore((s) => s.selectedMessageIds);
@@ -245,6 +253,42 @@ export function ConversationFeedPanel({
         ) : null}
         {messages.length > 0 ? (
           <div className="grid min-w-0 gap-4">
+            {selectedMessageIds.size > 0 ? (
+              <div className="sticky top-2 z-20 flex justify-end">
+                <div className="inline-flex max-w-full items-center gap-1 rounded-full border border-border/45 bg-background/88 px-2 py-1 shadow-sm backdrop-blur">
+                  <span className="truncate px-1 text-xs text-muted-foreground">
+                    {t("app.messageSelected", { count: selectedMessageIds.size })}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 rounded-full px-2.5 text-xs"
+                    onClick={() => void onCopySelectedMessageLink?.()}
+                  >
+                    {t("app.copySelectedLink")}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 rounded-full px-2.5 text-xs"
+                    onClick={() => void onCopySelectedMessagesMarkdown?.()}
+                  >
+                    {t("app.copyMarkdown")}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 rounded-full px-2.5 text-xs"
+                    onClick={onClearSelectedMessages}
+                  >
+                    {t("app.clear")}
+                  </Button>
+                </div>
+              </div>
+            ) : null}
             <HistoryBackfillState
               hiddenCount={hiddenCount}
               visibleCount={visibleMessages.length}

@@ -1,4 +1,3 @@
-import type { Dispatch, SetStateAction } from "react";
 import { useCallback, useEffect, useMemo } from "react";
 import type { SessionRecord } from "../lib/session";
 import type { ConversationJumpTarget } from "./useConversationJump";
@@ -6,13 +5,7 @@ import type { useExecutionActivity } from "./useExecutionActivity";
 import { useAgendaoStore } from "../store";
 
 interface UseSchedulerNavigationOptions {
-  sessions: SessionRecord[];
-  selectedSessionId: string | null;
-  currentSession: SessionRecord | null;
-  setSessions: Dispatch<SetStateAction<SessionRecord[]>>;
-  setSelectedSessionId: Dispatch<SetStateAction<string | null>>;
   apiJson: <T>(path: string, options?: RequestInit) => Promise<T>;
-  setBanner: (message: string) => void;
   executionActivity: ReturnType<typeof useExecutionActivity>;
   jumpToConversationTarget: (target: ConversationJumpTarget) => void;
   queueConversationJumpTarget: (target: ConversationJumpTarget) => void;
@@ -65,17 +58,16 @@ function upsertSession(current: SessionRecord[], incoming: SessionRecord) {
 }
 
 export function useSchedulerNavigation({
-  sessions,
-  selectedSessionId,
-  currentSession,
-  setSessions,
-  setSelectedSessionId,
   apiJson,
-  setBanner,
   executionActivity,
   jumpToConversationTarget,
   queueConversationJumpTarget,
 }: UseSchedulerNavigationOptions) {
+  const sessions = useAgendaoStore((s) => s.sessions);
+  const setSessions = useAgendaoStore((s) => s.setSessions);
+  const selectedSessionId = useAgendaoStore((s) => s.selectedSessionId);
+  const setSelectedSessionId = useAgendaoStore((s) => s.setSelectedSessionId);
+  const setBanner = useAgendaoStore((s) => s.setBanner);
   const activeStageContext = useAgendaoStore((s) => s.activeStageContext) as StageNavigationContext | null;
   const setActiveStageContext = useAgendaoStore((s) => s.setActiveStageContext);
   const previewStageId = useAgendaoStore((s) => s.previewStageId);
@@ -83,6 +75,10 @@ export function useSchedulerNavigation({
   const sessionBreadcrumbs = useAgendaoStore((s) => s.sessionBreadcrumbs);
   const setSessionBreadcrumbs = useAgendaoStore((s) => s.setSessionBreadcrumbs);
   const currentBreadcrumbProvenanceFor = useAgendaoStore((s) => s.currentBreadcrumbProvenanceFor);
+  const currentSession = useMemo(
+    () => sessions.find((session) => session.id === selectedSessionId) ?? null,
+    [selectedSessionId, sessions],
+  );
 
   const sessionForId = useCallback(
     (sessionId: string | null | undefined) => {

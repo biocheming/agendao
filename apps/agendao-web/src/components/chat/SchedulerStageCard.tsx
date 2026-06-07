@@ -21,6 +21,10 @@ import {
 import { useState } from "react";
 import { MessageResponse } from "../ai-elements/message";
 
+function joinSummaryParts(parts: Array<string | null | undefined>) {
+  return parts.filter(Boolean).join(" · ");
+}
+
 interface SchedulerStageCardProps {
   message: FeedBlock<"scheduler_stage">;
   highlighted?: boolean;
@@ -142,6 +146,8 @@ export function SchedulerStageCard({
   const waitingLabel = humanizeStageWaitTarget(message.waiting_on);
   const lastEventLabel = humanizeStageEvent(message.last_event);
   const stageSummary = stageSummaryText(message);
+  const stageMetaSummary = joinSummaryParts(chips);
+  const stageTokenSummary = joinSummaryParts(tokens);
 
   const decisionInlineFields = message.decision?.fields
     ?.map((field) => ({
@@ -171,18 +177,9 @@ export function SchedulerStageCard({
         <div className="roc-message-meta-group">
           <span className="roc-section-label">Scheduler Stage</span>
           {(message.role ?? "assistant") !== "assistant" ? (
-            <span className="roc-badge">{message.role}</span>
+            <span className="text-xs text-muted-foreground">{message.role}</span>
           ) : null}
         </div>
-        {chips.length ? (
-          <div className="roc-message-meta-group">
-            {chips.map((chip, index) => (
-              <span key={`${message.feedId}-chip-${index}`} className="roc-badge">
-                {chip}
-              </span>
-            ))}
-          </div>
-        ) : null}
       </div>
 
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -197,6 +194,9 @@ export function SchedulerStageCard({
               </h3>
               {stageSummary ? (
                 <p className="roc-detail-summary">{stageSummary}</p>
+              ) : null}
+              {stageMetaSummary ? (
+                <p className="mt-1 text-sm text-muted-foreground">{stageMetaSummary}</p>
               ) : null}
             </div>
           </div>
@@ -255,14 +255,8 @@ export function SchedulerStageCard({
         </div>
       ) : null}
 
-      {tokens.length ? (
-        <div className="flex flex-wrap gap-2">
-          {tokens.map((token) => (
-            <span key={`${message.feedId}-${token}`} className="roc-badge">
-              {token}
-            </span>
-          ))}
-        </div>
+      {stageTokenSummary ? (
+        <p className="text-sm text-muted-foreground">Metrics {stageTokenSummary}</p>
       ) : null}
 
       {message.decision ? (
@@ -354,33 +348,21 @@ export function SchedulerStageCard({
       {(message.active_skills?.length || message.active_agents?.length || message.active_categories?.length) ? (
         <div className="grid gap-2">
           {message.active_skills?.length ? (
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="grid gap-1">
               <span className="roc-section-label">Skills</span>
-              {message.active_skills.map((skill) => (
-                <span key={`${message.feedId}-skill-${skill}`} className="roc-badge">
-                  {skill}
-                </span>
-              ))}
+              <p className="text-sm text-muted-foreground">{message.active_skills.join(", ")}</p>
             </div>
           ) : null}
           {message.active_agents?.length ? (
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="grid gap-1">
               <span className="roc-section-label">Agents</span>
-              {message.active_agents.map((agent) => (
-                <span key={`${message.feedId}-agent-${agent}`} className="roc-badge">
-                  {agent}
-                </span>
-              ))}
+              <p className="text-sm text-muted-foreground">{message.active_agents.join(", ")}</p>
             </div>
           ) : null}
           {message.active_categories?.length ? (
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="grid gap-1">
               <span className="roc-section-label">Categories</span>
-              {message.active_categories.map((category) => (
-                <span key={`${message.feedId}-category-${category}`} className="roc-badge">
-                  {category}
-                </span>
-              ))}
+              <p className="text-sm text-muted-foreground">{message.active_categories.join(", ")}</p>
             </div>
           ) : null}
         </div>

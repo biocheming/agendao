@@ -86,14 +86,14 @@ export function WorkspacePanel({
 
   return (
     <div className="flex flex-col h-full overflow-hidden" data-testid="workspace-panel">
-      <div className="flex items-center justify-between border-b border-border shrink-0 px-3 py-2">
-        <div className="flex min-w-0 flex-1 items-center">
+      <div className="flex h-11 items-center justify-between border-b border-border shrink-0 px-2.5" data-testid="workspace-panel-header">
+        <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto" data-testid="workspace-panel-tabs">
           <button
             className={cn(
-              "inline-flex min-w-0 items-center justify-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-medium transition-colors",
+              "inline-flex min-w-0 items-center justify-center gap-1.5 rounded-md border-b-2 border-transparent px-2.5 py-1 text-[11px] font-medium transition-colors",
               activeTab === "files"
-                ? "bg-foreground/8 text-foreground"
-                : "text-muted-foreground hover:bg-accent/45 hover:text-foreground"
+                ? "border-foreground/55 text-foreground"
+                : "text-muted-foreground hover:text-foreground"
             )}
             type="button"
             onClick={() => setActiveTab("files")}
@@ -104,10 +104,10 @@ export function WorkspacePanel({
           </button>
           <button
             className={cn(
-              "inline-flex items-center justify-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-medium transition-colors",
+              "inline-flex items-center justify-center gap-1.5 rounded-md border-b-2 border-transparent px-2.5 py-1 text-[11px] font-medium transition-colors",
               activeTab === "insights"
-                ? "bg-foreground/8 text-foreground"
-                : "text-muted-foreground hover:bg-accent/45 hover:text-foreground"
+                ? "border-foreground/55 text-foreground"
+                : "text-muted-foreground hover:text-foreground"
             )}
             type="button"
             onClick={() => setActiveTab("insights")}
@@ -117,10 +117,10 @@ export function WorkspacePanel({
           </button>
           <button
             className={cn(
-              "inline-flex items-center justify-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-medium transition-colors",
+              "inline-flex items-center justify-center gap-1.5 rounded-md border-b-2 border-transparent px-2.5 py-1 text-[11px] font-medium transition-colors",
               activeTab === "preview"
-                ? "bg-foreground/8 text-foreground"
-                : "text-muted-foreground hover:bg-accent/45 hover:text-foreground"
+                ? "border-foreground/55 text-foreground"
+                : "text-muted-foreground hover:text-foreground"
             )}
             type="button"
             onClick={() => setActiveTab("preview")}
@@ -130,10 +130,10 @@ export function WorkspacePanel({
           </button>
           <button
             className={cn(
-              "inline-flex items-center justify-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-medium transition-colors",
+              "inline-flex items-center justify-center gap-1.5 rounded-md border-b-2 border-transparent px-2.5 py-1 text-[11px] font-medium transition-colors",
               activeTab === "proposals"
-                ? "bg-foreground/8 text-foreground"
-                : "text-muted-foreground hover:bg-accent/45 hover:text-foreground"
+                ? "border-foreground/55 text-foreground"
+                : "text-muted-foreground hover:text-foreground"
             )}
             type="button"
             onClick={() => setActiveTab("proposals")}

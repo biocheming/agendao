@@ -9,6 +9,7 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
 } from "react";
 import { ComposerSection } from "./components/composer/ComposerSection";
 import { ConversationFeedPanel } from "./components/chat/ConversationFeedPanel";
@@ -49,6 +50,7 @@ import { useWorkspaceCoordinator } from "./hooks/useWorkspaceCoordinator";
 import { useResizableHeight, useResizableWidth } from "./hooks/useResizableWidth";
 import { useProviderConnectForm } from "./hooks/useProviderConnectForm";
 import { useDiagnosticsFromTelemetry } from "./hooks/useDiagnosticsFromTelemetry";
+import { useProjectCreation } from "./hooks/useProjectCreation";
 import { prepareComposerAttachments } from "./lib/composerAttachments";
 import {
   currentContextTokensFromSources,
@@ -59,7 +61,6 @@ import {
   attachmentLabel,
   attachmentWorkspacePath,
   droppedFiles,
-  resolveWorkspacePath,
 } from "./lib/composerContext";
 import type { RuntimeSurfaceOutputBlock } from "./lib/history";
 import {
@@ -75,12 +76,10 @@ import {
   flattenProviderModels,
 } from "./lib/provider";
 import {
-  basenamePath,
   buildSessionTree,
   buildWorkspaceSummaries,
 } from "./lib/sidebar";
 import {
-  type DirectoryCreateResponseRecord,
   type RecentModelsPayloadRecord,
   workspaceModeFromContext,
   workspaceRootFromContext,
@@ -120,6 +119,8 @@ const THEME_FAVICON_SRC: Record<ThemeId, string> = {
   cobalt: `${import.meta.env.BASE_URL}brand/agendao-icon-mark-cobalt.svg`,
 };
 
+type RuntimeSurfaceTab = "queue" | "session" | "inspect";
+
 function RuntimeSurfaceList({
   title,
   blocks,
@@ -130,22 +131,22 @@ function RuntimeSurfaceList({
   emptyLabel: string;
 }) {
   return (
-    <section className="min-h-[14rem] rounded-2xl border border-border/45 bg-background/75">
-      <div className="flex items-center justify-between border-b border-border/40 px-3.5 py-3">
+    <section className="overflow-hidden rounded-xl border border-border/40 bg-background/78">
+      <div className="flex items-center justify-between border-b border-border/35 px-3 py-2.5">
         <h3 className="text-sm font-medium text-foreground">{title}</h3>
         <span className="text-xs text-muted-foreground">{blocks.length}</span>
       </div>
       {blocks.length === 0 ? (
-        <div className="px-3.5 py-6 text-sm text-muted-foreground">{emptyLabel}</div>
+        <div className="px-3 py-5 text-sm text-muted-foreground">{emptyLabel}</div>
       ) : (
-        <div className="space-y-3 px-3.5 py-3">
+        <div className="max-h-[124px] space-y-2 overflow-auto px-3 py-2.5">
           {blocks.map((block) => {
             const preview = runtimeSurfacePreview(block);
             const phase = runtimeSurfacePhase(block);
             return (
               <article
                 key={block.id ?? `${block.kind}:${block.event ?? block.title ?? preview ?? Math.random()}`}
-                className="rounded-xl border border-border/35 bg-card/70 px-3 py-2.5"
+                className="rounded-lg border border-border/30 bg-card/70 px-2.5 py-2"
               >
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-sm font-medium text-foreground">
@@ -180,10 +181,7 @@ export default function App() {
   // Store-backed state (replaces 24 individual useState calls)
   // ============================================================
   const sessions = useAgendaoStore((s) => s.sessions);
-  const setSessions = useAgendaoStore((s) => s.setSessions);
   const selectedSessionId = useAgendaoStore((s) => s.selectedSessionId);
-  const setSelectedSessionId = useAgendaoStore((s) => s.setSelectedSessionId);
-  const selectedMessageIds = useAgendaoStore((s) => s.selectedMessageIds);
   const setSelectedMessageIds = useAgendaoStore((s) => s.setSelectedMessageIds);
   const composer = useAgendaoStore((s) => s.composer);
   const setComposer = useAgendaoStore((s) => s.setComposer);
@@ -203,8 +201,8 @@ export default function App() {
   const showThinking = useAgendaoStore((s) => s.showThinking);
   const setShowThinking = useAgendaoStore((s) => s.setShowThinking);
   const streaming = useAgendaoStore((s) => s.streaming);
-  const settingsOpen = useAgendaoStore((s) => s.settingsOpen);
-  const setSettingsOpen = useAgendaoStore((s) => s.setSettingsOpen);
+  const route = useAgendaoStore((s) => s.route);
+  const setRoute = useAgendaoStore((s) => s.setRoute);
   const statusLine = useAgendaoStore((s) => s.statusLine);
   const latestRuntimeError = useAgendaoStore((s) => s.latestRuntimeError);
   const banner = useAgendaoStore((s) => s.banner);
@@ -283,9 +281,6 @@ export default function App() {
   const setConnectBusy = connectFormActions.setBusy;
   const feedRef = useRef<HTMLDivElement | null>(null);
   const preferencesReadyRef = useRef(false);
-  const routeSyncSourceRef = useRef<"app" | "browser">("app");
-  const routeInitializedRef = useRef(false);
-  const selectedSessionRef = useRef<string | null>(null);
   const maxPendingOutputBlocks = useMemo(
     () =>
       readRuntimeBudgetNumber(workspaceContext?.config, "web_max_pending_output_blocks", 256),
@@ -293,14 +288,11 @@ export default function App() {
   );
 
   const {
-    appendRuntimeSurfaceBlock,
     currentRuntimeSurface,
     hasCurrentRuntimeSurface,
-    setRuntimeSurfaceBanner,
-  } = useRuntimeSurface({
-    selectedSessionId,
-    sessionIds: sessions.map((session) => session.id),
-  });
+  } = useRuntimeSurface();
+  const [runtimeSurfaceExpanded, setRuntimeSurfaceExpanded] = useState(false);
+  const [runtimeSurfaceTab, setRuntimeSurfaceTab] = useState<RuntimeSurfaceTab>("queue");
   // P2-3: viewport budget for rendered messages. When exceeded, only the most
   // recent messages are rendered. Full transcript is preserved in state.
   // Derived from agendao_config::RuntimeBudgetConfig.tui_max_viewport_messages.
@@ -447,6 +439,84 @@ export default function App() {
     pendingPermission: Boolean(permission),
   });
   const sessionUsage = executionActivity.sessionUsage ?? currentSession?.telemetry?.usage ?? null;
+  const runtimeSurfaceTabs = useMemo(
+    () => [
+      {
+        key: "queue" as const,
+        label: t("app.runtimeSurfaceQueue"),
+        count: currentRuntimeSurface.queueItems.length,
+        blocks: currentRuntimeSurface.queueItems,
+      },
+      {
+        key: "session" as const,
+        label: t("app.runtimeSurfaceSessionEvents"),
+        count: currentRuntimeSurface.sessionEvents.length,
+        blocks: currentRuntimeSurface.sessionEvents,
+      },
+      {
+        key: "inspect" as const,
+        label: t("app.runtimeSurfaceInspect"),
+        count: currentRuntimeSurface.inspectItems.length,
+        blocks: currentRuntimeSurface.inspectItems,
+      },
+    ],
+    [
+      currentRuntimeSurface.inspectItems,
+      currentRuntimeSurface.queueItems,
+      currentRuntimeSurface.sessionEvents,
+      t,
+    ],
+  );
+  const hasRuntimeSurfaceContent = Boolean(currentRuntimeSurface.banner)
+    || runtimeSurfaceTabs.some((tab) => tab.count > 0);
+  const activeRuntimeSurfaceTab = useMemo(
+    () =>
+      runtimeSurfaceTabs.find((tab) => tab.key === runtimeSurfaceTab)
+      ?? runtimeSurfaceTabs.find((tab) => tab.count > 0)
+      ?? runtimeSurfaceTabs[0],
+    [runtimeSurfaceTab, runtimeSurfaceTabs],
+  );
+  const runtimeSurfaceSummary = useMemo(() => {
+    if (currentRuntimeSurface.banner?.trim()) {
+      return currentRuntimeSurface.banner.trim().split("\n")[0] ?? currentRuntimeSurface.banner.trim();
+    }
+    const firstQueue = currentRuntimeSurface.queueItems[0];
+    if (firstQueue) {
+      return t("app.runtimeSurfaceQueueSummary", {
+        count: currentRuntimeSurface.queueItems.length,
+        label: runtimeSurfaceLabel(firstQueue),
+      });
+    }
+    const firstSessionEvent = currentRuntimeSurface.sessionEvents[0];
+    if (firstSessionEvent) {
+      return t("app.runtimeSurfaceSessionSummary", {
+        count: currentRuntimeSurface.sessionEvents.length,
+        label: runtimeSurfaceLabel(firstSessionEvent),
+      });
+    }
+    const firstInspect = currentRuntimeSurface.inspectItems[0];
+    if (firstInspect) {
+      return t("app.runtimeSurfaceInspectSummary", {
+        count: currentRuntimeSurface.inspectItems.length,
+        label: runtimeSurfaceLabel(firstInspect),
+      });
+    }
+    return t("app.runtimeSurfaceIdle");
+  }, [currentRuntimeSurface.banner, currentRuntimeSurface.inspectItems, currentRuntimeSurface.queueItems, currentRuntimeSurface.sessionEvents, t]);
+
+  useEffect(() => {
+    if (!hasRuntimeSurfaceContent) {
+      setRuntimeSurfaceExpanded(false);
+      return;
+    }
+    const preferredTab = runtimeSurfaceTabs.find((tab) => tab.count > 0)?.key ?? "queue";
+    setRuntimeSurfaceTab((current) => {
+      if (runtimeSurfaceTabs.some((tab) => tab.key === current && tab.count > 0)) {
+        return current;
+      }
+      return preferredTab;
+    });
+  }, [hasRuntimeSurfaceContent, runtimeSurfaceTabs]);
   const effectiveRightPanelWidth = useMemo(() => {
     if (workspacePanelTab === "preview") return Math.max(rightResize.width, 640);
     if (workspacePanelTab === "insights") return Math.max(rightResize.width, 460);
@@ -477,9 +547,9 @@ export default function App() {
     clearPendingSessionRefresh,
     createSession,
     deleteSelectedSessions,
-    fetchSessions,
     forkSelectedSession,
     provisionExternalAdapterSession,
+    refreshSessions,
     scheduleSessionRefresh,
     selectSession,
     selectWorkspace,
@@ -489,17 +559,13 @@ export default function App() {
     currentWorkspacePath,
     currentWorkspaceSummaryPath: currentWorkspaceSummary?.path ?? null,
     formatError,
-    routeInitializedRef,
-    routeSyncSourceRef,
     selectedSessionId,
-    selectedSessionRef,
     serviceRootPath,
     workspaceContextRootPath: workspaceRootFromContext(workspaceContext),
   });
 
   const { reloadCoreSettingsData, reloadProvidersAndModes } = useWebBootstrap({
     apiJson,
-    fetchSessions,
     formatError,
     preferencesReadyRef,
     provisionExternalAdapterSession,
@@ -519,7 +585,6 @@ export default function App() {
     apiJson,
     applyLiveExecutionOutputBlock,
     applySchedulerStageOutputBlock,
-    appendRuntimeSurfaceBlock,
     clearPendingSessionRefresh,
     feedRef,
     formatError,
@@ -527,13 +592,6 @@ export default function App() {
     onConfigUpdated: reloadProvidersAndModes,
     refreshExecutionActivity,
     scheduleSessionRefresh,
-    selectedSessionId,
-    selectedSessionRef,
-    sessions,
-    setBanner,
-    setRuntimeSurfaceBanner,
-    showThinking,
-    streaming,
   });
   const composerContextTokens = useMemo(() => {
     const activeEstimate =
@@ -586,14 +644,15 @@ export default function App() {
     serviceRootPath,
     workspaceContext,
   });
-  const schedulerNavigation = useSchedulerNavigation({
-    sessions,
-    selectedSessionId,
-    currentSession,
-    setSessions,
-    setSelectedSessionId,
+  const createProject = useProjectCreation({
     apiJson,
-    setBanner,
+    serviceRootPath,
+    workspaceBasePath,
+    createSession,
+    reloadWorkspaceWithSelection,
+  });
+  const schedulerNavigation = useSchedulerNavigation({
+    apiJson,
     executionActivity,
     jumpToConversationTarget: conversationJump.jumpOrQueueConversationTarget,
     queueConversationJumpTarget: conversationJump.queueConversationJumpTarget,
@@ -618,10 +677,6 @@ export default function App() {
       favicon.href = THEME_FAVICON_SRC[theme];
     }
   }, [theme]);
-
-  useEffect(() => {
-    selectedSessionRef.current = selectedSessionId;
-  }, [selectedSessionId]);
 
   // Provider connect resolution moved to useProviderConnectForm
 
@@ -678,32 +733,6 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [selectedMode, selectedModel, setBanner, showThinking, theme]);
 
-  const createProject = async (input: { path: string; title?: string }) => {
-    const baseRoot = serviceRootPath || workspaceBasePath;
-    const targetPath = resolveWorkspacePath(baseRoot, input.path);
-    if (!targetPath) {
-      setBanner("Project path is required");
-      return;
-    }
-
-    try {
-      const directory = await apiJson<DirectoryCreateResponseRecord>("/file/directory", {
-        method: "POST",
-        body: JSON.stringify({ path: targetPath }),
-      });
-      const folderName = basenamePath(directory.path);
-      await createSession({
-        directory: directory.path,
-        projectId: folderName,
-        title: input.title || `${folderName} workspace`,
-      });
-      reloadWorkspaceWithSelection(directory.path, "directory");
-      setBanner(`Created project ${folderName}`);
-    } catch (error) {
-      setBanner(`Failed to create project: ${formatError(error)}`);
-    }
-  };
-
   const submitPrompt = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const content = composer.trim();
@@ -725,7 +754,7 @@ export default function App() {
       setBanner(`Multimodal preflight unavailable: ${formatError(error)}`);
     }
 
-    let sessionId = selectedSessionRef.current;
+    let sessionId = selectedSessionId;
     if (!sessionId) {
       try {
         sessionId = await createSession();
@@ -734,7 +763,6 @@ export default function App() {
         return;
       }
     }
-    selectedSessionRef.current = sessionId;
 
     const preview = promptPreviewText(content, promptParts);
     const optimisticMessage = createOptimisticUserFeedMessage(preview);
@@ -795,8 +823,7 @@ export default function App() {
     }
 
     try {
-      const sessionData = await fetchSessions();
-      setSessions(sessionData);
+      await refreshSessions();
     } catch {
       // best effort
     }
@@ -864,7 +891,7 @@ export default function App() {
       });
       setQuestion(null);
       setQuestionAnswers({});
-      const sessionId = question.session_id ?? selectedSessionRef.current;
+      const sessionId = question.session_id ?? selectedSessionId;
       if (sessionId) {
         const session = await apiJson<SessionRecord>(`/session/${sessionId}`);
         const pending = pendingCommandFromSession(session, question.request_id);
@@ -1013,7 +1040,65 @@ export default function App() {
     setSelectedAttachmentIndex(current);
   };
 
-  return (
+  const settingsPage = (
+    <Suspense
+      fallback={
+        <div className="roc-app-shell flex h-dvh flex-col overflow-hidden bg-background text-foreground font-sans">
+          <div className="mx-auto flex h-full w-full max-w-[110rem] flex-1 items-start justify-center px-4 py-6 md:px-6">
+            <section className="flex h-full w-full flex-col rounded-[28px] border border-border/60 bg-card px-6 py-8 shadow-sm">
+              <div className="flex flex-col items-center justify-center gap-2 text-muted-foreground py-12">
+                <h3 className="text-sm">{t("app.loadingSettings")}</h3>
+                <p className="text-xs">{t("app.pleaseWait")}</p>
+              </div>
+            </section>
+          </div>
+        </div>
+      }
+    >
+      <SettingsDrawer
+        onClose={() => setRoute("workbench")}
+        theme={theme}
+        themes={THEMES}
+        onThemeChange={(nextTheme) => setTheme(nextTheme as ThemeId)}
+        workspaceMode={resolvedWorkspaceMode}
+        workspaceRootPath={resolvedWorkspaceRootPath}
+        workspaceConfigDir={workspaceContext?.identity?.config_dir ?? null}
+        selectedSessionId={selectedSessionId}
+        modeOptions={settingsModeOptions}
+        selectedMode={selectedMode}
+        onModeChange={setSelectedMode}
+        modelOptions={modelOptions}
+        selectedModel={selectedModel}
+        onModelChange={handleModelChange}
+        showThinking={showThinking}
+        onShowThinkingChange={setShowThinking}
+        providers={providers}
+        knownProviders={knownProviders}
+        connectProtocols={connectProtocols}
+        connectQuery={connectQuery}
+        onConnectQueryChange={setConnectQuery}
+        connectResolution={connectResolution}
+        connectResolveBusy={connectResolveBusy}
+        connectResolveError={connectResolveError}
+        connectProviderId={connectProviderId}
+        onConnectProviderIdChange={setConnectProviderId}
+        connectProtocol={connectProtocol}
+        onConnectProtocolChange={setConnectProtocol}
+        connectApiKey={connectApiKey}
+        onConnectApiKeyChange={setConnectApiKey}
+        connectBaseUrl={connectBaseUrl}
+        onConnectBaseUrlChange={setConnectBaseUrl}
+        connectBusy={connectBusy}
+        onConnectProvider={connectProvider}
+        api={api}
+        apiJson={apiJson}
+        onBanner={setBanner}
+        onReloadCoreData={reloadCoreSettingsData}
+      />
+    </Suspense>
+  );
+
+  const workbenchPage = (
     <div className="roc-app-shell flex h-dvh flex-col overflow-hidden bg-background text-foreground font-sans">
       <div className="flex flex-1 overflow-hidden">
         {leftSidebarOpen && (
@@ -1106,7 +1191,7 @@ export default function App() {
               <TerminalSquareIcon className={cn("size-4", terminalOpen && "text-foreground")} />
             </button>
             <button
-              onClick={() => setSettingsOpen(true)}
+              onClick={() => setRoute("settings")}
               data-testid="settings-open"
               className="rounded-lg border border-border/50 bg-background/78 p-1.5 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:bg-muted hover:text-foreground"
               title={t("app.settings")}
@@ -1136,89 +1221,72 @@ export default function App() {
             </div>
           ) : null}
 
-          {selectedSessionId && hasCurrentRuntimeSurface ? (
+          {selectedSessionId && hasCurrentRuntimeSurface && hasRuntimeSurfaceContent ? (
             <div className="mx-auto w-full max-w-[88rem] px-4 pt-3 md:px-5">
-              <div className="roc-panel grid gap-4 px-4 py-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <div className="roc-section-label">{t("app.runtimeSurface")}</div>
-                    <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                      {t("app.runtimeSurfaceSummary")}
-                    </p>
+              <div
+                className="roc-panel max-h-[240px] overflow-hidden px-0 py-0"
+                data-testid="runtime-surface"
+                data-expanded={runtimeSurfaceExpanded ? "true" : "false"}
+              >
+                <button
+                  type="button"
+                  data-testid="runtime-surface-toggle"
+                  className="flex h-10 w-full items-center justify-between gap-3 px-4 text-left"
+                  aria-expanded={runtimeSurfaceExpanded}
+                  title={runtimeSurfaceExpanded ? t("app.runtimeSurfaceHideDetails") : t("app.runtimeSurfaceDetails")}
+                  onClick={() => setRuntimeSurfaceExpanded((value) => !value)}
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-foreground">{runtimeSurfaceSummary}</p>
                   </div>
-                  <div className="flex flex-wrap gap-2">
-                    {currentRuntimeSurface.queueItems.length > 0 ? (
-                      <span className="roc-badge px-2.5 py-1 text-xs">
-                        queue {currentRuntimeSurface.queueItems.length}
-                      </span>
-                    ) : null}
-                    {currentRuntimeSurface.sessionEvents.length > 0 ? (
-                      <span className="roc-badge px-2.5 py-1 text-xs">
-                        session {currentRuntimeSurface.sessionEvents.length}
-                      </span>
-                    ) : null}
-                    {currentRuntimeSurface.inspectItems.length > 0 ? (
-                      <span className="roc-badge px-2.5 py-1 text-xs">
-                        inspect {currentRuntimeSurface.inspectItems.length}
-                      </span>
-                    ) : null}
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    {runtimeSurfaceTabs.map((tab) =>
+                      tab.count > 0 ? (
+                        <span key={tab.key} className="roc-badge px-2 py-0.5 text-[11px]">
+                          {tab.label} {tab.count}
+                        </span>
+                      ) : null,
+                    )}
                   </div>
-                </div>
-                {currentRuntimeSurface.banner ? (
-                  <div className="rounded-2xl border border-amber-500/25 bg-amber-500/8 px-3.5 py-3 text-sm leading-6 text-amber-900 dark:text-amber-100">
-                    {currentRuntimeSurface.banner}
+                </button>
+                {runtimeSurfaceExpanded ? (
+                  <div
+                    className="max-h-[196px] overflow-hidden border-t border-border/40 px-3 pb-3 pt-2.5"
+                    data-testid="runtime-surface-expanded"
+                  >
+                    <div className="mb-2 flex flex-wrap items-center gap-1.5" data-testid="runtime-surface-tabs">
+                      {runtimeSurfaceTabs.map((tab) => (
+                        <button
+                          key={tab.key}
+                          type="button"
+                          data-testid={`runtime-surface-tab-${tab.key}`}
+                          className={cn(
+                            "inline-flex h-7 items-center rounded-full px-2.5 text-[11px] font-medium transition-colors",
+                            activeRuntimeSurfaceTab.key === tab.key
+                              ? "bg-foreground/8 text-foreground"
+                              : "text-muted-foreground hover:bg-accent/45 hover:text-foreground",
+                          )}
+                          onClick={() => setRuntimeSurfaceTab(tab.key)}
+                        >
+                          {tab.label}
+                        </button>
+                      ))}
+                    </div>
+                    {currentRuntimeSurface.banner ? (
+                      <div
+                        className="mb-2 rounded-lg border border-amber-500/25 bg-amber-500/8 px-3 py-2 text-sm leading-5 text-amber-900 dark:text-amber-100"
+                        data-testid="runtime-surface-banner"
+                      >
+                        {currentRuntimeSurface.banner}
+                      </div>
+                    ) : null}
+                    <RuntimeSurfaceList
+                      title={activeRuntimeSurfaceTab.label}
+                      blocks={activeRuntimeSurfaceTab.blocks}
+                      emptyLabel={t("app.noEventsYet")}
+                    />
                   </div>
                 ) : null}
-                <div className="grid gap-4 lg:grid-cols-3">
-                  <RuntimeSurfaceList
-                    title={t("app.runtimeSurfaceQueue")}
-                    blocks={currentRuntimeSurface.queueItems}
-                    emptyLabel={t("app.noEventsYet")}
-                  />
-                  <RuntimeSurfaceList
-                    title={t("app.runtimeSurfaceSessionEvents")}
-                    blocks={currentRuntimeSurface.sessionEvents}
-                    emptyLabel={t("app.noEventsYet")}
-                  />
-                  <RuntimeSurfaceList
-                    title={t("app.runtimeSurfaceInspect")}
-                    blocks={currentRuntimeSurface.inspectItems}
-                    emptyLabel={t("app.noEventsYet")}
-                  />
-                </div>
-              </div>
-            </div>
-          ) : null}
-
-          {selectedMessageIds.size > 0 ? (
-            <div className="mx-auto w-full max-w-[88rem] px-4 pt-3 md:px-5">
-              <div className="roc-panel flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-                <span className="text-sm text-muted-foreground">
-                  {t("app.messageSelected", { count: selectedMessageIds.size })}
-                </span>
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    className="roc-action roc-action-pill"
-                    onClick={() => void copySelectedMessageLink()}
-                  >
-                    {t("app.copySelectedLink")}
-                  </button>
-                  <button
-                    type="button"
-                    className="roc-action roc-action-pill"
-                    onClick={() => void copySelectedMessagesMarkdown()}
-                  >
-                    {t("app.copyMarkdown")}
-                  </button>
-                  <button
-                    type="button"
-                    className="roc-action roc-action-pill"
-                    onClick={() => setSelectedMessageIds(new Set())}
-                  >
-                    {t("app.clear")}
-                  </button>
-                </div>
               </div>
             </div>
           ) : null}
@@ -1253,6 +1321,9 @@ export default function App() {
             activeStageId={schedulerNavigation.previewStageId ?? schedulerNavigation.activeStageId}
             activeToolCallId={schedulerNavigation.activeToolCallId}
             onCopyMessageLink={copyMessageLink}
+            onCopySelectedMessageLink={copySelectedMessageLink}
+            onCopySelectedMessagesMarkdown={copySelectedMessagesMarkdown}
+            onClearSelectedMessages={() => setSelectedMessageIds(new Set())}
             onToggleMessageSelected={toggleMessageSelected}
             onNavigateStage={schedulerNavigation.navigateToStage}
             onNavigateAttachedSession={schedulerNavigation.navigateToAttachedSession}
@@ -1367,62 +1438,12 @@ export default function App() {
         )}
       </div>
 
-      {settingsOpen ? (
-        <Suspense
-          fallback={
-            <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-start justify-end">
-              <section className="h-full w-full max-w-md bg-card border-l border-border overflow-y-auto p-6 flex flex-col gap-4">
-                <div className="flex flex-col items-center justify-center gap-2 text-muted-foreground py-12">
-                  <h3 className="text-sm">{t("app.loadingSettings")}</h3>
-                  <p className="text-xs">{t("app.pleaseWait")}</p>
-                </div>
-              </section>
-            </div>
-          }
-        >
-          <SettingsDrawer
-            onClose={() => setSettingsOpen(false)}
-            theme={theme}
-            themes={THEMES}
-            onThemeChange={(nextTheme) => setTheme(nextTheme as ThemeId)}
-            workspaceMode={resolvedWorkspaceMode}
-            workspaceRootPath={resolvedWorkspaceRootPath}
-            workspaceConfigDir={workspaceContext?.identity?.config_dir ?? null}
-            selectedSessionId={selectedSessionId}
-            modeOptions={settingsModeOptions}
-            selectedMode={selectedMode}
-            onModeChange={setSelectedMode}
-            modelOptions={modelOptions}
-            selectedModel={selectedModel}
-            onModelChange={handleModelChange}
-            showThinking={showThinking}
-            onShowThinkingChange={setShowThinking}
-            providers={providers}
-            knownProviders={knownProviders}
-            connectProtocols={connectProtocols}
-            connectQuery={connectQuery}
-            onConnectQueryChange={setConnectQuery}
-            connectResolution={connectResolution}
-            connectResolveBusy={connectResolveBusy}
-            connectResolveError={connectResolveError}
-            connectProviderId={connectProviderId}
-            onConnectProviderIdChange={setConnectProviderId}
-            connectProtocol={connectProtocol}
-            onConnectProtocolChange={setConnectProtocol}
-            connectApiKey={connectApiKey}
-            onConnectApiKeyChange={setConnectApiKey}
-            connectBaseUrl={connectBaseUrl}
-            onConnectBaseUrlChange={setConnectBaseUrl}
-            connectBusy={connectBusy}
-            onConnectProvider={connectProvider}
-            api={api}
-            apiJson={apiJson}
-            onBanner={setBanner}
-            onReloadCoreData={reloadCoreSettingsData}
-          />
-        </Suspense>
-      ) : null}
+    </div>
+  );
 
+  return (
+    <>
+      {route === "settings" ? settingsPage : workbenchPage}
       <InteractionOverlays
         question={question}
         permission={permission}
@@ -1439,6 +1460,6 @@ export default function App() {
         onSubmitQuestion={submitQuestion}
         onReplyPermission={replyPermission}
       />
-    </div>
+    </>
   );
 }

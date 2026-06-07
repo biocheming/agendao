@@ -192,8 +192,7 @@ html[data-theme="cobalt"] {
   /* ─── Surfaces ───────────────────────────────────────────────────── */
 
   .roc-panel {
-    @apply rounded-[20px] transition-all duration-200;
-    box-shadow: var(--roc-shadow-minimal);
+    @apply rounded-[16px] border border-border/38 transition-all duration-200;
     background: oklch(from var(--foreground) l c h / 1%);
   }
 
@@ -201,10 +200,19 @@ html[data-theme="cobalt"] {
     box-shadow: var(--roc-shadow-md);
   }
 
+  .roc-panel[data-tone="alert"] {
+    border-color: oklch(from var(--destructive) l c h / 24%);
+    background: oklch(from var(--destructive) l c h / 5%);
+  }
+
   .roc-section {
-    @apply grid gap-3 rounded-[16px] p-4;
-    box-shadow: var(--roc-shadow-minimal);
+    @apply grid gap-3 rounded-[16px] border border-border/28 p-4;
     background: oklch(from var(--foreground) l c h / 1.5%);
+  }
+
+  .roc-section[data-tone="alert"] {
+    border-color: oklch(from var(--destructive) l c h / 22%);
+    background: oklch(from var(--destructive) l c h / 4.5%);
   }
 
   /* ─── Sidebar ────────────────────────────────────────────────────── */
@@ -253,13 +261,11 @@ html[data-theme="cobalt"] {
   /* ─── Messages ───────────────────────────────────────────────────── */
 
   .roc-message-card {
-    @apply overflow-hidden rounded-[16px] bg-transparent px-5 py-4 transition-colors;
-    box-shadow: var(--roc-shadow-minimal);
+    @apply overflow-hidden rounded-[16px] border border-border/28 bg-transparent px-5 py-4 transition-colors;
   }
 
   .roc-message-card[data-tone="assistant"] {
     background: oklch(from var(--foreground) l c h / 1.5%);
-    box-shadow: var(--roc-shadow-minimal);
   }
 
   .roc-message-card[data-tone="user"] {
@@ -286,6 +292,11 @@ html[data-theme="cobalt"] {
     width: 3px;
     background: oklch(from var(--roc-hero) l c h / 60%);
     border-radius: 999px;
+  }
+
+  .roc-message-card[data-tone="alert"] {
+    border-color: oklch(from var(--destructive) l c h / 24%);
+    background: oklch(from var(--destructive) l c h / 5%);
   }
 
   .roc-message-meta-row {
@@ -458,7 +469,7 @@ html[data-theme="cobalt"] {
 
   .roc-empty-capability-card {
     @apply flex flex-col items-center gap-2 rounded-[16px] p-4 text-center transition-colors;
-    box-shadow: var(--roc-shadow-minimal);
+    border: 1px solid oklch(from var(--foreground) l c h / 10%);
     background: oklch(from var(--foreground) l c h / 1.5%);
   }
 
@@ -569,8 +580,7 @@ html[data-theme="cobalt"] {
   }
 
   .roc-rail-section {
-    @apply grid gap-3 rounded-[16px] p-4;
-    box-shadow: var(--roc-shadow-minimal);
+    @apply grid gap-3 rounded-[16px] border border-border/28 p-4;
     background: oklch(from var(--foreground) l c h / 1.5%);
   }
 
@@ -643,15 +653,14 @@ html[data-theme="cobalt"] {
   /* ─── History ────────────────────────────────────────────────────── */
 
   .roc-session-header {
-    @apply rounded-[16px] px-4 py-3;
-    box-shadow: var(--roc-shadow-minimal);
+    @apply rounded-[16px] border border-border/28 px-4 py-1.5;
     background: oklch(from var(--foreground) l c h / 1.5%);
   }
 
   .roc-session-title {
-    @apply min-w-0 truncate text-xl font-semibold tracking-[-0.03em] text-primary;
+    @apply min-w-0 truncate text-[1.125rem] leading-tight font-semibold tracking-[-0.03em] text-primary;
     font-family: var(--font-serif);
-    text-wrap: balance;
+    text-wrap: nowrap;
   }
 
   .roc-session-subtitle {
@@ -679,9 +688,14 @@ html[data-theme="cobalt"] {
 
   /* Emphasis: subtle primary tint via color-mix — badge-color CSS var drives it */
   .roc-badge[data-emphasis="true"] {
-    background: oklch(from var(--primary) l c h / 10%);
+    background: oklch(from var(--primary) l c h / 8%);
     color: var(--primary);
     font-weight: 600;
+  }
+
+  .roc-badge[data-tone="alert"] {
+    background: oklch(from var(--destructive) l c h / 10%);
+    color: var(--destructive);
   }
 
   /* Inline badge icon container: 12px square, subtle bg, tiny radius */
@@ -897,17 +911,24 @@ html[data-theme="cobalt"] {
   /* ─── Composer ───────────────────────────────────────────────────── */
 
   .roc-composer-shell {
-    @apply overflow-hidden rounded-[20px] transition-all duration-200;
-    box-shadow: var(--roc-shadow-lg);
-    background: oklch(from var(--foreground) l c h / 1.5%);
+    @apply overflow-hidden rounded-[20px] border transition-all duration-200;
+    border-color: oklch(from var(--roc-hero) l c h / 14%);
+    box-shadow: var(--roc-shadow-md);
+    background:
+      linear-gradient(
+        180deg,
+        oklch(from var(--roc-hero) l c h / 4%) 0%,
+        oklch(from var(--foreground) l c h / 1.5%) 32%,
+        oklch(from var(--foreground) l c h / 1.2%) 100%
+      );
   }
 
   .roc-composer-shell:hover {
-    box-shadow: var(--roc-shadow-lg), 0 0 0 1px oklch(from var(--primary) l c h / 8%);
+    box-shadow: var(--roc-shadow-lg), 0 0 0 1px oklch(from var(--roc-hero) l c h / 10%);
   }
 
   .roc-composer-shell[data-drag-active="true"] {
-    box-shadow: var(--roc-shadow-lg), 0 0 0 2px oklch(from var(--primary) l c h / 25%);
+    box-shadow: var(--roc-shadow-lg), 0 0 0 2px oklch(from var(--roc-hero) l c h / 22%);
   }
 
   .roc-toolbar-field {

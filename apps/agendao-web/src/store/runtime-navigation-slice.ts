@@ -3,9 +3,16 @@ import { resolveSetState, type AgendaoState, type SessionRuntimeSurface, type St
 
 const MAX_RUNTIME_SURFACE_SESSIONS = 12;
 
+const EMPTY_RUNTIME_SURFACE: SessionRuntimeSurface = {
+  banner: null,
+  sessionEvents: [],
+  inspectItems: [],
+  queueItems: [],
+};
+
 function createEmptyRuntimeSurface(): SessionRuntimeSurface {
   return {
-    banner: null,
+    ...EMPTY_RUNTIME_SURFACE,
     sessionEvents: [],
     inspectItems: [],
     queueItems: [],
@@ -93,7 +100,14 @@ export function createRuntimeNavigationSlice(
           entries.length > MAX_RUNTIME_SURFACE_SESSIONS
             ? entries.slice(-MAX_RUNTIME_SURFACE_SESSIONS)
             : entries;
-        if (next.length === Object.keys(state.runtimeSurfaceBySession).length) {
+        const currentEntries = Object.entries(state.runtimeSurfaceBySession);
+        const unchanged =
+          next.length === currentEntries.length &&
+          next.every(([id, value], index) => {
+            const [currentId, currentValue] = currentEntries[index] ?? [];
+            return currentId === id && currentValue === value;
+          });
+        if (unchanged) {
           return {};
         }
         return {
@@ -102,7 +116,7 @@ export function createRuntimeNavigationSlice(
       }),
 
     currentRuntimeSurfaceFor: (sessionId) =>
-      sessionId ? (get().runtimeSurfaceBySession[sessionId] ?? createEmptyRuntimeSurface()) : createEmptyRuntimeSurface(),
+      sessionId ? (get().runtimeSurfaceBySession[sessionId] ?? EMPTY_RUNTIME_SURFACE) : EMPTY_RUNTIME_SURFACE,
 
     hasRuntimeSurfaceFor: (sessionId) => {
       const current = get().currentRuntimeSurfaceFor(sessionId);

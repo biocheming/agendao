@@ -54,7 +54,6 @@ export function useSessionRegistry({
 
   return {
     clearPendingSessionRefresh,
-    refreshSessionsFromServer,
     scheduleSessionRefresh,
   };
 }

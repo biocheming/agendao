@@ -72,6 +72,13 @@ function formatCompactTokenCount(value: number) {
   return String(Math.round(value));
 }
 
+function summarizeMetrics(items: Array<[string, string | number | null | undefined]>) {
+  return items
+    .filter(([, value]) => value !== null && value !== undefined && value !== "")
+    .map(([label, value]) => `${label} ${value}`)
+    .join(" · ");
+}
+
 function currentContextEstimate(activity: ExecutionActivityState) {
   const activeStage = activity.activeStageSummary;
   const activeStageContext = activeStage && isLiveStageStatus(activeStage.status)
@@ -425,7 +432,7 @@ export function ExecutionActivityPanel({
     return (
       <div key={key} className="roc-rail-item grid gap-1 bg-card/45">
         <div className="roc-rail-meta-list items-center">
-          <span className="roc-badge px-3 py-1 text-xs">{toolKindLabel(entry.kind)}</span>
+          <span className="text-xs text-muted-foreground">{toolKindLabel(entry.kind)}</span>
           <strong>{entry.label}</strong>
           <span className={cn("roc-badge px-3 py-1 text-xs", liveExecutionTone(entry.status))}>
             {entry.status}
@@ -433,7 +440,7 @@ export function ExecutionActivityPanel({
           {entry.stageId ? (
             <button
               type="button"
-              className="roc-badge px-3 py-1 text-xs"
+              className="text-xs text-muted-foreground transition-colors hover:text-primary"
               onClick={() => onNavigateStage(entry.stageId!)}
             >
               stage {entry.stageId}
@@ -442,7 +449,7 @@ export function ExecutionActivityPanel({
           {entry.toolCallId ? (
             <button
               type="button"
-              className="roc-badge px-3 py-1 text-xs"
+              className="text-xs text-muted-foreground transition-colors hover:text-primary"
               onClick={() =>
                 onNavigateToolCall(entry.toolCallId!, {
                   stageId: entry.stageId,
@@ -530,14 +537,17 @@ export function ExecutionActivityPanel({
               ) : null}
             </div>
           </div>
-          <div className="roc-rail-meta-list">
-            <span className="roc-badge px-3 py-1.5 text-xs">active {activity.executionTopology.active_count}</span>
-            <span className="roc-badge px-3 py-1.5 text-xs">running {activity.executionTopology.running_count}</span>
-            <span className="roc-badge px-3 py-1.5 text-xs">waiting {activity.executionTopology.waiting_count}</span>
-            <span className="roc-badge px-3 py-1.5 text-xs">retry {activity.executionTopology.retry_count ?? 0}</span>
-            <span className="roc-badge px-3 py-1.5 text-xs">cancelling {activity.executionTopology.cancelling_count ?? 0}</span>
-            <span className="roc-badge px-3 py-1.5 text-xs">done {activity.executionTopology.done_count}</span>
-          </div>
+          <p className="text-sm text-muted-foreground leading-relaxed">
+            Topology{" "}
+            {summarizeMetrics([
+              ["active", activity.executionTopology.active_count],
+              ["running", activity.executionTopology.running_count],
+              ["waiting", activity.executionTopology.waiting_count],
+              ["retry", activity.executionTopology.retry_count ?? 0],
+              ["cancelling", activity.executionTopology.cancelling_count ?? 0],
+              ["done", activity.executionTopology.done_count],
+            ])}
+          </p>
           <p className="text-sm text-muted-foreground leading-relaxed">
             Updated {formatTs(activity.executionTopology.updated_at ?? undefined)}
           </p>
@@ -545,14 +555,22 @@ export function ExecutionActivityPanel({
             <div className="grid gap-3 md:grid-cols-2">
               <div className={sideSectionClass}>
                 <p className="roc-section-label">Session Cumulative</p>
-                <div className="roc-rail-meta-list">
-                  <span className="roc-badge px-3 py-1.5 text-xs">input {formatCompactTokenCount(activity.sessionUsage.input_tokens)}</span>
-                  <span className="roc-badge px-3 py-1.5 text-xs">output {formatCompactTokenCount(activity.sessionUsage.output_tokens)}</span>
-                  <span className="roc-badge px-3 py-1.5 text-xs">reasoning {formatCompactTokenCount(activity.sessionUsage.reasoning_tokens)}</span>
-                  <span className="roc-badge px-3 py-1.5 text-xs">cache read {formatCompactTokenCount(activity.sessionUsage.cache_read_tokens)}</span>
-                  <span className="roc-badge px-3 py-1.5 text-xs">cache miss {formatCompactTokenCount(activity.sessionUsage.cache_miss_tokens)}</span>
-                  <span className="roc-badge px-3 py-1.5 text-xs">cache write {formatCompactTokenCount(activity.sessionUsage.cache_write_tokens)}</span>
-                </div>
+                <p className="text-sm text-muted-foreground leading-relaxed">
+                  Tokens{" "}
+                  {summarizeMetrics([
+                    ["input", formatCompactTokenCount(activity.sessionUsage.input_tokens)],
+                    ["output", formatCompactTokenCount(activity.sessionUsage.output_tokens)],
+                    ["reasoning", formatCompactTokenCount(activity.sessionUsage.reasoning_tokens)],
+                  ])}
+                </p>
+                <p className="text-sm text-muted-foreground leading-relaxed">
+                  Cache{" "}
+                  {summarizeMetrics([
+                    ["read", formatCompactTokenCount(activity.sessionUsage.cache_read_tokens)],
+                    ["miss", formatCompactTokenCount(activity.sessionUsage.cache_miss_tokens)],
+                    ["write", formatCompactTokenCount(activity.sessionUsage.cache_write_tokens)],
+                  ])}
+                </p>
                 {contextEstimate ? (
                   <p className="text-sm text-muted-foreground leading-relaxed">
                     Current live context {formatCompactTokenCount(contextEstimate)}
@@ -568,23 +586,25 @@ export function ExecutionActivityPanel({
                       <strong>{activity.activeStageSummary.stage_name}</strong>
                       <span className="roc-badge px-3 py-1 text-xs">{activity.activeStageSummary.status}</span>
                       {activity.sessionRuntime?.active_stage_count ? (
-                        <span className="roc-badge px-3 py-1 text-xs">active {activity.sessionRuntime.active_stage_count}</span>
+                        <span className="text-xs text-muted-foreground">active {activity.sessionRuntime.active_stage_count}</span>
                       ) : null}
                     </div>
-                    <div className="roc-rail-meta-list">
-                      {typeof activity.activeStageSummary.prompt_tokens === "number" ? (
-                        <span className="roc-badge px-3 py-1 text-xs">in {formatCompactTokenCount(activity.activeStageSummary.prompt_tokens)}</span>
-                      ) : null}
-                      {typeof activity.activeStageSummary.completion_tokens === "number" ? (
-                        <span className="roc-badge px-3 py-1 text-xs">out {formatCompactTokenCount(activity.activeStageSummary.completion_tokens)}</span>
-                      ) : null}
-                      {typeof activity.activeStageSummary.reasoning_tokens === "number" ? (
-                        <span className="roc-badge px-3 py-1 text-xs">reasoning {formatCompactTokenCount(activity.activeStageSummary.reasoning_tokens)}</span>
-                      ) : null}
-                      {typeof activity.activeStageSummary.skill_tree_budget === "number" ? (
-                        <span className="roc-badge px-3 py-1 text-xs">budget {activity.activeStageSummary.skill_tree_budget}</span>
-                      ) : null}
-                    </div>
+                    <p className="text-sm text-muted-foreground leading-relaxed">
+                      {summarizeMetrics([
+                        typeof activity.activeStageSummary.prompt_tokens === "number"
+                          ? ["in", formatCompactTokenCount(activity.activeStageSummary.prompt_tokens)]
+                          : ["", null],
+                        typeof activity.activeStageSummary.completion_tokens === "number"
+                          ? ["out", formatCompactTokenCount(activity.activeStageSummary.completion_tokens)]
+                          : ["", null],
+                        typeof activity.activeStageSummary.reasoning_tokens === "number"
+                          ? ["reasoning", formatCompactTokenCount(activity.activeStageSummary.reasoning_tokens)]
+                          : ["", null],
+                        typeof activity.activeStageSummary.skill_tree_budget === "number"
+                          ? ["budget", activity.activeStageSummary.skill_tree_budget]
+                          : ["", null],
+                      ])}
+                    </p>
                     <p className="text-sm text-muted-foreground leading-relaxed">
                       {activity.activeStageSummary.waiting_on
                         ? `Waiting for ${
@@ -645,7 +665,7 @@ export function ExecutionActivityPanel({
                         </span>
                         <button
                           type="button"
-                          className="roc-badge px-3 py-1 text-xs"
+                          className="text-xs text-muted-foreground transition-colors hover:text-primary"
                           onClick={() => onNavigateStage(stage.stage_id)}
                         >
                           stage {stage.stage_id}
@@ -672,20 +692,16 @@ export function ExecutionActivityPanel({
               {sessionToolRepairSummary ? (
                 <div className={sideSectionClass}>
                   <p className="roc-section-label">Tool Repair</p>
-                  <div className="roc-rail-meta-list">
-                    <span className="roc-badge px-3 py-1.5 text-xs">
-                      repaired {sessionToolRepairSummary.repaired_tool_call_count}/
-                      {sessionToolRepairSummary.total_tool_calls}
-                    </span>
-                    <span className="roc-badge px-3 py-1.5 text-xs">
-                      errors {sessionToolRepairSummary.error_tool_call_count}
-                    </span>
-                    <span className="roc-badge px-3 py-1.5 text-xs">
-                      events {sessionToolRepairSummary.repair_event_count}
-                    </span>
-                  </div>
                   <p className="text-sm text-muted-foreground leading-relaxed">
-                    Session-local repair activity for finalized tool calls.
+                    Session-local repair activity for finalized tool calls.{" "}
+                    {summarizeMetrics([
+                      [
+                        "repaired",
+                        `${sessionToolRepairSummary.repaired_tool_call_count}/${sessionToolRepairSummary.total_tool_calls}`,
+                      ],
+                      ["errors", sessionToolRepairSummary.error_tool_call_count],
+                      ["events", sessionToolRepairSummary.repair_event_count],
+                    ])}
                   </p>
                   <p className="text-xs text-muted-foreground leading-relaxed">
                     Kinds {formatRepairKindSummary(sessionToolRepairSummary.event_kinds)}
@@ -698,19 +714,13 @@ export function ExecutionActivityPanel({
               {modelToolRepairSummary ? (
                 <div className={sideSectionClass}>
                   <p className="roc-section-label">Model Repair Baseline</p>
-                  <div className="roc-rail-meta-list">
-                    <span className="roc-badge px-3 py-1.5 text-xs">
-                      {modelToolRepairSummary.provider_id}/{modelToolRepairSummary.model_id}
-                    </span>
-                    <span className="roc-badge px-3 py-1.5 text-xs">
-                      sessions {modelToolRepairSummary.session_count}
-                    </span>
-                    <span className="roc-badge px-3 py-1.5 text-xs">
-                      repaired sessions {modelToolRepairSummary.repaired_session_count}
-                    </span>
-                  </div>
                   <p className="text-sm text-muted-foreground leading-relaxed">
-                    Cross-session baseline for the same provider/model pair.
+                    Cross-session baseline for {modelToolRepairSummary.provider_id}/
+                    {modelToolRepairSummary.model_id}.{" "}
+                    {summarizeMetrics([
+                      ["sessions", modelToolRepairSummary.session_count],
+                      ["repaired sessions", modelToolRepairSummary.repaired_session_count],
+                    ])}
                   </p>
                   <p className="text-xs text-muted-foreground leading-relaxed">
                     Calls {modelToolRepairSummary.repaired_tool_call_count}/
@@ -728,16 +738,11 @@ export function ExecutionActivityPanel({
           {trajectoryQuality ? (
             <div className={sideSectionClass}>
               <p className="roc-section-label">Trajectory Quality</p>
-              <div className="roc-rail-meta-list">
-                <span className="roc-badge px-3 py-1.5 text-xs">score {trajectoryQuality.score}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">{formatTrajectoryBand(trajectoryQuality.band)}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">
-                  repaired {trajectoryQuality.repaired_tool_call_count}/{trajectoryQuality.total_tool_calls}
-                </span>
-                <span className="roc-badge px-3 py-1.5 text-xs">
-                  errors {trajectoryQuality.error_tool_call_count}
-                </span>
-              </div>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                Score {trajectoryQuality.score} · {formatTrajectoryBand(trajectoryQuality.band)} ·{" "}
+                repaired {trajectoryQuality.repaired_tool_call_count}/{trajectoryQuality.total_tool_calls}
+                {" · "}errors {trajectoryQuality.error_tool_call_count}
+              </p>
               <p className="text-sm text-muted-foreground leading-relaxed">
                 Sanitizer {trajectoryQuality.sanitizer_event_count} · strict-fail {trajectoryQuality.strict_would_fail_count} · provider {trajectoryQuality.provider_diagnostic_count}
               </p>
@@ -749,20 +754,14 @@ export function ExecutionActivityPanel({
             || (activity.telemetry?.last_permission_miss_count ?? 0) > 0 ? (
             <div className={sideSectionClass}>
               <p className="roc-section-label">Permission Authority</p>
-              <div className="roc-rail-meta-list">
-                <span className="roc-badge px-3 py-1.5 text-xs">
-                  turn {activity.telemetry?.granted_by_turn_count ?? 0}
-                </span>
-                <span className="roc-badge px-3 py-1.5 text-xs">
-                  session {activity.telemetry?.granted_by_session_count ?? 0}
-                </span>
-                <span className="roc-badge px-3 py-1.5 text-xs">
-                  pending {activity.telemetry?.pending_permission_count ?? 0}
-                </span>
-                <span className="roc-badge px-3 py-1.5 text-xs">
-                  misses {activity.telemetry?.last_permission_miss_count ?? 0}
-                </span>
-              </div>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                {summarizeMetrics([
+                  ["turn", activity.telemetry?.granted_by_turn_count ?? 0],
+                  ["session", activity.telemetry?.granted_by_session_count ?? 0],
+                  ["pending", activity.telemetry?.pending_permission_count ?? 0],
+                  ["misses", activity.telemetry?.last_permission_miss_count ?? 0],
+                ])}
+              </p>
               {activity.telemetry?.last_permission_matcher_kind ? (
                 <p className="text-xs text-muted-foreground">
                   Last grant: {activity.telemetry.last_permission_matcher_kind}
@@ -773,17 +772,13 @@ export function ExecutionActivityPanel({
           {activity.telemetry?.runtime_protocol ? (
             <div className={sideSectionClass}>
               <p className="roc-section-label">Runtime Protocol</p>
-              <div className="roc-rail-meta-list">
-                <span className="roc-badge px-3 py-1.5 text-xs">
-                  ingress {activity.telemetry.runtime_protocol.prompt_ingress}
-                </span>
-                <span className="roc-badge px-3 py-1.5 text-xs">
-                  steering {activity.telemetry.runtime_protocol.steering.pending_count}
-                </span>
-                <span className="roc-badge px-3 py-1.5 text-xs">
-                  interrupt {activity.telemetry.runtime_protocol.interrupt.phase}
-                </span>
-              </div>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                {summarizeMetrics([
+                  ["ingress", activity.telemetry.runtime_protocol.prompt_ingress],
+                  ["steering", activity.telemetry.runtime_protocol.steering.pending_count],
+                  ["interrupt", activity.telemetry.runtime_protocol.interrupt.phase],
+                ])}
+              </p>
               {activity.telemetry.runtime_protocol.permission.pending ? (
                 <p className="text-xs text-muted-foreground">
                   Permission {activity.telemetry.runtime_protocol.permission.pending_permission_id}
@@ -807,17 +802,13 @@ export function ExecutionActivityPanel({
           {activity.telemetry?.event_bus_telemetry ? (
             <div className={sideSectionClass}>
               <p className="roc-section-label">Event Bus</p>
-              <div className="roc-rail-meta-list">
-                <span className="roc-badge px-3 py-1.5 text-xs">
-                  sends {activity.telemetry.event_bus_telemetry.send_count}
-                </span>
-                <span className="roc-badge px-3 py-1.5 text-xs">
-                  no-receiver {activity.telemetry.event_bus_telemetry.send_error_count}
-                </span>
-                <span className="roc-badge px-3 py-1.5 text-xs">
-                  max receivers {activity.telemetry.event_bus_telemetry.max_receivers}
-                </span>
-              </div>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                {summarizeMetrics([
+                  ["sends", activity.telemetry.event_bus_telemetry.send_count],
+                  ["no-receiver", activity.telemetry.event_bus_telemetry.send_error_count],
+                  ["max receivers", activity.telemetry.event_bus_telemetry.max_receivers],
+                ])}
+              </p>
               <p className="text-xs text-muted-foreground">
                 Last send {activity.telemetry.event_bus_telemetry.last_send_at_ms || 0} · last error{" "}
                 {activity.telemetry.event_bus_telemetry.last_send_error_at_ms || 0}
@@ -961,24 +952,29 @@ export function ExecutionActivityPanel({
                   <p className="roc-section-label">Memory Runtime</p>
                   <h4 className="roc-rail-section-title">{sessionMemory.workspace_mode} workspace explain</h4>
                 </div>
-                <span className="roc-badge px-3 py-1.5 text-xs">
-                  snapshot {sessionMemory.frozen_snapshot_items}
-                </span>
               </div>
-              <div className="roc-rail-meta-list">
-                <span className="roc-badge px-3 py-1.5 text-xs">prefetch {sessionMemory.last_prefetch_items}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">rule hits {sessionMemoryRecentRuleHits.length}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">session writes {sessionMemory.candidate_count + sessionMemory.validated_count + sessionMemory.rejected_count}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">warnings {sessionMemory.warning_count}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">methodology {sessionMemory.methodology_candidate_count}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">skill targets {sessionMemory.derived_skill_candidate_count}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">linked skills {sessionMemory.linked_skill_count}</span>
-                {sessionMemory.latest_consolidation_run ? (
-                  <span className="roc-badge px-3 py-1.5 text-xs">
-                    consolidation {sessionMemory.latest_consolidation_run.run_id}
-                  </span>
-                ) : null}
-              </div>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                {summarizeMetrics([
+                  ["snapshot", sessionMemory.frozen_snapshot_items],
+                  ["prefetch", sessionMemory.last_prefetch_items],
+                  ["rule hits", sessionMemoryRecentRuleHits.length],
+                  [
+                    "session writes",
+                    sessionMemory.candidate_count + sessionMemory.validated_count + sessionMemory.rejected_count,
+                  ],
+                ])}
+              </p>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                {summarizeMetrics([
+                  ["warnings", sessionMemory.warning_count],
+                  ["methodology", sessionMemory.methodology_candidate_count],
+                  ["skill targets", sessionMemory.derived_skill_candidate_count],
+                  ["linked skills", sessionMemory.linked_skill_count],
+                ])}
+                {sessionMemory.latest_consolidation_run
+                  ? ` · consolidation ${sessionMemory.latest_consolidation_run.run_id}`
+                  : ""}
+              </p>
               <div className="grid gap-1 text-sm text-muted-foreground">
                 <p>Workspace key: {sessionMemory.workspace_key}</p>
                 <p>Frozen snapshot generated: {formatDateTime(sessionMemory.frozen_snapshot_generated_at ?? undefined)}</p>
@@ -1002,11 +998,11 @@ export function ExecutionActivityPanel({
               {recentSkillRecords.length ? (
                 <div className="grid gap-2">
                   <p className="roc-section-label">Recent Skill-Linked Memory</p>
-                  <div className="roc-rail-meta-list">
+                  <div className="grid gap-1 text-sm text-muted-foreground">
                     {recentSkillRecords.slice(0, 4).map((item) => (
-                      <span key={memoryRecordIdValue(item.id)} className="roc-badge px-3 py-1.5 text-xs">
+                      <p key={memoryRecordIdValue(item.id)}>
                         {item.linked_skill_name || item.derived_skill_name}: {item.title}
-                      </span>
+                      </p>
                     ))}
                   </div>
                 </div>
@@ -1031,9 +1027,7 @@ export function ExecutionActivityPanel({
                       <div key={hit.id} className={sideItemCardClass}>
                         <div className="flex flex-wrap items-center gap-2">
                           <strong>{hit.hit_kind}</strong>
-                          {hit.memory_id ? (
-                            <span className="roc-badge px-2.5 py-1 text-xs">{memoryRecordIdValue(hit.memory_id)}</span>
-                          ) : null}
+                          {hit.memory_id ? <span className="text-xs text-muted-foreground">{memoryRecordIdValue(hit.memory_id)}</span> : null}
                         </div>
                         <p className="text-xs text-muted-foreground">
                           {hit.detail || "No detail attached"}
