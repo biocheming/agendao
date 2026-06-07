@@ -1,4 +1,4 @@
-import { type Dispatch, type SetStateAction, useCallback, useEffect, useRef, useState } from "react";
+import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
 import type { ConnectProtocolOption, ResolveProviderConnectResponseRecord } from "../lib/provider";
 
 export interface ConnectFormState {

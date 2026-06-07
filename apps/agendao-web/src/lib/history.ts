@@ -105,6 +105,7 @@ export interface ToolOutputBlock extends OutputBlockBase, CompatibilityDisplayMi
 export interface SchedulerStageOutputBlock extends OutputBlockBase {
   kind: "scheduler_stage";
   stage_id?: string;
+  tool_call_id?: string;
   profile?: string;
   status?: string;
   stage?: string;

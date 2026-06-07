@@ -208,7 +208,7 @@ export type ReasoningContentProps = ComponentProps<
 };
 
 export const ReasoningContent = memo(
-  ({ className, children, dir, ...props }: ReasoningContentProps) => (
+  ({ className, children, ...props }: ReasoningContentProps) => (
     <CollapsibleContent
       className={cn(
         "mt-4 text-sm",

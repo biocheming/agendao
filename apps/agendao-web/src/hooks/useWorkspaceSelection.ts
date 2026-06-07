@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { WorkspacePanelTab } from "../components/WorkspacePanel";
+import type { WorkspacePanelTab } from "../components/workspace/WorkspacePanel";
 
 export interface WorkspaceSelectionState {
   panelTab: WorkspacePanelTab;

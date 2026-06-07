@@ -175,12 +175,12 @@ export function shouldQueueLiveTranscriptBlock(block: OutputBlock): boolean {
   if (queueRoute === "non_transcript_live") {
     return false;
   }
-  // Scheduler stage live output already has a dedicated activity/progress
-  // surface. Until it carries an explicit transcript identity, keep it out of
-  // the visible transcript feed so Web does not treat progress snapshots as
-  // durable conversation entries.
   if (block.kind === "scheduler_stage") {
-    return false;
+    // Real attached-session / provenance navigation still originates from
+    // scheduler stage cards in the transcript. Keep explicit live-identity
+    // scheduler updates on the activity surface only, but allow
+    // compatibility-routed scheduler blocks into the visible feed.
+    return queueRoute === "compatibility";
   }
   // Tool progress without a stable tool-call identity belongs to the
   // execution/progress surface, not the durable transcript feed.
@@ -203,24 +203,6 @@ function toFeedMessage(block: OutputBlock): FeedMessage {
     anchorId,
     text: primaryDisplayText(block),
   };
-}
-
-function schedulerStageTitleFromText(text: string): { title: string; body: string } {
-  const trimmed = text.trim();
-  const heading = trimmed.match(/^##\s+([^\n]+)(?:\n([\s\S]*))?$/);
-  if (!heading) return { title: "", body: text };
-  return {
-    title: heading[1]?.trim() ?? "",
-    body: heading[2]?.trimStart() ?? "",
-  };
-}
-
-function prettifySchedulerToken(value: string): string {
-  return value
-    .split(/[-_]/)
-    .filter(Boolean)
-    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
-    .join(" ");
 }
 
 // P2: dead code removed (schedulerDecisionFromMetadata, metadataNumber,

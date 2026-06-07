@@ -3,12 +3,10 @@ import { apiUrl, parseSSE } from "../lib/api";
 import type { AuxiliaryOutputBlock, FeedMessage, OutputBlock } from "../lib/history";
 import { applyOutputBlock, shouldQueueLiveTranscriptBlock } from "../lib/liveTranscriptState";
 import {
-  type PermissionInteractionRecord,
   permissionInteractionFromEvent,
   questionInteractionFromEvent,
-  type QuestionAnswerValue,
-  type QuestionInteractionRecord,
 } from "../lib/interaction";
+import { useAgendaoStore } from "../store";
 
 interface UseServerEventStreamOptions {
   applyLiveExecutionOutputBlock: (block: OutputBlock, sessionId: string) => void;
@@ -27,19 +25,8 @@ interface UseServerEventStreamOptions {
   refreshExecutionActivity: (sessionId: string) => void | Promise<void>;
   scheduleSessionRefresh: () => void;
   selectedSessionRef: React.MutableRefObject<string | null>;
-  setLatestRuntimeError: React.Dispatch<React.SetStateAction<string | null>>;
   setMessages: React.Dispatch<React.SetStateAction<FeedMessage[]>>;
-  setPermission: React.Dispatch<React.SetStateAction<PermissionInteractionRecord | null>>;
-  setPermissionSubmitCompletedAt: React.Dispatch<React.SetStateAction<string | null>>;
-  setPermissionSubmitError: React.Dispatch<React.SetStateAction<string | null>>;
-  setPermissionSubmitStartedAt: React.Dispatch<React.SetStateAction<string | null>>;
-  setPermissionSubmitting: React.Dispatch<React.SetStateAction<boolean>>;
-  setQuestion: React.Dispatch<React.SetStateAction<QuestionInteractionRecord | null>>;
-  setQuestionAnswers: React.Dispatch<React.SetStateAction<Record<number, QuestionAnswerValue>>>;
-  setQuestionSubmitting: React.Dispatch<React.SetStateAction<boolean>>;
   setRuntimeSurfaceBanner: (sessionId: string, nextBanner: string | null) => void;
-  setStatusLine: React.Dispatch<React.SetStateAction<string>>;
-  setStreaming: React.Dispatch<React.SetStateAction<boolean>>;
   showThinking: boolean;
 }
 
@@ -82,19 +69,8 @@ export function useServerEventStream({
   refreshExecutionActivity,
   scheduleSessionRefresh,
   selectedSessionRef,
-  setLatestRuntimeError,
   setMessages,
-  setPermission,
-  setPermissionSubmitCompletedAt,
-  setPermissionSubmitError,
-  setPermissionSubmitStartedAt,
-  setPermissionSubmitting,
-  setQuestion,
-  setQuestionAnswers,
-  setQuestionSubmitting,
   setRuntimeSurfaceBanner,
-  setStatusLine,
-  setStreaming,
   showThinking,
 }: UseServerEventStreamOptions) {
   const showThinkingRef = useRef(showThinking);
@@ -108,6 +84,7 @@ export function useServerEventStream({
     let controller: AbortController | null = null;
 
     const handleServerEvent = (payload: unknown) => {
+      const store = useAgendaoStore.getState();
       const event = payload as Record<string, unknown>;
       const type = typeof event.type === "string" ? event.type : "";
       const eventSessionId = eventSessionIdFromPayload(event);
@@ -117,6 +94,9 @@ export function useServerEventStream({
         if (!block) return;
         if (block.kind === "scheduler_stage") {
           applySchedulerStageOutputBlock(block, eventSessionId);
+          if (shouldQueueLiveTranscriptBlock(block)) {
+            queueVisibleLiveSnapshot(eventSessionId, block);
+          }
           return;
         }
         if (block.kind === "tool") {
@@ -146,7 +126,7 @@ export function useServerEventStream({
 
       if (type === "error" && eventSessionId === selectedSessionRef.current) {
         flushPendingOutputBlocks();
-        setLatestRuntimeError(String(event.error ?? "Unknown error"));
+        store.setLatestRuntimeError(String(event.error ?? "Unknown error"));
         setMessages((current) =>
           applyOutputBlock(
             current,
@@ -158,8 +138,8 @@ export function useServerEventStream({
             showThinkingRef.current,
           ),
         );
-        setStreaming(false);
-        setStatusLine("error");
+        store.setStreaming(false);
+        store.setStatusLine("error");
         return;
       }
 
@@ -187,36 +167,36 @@ export function useServerEventStream({
               : String(rawStatus ?? "");
         const status = statusCandidate === "retry" ? "retrying" : statusCandidate;
         if (status === "idle" || status === "complete" || status === "error") {
-          setStreaming(false);
-          setStatusLine(status || "idle");
+          store.setStreaming(false);
+          store.setStatusLine(status || "idle");
           if (status !== "error") {
-            setLatestRuntimeError(null);
+            store.setLatestRuntimeError(null);
           }
         } else if (status === "compacting" || status === "retrying") {
-          setStreaming(true);
-          setStatusLine(status);
-          setLatestRuntimeError(null);
+          store.setStreaming(true);
+          store.setStatusLine(status);
+          store.setLatestRuntimeError(null);
         }
         return;
       }
 
       if (type === "question.created" && eventSessionId === selectedSessionRef.current) {
         flushPendingOutputBlocks();
-        setQuestion(questionInteractionFromEvent(event, eventSessionId));
-        setQuestionAnswers({});
-        setStreaming(false);
-        setStatusLine("awaiting_user");
-        setLatestRuntimeError(null);
+        store.setQuestion(questionInteractionFromEvent(event, eventSessionId));
+        store.setQuestionAnswers({});
+        store.setStreaming(false);
+        store.setStatusLine("awaiting_user");
+        store.setLatestRuntimeError(null);
         return;
       }
 
       if (type === "question.resolved" && eventSessionId === selectedSessionRef.current) {
-        setQuestion(null);
-        setQuestionAnswers({});
-        setQuestionSubmitting(false);
-        setLatestRuntimeError(null);
-        setStreaming(true);
-        setStatusLine("running");
+        store.setQuestion(null);
+        store.setQuestionAnswers({});
+        store.setQuestionSubmitting(false);
+        store.setLatestRuntimeError(null);
+        store.setStreaming(true);
+        store.setStatusLine("running");
         return;
       }
 
@@ -226,21 +206,21 @@ export function useServerEventStream({
       }
 
       if (type === "permission.requested" && eventSessionId === selectedSessionRef.current) {
-        setPermission(permissionInteractionFromEvent(event, eventSessionId));
-        setPermissionSubmitting(false);
-        setPermissionSubmitError(null);
-        setPermissionSubmitStartedAt(null);
-        setPermissionSubmitCompletedAt(null);
-        setLatestRuntimeError(null);
-        setStreaming(false);
-        setStatusLine("awaiting_user");
+        store.setPermission(permissionInteractionFromEvent(event, eventSessionId));
+        store.setPermissionSubmitting(false);
+        store.setPermissionSubmitError(null);
+        store.setPermissionSubmitStartedAt(null);
+        store.setPermissionSubmitCompletedAt(null);
+        store.setLatestRuntimeError(null);
+        store.setStreaming(false);
+        store.setStatusLine("awaiting_user");
         return;
       }
 
       if (type === "permission.resolved") {
         const resolvedPermissionId = String(event.permissionID ?? "");
         let resolvedCurrentPermission = false;
-        setPermission((current) => {
+        store.setPermission((current) => {
           if (!current) return null;
           if (resolvedPermissionId && current.permission_id !== resolvedPermissionId) {
             return current;
@@ -249,12 +229,12 @@ export function useServerEventStream({
           return null;
         });
         if (resolvedCurrentPermission || !resolvedPermissionId) {
-          setPermissionSubmitting(false);
-          setPermissionSubmitError(null);
-          setPermissionSubmitCompletedAt(new Date().toISOString());
-          setLatestRuntimeError(null);
-          setStreaming(true);
-          setStatusLine("running");
+          store.setPermissionSubmitting(false);
+          store.setPermissionSubmitError(null);
+          store.setPermissionSubmitCompletedAt(new Date().toISOString());
+          store.setLatestRuntimeError(null);
+          store.setStreaming(true);
+          store.setStatusLine("running");
         }
       }
     };
@@ -273,7 +253,7 @@ export function useServerEventStream({
           await parseSSE(response, (_eventName, payload) => handleServerEvent(payload));
         } catch {
           if (!active || controller.signal.aborted) return;
-          setStatusLine("reconnecting");
+          useAgendaoStore.getState().setStatusLine("reconnecting");
           await new Promise((resolve) => window.setTimeout(resolve, 1500));
         }
       }
@@ -298,18 +278,7 @@ export function useServerEventStream({
     refreshExecutionActivity,
     scheduleSessionRefresh,
     selectedSessionRef,
-    setLatestRuntimeError,
     setMessages,
-    setPermission,
-    setPermissionSubmitCompletedAt,
-    setPermissionSubmitError,
-    setPermissionSubmitStartedAt,
-    setPermissionSubmitting,
-    setQuestion,
-    setQuestionAnswers,
-    setQuestionSubmitting,
     setRuntimeSurfaceBanner,
-    setStatusLine,
-    setStreaming,
   ]);
 }

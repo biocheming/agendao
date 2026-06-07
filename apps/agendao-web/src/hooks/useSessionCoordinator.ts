@@ -1,0 +1,300 @@
+import { useCallback, useEffect, type MutableRefObject } from "react";
+import { normalizeSessionRecord, normalizeSessionRecords } from "../lib/sidebar";
+import { type SessionListResponseRecord, type SessionRecord } from "../lib/session";
+import {
+  readWebSessionRoute,
+  writeWebSessionRoute,
+} from "../lib/webSessionUrl";
+import { useAgendaoStore } from "../store";
+import { useExternalAdapterProvisioning } from "./useExternalAdapterProvisioning";
+import { useSessionRegistry } from "./useSessionRegistry";
+
+interface UseSessionCoordinatorOptions {
+  api: (path: string, options?: RequestInit) => Promise<Response>;
+  apiJson: <T>(path: string, options?: RequestInit) => Promise<T>;
+  currentWorkspacePath: string | null;
+  currentWorkspaceSummaryPath: string | null;
+  formatError: (error: unknown) => string;
+  routeInitializedRef: MutableRefObject<boolean>;
+  routeSyncSourceRef: MutableRefObject<"app" | "browser">;
+  selectedSessionId: string | null;
+  selectedSessionRef: MutableRefObject<string | null>;
+  serviceRootPath: string;
+  workspaceContextRootPath: string | null;
+}
+
+export function useSessionCoordinator({
+  api,
+  apiJson,
+  currentWorkspacePath,
+  currentWorkspaceSummaryPath,
+  formatError,
+  routeInitializedRef,
+  routeSyncSourceRef,
+  selectedSessionId,
+  selectedSessionRef,
+  serviceRootPath,
+  workspaceContextRootPath,
+}: UseSessionCoordinatorOptions) {
+  const sessions = useAgendaoStore((s) => s.sessions);
+  const setSessions = useAgendaoStore((s) => s.setSessions);
+  const setCurrentWorkspacePath = useAgendaoStore((s) => s.setCurrentWorkspacePath);
+  const setSelectedSessionId = useAgendaoStore((s) => s.setSelectedSessionId);
+  const deletingSessions = useAgendaoStore((s) => s.deletingSessions);
+  const setDeletingSessions = useAgendaoStore((s) => s.setDeletingSessions);
+  const setBanner = useAgendaoStore((s) => s.setBanner);
+
+  const fetchSessions = useCallback(async (): Promise<SessionRecord[]> => {
+    const sessionData = await apiJson<SessionListResponseRecord>("/session?limit=500");
+    return normalizeSessionRecords(sessionData?.items ?? []);
+  }, [apiJson]);
+
+  const onSessionReady = useCallback(
+    (session: SessionRecord, directory: string, replace: boolean) => {
+      setSessions((current) =>
+        normalizeSessionRecords([session, ...current.filter((item) => item.id !== session.id)]),
+      );
+      setCurrentWorkspacePath((current) => directory || current);
+      writeWebSessionRoute(
+        { sessionId: session.id, messageId: null, highlightIds: [], externalProvisioning: null },
+        { replace },
+      );
+    },
+    [setCurrentWorkspacePath, setSessions],
+  );
+
+  const provisionExternalAdapterSession = useExternalAdapterProvisioning({
+    apiJson,
+    onSessionReady,
+  });
+
+  const { clearPendingSessionRefresh, scheduleSessionRefresh } = useSessionRegistry({
+    fetchSessions,
+    formatError,
+    setBanner,
+    setSelectedSessionId,
+    setSessions,
+  });
+
+  const createSession = useCallback(
+    async (options?: { directory?: string; title?: string; projectId?: string }) => {
+      const requestedDirectory =
+        options?.directory?.trim() ||
+        currentWorkspaceSummaryPath ||
+        currentWorkspacePath ||
+        workspaceContextRootPath ||
+        serviceRootPath ||
+        undefined;
+      const created = await apiJson<SessionRecord>("/session", {
+        method: "POST",
+        body: JSON.stringify({
+          directory: requestedDirectory,
+          title: options?.title,
+          project_id: options?.projectId,
+        }),
+      });
+      const normalized = normalizeSessionRecord(created);
+      setSessions((current) =>
+        normalizeSessionRecords([normalized, ...current.filter((item) => item.id !== normalized.id)]),
+      );
+      setCurrentWorkspacePath(normalized.directory?.trim() || requestedDirectory || null);
+      selectedSessionRef.current = normalized.id;
+      setSelectedSessionId(normalized.id);
+      return normalized.id;
+    },
+    [
+      apiJson,
+      currentWorkspacePath,
+      currentWorkspaceSummaryPath,
+      selectedSessionRef,
+      serviceRootPath,
+      setCurrentWorkspacePath,
+      setSelectedSessionId,
+      setSessions,
+      workspaceContextRootPath,
+    ],
+  );
+
+  const forkSelectedSession = useCallback(async () => {
+    if (!selectedSessionId) return;
+    try {
+      const forked = normalizeSessionRecord(
+        await apiJson<SessionRecord>(`/session/${selectedSessionId}/fork`, {
+          method: "POST",
+          body: JSON.stringify({ message_id: null }),
+        }),
+      );
+      setSessions((current) =>
+        normalizeSessionRecords([forked, ...current.filter((item) => item.id !== forked.id)]),
+      );
+      setCurrentWorkspacePath(forked.directory?.trim() || currentWorkspacePath || null);
+      selectedSessionRef.current = forked.id;
+      setSelectedSessionId(forked.id);
+      setBanner(`Forked session ${forked.title}`);
+    } catch (error) {
+      setBanner(`Failed to fork session: ${formatError(error)}`);
+    }
+  }, [
+    apiJson,
+    currentWorkspacePath,
+    formatError,
+    selectedSessionId,
+    selectedSessionRef,
+    setBanner,
+    setCurrentWorkspacePath,
+    setSelectedSessionId,
+    setSessions,
+  ]);
+
+  const selectWorkspace = useCallback(
+    (workspacePath: string) => {
+      setCurrentWorkspacePath(workspacePath);
+      const workspaceSessions = sessions
+        .filter((session) => session.directory?.trim() === workspacePath)
+        .sort((left, right) => (right.updated ?? 0) - (left.updated ?? 0));
+      const preferred =
+        workspaceSessions.find((session) => !session.parent_id) ?? workspaceSessions[0] ?? null;
+      if (preferred) {
+        setSelectedSessionId(preferred.id);
+      }
+    },
+    [sessions, setCurrentWorkspacePath, setSelectedSessionId],
+  );
+
+  const deleteSelectedSessions = useCallback(
+    async (sessionIds: string[]) => {
+      const uniqueIds = Array.from(new Set(sessionIds.map((id) => id.trim()).filter(Boolean)));
+      if (uniqueIds.length === 0 || deletingSessions) return;
+
+      const sessionById = new Map(sessions.map((session) => [session.id, session]));
+      const selectedSet = new Set(uniqueIds);
+      const deleteRoots = uniqueIds.filter((sessionId) => {
+        let cursor = sessionById.get(sessionId)?.parent_id ?? null;
+        while (cursor) {
+          if (selectedSet.has(cursor)) return false;
+          cursor = sessionById.get(cursor)?.parent_id ?? null;
+        }
+        return true;
+      });
+
+      if (deleteRoots.length === 0) return;
+
+      setDeletingSessions(true);
+      setBanner(null);
+
+      try {
+        for (const sessionId of deleteRoots) {
+          await api(`/session/${sessionId}`, { method: "DELETE" });
+        }
+
+        const sessionData = await fetchSessions();
+        setSessions(sessionData);
+
+        const currentStillExists =
+          selectedSessionId && sessionData.some((session) => session.id === selectedSessionId);
+        if (!currentStillExists) {
+          const workspacePath = currentWorkspaceSummaryPath ?? currentWorkspacePath;
+          const workspaceSessions = sessionData
+            .filter((session) => session.directory?.trim() === workspacePath)
+            .sort((left, right) => (right.updated ?? 0) - (left.updated ?? 0));
+          const fallback =
+            workspaceSessions.find((session) => !session.parent_id) ?? workspaceSessions[0] ?? null;
+          setSelectedSessionId(fallback?.id ?? null);
+        }
+
+        setBanner(`Deleted ${deleteRoots.length} session${deleteRoots.length === 1 ? "" : "s"}.`);
+      } catch (error) {
+        setBanner(`Failed to delete sessions: ${formatError(error)}`);
+      } finally {
+        setDeletingSessions(false);
+      }
+    },
+    [
+      api,
+      currentWorkspacePath,
+      currentWorkspaceSummaryPath,
+      deletingSessions,
+      fetchSessions,
+      formatError,
+      selectedSessionId,
+      sessions,
+      setBanner,
+      setDeletingSessions,
+      setSelectedSessionId,
+      setSessions,
+    ],
+  );
+
+  const selectSession = useCallback(
+    (sessionId: string | null) => {
+      routeSyncSourceRef.current = "app";
+      setSelectedSessionId(sessionId);
+    },
+    [routeSyncSourceRef, setSelectedSessionId],
+  );
+
+  useEffect(() => {
+    if (!selectedSessionId) return;
+    if (routeSyncSourceRef.current === "browser") {
+      routeSyncSourceRef.current = "app";
+      routeInitializedRef.current = true;
+      return;
+    }
+    const route = readWebSessionRoute();
+    if (!routeInitializedRef.current && route.sessionId === selectedSessionId) {
+      routeInitializedRef.current = true;
+      return;
+    }
+    if (route.sessionId === selectedSessionId && (route.messageId || route.highlightIds.length > 0)) {
+      routeInitializedRef.current = true;
+      return;
+    }
+    routeInitializedRef.current = true;
+    writeWebSessionRoute({ sessionId: selectedSessionId, messageId: null, highlightIds: [] });
+  }, [routeInitializedRef, routeSyncSourceRef, selectedSessionId]);
+
+  useEffect(() => {
+    let active = true;
+
+    const handlePopState = () => {
+      const route = readWebSessionRoute();
+      if (!route.sessionId && route.externalProvisioning) {
+        void (async () => {
+          try {
+            const sessionId = await provisionExternalAdapterSession(route.externalProvisioning!, {
+              replace: true,
+            });
+            if (!active) return;
+            routeSyncSourceRef.current = "browser";
+            setSelectedSessionId(sessionId);
+          } catch (error) {
+            if (active) {
+              setBanner(`Failed to provision external adapter session: ${formatError(error)}`);
+            }
+          }
+        })();
+        return;
+      }
+      routeSyncSourceRef.current = "browser";
+      setSelectedSessionId(route.sessionId);
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => {
+      active = false;
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, [formatError, provisionExternalAdapterSession, routeSyncSourceRef, setBanner, setSelectedSessionId]);
+
+  return {
+    clearPendingSessionRefresh,
+    createSession,
+    deleteSelectedSessions,
+    fetchSessions,
+    forkSelectedSession,
+    provisionExternalAdapterSession,
+    scheduleSessionRefresh,
+    selectSession,
+    selectWorkspace,
+  };
+}

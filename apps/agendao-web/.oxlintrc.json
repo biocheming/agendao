@@ -1,0 +1,18 @@
+{
+  "ignorePatterns": [
+    "dist/**",
+    "node_modules/**",
+    "src/generated/**"
+  ],
+  "plugins": [
+    "react",
+    "typescript",
+    "promise",
+    "vitest"
+  ],
+  "rules": {
+    "no-debugger": "error",
+    "react/exhaustive-deps": "warn",
+    "react/rules-of-hooks": "error"
+  }
+}
