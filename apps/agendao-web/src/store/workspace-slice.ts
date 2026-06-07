@@ -8,6 +8,7 @@ export function createWorkspaceSlice(
   | "fileTree"
   | "workspaceRootPath"
   | "workspaceLoading"
+  | "workspaceNodeLoading"
   | "selectedFilePath"
   | "selectedFileContent"
   | "savedFileContent"
@@ -25,6 +26,7 @@ export function createWorkspaceSlice(
   | "setFileTree"
   | "setWorkspaceRootPath"
   | "setWorkspaceLoading"
+  | "setWorkspaceNodeLoading"
   | "setSelectedFilePath"
   | "setSelectedFileContent"
   | "setSavedFileContent"
@@ -44,6 +46,7 @@ export function createWorkspaceSlice(
     fileTree: null,
     workspaceRootPath: "",
     workspaceLoading: false,
+    workspaceNodeLoading: {},
     selectedFilePath: null,
     selectedFileContent: "",
     savedFileContent: "",
@@ -66,6 +69,16 @@ export function createWorkspaceSlice(
       }),
     setWorkspaceLoading: (workspaceLoading) =>
       set({ workspaceLoading: resolveSetState(workspaceLoading, get().workspaceLoading) }),
+    setWorkspaceNodeLoading: (path, loading) =>
+      set((state) => {
+        const next = { ...state.workspaceNodeLoading };
+        if (loading) {
+          next[path] = true;
+        } else {
+          delete next[path];
+        }
+        return { workspaceNodeLoading: next };
+      }),
     setSelectedFilePath: (selectedFilePath) =>
       set({ selectedFilePath: resolveSetState(selectedFilePath, get().selectedFilePath) }),
     setSelectedFileContent: (selectedFileContent) =>

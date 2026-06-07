@@ -570,6 +570,7 @@ export default function App() {
     reloadWorkspacePreservingSelection,
     reloadWorkspaceWithSelection,
     selectWorkspaceNode,
+    ensureWorkspaceNodeLoaded,
     selectedWorkspaceFilename,
     uploadWorkspaceFiles,
     workspaceBasePath,
@@ -1356,6 +1357,7 @@ export default function App() {
                   onCreateWorkspaceDirectory={createWorkspaceDirectory}
                   onUploadWorkspaceFiles={uploadWorkspaceFiles}
                   onSelectWorkspaceNode={selectWorkspaceNode}
+                  onExpandWorkspaceNode={ensureWorkspaceNodeLoaded}
                   onInsertWorkspaceReference={insertWorkspaceReference}
                   onAttachSelectedWorkspaceNode={attachSelectedWorkspaceNode}
                 />

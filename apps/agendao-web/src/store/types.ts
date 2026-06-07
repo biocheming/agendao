@@ -192,6 +192,7 @@ export interface AgendaoState {
   fileTree: FileTreeNodeRecord | null;
   workspaceRootPath: string;
   workspaceLoading: boolean;
+  workspaceNodeLoading: Record<string, boolean>;
   selectedFilePath: string | null;
   selectedFileContent: string;
   savedFileContent: string;
@@ -210,6 +211,7 @@ export interface AgendaoState {
   setFileTree: (tree: SetStateFn<FileTreeNodeRecord | null>) => void;
   setWorkspaceRootPath: (path: SetStateFn<string>) => void;
   setWorkspaceLoading: (loading: SetStateFn<boolean>) => void;
+  setWorkspaceNodeLoading: (path: string, loading: boolean) => void;
   setSelectedFilePath: (path: SetStateFn<string | null>) => void;
   setSelectedFileContent: (content: SetStateFn<string>) => void;
   setSavedFileContent: (content: SetStateFn<string>) => void;

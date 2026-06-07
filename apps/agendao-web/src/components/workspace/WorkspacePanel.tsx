@@ -54,6 +54,7 @@ interface WorkspacePanelProps {
   onCreateWorkspaceDirectory: () => Promise<void>;
   onUploadWorkspaceFiles: (event: ChangeEvent<HTMLInputElement>) => void;
   onSelectWorkspaceNode: (path: string, type: "file" | "directory") => void;
+  onExpandWorkspaceNode: (path: string) => void | Promise<void>;
   onInsertWorkspaceReference: () => void;
   onAttachSelectedWorkspaceNode: () => void;
 }
@@ -67,6 +68,7 @@ export function WorkspacePanel({
   onCreateWorkspaceDirectory,
   onUploadWorkspaceFiles,
   onSelectWorkspaceNode,
+  onExpandWorkspaceNode,
   onInsertWorkspaceReference,
   onAttachSelectedWorkspaceNode,
   schedulerNavigation,
@@ -75,6 +77,7 @@ export function WorkspacePanel({
   const activeTab = useAgendaoStore((s) => s.workspacePanelTab);
   const setActiveTab = useAgendaoStore((s) => s.setWorkspacePanelTab);
   const workspaceLoading = useAgendaoStore((s) => s.workspaceLoading);
+  const workspaceNodeLoading = useAgendaoStore((s) => s.workspaceNodeLoading);
   const fileTree = useAgendaoStore((s) => s.fileTree);
   const selectedWorkspacePath = useAgendaoStore((s) => s.selectedWorkspacePath);
   const workspaceUploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -229,11 +232,13 @@ export function WorkspacePanel({
                   linkedPath={workspaceLinkLabel ? selectedWorkspacePath : null}
                   linkedLabel={workspaceLinkLabel}
                   linkedStageId={workspaceLinkStageId}
+                  loadingPaths={workspaceNodeLoading}
                   onSelectNode={(node) => {
                     onSelectWorkspaceNode(node.path, node.type);
                     setActiveTab(node.type === "file" ? "preview" : "files");
                     schedulerNavigation.restoreActiveStage();
                   }}
+                  onExpandNode={(node) => onExpandWorkspaceNode(node.path)}
                   onPreviewStage={schedulerNavigation.previewStage}
                 />
               )

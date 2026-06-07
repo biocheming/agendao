@@ -25,6 +25,7 @@ interface WorkspaceInspectorPanelProps {
   apiJson: <T>(path: string, options?: RequestInit) => Promise<T>;
   workspaceLoading: boolean;
   fileTree: FileTreeNodeRecord | null;
+  workspaceNodeLoading: Record<string, boolean>;
   workspaceRootLabel: string;
   selectedWorkspacePath: string | null;
   workspaceLinkLabel: string | null;
@@ -53,6 +54,7 @@ interface WorkspaceInspectorPanelProps {
   onCreateWorkspaceDirectory: () => void | Promise<void>;
   onUploadWorkspaceFiles: (event: ChangeEvent<HTMLInputElement>) => void | Promise<void>;
   onSelectWorkspaceNode: (path: string, type?: "file" | "directory") => void;
+  onExpandWorkspaceNode: (path: string) => void | Promise<void>;
   onWorkspaceContentChange: (value: string) => void;
   onInsertWorkspaceReference: () => void;
   onAttachSelectedWorkspaceNode: () => void;
@@ -81,6 +83,7 @@ export function WorkspaceInspectorPanel({
   apiJson,
   workspaceLoading,
   fileTree,
+  workspaceNodeLoading,
   workspaceRootLabel,
   selectedWorkspacePath,
   workspaceLinkLabel,
@@ -109,6 +112,7 @@ export function WorkspaceInspectorPanel({
   onCreateWorkspaceDirectory,
   onUploadWorkspaceFiles,
   onSelectWorkspaceNode,
+  onExpandWorkspaceNode,
   onWorkspaceContentChange,
   onInsertWorkspaceReference,
   onAttachSelectedWorkspaceNode,
@@ -183,10 +187,12 @@ export function WorkspaceInspectorPanel({
               linkedPath={workspaceLinkLabel ? selectedWorkspacePath : null}
               linkedLabel={workspaceLinkLabel}
               linkedStageId={workspaceLinkStageId}
+              loadingPaths={workspaceNodeLoading}
               onSelectNode={(node) => {
                 onSelectWorkspaceNode(node.path, node.type);
                 schedulerNavigation.restoreActiveStage();
               }}
+              onExpandNode={(node) => onExpandWorkspaceNode(node.path)}
               onPreviewStage={schedulerNavigation.previewStage}
             />
           ) : (

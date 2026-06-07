@@ -1,6 +1,11 @@
 import { useCallback, useEffect, type MutableRefObject } from "react";
 import { normalizeSessionRecord, normalizeSessionRecords } from "../lib/sidebar";
-import { type SessionListResponseRecord, type SessionRecord } from "../lib/session";
+import {
+  OPTIMISTIC_SESSION_ID_PREFIX,
+  isOptimisticSessionId,
+  type SessionListResponseRecord,
+  type SessionRecord,
+} from "../lib/session";
 import {
   readWebSessionRoute,
   writeWebSessionRoute,
@@ -85,6 +90,27 @@ export function useSessionCoordinator({
         workspaceContextRootPath ||
         serviceRootPath ||
         undefined;
+      const previousSelectedSessionId = selectedSessionRef.current;
+      const optimisticId =
+        `${OPTIMISTIC_SESSION_ID_PREFIX}${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      const optimisticSession = normalizeSessionRecord({
+        id: optimisticId,
+        title: options?.title?.trim() || "New session",
+        directory: requestedDirectory,
+        project_id: options?.projectId,
+        updated: Date.now(),
+      } as SessionRecord);
+      setSessions((current) =>
+        normalizeSessionRecords([
+          optimisticSession,
+          ...current.filter((item) => item.id !== optimisticId),
+        ]),
+      );
+      setCurrentWorkspacePath(requestedDirectory || null);
+      selectedSessionRef.current = optimisticId;
+      setSelectedSessionId(optimisticId);
+
+      try {
       const created = await apiJson<SessionRecord>("/session", {
         method: "POST",
         body: JSON.stringify({
@@ -95,12 +121,21 @@ export function useSessionCoordinator({
       });
       const normalized = normalizeSessionRecord(created);
       setSessions((current) =>
-        normalizeSessionRecords([normalized, ...current.filter((item) => item.id !== normalized.id)]),
+        normalizeSessionRecords([
+          normalized,
+          ...current.filter((item) => item.id !== normalized.id && item.id !== optimisticId),
+        ]),
       );
       setCurrentWorkspacePath(normalized.directory?.trim() || requestedDirectory || null);
       selectedSessionRef.current = normalized.id;
       setSelectedSessionId(normalized.id);
       return normalized.id;
+      } catch (error) {
+        setSessions((current) => current.filter((item) => item.id !== optimisticId));
+        selectedSessionRef.current = previousSelectedSessionId;
+        setSelectedSessionId(previousSelectedSessionId ?? null);
+        throw error;
+      }
     },
     [
       apiJson,
@@ -235,6 +270,7 @@ export function useSessionCoordinator({
 
   useEffect(() => {
     if (!selectedSessionId) return;
+    if (isOptimisticSessionId(selectedSessionId)) return;
     if (routeSyncSourceRef.current === "browser") {
       routeSyncSourceRef.current = "app";
       routeInitializedRef.current = true;

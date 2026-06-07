@@ -23,6 +23,7 @@ import {
   toolExecutionKind,
 } from "../lib/toolPresentation";
 import { toolIdFromPartKey } from "../lib/liveIdentity";
+import { isOptimisticSessionId } from "../lib/session";
 
 export interface ActivityFilters {
   stageId: string;
@@ -356,7 +357,14 @@ export function useExecutionActivity({
       resetExecutionActivity();
       return;
     }
-    void refreshExecutionActivity(selectedSessionId, activityFilters, activityPage);
+    if (isOptimisticSessionId(selectedSessionId)) {
+      resetExecutionActivity();
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void refreshExecutionActivity(selectedSessionId, activityFilters, activityPage);
+    }, 220);
+    return () => window.clearTimeout(timer);
   }, [activityFilters, activityPage, refreshExecutionActivity, resetExecutionActivity, selectedSessionId]);
 
   const telemetryStages = useMemo(
