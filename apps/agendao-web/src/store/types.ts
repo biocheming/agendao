@@ -85,16 +85,16 @@ export interface AgendaoState {
   setTheme: (theme: SetStateFn<ThemeId>) => void;
 
   // === UI Layout ===
+  route: "workbench" | "settings";
   leftSidebarOpen: boolean;
   rightSidebarOpen: boolean;
   terminalOpen: boolean;
-  settingsOpen: boolean;
   banner: string | null;
 
+  setRoute: (route: SetStateFn<"workbench" | "settings">) => void;
   setLeftSidebarOpen: (open: SetStateFn<boolean>) => void;
   setRightSidebarOpen: (open: SetStateFn<boolean>) => void;
   setTerminalOpen: (open: SetStateFn<boolean>) => void;
-  setSettingsOpen: (open: SetStateFn<boolean>) => void;
   setBanner: (message: SetStateFn<string | null>) => void;
   clearBanner: () => void;
 

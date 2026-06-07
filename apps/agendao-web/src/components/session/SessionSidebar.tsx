@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   CheckSquare2,
+  ChevronsUpDown,
   ChevronDown,
   ChevronRight,
   FolderPlus,
@@ -220,6 +221,7 @@ export function SessionSidebar({
   const [newProjectPath, setNewProjectPath] = useState("");
   const [newProjectTitle, setNewProjectTitle] = useState("");
   const [collapsedSessionIds, setCollapsedSessionIds] = useState<Set<string>>(new Set());
+  const [projectsExpanded, setProjectsExpanded] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
@@ -243,12 +245,18 @@ export function SessionSidebar({
       nodes.reduce((total, node) => total + 1 + walk(node.children), 0);
     return walk(sessionTree);
   }, [sessionTree]);
-  const showProjectsSection = workspaces.length > 1 || workspaceQuery.trim().length > 0;
+  const showProjectsSection = projectsExpanded || workspaceQuery.trim().length > 0;
   const validSessionIds = useMemo(() => new Set(flattenSessionIds(sessionTree)), [sessionTree]);
   const selectedCount = useMemo(
     () => Array.from(selectedSessionIds).filter((id) => validSessionIds.has(id)).length,
     [selectedSessionIds, validSessionIds],
   );
+
+  useEffect(() => {
+    if (workspaces.length <= 1 && workspaceQuery.trim().length === 0) {
+      setProjectsExpanded(false);
+    }
+  }, [workspaceQuery, workspaces.length]);
 
   useEffect(() => {
     setSelectedSessionIds((current) => {
@@ -334,8 +342,8 @@ export function SessionSidebar({
   return (
     <aside className="roc-sidebar-shell flex h-full flex-col" data-testid="session-sidebar">
       <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto px-3 py-3">
-        <section className="flex flex-col items-start gap-2 px-1 pt-1">
-          <div className="flex px-0.5 py-1">
+        <section className="flex items-center justify-between gap-2 px-1 pt-1">
+          <div className="flex min-w-0 px-0.5 py-0.5">
             <img
               src={logoSrc}
               alt="AgenDao"
@@ -345,47 +353,46 @@ export function SessionSidebar({
           </div>
           <button
             type="button"
-            className="inline-flex items-center gap-2 rounded-full border border-border/45 bg-background/68 px-3 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border/45 bg-background/68 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             title={t("sidebar.hideSidebarTitle")}
             onClick={onHideSidebar}
           >
             <PanelLeftClose className="h-3.5 w-3.5" />
-            <span>{t("sidebar.hideSidebar")}</span>
           </button>
         </section>
 
-        <section className="px-1 pt-1 pb-1.5">
+        <section className="px-1 pt-0.5 pb-1">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
                 {t("sidebar.workspace")}
               </p>
-              <h2 className="mt-1 text-[15px] font-semibold tracking-tight text-foreground">
+              <h2 className="mt-0.5 text-[15px] font-semibold tracking-tight text-foreground">
                 {currentWorkspaceShort || t("sidebar.chooseWorkspace")}
               </h2>
               {currentWorkspaceHint && currentWorkspaceHint !== currentWorkspaceShort ? (
-                <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{currentWorkspaceHint}</p>
+                <p className="truncate text-[10px] text-muted-foreground">{currentWorkspaceHint}</p>
               ) : null}
             </div>
             {workspaceModeKey ? <span className="roc-badge px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.22em]">{t(workspaceModeKey)}</span> : null}
           </div>
 
-          <div className="mt-2.5 grid grid-cols-2 gap-1.5">
+          <div className="mt-2 grid grid-cols-2 gap-1.5">
             <Button
               variant="ghost"
               size="sm"
-              className="roc-action h-8.5 rounded-full justify-start px-3 text-[11px]"
+              className="roc-action h-8 rounded-full justify-start px-3 text-[11px]"
               type="button"
-              data-testid="project-new"
-              onClick={() => setCreateOpen(true)}
+              data-testid="projects-toggle"
+              onClick={() => setProjectsExpanded((current) => !current)}
             >
-              <FolderPlus className="mr-1.5 h-3.5 w-3.5" />
-              {t("sidebar.newProject")}
+              <ChevronsUpDown className="mr-1.5 h-3.5 w-3.5" />
+              {t("sidebar.projects")}
             </Button>
             <Button
               variant="ghost"
               size="sm"
-              className="roc-primary-action h-8.5 rounded-full justify-start px-3 text-[11px] font-semibold"
+              className="roc-primary-action h-8 rounded-full justify-start px-3 text-[11px] font-semibold"
               type="button"
               data-testid="session-new"
               onClick={onCreateSession}
@@ -406,7 +413,18 @@ export function SessionSidebar({
                     {t("sidebar.projects")}
                   </p>
                 </div>
-                <span className="roc-sidebar-meta">{filteredWorkspaces.length}</span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    className="roc-sidebar-toggle"
+                    title={t("sidebar.newProject")}
+                    aria-label={t("sidebar.newProject")}
+                    onClick={() => setCreateOpen(true)}
+                  >
+                    <FolderPlus className="h-3.5 w-3.5" />
+                  </button>
+                  <span className="roc-sidebar-meta">{filteredWorkspaces.length}</span>
+                </div>
               </div>
 
               {workspaces.length > 1 ? (
@@ -425,7 +443,7 @@ export function SessionSidebar({
             <div className="min-h-0 overflow-y-auto pr-1">
               <div className="flex flex-col gap-2">
                 {filteredWorkspaces.length === 0 ? (
-                  <div className="rounded-[20px] border border-dashed border-border/45 bg-muted/28 px-3.5 py-4 text-sm text-muted-foreground">
+                  <div className="rounded-[16px] border border-dashed border-border/45 bg-muted/28 px-3.5 py-4 text-sm text-muted-foreground">
                     {workspaces.length === 0 ? t("sidebar.emptyWorkspaces") : t("sidebar.emptyMatchingWorkspaces")}
                   </div>
                 ) : (
@@ -520,7 +538,7 @@ export function SessionSidebar({
 
           <div className="min-h-0 overflow-y-auto pr-1">
             {sessionTree.length === 0 ? (
-              <div className="rounded-[20px] border border-dashed border-border/45 bg-muted/28 px-3.5 py-4 text-sm text-muted-foreground">
+              <div className="rounded-[16px] border border-dashed border-border/45 bg-muted/28 px-3.5 py-4 text-sm text-muted-foreground">
                 {t("sidebar.emptySessions")}
               </div>
             ) : (

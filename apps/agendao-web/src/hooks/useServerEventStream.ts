@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { apiUrl, parseSSE } from "../lib/api";
-import type { AuxiliaryOutputBlock, FeedMessage, OutputBlock } from "../lib/history";
+import type { OutputBlock } from "../lib/history";
 import { applyOutputBlock, shouldQueueLiveTranscriptBlock } from "../lib/liveTranscriptState";
 import {
   permissionInteractionFromEvent,
@@ -11,12 +11,6 @@ import { useAgendaoStore } from "../store";
 interface UseServerEventStreamOptions {
   applyLiveExecutionOutputBlock: (block: OutputBlock, sessionId: string) => void;
   applySchedulerStageOutputBlock: (block: OutputBlock, sessionId: string) => void;
-  appendRuntimeSurfaceBlock: (
-    sessionId: string,
-    key: "sessionEvents" | "inspectItems" | "queueItems",
-    block: AuxiliaryOutputBlock,
-    limit: number,
-  ) => void;
   clearPendingOutputBlockFlush: () => void;
   clearPendingSessionRefresh: () => void;
   flushPendingOutputBlocks: () => void;
@@ -24,10 +18,6 @@ interface UseServerEventStreamOptions {
   queueVisibleLiveSnapshot: (sessionId: string, block: OutputBlock) => void;
   refreshExecutionActivity: (sessionId: string) => void | Promise<void>;
   scheduleSessionRefresh: () => void;
-  selectedSessionRef: React.MutableRefObject<string | null>;
-  setMessages: React.Dispatch<React.SetStateAction<FeedMessage[]>>;
-  setRuntimeSurfaceBanner: (sessionId: string, nextBanner: string | null) => void;
-  showThinking: boolean;
 }
 
 function outputBlockFromEvent(event: Record<string, unknown>): OutputBlock | undefined {
@@ -60,7 +50,6 @@ function eventSessionIdFromPayload(event: Record<string, unknown>): string | und
 export function useServerEventStream({
   applyLiveExecutionOutputBlock,
   applySchedulerStageOutputBlock,
-  appendRuntimeSurfaceBlock,
   clearPendingOutputBlockFlush,
   clearPendingSessionRefresh,
   flushPendingOutputBlocks,
@@ -68,11 +57,11 @@ export function useServerEventStream({
   queueVisibleLiveSnapshot,
   refreshExecutionActivity,
   scheduleSessionRefresh,
-  selectedSessionRef,
-  setMessages,
-  setRuntimeSurfaceBanner,
-  showThinking,
 }: UseServerEventStreamOptions) {
+  const appendRuntimeSurfaceBlock = useAgendaoStore((s) => s.appendRuntimeSurfaceBlock);
+  const setMessages = useAgendaoStore((s) => s.setMessages);
+  const setRuntimeSurfaceBanner = useAgendaoStore((s) => s.setRuntimeSurfaceBanner);
+  const showThinking = useAgendaoStore((s) => s.showThinking);
   const showThinkingRef = useRef(showThinking);
 
   useEffect(() => {
@@ -88,8 +77,9 @@ export function useServerEventStream({
       const event = payload as Record<string, unknown>;
       const type = typeof event.type === "string" ? event.type : "";
       const eventSessionId = eventSessionIdFromPayload(event);
+      const selectedSessionId = store.selectedSessionId;
 
-      if (type === "output_block" && eventSessionId === selectedSessionRef.current) {
+      if (type === "output_block" && eventSessionId === selectedSessionId) {
         const block = outputBlockFromEvent(event);
         if (!block) return;
         if (block.kind === "scheduler_stage") {
@@ -124,7 +114,7 @@ export function useServerEventStream({
         return;
       }
 
-      if (type === "error" && eventSessionId === selectedSessionRef.current) {
+      if (type === "error" && eventSessionId === selectedSessionId) {
         flushPendingOutputBlocks();
         store.setLatestRuntimeError(String(event.error ?? "Unknown error"));
         setMessages((current) =>
@@ -156,7 +146,7 @@ export function useServerEventStream({
         return;
       }
 
-      if (type === "session.status" && eventSessionId === selectedSessionRef.current) {
+      if (type === "session.status" && eventSessionId === selectedSessionId) {
         flushPendingOutputBlocks();
         const rawStatus = event.status;
         const statusCandidate =
@@ -180,7 +170,7 @@ export function useServerEventStream({
         return;
       }
 
-      if (type === "question.created" && eventSessionId === selectedSessionRef.current) {
+      if (type === "question.created" && eventSessionId === selectedSessionId) {
         flushPendingOutputBlocks();
         store.setQuestion(questionInteractionFromEvent(event, eventSessionId));
         store.setQuestionAnswers({});
@@ -190,7 +180,7 @@ export function useServerEventStream({
         return;
       }
 
-      if (type === "question.resolved" && eventSessionId === selectedSessionRef.current) {
+      if (type === "question.resolved" && eventSessionId === selectedSessionId) {
         store.setQuestion(null);
         store.setQuestionAnswers({});
         store.setQuestionSubmitting(false);
@@ -200,12 +190,12 @@ export function useServerEventStream({
         return;
       }
 
-      if (type === "execution.topology.changed" && eventSessionId === selectedSessionRef.current) {
+      if (type === "execution.topology.changed" && eventSessionId === selectedSessionId) {
         void refreshExecutionActivity(eventSessionId);
         return;
       }
 
-      if (type === "permission.requested" && eventSessionId === selectedSessionRef.current) {
+      if (type === "permission.requested" && eventSessionId === selectedSessionId) {
         store.setPermission(permissionInteractionFromEvent(event, eventSessionId));
         store.setPermissionSubmitting(false);
         store.setPermissionSubmitError(null);
@@ -269,7 +259,6 @@ export function useServerEventStream({
   }, [
     applyLiveExecutionOutputBlock,
     applySchedulerStageOutputBlock,
-    appendRuntimeSurfaceBlock,
     clearPendingOutputBlockFlush,
     clearPendingSessionRefresh,
     flushPendingOutputBlocks,
@@ -277,7 +266,7 @@ export function useServerEventStream({
     queueVisibleLiveSnapshot,
     refreshExecutionActivity,
     scheduleSessionRefresh,
-    selectedSessionRef,
+    appendRuntimeSurfaceBlock,
     setMessages,
     setRuntimeSurfaceBanner,
   ]);

@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, type MutableRefObject, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, type RefObject } from "react";
 import { buildWebSessionUrl, readWebSessionRoute } from "../lib/webSessionUrl";
-import type { AuxiliaryOutputBlock, FeedMessage, MessageRecord, OutputBlock } from "../lib/history";
+import type { FeedMessage, MessageRecord, OutputBlock } from "../lib/history";
 import {
   feedToolCallId as feedToolCallIdFromMessage,
   isToolOutputBlock,
@@ -10,7 +10,6 @@ import {
   type QuestionInfoResponseRecord,
 } from "../lib/interaction";
 import { runtimeSurfaceDebugDetail } from "../lib/display";
-import type { SessionRecord } from "../lib/session";
 import { isOptimisticSessionId } from "../lib/session";
 import { useAgendaoStore } from "../store";
 import { useConversationJump } from "./useConversationJump";
@@ -21,12 +20,6 @@ interface UseTranscriptCoordinatorOptions {
   apiJson: <T>(path: string, options?: RequestInit) => Promise<T>;
   applyLiveExecutionOutputBlock: (block: OutputBlock, sessionId: string) => void;
   applySchedulerStageOutputBlock: (block: OutputBlock, sessionId: string) => void;
-  appendRuntimeSurfaceBlock: (
-    sessionId: string,
-    key: "sessionEvents" | "inspectItems" | "queueItems",
-    block: AuxiliaryOutputBlock,
-    limit: number,
-  ) => void;
   clearPendingSessionRefresh: () => void;
   feedRef: RefObject<HTMLDivElement | null>;
   formatError: (error: unknown) => string;
@@ -34,20 +27,12 @@ interface UseTranscriptCoordinatorOptions {
   onConfigUpdated: () => void;
   refreshExecutionActivity: (sessionId: string) => void | Promise<void>;
   scheduleSessionRefresh: () => void;
-  selectedSessionId: string | null;
-  selectedSessionRef: MutableRefObject<string | null>;
-  sessions: SessionRecord[];
-  setBanner: (message: string | null) => void;
-  setRuntimeSurfaceBanner: (sessionId: string, nextBanner: string | null) => void;
-  showThinking: boolean;
-  streaming: boolean;
 }
 
 export function useTranscriptCoordinator({
   apiJson,
   applyLiveExecutionOutputBlock,
   applySchedulerStageOutputBlock,
-  appendRuntimeSurfaceBlock,
   clearPendingSessionRefresh,
   feedRef,
   formatError,
@@ -55,21 +40,19 @@ export function useTranscriptCoordinator({
   onConfigUpdated,
   refreshExecutionActivity,
   scheduleSessionRefresh,
-  selectedSessionId,
-  selectedSessionRef,
-  sessions,
-  setBanner,
-  setRuntimeSurfaceBanner,
-  showThinking,
-  streaming,
 }: UseTranscriptCoordinatorOptions) {
+  const sessions = useAgendaoStore((s) => s.sessions);
+  const selectedSessionId = useAgendaoStore((s) => s.selectedSessionId);
   const selectedMessageIds = useAgendaoStore((s) => s.selectedMessageIds);
   const setSelectedMessageIds = useAgendaoStore((s) => s.setSelectedMessageIds);
   const setHistoryLoading = useAgendaoStore((s) => s.setHistoryLoading);
   const setQuestion = useAgendaoStore((s) => s.setQuestion);
   const setQuestionAnswers = useAgendaoStore((s) => s.setQuestionAnswers);
+  const setBanner = useAgendaoStore((s) => s.setBanner);
   const sessionBreadcrumbs = useAgendaoStore((s) => s.sessionBreadcrumbs);
   const currentBreadcrumbProvenanceFor = useAgendaoStore((s) => s.currentBreadcrumbProvenanceFor);
+  const streaming = useAgendaoStore((s) => s.streaming);
+  const showThinking = useAgendaoStore((s) => s.showThinking);
 
   const {
     clearPendingOutputBlockFlush,
@@ -85,7 +68,6 @@ export function useTranscriptCoordinator({
     setMessages,
   } = useTranscriptFeedState({
     maxPendingOutputBlocks,
-    selectedSessionRef,
     sessionIds: sessions.map((session) => session.id),
     showThinking,
   });
@@ -209,6 +191,12 @@ export function useTranscriptCoordinator({
           messages: Array<{ kind: string; id?: string; tool_call_id?: string; text?: string }>;
           liveBlocks: Array<{ kind: string; id?: string; tool_call_id?: string; text?: string; detail?: string; part_key?: string; part_kind?: string }>;
           pendingVisible: Array<{ kind: string; id?: string; tool_call_id?: string; text?: string; detail?: string; part_key?: string; part_kind?: string }>;
+          injectRuntimeSurface?: (payload: {
+            banner?: string | null;
+            queueItems?: Array<Record<string, unknown>>;
+            sessionEvents?: Array<Record<string, unknown>>;
+            inspectItems?: Array<Record<string, unknown>>;
+          }) => boolean;
         };
       }
     ).__agendaoWebDebug = {
@@ -246,6 +234,36 @@ export function useTranscriptCoordinator({
         part_key: block.live_identity?.part_key,
         part_kind: block.live_identity?.part_kind,
       })),
+      injectRuntimeSurface: ({ banner = null, queueItems = [], sessionEvents = [], inspectItems = [] }) => {
+        if (!selectedSessionId) return false;
+        const store = useAgendaoStore.getState();
+        store.setRuntimeSurfaceBanner(selectedSessionId, banner);
+        queueItems.forEach((block) =>
+          store.appendRuntimeSurfaceBlock(
+            selectedSessionId,
+            "queueItems",
+            block as never,
+            20,
+          ),
+        );
+        sessionEvents.forEach((block) =>
+          store.appendRuntimeSurfaceBlock(
+            selectedSessionId,
+            "sessionEvents",
+            block as never,
+            50,
+          ),
+        );
+        inspectItems.forEach((block) =>
+          store.appendRuntimeSurfaceBlock(
+            selectedSessionId,
+            "inspectItems",
+            block as never,
+            10,
+          ),
+        );
+        return true;
+      },
     };
   }, [
     currentBreadcrumbProvenanceFor,
@@ -307,7 +325,6 @@ export function useTranscriptCoordinator({
   useServerEventStream({
     applyLiveExecutionOutputBlock,
     applySchedulerStageOutputBlock,
-    appendRuntimeSurfaceBlock,
     clearPendingOutputBlockFlush,
     clearPendingSessionRefresh,
     flushPendingOutputBlocks,
@@ -315,10 +332,6 @@ export function useTranscriptCoordinator({
     queueVisibleLiveSnapshot,
     refreshExecutionActivity,
     scheduleSessionRefresh,
-    selectedSessionRef,
-    setMessages,
-    setRuntimeSurfaceBanner,
-    showThinking,
   });
 
   return {

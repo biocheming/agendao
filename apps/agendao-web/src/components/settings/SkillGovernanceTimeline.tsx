@@ -174,7 +174,7 @@ export function SkillGovernanceTimeline({
                     >
                       {entry.status}
                     </span>
-                    <span className="roc-badge px-2.5 py-1 text-[11px] uppercase tracking-wide">
+                    <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
                       {entry.kind}
                     </span>
                   </div>
@@ -185,22 +185,14 @@ export function SkillGovernanceTimeline({
                 </span>
               </div>
 
-              <div className="mt-3 flex flex-wrap gap-2 text-xs">
-                {entry.skill_name ? (
-                  <span className="roc-badge px-2.5 py-1">
-                    skill {entry.skill_name}
-                  </span>
-                ) : null}
-                {entry.source_id ? (
-                  <span className="roc-badge px-2.5 py-1">
-                    source {entry.source_id}
-                  </span>
-                ) : null}
-                {entry.actor ? (
-                  <span className="roc-badge px-2.5 py-1 text-muted-foreground">
-                    actor {entry.actor}
-                  </span>
-                ) : null}
+              <div className="mt-3 text-xs text-muted-foreground">
+                {[
+                  entry.skill_name ? `skill ${entry.skill_name}` : null,
+                  entry.source_id ? `source ${entry.source_id}` : null,
+                  entry.actor ? `actor ${entry.actor}` : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
               </div>
 
               {entry.managed_record ? (

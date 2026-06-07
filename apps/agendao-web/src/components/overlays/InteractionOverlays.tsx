@@ -199,75 +199,79 @@ export function InteractionOverlays({
                 </p>
               ) : null}
               {permissionSubmitStartedAt || permissionSubmitCompletedAt ? (
-                <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm text-muted-foreground">
+                <dl className="flex flex-col gap-3 text-sm text-muted-foreground">
                   {permissionSubmitStartedAt ? (
-                    <>
-                      <dt>Submit started</dt>
+                    <div className="flex flex-col gap-1">
+                      <dt className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/75">
+                        Submit started
+                      </dt>
                       <dd data-testid="permission-submit-started">{permissionSubmitStartedAt}</dd>
-                    </>
+                    </div>
                   ) : null}
                   {permissionSubmitCompletedAt ? (
-                    <>
-                      <dt>Last submit done</dt>
+                    <div className="flex flex-col gap-1">
+                      <dt className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/75">
+                        Last submit done
+                      </dt>
                       <dd data-testid="permission-submit-completed">{permissionSubmitCompletedAt}</dd>
-                    </>
+                    </div>
                   ) : null}
                 </dl>
               ) : null}
-              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+              <dl className="flex flex-col gap-3 text-sm">
                 {permission.permission ? (
-                  <div>
-                    <dt>Permission</dt>
-                    <dd>{permission.permission}</dd>
+                  <div className="flex flex-col gap-1.5">
+                    <dt className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/75">Permission</dt>
+                    <dd className="leading-6 text-foreground">{permission.permission}</dd>
                   </div>
                 ) : null}
                 {permission.permission_class_label ? (
-                  <div>
-                    <dt>Class</dt>
-                    <dd>{permission.permission_class_label}</dd>
+                  <div className="flex flex-col gap-1.5">
+                    <dt className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/75">Class</dt>
+                    <dd className="leading-6 text-foreground">{permission.permission_class_label}</dd>
                   </div>
                 ) : null}
                 {permission.scope_label || permission.scope_key ? (
-                  <div>
-                    <dt>Scope</dt>
-                    <dd>{permission.scope_label ?? permission.scope_key}</dd>
+                  <div className="flex flex-col gap-1.5">
+                    <dt className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/75">Scope</dt>
+                    <dd className="leading-6 text-foreground">{permission.scope_label ?? permission.scope_key}</dd>
                   </div>
                 ) : null}
                 {permission.grant_target_summary ? (
-                  <div>
-                    <dt>Target</dt>
-                    <dd>{permission.grant_target_summary}</dd>
+                  <div className="flex flex-col gap-1.5">
+                    <dt className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/75">Target</dt>
+                    <dd className="leading-6 text-foreground">{permission.grant_target_summary}</dd>
                   </div>
                 ) : null}
                 {permission.matcher_label ? (
-                  <div>
-                    <dt>Match</dt>
-                    <dd>{permission.matcher_label}</dd>
+                  <div className="flex flex-col gap-1.5">
+                    <dt className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/75">Match</dt>
+                    <dd className="leading-6 text-foreground">{permission.matcher_label}</dd>
                   </div>
                 ) : null}
                 {permission.grant_hint ? (
-                  <div>
-                    <dt>Grant</dt>
-                    <dd>{permission.grant_hint}</dd>
+                  <div className="flex flex-col gap-1.5">
+                    <dt className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/75">Grant</dt>
+                    <dd className="leading-6 text-foreground">{permission.grant_hint}</dd>
                   </div>
                 ) : null}
                 {permission.risk_tags?.length ? (
-                  <div>
-                    <dt>Risk</dt>
-                    <dd>{permission.risk_tags.join(", ")}</dd>
+                  <div className="flex flex-col gap-1.5">
+                    <dt className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/75">Risk</dt>
+                    <dd className="leading-6 text-foreground">{permission.risk_tags.join(", ")}</dd>
                   </div>
                 ) : null}
                 {permission.command ? (
-                  <div>
-                    <dt>Command</dt>
+                  <div className="flex flex-col gap-1.5">
+                    <dt className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/75">Command</dt>
                     <dd className="mt-1">
                       <CollapsibleCodeValue value={permission.command} testId="permission-command" />
                     </dd>
                   </div>
                 ) : null}
                 {permission.filepath ? (
-                  <div>
-                    <dt>Path</dt>
+                  <div className="flex flex-col gap-1.5">
+                    <dt className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/75">Path</dt>
                     <dd className="mt-1">
                       <CollapsibleCodeValue value={permission.filepath} testId="permission-path" />
                     </dd>

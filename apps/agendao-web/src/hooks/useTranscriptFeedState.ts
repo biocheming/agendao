@@ -3,7 +3,6 @@ import {
   useCallback,
   useEffect,
   useRef,
-  type MutableRefObject,
 } from "react";
 import type {
   FeedMessage,
@@ -40,7 +39,6 @@ function createFeedSequence() {
 
 interface UseTranscriptFeedStateOptions {
   maxPendingOutputBlocks: number;
-  selectedSessionRef: MutableRefObject<string | null>;
   sessionIds: string[];
   showThinking: boolean;
 }
@@ -53,7 +51,6 @@ interface RebuildFeedFromHistoryOptions {
 
 export function useTranscriptFeedState({
   maxPendingOutputBlocks,
-  selectedSessionRef,
   sessionIds,
   showThinking,
 }: UseTranscriptFeedStateOptions) {
@@ -125,7 +122,7 @@ export function useTranscriptFeedState({
       return;
     }
     pendingOutputBlocksRef.current = {};
-    const activeSessionId = selectedSessionRef.current;
+    const activeSessionId = useAgendaoStore.getState().selectedSessionId;
     const visibleSnapshots = activeSessionId ? (queuedBySession[activeSessionId] ?? []) : [];
 
     if (visibleSnapshots.length === 0) {
@@ -140,7 +137,7 @@ export function useTranscriptFeedState({
         ),
       );
     });
-  }, [clearPendingOutputBlockFlush, selectedSessionRef, setMessages]);
+  }, [clearPendingOutputBlockFlush, setMessages]);
 
   const schedulePendingOutputBlockFlush = useCallback(() => {
     if (outputFlushFrameRef.current !== null) {
@@ -170,7 +167,7 @@ export function useTranscriptFeedState({
       ...liveBlocksRef.current,
       [sessionId]: nextLiveBlocks,
     };
-    if (sessionId !== selectedSessionRef.current) {
+    if (sessionId !== useAgendaoStore.getState().selectedSessionId) {
       return;
     }
     const visible = visibleSnapshotFromLiveBlocks(nextLiveBlocks, block);
@@ -192,7 +189,6 @@ export function useTranscriptFeedState({
     maxPendingOutputBlocks,
     pendingVisibleSnapshotKey,
     schedulePendingOutputBlockFlush,
-    selectedSessionRef,
   ]);
 
   const rebuildFeedFromHistory = useCallback(({

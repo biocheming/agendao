@@ -1,4 +1,4 @@
-import { useCallback, useEffect, type MutableRefObject } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { normalizeSessionRecord, normalizeSessionRecords } from "../lib/sidebar";
 import {
   OPTIMISTIC_SESSION_ID_PREFIX,
@@ -20,10 +20,7 @@ interface UseSessionCoordinatorOptions {
   currentWorkspacePath: string | null;
   currentWorkspaceSummaryPath: string | null;
   formatError: (error: unknown) => string;
-  routeInitializedRef: MutableRefObject<boolean>;
-  routeSyncSourceRef: MutableRefObject<"app" | "browser">;
   selectedSessionId: string | null;
-  selectedSessionRef: MutableRefObject<string | null>;
   serviceRootPath: string;
   workspaceContextRootPath: string | null;
 }
@@ -34,10 +31,7 @@ export function useSessionCoordinator({
   currentWorkspacePath,
   currentWorkspaceSummaryPath,
   formatError,
-  routeInitializedRef,
-  routeSyncSourceRef,
   selectedSessionId,
-  selectedSessionRef,
   serviceRootPath,
   workspaceContextRootPath,
 }: UseSessionCoordinatorOptions) {
@@ -48,11 +42,19 @@ export function useSessionCoordinator({
   const deletingSessions = useAgendaoStore((s) => s.deletingSessions);
   const setDeletingSessions = useAgendaoStore((s) => s.setDeletingSessions);
   const setBanner = useAgendaoStore((s) => s.setBanner);
+  const routeInitializedRef = useRef(false);
+  const routeSyncSourceRef = useRef<"app" | "browser">("app");
 
   const fetchSessions = useCallback(async (): Promise<SessionRecord[]> => {
     const sessionData = await apiJson<SessionListResponseRecord>("/session?limit=500");
     return normalizeSessionRecords(sessionData?.items ?? []);
   }, [apiJson]);
+
+  const refreshSessions = useCallback(async () => {
+    const sessionData = await fetchSessions();
+    setSessions(sessionData);
+    return sessionData;
+  }, [fetchSessions, setSessions]);
 
   const onSessionReady = useCallback(
     (session: SessionRecord, directory: string, replace: boolean) => {
@@ -90,7 +92,7 @@ export function useSessionCoordinator({
         workspaceContextRootPath ||
         serviceRootPath ||
         undefined;
-      const previousSelectedSessionId = selectedSessionRef.current;
+      const previousSelectedSessionId = selectedSessionId;
       const optimisticId =
         `${OPTIMISTIC_SESSION_ID_PREFIX}${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
       const optimisticSession = normalizeSessionRecord({
@@ -107,7 +109,6 @@ export function useSessionCoordinator({
         ]),
       );
       setCurrentWorkspacePath(requestedDirectory || null);
-      selectedSessionRef.current = optimisticId;
       setSelectedSessionId(optimisticId);
 
       try {
@@ -127,12 +128,10 @@ export function useSessionCoordinator({
         ]),
       );
       setCurrentWorkspacePath(normalized.directory?.trim() || requestedDirectory || null);
-      selectedSessionRef.current = normalized.id;
       setSelectedSessionId(normalized.id);
       return normalized.id;
       } catch (error) {
         setSessions((current) => current.filter((item) => item.id !== optimisticId));
-        selectedSessionRef.current = previousSelectedSessionId;
         setSelectedSessionId(previousSelectedSessionId ?? null);
         throw error;
       }
@@ -141,7 +140,7 @@ export function useSessionCoordinator({
       apiJson,
       currentWorkspacePath,
       currentWorkspaceSummaryPath,
-      selectedSessionRef,
+      selectedSessionId,
       serviceRootPath,
       setCurrentWorkspacePath,
       setSelectedSessionId,
@@ -163,7 +162,6 @@ export function useSessionCoordinator({
         normalizeSessionRecords([forked, ...current.filter((item) => item.id !== forked.id)]),
       );
       setCurrentWorkspacePath(forked.directory?.trim() || currentWorkspacePath || null);
-      selectedSessionRef.current = forked.id;
       setSelectedSessionId(forked.id);
       setBanner(`Forked session ${forked.title}`);
     } catch (error) {
@@ -174,7 +172,6 @@ export function useSessionCoordinator({
     currentWorkspacePath,
     formatError,
     selectedSessionId,
-    selectedSessionRef,
     setBanner,
     setCurrentWorkspacePath,
     setSelectedSessionId,
@@ -222,8 +219,7 @@ export function useSessionCoordinator({
           await api(`/session/${sessionId}`, { method: "DELETE" });
         }
 
-        const sessionData = await fetchSessions();
-        setSessions(sessionData);
+        const sessionData = await refreshSessions();
 
         const currentStillExists =
           selectedSessionId && sessionData.some((session) => session.id === selectedSessionId);
@@ -249,14 +245,13 @@ export function useSessionCoordinator({
       currentWorkspacePath,
       currentWorkspaceSummaryPath,
       deletingSessions,
-      fetchSessions,
       formatError,
+      refreshSessions,
       selectedSessionId,
       sessions,
       setBanner,
       setDeletingSessions,
       setSelectedSessionId,
-      setSessions,
     ],
   );
 
@@ -326,9 +321,9 @@ export function useSessionCoordinator({
     clearPendingSessionRefresh,
     createSession,
     deleteSelectedSessions,
-    fetchSessions,
     forkSelectedSession,
     provisionExternalAdapterSession,
+    refreshSessions,
     scheduleSessionRefresh,
     selectSession,
     selectWorkspace,

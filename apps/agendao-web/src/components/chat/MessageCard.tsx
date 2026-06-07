@@ -100,6 +100,10 @@ function attachedSessionLabel(message: FeedMessage): string {
   return feedAttachedSessionId(message) ?? "";
 }
 
+function joinSummaryParts(parts: Array<string | null | undefined>) {
+  return parts.filter(Boolean).join(" · ");
+}
+
 function MetaActionButton({
   children,
   onClick,
@@ -113,7 +117,7 @@ function MetaActionButton({
     <button
       type="button"
       onClick={onClick}
-      className={cn("roc-badge transition-colors hover:border-primary/35 hover:text-primary", className)}
+      className={cn("text-xs text-muted-foreground transition-colors hover:text-primary", className)}
     >
       {children}
     </button>
@@ -416,10 +420,12 @@ function ToolBlock({ message, active }: { message: ToolOutputBlock; active: bool
     >
       <div className="grid gap-2.5">
         {message.tool_call_id || message.stage_id ? (
-          <div className="roc-message-meta-group">
-            {message.tool_call_id ? <span className="roc-badge">tool {message.tool_call_id}</span> : null}
-            {message.stage_id ? <span className="roc-badge">stage {message.stage_id}</span> : null}
-          </div>
+          <p className="text-sm text-muted-foreground">
+            {joinSummaryParts([
+              message.tool_call_id ? `tool ${message.tool_call_id}` : null,
+              message.stage_id ? `stage ${message.stage_id}` : null,
+            ])}
+          </p>
         ) : null}
         {fields?.length ? <FieldList fields={fields} /> : null}
         {compatDetail ? (
@@ -511,6 +517,11 @@ export function MessageCard({
   const cacheSummary = cacheBustSummaryFromMetadata(message.metadata);
   const cacheDiagnosticLabel = cacheBustSummaryStatusLabel(cacheSummary);
   const cacheDiagnosticDetail = cacheBustSummaryLabel(cacheSummary);
+  const metaSummary = joinSummaryParts([
+    clock,
+    cacheDiagnosticLabel ? `cache ${cacheDiagnosticLabel}` : null,
+    toolCallId ? `tool ${toolCallId}` : null,
+  ]);
   const active =
     Boolean(activeStageId && stageId === activeStageId) ||
     Boolean(activeToolCallId && toolCallId === activeToolCallId);
@@ -544,13 +555,17 @@ export function MessageCard({
                 />
               ) : null}
               <span className="roc-section-label">{roleLabel}</span>
-              {clock ? <span className="roc-badge">{clock}</span> : null}
-              {cacheDiagnosticLabel ? (
+              {metaSummary ? (
                 <span
-                  className="roc-badge border-amber-500/30 text-amber-700 dark:text-amber-300"
-                  title={cacheDiagnosticDetail || "Prompt cache diagnostic"}
+                  className={cn(
+                    "text-xs",
+                    cacheDiagnosticLabel
+                      ? "text-amber-700 dark:text-amber-300"
+                      : "text-muted-foreground",
+                  )}
+                  title={cacheDiagnosticDetail || metaSummary}
                 >
-                  cache {cacheDiagnosticLabel}
+                  {metaSummary}
                 </span>
               ) : null}
             </div>
@@ -561,7 +576,6 @@ export function MessageCard({
                     stage {stageId}
                   </MetaActionButton>
                 ) : null}
-                {toolCallId ? <span className="roc-badge">tool {toolCallId}</span> : null}
               </div>
             ) : null}
           </div>

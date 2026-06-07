@@ -46,6 +46,13 @@ function formatCompactTokenCount(value: number) {
   return String(Math.round(value));
 }
 
+function summarizeMetrics(items: Array<[string, string | number | null | undefined]>) {
+  return items
+    .filter(([, value]) => value !== null && value !== undefined && value !== "")
+    .map(([label, value]) => `${label} ${value}`)
+    .join(" · ");
+}
+
 function schedulerTraceLabel(kind?: string | null) {
   switch (kind) {
     case "requested_profile":
@@ -237,15 +244,17 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
                 <h4 className="roc-rail-section-title">Current Run Snapshot</h4>
               </div>
               <div className="roc-rail-meta-list">
-                <span className="roc-badge px-3 py-1.5 text-xs">version {telemetry.version}</span>
                 <span className="roc-badge px-3 py-1.5 text-xs">status {telemetry.last_run_status}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">stages {telemetryStages.length}</span>
-                {trajectoryQuality ? (
-                  <span className="roc-badge px-3 py-1.5 text-xs">
-                    trajectory {trajectoryQuality.score} {formatTrajectoryBand(trajectoryQuality.band)}
-                  </span>
-                ) : null}
               </div>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                {summarizeMetrics([
+                  ["version", telemetry.version],
+                  ["stages", telemetryStages.length],
+                  trajectoryQuality
+                    ? ["trajectory", `${trajectoryQuality.score} ${formatTrajectoryBand(trajectoryQuality.band)}`]
+                    : ["", null],
+                ])}
+              </p>
               {currentContextTokens ? (
                 <p className="text-sm text-muted-foreground leading-relaxed">
                   Current live context {formatCompactTokenCount(currentContextTokens)}
@@ -267,20 +276,16 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
               ) : null}
               {runtimeTelemetry || telemetry ? (
                 <div className={detailTileClass}>
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="grid gap-1">
                     <p className="roc-section-label">Tool Result Governance</p>
-                    <span className="roc-badge px-2.5 py-1 text-xs">
-                      single {toolResultGovernance?.single_result_governed_count ?? 0}
-                    </span>
-                    <span className="roc-badge px-2.5 py-1 text-xs">
-                      batch {toolResultGovernance?.batch_governed_count ?? 0}
-                    </span>
-                    <span className="roc-badge px-2.5 py-1 text-xs">
-                      transcript fallback {toolResultGovernance?.transcript_fallback_count ?? 0}
-                    </span>
-                    <span className="roc-badge px-2.5 py-1 text-xs">
-                      artifact {toolResultGovernance?.artifact_fallback_count ?? 0}
-                    </span>
+                    <p className="text-sm text-muted-foreground leading-relaxed">
+                      {summarizeMetrics([
+                        ["single", toolResultGovernance?.single_result_governed_count ?? 0],
+                        ["batch", toolResultGovernance?.batch_governed_count ?? 0],
+                        ["transcript fallback", toolResultGovernance?.transcript_fallback_count ?? 0],
+                        ["artifact", toolResultGovernance?.artifact_fallback_count ?? 0],
+                      ])}
+                    </p>
                   </div>
                   {(toolResultGovernance?.total_original_chars ?? 0) > 0 ? (
                     <p className="text-sm text-muted-foreground leading-relaxed">
@@ -312,12 +317,14 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
               </div>
               {schedulerPolicy ? (
                 <>
-                  <div className="roc-rail-meta-list">
-                    <span className="roc-badge px-3 py-1.5 text-xs">source {schedulerPolicy.source}</span>
-                    <span className="roc-badge px-3 py-1.5 text-xs">applied {schedulerPolicy.applied ? "yes" : "no"}</span>
-                    <span className="roc-badge px-3 py-1.5 text-xs">requested {schedulerPolicy.requested_profile || "--"}</span>
-                    <span className="roc-badge px-3 py-1.5 text-xs">effective {schedulerPolicy.effective_profile || "--"}</span>
-                  </div>
+                  <p className="text-sm text-muted-foreground leading-relaxed">
+                    {summarizeMetrics([
+                      ["source", schedulerPolicy.source],
+                      ["applied", schedulerPolicy.applied ? "yes" : "no"],
+                      ["requested", schedulerPolicy.requested_profile || "--"],
+                      ["effective", schedulerPolicy.effective_profile || "--"],
+                    ])}
+                  </p>
                   <div className="grid gap-1 text-sm text-muted-foreground">
                     <p>Mode kind: {schedulerPolicy.mode_kind || "--"}</p>
                     <p>Root agent: {schedulerPolicy.root_agent || "--"}</p>
@@ -333,9 +340,7 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
                         >
                           <div className="flex flex-wrap items-center gap-2">
                             <strong>{schedulerTraceLabel(step.kind)}</strong>
-                            {step.profile ? (
-                              <span className="roc-badge px-2.5 py-1 text-xs">{step.profile}</span>
-                            ) : null}
+                            {step.profile ? <span className="text-xs text-muted-foreground">{step.profile}</span> : null}
                             <span className="text-xs text-muted-foreground">
                               applied {step.applied ? "yes" : "no"}
                             </span>
@@ -376,15 +381,15 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
                 <h4 className="roc-rail-section-title">{multimodalDisplayLabel(multimodal) || "Attachment-backed input"}</h4>
               </div>
               <div className="roc-rail-meta-list">
-                <span className="roc-badge px-3 py-1.5 text-xs">message {multimodal.user_message_id}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">attachments {multimodal.attachment_count}</span>
-                {(multimodal.kinds ?? []).map((kind) => (
-                  <span key={`kind:${kind}`} className="roc-badge px-3 py-1.5 text-xs">
-                    {kind}
-                  </span>
-                ))}
+                <span className="text-xs text-muted-foreground">
+                  {summarizeMetrics([
+                    ["message", multimodal.user_message_id],
+                    ["attachments", multimodal.attachment_count],
+                  ])}
+                </span>
               </div>
               <div className="grid gap-1 text-sm text-muted-foreground">
+                <p>Kinds: {(multimodal.kinds ?? []).join(", ") || "--"}</p>
                 <p>Resolved model: {multimodal.resolved_model || "--"}</p>
                 <p>Badges: {(multimodal.badges ?? []).join(", ") || "--"}</p>
                 <p>Hard block: {multimodal.hard_block ? "yes" : "no"}</p>
@@ -433,16 +438,22 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
                 <p className="roc-section-label">Memory Explain</p>
                 <h4 className="roc-rail-section-title">{insights.memory.summary.workspace_mode} workspace</h4>
               </div>
-              <div className="roc-rail-meta-list">
-                <span className="roc-badge px-3 py-1.5 text-xs">snapshot {insights.memory.summary.frozen_snapshot_items}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">prefetch {insights.memory.summary.last_prefetch_items}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">rule hits {memoryRecentRuleHits.length}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">warnings {insights.memory.summary.warning_count}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">methodology {insights.memory.summary.methodology_candidate_count}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">skill targets {insights.memory.summary.derived_skill_candidate_count}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">linked skills {insights.memory.summary.linked_skill_count}</span>
-                <span className="roc-badge px-3 py-1.5 text-xs">feedback lessons {insights.memory.summary.skill_feedback_lesson_count}</span>
-              </div>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                {summarizeMetrics([
+                  ["snapshot", insights.memory.summary.frozen_snapshot_items],
+                  ["prefetch", insights.memory.summary.last_prefetch_items],
+                  ["rule hits", memoryRecentRuleHits.length],
+                  ["warnings", insights.memory.summary.warning_count],
+                ])}
+              </p>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                {summarizeMetrics([
+                  ["methodology", insights.memory.summary.methodology_candidate_count],
+                  ["skill targets", insights.memory.summary.derived_skill_candidate_count],
+                  ["linked skills", insights.memory.summary.linked_skill_count],
+                  ["feedback lessons", insights.memory.summary.skill_feedback_lesson_count],
+                ])}
+              </p>
               <div className="grid gap-1 text-sm text-muted-foreground">
                 <p>Workspace key: {insights.memory.summary.workspace_key}</p>
                 <p>Allowed scopes: {memoryAllowedScopes.join(", ") || "--"}</p>
@@ -470,9 +481,7 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
                       >
                         <div className="flex flex-wrap items-center gap-2">
                           <strong>{item.title}</strong>
-                          {skillBadgeLabel(item) ? (
-                            <span className="roc-badge px-2.5 py-1 text-xs">{skillBadgeLabel(item)}</span>
-                          ) : null}
+                          {skillBadgeLabel(item) ? <span className="text-xs text-muted-foreground">{skillBadgeLabel(item)}</span> : null}
                         </div>
                         <p className="text-xs text-muted-foreground">{item.summary}</p>
                         <button
@@ -501,11 +510,7 @@ export const SessionInsightsPanel = memo(function SessionInsightsPanel({
                     <div key={hit.id} className={detailTileClass}>
                       <div className="flex flex-wrap items-center gap-2">
                         <strong>{hit.hit_kind}</strong>
-                        {hit.memory_id ? (
-                          <span className="roc-badge px-2.5 py-1 text-xs">
-                            {memoryRecordIdValue(hit.memory_id)}
-                          </span>
-                        ) : null}
+                        {hit.memory_id ? <span className="text-xs text-muted-foreground">{memoryRecordIdValue(hit.memory_id)}</span> : null}
                       </div>
                       <p className="text-xs text-muted-foreground">
                         {hit.detail || "No detail attached"}

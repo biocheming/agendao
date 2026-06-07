@@ -20,7 +20,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "npm run check:generated && npm run typecheck && vite build",
     "preview": "vite preview",
-    "smoke:phase4": "node scripts/phase4-smoke.mjs"
+    "smoke:phase4": "node scripts/phase4-smoke.mjs",
+    "audit:phase-b": "node scripts/phase-b-aesthetic-audit.mjs",
+    "audit:phase-c": "node scripts/phase-c-structure-audit.mjs"
   },
   "dependencies": {
     "@radix-ui/react-use-controllable-state": "^1.2.2",

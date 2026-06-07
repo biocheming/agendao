@@ -495,6 +495,22 @@ export function ComposerPanel({
     () => new Set(recentProviderModels.map((entry) => entry.key)),
     [recentProviderModels],
   );
+  const hasDiagnostics =
+    Boolean(closureDiagnosticLabel) ||
+    Boolean(ingressDiagnosticLabel) ||
+    Boolean(providerDiagnosticLabel) ||
+    Boolean(pricingLabel) ||
+    multimodalHints.length > 0 ||
+    Boolean(activityHint) ||
+    Boolean(permissionStatusLabel);
+  const [telemetryExpanded, setTelemetryExpanded] = useState(false);
+
+  useEffect(() => {
+    if (hasDiagnostics) {
+      setTelemetryExpanded(true);
+    }
+  }, [hasDiagnostics]);
+
   const renderModelOption = (
     provider: ProviderRecord,
     model: ProviderModelRecord,
@@ -872,8 +888,8 @@ export function ComposerPanel({
                   </div>
                 </div>
 
-                <div className="flex flex-col gap-2 pt-0.25 lg:flex-row lg:items-end lg:justify-between">
-                  <div className="min-w-0 flex-1">
+                <div className="flex flex-col gap-2 pt-0.25">
+                  <div className="flex min-w-0 flex-col gap-1.5">
                     <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[11px] leading-5">
                       {contextSummary ? (
                         <span className="font-medium text-foreground/88">
@@ -890,66 +906,82 @@ export function ComposerPanel({
                       {cacheUsageLabel ? (
                         <span className="text-muted-foreground">{cacheUsageLabel}</span>
                       ) : null}
-                      {closureDiagnosticLabel ? (
-                        <span
-                          className="text-amber-700 dark:text-amber-300"
-                          title="Context closure / cache coarse diagnostic"
-                        >
-                          Closure {closureDiagnosticLabel}
-                        </span>
-                      ) : null}
-                      {ingressDiagnosticLabel ? (
-                        <span className="text-muted-foreground" title="Ingress stabilization">
-                          Ingress {ingressDiagnosticLabel}
-                        </span>
-                      ) : null}
-                      {providerDiagnosticLabel ? (
-                        <span className="text-amber-700 dark:text-amber-300" title="Provider diagnostic">
-                          Provider {providerDiagnosticLabel}
-                        </span>
-                      ) : null}
                       {contextCount > 0 ? (
                         <span className="roc-badge">
                           {references.length} refs · {attachments.length} files
                         </span>
                       ) : null}
-                      {pricingLabel ? (
-                        <span className="text-muted-foreground" title="Model pricing per million tokens">
-                          {pricingLabel}
-                        </span>
-                      ) : null}
-                      {multimodalHints.map((hint, index) => (
-                        <span
-                          key={`${hint.tone}:${hint.text}:${index}`}
-                          className={cn(
-                            hint.tone === "warning"
-                              ? "text-amber-700 dark:text-amber-300"
-                              : "text-muted-foreground",
-                          )}
+                    </div>
+                    {hasDiagnostics ? (
+                      <div className="flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          className="text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+                          aria-expanded={telemetryExpanded}
+                          onClick={() => setTelemetryExpanded((value) => !value)}
                         >
-                          {hint.text}
-                        </span>
-                      ))}
-                      {activityHint ? (
-                        <span className={cn("font-medium", voiceError ? "text-destructive" : "text-muted-foreground")}>
-                          {activityHint}
-                        </span>
-                      ) : null}
-                      {permissionStatusLabel ? (
-                        <span
-                          className={cn(
-                            "font-medium",
-                            permissionStatusTone === "destructive"
-                              ? "text-destructive"
-                              : permissionStatusTone === "warning"
+                          {telemetryExpanded ? "Hide diagnostics" : "Show diagnostics"}
+                        </button>
+                      </div>
+                    ) : null}
+                    {hasDiagnostics && telemetryExpanded ? (
+                      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[11px] leading-5">
+                        {closureDiagnosticLabel ? (
+                          <span
+                            className="text-amber-700 dark:text-amber-300"
+                            title="Context closure / cache coarse diagnostic"
+                          >
+                            Closure {closureDiagnosticLabel}
+                          </span>
+                        ) : null}
+                        {ingressDiagnosticLabel ? (
+                          <span className="text-muted-foreground" title="Ingress stabilization">
+                            Ingress {ingressDiagnosticLabel}
+                          </span>
+                        ) : null}
+                        {providerDiagnosticLabel ? (
+                          <span className="text-amber-700 dark:text-amber-300" title="Provider diagnostic">
+                            Provider {providerDiagnosticLabel}
+                          </span>
+                        ) : null}
+                        {pricingLabel ? (
+                          <span className="text-muted-foreground" title="Model pricing per million tokens">
+                            {pricingLabel}
+                          </span>
+                        ) : null}
+                        {multimodalHints.map((hint, index) => (
+                          <span
+                            key={`${hint.tone}:${hint.text}:${index}`}
+                            className={cn(
+                              hint.tone === "warning"
                                 ? "text-amber-700 dark:text-amber-300"
                                 : "text-muted-foreground",
-                          )}
-                        >
-                          {permissionStatusLabel}
-                        </span>
-                      ) : null}
-                    </div>
+                            )}
+                          >
+                            {hint.text}
+                          </span>
+                        ))}
+                        {activityHint ? (
+                          <span className={cn("font-medium", voiceError ? "text-destructive" : "text-muted-foreground")}>
+                            {activityHint}
+                          </span>
+                        ) : null}
+                        {permissionStatusLabel ? (
+                          <span
+                            className={cn(
+                              "font-medium",
+                              permissionStatusTone === "destructive"
+                                ? "text-destructive"
+                                : permissionStatusTone === "warning"
+                                  ? "text-amber-700 dark:text-amber-300"
+                                  : "text-muted-foreground",
+                            )}
+                          >
+                            {permissionStatusLabel}
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               </div>
