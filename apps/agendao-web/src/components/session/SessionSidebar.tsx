@@ -24,8 +24,14 @@ import {
 import { Input } from "@/components/ui/input";
 import type { SessionTreeNode, WorkspaceSummary } from "@/lib/sidebar";
 import { useI18n } from "@/i18n/I18nProvider";
+import { useAgendaoStore } from "@/store";
+import type { ThemeId } from "@/lib/webRuntime";
 
-const AGENDAO_LOGO_SRC = `${import.meta.env.BASE_URL}brand/agendao-logo.svg`;
+const THEME_LOGO_SRC: Record<ThemeId, string> = {
+  daylight: `${import.meta.env.BASE_URL}brand/agendao-logo-daylight.svg`,
+  sunset: `${import.meta.env.BASE_URL}brand/agendao-logo-sunset.svg`,
+  cobalt: `${import.meta.env.BASE_URL}brand/agendao-logo-cobalt.svg`,
+};
 
 interface SessionSidebarProps {
   workspaces: WorkspaceSummary[];
@@ -208,6 +214,7 @@ export function SessionSidebar({
   onHideSidebar,
 }: SessionSidebarProps) {
   const { t } = useI18n();
+  const theme = useAgendaoStore((s) => s.theme);
   const [workspaceQuery, setWorkspaceQuery] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [newProjectPath, setNewProjectPath] = useState("");
@@ -219,6 +226,7 @@ export function SessionSidebar({
   const workspaceModeKey = workspaceModeLabel(currentWorkspaceMode);
   const currentWorkspaceHint = workspacePathHint(currentWorkspacePath, currentWorkspaceRootPath);
   const currentWorkspaceShort = compactPathLabel(currentWorkspacePath) || currentWorkspaceLabel;
+  const logoSrc = THEME_LOGO_SRC[theme] ?? THEME_LOGO_SRC.daylight;
 
   const filteredWorkspaces = useMemo(() => {
     const query = workspaceQuery.trim().toLowerCase();
@@ -329,7 +337,7 @@ export function SessionSidebar({
         <section className="flex flex-col items-start gap-2 px-1 pt-1">
           <div className="flex px-0.5 py-1">
             <img
-              src={AGENDAO_LOGO_SRC}
+              src={logoSrc}
               alt="AgenDao"
               className="h-8 w-auto max-w-[9.5rem] object-contain"
               draggable={false}
