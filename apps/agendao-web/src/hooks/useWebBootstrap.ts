@@ -39,6 +39,13 @@ interface ConfigSurfaceData {
   workspaceContext: WorkspaceContextRecord | null;
 }
 
+function isSessionWithinWorkspace(session: SessionRecord, workspaceRoot: string) {
+  const directory = session.directory?.trim() ?? "";
+  const root = workspaceRoot.trim();
+  if (!directory || !root) return false;
+  return directory === root || directory.startsWith(`${root}/`);
+}
+
 function visibleModes(modeData: ExecutionMode[] | null | undefined): ExecutionMode[] {
   return (modeData ?? [])
     .filter((mode) => mode.hidden !== true)
@@ -158,21 +165,38 @@ export function useWebBootstrap({
         if (cancelled) return;
 
         const store = useAgendaoStore.getState();
-        store.setServiceRootPath(
-          workspaceRootFromContext(configData.workspaceContext) || paths.cwd || "",
-        );
+        const serviceRootPath =
+          workspaceRootFromContext(configData.workspaceContext) || paths.cwd || "";
+        store.setServiceRootPath(serviceRootPath);
         store.setSessions(sessionData);
         applyConfigSurface(configData, { includePreferences: true });
+
+        const workspaceSessions = sessionData.filter((session) =>
+          isSessionWithinWorkspace(session, serviceRootPath),
+        );
 
         const routeSessionExists = Boolean(
           routeSessionId && sessionData.some((session) => session.id === routeSessionId),
         );
         const currentId = store.selectedSessionId;
+        const currentSessionExists = Boolean(
+          currentId && sessionData.some((session) => session.id === currentId),
+        );
+        const currentSessionWithinWorkspace = Boolean(
+          currentId &&
+            sessionData.some(
+              (session) =>
+                session.id === currentId &&
+                isSessionWithinWorkspace(session, serviceRootPath),
+            ),
+        );
+        const defaultWorkspaceSessionId = workspaceSessions[0]?.id ?? null;
         store.setSelectedSessionId(
-          currentId
-            ?? (routeSessionProvisioned || routeSessionExists
-              ? routeSessionId
-              : sessionData[0]?.id ?? null),
+          routeSessionProvisioned || routeSessionExists
+            ? routeSessionId
+            : currentSessionExists && currentSessionWithinWorkspace
+              ? currentId
+              : defaultWorkspaceSessionId,
         );
         preferencesReadyRef.current = true;
       } catch (error) {
