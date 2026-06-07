@@ -11,6 +11,7 @@ import {
 } from "../lib/interaction";
 import { runtimeSurfaceDebugDetail } from "../lib/display";
 import type { SessionRecord } from "../lib/session";
+import { isOptimisticSessionId } from "../lib/session";
 import { useAgendaoStore } from "../store";
 import { useConversationJump } from "./useConversationJump";
 import { useServerEventStream } from "./useServerEventStream";
@@ -259,6 +260,10 @@ export function useTranscriptCoordinator({
   useEffect(() => {
     if (!selectedSessionId) {
       setBanner(null);
+      return;
+    }
+    if (isOptimisticSessionId(selectedSessionId)) {
+      setHistoryLoading(false);
       return;
     }
 

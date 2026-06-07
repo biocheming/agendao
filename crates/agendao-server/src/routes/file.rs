@@ -39,6 +39,7 @@ pub struct ListFilesQuery {
 #[derive(Debug, Deserialize)]
 pub struct FileTreeQuery {
     pub path: Option<String>,
+    pub depth: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -79,6 +80,10 @@ pub struct FileTreeNode {
     pub file_type: String,
     pub size: Option<u64>,
     pub modified: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_children: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub children_loaded: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<FileTreeNode>,
 }
@@ -276,7 +281,18 @@ fn file_info_from_path(path: &FsPath) -> FileInfo {
     }
 }
 
-fn build_tree_node(path: &FsPath, root: &FsPath) -> Result<FileTreeNode> {
+fn list_child_paths(path: &FsPath, root: &FsPath) -> Result<Vec<PathBuf>> {
+    let mut entries = std::fs::read_dir(path)
+        .map_err(|e| ApiError::BadRequest(format!("Failed to read directory: {}", e)))?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|child| is_within_root(child, root))
+        .collect::<Vec<_>>();
+    entries.sort();
+    Ok(entries)
+}
+
+fn build_tree_node(path: &FsPath, root: &FsPath, depth: usize) -> Result<FileTreeNode> {
     let canonical = canonicalize_within_root(path, root)?;
     let name = canonical
         .file_name()
@@ -295,17 +311,20 @@ fn build_tree_node(path: &FsPath, root: &FsPath) -> Result<FileTreeNode> {
         None
     };
 
+    let is_directory = canonical.is_dir();
+    let entries = if is_directory {
+        Some(list_child_paths(&canonical, root)?)
+    } else {
+        None
+    };
+    let has_children = entries.as_ref().map(|children| !children.is_empty());
+    let children_loaded = if is_directory { Some(depth > 0) } else { None };
     let mut children = Vec::new();
-    if canonical.is_dir() {
-        let mut entries = std::fs::read_dir(&canonical)
-            .map_err(|e| ApiError::BadRequest(format!("Failed to read directory: {}", e)))?
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| is_within_root(path, root))
-            .collect::<Vec<_>>();
-        entries.sort();
-        for child in entries {
-            children.push(build_tree_node(&child, root)?);
+    if let Some(paths) = entries.as_ref() {
+        if depth > 0 {
+            for child in paths {
+                children.push(build_tree_node(child, root, depth.saturating_sub(1))?);
+            }
         }
     }
 
@@ -315,6 +334,8 @@ fn build_tree_node(path: &FsPath, root: &FsPath) -> Result<FileTreeNode> {
         file_type: file_type.to_string(),
         size,
         modified: modified_millis(&canonical),
+        has_children,
+        children_loaded,
         children,
     })
 }
@@ -350,15 +371,17 @@ async fn get_file_tree(
     Query(query): Query<FileTreeQuery>,
 ) -> Result<Json<FileTreeNode>> {
     let default_root = project_root(state.as_ref())?;
+    let depth = query.depth.unwrap_or(1);
     if let Some(input) = query.path.as_deref() {
         let root = effective_root_for_input(input, &default_root)?;
         Ok(Json(build_tree_node(
             &resolve_existing_input_path(input, &root)?,
             &root,
+            depth,
         )?))
     } else {
         let root = canonical_root(&default_root)?;
-        Ok(Json(build_tree_node(&root, &root)?))
+        Ok(Json(build_tree_node(&root, &root, depth)?))
     }
 }
 

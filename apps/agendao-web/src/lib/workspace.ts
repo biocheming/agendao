@@ -6,6 +6,8 @@ export interface FileTreeNodeRecord {
   type: "file" | "directory";
   size?: number | null;
   modified?: number | null;
+  hasChildren?: boolean;
+  childrenLoaded?: boolean;
   children?: FileTreeNodeRecord[];
 }
 

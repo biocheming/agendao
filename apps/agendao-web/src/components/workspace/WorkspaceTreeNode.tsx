@@ -7,6 +7,7 @@ import {
   FileCodeIcon,
   FileJsonIcon,
   FileImageIcon,
+  LoaderCircleIcon,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import type { FileTreeNodeRecord } from "@/lib/workspace";
@@ -20,7 +21,9 @@ interface WorkspaceTreeNodeProps {
   linkedPath?: string | null;
   linkedLabel?: string | null;
   linkedStageId?: string | null;
+  loadingPaths?: Record<string, boolean>;
   onSelectNode: (node: FileTreeNodeRecord) => void;
+  onExpandNode?: (node: FileTreeNodeRecord) => void | Promise<void>;
   onPreviewStage?: (stageId: string | null) => void;
 }
 
@@ -54,14 +57,17 @@ export function WorkspaceTreeNode({
   linkedPath = null,
   linkedLabel = null,
   linkedStageId = null,
+  loadingPaths = {},
   onSelectNode,
+  onExpandNode,
   onPreviewStage,
 }: WorkspaceTreeNodeProps) {
   const linked = nodeLinked(node, linkedPath);
   const children = node.children ?? [];
-  const hasChildren = children.length > 0;
+  const hasChildren = Boolean(node.hasChildren ?? children.length > 0);
   const isRoot = depth === 0;
   const [isExpanded, setIsExpanded] = useState(isRoot);
+  const isLoading = Boolean(loadingPaths[node.path]);
 
   // Build the prefix with ASCII tree lines
   const prefix = parentLines.map((showLine) => (showLine ? "│" : " ")).join(" ");
@@ -85,8 +91,12 @@ export function WorkspaceTreeNode({
           aria-expanded={hasChildren ? isExpanded : undefined}
           onClick={() => {
             onSelectNode(node);
-            if (hasChildren && !isRoot) {
-              setIsExpanded((value) => !value);
+            if (hasChildren) {
+              const nextExpanded = !isExpanded;
+              setIsExpanded(nextExpanded);
+              if (nextExpanded && node.type === "directory" && !node.childrenLoaded) {
+                void onExpandNode?.(node);
+              }
             }
           }}
           onMouseEnter={() => linked && linkedStageId ? onPreviewStage?.(linkedStageId) : undefined}
@@ -101,7 +111,9 @@ export function WorkspaceTreeNode({
           )}
 
           {/* Folder icon */}
-          {isExpanded ? (
+          {isLoading ? (
+            <LoaderCircleIcon className="size-3.5 animate-spin text-primary/70" />
+          ) : isExpanded ? (
             <FolderOpenIcon className="size-3.5 text-primary/70" />
           ) : (
             <FolderIcon className="size-3.5 text-primary/70" />
@@ -133,7 +145,9 @@ export function WorkspaceTreeNode({
                 linkedPath={linkedPath}
                 linkedLabel={linkedLabel}
                 linkedStageId={linkedStageId}
+                loadingPaths={loadingPaths}
                 onSelectNode={onSelectNode}
+                onExpandNode={onExpandNode}
                 onPreviewStage={onPreviewStage}
               />
             ))}

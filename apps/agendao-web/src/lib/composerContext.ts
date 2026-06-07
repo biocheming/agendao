@@ -75,6 +75,8 @@ export interface ComposerAttachmentRecord {
 export interface WorkspaceTreeNodeRecord {
   path: string;
   type: "file" | "directory";
+  hasChildren?: boolean;
+  childrenLoaded?: boolean;
   children?: WorkspaceTreeNodeRecord[];
 }
 

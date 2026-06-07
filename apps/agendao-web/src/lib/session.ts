@@ -127,6 +127,12 @@ export interface SessionRecord {
   };
 }
 
+export const OPTIMISTIC_SESSION_ID_PREFIX = "optimistic:";
+
+export function isOptimisticSessionId(sessionId: string | null | undefined): boolean {
+  return Boolean(sessionId && sessionId.startsWith(OPTIMISTIC_SESSION_ID_PREFIX));
+}
+
 export interface ExternalAdapterResolvedBindingRecord {
   session_id: string;
   actor_id: string;

@@ -23,6 +23,7 @@ import type {
   WorkspaceContextRecord,
 } from "../lib/workspace";
 import { workspaceRootFromContext } from "../lib/workspace";
+import { isOptimisticSessionId } from "../lib/session";
 import { useAgendaoStore } from "../store";
 
 interface UseWorkspaceCoordinatorOptions {
@@ -57,6 +58,7 @@ export function useWorkspaceCoordinator({
   const workspaceRootPath = useAgendaoStore((s) => s.workspaceRootPath);
   const setWorkspaceRootPath = useAgendaoStore((s) => s.setWorkspaceRootPath);
   const setWorkspaceLoading = useAgendaoStore((s) => s.setWorkspaceLoading);
+  const setWorkspaceNodeLoading = useAgendaoStore((s) => s.setWorkspaceNodeLoading);
   const selectedFilePath = useAgendaoStore((s) => s.selectedFilePath);
   const selectedFileContent = useAgendaoStore((s) => s.selectedFileContent);
   const setSelectedFileContent = useAgendaoStore((s) => s.setSelectedFileContent);
@@ -81,6 +83,58 @@ export function useWorkspaceCoordinator({
   const setSelectedFilePath = useAgendaoStore((s) => s.setSelectedFilePath);
   const setWorkspaceDirty = useAgendaoStore((s) => s.setWorkspaceDirty);
   const autoPreviewSignatureRef = useRef("");
+
+  const mergeTreeNode = useCallback(
+    (
+      tree: FileTreeNodeRecord | null,
+      path: string,
+      updater: (node: FileTreeNodeRecord) => FileTreeNodeRecord,
+    ): FileTreeNodeRecord | null => {
+      if (!tree) return null;
+      if (tree.path === path) {
+        return updater(tree);
+      }
+      const children = tree.children ?? [];
+      let changed = false;
+      const nextChildren = children.map((child) => {
+        const nextChild = mergeTreeNode(child, path, updater);
+        if (nextChild !== child) changed = true;
+        return nextChild ?? child;
+      });
+      return changed ? { ...tree, children: nextChildren } : tree;
+    },
+    [],
+  );
+
+  const ensureWorkspaceNodeLoaded = useCallback(
+    async (path: string) => {
+      if (!path) return;
+      const state = useAgendaoStore.getState();
+      const existing = findNodeByPath(state.fileTree, path);
+      if (!existing || existing.type !== "directory") return;
+      if (existing.childrenLoaded) return;
+
+      setWorkspaceNodeLoading(path, true);
+      try {
+        const loaded = await apiJson<FileTreeNodeRecord>(
+          `/file/tree?path=${encodeURIComponent(path)}&depth=1`,
+        );
+        setFileTree((current) =>
+          mergeTreeNode(current, path, (node) => ({
+            ...node,
+            children: loaded.children ?? [],
+            hasChildren: loaded.hasChildren,
+            childrenLoaded: true,
+          })),
+        );
+      } catch (error) {
+        setBanner(`Failed to expand workspace folder: ${formatError(error)}`);
+      } finally {
+        setWorkspaceNodeLoading(path, false);
+      }
+    },
+    [apiJson, formatError, mergeTreeNode, setBanner, setFileTree, setWorkspaceNodeLoading],
+  );
 
   const workspaceDirty = Boolean(selectedFilePath) && selectedFileContent !== savedFileContent;
   const workspaceBasePath =
@@ -166,6 +220,9 @@ export function useWorkspaceCoordinator({
         setSelectedWorkspaceType(node.type);
         setSelectedFilePath(node.type === "file" ? node.path : null);
         setWorkspacePanelTab(node.type === "file" ? "preview" : "files");
+        if (node.type === "directory") {
+          void ensureWorkspaceNodeLoaded(node.path);
+        }
         return true;
       }
 
@@ -187,6 +244,7 @@ export function useWorkspaceCoordinator({
       setWorkspacePanelTab,
       triggerWorkspaceReload,
       workspaceDirty,
+      ensureWorkspaceNodeLoaded,
     ],
   );
 
@@ -472,11 +530,15 @@ export function useWorkspaceCoordinator({
   );
 
   useEffect(() => {
+    if (selectedSessionId && isOptimisticSessionId(selectedSessionId)) {
+      setWorkspaceLoading(false);
+      return;
+    }
     let cancelled = false;
+    let timer: number | null = null;
 
     const loadTree = async () => {
       setWorkspaceLoading(true);
-      setFileTree(null);
       setSelectedWorkspacePath(null);
       setSelectedWorkspaceType("directory");
       setSelectedFilePath(null);
@@ -485,7 +547,7 @@ export function useWorkspaceCoordinator({
 
       try {
         const requestedPath = currentSessionDirectory?.trim() ?? "";
-        const query = requestedPath ? `?path=${encodeURIComponent(requestedPath)}` : "";
+        const query = requestedPath ? `?path=${encodeURIComponent(requestedPath)}&depth=1` : "?depth=1";
         let tree: FileTreeNodeRecord;
         try {
           tree = await apiJson<FileTreeNodeRecord>(`/file/tree${query}`);
@@ -495,7 +557,7 @@ export function useWorkspaceCoordinator({
             requestedPath &&
             message.includes("Access denied: path escapes project directory")
           ) {
-            tree = await apiJson<FileTreeNodeRecord>("/file/tree");
+            tree = await apiJson<FileTreeNodeRecord>("/file/tree?depth=1");
             setBanner(
               "Session workspace is outside the current project. Showing the current project root instead.",
             );
@@ -509,14 +571,15 @@ export function useWorkspaceCoordinator({
         const preferredNode = pendingWorkspaceSelection
           ? findNodeByPath(tree, pendingWorkspaceSelection.path)
           : null;
-        const fallbackFilePath = findFirstFile(tree);
-        const fallbackNode = fallbackFilePath ? findNodeByPath(tree, fallbackFilePath) : tree;
-        const nextNode = preferredNode ?? fallbackNode;
+        const nextNode = preferredNode ?? tree;
 
         setSelectedWorkspacePath(nextNode?.path ?? null);
         setSelectedWorkspaceType(nextNode?.type ?? "directory");
         setSelectedFilePath(nextNode?.type === "file" ? nextNode.path : null);
         setPendingWorkspaceSelection(null);
+        if (nextNode?.type === "directory" && nextNode.path) {
+          void ensureWorkspaceNodeLoaded(nextNode.path);
+        }
       } catch (error) {
         if (!cancelled) {
           setBanner(`Failed to load workspace tree: ${formatError(error)}`);
@@ -529,9 +592,12 @@ export function useWorkspaceCoordinator({
       }
     };
 
-    void loadTree();
+    timer = window.setTimeout(() => {
+      void loadTree();
+    }, 140);
     return () => {
       cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
     };
   }, [
     apiJson,
@@ -550,6 +616,8 @@ export function useWorkspaceCoordinator({
     setWorkspaceRootPath,
     setPendingWorkspaceSelection,
     workspaceReloadToken,
+    ensureWorkspaceNodeLoaded,
+    selectedSessionId,
   ]);
 
   useEffect(() => {
@@ -626,6 +694,7 @@ export function useWorkspaceCoordinator({
       downloadSelectedFile,
       insertWorkspaceReference,
       locateAttachmentInWorkspace,
+      ensureWorkspaceNodeLoaded,
       reloadWorkspacePreservingSelection,
       reloadWorkspaceWithSelection,
       saveSelectedFile,
