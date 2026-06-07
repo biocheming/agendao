@@ -484,11 +484,25 @@ export function useWorkspaceCoordinator({
       setSavedFileContent("");
 
       try {
-        const query =
-          currentSessionDirectory && currentSessionDirectory.trim()
-            ? `?path=${encodeURIComponent(currentSessionDirectory)}`
-            : "";
-        const tree = await apiJson<FileTreeNodeRecord>(`/file/tree${query}`);
+        const requestedPath = currentSessionDirectory?.trim() ?? "";
+        const query = requestedPath ? `?path=${encodeURIComponent(requestedPath)}` : "";
+        let tree: FileTreeNodeRecord;
+        try {
+          tree = await apiJson<FileTreeNodeRecord>(`/file/tree${query}`);
+        } catch (error) {
+          const message = formatError(error);
+          if (
+            requestedPath &&
+            message.includes("Access denied: path escapes project directory")
+          ) {
+            tree = await apiJson<FileTreeNodeRecord>("/file/tree");
+            setBanner(
+              "Session workspace is outside the current project. Showing the current project root instead.",
+            );
+          } else {
+            throw error;
+          }
+        }
         if (cancelled) return;
         setFileTree(tree);
         setWorkspaceRootPath(tree.path);
