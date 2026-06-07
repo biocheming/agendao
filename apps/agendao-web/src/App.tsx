@@ -114,6 +114,12 @@ const WorkspacePanel = lazy(async () => {
   return { default: module.WorkspacePanel };
 });
 
+const THEME_FAVICON_SRC: Record<ThemeId, string> = {
+  daylight: `${import.meta.env.BASE_URL}brand/agendao-icon-mark-daylight.svg`,
+  sunset: `${import.meta.env.BASE_URL}brand/agendao-icon-mark-sunset.svg`,
+  cobalt: `${import.meta.env.BASE_URL}brand/agendao-icon-mark-cobalt.svg`,
+};
+
 function RuntimeSurfaceList({
   title,
   blocks,
@@ -606,6 +612,10 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
+    const favicon = document.getElementById("theme-favicon");
+    if (favicon instanceof HTMLLinkElement) {
+      favicon.href = THEME_FAVICON_SRC[theme];
+    }
   }, [theme]);
 
   useEffect(() => {

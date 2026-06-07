@@ -64,7 +64,7 @@ agendao web --dir /path/to/workspace
 
 当前 Web 正式入口是 `/`，不是历史过渡路由。
 如果用户直接双击二进制、且不在终端环境里启动，AgenDao 会优先走桌面 Web 启动路径，并在打开浏览器前先确定 workspace 目录；若当前目录不可信，会尝试复用上次目录或弹出系统目录选择框。
-图标与品牌源资产当前以 `icons/icon.svg`、`icons/logo.svg` 及其主题变体为主；桌面分发派生资产位于 `icons/agendao.ico` 与 `icons/agendao.icns`。Web 会使用基于该品牌源生成的 favicon，`windows-msvc` 构建会尝试把 `.ico` 嵌入生成的 `agendao.exe`，Linux 桌面分发可使用 `packaging/linux/agendao.desktop` 模板，macOS 可通过 `./scripts/build_macos_app_bundle.sh release` 组装 Finder 可双击的 `AgenDao.app`。
+图标与品牌源资产当前统一以 `icons/icon.svg`、`icons/logo.svg` 及其主题变体为主；`icons/agendao.ico`、`icons/agendao.icns`、favicon 和 app bundle 图标都应视为从该 SVG 源派生出来的分发产物。Web 会使用基于该品牌源生成的 favicon，`windows-msvc` 构建会尝试把 `.ico` 嵌入生成的 `agendao.exe`，Linux 桌面分发可使用 `packaging/linux/agendao.desktop` 模板，macOS 可通过 `./scripts/build_macos_app_bundle.sh release` 组装 Finder 可双击的 `AgenDao.app`。
 
 ### 1.4 Attach
 

@@ -31,10 +31,11 @@ ICNS_PATH="${REPO_ROOT}/icons/agendao.icns"
 PLIST_TEMPLATE="${REPO_ROOT}/packaging/macos/Info.plist.template"
 PLIST_PATH="${CONTENTS_DIR}/Info.plist"
 PKGINFO_PATH="${CONTENTS_DIR}/PkgInfo"
-SOURCE_ICON="${REPO_ROOT}/icons/agendao.png"
+SOURCE_ICON_SVG="${REPO_ROOT}/icons/icon.svg"
+SOURCE_ICON_PNG="${REPO_ROOT}/icons/agendao.png"
 
-if [[ ! -f "${SOURCE_ICON}" ]]; then
-  echo "missing source icon: ${SOURCE_ICON}" >&2
+if [[ ! -f "${SOURCE_ICON_SVG}" ]]; then
+  echo "missing source icon: ${SOURCE_ICON_SVG}" >&2
   exit 1
 fi
 
@@ -47,17 +48,26 @@ render_icon_png() {
   local size=$1
   local output=$2
 
+  if command -v inkscape >/dev/null 2>&1; then
+    inkscape "${SOURCE_ICON_SVG}" --export-filename="${output}" -w "${size}" -h "${size}" >/dev/null
+    return
+  fi
+
   if command -v sips >/dev/null 2>&1; then
-    sips -z "${size}" "${size}" "${SOURCE_ICON}" --out "${output}" >/dev/null
+    if [[ ! -f "${SOURCE_ICON_PNG}" ]]; then
+      echo "missing fallback png icon: ${SOURCE_ICON_PNG}" >&2
+      exit 1
+    fi
+    sips -z "${size}" "${size}" "${SOURCE_ICON_PNG}" --out "${output}" >/dev/null
     return
   fi
 
   if command -v convert >/dev/null 2>&1; then
-    convert "${SOURCE_ICON}" -background none -gravity center -resize "${size}x${size}" -extent "${size}x${size}" "${output}"
+    convert "${SOURCE_ICON_SVG}" -background none -gravity center -resize "${size}x${size}" -extent "${size}x${size}" "${output}"
     return
   fi
 
-  echo "need either sips or convert to render macOS iconset assets" >&2
+  echo "need inkscape, sips, or convert to render macOS iconset assets" >&2
   exit 1
 }
 
