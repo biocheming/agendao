@@ -15,6 +15,7 @@ import {
   FolderPlusIcon,
   SparklesIcon,
   UploadIcon,
+  GitBranchIcon,
 } from "lucide-react";
 import type { useExecutionActivity } from "../../hooks/useExecutionActivity";
 
@@ -33,7 +34,12 @@ const SkillProposalInbox = lazy(async () => {
   return { default: module.SkillProposalInbox };
 });
 
-export type WorkspacePanelTab = "files" | "insights" | "preview" | "proposals";
+const WorktreePanel = lazy(async () => {
+  const module = await import("./WorktreePanel");
+  return { default: module.WorktreePanel };
+});
+
+export type WorkspacePanelTab = "files" | "insights" | "preview" | "proposals" | "worktrees";
 
 interface WorkspacePanelProps {
   apiJson: <T>(path: string, options?: RequestInit) => Promise<T>;
@@ -140,6 +146,20 @@ export function WorkspacePanel({
           >
             <SparklesIcon className="size-3.25" />
             <span>Proposals</span>
+          </button>
+          <button
+            className={cn(
+              "inline-flex items-center justify-center gap-1.5 rounded-md border-b-2 border-transparent px-2.5 py-1 text-[11px] font-medium transition-colors",
+              activeTab === "worktrees"
+                ? "border-foreground/55 text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+            type="button"
+            data-testid="workspace-tab-worktrees"
+            onClick={() => setActiveTab("worktrees")}
+          >
+            <GitBranchIcon className="size-3.25" />
+            <span>Worktrees</span>
           </button>
         </div>
         <div className="flex items-center gap-0.5 flex-shrink-0">
@@ -271,6 +291,19 @@ export function WorkspacePanel({
               }
             >
               <SkillProposalInbox />
+            </Suspense>
+          </PanelErrorBoundary>
+        ) : null}
+        {activeTab === "worktrees" ? (
+          <PanelErrorBoundary label="Worktrees">
+            <Suspense
+              fallback={
+                <div className="flex items-center justify-center py-6 text-muted-foreground/60">
+                  <span className="text-[10px]">Loading worktrees...</span>
+                </div>
+              }
+            >
+              <WorktreePanel className="h-full border-0 bg-transparent p-2 shadow-none" />
             </Suspense>
           </PanelErrorBoundary>
         ) : null}

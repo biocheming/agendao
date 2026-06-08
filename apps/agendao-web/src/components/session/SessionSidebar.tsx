@@ -451,6 +451,8 @@ export function SessionSidebar({
                     <button
                       key={workspace.path}
                       type="button"
+                      data-testid="workspace-project-item"
+                      data-workspace-path={workspace.path}
                       data-active={workspace.path === currentWorkspacePath ? "true" : "false"}
                       className="roc-sidebar-item"
                       title={workspace.path}

@@ -2,8 +2,12 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { WebSocket as UndiciWebSocket } from "undici";
+
+const RuntimeWebSocket = globalThis.WebSocket ?? UndiciWebSocket;
 
 const BASE_URL = process.env.AGENDAO_BASE_URL ?? "http://127.0.0.1:4100";
+const WEB_URL = new URL("/web/", `${BASE_URL}/`).toString();
 const CHROME_BIN = process.env.CHROME_BIN ?? "google-chrome";
 const CHROME_PORT = Number.parseInt(process.env.AGENDAO_CHROME_PORT ?? "9223", 10);
 const TIMEOUT_MS = Number.parseInt(process.env.AGENDAO_SMOKE_TIMEOUT_MS ?? "30000", 10);
@@ -109,7 +113,7 @@ async function createPageClient() {
     throw new Error("Could not find a Chrome page target");
   }
 
-  const socket = new WebSocket(page.webSocketDebuggerUrl);
+  const socket = new RuntimeWebSocket(page.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => {
     socket.addEventListener("open", resolve, { once: true });
     socket.addEventListener("error", reject, { once: true });
@@ -242,7 +246,7 @@ async function fillInput(client, selector, value) {
 async function activeSessionId(client) {
   return evaluate(
     client,
-    "document.querySelector('[data-testid=\"session-item\"].active')?.dataset.sessionId ?? null",
+    "document.querySelector('[data-testid=\"session-item\"][data-active=\"true\"]')?.dataset.sessionId ?? null",
   );
 }
 
@@ -287,16 +291,20 @@ async function run() {
         ),
       );
     });
-    await navigate(client, `${BASE_URL}/`);
+    await navigate(client, `${WEB_URL}?session=${encodeURIComponent(seededSession.id)}`);
     await waitForExpression(
       client,
-      "Boolean(document.querySelector('textarea[placeholder*=\"Send a prompt\"]'))",
+      "Boolean(document.querySelector('[data-testid=\"composer-input\"]'))",
     );
-    const sessionId = seededSession.id;
+    const sessionId =
+      (await waitForExpression(
+        client,
+        "document.querySelector('[data-testid=\"session-item\"][data-active=\"true\"]')?.dataset.sessionId ?? null",
+      )) ?? seededSession.id;
     assert(sessionId, "could not resolve active session id");
 
-    await fillInput(client, "textarea[placeholder*='Send a prompt']", "/autoresearch");
-    await click(client, "[data-testid='composer-form'] button[type='submit']");
+    await fillInput(client, "[data-testid='composer-input']", "/autoresearch");
+    await click(client, "[data-testid='composer-send']");
     await waitForExpression(
       client,
       `(window.__agendaoTracker?.fetches ?? []).filter((entry) =>
@@ -306,9 +314,21 @@ async function run() {
     await waitForExpression(client, "Boolean(document.querySelector('[data-testid=\"question-overlay\"]'))");
 
     await fillInput(client, "[data-testid='question-input'][data-question-index='0']", "Exercise the browser command preflight and answer flow.");
-    await fillInput(client, "[data-testid='question-input'][data-question-index='1']", "crates/agendao-server/**\napps/agendao-web/**");
-    await fillInput(client, "[data-testid='question-input'][data-question-index='2']", "The frontend replies once and resubmits the command.");
-    await fillInput(client, "[data-testid='question-input'][data-question-index='3']", "cargo build -p agendao-server");
+    await fillInput(
+      client,
+      "[data-testid='question-input'][data-question-index='1']",
+      "crates/agendao/**\ncrates/agendao-cli/**\ncrates/agendao-server/**\ncrates/agendao-tui/**\napps/agendao-web/**",
+    );
+    await fillInput(
+      client,
+      "[data-testid='question-input'][data-question-index='2']",
+      "The command resubmits with all missing fields populated.",
+    );
+    await fillInput(
+      client,
+      "[data-testid='question-input'][data-question-index='3']",
+      "cargo build -p agendao && npm --prefix apps/agendao-web run build",
+    );
     await click(client, "[data-testid='question-submit']");
 
     await waitForExpression(

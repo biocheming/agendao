@@ -1977,7 +1977,7 @@ export function SettingsDrawer({
         </nav>
 
         <div className="flex flex-1 min-h-0 flex-col gap-6 overflow-y-auto px-5 pb-6 pt-5 sm:px-7 sm:pb-7 sm:pt-6">
-          {feedback ? <div className="rounded-lg border border-amber-300 bg-amber-50/80 px-4 py-2.5 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/60 dark:text-amber-200">{feedback}</div> : null}
+          {feedback ? <div className="rounded-lg border border-amber-300 bg-amber-50/80 px-4 py-2.5 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/60 dark:text-amber-200" data-testid="settings-feedback">{feedback}</div> : null}
           {loading ? <div className="flex flex-col items-center justify-center gap-3 text-muted-foreground py-8">Loading settings...</div> : null}
           {!loading && isolatedNotice ? (
             <div className="rounded-lg border border-amber-300 bg-amber-50/80 px-4 py-2.5 text-sm leading-relaxed text-amber-900 dark:border-amber-700 dark:bg-amber-950/60 dark:text-amber-200">
@@ -1986,7 +1986,7 @@ export function SettingsDrawer({
           ) : null}
 
           {!loading && activeTab === "general" ? (
-            <div className="grid gap-6">
+            <div className="grid gap-6" data-testid="settings-panel-general">
               <div className="roc-section">
                 <div className={formFieldClass}>
                   <label className={formLabelClass}>Theme</label>
@@ -1996,6 +1996,8 @@ export function SettingsDrawer({
                     <button
                       key={item.id}
                       type="button"
+                      data-testid={`settings-theme-${item.id}`}
+                      data-active={theme === item.id ? "true" : "false"}
                       className={
                         theme === item.id
                           ? "roc-action roc-action-pill border-foreground bg-foreground px-4 text-sm font-medium text-background"
@@ -2048,6 +2050,7 @@ export function SettingsDrawer({
                   <input
                     className={checkboxClass}
                     type="checkbox"
+                    data-testid="settings-show-thinking"
                     checked={showThinking}
                     onChange={(event) => onShowThinkingChange(event.target.checked)}
                   />
@@ -2110,52 +2113,57 @@ export function SettingsDrawer({
           {!loading && activeTab === "memory" ? (
             <Suspense
               fallback={
-                <div className="rounded-xl border border-border/50 bg-card/50 px-4 py-8 text-sm text-muted-foreground">
+                <div
+                  className="rounded-xl border border-border/50 bg-card/50 px-4 py-8 text-sm text-muted-foreground"
+                  data-testid="settings-panel-memory-loading"
+                >
                   Loading memory tools...
                 </div>
               }
             >
-              <MemoryTab
-                selectedSessionId={selectedSessionId}
-                styles={{
-                  primaryButtonClass,
-                  secondaryButtonClass,
-                  summaryCardClass,
-                  sectionCardClass,
-                  mutedCardClass,
-                  insetCardClass,
-                  disclosureCardClass,
-                }}
-                memorySearchDraft={memorySearchDraft}
-                onMemorySearchDraftChange={setMemorySearchDraft}
-                memoryListLoading={memoryListLoading}
-                onLoadMemoryList={() => void loadMemoryList()}
-                memoryPreviewLoading={memoryPreviewLoading}
-                onLoadMemoryPreview={() => void loadMemoryPreview()}
-                memoryGovernanceLoading={memoryGovernanceLoading}
-                onLoadMemoryGovernance={() => void loadMemoryGovernance()}
-                memoryConsolidateIncludeCandidates={memoryConsolidateIncludeCandidates}
-                onMemoryConsolidateIncludeCandidatesChange={setMemoryConsolidateIncludeCandidates}
-                memoryConsolidating={memoryConsolidating}
-                onRunMemoryConsolidation={() => void runMemoryConsolidation()}
-                memoryListResponse={memoryListResponse}
-                selectedMemoryId={selectedMemoryId}
-                onSelectMemoryId={setSelectedMemoryId}
-                memoryDetailLoading={memoryDetailLoading}
-                memoryDetail={memoryDetail}
-                memoryValidationReport={memoryValidationReport}
-                memoryConflicts={memoryConflicts}
-                memoryPreview={memoryPreview}
-                memoryRulePacks={memoryRulePacks}
-                memoryRuleHits={memoryRuleHits}
-                memoryConsolidationRuns={memoryConsolidationRuns}
-                memoryConsolidationResult={memoryConsolidationResult}
-              />
+              <div data-testid="settings-panel-memory">
+                <MemoryTab
+                  selectedSessionId={selectedSessionId}
+                  styles={{
+                    primaryButtonClass,
+                    secondaryButtonClass,
+                    summaryCardClass,
+                    sectionCardClass,
+                    mutedCardClass,
+                    insetCardClass,
+                    disclosureCardClass,
+                  }}
+                  memorySearchDraft={memorySearchDraft}
+                  onMemorySearchDraftChange={setMemorySearchDraft}
+                  memoryListLoading={memoryListLoading}
+                  onLoadMemoryList={() => void loadMemoryList()}
+                  memoryPreviewLoading={memoryPreviewLoading}
+                  onLoadMemoryPreview={() => void loadMemoryPreview()}
+                  memoryGovernanceLoading={memoryGovernanceLoading}
+                  onLoadMemoryGovernance={() => void loadMemoryGovernance()}
+                  memoryConsolidateIncludeCandidates={memoryConsolidateIncludeCandidates}
+                  onMemoryConsolidateIncludeCandidatesChange={setMemoryConsolidateIncludeCandidates}
+                  memoryConsolidating={memoryConsolidating}
+                  onRunMemoryConsolidation={() => void runMemoryConsolidation()}
+                  memoryListResponse={memoryListResponse}
+                  selectedMemoryId={selectedMemoryId}
+                  onSelectMemoryId={setSelectedMemoryId}
+                  memoryDetailLoading={memoryDetailLoading}
+                  memoryDetail={memoryDetail}
+                  memoryValidationReport={memoryValidationReport}
+                  memoryConflicts={memoryConflicts}
+                  memoryPreview={memoryPreview}
+                  memoryRulePacks={memoryRulePacks}
+                  memoryRuleHits={memoryRuleHits}
+                  memoryConsolidationRuns={memoryConsolidationRuns}
+                  memoryConsolidationResult={memoryConsolidationResult}
+                />
+              </div>
             </Suspense>
           ) : null}
 
           {!loading && activeTab === "providers" ? (
-            <div className="grid gap-6">
+            <div className="grid gap-6" data-testid="settings-panel-providers">
               <form
                 className="roc-section"
                 onSubmit={(event) => {
@@ -2169,6 +2177,7 @@ export function SettingsDrawer({
                 <label htmlFor="settings-provider-connect-query" className={formLabelClass}>Connect Provider</label>
                 <input
                   id="settings-provider-connect-query"
+                  data-testid="settings-provider-connect-query"
                   className={inputClass}
                   type="text"
                   placeholder="Search provider or enter custom id"
@@ -2212,6 +2221,7 @@ export function SettingsDrawer({
                 <label className={formFieldClass}>
                   <span className={formLabelClass}>Provider ID</span>
                   <input
+                    data-testid="settings-provider-id"
                     className={inputClass}
                     type="text"
                     placeholder="Provider id"
@@ -2238,6 +2248,7 @@ export function SettingsDrawer({
                 <label className={formFieldClass}>
                   <span className={formLabelClass}>API Key</span>
                   <input
+                    data-testid="settings-provider-api-key"
                     className={inputClass}
                     type="password"
                     placeholder="API key"
@@ -2248,6 +2259,7 @@ export function SettingsDrawer({
                 <label className={formFieldClass}>
                   <span className={formLabelClass}>Base URL</span>
                   <input
+                    data-testid="settings-provider-base-url"
                     className={inputClass}
                     type="url"
                     placeholder="Custom base URL (optional)"
@@ -2258,6 +2270,7 @@ export function SettingsDrawer({
                 <label className={formFieldClass}>
                   <span className={formLabelClass}>Protocol</span>
                   <select
+                    data-testid="settings-provider-protocol"
                     className={selectClass}
                     value={connectProtocol}
                     onChange={(event) => onConnectProtocolChange(event.target.value)}
@@ -2269,7 +2282,7 @@ export function SettingsDrawer({
                     ))}
                   </select>
                 </label>
-                <button className={primaryButtonClass} type="submit" disabled={connectBusy}>
+                <button className={primaryButtonClass} type="submit" disabled={connectBusy} data-testid="settings-provider-submit">
                   {connectBusy ? "Connecting..." : "Connect"}
                 </button>
               </form>
@@ -2282,6 +2295,7 @@ export function SettingsDrawer({
                     <button
                       className={secondaryButtonClass}
                       type="button"
+                      data-testid="settings-provider-refresh"
                       disabled={busyKey === "provider:refresh"}
                       onClick={() => void refreshProviderCatalogue()}
                     >
@@ -2290,7 +2304,7 @@ export function SettingsDrawer({
                   </div>
                 </div>
                 {providers.map((provider) => (
-                  <div key={provider.id} className="rounded-lg border border-border/40 bg-card p-4 flex items-start justify-between gap-4">
+                  <div key={provider.id} className="rounded-lg border border-border/40 bg-card p-4 flex items-start justify-between gap-4" data-testid={`settings-provider-row-${provider.id}`}>
                     <div>
                       <strong>{provider.name}</strong>
                       <p className="text-sm text-muted-foreground leading-relaxed">
@@ -2300,6 +2314,7 @@ export function SettingsDrawer({
                     <button
                       className={secondaryButtonClass}
                       type="button"
+                      data-testid={`settings-provider-remove-${provider.id}`}
                       disabled={busyKey === `provider:delete:${provider.id}`}
                       onClick={() => void removeProvider(provider.id)}
                     >
@@ -2756,7 +2771,7 @@ export function SettingsDrawer({
           ) : null}
 
           {!loading && activeTab === "scheduler" ? (
-            <div className="grid gap-6">
+            <div className="grid gap-6" data-testid="settings-panel-scheduler">
               <div className="roc-section">
                 <label htmlFor="settings-scheduler-path" className={formLabelClass}>Scheduler Config Path</label>
                 <input
@@ -2784,6 +2799,7 @@ export function SettingsDrawer({
                   <button
                     className={primaryButtonClass}
                     type="button"
+                    data-testid="settings-scheduler-save"
                     disabled={busyKey === "scheduler:save"}
                     onClick={() => void saveScheduler()}
                   >
@@ -2823,7 +2839,7 @@ export function SettingsDrawer({
           ) : null}
 
           {!loading && activeTab === "validation" ? (
-            <div className="grid gap-6">
+            <div className="grid gap-6" data-testid="settings-panel-validation">
               <div className="grid gap-3 sm:grid-cols-4">
                 <div className={summaryCardClass}>
                   <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Config Revision</span>
@@ -2844,20 +2860,20 @@ export function SettingsDrawer({
               </div>
 
               {!configValidation ? (
-                <div className={mutedCardClass}>
+                <div className={mutedCardClass} data-testid="settings-validation-unavailable">
                   Validation snapshot was unavailable during this refresh. The rest of the settings surface still reflects current config and owner-local inspections.
                 </div>
               ) : null}
 
               {configValidation && validationReports.length === 0 ? (
-                <div className={mutedCardClass}>
+                <div className={mutedCardClass} data-testid="settings-validation-empty">
                   No validation findings are present in the current config snapshot.
                 </div>
               ) : null}
 
               {configValidation && validationGroups.length > 0 ? (
                 validationGroups.map((group) => (
-                  <div key={group.owner} className="roc-section">
+                  <div key={group.owner} className="roc-section" data-testid="settings-validation-group">
                     <div className="flex items-center justify-between gap-3">
                       <p className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">
                         {validationOwnerLabel(group.owner)}
@@ -2933,107 +2949,112 @@ export function SettingsDrawer({
           {!loading && activeTab === "skills" ? (
             <Suspense
               fallback={
-                <div className="rounded-xl border border-border/50 bg-card/50 px-4 py-8 text-sm text-muted-foreground">
+                <div
+                  className="rounded-xl border border-border/50 bg-card/50 px-4 py-8 text-sm text-muted-foreground"
+                  data-testid="settings-panel-skills-loading"
+                >
                   Loading skills workspace...
                 </div>
               }
             >
-            <SkillsTab
-              workspaceRootPath={workspaceRootPath}
-              selectedSessionId={selectedSessionId}
-              skillWorkspaceRoot={skillWorkspaceRoot}
-              skillsMutationsEnabled={skillsMutationsEnabled}
-              styles={{
-                primaryButtonClass,
-                secondaryButtonClass,
-                summaryCardClass,
-                sectionCardClass,
-                mutedCardClass,
-                editorTextareaClass,
-              }}
-              busyKey={busyKey}
-              skillCatalog={skillCatalog}
-              managedSkills={managedSkills}
-              skillUsageLedger={skillUsageLedger}
-              skillNegativeEntropy={skillNegativeEntropy}
-              skillSemanticConflicts={skillSemanticConflicts}
-              skillSourceIndices={skillSourceIndices}
-              skillDistributions={skillDistributions}
-              skillArtifactCache={skillArtifactCache}
-              skillHubPolicy={skillHubPolicy}
-              skillLifecycle={skillLifecycle}
-              skillGovernanceTimeline={skillGovernanceTimeline}
-              skillSyncSourceId={skillSyncSourceId}
-              onSkillSyncSourceIdChange={setSkillSyncSourceId}
-              skillSyncSourceKind={skillSyncSourceKind}
-              onSkillSyncSourceKindChange={setSkillSyncSourceKind}
-              skillSyncLocator={skillSyncLocator}
-              onSkillSyncLocatorChange={setSkillSyncLocator}
-              skillSyncRevision={skillSyncRevision}
-              onSkillSyncRevisionChange={setSkillSyncRevision}
-              skillSyncPlan={skillSyncPlan}
-              onPlanSkillSync={() => void planSkillSync()}
-              onApplySkillSync={() => void applySkillSync()}
-              onRefreshSkillSourceIndex={() => void refreshSkillSourceIndex()}
-              onRunSelectedSourceGuard={() => void runSelectedSourceGuard()}
-              remoteInstallSkillName={remoteInstallSkillName}
-              onRemoteInstallSkillNameChange={setRemoteInstallSkillName}
-              remoteInstallPlan={remoteInstallPlan}
-              onPlanRemoteInstall={() => void planRemoteInstall()}
-              onPlanRemoteUpdate={() => void planRemoteUpdate()}
-              onApplyRemoteInstall={() => void applyRemoteInstall()}
-              onApplyRemoteUpdate={() => void applyRemoteUpdate()}
-              onDetachManagedSkill={() => void detachManagedSkill()}
-              onRemoveManagedSkill={() => void removeManagedSkill()}
-              skillGuardReports={skillGuardReports}
-              skillGuardTarget={skillGuardTarget}
-              selectedSkillName={selectedSkillName}
-              onSelectedSkillNameChange={setSelectedSkillName}
-              selectedSkillEntry={selectedSkillEntry}
-              skillDetail={skillDetail}
-              skillDetailLoading={skillDetailLoading}
-              skillEditorContent={skillEditorContent}
-              onSkillEditorContentChange={setSkillEditorContent}
-              editSkillEditorMode={editSkillEditorMode}
-              onEditSkillEditorModeChange={setEditSkillEditorMode}
-              editSkillDescription={editSkillDescription}
-              onEditSkillDescriptionChange={setEditSkillDescription}
-              editSkillMethodologyDraft={editSkillMethodologyDraft}
-              onEditSkillMethodologyDraftChange={setEditSkillMethodologyDraft}
-              editSkillMethodologyMatched={editSkillMethodologyMatched}
-              editSkillMethodologyPreview={editSkillMethodologyPreview}
-              editSkillMethodologyPreviewError={editSkillMethodologyPreviewError}
-              newSkillName={newSkillName}
-              onNewSkillNameChange={setNewSkillName}
-              newSkillDescription={newSkillDescription}
-              onNewSkillDescriptionChange={setNewSkillDescription}
-              newSkillCategory={newSkillCategory}
-              onNewSkillCategoryChange={setNewSkillCategory}
-              newSkillBody={newSkillBody}
-              onNewSkillBodyChange={setNewSkillBody}
-              newSkillEditorMode={newSkillEditorMode}
-              onNewSkillEditorModeChange={setNewSkillEditorMode}
-              newSkillMethodologyDraft={newSkillMethodologyDraft}
-              onNewSkillMethodologyDraftChange={setNewSkillMethodologyDraft}
-              newSkillMethodologyPreview={newSkillMethodologyPreview}
-              newSkillMethodologyPreviewError={newSkillMethodologyPreviewError}
-              onCreateSkill={() => void createSkill()}
-              onRunSelectedSkillGuard={() => void runSelectedSkillGuard()}
-              onSaveSelectedSkill={() => void saveSelectedSkill()}
-              onDeleteSelectedSkill={() => void deleteSelectedSkill()}
-              managedRecordBySkill={managedRecordBySkill}
-              latestGuardBySkill={latestGuardBySkill}
-              selectedHubSourceSnapshot={selectedHubSourceSnapshot}
-              selectedRemoteSourceEntry={selectedRemoteSourceEntry}
-              selectedRemoteDistribution={selectedRemoteDistribution}
-              selectedRemoteArtifactCache={selectedRemoteArtifactCache}
-              selectedRemoteLifecycle={selectedRemoteLifecycle}
-            />
+              <div data-testid="settings-panel-skills">
+                <SkillsTab
+                  workspaceRootPath={workspaceRootPath}
+                  selectedSessionId={selectedSessionId}
+                  skillWorkspaceRoot={skillWorkspaceRoot}
+                  skillsMutationsEnabled={skillsMutationsEnabled}
+                  styles={{
+                    primaryButtonClass,
+                    secondaryButtonClass,
+                    summaryCardClass,
+                    sectionCardClass,
+                    mutedCardClass,
+                    editorTextareaClass,
+                  }}
+                  busyKey={busyKey}
+                  skillCatalog={skillCatalog}
+                  managedSkills={managedSkills}
+                  skillUsageLedger={skillUsageLedger}
+                  skillNegativeEntropy={skillNegativeEntropy}
+                  skillSemanticConflicts={skillSemanticConflicts}
+                  skillSourceIndices={skillSourceIndices}
+                  skillDistributions={skillDistributions}
+                  skillArtifactCache={skillArtifactCache}
+                  skillHubPolicy={skillHubPolicy}
+                  skillLifecycle={skillLifecycle}
+                  skillGovernanceTimeline={skillGovernanceTimeline}
+                  skillSyncSourceId={skillSyncSourceId}
+                  onSkillSyncSourceIdChange={setSkillSyncSourceId}
+                  skillSyncSourceKind={skillSyncSourceKind}
+                  onSkillSyncSourceKindChange={setSkillSyncSourceKind}
+                  skillSyncLocator={skillSyncLocator}
+                  onSkillSyncLocatorChange={setSkillSyncLocator}
+                  skillSyncRevision={skillSyncRevision}
+                  onSkillSyncRevisionChange={setSkillSyncRevision}
+                  skillSyncPlan={skillSyncPlan}
+                  onPlanSkillSync={() => void planSkillSync()}
+                  onApplySkillSync={() => void applySkillSync()}
+                  onRefreshSkillSourceIndex={() => void refreshSkillSourceIndex()}
+                  onRunSelectedSourceGuard={() => void runSelectedSourceGuard()}
+                  remoteInstallSkillName={remoteInstallSkillName}
+                  onRemoteInstallSkillNameChange={setRemoteInstallSkillName}
+                  remoteInstallPlan={remoteInstallPlan}
+                  onPlanRemoteInstall={() => void planRemoteInstall()}
+                  onPlanRemoteUpdate={() => void planRemoteUpdate()}
+                  onApplyRemoteInstall={() => void applyRemoteInstall()}
+                  onApplyRemoteUpdate={() => void applyRemoteUpdate()}
+                  onDetachManagedSkill={() => void detachManagedSkill()}
+                  onRemoveManagedSkill={() => void removeManagedSkill()}
+                  skillGuardReports={skillGuardReports}
+                  skillGuardTarget={skillGuardTarget}
+                  selectedSkillName={selectedSkillName}
+                  onSelectedSkillNameChange={setSelectedSkillName}
+                  selectedSkillEntry={selectedSkillEntry}
+                  skillDetail={skillDetail}
+                  skillDetailLoading={skillDetailLoading}
+                  skillEditorContent={skillEditorContent}
+                  onSkillEditorContentChange={setSkillEditorContent}
+                  editSkillEditorMode={editSkillEditorMode}
+                  onEditSkillEditorModeChange={setEditSkillEditorMode}
+                  editSkillDescription={editSkillDescription}
+                  onEditSkillDescriptionChange={setEditSkillDescription}
+                  editSkillMethodologyDraft={editSkillMethodologyDraft}
+                  onEditSkillMethodologyDraftChange={setEditSkillMethodologyDraft}
+                  editSkillMethodologyMatched={editSkillMethodologyMatched}
+                  editSkillMethodologyPreview={editSkillMethodologyPreview}
+                  editSkillMethodologyPreviewError={editSkillMethodologyPreviewError}
+                  newSkillName={newSkillName}
+                  onNewSkillNameChange={setNewSkillName}
+                  newSkillDescription={newSkillDescription}
+                  onNewSkillDescriptionChange={setNewSkillDescription}
+                  newSkillCategory={newSkillCategory}
+                  onNewSkillCategoryChange={setNewSkillCategory}
+                  newSkillBody={newSkillBody}
+                  onNewSkillBodyChange={setNewSkillBody}
+                  newSkillEditorMode={newSkillEditorMode}
+                  onNewSkillEditorModeChange={setNewSkillEditorMode}
+                  newSkillMethodologyDraft={newSkillMethodologyDraft}
+                  onNewSkillMethodologyDraftChange={setNewSkillMethodologyDraft}
+                  newSkillMethodologyPreview={newSkillMethodologyPreview}
+                  newSkillMethodologyPreviewError={newSkillMethodologyPreviewError}
+                  onCreateSkill={() => void createSkill()}
+                  onRunSelectedSkillGuard={() => void runSelectedSkillGuard()}
+                  onSaveSelectedSkill={() => void saveSelectedSkill()}
+                  onDeleteSelectedSkill={() => void deleteSelectedSkill()}
+                  managedRecordBySkill={managedRecordBySkill}
+                  latestGuardBySkill={latestGuardBySkill}
+                  selectedHubSourceSnapshot={selectedHubSourceSnapshot}
+                  selectedRemoteSourceEntry={selectedRemoteSourceEntry}
+                  selectedRemoteDistribution={selectedRemoteDistribution}
+                  selectedRemoteArtifactCache={selectedRemoteArtifactCache}
+                  selectedRemoteLifecycle={selectedRemoteLifecycle}
+                />
+              </div>
             </Suspense>
           ) : null}
 
           {!loading && activeTab === "mcp" ? (
-            <div className="grid gap-6">
+            <div className="grid gap-6" data-testid="settings-panel-mcp">
               <div className="grid gap-3">
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Runtime Status</p>
@@ -3041,7 +3062,11 @@ export function SettingsDrawer({
                 </div>
                 {Object.values(mcpStatus).length ? (
                   Object.values(mcpStatus).map((server) => (
-                    <div key={server.name} className="rounded-lg border border-border/40 bg-card p-4 flex items-start justify-between gap-4">
+                    <div
+                      key={server.name}
+                      className="rounded-lg border border-border/40 bg-card p-4 flex items-start justify-between gap-4"
+                      data-testid="settings-mcp-server"
+                    >
                       <div>
                         <strong>{server.name}</strong>
                         <p className="text-sm text-muted-foreground leading-relaxed">
@@ -3078,7 +3103,7 @@ export function SettingsDrawer({
                     </div>
                   ))
                 ) : (
-                  <p className="flex flex-col items-center justify-center gap-3 text-muted-foreground py-8">No MCP runtime entries reported yet.</p>
+                  <p className="flex flex-col items-center justify-center gap-3 text-muted-foreground py-8" data-testid="settings-mcp-empty">No MCP runtime entries reported yet.</p>
                 )}
               </div>
 
@@ -3141,7 +3166,7 @@ export function SettingsDrawer({
           ) : null}
 
           {!loading && activeTab === "plugins" ? (
-            <div className="grid gap-6">
+            <div className="grid gap-6" data-testid="settings-panel-plugins">
               <div className="grid gap-3">
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Auth Bridges</p>
@@ -3149,7 +3174,11 @@ export function SettingsDrawer({
                 </div>
                 {pluginAuthProviders.length ? (
                   pluginAuthProviders.map((provider) => (
-                    <div key={provider.provider} className="rounded-lg border border-border/40 bg-card p-4 flex items-start justify-between gap-4">
+                    <div
+                      key={provider.provider}
+                      className="rounded-lg border border-border/40 bg-card p-4 flex items-start justify-between gap-4"
+                      data-testid="settings-plugin-provider"
+                    >
                       <div>
                         <strong>{provider.provider}</strong>
                         <p className="text-sm text-muted-foreground leading-relaxed">
@@ -3163,7 +3192,7 @@ export function SettingsDrawer({
                     </div>
                   ))
                 ) : (
-                  <p className="flex flex-col items-center justify-center gap-3 text-muted-foreground py-8">No plugin auth bridges reported.</p>
+                  <p className="flex flex-col items-center justify-center gap-3 text-muted-foreground py-8" data-testid="settings-plugins-empty">No plugin auth bridges reported.</p>
                 )}
               </div>
 
@@ -3226,7 +3255,7 @@ export function SettingsDrawer({
           ) : null}
 
           {!loading && activeTab === "lsp" ? (
-            <div className="grid gap-6">
+            <div className="grid gap-6" data-testid="settings-panel-lsp">
               <div className="grid gap-3">
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">LSP Servers</p>
@@ -3234,12 +3263,16 @@ export function SettingsDrawer({
                 </div>
                 {lspStatus?.servers.length ? (
                   lspStatus.servers.map((server) => (
-                    <div key={server} className="rounded-lg border border-border/40 bg-card p-4 flex items-center justify-between gap-4">
+                    <div
+                      key={server}
+                      className="rounded-lg border border-border/40 bg-card p-4 flex items-center justify-between gap-4"
+                      data-testid="settings-lsp-server"
+                    >
                       <strong>{server}</strong>
                     </div>
                   ))
                 ) : (
-                  <p className="flex flex-col items-center justify-center gap-3 text-muted-foreground py-8">No LSP servers reported by `/lsp`.</p>
+                  <p className="flex flex-col items-center justify-center gap-3 text-muted-foreground py-8" data-testid="settings-lsp-empty">No LSP servers reported by `/lsp`.</p>
                 )}
               </div>
 

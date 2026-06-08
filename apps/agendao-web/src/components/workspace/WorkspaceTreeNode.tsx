@@ -9,7 +9,7 @@ import {
   FileImageIcon,
   LoaderCircleIcon,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { FileTreeNodeRecord } from "@/lib/workspace";
 
 interface WorkspaceTreeNodeProps {
@@ -68,6 +68,21 @@ export function WorkspaceTreeNode({
   const isRoot = depth === 0;
   const [isExpanded, setIsExpanded] = useState(isRoot);
   const isLoading = Boolean(loadingPaths[node.path]);
+  const containsSelectedDescendant =
+    node.type === "directory" &&
+    Boolean(selectedPath) &&
+    selectedPath !== node.path &&
+    selectedPath?.startsWith(`${node.path}/`) === true;
+
+  useEffect(() => {
+    if (!containsSelectedDescendant || !hasChildren || isExpanded) {
+      return;
+    }
+    setIsExpanded(true);
+    if (!node.childrenLoaded) {
+      void onExpandNode?.(node);
+    }
+  }, [containsSelectedDescendant, hasChildren, isExpanded, node, onExpandNode]);
 
   // Build the prefix with ASCII tree lines
   const prefix = parentLines.map((showLine) => (showLine ? "│" : " ")).join(" ");

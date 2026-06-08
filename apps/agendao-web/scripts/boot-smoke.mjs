@@ -9,13 +9,8 @@ const RuntimeWebSocket = globalThis.WebSocket ?? UndiciWebSocket;
 const BASE_URL = process.env.AGENDAO_BASE_URL ?? "http://127.0.0.1:3000";
 const WEB_URL = new URL("/web/", `${BASE_URL}/`).toString();
 const CHROME_BIN = process.env.CHROME_BIN ?? "google-chrome";
-const CHROME_PORT = Number.parseInt(process.env.AGENDAO_CHROME_PORT ?? "9224", 10);
+const CHROME_PORT = Number.parseInt(process.env.AGENDAO_CHROME_PORT ?? "9225", 10);
 const TIMEOUT_MS = Number.parseInt(process.env.AGENDAO_SMOKE_TIMEOUT_MS ?? "30000", 10);
-const WORKSPACE_DIR =
-  process.env.AGENDAO_WORKSPACE_DIR ?? "/home/biocheming/tests/python/rust/test/life";
-const PROMPT =
-  process.env.AGENDAO_BROWSER_PROMPT ??
-  "用文献检索的skill，检索中国海洋大学徐锡明2021-2026年发表的论文";
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -24,7 +19,7 @@ function sleep(ms) {
 async function fetchJson(url, init) {
   const response = await fetch(url, init);
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status} for ${url}: ${await response.text()}`);
+    throw new Error(`HTTP ${response.status} for ${url}`);
   }
   return response.json();
 }
@@ -46,7 +41,7 @@ async function waitForHttp(url, timeoutMs = TIMEOUT_MS) {
 }
 
 async function launchChrome() {
-  const userDataDir = await mkdtemp(path.join(tmpdir(), "agendao-live-check-chrome-"));
+  const userDataDir = await mkdtemp(path.join(tmpdir(), "agendao-boot-smoke-"));
   const chrome = spawn(
     CHROME_BIN,
     [
@@ -62,8 +57,14 @@ async function launchChrome() {
     ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
+
+  let stderr = "";
+  chrome.stderr.on("data", (chunk) => {
+    stderr += chunk.toString();
+  });
+
   await waitForHttp(`http://127.0.0.1:${CHROME_PORT}/json/version`);
-  return { chrome, userDataDir };
+  return { chrome, userDataDir, stderr: () => stderr };
 }
 
 async function terminateProcess(child) {
@@ -119,7 +120,9 @@ async function createPageClient() {
     async send(method, params = {}) {
       const id = ++nextId;
       socket.send(JSON.stringify({ id, method, params }));
-      return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+      });
     },
     on(method, handler) {
       const handlers = listeners.get(method) ?? [];
@@ -138,7 +141,6 @@ async function createPageClient() {
 
   await client.send("Page.enable");
   await client.send("Runtime.enable");
-  await client.send("Network.enable");
   return client;
 }
 
@@ -176,97 +178,30 @@ async function navigate(client, url) {
   await waitForExpression(client, "document.readyState === 'complete'");
 }
 
-async function click(client, selector) {
-  const escaped = JSON.stringify(selector);
-  const clicked = await evaluate(
-    client,
-    `(() => {
-      const element = document.querySelector(${escaped});
-      if (!element) return false;
-      element.click();
-      return true;
-    })()`,
-  );
-  if (!clicked) {
-    throw new Error(`Could not find clickable selector ${selector}`);
-  }
-}
-
-async function fillInput(client, selector, value) {
-  const escapedSelector = JSON.stringify(selector);
-  const escapedValue = JSON.stringify(value);
-  const updated = await evaluate(
-    client,
-    `(() => {
-      const element = document.querySelector(${escapedSelector});
-      if (!element) return false;
-      const descriptor = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')
-        ?? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
-      descriptor?.set?.call(element, ${escapedValue});
-      element.focus();
-      element.dispatchEvent(new Event('input', { bubbles: true }));
-      element.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
-    })()`,
-  );
-  if (!updated) {
-    throw new Error(`Could not find input selector ${selector}`);
-  }
-}
-
-async function collectMessageCards(client) {
-  return evaluate(
-    client,
-    `(() => Array.from(document.querySelectorAll('[data-testid="message-card"]')).map((node, index) => ({
-      index,
-      text: node.innerText,
-    })))()`,
-  );
-}
-
 async function run() {
-  const seededSession = await fetchJson(`${BASE_URL}/session`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      directory: WORKSPACE_DIR,
-      title: `browser-check-${Date.now()}`,
-    }),
-  });
-
-  const { chrome, userDataDir } = await launchChrome();
+  const { chrome, userDataDir, stderr } = await launchChrome();
   let client = null;
 
   try {
     client = await createPageClient();
-    await navigate(client, `${WEB_URL}?session=${encodeURIComponent(seededSession.id)}`);
-    await waitForExpression(
-      client,
-      "Boolean(document.querySelector('[data-testid=\"composer-input\"]'))",
-    );
-    await fillInput(client, "[data-testid='composer-input']", PROMPT);
-    await click(client, "[data-testid='composer-send']");
-
-    const checkpointsMs = [3000, 8000, 15000, 25000];
-    let previous = 0;
-    for (const checkpoint of checkpointsMs) {
-      await sleep(checkpoint - previous);
-      previous = checkpoint;
-      const cards = await collectMessageCards(client);
-      console.log(`\n=== ${checkpoint}ms ===`);
-      for (const card of cards) {
-        console.log(`--- card ${card.index} ---`);
-        console.log(card.text);
-      }
-    }
+    await navigate(client, WEB_URL);
+    await waitForExpression(client, "Boolean(document.querySelector('[data-testid=\"session-sidebar\"]'))");
+    await waitForExpression(client, "Boolean(document.querySelector('[data-testid=\"composer-form\"]'))");
+    await waitForExpression(client, "Boolean(document.querySelector('[data-testid=\"workspace-panel\"]'))");
+    console.log("boot smoke passed");
   } finally {
-    if (client) client.close();
+    if (client) {
+      client.close();
+    }
     await terminateProcess(chrome);
     await rm(userDataDir, { recursive: true, force: true });
+    if (stderr()) {
+      // keep silent on success unless Chrome emitted hard noise
+    }
   }
 }
 
 run().catch((error) => {
-  console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+  console.error(`Boot smoke failed: ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
 });

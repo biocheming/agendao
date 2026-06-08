@@ -104,7 +104,7 @@ export function MemoryTab({
   const [memoryTab, setMemoryTab] = useState<"overview" | "records" | "governance" | "retrieval">("overview");
 
   return (
-    <div className="relative grid gap-4">
+    <div className="relative grid gap-4" data-testid="settings-memory-root">
       {/* Header + Sub-tabs */}
       <div className="flex items-center justify-between gap-3">
         <h3 className="m-0 text-base font-semibold">Memory</h3>
@@ -113,6 +113,8 @@ export function MemoryTab({
             <button
               key={tab}
               type="button"
+              data-testid={`settings-memory-subtab-${tab}`}
+              data-active={memoryTab === tab ? "true" : "false"}
               className={cn(
                 "rounded-md px-3 py-1 text-xs font-medium transition-colors",
                 memoryTab === tab
@@ -134,6 +136,7 @@ export function MemoryTab({
             <label htmlFor="settings-memory-search" className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Search</label>
             <input
               id="settings-memory-search"
+              data-testid="settings-memory-search"
               type="text"
               placeholder="Search title, summary, normalized facts"
               value={memorySearchDraft}
@@ -149,13 +152,13 @@ export function MemoryTab({
           </div>
 
           <div className="flex flex-wrap gap-2">
-            <button type="button" className={primaryButtonClass} onClick={onLoadMemoryList} disabled={memoryListLoading}>
+            <button type="button" className={primaryButtonClass} data-testid="settings-memory-refresh" onClick={onLoadMemoryList} disabled={memoryListLoading}>
               {memoryListLoading ? "Refreshing..." : "Refresh Memory"}
             </button>
-            <button type="button" className={secondaryButtonClass} onClick={onLoadMemoryPreview} disabled={memoryPreviewLoading}>
+            <button type="button" className={secondaryButtonClass} data-testid="settings-memory-preview" onClick={onLoadMemoryPreview} disabled={memoryPreviewLoading}>
               {memoryPreviewLoading ? "Previewing..." : "Preview Injection"}
             </button>
-            <button type="button" className={secondaryButtonClass} onClick={onLoadMemoryGovernance} disabled={memoryGovernanceLoading}>
+            <button type="button" className={secondaryButtonClass} data-testid="settings-memory-governance-refresh" onClick={onLoadMemoryGovernance} disabled={memoryGovernanceLoading}>
               {memoryGovernanceLoading ? "Refreshing..." : "Refresh Governance"}
             </button>
           </div>
@@ -163,10 +166,10 @@ export function MemoryTab({
           <div className="border-l-2 border-l-foreground/10 bg-muted/30 px-4 py-3">
             <div className="flex items-center gap-4">
               <label className="flex items-center gap-2 text-sm cursor-pointer">
-                <input type="checkbox" checked={memoryConsolidateIncludeCandidates} onChange={(event) => onMemoryConsolidateIncludeCandidatesChange(event.target.checked)} />
+                <input data-testid="settings-memory-include-candidates" type="checkbox" checked={memoryConsolidateIncludeCandidates} onChange={(event) => onMemoryConsolidateIncludeCandidatesChange(event.target.checked)} />
                 Include candidates
               </label>
-              <button type="button" className={primaryButtonClass} onClick={onRunMemoryConsolidation} disabled={memoryConsolidating}>
+              <button type="button" className={primaryButtonClass} data-testid="settings-memory-consolidate" onClick={onRunMemoryConsolidation} disabled={memoryConsolidating}>
                 {memoryConsolidating ? "Consolidating..." : "Run Consolidation"}
               </button>
             </div>
@@ -207,7 +210,7 @@ export function MemoryTab({
       {/* Records Tab */}
       {memoryTab === "records" ? (
         <div className="relative">
-          <div className="grid gap-2 max-h-[28rem] overflow-y-auto pr-1">
+          <div className="grid gap-2 max-h-[28rem] overflow-y-auto pr-1" data-testid="settings-memory-records">
             <div className="flex items-center justify-between gap-3 mb-2">
               <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Memory Records</span>
               <span className="text-xs text-muted-foreground">
@@ -223,6 +226,7 @@ export function MemoryTab({
                   <button
                     key={recordId}
                     type="button"
+                    data-testid="settings-memory-record"
                     className={cn(
                       "grid gap-1.5 rounded-lg border-l-2 px-4 py-3 text-left transition-colors",
                       active
@@ -250,7 +254,7 @@ export function MemoryTab({
                 );
               })
             ) : (
-              <div className={mutedCardClass}>No memory records matched this query.</div>
+              <div className={mutedCardClass} data-testid="settings-memory-records-empty">No memory records matched this query.</div>
             )}
           </div>
 
@@ -381,7 +385,7 @@ export function MemoryTab({
       {/* Governance Tab */}
       {memoryTab === "governance" ? (
         <div className="grid gap-5">
-          <div>
+          <div data-testid="settings-memory-rule-packs">
             <div className="flex items-center justify-between gap-3 mb-2">
               <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Rule Packs</span>
               <span className="text-xs text-muted-foreground">{memoryGovernanceLoading ? "Loading..." : `${memoryRulePacks?.items?.length ?? 0} packs`}</span>
@@ -407,11 +411,11 @@ export function MemoryTab({
                     ) : <span className="mt-1 block text-xs text-muted-foreground">No rules declared.</span>}
                   </div>
                 ))
-              ) : <div className={mutedCardClass}>{memoryGovernanceLoading ? "Loading rule packs..." : "No rule packs available."}</div>}
+              ) : <div className={mutedCardClass} data-testid="settings-memory-rule-packs-empty">{memoryGovernanceLoading ? "Loading rule packs..." : "No rule packs available."}</div>}
             </div>
           </div>
 
-          <div>
+          <div data-testid="settings-memory-rule-hits">
             <div className="flex items-center justify-between gap-3 mb-2">
               <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Recent Rule Hits</span>
               <span className="text-xs text-muted-foreground">{memoryGovernanceLoading ? "Loading..." : `${memoryRuleHits?.items?.length ?? 0} hits`}</span>
@@ -430,11 +434,11 @@ export function MemoryTab({
                     </div>
                   </div>
                 ))
-              ) : <div className={mutedCardClass}>{memoryGovernanceLoading ? "Loading rule hits..." : "No recent rule hits."}</div>}
+              ) : <div className={mutedCardClass} data-testid="settings-memory-rule-hits-empty">{memoryGovernanceLoading ? "Loading rule hits..." : "No recent rule hits."}</div>}
             </div>
           </div>
 
-          <div>
+          <div data-testid="settings-memory-consolidation-runs">
             <div className="flex items-center justify-between gap-3 mb-2">
               <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">Consolidation Runs</span>
               <span className="text-xs text-muted-foreground">{memoryGovernanceLoading ? "Loading..." : `${memoryConsolidationRuns?.items?.length ?? 0} runs`}</span>
@@ -463,7 +467,7 @@ export function MemoryTab({
                     </div>
                   </div>
                 ))
-              ) : <div className={mutedCardClass}>{memoryGovernanceLoading ? "Loading consolidation runs..." : "No consolidation runs recorded yet."}</div>}
+              ) : <div className={mutedCardClass} data-testid="settings-memory-consolidation-runs-empty">{memoryGovernanceLoading ? "Loading consolidation runs..." : "No consolidation runs recorded yet."}</div>}
             </div>
           </div>
         </div>
@@ -479,7 +483,7 @@ export function MemoryTab({
           <div className={mutedCardClass}>
             {memoryPreview?.contract.note || "Formal preview of which memory records would be injected into the current turn and why."}
           </div>
-          <div className="grid gap-3">
+          <div className="grid gap-3" data-testid="settings-memory-retrieval-items">
             {arrayOrEmpty(memoryPreview?.packet.items).length ? (
               arrayOrEmpty(memoryPreview?.packet.items).map((item) => (
                 <div key={memoryRecordIdValue(item.card.id)} className="border-l-2 border-l-foreground/10 bg-muted/30 px-4 py-3">
@@ -494,7 +498,7 @@ export function MemoryTab({
                   </div>
                 </div>
               ))
-            ) : <div className={mutedCardClass}>No memory records would be injected for the current search/session scope.</div>}
+            ) : <div className={mutedCardClass} data-testid="settings-memory-retrieval-empty">No memory records would be injected for the current search/session scope.</div>}
           </div>
         </div>
       ) : null}

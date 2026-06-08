@@ -540,10 +540,7 @@ fn build_external_scheduler_profile_mode_list(
         Ok(config) => config,
         Err(error) => {
             tracing::warn!(path = %scheduler_path, %error, "failed to load external scheduler profiles for execution modes");
-            return Err(ApiError::InternalError(format!(
-                "Failed to load scheduler config for execution modes: {}",
-                error
-            )));
+            return Ok(Vec::new());
         }
     };
 
@@ -801,21 +798,38 @@ mod tests {
     }
 
     #[test]
-    fn execution_modes_fail_explicitly_when_scheduler_config_cannot_be_loaded() {
+    fn execution_modes_skip_external_profiles_when_scheduler_config_cannot_be_loaded() {
         let config = AppConfig {
             scheduler_path: Some("/definitely/missing/agendao.scheduler.jsonc".to_string()),
             ..Default::default()
         };
 
-        let error = build_execution_mode_list(Some(&config))
-            .expect_err("broken scheduler config should fail mode listing explicitly");
+        let modes = build_execution_mode_list(Some(&config))
+            .expect("broken external scheduler config should not fail built-in mode listing");
 
-        match error {
-            ApiError::InternalError(message) => {
-                assert!(message.contains("Failed to load scheduler config for execution modes"));
-            }
-            other => panic!("expected internal error, got {other:?}"),
-        }
+        let preset_names = modes
+            .iter()
+            .filter(|mode| mode.kind == "preset")
+            .map(|mode| mode.name.as_str())
+            .collect::<Vec<_>>();
+        let profile_names = modes
+            .iter()
+            .filter(|mode| mode.kind == "profile")
+            .map(|mode| mode.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            preset_names,
+            vec![
+                "auto",
+                "sisyphus",
+                "prometheus",
+                "atlas",
+                "hephaestus",
+                "verifier",
+            ]
+        );
+        assert!(profile_names.is_empty());
     }
 
     #[test]
