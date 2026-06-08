@@ -653,3 +653,55 @@ fn scroll_to_message_uses_compact_message_first_line_index() {
     let state = view.state.lock();
     assert_eq!(state.viewport.scroll_offset, expected_scroll_offset);
 }
+
+#[test]
+fn synthetic_compaction_message_is_only_present_while_compacting() {
+    let summary = agendao_types::ContextCompactionSummary {
+        trigger: "auto".to_string(),
+        phase: Some("pre_request".to_string()),
+        reason: Some("context_pressure".to_string()),
+        forced: false,
+        request_context_tokens: Some(58_000),
+        live_context_tokens: Some(58_000),
+        limit_tokens: Some(100_000),
+        body_chars: None,
+        message_count_before: None,
+        compacted_message_count: None,
+        kept_message_count: None,
+        summary: None,
+    };
+
+    let message = super::synthetic_compaction_message(
+        "ses_1",
+        (
+            crate::context::SessionStatus::Compacting,
+            Some(summary.clone()),
+            Some(agendao_types::ContextCompactionLifecycleSummary {
+                trigger: "auto".to_string(),
+                phase: Some("pre_request".to_string()),
+                reason: Some("context_pressure".to_string()),
+                status: agendao_types::ContextCompactionLifecycleStatus::Started,
+                forced: false,
+                request_context_tokens: Some(58_000),
+                live_context_tokens: Some(58_000),
+                limit_tokens: Some(100_000),
+                body_chars: None,
+                installed: None,
+            }),
+        ),
+    )
+    .expect("compaction block should render while compacting");
+
+    assert!(message.content.contains("Compacting conversation"));
+    assert!(message.content.contains("compressing"));
+    assert!(message.content.contains("58K"));
+    assert!(message.content.contains("context pressure"));
+
+    assert!(
+        super::synthetic_compaction_message(
+            "ses_1",
+            (crate::context::SessionStatus::Running, Some(summary), None)
+        )
+        .is_none()
+    );
+}
