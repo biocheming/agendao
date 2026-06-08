@@ -283,6 +283,35 @@ mod tests {
     }
 
     #[test]
+    fn builtin_autoresearch_profile_resolves_even_when_scheduler_path_is_invalid() {
+        let config = AppConfig {
+            scheduler_path: Some("/tmp/does-not-exist-autoresearch.jsonc".to_string()),
+            ..AppConfig::default()
+        };
+
+        let defaults = resolve_scheduler_request_defaults_validated(&config, Some("autoresearch-run"))
+            .expect("bundled autoresearch defaults should win before file-backed scheduler resolution")
+            .expect("bundled autoresearch defaults should resolve");
+
+        assert_eq!(defaults.profile_name.as_deref(), Some("autoresearch-run"));
+    }
+
+    #[test]
+    fn builtin_autoresearch_profile_config_resolves_even_when_scheduler_path_is_invalid() {
+        let config = AppConfig {
+            scheduler_path: Some("/tmp/does-not-exist-autoresearch.jsonc".to_string()),
+            ..AppConfig::default()
+        };
+
+        let (profile_name, profile) =
+            resolve_scheduler_profile_config(&config, Some("autoresearch-run"))
+                .expect("bundled autoresearch profile config should win before file-backed scheduler resolution");
+
+        assert_eq!(profile_name, "autoresearch-run");
+        assert_eq!(profile.orchestrator.as_deref(), Some("hephaestus"));
+    }
+
+    #[test]
     fn builtin_auto_profile_config_resolves_without_external_scheduler_file() {
         let (profile_name, profile) =
             resolve_scheduler_profile_config(&AppConfig::default(), Some("auto"))

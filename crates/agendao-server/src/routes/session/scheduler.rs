@@ -307,6 +307,9 @@ pub(crate) fn resolve_scheduler_request_defaults_validated(
         return Ok(Some(defaults));
     }
 
+    if let Some(defaults) = resolve_bundled_scheduler_request_defaults(Some(profile_name)) {
+        return Ok(Some(defaults));
+    }
     let scheduler_path = config
         .scheduler_path
         .as_deref()
@@ -355,10 +358,6 @@ pub(crate) fn resolve_scheduler_request_defaults_validated(
             })?;
 
         return Ok(Some(scheduler_request_defaults_from_plan(&plan)));
-    }
-
-    if let Some(defaults) = resolve_bundled_scheduler_request_defaults(Some(profile_name)) {
-        return Ok(Some(defaults));
     }
 
     Err(ApiError::BadRequest(format!(
@@ -600,6 +599,7 @@ pub(super) fn resolve_scheduler_profile_config(
         ));
     }
 
+    let bundled_profile = resolve_bundled_scheduler_profile_config(Some(profile_name));
     let scheduler_path = config
         .scheduler_path
         .as_deref()
@@ -610,20 +610,20 @@ pub(super) fn resolve_scheduler_profile_config(
             Ok(config) => config,
             Err(error) => {
                 tracing::warn!(path = %scheduler_path, %error, "failed to load scheduler profile config");
-                return None;
+                return bundled_profile;
             }
         };
         let profile = match scheduler_config.profile(profile_name) {
             Ok(profile) => profile.clone(),
             Err(error) => {
                 tracing::warn!(path = %scheduler_path, profile = %profile_name, %error, "failed to resolve scheduler profile config");
-                return None;
+                return bundled_profile;
             }
         };
         return Some((profile_name.to_string(), profile));
     }
 
-    resolve_bundled_scheduler_profile_config(Some(profile_name))
+    bundled_profile
 }
 
 #[derive(Clone)]

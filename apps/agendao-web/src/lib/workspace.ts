@@ -63,6 +63,32 @@ export interface DirectoryCreateResponseRecord {
 
 export type WorkspaceFeedMessage = Pick<FeedMessage, "title" | "text">;
 
+interface RawFileTreeNodeRecord {
+  name: string;
+  path: string;
+  type: "file" | "directory";
+  size?: number | null;
+  modified?: number | null;
+  hasChildren?: boolean;
+  has_children?: boolean;
+  childrenLoaded?: boolean;
+  children_loaded?: boolean;
+  children?: RawFileTreeNodeRecord[];
+}
+
+export function normalizeFileTreeNode(node: RawFileTreeNodeRecord): FileTreeNodeRecord {
+  return {
+    name: node.name,
+    path: node.path,
+    type: node.type,
+    size: node.size ?? null,
+    modified: node.modified ?? null,
+    hasChildren: node.hasChildren ?? node.has_children ?? false,
+    childrenLoaded: node.childrenLoaded ?? node.children_loaded ?? false,
+    children: Array.isArray(node.children) ? node.children.map(normalizeFileTreeNode) : [],
+  };
+}
+
 export function workspaceRootFromContext(context: WorkspaceContextRecord | null): string {
   return context?.identity?.workspace_root?.trim() || "";
 }

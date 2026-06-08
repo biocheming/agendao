@@ -601,7 +601,7 @@ export function SkillsTab({
   };
 
   return (
-    <div className="relative grid gap-4">
+    <div className="relative grid gap-4" data-testid="settings-skills-root">
       {/* ── Header + Sub-tabs ── */}
       <div className="flex items-center justify-between gap-3">
         <h3 className="m-0 text-base font-semibold">Skills</h3>
@@ -610,6 +610,8 @@ export function SkillsTab({
             <button
               key={tab}
               type="button"
+              data-testid={`settings-skills-subtab-${tab}`}
+              data-active={activeSubtab === tab ? "true" : "false"}
               className={cn(
                 "rounded-md px-3 py-1 text-xs font-medium transition-colors",
                 activeSubtab === tab
@@ -640,7 +642,7 @@ export function SkillsTab({
       ) : null}
 
       {activeSubtab === "overview" ? (
-        <div className="grid gap-5">
+        <div className="grid gap-5" data-testid="settings-skills-overview">
           {/* Workspace info */}
           <div className="border-l-2 border-l-foreground/10 bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
             <div className="grid gap-2">
@@ -690,18 +692,21 @@ export function SkillsTab({
             <div className="mt-3 grid gap-3">
               <input
                 type="text"
+                data-testid="settings-skills-new-name"
                 placeholder="skill name"
                 value={newSkillName}
                 onChange={(event) => onNewSkillNameChange(event.target.value)}
               />
               <input
                 type="text"
+                data-testid="settings-skills-new-description"
                 placeholder="description"
                 value={newSkillDescription}
                 onChange={(event) => onNewSkillDescriptionChange(event.target.value)}
               />
               <input
                 type="text"
+                data-testid="settings-skills-new-category"
                 placeholder="category (optional)"
                 value={newSkillCategory}
                 onChange={(event) => onNewSkillCategoryChange(event.target.value)}
@@ -716,6 +721,7 @@ export function SkillsTab({
               ) : (
                 <textarea
                   className={editorTextareaClass}
+                  data-testid="settings-skills-new-body"
                   placeholder="Skill body"
                   value={newSkillBody}
                   onChange={(event) => onNewSkillBodyChange(event.target.value)}
@@ -728,6 +734,7 @@ export function SkillsTab({
               <button
                 className={primaryButtonClass}
                 type="button"
+                data-testid="settings-skills-create"
                 disabled={
                   !skillsMutationsEnabled ||
                   !newSkillName.trim() ||
@@ -749,7 +756,7 @@ export function SkillsTab({
       ) : null}
 
       {activeSubtab === "hub" ? (
-        <div className="grid gap-5">
+        <div className="grid gap-5" data-testid="settings-skills-hub">
           {/* Search + select */}
           <div>
             <div className="flex items-center justify-between gap-3 mb-3">
@@ -762,13 +769,14 @@ export function SkillsTab({
             <div className="grid gap-3">
               <input
                 type="search"
+                data-testid="settings-skills-hub-search"
                 placeholder="Search by skill name, category, description, source, or revision"
                 value={hubSearchDraft}
                 onChange={(event) => setHubSearchDraft(event.target.value)}
               />
 
               {skillSourceIndices.length ? (
-                <div className="max-h-[22rem] overflow-y-auto pr-1 grid gap-2">
+                <div className="max-h-[22rem] overflow-y-auto pr-1 grid gap-2" data-testid="settings-skills-hub-results">
                   {hubSearchResults.length ? hubSearchResults.map((result) => {
                     const selected =
                       result.source.source_id === selectedSourceId &&
@@ -778,6 +786,7 @@ export function SkillsTab({
                       <button
                         key={`${result.source.source_id}:${result.entry.skill_name}:${result.entry.revision ?? ""}`}
                         type="button"
+                        data-testid="settings-skills-hub-result"
                         className={cn(
                           "grid gap-2 rounded-lg border-l-2 px-4 py-3 text-left text-sm transition-colors",
                           selected
@@ -827,13 +836,13 @@ export function SkillsTab({
                       </button>
                     );
                   }) : (
-                    <div className="rounded-lg border border-border/40 bg-muted/20 px-4 py-6 text-center text-sm text-muted-foreground">
+                    <div className="rounded-lg border border-border/40 bg-muted/20 px-4 py-6 text-center text-sm text-muted-foreground" data-testid="settings-skills-hub-results-empty">
                       No remote skills matched this search. Refresh the source index or try another query.
                     </div>
                   )}
                 </div>
               ) : (
-                <div className="rounded-lg border border-border/40 bg-muted/20 px-4 py-6 text-center text-sm text-muted-foreground">
+                <div className="rounded-lg border border-border/40 bg-muted/20 px-4 py-6 text-center text-sm text-muted-foreground" data-testid="settings-skills-hub-sources-empty">
                   No source index is cached yet. Configure a source below, then refresh the source index.
                 </div>
               )}
@@ -936,9 +945,9 @@ export function SkillsTab({
           <div>
             <div className="text-xs tracking-widest uppercase text-muted-foreground font-semibold mb-2">Managed Skills</div>
             {managedSkills.length ? (
-              <div className="grid gap-2">
+              <div className="grid gap-2" data-testid="settings-skills-managed-list">
                 {managedSkills.slice(0, 8).map((record) => (
-                  <div key={record.skill_name} className="border-l-2 border-l-foreground/10 bg-muted/20 px-4 py-2 text-sm">
+                  <div key={record.skill_name} className="border-l-2 border-l-foreground/10 bg-muted/20 px-4 py-2 text-sm" data-testid="settings-skills-managed-item">
                     <div className="flex items-start justify-between gap-3">
                       <strong>{record.skill_name}</strong>
                       <span className="text-muted-foreground">{record.installed_revision || "--"}</span>
@@ -948,7 +957,7 @@ export function SkillsTab({
                 ))}
               </div>
             ) : (
-              <div className="text-sm text-muted-foreground">No managed records yet.</div>
+              <div className="text-sm text-muted-foreground" data-testid="settings-skills-managed-empty">No managed records yet.</div>
             )}
           </div>
 
@@ -1201,9 +1210,9 @@ export function SkillsTab({
       ) : null}
 
       {activeSubtab === "catalog" ? (
-        <div className="relative">
+        <div className="relative" data-testid="settings-skills-catalog">
           {/* List view */}
-          <div className="grid gap-2 max-h-[28rem] overflow-y-auto pr-1">
+          <div className="grid gap-2 max-h-[28rem] overflow-y-auto pr-1" data-testid="settings-skills-catalog-list">
             <div className="flex items-center justify-between gap-3 mb-2">
               <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">
                 Catalog
@@ -1225,6 +1234,7 @@ export function SkillsTab({
                   <button
                     key={skill.name}
                     type="button"
+                    data-testid="settings-skills-catalog-item"
                     className={cn(
                       "grid gap-1.5 rounded-lg border-l-2 px-4 py-3 text-left transition-colors",
                       selected
@@ -1291,7 +1301,7 @@ export function SkillsTab({
                 );
               })
             ) : (
-              <div className={mutedCardClass}>No skills discovered yet.</div>
+              <div className={mutedCardClass} data-testid="settings-skills-catalog-empty">No skills discovered yet.</div>
             )}
           </div>
 
@@ -1480,7 +1490,7 @@ export function SkillsTab({
       ) : null}
 
       {activeSubtab === "governance" ? (
-        <div className="grid gap-5">
+        <div className="grid gap-5" data-testid="settings-skills-governance">
           <div className="grid gap-3 md:grid-cols-4">
             <div className={summaryCardClass}>
               <span className="text-xs tracking-widest uppercase text-muted-foreground font-semibold">

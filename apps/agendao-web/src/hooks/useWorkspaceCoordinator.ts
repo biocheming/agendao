@@ -21,7 +21,7 @@ import type {
   UploadFilesResponseRecord,
   WorkspaceContextRecord,
 } from "../lib/workspace";
-import { workspaceRootFromContext } from "../lib/workspace";
+import { normalizeFileTreeNode, workspaceRootFromContext } from "../lib/workspace";
 import { isOptimisticSessionId } from "../lib/session";
 import { useAgendaoStore } from "../store";
 
@@ -115,9 +115,9 @@ export function useWorkspaceCoordinator({
 
       setWorkspaceNodeLoading(path, true);
       try {
-        const loaded = await apiJson<FileTreeNodeRecord>(
+        const loaded = normalizeFileTreeNode(await apiJson<FileTreeNodeRecord>(
           `/file/tree?path=${encodeURIComponent(path)}&depth=1`,
-        );
+        ));
         setFileTree((current) =>
           mergeTreeNode(current, path, (node) => ({
             ...node,
@@ -549,14 +549,14 @@ export function useWorkspaceCoordinator({
         const query = requestedPath ? `?path=${encodeURIComponent(requestedPath)}&depth=1` : "?depth=1";
         let tree: FileTreeNodeRecord;
         try {
-          tree = await apiJson<FileTreeNodeRecord>(`/file/tree${query}`);
+          tree = normalizeFileTreeNode(await apiJson<FileTreeNodeRecord>(`/file/tree${query}`));
         } catch (error) {
           const message = formatError(error);
           if (
             requestedPath &&
             message.includes("Access denied: path escapes project directory")
           ) {
-            tree = await apiJson<FileTreeNodeRecord>("/file/tree?depth=1");
+            tree = normalizeFileTreeNode(await apiJson<FileTreeNodeRecord>("/file/tree?depth=1"));
             setBanner(
               "Session workspace is outside the current project. Showing the current project root instead.",
             );

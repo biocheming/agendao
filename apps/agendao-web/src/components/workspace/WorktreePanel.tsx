@@ -98,7 +98,7 @@ export function WorktreePanel({ className }: WorktreePanelProps) {
   );
 
   return (
-    <div className={cn("roc-panel roc-rail-panel h-full overflow-hidden p-5", className)}>
+    <div className={cn("roc-panel roc-rail-panel h-full overflow-hidden p-5", className)} data-testid="worktree-panel">
       <div className="roc-rail-header">
         <div className="roc-rail-headline">
           <p className="roc-section-label">Workspace</p>
@@ -114,6 +114,7 @@ export function WorktreePanel({ className }: WorktreePanelProps) {
             variant="ghost"
             size="icon-sm"
             className="size-7"
+            data-testid="worktree-refresh"
             onClick={() => {
               setRefreshing(true);
               void loadWorktrees().then(() => setRefreshing(false));
@@ -124,11 +125,11 @@ export function WorktreePanel({ className }: WorktreePanelProps) {
           </Button>
           <Dialog open={createOpen} onOpenChange={setCreateOpen}>
             <DialogTrigger asChild>
-              <Button variant="ghost" size="icon-sm" className="size-7">
+              <Button variant="ghost" size="icon-sm" className="size-7" data-testid="worktree-create-open">
                 <PlusIcon className="size-4" />
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-md gap-5">
+            <DialogContent className="max-w-md gap-5" data-testid="worktree-create-dialog">
               <DialogHeader>
                 <DialogTitle>Create Worktree</DialogTitle>
                 <DialogDescription>
@@ -142,6 +143,7 @@ export function WorktreePanel({ className }: WorktreePanelProps) {
                   </label>
                   <Input
                     id="branch"
+                    data-testid="worktree-branch-input"
                     className="h-9 rounded-lg"
                     placeholder="feature/experiment"
                     value={newBranchName}
@@ -154,6 +156,7 @@ export function WorktreePanel({ className }: WorktreePanelProps) {
                   </label>
                   <Input
                     id="path"
+                    data-testid="worktree-path-input"
                     className="h-9 rounded-lg"
                     placeholder="repo-feature-1"
                     value={newPath}
@@ -165,7 +168,7 @@ export function WorktreePanel({ className }: WorktreePanelProps) {
                 <Button variant="outline" onClick={() => setCreateOpen(false)}>
                   Cancel
                 </Button>
-                <Button onClick={() => void handleCreate()} disabled={creating}>
+                <Button data-testid="worktree-create-submit" onClick={() => void handleCreate()} disabled={creating}>
                   {creating ? (
                     <>
                       <LoaderCircleIcon className="size-4 animate-spin mr-2" />
@@ -185,7 +188,7 @@ export function WorktreePanel({ className }: WorktreePanelProps) {
       </div>
 
       {error && (
-        <div className="roc-state-card" data-tone="danger">
+        <div className="roc-state-card" data-tone="danger" data-testid="worktree-error">
           <div className="flex items-start gap-3">
             <div className="roc-status-orb shrink-0" data-tone="danger">
               <XCircleIcon className="size-4" />
@@ -200,7 +203,7 @@ export function WorktreePanel({ className }: WorktreePanelProps) {
 
       <div className="flex-1 overflow-auto space-y-3 pr-1">
         {loading ? (
-          <div className="roc-state-card flex items-center gap-3" data-tone="loading">
+          <div className="roc-state-card flex items-center gap-3" data-tone="loading" data-testid="worktree-loading">
             <div className="roc-status-orb shrink-0" data-tone="loading">
               <LoaderCircleIcon className="size-4 animate-spin" />
             </div>
@@ -210,7 +213,7 @@ export function WorktreePanel({ className }: WorktreePanelProps) {
             </div>
           </div>
         ) : worktrees.length === 0 ? (
-          <div className="roc-rail-empty py-8" data-tone="muted">
+          <div className="roc-rail-empty py-8" data-tone="muted" data-testid="worktree-empty">
             <div className="roc-status-orb">
               <GitBranchIcon className="size-4" />
             </div>
@@ -224,6 +227,7 @@ export function WorktreePanel({ className }: WorktreePanelProps) {
             <div
               key={wt.path}
               className="roc-rail-section roc-surface-interactive"
+              data-testid="worktree-item"
             >
               <div className="roc-rail-section-header">
                 <div className="flex items-center gap-2 min-w-0">
@@ -239,6 +243,7 @@ export function WorktreePanel({ className }: WorktreePanelProps) {
                   variant="ghost"
                   size="icon-sm"
                   className="size-7 text-muted-foreground hover:text-destructive"
+                  data-testid="worktree-delete"
                   onClick={() => void handleDelete(wt.path)}
                 >
                   <Trash2Icon className="size-4" />

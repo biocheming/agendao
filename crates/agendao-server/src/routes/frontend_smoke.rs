@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use agendao_permission::PermissionLifetime;
 use axum::{extract::State, routing::post, Json, Router};
 use serde::Deserialize;
 
@@ -36,6 +37,8 @@ struct FrontendSmokePermissionRequest {
     command: Option<String>,
     #[serde(default)]
     filepath: Option<String>,
+    #[serde(default)]
+    supported_lifetimes: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,8 +64,19 @@ async fn frontend_smoke_permission(
     State(state): State<Arc<ServerState>>,
     Json(req): Json<FrontendSmokePermissionRequest>,
 ) -> Json<bool> {
-    let mut request =
-        agendao_tool::PermissionRequest::new(req.permission).with_patterns(req.patterns);
+    let supported_lifetimes = req
+        .supported_lifetimes
+        .into_iter()
+        .filter_map(|value| match value.as_str() {
+            "once" => Some(PermissionLifetime::Once),
+            "turn" => Some(PermissionLifetime::Turn),
+            "session" | "always" => Some(PermissionLifetime::Session),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let mut request = agendao_tool::PermissionRequest::new(req.permission)
+        .with_patterns(req.patterns)
+        .with_supported_lifetimes(supported_lifetimes);
     for always in req.always {
         request = request.with_always(always);
     }

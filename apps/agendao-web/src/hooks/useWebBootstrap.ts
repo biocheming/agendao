@@ -40,6 +40,11 @@ interface ConfigSurfaceData {
   workspaceContext: WorkspaceContextRecord | null;
 }
 
+interface CoreBootstrapData {
+  sessionData: SessionRecord[];
+  paths: PathsResponseRecord;
+}
+
 function isSessionWithinWorkspace(session: SessionRecord, workspaceRoot: string) {
   const directory = session.directory?.trim() ?? "";
   const root = workspaceRoot.trim();
@@ -59,6 +64,16 @@ export function useWebBootstrap({
   preferencesReadyRef,
   provisionExternalAdapterSession,
 }: UseWebBootstrapOptions) {
+  const loadCoreBootstrapData = useCallback(async (): Promise<CoreBootstrapData> => {
+    const [sessionData, paths] = await Promise.all([
+      apiJson<SessionListResponseRecord>("/session?limit=500").then((response) =>
+        normalizeSessionRecords(response?.items ?? []),
+      ),
+      apiJson<PathsResponseRecord>("/path"),
+    ]);
+    return { sessionData, paths };
+  }, [apiJson]);
+
   const loadConfigSurface = useCallback(
     async (includeWorkspaceContext: boolean): Promise<ConfigSurfaceData> => {
       const [providersData, modeData, connectSchema, context] = await Promise.all([
@@ -156,38 +171,52 @@ export function useWebBootstrap({
           }
         }
 
-        const [sessionData, configData, paths] = await Promise.all([
-          apiJson<SessionListResponseRecord>("/session?limit=500").then((response) =>
-            normalizeSessionRecords(response?.items ?? []),
-          ),
+        const [coreBootstrapResult, configSurfaceResult] = await Promise.allSettled([
+          loadCoreBootstrapData(),
           loadConfigSurface(true),
-          apiJson<PathsResponseRecord>("/path"),
         ]);
 
         if (cancelled) return;
+        if (coreBootstrapResult.status !== "fulfilled") {
+          throw coreBootstrapResult.reason;
+        }
 
         const store = useAgendaoStore.getState();
+        const configData =
+          configSurfaceResult.status === "fulfilled" ? configSurfaceResult.value : null;
         const serviceRootPath =
-          workspaceRootFromContext(configData.workspaceContext) || paths.cwd || "";
+          workspaceRootFromContext(configData?.workspaceContext ?? null) ||
+          coreBootstrapResult.value.paths.cwd ||
+          "";
         store.setServiceRootPath(serviceRootPath);
-        store.setSessions(sessionData);
-        applyConfigSurface(configData, { includePreferences: true });
+        store.setSessions(coreBootstrapResult.value.sessionData);
+        if (configData) {
+          applyConfigSurface(configData, { includePreferences: true });
+        } else if (configSurfaceResult.status === "rejected") {
+          store.setBanner(`Config surface degraded: ${formatError(configSurfaceResult.reason)}`);
+        }
 
-        const workspaceSessions = sessionData.filter((session) =>
+        const workspaceSessions = coreBootstrapResult.value.sessionData.filter((session: SessionRecord) =>
           isSessionWithinWorkspace(session, serviceRootPath),
         );
 
         const routeSessionExists = Boolean(
-          routeSessionId && sessionData.some((session) => session.id === routeSessionId),
+          routeSessionId &&
+            coreBootstrapResult.value.sessionData.some(
+              (session: SessionRecord) => session.id === routeSessionId,
+            ),
         );
         const currentId = store.selectedSessionId;
         const currentSessionExists = Boolean(
-          currentId && sessionData.some((session) => session.id === currentId),
+          currentId &&
+            coreBootstrapResult.value.sessionData.some(
+              (session: SessionRecord) => session.id === currentId,
+            ),
         );
         const currentSessionWithinWorkspace = Boolean(
           currentId &&
-            sessionData.some(
-              (session) =>
+            coreBootstrapResult.value.sessionData.some(
+              (session: SessionRecord) =>
                 session.id === currentId &&
                 isSessionWithinWorkspace(session, serviceRootPath),
             ),
@@ -218,6 +247,7 @@ export function useWebBootstrap({
     apiJson,
     applyConfigSurface,
     formatError,
+    loadCoreBootstrapData,
     loadConfigSurface,
     preferencesReadyRef,
     provisionExternalAdapterSession,
