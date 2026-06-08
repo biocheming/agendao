@@ -221,6 +221,41 @@ export interface SessionCompactionContinuityInspectionRecord {
   recall_policy?: string | null;
 }
 
+export interface ContextCompactionSummaryRecord {
+  trigger: string;
+  phase?: string | null;
+  reason?: string | null;
+  forced: boolean;
+  request_context_tokens?: number | null;
+  live_context_tokens?: number | null;
+  limit_tokens?: number | null;
+  body_chars?: number | null;
+  message_count_before?: number | null;
+  compacted_message_count?: number | null;
+  kept_message_count?: number | null;
+  summary?: string | null;
+}
+
+export interface ContextCompactionInstalledDiagnosticsRecord {
+  request_context_tokens?: number | null;
+  live_context_tokens?: number | null;
+  body_chars?: number | null;
+  cache_explanation?: string | null;
+}
+
+export interface ContextCompactionLifecycleSummaryRecord {
+  trigger: string;
+  phase?: string | null;
+  reason?: string | null;
+  status: "started" | "installed" | "failed" | "skipped";
+  forced: boolean;
+  request_context_tokens?: number | null;
+  live_context_tokens?: number | null;
+  limit_tokens?: number | null;
+  body_chars?: number | null;
+  installed?: ContextCompactionInstalledDiagnosticsRecord | null;
+}
+
 export interface SessionTelemetrySnapshotRecord {
   runtime: SessionRuntimeRecord;
   stages: StageSummaryRecord[];
@@ -241,6 +276,8 @@ export interface SessionTelemetrySnapshotRecord {
   cache_evidence?: Record<string, unknown> | null;
   cache_semantics?: Record<string, unknown> | null;
   context_closure_contract?: SessionContextClosureContractRecord | null;
+  context_compaction_summary?: ContextCompactionSummaryRecord | null;
+  context_compaction_lifecycle_summary?: ContextCompactionLifecycleSummaryRecord | null;
   compaction_continuity?: SessionCompactionContinuityInspectionRecord | null;
   prompt_surface_evidence?: Record<string, unknown> | null;
   ingress_stabilization?: Record<string, unknown> | null;

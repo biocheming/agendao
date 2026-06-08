@@ -12,6 +12,8 @@ import { Button } from "../ui/button";
 import { Shimmer } from "../ai-elements/shimmer";
 import { BrainCircuitIcon, ChevronUpIcon, Layers2, LoaderCircleIcon, SparklesIcon, WrenchIcon } from "lucide-react";
 import type { FeedMessage } from "../../lib/history";
+import type { SessionTelemetrySnapshotRecord } from "../../lib/sessionActivity";
+import { withSyntheticCompactionMessage } from "../../lib/contextCompaction";
 import { useAgendaoStore } from "../../store";
 
 const INITIAL_VISIBLE_MESSAGES = 18;
@@ -24,6 +26,7 @@ interface ConversationFeedPanelProps {
   highlightedMessageIds?: Set<string>;
   activeStageId: string | null;
   activeToolCallId: string | null;
+  telemetry?: SessionTelemetrySnapshotRecord | null;
   onCopyMessageLink?: (message: FeedMessage) => Promise<void> | void;
   onCopySelectedMessageLink?: () => Promise<void> | void;
   onCopySelectedMessagesMarkdown?: () => Promise<void> | void;
@@ -123,6 +126,7 @@ export function ConversationFeedPanel({
   highlightedMessageIds,
   activeStageId,
   activeToolCallId,
+  telemetry = null,
   onCopyMessageLink,
   onCopySelectedMessageLink,
   onCopySelectedMessagesMarkdown,
@@ -188,7 +192,7 @@ export function ConversationFeedPanel({
   const handleLoadEarlier = () => {
     if (hiddenCount === 0) return;
     revealAnchorHeightRef.current = feedRef.current?.scrollHeight ?? null;
-    setVisibleCount((current) => Math.min(messages.length, current + LOAD_MORE_MESSAGES_STEP));
+    setVisibleCount((current) => Math.min(timelineMessages.length, current + LOAD_MORE_MESSAGES_STEP));
   };
 
   return (
@@ -251,7 +255,7 @@ export function ConversationFeedPanel({
             </div>
           </ConversationEmptyState>
         ) : null}
-        {messages.length > 0 ? (
+        {timelineMessages.length > 0 ? (
           <div className="grid min-w-0 gap-4">
             {selectedMessageIds.size > 0 ? (
               <div className="sticky top-2 z-20 flex justify-end">
@@ -292,7 +296,7 @@ export function ConversationFeedPanel({
             <HistoryBackfillState
               hiddenCount={hiddenCount}
               visibleCount={visibleMessages.length}
-              totalCount={messages.length}
+              totalCount={timelineMessages.length}
               historyLoading={historyLoading}
               onLoadEarlier={handleLoadEarlier}
             />
