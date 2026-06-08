@@ -142,6 +142,21 @@ impl SessionMessagesSnapshot {
             )
         };
 
+        let compaction = {
+            let session_ctx = context.session.read();
+            (
+                session_ctx.status(session_id).clone(),
+                session_ctx.session_context_compaction_summary.clone(),
+                session_ctx
+                    .session_context_compaction_lifecycle_summary
+                    .clone(),
+            )
+        };
+
+        if let Some(message) = synthetic_compaction_message(session_id, compaction) {
+            messages.push(message);
+        }
+
         // P2-3: UUID-anchored viewport capping. When messages exceed the
         // budget, keep only the last MAX_VIEWPORT_MESSAGES. The anchor is
         // the count-based slice — if compaction changes the UUID set, we
@@ -165,6 +180,151 @@ impl SessionMessagesSnapshot {
             fallback_model,
         }
     }
+}
+
+fn synthetic_compaction_message(
+    session_id: &str,
+    compaction: (
+        crate::context::SessionStatus,
+        Option<agendao_types::ContextCompactionSummary>,
+        Option<agendao_types::ContextCompactionLifecycleSummary>,
+    ),
+) -> Option<Message> {
+    let (status, summary, lifecycle) = compaction;
+    if !matches!(status, crate::context::SessionStatus::Compacting) {
+        return None;
+    }
+
+    let mut lines = vec!["Compacting conversation".to_string()];
+    lines.push(format!("  {}", compaction_progress_bar()));
+
+    if let Some(status_line) = compaction_status_line(lifecycle.as_ref(), summary.as_ref()) {
+        lines.push(format!("  {}", status_line));
+    }
+
+    let mut details = Vec::new();
+    if let Some(lifecycle) = lifecycle.as_ref() {
+        if let Some(reason) = lifecycle.reason.as_deref().filter(|value| !value.trim().is_empty()) {
+            details.push(reason.replace('_', " "));
+        }
+        if let Some(phase) = lifecycle.phase.as_deref().filter(|value| !value.trim().is_empty()) {
+            details.push(phase.replace('_', " "));
+        }
+        if let Some(limit) = lifecycle.limit_tokens {
+            let used = lifecycle
+                .request_context_tokens
+                .or(lifecycle.live_context_tokens)
+                .unwrap_or(0);
+            let percent = agendao_types::context_usage_percent(used, limit).unwrap_or(0);
+            details.push(format!(
+                "{}/{} {}%",
+                compact_number(used),
+                compact_number(limit),
+                percent
+            ));
+        }
+    } else if let Some(summary) = summary.as_ref() {
+        if let Some(reason) = summary.reason.as_deref().filter(|value| !value.trim().is_empty()) {
+            details.push(reason.replace('_', " "));
+        }
+        if let Some(limit) = summary.limit_tokens {
+            let used = summary
+                .request_context_tokens
+                .or(summary.live_context_tokens)
+                .unwrap_or(0);
+            let percent = agendao_types::context_usage_percent(used, limit).unwrap_or(0);
+            details.push(format!(
+                "{}/{} {}%",
+                compact_number(used),
+                compact_number(limit),
+                percent
+            ));
+        }
+    }
+
+    if !details.is_empty() {
+        lines.push(format!("  {}", details.join(" · ")));
+    }
+
+    Some(Message {
+        id: format!("__compaction__:{}", session_id),
+        role: crate::context::MessageRole::System,
+        content: lines.join("\n"),
+        created_at: chrono::Utc::now(),
+        agent: None,
+        model: None,
+        mode: None,
+        finish: None,
+        error: None,
+        completed_at: None,
+        cost: 0.0,
+        tokens: crate::context::TokenUsage::default(),
+        metadata: None,
+        multimodal: None,
+        parts: Vec::new(),
+    })
+}
+
+fn compaction_progress_bar() -> String {
+    format!("{} ...", "▰".repeat(12) + &"▱".repeat(28))
+}
+
+fn compaction_status_line(
+    lifecycle: Option<&agendao_types::ContextCompactionLifecycleSummary>,
+    summary: Option<&agendao_types::ContextCompactionSummary>,
+) -> Option<String> {
+    let used = lifecycle
+        .and_then(|lifecycle| {
+            lifecycle
+                .request_context_tokens
+                .or(lifecycle.live_context_tokens)
+        })
+        .or_else(|| summary.and_then(|summary| summary.request_context_tokens.or(summary.live_context_tokens)));
+
+    let body_chars = lifecycle
+        .and_then(|lifecycle| lifecycle.body_chars)
+        .or_else(|| summary.and_then(|summary| summary.body_chars));
+
+    let message_count = summary.and_then(|summary| summary.message_count_before);
+
+    let mut parts = Vec::new();
+    if let Some(message_count) = message_count {
+        parts.push(format!("compressing {message_count} messages"));
+    } else if used.is_some() || body_chars.is_some() {
+        parts.push("compressing conversation".to_string());
+    }
+    if let Some(used) = used {
+        parts.push(format!("~{} tok", compact_number(used)));
+    }
+    if let Some(body_chars) = body_chars {
+        parts.push(format!("{} chars", compact_number(body_chars as u64)));
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" · "))
+    }
+}
+
+fn compact_number(value: u64) -> String {
+    if value >= 1_000_000 {
+        let compact = value as f64 / 1_000_000.0;
+        return if compact.fract() == 0.0 {
+            format!("{compact:.0}M")
+        } else {
+            format!("{compact:.1}M")
+        };
+    }
+    if value >= 1_000 {
+        let compact = value as f64 / 1_000.0;
+        return if compact.fract() == 0.0 {
+            format!("{compact:.0}K")
+        } else {
+            format!("{compact:.1}K")
+        };
+    }
+    value.to_string()
 }
 
 #[derive(Clone)]

@@ -249,6 +249,9 @@ pub struct SessionState {
     pub stage_summaries: Vec<StageSummary>,
     pub session_usage: Option<SessionUsage>,
     pub session_usage_books: Option<SessionUsageBooks>,
+    pub session_context_compaction_summary: Option<crate::api::ContextCompactionSummary>,
+    pub session_context_compaction_lifecycle_summary:
+        Option<crate::api::ContextCompactionLifecycleSummary>,
     pub session_cache_semantics: Option<crate::api::SessionCacheSemanticsSummary>,
     pub session_context_closure_contract: Option<crate::api::SessionContextClosureContract>,
     pub session_runtime: Option<crate::api::SessionRuntimeState>,
@@ -392,6 +395,9 @@ impl AppContext {
         );
         session.session_usage = Some(telemetry.usage);
         session.session_usage_books = Some(telemetry.usage_books);
+        session.session_context_compaction_summary = telemetry.context_compaction_summary;
+        session.session_context_compaction_lifecycle_summary =
+            telemetry.context_compaction_lifecycle_summary;
         session.session_cache_semantics = telemetry.cache_semantics;
         session.session_context_closure_contract = telemetry.context_closure_contract;
         session.session_runtime = Some(telemetry.runtime);
@@ -506,6 +512,24 @@ impl AppContext {
 
     pub fn session_usage_books(&self) -> Option<SessionUsageBooks> {
         self.session.read().session_usage_books.clone()
+    }
+
+    pub fn session_context_compaction_summary(
+        &self,
+    ) -> Option<crate::api::ContextCompactionSummary> {
+        self.session
+            .read()
+            .session_context_compaction_summary
+            .clone()
+    }
+
+    pub fn session_context_compaction_lifecycle_summary(
+        &self,
+    ) -> Option<crate::api::ContextCompactionLifecycleSummary> {
+        self.session
+            .read()
+            .session_context_compaction_lifecycle_summary
+            .clone()
     }
 
     pub fn session_cache_semantics(&self) -> Option<crate::api::SessionCacheSemanticsSummary> {
