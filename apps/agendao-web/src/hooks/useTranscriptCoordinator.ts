@@ -22,9 +22,11 @@ interface UseTranscriptCoordinatorOptions {
   applySchedulerStageOutputBlock: (block: OutputBlock, sessionId: string) => void;
   clearPendingSessionRefresh: () => void;
   feedRef: RefObject<HTMLDivElement | null>;
+  forkSessionFromMessage: (messageId: string) => Promise<{ id: string }>;
   formatError: (error: unknown) => string;
   maxPendingOutputBlocks: number;
   onConfigUpdated: () => void;
+  onPrimeComposerFromPrompt: (text: string) => void;
   refreshExecutionActivity: (sessionId: string) => void | Promise<void>;
   scheduleSessionRefresh: () => void;
 }
@@ -35,9 +37,11 @@ export function useTranscriptCoordinator({
   applySchedulerStageOutputBlock,
   clearPendingSessionRefresh,
   feedRef,
+  forkSessionFromMessage,
   formatError,
   maxPendingOutputBlocks,
   onConfigUpdated,
+  onPrimeComposerFromPrompt,
   refreshExecutionActivity,
   scheduleSessionRefresh,
 }: UseTranscriptCoordinatorOptions) {
@@ -152,6 +156,22 @@ export function useTranscriptCoordinator({
     await navigator.clipboard.writeText(markdown);
     setBanner(`Copied ${selected.length} selected message${selected.length === 1 ? "" : "s"} as Markdown`);
   }, [messages, selectedMessageIds, setBanner]);
+
+  const editAndResendMessage = useCallback(
+    async (message: FeedMessage) => {
+      if (message.role !== "user" || !message.anchorId) return;
+      const promptText = message.text?.trim();
+      if (!promptText) return;
+      try {
+        await forkSessionFromMessage(message.anchorId);
+        onPrimeComposerFromPrompt(promptText);
+        setBanner("Forked from prompt. Edit the draft and resend.");
+      } catch (error) {
+        setBanner(`Failed to prepare prompt retry: ${formatError(error)}`);
+      }
+    },
+    [forkSessionFromMessage, formatError, onPrimeComposerFromPrompt, setBanner],
+  );
 
   useEffect(() => {
     const route = readWebSessionRoute();
@@ -339,6 +359,7 @@ export function useTranscriptCoordinator({
     copyMessageLink,
     copySelectedMessageLink,
     copySelectedMessagesMarkdown,
+    editAndResendMessage,
     loadPendingQuestion,
     messageHistory,
     messages,

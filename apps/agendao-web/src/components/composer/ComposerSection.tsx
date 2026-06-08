@@ -31,6 +31,7 @@ interface ComposerSectionProps {
   permissionStatusTone?: "muted" | "warning" | "destructive";
   onPreviewStage?: (stageId: string | null) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onStopStreaming: () => void | Promise<void>;
   onRemoveAttachment: (index: number) => void;
   onSelectAttachment: (index: number, attachment: ComposerAttachmentRecord) => void;
   onLocateAttachment: (attachment: ComposerAttachmentRecord) => void;

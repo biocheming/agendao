@@ -13,6 +13,7 @@ import {
   BrainCircuitIcon,
   CheckIcon,
   ChevronDownIcon,
+  CornerUpLeftIcon,
   CopyIcon,
   InfoIcon,
   SparklesIcon,
@@ -65,6 +66,7 @@ interface MessageCardProps {
   activeStageId?: string | null;
   activeToolCallId?: string | null;
   onCopyMessageLink?: (message: FeedMessage) => Promise<void> | void;
+  onEditAndResend?: (message: FeedMessage) => Promise<void> | void;
   onToggleSelected?: (message: FeedMessage) => void;
   onNavigateStage: (stageId: string) => void;
   onNavigateAttachedSession: (
@@ -313,6 +315,7 @@ function StatusBlock({ message }: { message: StatusOutputBlock }) {
       </section>
     );
   }
+
   const isError = message.tone === "error";
   const title = message.title?.trim() || (isError ? "Runtime error" : "System update");
   const summary = message.summary?.trim() || excerptText(message.text, 120) || null;
@@ -487,6 +490,7 @@ export function MessageCard({
   activeStageId = null,
   activeToolCallId = null,
   onCopyMessageLink,
+  onEditAndResend,
   onToggleSelected,
   onNavigateStage,
   onNavigateAttachedSession,
@@ -552,6 +556,7 @@ export function MessageCard({
   const active =
     Boolean(activeStageId && stageId === activeStageId) ||
     Boolean(activeToolCallId && toolCallId === activeToolCallId);
+  const canEditAndResend = Boolean(isUser && onEditAndResend && message.anchorId && displayText.trim());
 
   return (
     <article
@@ -627,6 +632,36 @@ export function MessageCard({
           {message.fields?.length ? (
             <div className="mt-4">
               <FieldList fields={message.fields} />
+            </div>
+          ) : null}
+
+          {isUser ? (
+            <div className="roc-message-footer">
+              <div className="min-w-0 flex-1">
+                {summary ? <p className="roc-message-summary">{summary}</p> : null}
+              </div>
+              <TooltipProvider>
+                {canEditAndResend ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="roc-action roc-action-pill roc-message-replay-action h-7 rounded-full px-2.5"
+                        title="Reopen this prompt in a fork so you can revise and resend it"
+                        onClick={() => void onEditAndResend?.(message)}
+                      >
+                        <CornerUpLeftIcon className="size-3.5" />
+                        <span>Revise & resend</span>
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">
+                      Fork from this prompt, reopen it in the composer, then resend
+                    </TooltipContent>
+                  </Tooltip>
+                ) : null}
+              </TooltipProvider>
             </div>
           ) : null}
 

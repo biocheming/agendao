@@ -548,6 +548,7 @@ export default function App() {
     createSession,
     deleteSelectedSessions,
     forkSelectedSession,
+    forkSessionFromMessage,
     provisionExternalAdapterSession,
     refreshSessions,
     scheduleSessionRefresh,
@@ -575,6 +576,7 @@ export default function App() {
     copyMessageLink,
     copySelectedMessageLink,
     copySelectedMessagesMarkdown,
+    editAndResendMessage,
     loadPendingQuestion,
     messageHistory,
     optimisticMessagesRef,
@@ -587,9 +589,15 @@ export default function App() {
     applySchedulerStageOutputBlock,
     clearPendingSessionRefresh,
     feedRef,
+    forkSessionFromMessage,
     formatError,
     maxPendingOutputBlocks,
     onConfigUpdated: reloadProvidersAndModes,
+    onPrimeComposerFromPrompt: (text) => {
+      setComposer(text);
+      setAttachments([]);
+      setSelectedAttachmentIndex(null);
+    },
     refreshExecutionActivity,
     scheduleSessionRefresh,
   });
@@ -828,6 +836,20 @@ export default function App() {
       // best effort
     }
   };
+
+  const stopActivePrompt = useCallback(async () => {
+    if (!selectedSessionId || !streaming) return;
+
+    setBanner(null);
+    setStatusLine("cancelling");
+
+    try {
+      await apiJson(`/session/${selectedSessionId}/abort`, { method: "POST" });
+    } catch (error) {
+      setBanner(`Failed to stop session: ${formatError(error)}`);
+      setStatusLine("running");
+    }
+  }, [selectedSessionId, setBanner, setStatusLine, streaming]);
 
   const attachComposerFiles = async (files: File[], failurePrefix: string) => {
     if (!files.length) return;
@@ -1324,6 +1346,7 @@ export default function App() {
             onCopyMessageLink={copyMessageLink}
             onCopySelectedMessageLink={copySelectedMessageLink}
             onCopySelectedMessagesMarkdown={copySelectedMessagesMarkdown}
+            onEditAndResendMessage={editAndResendMessage}
             onClearSelectedMessages={() => setSelectedMessageIds(new Set())}
             onToggleMessageSelected={toggleMessageSelected}
             onNavigateStage={schedulerNavigation.navigateToStage}
@@ -1356,6 +1379,7 @@ export default function App() {
               permissionStatusTone={permissionStatusTone}
               onPreviewStage={schedulerNavigation.previewStage}
               onSubmit={submitPrompt}
+              onStopStreaming={stopActivePrompt}
               onRemoveAttachment={removeAttachmentAt}
               onSelectAttachment={(index, attachment) => {
                 setSelectedAttachmentIndex(index);

@@ -30,6 +30,7 @@ function renderComposerSection() {
       activeStageId={null}
       provenance={null}
       onSubmit={onSubmit}
+      onStopStreaming={vi.fn<() => void>()}
       onRemoveAttachment={vi.fn<(index: number) => void>()}
       onSelectAttachment={vi.fn<(index: number, attachment: { type: string; url?: string; filename?: string; mime?: string }) => void>()}
       onLocateAttachment={vi.fn<(attachment: { type: string; url?: string; filename?: string; mime?: string }) => void>()}
@@ -100,6 +101,7 @@ describe("ComposerSection", () => {
         activeStageId={null}
         provenance={null}
         onSubmit={vi.fn<(event: React.FormEvent<HTMLFormElement>) => void>((event) => event.preventDefault())}
+        onStopStreaming={vi.fn<() => void>()}
         onRemoveAttachment={vi.fn<(index: number) => void>()}
         onSelectAttachment={vi.fn<(index: number, attachment: { type: string; url?: string; filename?: string; mime?: string }) => void>()}
         onLocateAttachment={vi.fn<(attachment: { type: string; url?: string; filename?: string; mime?: string }) => void>()}
@@ -117,5 +119,54 @@ describe("ComposerSection", () => {
     );
 
     expect(screen.getByTestId("composer-input")).not.toBeDisabled();
+  });
+
+  it("shows a stop button during streaming and routes clicks to the stop handler", () => {
+    const modes: ExecutionMode[] = [{ id: "auto", name: "auto", kind: "preset" }];
+    const providers: ProviderRecord[] = [{ id: "openai", name: "OpenAI", models: [] }];
+    const onStopStreaming = vi.fn<() => void>();
+
+    useAgendaoStore.setState({
+      composer: "draft",
+      attachments: [],
+      streaming: true,
+      modes,
+      providers,
+      selectedMode: "preset:auto",
+      selectedModel: "",
+      workspaceContext: null,
+      selectedWorkspacePath: null,
+    });
+
+    render(
+      <ComposerSection
+        multimodalHints={[]}
+        allowAudioInput={false}
+        allowImageInput={true}
+        allowFileInput={true}
+        onModelChange={vi.fn<(value: string) => void>()}
+        workspaceRootPath="/repo"
+        activeStageId={null}
+        provenance={null}
+        onSubmit={vi.fn<(event: React.FormEvent<HTMLFormElement>) => void>((event) => event.preventDefault())}
+        onStopStreaming={onStopStreaming}
+        onRemoveAttachment={vi.fn<(index: number) => void>()}
+        onSelectAttachment={vi.fn<(index: number, attachment: { type: string; url?: string; filename?: string; mime?: string }) => void>()}
+        onLocateAttachment={vi.fn<(attachment: { type: string; url?: string; filename?: string; mime?: string }) => void>()}
+        onNavigateStage={vi.fn<(stageId: string) => void>()}
+        onNavigateProvenanceSession={vi.fn<() => void>()}
+        onNavigateProvenanceStage={vi.fn<() => void>()}
+        onNavigateProvenanceToolCall={vi.fn<() => void>()}
+        onDragEnter={vi.fn<(event: React.DragEvent<HTMLDivElement>) => void>()}
+        onDragOver={vi.fn<(event: React.DragEvent<HTMLDivElement>) => void>()}
+        onDragLeave={vi.fn<(event: React.DragEvent<HTMLDivElement>) => void>()}
+        onDrop={vi.fn<(event: React.DragEvent<HTMLDivElement>) => void>()}
+        onFileChange={vi.fn<(event: React.ChangeEvent<HTMLInputElement>) => void>()}
+        onPaste={vi.fn<(event: React.ClipboardEvent<HTMLTextAreaElement>) => void>()}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("composer-stop"));
+    expect(onStopStreaming).toHaveBeenCalledTimes(1);
   });
 });

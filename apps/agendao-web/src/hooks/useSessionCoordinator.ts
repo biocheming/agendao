@@ -178,6 +178,37 @@ export function useSessionCoordinator({
     setSessions,
   ]);
 
+  const forkSessionFromMessage = useCallback(
+    async (messageId: string) => {
+      const targetSessionId = selectedSessionId?.trim();
+      const targetMessageId = messageId.trim();
+      if (!targetSessionId || !targetMessageId) {
+        throw new Error("A session and message are required to fork from a prompt.");
+      }
+
+      const forked = normalizeSessionRecord(
+        await apiJson<SessionRecord>(`/session/${targetSessionId}/fork`, {
+          method: "POST",
+          body: JSON.stringify({ message_id: targetMessageId }),
+        }),
+      );
+      setSessions((current) =>
+        normalizeSessionRecords([forked, ...current.filter((item) => item.id !== forked.id)]),
+      );
+      setCurrentWorkspacePath(forked.directory?.trim() || currentWorkspacePath || null);
+      setSelectedSessionId(forked.id);
+      return forked;
+    },
+    [
+      apiJson,
+      currentWorkspacePath,
+      selectedSessionId,
+      setCurrentWorkspacePath,
+      setSelectedSessionId,
+      setSessions,
+    ],
+  );
+
   const selectWorkspace = useCallback(
     (workspacePath: string) => {
       setCurrentWorkspacePath(workspacePath);
@@ -322,6 +353,7 @@ export function useSessionCoordinator({
     createSession,
     deleteSelectedSessions,
     forkSelectedSession,
+    forkSessionFromMessage,
     provisionExternalAdapterSession,
     refreshSessions,
     scheduleSessionRefresh,
