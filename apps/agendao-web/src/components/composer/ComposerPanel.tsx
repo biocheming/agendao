@@ -202,6 +202,7 @@ interface ComposerPanelProps {
   permissionStatusTone?: "muted" | "warning" | "destructive";
   onPreviewStage?: (stageId: string | null) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onStopStreaming: () => void | Promise<void>;
   onRemoveReference: (reference: string) => void;
   onRemoveAttachment: (index: number) => void;
   onSelectAttachment: (index: number, attachment: ComposerAttachmentRecord) => void;
@@ -258,6 +259,7 @@ export function ComposerPanel({
   permissionStatusTone = "muted",
   onPreviewStage,
   onSubmit,
+  onStopStreaming,
   onRemoveReference,
   onRemoveAttachment,
   onSelectAttachment,
@@ -690,10 +692,9 @@ export function ComposerPanel({
                       variant="outline"
                       size="icon"
                       className="h-9 w-9 rounded-full border-destructive/50 text-destructive hover:bg-destructive/10"
+                      data-testid="composer-stop"
                       title="Stop current response"
-                      onClick={() => {
-                        window.dispatchEvent(new CustomEvent("agendao:stop-streaming"));
-                      }}
+                      onClick={() => void onStopStreaming()}
                     >
                       <SquareIcon className="size-3.5 fill-current" />
                     </Button>

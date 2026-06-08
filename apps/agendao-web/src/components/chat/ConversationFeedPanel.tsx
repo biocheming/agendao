@@ -30,6 +30,7 @@ interface ConversationFeedPanelProps {
   onCopyMessageLink?: (message: FeedMessage) => Promise<void> | void;
   onCopySelectedMessageLink?: () => Promise<void> | void;
   onCopySelectedMessagesMarkdown?: () => Promise<void> | void;
+  onEditAndResendMessage?: (message: FeedMessage) => Promise<void> | void;
   onClearSelectedMessages?: () => void;
   onToggleMessageSelected?: (message: FeedMessage) => void;
   onNavigateStage: (stageId: string) => void;
@@ -130,6 +131,7 @@ export function ConversationFeedPanel({
   onCopyMessageLink,
   onCopySelectedMessageLink,
   onCopySelectedMessagesMarkdown,
+  onEditAndResendMessage,
   onClearSelectedMessages,
   onToggleMessageSelected,
   onNavigateStage,
@@ -185,9 +187,17 @@ export function ConversationFeedPanel({
     feedRef.current.scrollTop = feedRef.current.scrollHeight;
   }, [feedRef, messages]);
 
-  const safeVisibleCount = messages.length === 0 ? 0 : Math.min(Math.max(visibleCount, 1), messages.length);
-  const hiddenCount = Math.max(0, messages.length - safeVisibleCount);
-  const visibleMessages = hiddenCount > 0 ? messages.slice(-safeVisibleCount) : messages;
+  const timelineMessages = withSyntheticCompactionMessage(messages, {
+    sessionId,
+    runStatus: telemetry?.runtime?.run_status,
+    summary: telemetry?.context_compaction_summary ?? null,
+    lifecycle: telemetry?.context_compaction_lifecycle_summary ?? null,
+  });
+  const safeVisibleCount =
+    timelineMessages.length === 0 ? 0 : Math.min(Math.max(visibleCount, 1), timelineMessages.length);
+  const hiddenCount = Math.max(0, timelineMessages.length - safeVisibleCount);
+  const visibleMessages =
+    hiddenCount > 0 ? timelineMessages.slice(-safeVisibleCount) : timelineMessages;
 
   const handleLoadEarlier = () => {
     if (hiddenCount === 0) return;
@@ -309,6 +319,7 @@ export function ConversationFeedPanel({
                 activeStageId={activeStageId}
                 activeToolCallId={activeToolCallId}
                 onCopyMessageLink={onCopyMessageLink}
+                onEditAndResend={onEditAndResendMessage}
                 onToggleSelected={onToggleMessageSelected}
                 onNavigateStage={onNavigateStage}
                 onNavigateAttachedSession={onNavigateAttachedSession}

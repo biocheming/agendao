@@ -765,6 +765,24 @@ html[data-theme="cobalt"] {
     @apply min-h-9 rounded-full px-4 text-sm;
   }
 
+  .roc-message-replay-action {
+    @apply gap-1.5 border border-transparent text-muted-foreground;
+    background: oklch(from var(--foreground) l c h / 1.5%);
+  }
+
+  .roc-message-replay-action:hover {
+    background: oklch(from var(--roc-hero) l c h / 10%);
+    border-color: oklch(from var(--roc-hero) l c h / 18%);
+    color: oklch(from var(--roc-hero) l c h / 48%);
+    box-shadow: var(--roc-shadow-md);
+  }
+
+  .roc-message-replay-action:active {
+    transform: translateY(0);
+    background: oklch(from var(--roc-hero) l c h / 13%);
+    box-shadow: var(--roc-shadow-sm);
+  }
+
   /* ─── Labels ─────────────────────────────────────────────────────── */
 
   .roc-section-label {
