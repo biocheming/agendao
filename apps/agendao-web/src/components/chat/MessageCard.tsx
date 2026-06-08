@@ -53,6 +53,10 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  isSyntheticCompactionMessage,
+  syntheticCompactionLines,
+} from "../../lib/contextCompaction";
 
 interface MessageCardProps {
   message: FeedMessage;
@@ -286,6 +290,29 @@ function ReasoningBlock({ message }: { message: FeedBlock<"reasoning"> }) {
 }
 
 function StatusBlock({ message }: { message: StatusOutputBlock }) {
+  if (isSyntheticCompactionMessage(message as FeedMessage)) {
+    const { statusLine, detailLine } = syntheticCompactionLines(message as FeedBlock<"status">);
+    return (
+      <section className="roc-detail-card" data-tone="warning" data-kind="compaction">
+        <div className="flex items-start gap-2.5">
+          <div className="roc-detail-icon text-amber-600 dark:text-amber-300">
+            <ActivityIcon className="size-4" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="roc-section-label">Context</div>
+            <div className="roc-detail-title">{message.title?.trim() || "Compacting conversation"}</div>
+            <div className="mt-2 flex items-center gap-1.5" aria-hidden="true">
+              <span className="roc-streaming-dot" />
+              <span className="roc-streaming-dot" />
+              <span className="roc-streaming-dot" />
+            </div>
+            {statusLine ? <p className="mt-2 text-sm leading-6 text-foreground/88">{statusLine}</p> : null}
+            {detailLine ? <p className="mt-1 text-sm leading-6 text-muted-foreground">{detailLine}</p> : null}
+          </div>
+        </div>
+      </section>
+    );
+  }
   const isError = message.tone === "error";
   const title = message.title?.trim() || (isError ? "Runtime error" : "System update");
   const summary = message.summary?.trim() || excerptText(message.text, 120) || null;

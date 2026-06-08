@@ -1320,6 +1320,7 @@ export default function App() {
             highlightedMessageIds={routeHighlightIds}
             activeStageId={schedulerNavigation.previewStageId ?? schedulerNavigation.activeStageId}
             activeToolCallId={schedulerNavigation.activeToolCallId}
+            telemetry={executionActivity.telemetry}
             onCopyMessageLink={copyMessageLink}
             onCopySelectedMessageLink={copySelectedMessageLink}
             onCopySelectedMessagesMarkdown={copySelectedMessagesMarkdown}
