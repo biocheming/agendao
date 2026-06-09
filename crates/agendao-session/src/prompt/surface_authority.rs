@@ -549,6 +549,32 @@ mod tests {
     }
 
     #[test]
+    fn environment_context_surface_stays_cache_friendly() {
+        let inputs = PromptSurfaceInputs::from_session_prompt_parts(
+            "ses-cache",
+            Some("base header".to_string()),
+            Some(
+                "You are powered by the model named gpt-5. The exact model ID is openai/gpt-5\nHere is some useful information about the environment you are running in:\n<env>\n  Working directory: /repo\n  Is directory a git repo: yes\n  Platform: linux\n</env>"
+                    .to_string(),
+            ),
+            None,
+            None,
+            vec![],
+            vec![],
+            CompiledExecutionRequest::default(),
+            HashMap::new(),
+        );
+
+        let sections = inputs.assemble_sections("projection".to_string(), None, None);
+
+        assert!(sections.system_text.contains("## Environment Context"));
+        assert!(sections.system_text.contains("Working directory: /repo"));
+        assert!(!sections.system_text.contains("Today's date:"));
+        assert!(!sections.system_text.contains("Current local time:"));
+        assert!(!sections.system_text.contains("Local timezone:"));
+    }
+
+    #[test]
     fn effective_tool_source_digests_preserve_base_and_append_mcp_group() {
         let base = vec![ToolDefinition {
             name: "read".to_string(),
