@@ -12,6 +12,8 @@ use ratatui::{
 };
 
 use crate::branding::{APP_NAME, APP_SHORT_NAME, APP_VERSION_DATE};
+use crate::components::usage_resolver::resolve_usage;
+use crate::context::session_context::fold_messages;
 use crate::file_index::FileIndex;
 use crate::render::RenderSurface;
 use crate::state::{
@@ -680,74 +682,12 @@ impl Sidebar {
                 });
             }
 
-            let total_cost = self
-                .context
-                .session_usage_books()
-                .as_ref()
-                .map(|books| books.workflow_cumulative.total_cost)
-                .or_else(|| {
-                    self.context
-                        .session_usage()
-                        .as_ref()
-                        .map(|usage| usage.total_cost)
-                })
-                .unwrap_or_else(|| {
-                    messages
-                        .iter()
-                        .filter(|m| matches!(m.role, MessageRole::Assistant))
-                        .map(|m| m.cost)
-                        .sum()
-                });
-            let total_tokens = self
-                .context
-                .session_usage_books()
-                .as_ref()
-                .map(|books| books.workflow_cumulative.total_tokens())
-                .or_else(|| {
-                    self.context
-                        .session_usage()
-                        .as_ref()
-                        .map(total_session_tokens)
-                })
-                .unwrap_or_else(|| {
-                    messages
-                        .iter()
-                        .filter(|m| matches!(m.role, MessageRole::Assistant))
-                        .map(|m| m.tokens.input + m.tokens.output + m.tokens.reasoning)
-                        .sum::<u64>()
-                });
-            let (session_cache_read_tokens, session_cache_miss_tokens, session_cache_write_tokens) =
-                self.context
-                    .session_usage_books()
-                    .as_ref()
-                    .map(|books| {
-                        (
-                            books.workflow_cumulative.cache_read_tokens,
-                            books.workflow_cumulative.cache_miss_tokens,
-                            books.workflow_cumulative.cache_write_tokens,
-                        )
-                    })
-                    .or_else(|| {
-                        self.context.session_usage().as_ref().map(|usage| {
-                            (
-                                usage.cache_read_tokens,
-                                usage.cache_miss_tokens,
-                                usage.cache_write_tokens,
-                            )
-                        })
-                    })
-                    .unwrap_or_else(|| {
-                        messages
-                            .iter()
-                            .filter(|m| matches!(m.role, MessageRole::Assistant))
-                            .fold((0u64, 0u64, 0u64), |(read, miss, write), message| {
-                                (
-                                    read.saturating_add(message.tokens.cache_read),
-                                    miss.saturating_add(message.tokens.cache_miss),
-                                    write.saturating_add(message.tokens.cache_write),
-                                )
-                            })
-                    });
+            let message_fold = fold_messages(messages.as_slice());
+            let resolved_usage = resolve_usage(
+                self.context.session_usage_books().as_ref(),
+                self.context.session_usage().as_ref(),
+                Some(&message_fold),
+            );
             let active_model = messages
                 .iter()
                 .rev()
@@ -796,27 +736,27 @@ impl Sidebar {
                             ]));
                         }
                     }
-                    if total_tokens > 0 {
+                    if resolved_usage.total_tokens > 0 {
                         lines.push(Line::from(vec![
                             Span::styled("Workflow ", Style::default().fg(theme.text_muted)),
                             Span::styled(
-                                format!("{} cumulative", format_compact_number(total_tokens)),
+                                format!("{} cumulative", format_compact_number(resolved_usage.total_tokens)),
                                 Style::default().fg(theme.text),
                             ),
                         ]));
                     }
-                    if session_cache_read_tokens > 0
-                        || session_cache_miss_tokens > 0
-                        || session_cache_write_tokens > 0
+                    if resolved_usage.cache_read_tokens > 0
+                        || resolved_usage.cache_miss_tokens > 0
+                        || resolved_usage.cache_write_tokens > 0
                     {
                         lines.push(Line::from(vec![
                             Span::styled("Cache  ", Style::default().fg(theme.text_muted)),
                             Span::styled(
                                 format!(
                                     "H/M/W {} / {} / {}",
-                                    format_compact_number(session_cache_read_tokens),
-                                    format_compact_number(session_cache_miss_tokens),
-                                    format_compact_number(session_cache_write_tokens)
+                                    format_compact_number(resolved_usage.cache_read_tokens),
+                                    format_compact_number(resolved_usage.cache_miss_tokens),
+                                    format_compact_number(resolved_usage.cache_write_tokens)
                                 ),
                                 Style::default().fg(theme.text),
                             ),
@@ -930,7 +870,7 @@ impl Sidebar {
                     lines.push(Line::from(vec![
                         Span::styled("Cost   ", Style::default().fg(theme.text_muted)),
                         Span::styled(
-                            format!("${:.4}", total_cost),
+                            format!("${:.4}", resolved_usage.total_cost),
                             Style::default().fg(theme.text),
                         ),
                     ]));
@@ -2335,10 +2275,6 @@ fn sidebar_usage_line(theme: &Theme, label: &str, used: u64, limit: Option<u64>)
         Span::styled(" ", Style::default().fg(theme.text_muted)),
         Span::styled(percent_label, accent),
     ])
-}
-
-fn total_session_tokens(usage: &agendao_types::SessionUsage) -> u64 {
-    usage.input_tokens + usage.output_tokens + usage.reasoning_tokens
 }
 
 fn format_price_pair(input: f64, output: f64) -> String {

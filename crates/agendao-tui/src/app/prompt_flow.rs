@@ -13,6 +13,11 @@ pub(super) struct PromptDispatchRequest<'a> {
     pub idempotency_key: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+pub(super) struct PromptDispatchStarted {
+    pub optimistic_message_id: String,
+}
+
 impl App {
     pub(super) fn paste_clipboard_to_prompt(&mut self) {
         match Clipboard::read() {
@@ -101,7 +106,7 @@ impl App {
     pub(super) fn submit_prompt(&mut self) -> anyhow::Result<()> {
         let shell_mode = self.prompt.is_shell_mode();
         let input = self.prompt.take_input();
-        let has_pending_parts = !self.pending_prompt_parts.is_empty();
+        let has_pending_parts = self.prompt_draft.has_attachments();
         if input.trim().is_empty() && !has_pending_parts {
             return Ok(());
         }
@@ -122,9 +127,8 @@ impl App {
             }
         }
 
-        let parts = (!self.pending_prompt_parts.is_empty())
-            .then(|| std::mem::take(&mut self.pending_prompt_parts));
-        self.sync_prompt_attachment_hint();
+        let parts = self.prompt_draft.take_attachments();
+        self.sync_prompt_draft_hint();
         self.submit_prompt_payload(input.clone(), input, parts)
     }
 
@@ -150,7 +154,7 @@ impl App {
         match self.context.current_route() {
             Route::Home => {
                 let optimistic_session_id = self.create_optimistic_session();
-                let opt_id = self.append_optimistic_user_message(
+                let started = self.begin_prompt_dispatch(
                     &optimistic_session_id,
                     &display_text,
                     selected_mode.display_mode.clone(),
@@ -160,11 +164,6 @@ impl App {
                 self.context.navigate(Route::Session {
                     session_id: optimistic_session_id.clone(),
                 });
-                self.ensure_session_view(&optimistic_session_id);
-                self.set_session_status(&optimistic_session_id, SessionStatus::Running);
-                self.prompt.set_spinner_task_kind(TaskKind::LlmRequest);
-                self.prompt.set_spinner_active(true);
-                self.event_caused_change = true;
                 let context = self.context.clone();
                 let session_directory = self.context.directory.read().clone();
                 thread::spawn(move || {
@@ -180,7 +179,7 @@ impl App {
                             selected_mode.scheduler_profile,
                             model,
                             variant,
-                            Some(format!("tui_{}", opt_id)),
+                            Some(format!("tui_{}", started.optimistic_message_id)),
                         ) {
                             Ok(response) => (Some(session), Some(response), None),
                             Err(err) => (Some(session), None, Some(err.to_string())),
@@ -189,7 +188,7 @@ impl App {
                     };
                     let _ = context.emit_custom_event(CustomEvent::PromptDispatchHomeFinished {
                         optimistic_session_id,
-                        optimistic_message_id: opt_id,
+                        optimistic_message_id: started.optimistic_message_id,
                         created_session: created_session.map(Box::new),
                         response,
                         error,
@@ -235,19 +234,13 @@ impl App {
             return;
         };
 
-        // Optimistic: show user message immediately before network call.
-        let opt_id = self.append_optimistic_user_message(
+        let started = self.begin_prompt_dispatch(
             session_id,
             &display_text,
             display_mode.clone(),
             model.clone(),
             variant.clone(),
         );
-        self.set_session_status(session_id, SessionStatus::Running);
-        self.prompt.set_spinner_task_kind(TaskKind::LlmRequest);
-        self.prompt.set_spinner_active(true);
-        self.ensure_session_view(session_id);
-        self.event_caused_change = true;
 
         let context = self.context.clone();
         let session_id = session_id.to_string();
@@ -260,18 +253,43 @@ impl App {
                 scheduler_profile,
                 model,
                 variant,
-                idempotency_key.or_else(|| Some(format!("tui_{}", opt_id))),
+                idempotency_key.or_else(|| Some(format!("tui_{}", started.optimistic_message_id))),
             ) {
                 Ok(response) => (Some(response), None),
                 Err(err) => (None, Some(err.to_string())),
             };
             let _ = context.emit_custom_event(CustomEvent::PromptDispatchSessionFinished {
                 session_id,
-                optimistic_message_id: opt_id,
+                optimistic_message_id: started.optimistic_message_id,
                 response,
                 error,
             });
         });
+    }
+
+    pub(super) fn begin_prompt_dispatch(
+        &mut self,
+        session_id: &str,
+        display_text: &str,
+        display_mode: Option<String>,
+        model: Option<String>,
+        variant: Option<String>,
+    ) -> PromptDispatchStarted {
+        let optimistic_message_id = self.append_optimistic_user_message(
+            session_id,
+            display_text,
+            display_mode,
+            model,
+            variant,
+        );
+        self.ensure_session_view(session_id);
+        self.set_session_status(session_id, SessionStatus::Running);
+        self.prompt.set_spinner_task_kind(TaskKind::LlmRequest);
+        self.prompt.set_spinner_active(true);
+        self.event_caused_change = true;
+        PromptDispatchStarted {
+            optimistic_message_id,
+        }
     }
 
     pub(super) fn submit_shell_command(&mut self, command: String) -> anyhow::Result<()> {
@@ -293,7 +311,7 @@ impl App {
         match self.context.current_route() {
             Route::Home => {
                 let optimistic_session_id = self.create_optimistic_session();
-                let _opt_id = self.append_optimistic_user_message(
+                let started = self.begin_prompt_dispatch(
                     &optimistic_session_id,
                     &user_line,
                     selected_mode.display_mode.clone(),
@@ -303,64 +321,103 @@ impl App {
                 self.context.navigate(Route::Session {
                     session_id: optimistic_session_id.clone(),
                 });
-                self.ensure_session_view(&optimistic_session_id);
-                self.event_caused_change = true;
-
-                let session_directory = self.context.directory.read().clone();
-                let session = match client.create_session(
-                    selected_mode.scheduler_profile.clone(),
-                    Some(session_directory),
-                ) {
-                    Ok(session) => session,
-                    Err(err) => {
-                        self.remove_optimistic_session(&optimistic_session_id);
-                        self.context.navigate_home();
-                        self.alert_dialog
-                            .set_message(&format!("Failed to create session:\n{}", err));
-                        self.open_alert_dialog();
-                        return Ok(());
-                    }
-                };
-                self.promote_optimistic_session(&optimistic_session_id, &session);
-                self.context.navigate(Route::Session {
-                    session_id: session.id.clone(),
+                self.pending_shell_dispatch = Some(PendingShellDispatch {
+                    session_id: optimistic_session_id.clone(),
+                    optimistic_message_id: started.optimistic_message_id.clone(),
                 });
-                self.ensure_session_view(&session.id);
 
-                if let Err(err) = client.execute_shell(&session.id, command.clone(), None) {
-                    self.alert_dialog
-                        .set_message(&format!("Failed to execute shell command:\n{}", err));
-                    self.open_alert_dialog();
-                    return Ok(());
-                }
-
-                self.set_session_status(&session.id, SessionStatus::Idle);
-                let _ = self.sync_session_from_server(&session.id);
+                let context = self.context.clone();
+                let session_directory = self.context.directory.read().clone();
+                let opt_session_id = optimistic_session_id.clone();
+                thread::spawn(move || {
+                    let (real_session_id, created_session, error) = match client.create_session(
+                        selected_mode.scheduler_profile.clone(),
+                        Some(session_directory),
+                    ) {
+                        Ok(session) => {
+                            let sid = session.id.clone();
+                            match client.execute_shell(&session.id, command.clone(), None) {
+                                Ok(_) => (sid, Some(session), None),
+                                Err(err) => (sid, Some(session), Some(err.to_string())),
+                            }
+                        }
+                        Err(err) => (String::new(), None, Some(err.to_string())),
+                    };
+                    let _ = context.emit_custom_event(CustomEvent::ShellDispatchFinished {
+                        optimistic_session_id: opt_session_id,
+                        session_id: real_session_id,
+                        optimistic_message_id: started.optimistic_message_id,
+                        created_session: created_session.map(Box::new),
+                        cancelled: false,
+                        error,
+                    });
+                });
             }
             Route::Session { session_id } => {
-                let opt_id = self.append_optimistic_user_message(
+                let started = self.begin_prompt_dispatch(
                     &session_id,
                     &user_line,
                     selected_mode.display_mode.clone(),
                     model.clone(),
                     variant.clone(),
                 );
-                self.ensure_session_view(&session_id);
-                self.event_caused_change = true;
-                if let Err(err) = client.execute_shell(&session_id, command.clone(), None) {
-                    self.remove_optimistic_message(&session_id, &opt_id);
-                    self.alert_dialog
-                        .set_message(&format!("Failed to execute shell command:\n{}", err));
-                    self.open_alert_dialog();
-                    return Ok(());
-                }
-                self.set_session_status(&session_id, SessionStatus::Idle);
-                let _ = self.sync_session_from_server(&session_id);
+                self.pending_shell_dispatch = Some(PendingShellDispatch {
+                    session_id: session_id.clone(),
+                    optimistic_message_id: started.optimistic_message_id.clone(),
+                });
+
+                let context = self.context.clone();
+                let session_id = session_id.to_string();
+                thread::spawn(move || {
+                    let result = client.execute_shell(&session_id, command.clone(), None);
+                    let _ = context.emit_custom_event(CustomEvent::ShellDispatchFinished {
+                        optimistic_session_id: session_id.clone(),
+                        session_id: session_id.clone(),
+                        optimistic_message_id: started.optimistic_message_id,
+                        created_session: None,
+                        cancelled: false,
+                        error: result.err().map(|e| e.to_string()),
+                    });
+                });
             }
             _ => {}
         }
 
-        self.sync_prompt_spinner_state();
         Ok(())
     }
+
+    pub(super) fn settle_shell_dispatch(
+        &mut self,
+        session_id: &str,
+        optimistic_message_id: Option<&str>,
+        outcome: ShellDispatchOutcome,
+    ) {
+        self.pending_shell_dispatch = None;
+        match outcome {
+            ShellDispatchOutcome::Failed => {
+                if let Some(msg_id) = optimistic_message_id {
+                    self.remove_optimistic_message(session_id, msg_id);
+                }
+                self.set_session_status(session_id, SessionStatus::Idle);
+                self.sync_prompt_spinner_state();
+            }
+            ShellDispatchOutcome::Sent => {
+                self.set_session_status(session_id, SessionStatus::Idle);
+                self.sync_prompt_spinner_state();
+            }
+            ShellDispatchOutcome::Cancelled => {
+                if let Some(msg_id) = optimistic_message_id {
+                    self.remove_optimistic_message(session_id, msg_id);
+                }
+                self.set_session_status(session_id, SessionStatus::Idle);
+                self.sync_prompt_spinner_state();
+            }
+        }
+    }
+}
+
+pub(super) enum ShellDispatchOutcome {
+    Sent,
+    Failed,
+    Cancelled,
 }

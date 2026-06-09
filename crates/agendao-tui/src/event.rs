@@ -64,6 +64,21 @@ pub enum CustomEvent {
         session_id: String,
         telemetry: Option<Box<crate::api::SessionTelemetrySnapshot>>,
     },
+    ShellDispatchFinished {
+        /// The optimistic session id that was created on the Home path.
+        /// Used so the handler can promote it once the real session is ready.
+        optimistic_session_id: String,
+        optimistic_message_id: String,
+        /// The real session id returned by the server (Home path) or the
+        /// existing session id (Session path).
+        session_id: String,
+        /// The full session info from `create_session` (Home path only).
+        /// Passed so the handler can call `promote_optimistic_session`.
+        created_session: Option<Box<crate::api::SessionInfo>>,
+        /// `true` when the user explicitly cancelled the in-flight dispatch.
+        cancelled: bool,
+        error: Option<String>,
+    },
     StateChanged(StateChange),
 }
 

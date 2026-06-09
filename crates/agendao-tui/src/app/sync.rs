@@ -184,7 +184,7 @@ impl App {
                 })
         };
         if let Some(attached_id) = attached_id {
-            self.context.navigate_session(attached_id.clone());
+            self.navigate_session_with_prompt_cleanup(attached_id.clone());
             self.ensure_session_view(&attached_id);
             let _ = self.sync_session_from_server(&attached_id);
         }
@@ -204,7 +204,7 @@ impl App {
         });
 
         if let Some(parent_id) = parent_id {
-            self.context.navigate_session(parent_id.clone());
+            self.navigate_session_with_prompt_cleanup(parent_id.clone());
             self.ensure_session_view(&parent_id);
             let _ = self.sync_session_from_server(&parent_id);
             return;
@@ -220,7 +220,7 @@ impl App {
             Some(Route::Home) => {}
             Some(_) => {}
             None => {
-                self.context.navigate_home();
+                self.navigate_home_with_prompt_cleanup();
             }
         }
     }

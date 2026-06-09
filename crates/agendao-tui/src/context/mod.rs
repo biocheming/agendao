@@ -1,6 +1,6 @@
 mod app_context;
 pub mod keybind;
-mod session_context;
+pub(crate) mod session_context;
 
 pub use app_context::{
     AppContext, DialogLifecycleState, DialogSlot, LspConnectionStatus, LspStatus,

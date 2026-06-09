@@ -98,6 +98,7 @@ pub struct Prompt {
     interrupt_press_count: u8,
     last_interrupt_time: Option<Instant>,
     attachment_status_hint: Option<String>,
+    return_flow_text: Option<String>,
 }
 
 impl Prompt {
@@ -194,6 +195,7 @@ impl Prompt {
             interrupt_press_count: 0,
             last_interrupt_time: None,
             attachment_status_hint: None,
+            return_flow_text: None,
         };
         prompt.recompute_suggestions();
         prompt
@@ -291,6 +293,7 @@ impl Prompt {
         let max_content_lines = inner_area
             .height
             .saturating_sub(if show_activity_row { 3 } else { 2 })
+            .saturating_sub(if self.return_flow_text.is_some() { 1 } else { 0 })
             .saturating_sub(PROMPT_BLOCK_PAD_TOP)
             .saturating_sub(PROMPT_BLOCK_PAD_BOTTOM)
             .max(PROMPT_MIN_INPUT_LINES);
@@ -298,8 +301,12 @@ impl Prompt {
         let input_lines = content_lines
             .saturating_add(PROMPT_BLOCK_PAD_TOP)
             .saturating_add(PROMPT_BLOCK_PAD_BOTTOM);
+        let has_return_flow = self.return_flow_text.is_some();
         let chunk_constraints = if show_activity_row {
             let mut constraints = vec![Constraint::Length(input_lines)];
+            if has_return_flow {
+                constraints.push(Constraint::Length(1));
+            }
             constraints.extend([
                 Constraint::Length(1),
                 Constraint::Length(1),
@@ -308,6 +315,9 @@ impl Prompt {
             constraints
         } else {
             let mut constraints = vec![Constraint::Length(input_lines)];
+            if has_return_flow {
+                constraints.push(Constraint::Length(1));
+            }
             constraints.extend([Constraint::Length(1), Constraint::Length(1)]);
             constraints
         };
@@ -317,8 +327,13 @@ impl Prompt {
             .split(inner_area);
 
         let paragraph = if self.input.is_empty() {
+            let display_text = if self.should_show_placeholder() {
+                placeholder.to_string()
+            } else {
+                String::new()
+            };
             Paragraph::new(Line::from(Span::styled(
-                placeholder,
+                display_text,
                 Style::default().fg(if self.focused {
                     theme.border_subtle
                 } else {
@@ -416,6 +431,17 @@ impl Prompt {
         let info_paragraph = Paragraph::new(info_line).style(Style::default().bg(meta_background));
         surface.render_widget(info_paragraph, info_row);
         chunk_index += 1;
+
+        if let Some(ref return_flow) = self.return_flow_text {
+            let flow_line = Paragraph::new(Line::from(Span::styled(
+                return_flow.clone(),
+                Style::default().fg(theme.text_muted),
+            )))
+            .style(Style::default().bg(meta_background));
+            let flow_row = row_content_area(chunks[chunk_index], PROMPT_LINE_H_INSET);
+            surface.render_widget(flow_line, flow_row);
+            chunk_index += 1;
+        }
 
         if show_activity_row {
             let spinner_row = chunks[chunk_index];
@@ -657,6 +683,10 @@ impl Prompt {
         self.attachment_status_hint = hint.map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
     }
 
+    pub fn set_return_flow_text(&mut self, text: Option<String>) {
+        self.return_flow_text = text.filter(|value| !value.trim().is_empty());
+    }
+
     pub fn set_focused(&mut self, focused: bool) {
         self.focused = focused;
     }
@@ -712,7 +742,7 @@ impl Prompt {
             .saturating_add(PROMPT_BLOCK_PAD_TOP)
             .saturating_add(PROMPT_BLOCK_PAD_BOTTOM)
             .saturating_add(if self.shows_activity_row() { 3 } else { 2 })
-            .saturating_add(2)
+            .saturating_add(if self.return_flow_text.is_some() { 1 } else { 0 })
     }
 
     fn shows_activity_row(&self) -> bool {
@@ -1136,27 +1166,58 @@ impl Prompt {
     }
 
     fn render_status_line(&self, theme: &Theme) -> Line<'static> {
-        if let Some(hint) = self.attachment_status_hint.as_ref() {
-            return Line::from(vec![
-                Span::styled(hint.clone(), Style::default().fg(theme.text)),
-                Span::styled(" · ", Style::default().fg(theme.text_muted)),
-                Span::styled("Enter send", Style::default().fg(theme.text_muted)),
-                Span::styled(" · ", Style::default().fg(theme.text_muted)),
-                Span::styled("Ctrl+L clear", Style::default().fg(theme.text_muted)),
-            ]);
-        }
-        if let Some(token) = self.current_slash_token() {
-            if self
-                .current_session_status()
-                .map_or(true, |status| matches!(status, SessionStatus::Idle))
-            {
-                return self.slash_hint_line(theme, &token);
+        if let Some(status) = self.current_session_status() {
+            if !matches!(status, SessionStatus::Idle) {
+                return self.status_line_for_session(status, theme);
             }
         }
-        if let Some(status) = self.current_session_status() {
-            return self.status_line_for_session(status, theme);
+        self.render_secondary_hint_line(theme)
+    }
+
+    /// Unified secondary hint line — single exit for idle-state information.
+    ///
+    /// Priority (D1):
+    /// 1. attachment hint + slash hint (layered with " · ")
+    /// 2. attachment hint alone
+    /// 3. slash hint alone
+    /// 4. idle / help hint
+    fn render_secondary_hint_line(&self, theme: &Theme) -> Line<'static> {
+        let slash = self.current_slash_token();
+        let attachment = self.attachment_status_hint.as_deref();
+
+        match (attachment, slash) {
+            (Some(att), Some(token)) => {
+                let mut spans = vec![
+                    Span::styled(att.to_string(), Style::default().fg(theme.text)),
+                    Span::styled(" · ", Style::default().fg(theme.text_muted)),
+                ];
+                spans.extend(self.slash_hint_line(theme, &token).spans);
+                Line::from(spans)
+            }
+            (Some(att), None) => {
+                let base = self.hint_line(theme);
+                let mut spans = vec![
+                    Span::styled(att.to_string(), Style::default().fg(theme.text)),
+                    Span::styled(" · ", Style::default().fg(theme.text_muted)),
+                ];
+                spans.extend(base.spans);
+                Line::from(spans)
+            }
+            (None, Some(token)) => self.slash_hint_line(theme, &token),
+            (None, None) => self.hint_line(theme),
         }
-        self.hint_line(theme)
+    }
+
+    /// Placeholder only appears in truly idle state — no hot state present.
+    fn should_show_placeholder(&self) -> bool {
+        self.input.trim().is_empty()
+            && self.current_token().is_none()
+            && self.attachment_status_hint.is_none()
+            && self.return_flow_text.is_none()
+            && !self.spinner_active()
+            && self
+                .current_session_status()
+                .map_or(true, |status| matches!(status, SessionStatus::Idle))
     }
 
     fn current_slash_token(&self) -> Option<String> {
@@ -1451,7 +1512,13 @@ impl Prompt {
         if let Some(token) = self.current_slash_token() {
             return self.slash_hint_line(theme, &token);
         }
-        Line::from("")
+        Line::from(vec![
+            Span::styled("Enter", Style::default().fg(theme.text)),
+            Span::styled(" send", Style::default().fg(theme.text_muted)),
+            Span::styled(" · ", Style::default().fg(theme.text_muted)),
+            Span::styled("Ctrl+L", Style::default().fg(theme.text)),
+            Span::styled(" clear", Style::default().fg(theme.text_muted)),
+        ])
     }
 
     fn slash_hint_line(&self, theme: &Theme, token: &str) -> Line<'static> {
@@ -2034,13 +2101,34 @@ mod tests {
     }
 
     #[test]
-    fn attachment_hint_overrides_idle_hint_line() {
+    fn attachment_hint_layers_with_idle_hint_line() {
         with_isolated_prompt(|mut prompt| {
             prompt.set_attachment_status_hint(Some("1 image attached".to_string()));
             let theme = prompt.context.theme.read().clone();
             let rendered = line_text(prompt.render_status_line(&theme));
             assert!(rendered.contains("1 image attached"), "{rendered}");
             assert!(rendered.contains("Enter send"), "{rendered}");
+            assert!(rendered.contains("Ctrl+L clear"), "{rendered}");
+        });
+    }
+
+    #[test]
+    fn attachment_hint_layers_with_slash_hint_line() {
+        with_isolated_prompt(|mut prompt| {
+            let session_id = {
+                let mut session = prompt.context.session.write();
+                session.data.create_session(Some("Test".to_string()))
+            };
+            prompt.context.navigate_session(session_id);
+            prompt.set_input("/sess".to_string());
+            prompt.set_attachment_status_hint(Some("1 image attached".to_string()));
+
+            let theme = prompt.context.theme.read().clone();
+            let rendered = line_text(prompt.render_status_line(&theme));
+
+            assert!(rendered.contains("1 image attached"), "{rendered}");
+            assert!(rendered.contains("matches:"), "{rendered}");
+            assert!(rendered.contains("/session"), "{rendered}");
         });
     }
 
@@ -2140,5 +2228,68 @@ mod tests {
             prompt.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::empty()));
             assert_eq!(prompt.get_input(), "");
         });
+    }
+
+    // ── D1: placeholder gate & secondary hint ─────────────────────
+
+    fn idle_prompt() -> Prompt {
+        let context = Arc::new(AppContext::new());
+        let mut prompt = Prompt::new(context);
+        // Ensure no placeholder variants influence the gate test —
+        // empty input + no hot state = truly idle.
+        prompt.placeholder_variants.clear();
+        prompt.shell_placeholders.clear();
+        prompt
+    }
+
+    #[test]
+    fn placeholder_hidden_when_return_flow_present() {
+        let mut prompt = idle_prompt();
+        prompt.set_return_flow_text(Some("Last turn: ↑12k ↓3.4k".to_string()));
+        assert!(!prompt.should_show_placeholder());
+    }
+
+    #[test]
+    fn placeholder_hidden_when_attachment_hint_present() {
+        let mut prompt = idle_prompt();
+        prompt.set_attachment_status_hint(Some("1 image attached".to_string()));
+        assert!(!prompt.should_show_placeholder());
+    }
+
+    #[test]
+    fn placeholder_hidden_when_spinner_active() {
+        let mut prompt = idle_prompt();
+        prompt.set_spinner_active(true);
+        assert!(!prompt.should_show_placeholder());
+    }
+
+    #[test]
+    fn placeholder_hidden_when_session_running() {
+        let prompt = idle_prompt();
+        // Plumb a running session through the shared context so
+        // current_session_status() sees it via the route.
+        let sid = {
+            let mut session = prompt.context.session.write();
+            let sid = session.create_session(Some("test-session".to_string()));
+            session.set_current_session_id(sid.clone());
+            session.set_status(&sid, SessionStatus::Running);
+            sid
+        };
+        // Navigate to the session route so prompt sees the status.
+        prompt.context.navigate_session(sid);
+        assert!(!prompt.should_show_placeholder());
+    }
+
+    #[test]
+    fn secondary_hint_prefers_attachment_plus_slash_over_idle_hint() {
+        let mut prompt = idle_prompt();
+        prompt.set_attachment_status_hint(Some("2 images".to_string()));
+        prompt.input = "/mcp".to_string();
+        prompt.cursor_position = 4;
+        prompt.recompute_suggestions();
+        let theme = Theme::default();
+        let hint = line_text(prompt.render_secondary_hint_line(&theme));
+        assert!(hint.contains("2 images"), "attachment hint should be present");
+        assert!(hint.contains("/mcp"), "slash hint should be present");
     }
 }
