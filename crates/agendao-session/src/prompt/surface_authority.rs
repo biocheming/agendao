@@ -27,6 +27,18 @@
 //!   instead of raw `String`.
 //! - **Phase 7**: Delete legacy full-prompt assembly paths.
 //!
+//! ## Cache boundary
+//!
+//! `PromptSurfaceSections` is the authority for **pure prompt-surface
+//! projections** only: stable system projection, tool-source grouping,
+//! provider policy projections, and output-projection policy.
+//!
+//! Provider-family cache semantics remain outside this module. In particular,
+//! `cache_request_fingerprint(...)` and
+//! `closeai_prompt_cache_key_for_fingerprint(...)` stay in
+//! `loop_lifecycle.rs` until their provider-specific behavior can be migrated
+//! without changing cache guardrail tests.
+//!
 //! ## Visibility
 //!
 //! All types and fields are `pub(crate)` — this module is a **crate-internal
@@ -40,8 +52,16 @@ use std::collections::HashMap;
 
 use agendao_execution_types::CompiledExecutionRequest;
 use agendao_provider::cache::ToolSurfaceSourceDigest;
+use agendao_provider::cache::{json_fingerprint, text_fingerprint};
 use agendao_provider::ToolDefinition;
 use agendao_types::MemoryRetrievalPacket;
+
+use super::surface_contract::{
+    collect_prompt_surface_provider_options, is_volatile_system_section,
+    normalize_stable_system_line, sanctioned_model_context_projection_for_message,
+    PromptSurfaceProviderOptionGroup,
+};
+use crate::SessionMessage;
 
 // ── Input model ─────────────────────────────────────────────────────────
 
@@ -132,6 +152,12 @@ pub(crate) struct PromptSurfaceSections {
     /// Provider-level parameters hash (reasoning, tool policy, etc.).
     pub(crate) provider_params_hash: String,
 
+    /// Reasoning-mode policy projection hash.
+    pub(crate) reasoning_mode_hash: Option<String>,
+
+    /// Tool-choice / allowed-tools policy projection hash.
+    pub(crate) tool_policy_hash: Option<String>,
+
     /// Preset identity label (e.g. "sisyphus", "atlas").
     pub(crate) preset_identity: Option<String>,
 
@@ -186,6 +212,145 @@ impl PromptSurfaceInputs {
             provider_options,
         }
     }
+
+    pub(crate) fn assemble_sections(
+        &self,
+        output_projection_policy_hash: String,
+        ingress_policy_hash: Option<String>,
+        closeai_prompt_cache_key: Option<String>,
+    ) -> PromptSurfaceSections {
+        let tool_surface_hash = agendao_provider::cache::tool_surface_fingerprint(&self.tools);
+        let tool_source_surface_hash =
+            agendao_provider::cache::tool_source_surface_fingerprint(&if self
+                .tool_source_digests
+                .is_empty()
+            {
+                vec![ToolSurfaceSourceDigest {
+                    source: agendao_provider::cache::ToolSurfaceSourceKind::Base,
+                    tool_count: self.tools.len(),
+                    tools_hash: tool_surface_hash.clone(),
+                }]
+            } else {
+                self.tool_source_digests.clone()
+            });
+        let provider_params_hash = json_fingerprint(&serde_json::json!({
+            "max_tokens": self.compiled_request.max_tokens,
+            "temperature": self.compiled_request.temperature,
+            "top_p": self.compiled_request.top_p,
+            "variant": self.compiled_request.variant,
+            "provider_options": self.compiled_request.provider_options,
+        }));
+        let reasoning_mode_hash = provider_option_hash(
+            &self.provider_options,
+            PromptSurfaceProviderOptionGroup::ReasoningMode,
+        );
+        let tool_policy_hash = provider_option_hash(
+            &self.provider_options,
+            PromptSurfaceProviderOptionGroup::ToolPolicy,
+        );
+        let system_text = self.system_prompt.clone().unwrap_or_default();
+        let stable_system_surface_hash =
+            text_fingerprint(&stable_system_surface_projection(&system_text));
+
+        PromptSurfaceSections {
+            system_text,
+            stable_system_surface_hash,
+            tool_surface_hash,
+            tool_source_surface_hash,
+            provider_params_hash,
+            reasoning_mode_hash,
+            tool_policy_hash,
+            preset_identity: self
+                .preset_extension
+                .as_ref()
+                .map(|preset| preset.preset_name.clone()),
+            closeai_prompt_cache_key,
+            ingress_policy_hash,
+            output_projection_policy_hash,
+        }
+    }
+
+    pub(crate) fn effective_tool_source_digests(
+        base_source_digests: &[ToolSurfaceSourceDigest],
+        base_tools: &[ToolDefinition],
+        extra_tools: &[ToolDefinition],
+    ) -> Vec<ToolSurfaceSourceDigest> {
+        let base_names = base_tools
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let effective_extra = extra_tools
+            .iter()
+            .filter(|tool| !base_names.contains(&tool.name))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let mut groups = if base_source_digests.is_empty() {
+            vec![ToolSurfaceSourceDigest {
+                source: agendao_provider::cache::ToolSurfaceSourceKind::Base,
+                tool_count: base_tools.len(),
+                tools_hash: agendao_provider::cache::tool_surface_fingerprint(base_tools),
+            }]
+        } else {
+            base_source_digests.to_vec()
+        };
+        groups.push(ToolSurfaceSourceDigest {
+            source: agendao_provider::cache::ToolSurfaceSourceKind::Mcp,
+            tool_count: effective_extra.len(),
+            tools_hash: agendao_provider::cache::tool_surface_fingerprint(&effective_extra),
+        });
+        groups
+    }
+
+    pub(crate) fn output_projection_policy_hash(prompt_messages: &[SessionMessage]) -> String {
+        let projected = prompt_messages
+            .iter()
+            .filter_map(sanctioned_model_context_projection_for_message)
+            .map(|projection| {
+                serde_json::json!({
+                    "path": projection.path.as_str(),
+                    "policy": projection.policy,
+                    "legacy_without_policy": projection.legacy_without_policy,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        json_fingerprint(&serde_json::json!({
+            "owner": "sanctioned_model_context_projection",
+            "entries": projected,
+        }))
+    }
+}
+
+fn stable_system_surface_projection(system_prompt: &str) -> String {
+    let mut lines = Vec::new();
+    let mut skipping_section = false;
+
+    for line in system_prompt.lines() {
+        if let Some(header) = line.strip_prefix("## ") {
+            let title = header.trim();
+            skipping_section = is_volatile_system_section(title);
+            if skipping_section {
+                continue;
+            }
+        }
+
+        if skipping_section {
+            continue;
+        }
+
+        lines.push(normalize_stable_system_line(line).into_owned());
+    }
+
+    lines.join("\n")
+}
+
+fn provider_option_hash(
+    provider_options: &HashMap<String, serde_json::Value>,
+    group: PromptSurfaceProviderOptionGroup,
+) -> Option<String> {
+    let relevant = collect_prompt_surface_provider_options(provider_options, group);
+    (!relevant.is_empty()).then(|| json_fingerprint(&serde_json::Value::Object(relevant)))
 }
 
 #[cfg(test)]
@@ -200,7 +365,10 @@ mod tests {
             "ses-1",
             Some("system header".to_string()),
             Some("env: linux".to_string()),
-            Some(PresetPromptExtension::new("sisyphus", "delegation-first orchestrator")),
+            Some(PresetPromptExtension::new(
+                "sisyphus",
+                "delegation-first orchestrator",
+            )),
             None,
             vec![],
             vec![],
@@ -245,5 +413,68 @@ mod tests {
         assert!(ext.extra_sections.is_empty());
         assert!(ext.capability_projection.is_none());
         assert!(ext.tone_augment.is_none());
+    }
+
+    #[test]
+    fn assemble_sections_projects_provider_policy_hashes() {
+        let inputs = PromptSurfaceInputs::from_session_prompt_parts(
+            "ses-1",
+            Some("system".to_string()),
+            None,
+            None,
+            None,
+            vec![],
+            vec![],
+            CompiledExecutionRequest {
+                provider_options: Some(HashMap::from([
+                    ("thinking".to_string(), serde_json::json!(true)),
+                    ("tool_choice".to_string(), serde_json::json!("auto")),
+                ])),
+                ..Default::default()
+            },
+            HashMap::from([
+                ("thinking".to_string(), serde_json::json!(true)),
+                ("tool_choice".to_string(), serde_json::json!("auto")),
+            ]),
+        );
+
+        let sections = inputs.assemble_sections("projection".to_string(), None, None);
+
+        assert!(sections.reasoning_mode_hash.is_some());
+        assert!(sections.tool_policy_hash.is_some());
+    }
+
+    #[test]
+    fn effective_tool_source_digests_preserve_base_and_append_mcp_group() {
+        let base = vec![ToolDefinition {
+            name: "read".to_string(),
+            description: Some("read files".to_string()),
+            parameters: serde_json::json!({"type":"object"}),
+        }];
+        let extra = vec![
+            ToolDefinition {
+                name: "read".to_string(),
+                description: Some("duplicate".to_string()),
+                parameters: serde_json::json!({"type":"object"}),
+            },
+            ToolDefinition {
+                name: "grep".to_string(),
+                description: Some("search".to_string()),
+                parameters: serde_json::json!({"type":"object"}),
+            },
+        ];
+
+        let digests = PromptSurfaceInputs::effective_tool_source_digests(&[], &base, &extra);
+
+        assert_eq!(digests.len(), 2);
+        assert_eq!(
+            digests[0].source,
+            agendao_provider::cache::ToolSurfaceSourceKind::Base
+        );
+        assert_eq!(
+            digests[1].source,
+            agendao_provider::cache::ToolSurfaceSourceKind::Mcp
+        );
+        assert_eq!(digests[1].tool_count, 1);
     }
 }
