@@ -568,7 +568,7 @@ export function MessageCard({
       data-stage-id={stageId}
       data-kind={message.kind}
     >
-      <div className={cn("w-full", isUser ? "max-w-[82%]" : "max-w-full")}>
+      <div className={cn("w-full", isUser ? "ml-auto max-w-[82%]" : "max-w-full")}>
         <section
           className="roc-message-card p-3 md:p-4"
           data-tone={isUser ? "user" : "assistant"}
@@ -636,7 +636,7 @@ export function MessageCard({
           ) : null}
 
           {isUser ? (
-            <div className="roc-message-footer">
+            <div className="roc-message-footer" data-align={isUser ? "user" : "assistant"}>
               <div className="min-w-0 flex-1">
                 {summary ? <p className="roc-message-summary">{summary}</p> : null}
               </div>

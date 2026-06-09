@@ -31,6 +31,8 @@ describe("MessageCard", () => {
     const action = screen.getByRole("button", { name: /revise & resend/i });
     fireEvent.click(action);
 
+    const card = screen.getByTestId("message-card");
+    expect(card).toHaveClass("justify-items-end");
     expect(onEditAndResend).toHaveBeenCalledTimes(1);
     expect(onEditAndResend).toHaveBeenCalledWith(message);
   });

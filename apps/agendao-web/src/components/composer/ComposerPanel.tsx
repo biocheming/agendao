@@ -3,10 +3,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ClipboardEvent, DragEvent } from "react";
 import type { BreadcrumbProvenance } from "../../hooks/useSchedulerNavigation";
-import {
-  browserSpeechRecognitionConstructor,
-  type BrowserSpeechRecognition,
-} from "../../lib/browserSpeech";
 import { AttachmentDetailsPanel } from "../chat/AttachmentDetailsPanel";
 import { ComposerContextStrip } from "./ComposerContextStrip";
 import type { ComposerAttachmentRecord } from "../../lib/composerContext";
@@ -163,6 +159,35 @@ function formatCompactPrice(value?: number | null) {
   return value.toFixed(2);
 }
 
+const VOICE_MIME_CANDIDATES = [
+  "audio/webm;codecs=opus",
+  "audio/webm",
+  "audio/ogg;codecs=opus",
+  "audio/ogg",
+  "audio/mp4",
+] as const;
+
+function resolveVoiceRecordingMimeType() {
+  if (typeof window === "undefined" || typeof window.MediaRecorder === "undefined") {
+    return null;
+  }
+  const ctor = window.MediaRecorder as typeof MediaRecorder & {
+    isTypeSupported?: (mimeType: string) => boolean;
+  };
+  for (const candidate of VOICE_MIME_CANDIDATES) {
+    if (typeof ctor.isTypeSupported !== "function" || ctor.isTypeSupported(candidate)) {
+      return candidate;
+    }
+  }
+  return "";
+}
+
+function voiceFileExtension(mimeType: string) {
+  if (mimeType.includes("ogg")) return "ogg";
+  if (mimeType.includes("mp4")) return "m4a";
+  return "webm";
+}
+
 interface ComposerPanelProps {
   composer: string;
   composerDragActive: boolean;
@@ -196,6 +221,7 @@ interface ComposerPanelProps {
   providerDiagnosticLabel?: string | null;
   inputPricePerMillion?: number | null;
   outputPricePerMillion?: number | null;
+  composerNotice?: { id: number; text: string; count: number } | null;
   activeStageId: string | null;
   provenance: BreadcrumbProvenance | null;
   permissionStatusLabel?: string | null;
@@ -215,6 +241,7 @@ interface ComposerPanelProps {
   onDragOver: (event: DragEvent<HTMLDivElement>) => void;
   onDragLeave: (event: DragEvent<HTMLDivElement>) => void;
   onDrop: (event: DragEvent<HTMLDivElement>) => void;
+  onAttachFiles: (files: File[], failurePrefix: string) => void | Promise<void>;
   onFileChange: (event: React.ChangeEvent<HTMLInputElement>) => void | Promise<void>;
   onPaste: (event: ClipboardEvent<HTMLTextAreaElement>) => void | Promise<void>;
   onComposerChange: (value: string) => void;
@@ -253,6 +280,7 @@ export function ComposerPanel({
   providerDiagnosticLabel = null,
   inputPricePerMillion = null,
   outputPricePerMillion = null,
+  composerNotice = null,
   activeStageId,
   provenance,
   permissionStatusLabel,
@@ -272,21 +300,28 @@ export function ComposerPanel({
   onDragOver,
   onDragLeave,
   onDrop,
+  onAttachFiles,
   onFileChange,
   onPaste,
   onComposerChange,
 }: ComposerPanelProps) {
+  type NoticePhase = "idle" | "enter" | "exit";
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
-  const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
-  const voiceBaseTextRef = useRef("");
+  const voiceRecorderRef = useRef<MediaRecorder | null>(null);
+  const voiceStreamRef = useRef<MediaStream | null>(null);
+  const voiceChunksRef = useRef<BlobPart[]>([]);
+  const voiceMimeTypeRef = useRef("audio/webm");
   const previousAttachmentCountRef = useRef(attachments.length);
   const [voiceSupported, setVoiceSupported] = useState(false);
   const [voiceListening, setVoiceListening] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [detailsExpanded, setDetailsExpanded] = useState(false);
+  const [displayNotice, setDisplayNotice] = useState(composerNotice);
+  const [noticePhase, setNoticePhase] = useState<NoticePhase>(composerNotice ? "enter" : "idle");
+  const [countPulse, setCountPulse] = useState(false);
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -311,12 +346,21 @@ export function ComposerPanel({
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const RecognitionCtor = browserSpeechRecognitionConstructor(window);
-    setVoiceSupported(Boolean(RecognitionCtor));
+    const supportsRecording =
+      typeof window.MediaRecorder !== "undefined" &&
+      typeof navigator !== "undefined" &&
+      !!navigator.mediaDevices?.getUserMedia;
+    setVoiceSupported(supportsRecording);
 
     return () => {
-      recognitionRef.current?.stop();
-      recognitionRef.current = null;
+      const recorder = voiceRecorderRef.current;
+      if (recorder && recorder.state !== "inactive") {
+        recorder.stop();
+      }
+      voiceRecorderRef.current = null;
+      voiceChunksRef.current = [];
+      voiceStreamRef.current?.getTracks().forEach((track) => track.stop());
+      voiceStreamRef.current = null;
     };
   }, []);
 
@@ -327,79 +371,138 @@ export function ComposerPanel({
     previousAttachmentCountRef.current = attachments.length;
   }, [attachments.length]);
 
-  const stopVoiceRecognition = () => {
-    recognitionRef.current?.stop();
-    recognitionRef.current = null;
+  useEffect(() => {
+    if (!composerNotice) {
+      if (!displayNotice) return;
+      setNoticePhase("exit");
+      const timeoutId = window.setTimeout(() => {
+        setDisplayNotice(null);
+        setNoticePhase("idle");
+      }, 140);
+      return () => window.clearTimeout(timeoutId);
+    }
+
+    if (!displayNotice) {
+      setDisplayNotice(composerNotice);
+      setNoticePhase("enter");
+      return;
+    }
+
+    if (displayNotice.id === composerNotice.id) return;
+
+    setNoticePhase("exit");
+    const timeoutId = window.setTimeout(() => {
+      setDisplayNotice(composerNotice);
+      setNoticePhase("enter");
+    }, 130);
+    return () => window.clearTimeout(timeoutId);
+  }, [composerNotice, displayNotice]);
+
+  useEffect(() => {
+    if (noticePhase !== "enter") return;
+    const timeoutId = window.setTimeout(() => {
+      setNoticePhase("idle");
+    }, 260);
+    return () => window.clearTimeout(timeoutId);
+  }, [noticePhase, displayNotice?.id]);
+
+  useEffect(() => {
+    if (!displayNotice || displayNotice.count <= 1) {
+      setCountPulse(false);
+      return;
+    }
+    setCountPulse(true);
+    const timeoutId = window.setTimeout(() => {
+      setCountPulse(false);
+    }, 360);
+    return () => window.clearTimeout(timeoutId);
+  }, [displayNotice?.id, displayNotice?.count]);
+
+  const stopVoiceCapture = () => {
+    const recorder = voiceRecorderRef.current;
+    if (!recorder || recorder.state === "inactive") {
+      setVoiceListening(false);
+      return;
+    }
+    recorder.stop();
     setVoiceListening(false);
   };
 
-  const startVoiceRecognition = () => {
-    if (typeof window === "undefined") return;
-    const RecognitionCtor = browserSpeechRecognitionConstructor(window);
-    if (!RecognitionCtor) {
+  const startVoiceCapture = async () => {
+    if (typeof window === "undefined" || typeof navigator === "undefined") return;
+    if (typeof window.MediaRecorder === "undefined" || !navigator.mediaDevices?.getUserMedia) {
       setVoiceSupported(false);
-      setVoiceError("This browser does not support speech recognition.");
+      setVoiceError("This browser does not support direct audio capture.");
+      return;
+    }
+    if (voiceRecorderRef.current && voiceRecorderRef.current.state !== "inactive") {
+      stopVoiceCapture();
       return;
     }
 
     setVoiceError(null);
-    voiceBaseTextRef.current = composer.trimEnd();
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = resolveVoiceRecordingMimeType();
+      const recorder = mimeType
+        ? new window.MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+        : new window.MediaRecorder(stream);
 
-    const recognition = new RecognitionCtor();
-    recognition.continuous = false;
-    recognition.interimResults = true;
-    recognition.lang =
-      typeof navigator !== "undefined" && navigator.language
-        ? navigator.language
-        : "en-US";
-    recognition.onresult = (event) => {
-      let finalTranscript = "";
-      let interimTranscript = "";
+      voiceStreamRef.current?.getTracks().forEach((track) => track.stop());
+      voiceStreamRef.current = stream;
+      voiceRecorderRef.current = recorder;
+      voiceChunksRef.current = [];
+      voiceMimeTypeRef.current = recorder.mimeType || mimeType || "audio/webm";
 
-      for (let index = event.resultIndex; index < event.results.length; index += 1) {
-        const result = event.results[index];
-        const transcript = result[0]?.transcript ?? result.item(0)?.transcript ?? "";
-        if (!transcript) continue;
-        if (result.isFinal) {
-          finalTranscript += transcript;
-        } else {
-          interimTranscript += transcript;
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          voiceChunksRef.current.push(event.data);
         }
-      }
+      };
+      recorder.onerror = () => {
+        setVoiceError("Voice capture failed while recording.");
+        setVoiceListening(false);
+      };
+      recorder.onstop = () => {
+        const mimeType = voiceMimeTypeRef.current || recorder.mimeType || "audio/webm";
+        const chunks = voiceChunksRef.current.slice();
+        voiceChunksRef.current = [];
+        voiceRecorderRef.current = null;
+        const stream = voiceStreamRef.current;
+        voiceStreamRef.current = null;
+        stream?.getTracks().forEach((track) => track.stop());
 
-      const spokenText = [finalTranscript, interimTranscript]
-        .map((value) => value.trim())
-        .filter(Boolean)
-        .join(" ")
-        .trim();
+        if (!chunks.length) {
+          setVoiceError("No audio was captured.");
+          return;
+        }
 
-      const base = voiceBaseTextRef.current;
-      if (!spokenText) {
-        onComposerChange(base);
-        return;
-      }
+        const blob = new Blob(chunks, { type: mimeType });
+        const extension = voiceFileExtension(mimeType);
+        const file = new File([blob], `voice-${Date.now()}.${extension}`, {
+          type: mimeType,
+        });
+        void Promise.resolve(onAttachFiles([file], "Voice capture failed")).catch((error) => {
+          setVoiceError(
+            error instanceof Error ? error.message : "Voice capture failed while attaching audio.",
+          );
+        });
+      };
 
-      onComposerChange(base ? `${base}\n${spokenText}` : spokenText);
-    };
-    recognition.onerror = (event) => {
-      if (event.error === "no-speech") {
-        setVoiceError("No speech detected.");
-      } else if (event.error === "not-allowed") {
-        setVoiceError("Microphone permission was denied.");
-      } else {
-        setVoiceError(`Voice input failed: ${event.error}`);
-      }
+      recorder.start();
+      setVoiceListening(true);
+    } catch (error) {
+      const message =
+        error instanceof DOMException && error.name === "NotAllowedError"
+          ? "Microphone permission was denied."
+          : error instanceof DOMException && error.name === "NotFoundError"
+            ? "No microphone was found on this device."
+            : error instanceof Error
+              ? error.message
+              : "Voice capture failed to start.";
+      setVoiceError(message);
       setVoiceListening(false);
-      recognitionRef.current = null;
-    };
-    recognition.onend = () => {
-      setVoiceListening(false);
-      recognitionRef.current = null;
-    };
-
-    recognitionRef.current = recognition;
-    setVoiceListening(true);
-    recognition.start();
+    }
   };
 
   const contextCount = references.length + attachments.length;
@@ -411,6 +514,8 @@ export function ComposerPanel({
     ? voiceError
     : composerDragActive
       ? "Drop files or images to attach them to this turn."
+      : voiceListening
+        ? "Recording audio. Stop capture to attach the clip to this turn."
       : streaming
         ? "AgenDao is responding. You can stop the current turn."
         : null;
@@ -627,7 +732,35 @@ export function ComposerPanel({
               className="hidden"
               onChange={onFileChange}
             />
-            <div className="px-4 pt-4 pb-3 md:px-5">
+            {displayNotice ? (
+              <div
+                className="px-4 pt-3 md:px-5"
+                data-testid="composer-notice"
+                role="status"
+                aria-live="polite"
+              >
+                <div
+                  key={displayNotice.id}
+                  data-state={noticePhase}
+                  className="roc-composer-notice-chip inline-flex max-w-full items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/8 px-2.5 py-1 text-[11px] leading-5 text-emerald-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] dark:text-emerald-200"
+                >
+                  <span className="rounded-full bg-emerald-500/14 px-1.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-emerald-700 dark:text-emerald-200">
+                    Attached
+                  </span>
+                  {displayNotice.count > 1 ? (
+                    <span
+                      data-pulse={countPulse ? "true" : "false"}
+                      className="roc-composer-notice-count inline-flex min-w-5 items-center justify-center rounded-full bg-emerald-500/16 px-1.5 text-[10px] font-semibold tabular-nums text-emerald-700 dark:text-emerald-200"
+                    >
+                      {displayNotice.count}
+                    </span>
+                  ) : null}
+                  <CheckIcon className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                  <span className="truncate">{displayNotice.text}</span>
+                </div>
+              </div>
+            ) : null}
+            <div className={cn("px-4 pb-3 md:px-5", displayNotice ? "pt-2.5" : "pt-4")}>
               <div className="flex items-end gap-2">
                 <textarea
                   ref={textareaRef}
@@ -659,14 +792,14 @@ export function ComposerPanel({
                         ) : null}
                       </Button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="min-w-[8rem]">
+                      <DropdownMenuContent align="end" className="min-w-[8rem]">
                       <DropdownMenuItem
                         disabled={!allowAudioInput || !voiceSupported}
-                        onClick={startVoiceRecognition}
+                        onClick={() => void (voiceListening ? stopVoiceCapture() : startVoiceCapture())}
                         className="gap-2 text-xs"
                       >
                         <MicIcon className="size-3.5" />
-                        Voice
+                        {voiceListening ? "Stop recording" : "Voice"}
                       </DropdownMenuItem>
                       <DropdownMenuItem
                         disabled={!allowFileInput}
@@ -697,6 +830,18 @@ export function ComposerPanel({
                       onClick={() => void onStopStreaming()}
                     >
                       <SquareIcon className="size-3.5 fill-current" />
+                    </Button>
+                  ) : voiceListening ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      className="h-9 w-9 rounded-full border-amber-500/55 text-amber-700 hover:bg-amber-500/10 dark:text-amber-300"
+                      data-testid="composer-voice-stop"
+                      title="Stop voice recording"
+                      onClick={stopVoiceCapture}
+                    >
+                      <MicIcon className="size-3.5 fill-current" />
                     </Button>
                   ) : null}
                   <Button
@@ -873,8 +1018,8 @@ export function ComposerPanel({
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8 rounded-full text-foreground"
-                          title="Stop voice input"
-                          onClick={stopVoiceRecognition}
+                          title="Stop voice recording"
+                          onClick={stopVoiceCapture}
                         >
                           <SquareIcon className="size-3.5 fill-current" />
                         </Button>

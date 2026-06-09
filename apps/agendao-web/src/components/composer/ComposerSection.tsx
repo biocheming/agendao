@@ -25,6 +25,7 @@ interface ComposerSectionProps {
   providerDiagnosticLabel?: string | null;
   inputPricePerMillion?: number | null;
   outputPricePerMillion?: number | null;
+  composerNotice?: { id: number; text: string; count: number } | null;
   activeStageId: string | null;
   provenance: BreadcrumbProvenance | null;
   permissionStatusLabel?: string | null;
@@ -43,6 +44,7 @@ interface ComposerSectionProps {
   onDragOver: (event: DragEvent<HTMLDivElement>) => void;
   onDragLeave: (event: DragEvent<HTMLDivElement>) => void;
   onDrop: (event: DragEvent<HTMLDivElement>) => void;
+  onAttachFiles: (files: File[], failurePrefix: string) => void | Promise<void>;
   onFileChange: (event: ChangeEvent<HTMLInputElement>) => void | Promise<void>;
   onPaste: (event: ClipboardEvent<HTMLTextAreaElement>) => void | Promise<void>;
 }
