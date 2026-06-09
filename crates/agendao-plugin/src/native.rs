@@ -106,6 +106,23 @@ impl NativePluginHandle {
 }
 
 /// Manages loading and tracking of native (dylib) plugins.
+///
+/// # Lifecycle (AgenDao §9, P3.2)
+///
+/// | Phase      | Method        | What happens                          |
+/// |------------|---------------|---------------------------------------|
+/// | Load       | `load()`      | dylib loaded → `register_hooks()`     |
+/// | Live       | `list()`      | query loaded plugins                  |
+/// | Shutdown   | `shutdown()`  | handles dropped (dylibs unloaded)     |
+/// | Drop       | (implicit)    | remaining handles dropped (fallback)  |
+///
+/// # Known gap (P3.2)
+///
+/// `shutdown()` drops dylib handles but does NOT call
+/// `PluginSystem::remove()` for each hook, because the `Plugin` trait's
+/// `register_hooks()` does not return hook IDs.  Until the trait is
+/// extended with a `hooks() → Vec<HookId>` method, callers must ensure
+/// hook dispatching has stopped before calling `shutdown()`.
 pub struct NativePluginLoader {
     handles: Vec<NativePluginHandle>,
 }
@@ -154,6 +171,23 @@ impl NativePluginLoader {
             }
         }
         errors
+    }
+
+    /// Shut down all native plugins: drop handles (unload dylibs).
+    ///
+    /// After `shutdown()`, the loader is empty.
+    ///
+    /// # Known gap (P3.2)
+    ///
+    /// Unlike the subprocess loader (which calls `hook_system.remove()` for
+    /// each hook before shutdown), the native loader cannot enumerate hook
+    /// names because the `Plugin` trait's `register_hooks()` does not return
+    /// hook IDs.  Until the trait is extended with a `hooks() → Vec<HookId>`
+    /// method, `shutdown()` only drops dylib handles.  Callers MUST stop
+    /// hook dispatching before calling this.
+    pub async fn shutdown(&mut self) {
+        // P3.2 future: iterate plugin.hooks() → system.remove()
+        self.handles.clear(); // drops NativePluginHandle → dylib unloaded
     }
 
     /// List all loaded native plugins as (name, version, path).
@@ -229,5 +263,15 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("failed to load native plugin"));
+    }
+
+    #[tokio::test]
+    async fn shutdown_clears_loader() {
+        let mut loader = NativePluginLoader::new();
+        assert_eq!(loader.count(), 0);
+        // shutdown on empty loader is a no-op.
+        loader.shutdown().await;
+        assert_eq!(loader.count(), 0);
+        assert!(loader.list().is_empty());
     }
 }
